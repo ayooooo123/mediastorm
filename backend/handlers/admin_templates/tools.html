@@ -234,12 +234,23 @@
                             <option value="trakt_list_sync">Trakt List Sync</option>
                             <option value="trakt_history_sync">Trakt History Sync</option>
                             <option value="backup">System Backup</option>
+                            <option value="prewarm">Pre-warm Continue Watching</option>
                         </select>
                     </div>
 
                     <div class="form-group">
                         <label class="form-label">Task Name</label>
                         <input type="text" class="form-input" id="newTaskName" placeholder="e.g., Sync Family Plex Watchlist">
+                    </div>
+
+                    <!-- Pre-warm specific config (info only) -->
+                    <div id="prewarmConfig" style="display: none;">
+                        <div style="padding: 1rem; background: var(--bg-secondary); border-radius: 8px; margin-bottom: 1rem;">
+                            <p style="margin: 0; color: var(--text-secondary); font-size: 0.9rem;">
+                                Pre-resolves continue watching items for all profiles so playback starts instantly.
+                                Debrid URLs are refreshed every 8 minutes to stay within the 10-minute TTL.
+                            </p>
+                        </div>
                     </div>
 
                     <!-- Plex Watchlist Sync specific config -->
@@ -426,6 +437,7 @@
                             <option value="trakt_list_sync">Trakt List Sync</option>
                             <option value="trakt_history_sync">Trakt History Sync</option>
                             <option value="backup">System Backup</option>
+                            <option value="prewarm">Pre-warm Continue Watching</option>
                         </select>
                         <small class="text-muted">Task type cannot be changed</small>
                     </div>
@@ -3671,6 +3683,16 @@
                             </button>
                             ` : ''}
                         </div>
+                        ${task.type === 'prewarm' ? `
+                        <div style="margin-top: 0.5rem;">
+                            <a href="${basePath}/prequeue" class="btn btn-sm btn-secondary" style="display: inline-flex; align-items: center;">
+                                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 0.25rem;">
+                                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+                                </svg>
+                                View Prequeues
+                            </a>
+                        </div>
+                        ` : ''}
                     </div>
                 </div>
             `;
@@ -3716,6 +3738,7 @@
             case 'trakt_list_sync': return 'Trakt List';
             case 'trakt_history_sync': return 'Trakt History';
             case 'backup': return 'System Backup';
+            case 'prewarm': return 'Pre-warm';
             default: return type;
         }
     }
@@ -3833,6 +3856,7 @@
         const traktConfig = document.getElementById('traktListSyncConfig');
         const traktHistoryConfig = document.getElementById('traktHistorySyncConfig');
         const backupConfig = document.getElementById('backupConfig');
+        const prewarmConfig = document.getElementById('prewarmConfig');
         const syncOptions = document.getElementById('syncOptionsConfig');
         const syncDirection = document.getElementById('newTaskSyncDirection');
 
@@ -3841,6 +3865,7 @@
         traktConfig.style.display = taskType === 'trakt_list_sync' ? 'block' : 'none';
         traktHistoryConfig.style.display = taskType === 'trakt_history_sync' ? 'block' : 'none';
         backupConfig.style.display = taskType === 'backup' ? 'block' : 'none';
+        prewarmConfig.style.display = taskType === 'prewarm' ? 'block' : 'none';
 
         // Populate Trakt accounts for history sync
         if (taskType === 'trakt_history_sync') {
@@ -3866,7 +3891,7 @@
             `;
         }
 
-        // Show sync options and dry run for any sync-type task (not for backup)
+        // Show sync options and dry run for any sync-type task (not for backup or prewarm)
         // But hide generic sync options for trakt_history_sync (it has its own direction control)
         const isSyncTask = taskType.includes('sync');
         const isHistorySync = taskType === 'trakt_history_sync';
@@ -4573,5 +4598,6 @@
             showToast(err.message, 'error');
         }
     }
+
 </script>
 {{end}}

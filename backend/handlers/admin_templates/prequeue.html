@@ -1,0 +1,172 @@
+{{template "base" .}}
+
+{{define "title"}}Active Prequeues - {{if .IsAdmin}}mediastorm Admin{{else}}mediastorm account{{end}}{{end}}
+
+{{define "content"}}
+<div class="page-header" style="display: flex; align-items: center; justify-content: space-between;">
+    <div>
+        <h1>Active Prequeues</h1>
+        <p>Pre-resolved and in-progress playback queue entries</p>
+    </div>
+    <div style="display: flex; gap: 0.5rem; align-items: center;">
+        <span id="autoRefreshLabel" style="font-size: 0.8rem; color: var(--text-muted);">Auto-refresh: on</span>
+        <button class="btn btn-secondary" onclick="toggleAutoRefresh()" id="autoRefreshBtn">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="1 4 1 10 7 10"/>
+                <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+            </svg>
+            Pause
+        </button>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h2>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+            </svg>
+            Queue Entries
+            <span id="entryCount" style="font-size: 0.8rem; font-weight: 400; color: var(--text-muted); margin-left: 0.5rem;"></span>
+        </h2>
+    </div>
+    <div class="card-body" style="padding: 0;">
+        <div id="prequeueEntries">
+            <div style="display: flex; align-items: center; justify-content: center; padding: 2rem; color: var(--text-muted);">
+                <div class="spinner" style="margin-right: 0.5rem;"></div>
+                Loading...
+            </div>
+        </div>
+    </div>
+</div>
+{{end}}
+
+{{define "scripts"}}
+<script>
+    const basePath = '{{.BasePath}}';
+    let autoRefresh = true;
+    let refreshTimer = null;
+
+    function toggleAutoRefresh() {
+        autoRefresh = !autoRefresh;
+        const btn = document.getElementById('autoRefreshBtn');
+        const label = document.getElementById('autoRefreshLabel');
+        if (autoRefresh) {
+            btn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg> Pause';
+            label.textContent = 'Auto-refresh: on';
+            startRefresh();
+        } else {
+            btn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg> Resume';
+            label.textContent = 'Auto-refresh: paused';
+            if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+        }
+    }
+
+    function startRefresh() {
+        if (refreshTimer) clearInterval(refreshTimer);
+        refreshTimer = setInterval(loadEntries, 5000);
+    }
+
+    async function loadEntries() {
+        try {
+            const response = await fetch('/admin/api/prequeue');
+            if (!response.ok) throw new Error('Failed to load');
+            const data = await response.json();
+            renderEntries(data.entries || []);
+        } catch (err) {
+            document.getElementById('prequeueEntries').innerHTML =
+                '<div style="text-align: center; padding: 2rem; color: var(--text-muted);">Failed to load: ' + escapeHtml(err.message) + '</div>';
+        }
+    }
+
+    function renderEntries(entries) {
+        const container = document.getElementById('prequeueEntries');
+        const countEl = document.getElementById('entryCount');
+
+        if (!entries || entries.length === 0) {
+            container.innerHTML = '<div style="text-align: center; padding: 2rem; color: var(--text-muted);">No active prequeue entries</div>';
+            countEl.textContent = '';
+            return;
+        }
+
+        // Sort: ready first, then by creation time descending
+        entries.sort((a, b) => {
+            const statusOrder = { ready: 0, probing: 1, resolving: 2, searching: 3, queued: 4, failed: 5 };
+            const aDiff = (statusOrder[a.status] || 9) - (statusOrder[b.status] || 9);
+            if (aDiff !== 0) return aDiff;
+            return new Date(b.createdAt) - new Date(a.createdAt);
+        });
+
+        countEl.textContent = '(' + entries.length + ')';
+
+        container.innerHTML = entries.map(entry => {
+            const statusColor = {
+                queued: '#6b7280', searching: '#f59e0b', resolving: '#3b82f6',
+                probing: '#8b5cf6', ready: '#10b981', failed: '#ef4444', expired: '#9ca3af'
+            }[entry.status] || '#6b7280';
+
+            let titleDisplay = escapeHtml(entry.titleName || 'Unknown');
+            if (entry.targetEpisode && entry.targetEpisode.seasonNumber > 0) {
+                titleDisplay += ' <span style="color: var(--text-muted);">S' +
+                    String(entry.targetEpisode.seasonNumber).padStart(2, '0') + 'E' +
+                    String(entry.targetEpisode.episodeNumber).padStart(2, '0') + '</span>';
+            } else if (entry.year > 0) {
+                titleDisplay += ' <span style="color: var(--text-muted);">(' + entry.year + ')</span>';
+            }
+
+            const isWarm = entry.reason === 'prewarm';
+            const profileName = entry.profileName ? escapeHtml(entry.profileName) : escapeHtml(entry.userId);
+            const streamPath = entry.streamPath
+                ? escapeHtml(entry.streamPath)
+                : '';
+
+            return '<div style="padding: 0.75rem 1rem; border-bottom: 1px solid var(--border);">' +
+                '<div style="display: flex; align-items: center; gap: 0.5rem; min-width: 0;">' +
+                    '<div style="flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500;">' +
+                        titleDisplay +
+                    '</div>' +
+                    '<div style="display: flex; gap: 0.35rem; flex-shrink: 0; align-items: center;">' +
+                        (isWarm ? '<span style="font-size: 0.7rem; font-weight: 600; background: #f59e0b22; color: #f59e0b; padding: 1px 6px; border-radius: 4px;">WARM</span>' : '') +
+                        '<span style="font-size: 0.75rem; font-weight: 600; padding: 2px 8px; border-radius: 10px; background: ' + statusColor + '22; color: ' + statusColor + ';">' + entry.status + '</span>' +
+                    '</div>' +
+                '</div>' +
+                '<div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 3px;">' +
+                    profileName + ' &middot; ' + (entry.mediaType || '—') + ' &middot; ' + formatRelativeTime(entry.createdAt) +
+                '</div>' +
+                (streamPath ? '<div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="' + escapeHtml(entry.streamPath || '') + '">' + streamPath + '</div>' : '') +
+                (entry.error ? '<div style="font-size: 0.75rem; color: #ef4444; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="' + escapeHtml(entry.error) + '">' + escapeHtml(entry.error) + '</div>' : '') +
+            '</div>';
+        }).join('');
+    }
+
+    function escapeHtml(text) {
+        if (!text) return '';
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    function formatRelativeTime(dateStr) {
+        if (!dateStr) return '';
+        const date = new Date(dateStr);
+        const now = new Date();
+        const diffMs = now - date;
+        const diffSec = Math.floor(diffMs / 1000);
+        if (diffSec < 0) {
+            const absSec = Math.abs(diffSec);
+            if (absSec < 60) return 'in ' + absSec + 's';
+            if (absSec < 3600) return 'in ' + Math.floor(absSec / 60) + 'm';
+            if (absSec < 86400) return 'in ' + Math.floor(absSec / 3600) + 'h';
+            return 'in ' + Math.floor(absSec / 86400) + 'd';
+        }
+        if (diffSec < 60) return diffSec + 's ago';
+        if (diffSec < 3600) return Math.floor(diffSec / 60) + 'm ago';
+        if (diffSec < 86400) return Math.floor(diffSec / 3600) + 'h ago';
+        return Math.floor(diffSec / 86400) + 'd ago';
+    }
+
+    // Load on page load and start auto-refresh
+    loadEntries();
+    startRefresh();
+</script>
+{{end}}

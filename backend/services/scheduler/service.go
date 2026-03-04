@@ -17,6 +17,7 @@ import (
 	"novastream/services/epg"
 	"novastream/services/history"
 	"novastream/services/plex"
+	"novastream/services/prewarm"
 	"novastream/services/trakt"
 	"novastream/services/watchlist"
 )
@@ -30,6 +31,7 @@ type Service struct {
 	epgService       *epg.Service
 	backupService    *backup.Service
 	historyService   *history.Service
+	prewarmService   *prewarm.Service
 
 	// Runtime state
 	mu      sync.RWMutex
@@ -250,6 +252,8 @@ func (s *Service) executeTask(task config.ScheduledTask) {
 		result, err = s.executeBackup(task)
 	case config.ScheduledTaskTypeTraktHistorySync:
 		result, err = s.executeTraktHistorySync(task)
+	case config.ScheduledTaskTypePrewarm:
+		result, err = s.executePrewarm(task)
 	default:
 		log.Printf("[scheduler] Unknown task type: %s", task.Type)
 		return
@@ -383,6 +387,13 @@ func (s *Service) SetHistoryService(historyService *history.Service) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.historyService = historyService
+}
+
+// SetPrewarmService sets the prewarm service for scheduled prewarm tasks.
+func (s *Service) SetPrewarmService(prewarmService *prewarm.Service) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prewarmService = prewarmService
 }
 
 // executePlexWatchlistSync syncs a Plex watchlist to/from a profile
@@ -2465,4 +2476,24 @@ func (s *Service) traktHistoryItemToUpdate(item trakt.HistoryItem, watched *bool
 	}
 
 	return update
+}
+
+// executePrewarm runs the prewarm task to pre-resolve continue watching items
+func (s *Service) executePrewarm(task config.ScheduledTask) (SyncResult, error) {
+	if s.prewarmService == nil {
+		return SyncResult{}, errors.New("prewarm service not configured")
+	}
+
+	ctx, cancel := context.WithTimeout(s.ctx, 10*time.Minute)
+	defer cancel()
+
+	prewarmResult, err := s.prewarmService.RunOnce(ctx)
+	if err != nil {
+		return SyncResult{}, fmt.Errorf("prewarm failed: %w", err)
+	}
+
+	return SyncResult{
+		Count:   prewarmResult.Warmed,
+		Message: fmt.Sprintf("Warmed %d, skipped %d, failed %d, removed %d", prewarmResult.Warmed, prewarmResult.Skipped, prewarmResult.Failed, prewarmResult.Removed),
+	}, nil
 }

@@ -33,6 +33,11 @@ type MovieDetailsProvider interface {
 	MovieInfo(ctx context.Context, req models.MovieDetailsQuery) (*models.Title, error)
 }
 
+// PrewarmService interface for checking pre-warmed entries
+type PrewarmService interface {
+	GetWarm(titleID, userID string) *playback.WarmRef
+}
+
 // PrequeueHandler handles prequeue requests for pre-loading playback streams
 type PrequeueHandler struct {
 	store              *playback.PrequeueStore
@@ -50,6 +55,7 @@ type PrequeueHandler struct {
 	metadataSvc        SeriesDetailsProvider // For episode counting
 	movieMetadataSvc   MovieDetailsProvider  // For movie anime detection
 	subtitleExtractor  SubtitlePreExtractor  // For pre-extracting subtitles
+	prewarmSvc         PrewarmService        // For checking pre-warmed entries
 	demoMode           bool
 }
 
@@ -198,6 +204,37 @@ func (h *PrequeueHandler) SetSubtitleExtractor(extractor SubtitlePreExtractor) {
 	h.subtitleExtractor = extractor
 }
 
+// SetPrewarmService sets the prewarm service for checking pre-warmed entries
+func (h *PrequeueHandler) SetPrewarmService(svc PrewarmService) {
+	h.prewarmSvc = svc
+}
+
+// GetStore returns the prequeue store for external access (e.g., prewarm service, admin viewer)
+func (h *PrequeueHandler) GetStore() *playback.PrequeueStore {
+	return h.store
+}
+
+// RunWorkerSync runs the prequeue worker synchronously and returns the prequeue ID.
+// Used by the prewarm service to pre-resolve continue watching items.
+func (h *PrequeueHandler) RunWorkerSync(ctx context.Context, titleID, titleName, imdbID, mediaType string, year int, userID string, targetEpisode *models.EpisodeReference) (string, error) {
+	// Create prequeue entry with a long TTL (inherits store TTL, prewarm service will extend)
+	entry, _ := h.store.Create(titleID, titleName, userID, mediaType, year, targetEpisode, "prewarm")
+
+	// Run worker synchronously (blocking)
+	h.runPrequeueWorker(entry.ID, titleID, titleName, imdbID, mediaType, year, userID, "", targetEpisode, 0, true)
+
+	// Check result
+	result, exists := h.store.Get(entry.ID)
+	if !exists {
+		return "", fmt.Errorf("prequeue entry expired during resolution")
+	}
+	if result.Status == playback.PrequeueStatusFailed {
+		return entry.ID, fmt.Errorf("prequeue failed: %s", result.Error)
+	}
+
+	return entry.ID, nil
+}
+
 // Prequeue initiates a prequeue request for a title
 func (h *PrequeueHandler) Prequeue(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
@@ -286,6 +323,23 @@ func (h *PrequeueHandler) Prequeue(w http.ResponseWriter, r *http.Request) {
 				EpisodeNumber: 1,
 			}
 			log.Printf("[prequeue] Defaulting to S01E01 (no history service)")
+		}
+	}
+
+	// Check for pre-warmed entry before creating a new one
+	if h.prewarmSvc != nil {
+		if warm := h.prewarmSvc.GetWarm(req.TitleID, req.UserID); warm != nil && warm.PrequeueID != "" {
+			if warmEntry, ok := h.store.Get(warm.PrequeueID); ok && warmEntry.Status == playback.PrequeueStatusReady {
+				log.Printf("[prequeue] Using pre-warmed entry %s for title=%s user=%s", warm.PrequeueID, req.TitleID, req.UserID)
+				resp := playback.PrequeueResponse{
+					PrequeueID:    warm.PrequeueID,
+					TargetEpisode: warmEntry.TargetEpisode,
+					Status:        playback.PrequeueStatusReady,
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(resp)
+				return
+			}
 		}
 	}
 

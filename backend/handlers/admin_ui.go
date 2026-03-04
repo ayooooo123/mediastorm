@@ -798,6 +798,7 @@ type AdminUIHandler struct {
 	performanceTemplate   *template.Template
 	logsTemplate          *template.Template
 	connectionsTemplate   *template.Template
+	prequeueTemplate      *template.Template
 	settingsPath          string
 	logFile               string
 	hlsManager            *HLSManager
@@ -1009,6 +1010,7 @@ func NewAdminUIHandler(settingsPath, logFile string, hlsManager *HLSManager, use
 		performanceTemplate:  createPageTemplate("performance.html"),
 		logsTemplate:         createPageTemplate("logs.html"),
 		connectionsTemplate:  createPageTemplate("connections.html"),
+		prequeueTemplate:     createPageTemplate("prequeue.html"),
 		settingsPath:         settingsPath,
 		logFile:              logFile,
 		hlsManager:          hlsManager,
@@ -4886,6 +4888,30 @@ func (h *AdminUIHandler) ToolsPage(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.toolsTemplate.ExecuteTemplate(w, "base", data); err != nil {
 		fmt.Printf("Tools template error: %v\n", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+	}
+}
+
+// PrequeuePage serves the active prequeues viewer page
+func (h *AdminUIHandler) PrequeuePage(w http.ResponseWriter, r *http.Request) {
+	isAdmin, accountID, basePath, username := h.getPageRoleInfo(r)
+
+	data := AdminPageData{
+		CurrentPath: basePath + "/tools",
+		BasePath:    basePath,
+		IsAdmin:     isAdmin,
+		AccountID:   accountID,
+		Username:    username,
+		Version:     GetBackendVersion(),
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if h.prequeueTemplate == nil {
+		http.Error(w, "Prequeue template not loaded", http.StatusInternalServerError)
+		return
+	}
+	if err := h.prequeueTemplate.ExecuteTemplate(w, "base", data); err != nil {
+		fmt.Printf("Prequeue template error: %v\n", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 	}
 }

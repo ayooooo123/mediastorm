@@ -41,6 +41,7 @@ import (
 	client_settings "novastream/services/client_settings"
 	content_preferences "novastream/services/content_preferences"
 	"novastream/services/backup"
+	"novastream/services/prewarm"
 	"novastream/services/scheduler"
 	"novastream/services/watchlist"
 	"novastream/utils"
@@ -519,6 +520,7 @@ func main() {
 	r.HandleFunc("/admin/status", adminUIHandler.RequireAuth(adminUIHandler.StatusPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/history", adminUIHandler.RequireAuth(adminUIHandler.HistoryPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/tools", adminUIHandler.RequireAuth(adminUIHandler.ToolsPage)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/prequeue", adminUIHandler.RequireAuth(adminUIHandler.PrequeuePage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/search", adminUIHandler.RequireAuth(adminUIHandler.SearchPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/accounts", adminUIHandler.RequireAuth(adminUIHandler.AccountsPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/kids-settings", adminUIHandler.RequireAuth(adminUIHandler.KidsSettingsPage)).Methods(http.MethodGet)
@@ -703,6 +705,23 @@ func main() {
 		fmt.Println("💾 Backup management available at /admin/backup")
 	}
 
+	// Prewarm service for pre-resolving continue watching items
+	prewarmService := prewarm.NewService(cfgManager, settings.Cache.Directory)
+	prewarmService.SetHistoryService(historyService)
+	prewarmService.SetUsersService(userService)
+	prewarmService.SetPrequeueStore(prequeueHandler.GetStore())
+	prewarmService.SetDebridStreaming(debridStreamingProvider)
+	prewarmService.SetWorkerFunc(prequeueHandler.RunWorkerSync)
+	schedulerService.SetPrewarmService(prewarmService)
+	prequeueHandler.SetPrewarmService(prewarmService)
+	prewarmService.RestorePrequeueEntries()
+
+	// Admin prequeue viewer endpoint
+	prequeueAdminHandler := handlers.NewAdminHandler(videoHandler.GetHLSManager())
+	prequeueAdminHandler.SetUserService(userService)
+	prequeueAdminHandler.SetPrequeueStore(prequeueHandler.GetStore())
+	r.HandleFunc("/admin/api/prequeue", adminUIHandler.RequireMasterAuth(prequeueAdminHandler.GetPrequeueEntries)).Methods(http.MethodGet)
+
 	// Connections dashboard (admin-only)
 	r.HandleFunc("/admin/connections", adminUIHandler.RequireMasterAuth(adminUIHandler.ConnectionsPage)).Methods(http.MethodGet)
 
@@ -845,6 +864,9 @@ func main() {
 	if err := schedulerService.Start(context.Background()); err != nil {
 		log.Printf("Warning: failed to start scheduler service: %v", err)
 	}
+
+	// Start prewarm background URL refresh
+	prewarmService.Start(context.Background())
 
 	// Start background cache manager to warm trending data and custom lists
 	// on startup and refresh periodically (every 2 hours)

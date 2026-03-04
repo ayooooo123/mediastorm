@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"novastream/models"
+	"novastream/services/playback"
 )
 
 // ProgressService provides access to playback progress data for admin dashboard
@@ -21,11 +22,17 @@ type UserService interface {
 	ListAll() []models.User
 }
 
+// PrequeueStoreProvider provides access to prequeue entries for admin viewer
+type PrequeueStoreProvider interface {
+	ListAll() []*playback.PrequeueEntry
+}
+
 // AdminHandler provides administrative endpoints for monitoring the server
 type AdminHandler struct {
 	hlsManager      *HLSManager
 	progressService ProgressService
 	userService     UserService
+	prequeueStore   PrequeueStoreProvider
 }
 
 // NewAdminHandler creates a new admin handler
@@ -43,6 +50,75 @@ func (h *AdminHandler) SetProgressService(svc ProgressService) {
 // SetUserService sets the user service for profile name lookup
 func (h *AdminHandler) SetUserService(svc UserService) {
 	h.userService = svc
+}
+
+// SetPrequeueStore sets the prequeue store for the admin prequeue viewer
+func (h *AdminHandler) SetPrequeueStore(store PrequeueStoreProvider) {
+	h.prequeueStore = store
+}
+
+// GetPrequeueEntries returns all active prequeue entries as JSON for the admin viewer
+func (h *AdminHandler) GetPrequeueEntries(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if h.prequeueStore == nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"entries": []interface{}{},
+			"count":   0,
+		})
+		return
+	}
+
+	entries := h.prequeueStore.ListAll()
+
+	// Build user name map for display
+	userNames := make(map[string]string)
+	if h.userService != nil {
+		for _, user := range h.userService.ListAll() {
+			userNames[user.ID] = user.Name
+		}
+	}
+
+	type prequeueInfo struct {
+		ID            string                   `json:"id"`
+		TitleName     string                   `json:"titleName"`
+		Year          int                      `json:"year,omitempty"`
+		UserID        string                   `json:"userId"`
+		ProfileName   string                   `json:"profileName,omitempty"`
+		MediaType     string                   `json:"mediaType"`
+		TargetEpisode *models.EpisodeReference `json:"targetEpisode,omitempty"`
+		Reason        string                   `json:"reason"`
+		Status        playback.PrequeueStatus  `json:"status"`
+		StreamPath    string                   `json:"streamPath,omitempty"`
+		Error         string                   `json:"error,omitempty"`
+		CreatedAt     time.Time                `json:"createdAt"`
+		ExpiresAt     time.Time                `json:"expiresAt"`
+	}
+
+	result := make([]prequeueInfo, 0, len(entries))
+	for _, e := range entries {
+		info := prequeueInfo{
+			ID:            e.ID,
+			TitleName:     e.TitleName,
+			Year:          e.Year,
+			UserID:        e.UserID,
+			ProfileName:   userNames[e.UserID],
+			MediaType:     e.MediaType,
+			TargetEpisode: e.TargetEpisode,
+			Reason:        e.Reason,
+			Status:        e.Status,
+			StreamPath:    e.StreamPath,
+			Error:         e.Error,
+			CreatedAt:     e.CreatedAt,
+			ExpiresAt:     e.ExpiresAt,
+		}
+		result = append(result, info)
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"entries": result,
+		"count":   len(result),
+	})
 }
 
 // StreamInfo represents information about an active stream

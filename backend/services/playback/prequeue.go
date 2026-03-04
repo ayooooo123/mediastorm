@@ -23,6 +23,14 @@ const (
 	PrequeueStatusExpired   PrequeueStatus = "expired"
 )
 
+// WarmRef is a lightweight reference to a pre-warmed prequeue entry
+type WarmRef struct {
+	PrequeueID string
+}
+
+// PrequeueWorkerFunc is the function signature for the prequeue worker callable by the prewarm service
+type PrequeueWorkerFunc func(ctx context.Context, titleID, titleName, imdbID, mediaType string, year int, userID string, targetEpisode *models.EpisodeReference) (string, error)
+
 // PrequeueRequest represents an incoming prequeue request
 type PrequeueRequest struct {
 	TitleID   string `json:"titleId"`
@@ -305,9 +313,12 @@ func (s *PrequeueStore) Update(id string, updateFn func(*PrequeueEntry)) bool {
 
 	updateFn(entry)
 
-	// Extend TTL when status becomes ready
+	// Extend TTL when status becomes ready (only if not already set further out)
 	if entry.Status == PrequeueStatusReady {
-		entry.ExpiresAt = time.Now().Add(s.ttl)
+		defaultExpiry := time.Now().Add(s.ttl)
+		if entry.ExpiresAt.Before(defaultExpiry) {
+			entry.ExpiresAt = defaultExpiry
+		}
 	}
 
 	return true
@@ -386,6 +397,20 @@ func (s *PrequeueStore) cleanup() {
 		delete(s.entries, id)
 		log.Printf("[prequeue] Expired and removed prequeue %s", id)
 	}
+}
+
+// ListAll returns all non-expired prequeue entries
+func (s *PrequeueStore) ListAll() []*PrequeueEntry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	now := time.Now()
+	var result []*PrequeueEntry
+	for _, entry := range s.entries {
+		if now.Before(entry.ExpiresAt) {
+			result = append(result, entry)
+		}
+	}
+	return result
 }
 
 // ToResponse converts an entry to a status response

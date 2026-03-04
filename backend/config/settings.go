@@ -485,6 +485,7 @@ const (
 	ScheduledTaskTypePlaylistRefresh   ScheduledTaskType = "playlist_refresh"
 	ScheduledTaskTypeBackup            ScheduledTaskType = "backup"
 	ScheduledTaskTypeTraktHistorySync  ScheduledTaskType = "trakt_history_sync"
+	ScheduledTaskTypePrewarm           ScheduledTaskType = "prewarm"
 )
 
 // BackupRetentionSettings controls how backups are automatically cleaned up
