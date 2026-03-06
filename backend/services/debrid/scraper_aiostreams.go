@@ -186,6 +186,7 @@ type aiostreamsResponse struct {
 		Name          string `json:"name"`
 		Description   string `json:"description"`
 		URL           string `json:"url"`
+		ExternalURL   string `json:"externalUrl"`
 		BehaviorHints struct {
 			BingeGroup string `json:"bingeGroup"`
 			VideoSize  int64  `json:"videoSize"`
@@ -292,6 +293,14 @@ func (a *AIOStreamsScraper) fetchStreams(ctx context.Context, mediaType, id stri
 	for _, stream := range payload.Streams {
 		streamURL := strings.TrimSpace(stream.URL)
 		if streamURL == "" {
+			// Stremio stream objects may use externalUrl instead of url.
+			streamURL = strings.TrimSpace(stream.ExternalURL)
+		}
+		if streamURL == "" {
+			continue
+		}
+		if IsKnownPlaceholderURL(streamURL) {
+			log.Printf("[aiostreams] skipping known placeholder stream URL: %s", streamURL)
 			continue
 		}
 
@@ -463,7 +472,7 @@ func extractLanguagesFromDesc(desc string) []string {
 		"🇨🇿": "Czech",
 		"🇭🇺": "Hungarian",
 		"🇹🇷": "Turkish",
-		"🌎": "Multi",
+		"🌎":  "Multi",
 	}
 
 	for flag, lang := range langPatterns {

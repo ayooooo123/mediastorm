@@ -104,6 +104,16 @@ func (s *HealthService) CheckHealth(ctx context.Context, result models.NZBResult
 		if streamURL == "" {
 			streamURL = result.Link
 		}
+		if IsKnownPlaceholderURL(streamURL) {
+			log.Printf("[debrid-health] pre-resolved stream %s is a known placeholder URL", result.Title)
+			return &DebridHealthCheck{
+				Healthy:      false,
+				Status:       "not_cached",
+				Cached:       false,
+				Provider:     result.Attributes["tracker"],
+				ErrorMessage: "stream points to a known placeholder URL",
+			}, nil
+		}
 		log.Printf("[debrid-health] checking pre-resolved stream: %s", result.Title)
 
 		// First, do a quick HEAD request to check if the URL is accessible
@@ -130,6 +140,16 @@ func (s *HealthService) CheckHealth(ctx context.Context, result models.NZBResult
 
 					log.Printf("[debrid-health] pre-resolved stream %s: HEAD status=%d content-length=%d content-type=%q final-url=%q",
 						result.Title, resp.StatusCode, contentLength, contentType, finalURL)
+					if IsKnownPlaceholderURL(finalURL) {
+						log.Printf("[debrid-health] pre-resolved stream %s redirected to known placeholder URL", result.Title)
+						return &DebridHealthCheck{
+							Healthy:      false,
+							Status:       "not_cached",
+							Cached:       false,
+							Provider:     result.Attributes["tracker"],
+							ErrorMessage: "stream redirected to a known placeholder URL",
+						}, nil
+					}
 
 					if resp.StatusCode == http.StatusNotFound {
 						log.Printf("[debrid-health] pre-resolved stream %s returned 404 - treating as uncached", result.Title)
@@ -614,11 +634,11 @@ var mediaExtensionPriority = map[string]int{
 }
 
 type mediaFileSelection struct {
-	OrderedIDs       []string
-	PreferredID      string
-	PreferredLabel   string
-	PreferredReason  string
-	RejectionReason  string // Set when selection is rejected (e.g., target episode not found)
+	OrderedIDs      []string
+	PreferredID     string
+	PreferredLabel  string
+	PreferredReason string
+	RejectionReason string // Set when selection is rejected (e.g., target episode not found)
 }
 
 func (s *mediaFileSelection) promotePreferredToFront() {
@@ -937,7 +957,7 @@ func (s *HealthService) probeAllTracks(ctx context.Context, streamURL string) (*
 		"-print_format", "json",
 		"-show_streams",
 		"-analyzeduration", "10000000", // 10 seconds
-		"-probesize", "10000000",       // 10MB
+		"-probesize", "10000000", // 10MB
 		streamURL,
 	}
 

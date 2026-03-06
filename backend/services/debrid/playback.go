@@ -58,6 +58,9 @@ func (s *PlaybackService) Resolve(ctx context.Context, candidate models.NZBResul
 		if streamURL == "" {
 			return nil, fmt.Errorf("pre-resolved stream missing stream_url")
 		}
+		if IsKnownPlaceholderURL(streamURL) {
+			return nil, fmt.Errorf("stream not cached: known placeholder stream URL")
+		}
 
 		log.Printf("[debrid-playback] using pre-resolved stream URL: %s", streamURL)
 
@@ -86,7 +89,7 @@ func (s *PlaybackService) Resolve(ctx context.Context, candidate models.NZBResul
 		resolution := &models.PlaybackResolution{
 			QueueID:       0,
 			WebDAVPath:    streamURL, // Direct stream URL
-			HealthStatus:  "cached", // Use "cached" for frontend compatibility
+			HealthStatus:  "cached",  // Use "cached" for frontend compatibility
 			FileSize:      candidate.SizeBytes,
 			SourceNZBPath: streamURL,
 		}
@@ -837,9 +840,9 @@ func (s *PlaybackService) ResolveBatch(ctx context.Context, candidate models.NZB
 	results := make([]models.BatchEpisodeResult, len(episodes))
 	for i, ep := range episodes {
 		res := models.BatchEpisodeResult{
-			SeasonNumber:         ep.SeasonNumber,
-			EpisodeNumber:        ep.EpisodeNumber,
-			EpisodeCode:          ep.EpisodeCode,
+			SeasonNumber:          ep.SeasonNumber,
+			EpisodeNumber:         ep.EpisodeNumber,
+			EpisodeCode:           ep.EpisodeCode,
 			AbsoluteEpisodeNumber: ep.AbsoluteEpisodeNumber,
 		}
 
