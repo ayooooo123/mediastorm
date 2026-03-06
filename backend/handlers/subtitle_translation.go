@@ -327,10 +327,11 @@ func translateVTTContentIncremental(
 		candidates = append(candidates, candidate{idx: i, text: cleanLine, cache: key})
 	}
 	if len(candidates) == 0 {
-		if strings.HasPrefix(strings.TrimSpace(content), "WEBVTT") {
-			return content, cached, nil
+		translatedContent := strings.Join(lines, "\n")
+		if strings.HasPrefix(strings.TrimSpace(translatedContent), "WEBVTT") {
+			return translatedContent, cached, nil
 		}
-		return "WEBVTT\n\n" + content, cached, nil
+		return "WEBVTT\n\n" + translatedContent, cached, nil
 	}
 
 	const batchSize = 80

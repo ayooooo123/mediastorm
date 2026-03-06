@@ -111,3 +111,41 @@ func TestTranslateVTTContentIncremental_StripsMarkupBeforeTranslation(t *testing
 		t.Fatalf("expected ASS vector draw path to be dropped, got:\n%s", got)
 	}
 }
+
+func TestTranslateVTTContentIncremental_ReturnsCachedLinesWhenNoNewCandidates(t *testing.T) {
+	input := strings.Join([]string{
+		"WEBVTT",
+		"",
+		"00:00.000 --> 00:01.000",
+		"Hello world.",
+		"",
+		"00:01.500 --> 00:03.000",
+		"Second line",
+		"",
+	}, "\n")
+
+	cached := map[string]string{
+		lineCacheKey("Hello world.", "en", "de"): "Hallo Welt.",
+		lineCacheKey("Second line", "en", "de"):  "Zweite Zeile",
+	}
+
+	got, _, err := translateVTTContentIncremental(
+		context.Background(),
+		input,
+		"en",
+		"de",
+		&prefixTranslator{prefix: "DE: "},
+		cached,
+		30*time.Second,
+	)
+	if err != nil {
+		t.Fatalf("translateVTTContentIncremental returned error: %v", err)
+	}
+
+	if strings.Contains(got, "Hello world.") || strings.Contains(got, "Second line") {
+		t.Fatalf("expected cached translated lines, got source text:\n%s", got)
+	}
+	if !strings.Contains(got, "Hallo Welt.") || !strings.Contains(got, "Zweite Zeile") {
+		t.Fatalf("expected cached translated lines in output, got:\n%s", got)
+	}
+}
