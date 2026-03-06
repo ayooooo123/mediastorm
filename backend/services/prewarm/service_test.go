@@ -114,6 +114,9 @@ func TestRunOnce_SkipsAlreadyWarmed(t *testing.T) {
 	entry, _ := store.Create("title1", "Breaking Bad", "user1", "series", 0, &models.EpisodeReference{SeasonNumber: 2, EpisodeNumber: 3}, "prewarm")
 	store.Update(entry.ID, func(e *playback.PrequeueEntry) {
 		e.Status = playback.PrequeueStatusReady
+		e.AudioTracks = []playback.AudioTrackInfo{
+			{Index: 0, Language: "eng", Codec: "aac", Title: "English"},
+		}
 	})
 
 	workerCalls := 0
@@ -513,28 +516,17 @@ func TestPersistence_RestorePrequeueEntries(t *testing.T) {
 	svc2.SetPrequeueStore(store)
 	svc2.RestorePrequeueEntries()
 
-	// Should have created a new prequeue entry
+	// Should keep the warm entry but defer creating a ready prequeue entry.
+	// A fresh warm run will repopulate full track metadata.
 	entry := svc2.entries[entryKey("title1", "user1")]
 	if entry == nil {
 		t.Fatal("expected entry after restore")
 	}
-	if entry.PrequeueID == "pq_old" {
-		t.Error("expected new prequeueID, got old one")
+	if entry.PrequeueID != "" {
+		t.Errorf("expected empty prequeueID after restore defer, got %q", entry.PrequeueID)
 	}
-	if entry.PrequeueID == "" {
-		t.Error("expected non-empty prequeueID after restore")
-	}
-
-	// The prequeue store should have the entry
-	pqEntry, ok := store.Get(entry.PrequeueID)
-	if !ok {
-		t.Fatal("expected prequeue entry in store")
-	}
-	if pqEntry.Status != playback.PrequeueStatusReady {
-		t.Errorf("expected status ready, got %s", pqEntry.Status)
-	}
-	if pqEntry.StreamPath != "/debrid/rd/123/456" {
-		t.Errorf("expected stream path /debrid/rd/123/456, got %s", pqEntry.StreamPath)
+	if _, ok := store.GetByTitleUser("title1", "user1"); ok {
+		t.Fatal("expected no restored ready prequeue entry in store")
 	}
 }
 
@@ -565,4 +557,3 @@ func TestPersistence_ExpiredEntriesRemovedOnRestore(t *testing.T) {
 		t.Errorf("expected 0 entries after restoring expired data, got %d", len(svc2.entries))
 	}
 }
-

@@ -13,11 +13,11 @@ import (
 	"novastream/config"
 	"novastream/internal/mediaresolve"
 	"novastream/models"
+	content_preferences "novastream/services/content_preferences"
 	"novastream/services/history"
 	"novastream/services/indexer"
 	"novastream/services/playback"
 	user_settings "novastream/services/user_settings"
-	content_preferences "novastream/services/content_preferences"
 	"novastream/utils/filter"
 
 	"github.com/gorilla/mux"
@@ -40,23 +40,30 @@ type PrewarmService interface {
 
 // PrequeueHandler handles prequeue requests for pre-loading playback streams
 type PrequeueHandler struct {
-	store              *playback.PrequeueStore
-	indexerSvc         *indexer.Service
-	playbackSvc        *playback.Service
-	historySvc         *history.Service
-	videoProber        VideoProber
-	hlsCreator         HLSCreator
-	metadataProber     VideoMetadataProber
-	fullProber         VideoFullProber // Combined prober for single ffprobe call
-	userSettingsSvc         *user_settings.Service
-	contentPreferencesSvc   *content_preferences.Service
-	clientSettingsSvc       ClientSettingsProvider
-	configManager           *config.Manager
-	metadataSvc        SeriesDetailsProvider // For episode counting
-	movieMetadataSvc   MovieDetailsProvider  // For movie anime detection
-	subtitleExtractor  SubtitlePreExtractor  // For pre-extracting subtitles
-	prewarmSvc         PrewarmService        // For checking pre-warmed entries
-	demoMode           bool
+	store                 *playback.PrequeueStore
+	indexerSvc            *indexer.Service
+	playbackSvc           *playback.Service
+	historySvc            *history.Service
+	videoProber           VideoProber
+	hlsCreator            HLSCreator
+	metadataProber        VideoMetadataProber
+	fullProber            VideoFullProber // Combined prober for single ffprobe call
+	userSettingsSvc       *user_settings.Service
+	contentPreferencesSvc *content_preferences.Service
+	clientSettingsSvc     ClientSettingsProvider
+	configManager         *config.Manager
+	metadataSvc           SeriesDetailsProvider // For episode counting
+	movieMetadataSvc      MovieDetailsProvider  // For movie anime detection
+	subtitleExtractor     SubtitlePreExtractor  // For pre-extracting subtitles
+	prewarmSvc            PrewarmService        // For checking pre-warmed entries
+	demoMode              bool
+}
+
+func hasTrackMetadata(entry *playback.PrequeueEntry) bool {
+	if entry == nil {
+		return false
+	}
+	return len(entry.AudioTracks) > 0 || len(entry.SubtitleTracks) > 0
 }
 
 // ClientSettingsProvider interface for accessing per-client filter settings
@@ -343,7 +350,7 @@ func (h *PrequeueHandler) Prequeue(w http.ResponseWriter, r *http.Request) {
 	// Check for pre-warmed entry before creating a new one
 	if h.prewarmSvc != nil {
 		if warm := h.prewarmSvc.GetWarm(req.TitleID, req.UserID); warm != nil && warm.PrequeueID != "" {
-			if warmEntry, ok := h.store.Get(warm.PrequeueID); ok && warmEntry.Status == playback.PrequeueStatusReady {
+			if warmEntry, ok := h.store.Get(warm.PrequeueID); ok && warmEntry.Status == playback.PrequeueStatusReady && hasTrackMetadata(warmEntry) {
 				// Verify the target episode matches (for series)
 				episodeMatch := true
 				if targetEpisode != nil && warmEntry.TargetEpisode != nil {
@@ -368,12 +375,15 @@ func (h *PrequeueHandler) Prequeue(w http.ResponseWriter, r *http.Request) {
 				}
 				log.Printf("[prequeue] Pre-warmed entry %s episode mismatch (warm=%v, requested=%v), resolving fresh",
 					warm.PrequeueID, warmEntry.TargetEpisode, targetEpisode)
+			} else {
+				log.Printf("[prequeue] Ignoring pre-warmed entry %s: not ready or missing track metadata, resolving fresh",
+					warm.PrequeueID)
 			}
 		}
 	}
 
 	// Check for existing ready entry in the store (covers both prewarm and regular prequeues)
-	if existing, ok := h.store.GetByTitleUser(req.TitleID, req.UserID); ok && existing.Status == playback.PrequeueStatusReady && existing.StreamPath != "" {
+	if existing, ok := h.store.GetByTitleUser(req.TitleID, req.UserID); ok && existing.Status == playback.PrequeueStatusReady && existing.StreamPath != "" && hasTrackMetadata(existing) {
 		episodeMatch := true
 		if targetEpisode != nil && existing.TargetEpisode != nil {
 			if targetEpisode.SeasonNumber != existing.TargetEpisode.SeasonNumber ||
@@ -394,6 +404,8 @@ func (h *PrequeueHandler) Prequeue(w http.ResponseWriter, r *http.Request) {
 			json.NewEncoder(w).Encode(resp)
 			return
 		}
+	} else if ok {
+		log.Printf("[prequeue] Existing ready entry %s missing track metadata, resolving fresh", existing.ID)
 	}
 
 	// Create prequeue entry

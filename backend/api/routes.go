@@ -319,6 +319,8 @@ func Register(
 	protected.HandleFunc("/subtitles/search", subtitlesHandler.Options).Methods(http.MethodOptions)
 	protected.HandleFunc("/subtitles/download", subtitlesHandler.Download).Methods(http.MethodGet)
 	protected.HandleFunc("/subtitles/download", subtitlesHandler.Options).Methods(http.MethodOptions)
+	protected.HandleFunc("/subtitles/translate", subtitlesHandler.Translate).Methods(http.MethodGet)
+	protected.HandleFunc("/subtitles/translate", subtitlesHandler.Options).Methods(http.MethodOptions)
 
 	protected.HandleFunc("/debug/log", debugHandler.Capture).Methods(http.MethodPost, http.MethodOptions)
 

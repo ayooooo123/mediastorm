@@ -685,11 +685,6 @@ func (h *VideoHandler) ProbeSubtitleTracks(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Subtitle extraction disabled — the player handles subtitles natively.
-	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte("[]"))
-	return
-
 	path := strings.TrimSpace(r.URL.Query().Get("path"))
 	if path == "" {
 		http.Error(w, "missing path parameter", http.StatusBadRequest)
@@ -826,8 +821,8 @@ func (m *SubtitleExtractManager) probeSubtitleStreamsWithMetadata(ctx context.Co
 		}
 		forced := strings.ToLower(stream.Tags.Forced) == "1" || strings.ToLower(stream.Tags.Forced) == "true"
 		tracks = append(tracks, SubtitleTrackInfo{
-			Index:         trackIndex,    // Use 0-based index for track selection in UI
-			AbsoluteIndex: stream.Index,  // Absolute ffprobe stream index for ffmpeg -map
+			Index:         trackIndex,   // Use 0-based index for track selection in UI
+			AbsoluteIndex: stream.Index, // Absolute ffprobe stream index for ffmpeg -map
 			Language:      stream.Tags.Language,
 			Title:         stream.Tags.Title,
 			Codec:         codecName,
@@ -1092,10 +1087,6 @@ func (h *VideoHandler) StartSubtitleExtract(w http.ResponseWriter, r *http.Reque
 		h.HandleOptions(w, r)
 		return
 	}
-
-	// Subtitle extraction disabled — the player handles subtitles natively.
-	http.Error(w, "subtitle extraction is disabled", http.StatusGone)
-	return
 
 	path := strings.TrimSpace(r.URL.Query().Get("path"))
 	if path == "" {

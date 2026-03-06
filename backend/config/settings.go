@@ -354,6 +354,7 @@ type DisplaySettings struct {
 type SubtitleSettings struct {
 	OpenSubtitlesUsername string `json:"openSubtitlesUsername"`
 	OpenSubtitlesPassword string `json:"openSubtitlesPassword"`
+	EnableTranslatedSubs  bool   `json:"enableTranslatedSubs"`
 }
 
 // MDBListSettings defines MDBList integration for aggregated ratings.
@@ -649,6 +650,7 @@ func DefaultSettings() Settings {
 		Subtitles: SubtitleSettings{
 			OpenSubtitlesUsername: "",
 			OpenSubtitlesPassword: "",
+			EnableTranslatedSubs:  true,
 		},
 		MDBList: MDBListSettings{
 			APIKey:         "",
@@ -861,6 +863,19 @@ func (m *Manager) Load() (Settings, error) {
 		if _, exists := displayMap["alwaysShowProfileSelector"]; !exists {
 			displayMap["alwaysShowProfileSelector"] = true
 		}
+	}
+
+	// Backfill subtitles.enableTranslatedSubs default (true) for existing configs.
+	if subtitlesRaw, ok := raw["subtitles"]; ok {
+		if subtitlesMap, ok := subtitlesRaw.(map[string]interface{}); ok {
+			if _, exists := subtitlesMap["enableTranslatedSubs"]; !exists {
+				subtitlesMap["enableTranslatedSubs"] = true
+			}
+		} else {
+			raw["subtitles"] = map[string]interface{}{"enableTranslatedSubs": true}
+		}
+	} else {
+		raw["subtitles"] = map[string]interface{}{"enableTranslatedSubs": true}
 	}
 
 	// Re-encode and decode into Settings struct

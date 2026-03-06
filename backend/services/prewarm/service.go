@@ -64,15 +64,22 @@ type Service struct {
 	entries map[string]*WarmEntry // key: "titleID:userID"
 	path    string                // persistence file path
 
-	historySvc     HistoryProvider
-	usersSvc       UsersProvider
-	prequeueStore  *playback.PrequeueStore
+	historySvc      HistoryProvider
+	usersSvc        UsersProvider
+	prequeueStore   *playback.PrequeueStore
 	debridStreaming DebridURLRefresher
-	configManager  *config.Manager
-	workerFn       playback.PrequeueWorkerFunc
+	configManager   *config.Manager
+	workerFn        playback.PrequeueWorkerFunc
 
 	ctx    context.Context
 	cancel context.CancelFunc
+}
+
+func hasTrackMetadata(entry *playback.PrequeueEntry) bool {
+	if entry == nil {
+		return false
+	}
+	return len(entry.AudioTracks) > 0 || len(entry.SubtitleTracks) > 0
 }
 
 // NewService creates a new prewarm service. If storageDir is provided, warm entries
@@ -161,20 +168,12 @@ func (s *Service) RestorePrequeueEntries() {
 			continue
 		}
 
-		// No existing entry — create a new one with just the stream path
-		pqEntry, _ := s.prequeueStore.Create(
-			entry.TitleID, entry.TitleName, entry.UserID,
-			entry.MediaType, entry.Year, entry.TargetEpisode, "prewarm",
-		)
-		if pqEntry != nil {
-			s.prequeueStore.Update(pqEntry.ID, func(e *playback.PrequeueEntry) {
-				e.Status = playback.PrequeueStatusReady
-				e.StreamPath = entry.StreamPath
-				e.ExpiresAt = entry.ExpiresAt
-			})
-			entry.PrequeueID = pqEntry.ID
-			restored++
-		}
+		// No existing prequeue entry found with full metadata. Keep warm metadata,
+		// but force a fresh resolve on next prewarm/details request instead of
+		// recreating a title-only ready entry that lacks audio/subtitle tracks.
+		entry.PrequeueID = ""
+		log.Printf("[prewarm] Deferring restore for %s (%s): missing prequeue entry with tracks, will re-warm",
+			key, entry.TitleName)
 	}
 
 	if restored > 0 || removed > 0 {
@@ -255,10 +254,12 @@ func (s *Service) RunOnce(ctx context.Context) (SyncResult, error) {
 
 			if hasExisting && existing.PrequeueID != "" {
 				// Check if the prequeue entry is still valid
-				if entry, ok := s.prequeueStore.Get(existing.PrequeueID); ok && entry.Status == playback.PrequeueStatusReady {
+				if entry, ok := s.prequeueStore.Get(existing.PrequeueID); ok && entry.Status == playback.PrequeueStatusReady && hasTrackMetadata(entry) {
 					result.Skipped++
 					continue
 				}
+				log.Printf("[prewarm] Re-warming %q for user %s: existing prequeue missing track metadata or not ready",
+					state.SeriesTitle, user.Name)
 			}
 
 			// Determine target episode

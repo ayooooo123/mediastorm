@@ -642,6 +642,7 @@ var SettingsSchema = map[string]interface{}{
 		"fields": map[string]interface{}{
 			"openSubtitlesUsername": map[string]interface{}{"type": "text", "label": "OpenSubtitles Username", "description": "OpenSubtitles.org username (optional, enables more results)", "order": 0},
 			"openSubtitlesPassword": map[string]interface{}{"type": "password", "label": "OpenSubtitles Password", "description": "OpenSubtitles.org password", "order": 1},
+			"enableTranslatedSubs":  map[string]interface{}{"type": "boolean", "label": "Enable Translated Subtitles", "description": "Allow automatic translation of embedded English subtitles into the preferred subtitle language", "order": 2},
 		},
 	},
 	"mdblist": map[string]interface{}{

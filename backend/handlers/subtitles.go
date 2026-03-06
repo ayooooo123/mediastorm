@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,21 +14,30 @@ import (
 	"strings"
 
 	"novastream/config"
+	langutil "novastream/utils/language"
+
+	xtextlanguage "golang.org/x/text/language"
 )
 
 // SubtitlesHandler handles subtitle search and download requests
 type SubtitlesHandler struct {
-	configManager *config.Manager
+	configManager      *config.Manager
+	translationManager *subtitleTranslationManager
 }
 
 // NewSubtitlesHandler creates a new SubtitlesHandler
 func NewSubtitlesHandler() *SubtitlesHandler {
-	return &SubtitlesHandler{}
+	return &SubtitlesHandler{
+		translationManager: newSubtitleTranslationManager("", newGoogleUnofficialTranslator()),
+	}
 }
 
 // NewSubtitlesHandlerWithConfig creates a new SubtitlesHandler with config manager
 func NewSubtitlesHandlerWithConfig(configManager *config.Manager) *SubtitlesHandler {
-	return &SubtitlesHandler{configManager: configManager}
+	return &SubtitlesHandler{
+		configManager:      configManager,
+		translationManager: newSubtitleTranslationManager("", newGoogleUnofficialTranslator()),
+	}
 }
 
 // getSubtitleScriptPaths returns paths to the subtitle Python scripts
@@ -265,6 +276,229 @@ func (h *SubtitlesHandler) Download(w http.ResponseWriter, r *http.Request) {
 	// Output is VTT content
 	w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
 	w.Write(output)
+}
+
+// Translate proxies and translates a VTT subtitle into a target language.
+// This is used to translate embedded English subtitles before online search fallback.
+func (h *SubtitlesHandler) Translate(w http.ResponseWriter, r *http.Request) {
+	log.Printf("[subtitles] translate request: %s", r.URL.String())
+	if !h.translationEnabled() {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "translated subtitles are disabled",
+		})
+		return
+	}
+	q := r.URL.Query()
+	sourceURL := strings.TrimSpace(q.Get("sourceUrl"))
+	rawTargetLanguage := strings.TrimSpace(q.Get("targetLanguage"))
+	rawSourceLanguage := strings.TrimSpace(q.Get("sourceLanguage"))
+	userID := strings.TrimSpace(q.Get("userId"))
+
+	if sourceURL == "" || rawTargetLanguage == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "sourceUrl and targetLanguage are required",
+		})
+		return
+	}
+	if rawSourceLanguage == "" {
+		rawSourceLanguage = "en"
+	}
+
+	sourceLanguage := normalizeTranslationLanguageCode(rawSourceLanguage)
+	if sourceLanguage == "" {
+		sourceLanguage = "auto"
+	}
+	targetLanguage := normalizeTranslationLanguageCode(rawTargetLanguage)
+	if targetLanguage == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "unsupported targetLanguage",
+		})
+		return
+	}
+
+	resolvedSourceURL, err := h.resolveSubtitleSourceURL(r, sourceURL)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
+	authToken := strings.TrimSpace(r.URL.Query().Get("token"))
+	if authHeader == "" && authToken != "" {
+		// Preserve auth when the caller used token query auth instead of Authorization header.
+		resolvedSourceURL = appendTokenQuery(resolvedSourceURL, authToken)
+	}
+	translated, err := h.translationManager.TranslateVTTFromURL(
+		r.Context(),
+		resolvedSourceURL,
+		userID,
+		sourceLanguage,
+		targetLanguage,
+		authHeader,
+	)
+	if err != nil {
+		log.Printf("[subtitles] translation failed source=%q from=%q (%q) to=%q (%q) err=%v", resolvedSourceURL, rawSourceLanguage, sourceLanguage, rawTargetLanguage, targetLanguage, err)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "subtitle translation failed"})
+		return
+	}
+
+	log.Printf("[subtitles] translate response: %d bytes, source=%q from=%q (%q) to=%q (%q)", len(translated), sourceURL, rawSourceLanguage, sourceLanguage, rawTargetLanguage, targetLanguage)
+	w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, no-store")
+	w.Write(translated)
+}
+
+func (h *SubtitlesHandler) translationEnabled() bool {
+	if h.configManager == nil {
+		return true
+	}
+	settings, err := h.configManager.Load()
+	if err != nil {
+		log.Printf("[subtitles] failed to load settings for translation toggle: %v", err)
+		return true
+	}
+	return settings.Subtitles.EnableTranslatedSubs
+}
+
+var legacyLanguageAliasToISO639_2 = map[string]string{
+	"fre": "fra",
+	"ger": "deu",
+	"dut": "nld",
+	"chi": "zho",
+	"cze": "ces",
+	"gre": "ell",
+	"rum": "ron",
+}
+
+func normalizeTranslationLanguageCode(raw string) string {
+	code := strings.ToLower(strings.TrimSpace(raw))
+	if code == "" {
+		return ""
+	}
+	if code == "auto" {
+		return "auto"
+	}
+
+	// Convert names/flags to canonical ISO-639-2/3 where possible.
+	if normalized := langutil.NormalizeToCode(code); normalized != "" {
+		code = normalized
+	}
+	if canonical, ok := legacyLanguageAliasToISO639_2[code]; ok {
+		code = canonical
+	}
+
+	tag, err := xtextlanguage.Parse(code)
+	if err != nil {
+		return ""
+	}
+	base, _ := tag.Base()
+	if strings.EqualFold(base.String(), "und") {
+		return ""
+	}
+	return strings.ToLower(base.String())
+}
+
+func appendTokenQuery(rawURL, token string) string {
+	if token == "" {
+		return rawURL
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	q := u.Query()
+	if q.Get("token") == "" {
+		q.Set("token", token)
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+func (h *SubtitlesHandler) resolveSubtitleSourceURL(r *http.Request, sourceURL string) (string, error) {
+	internalBase := internalLoopbackBaseURL(r)
+
+	// Relative URLs are resolved against this API host.
+	if strings.HasPrefix(sourceURL, "/") {
+		return internalBase + sourceURL, nil
+	}
+
+	parsed, err := url.Parse(sourceURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", fmt.Errorf("invalid sourceUrl")
+	}
+
+	parsedPort := parsed.Port()
+	reqHost := strings.TrimSpace(r.Host)
+	reqHostName := reqHost
+	reqPort := ""
+	if h, p, err := net.SplitHostPort(reqHost); err == nil {
+		reqHostName = h
+		reqPort = p
+	}
+
+	parsedHostName := parsed.Hostname()
+	if reqPort == "" {
+		// No explicit request port, infer defaults for strict match checks.
+		if parsed.Scheme == "https" {
+			reqPort = "443"
+		} else {
+			reqPort = "80"
+		}
+	}
+	if parsedPort == "" {
+		if parsed.Scheme == "https" {
+			parsedPort = "443"
+		} else {
+			parsedPort = "80"
+		}
+	}
+
+	// SSRF guardrail: absolute URLs must stay on this API host + port.
+	if !strings.EqualFold(parsedHostName, reqHostName) || parsedPort != reqPort {
+		return "", fmt.Errorf("sourceUrl host must match API host")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", fmt.Errorf("unsupported sourceUrl scheme")
+	}
+
+	parsed.Host = strings.TrimPrefix(internalBase, "http://")
+	parsed.Host = strings.TrimPrefix(parsed.Host, "https://")
+	parsed.Scheme = strings.SplitN(internalBase, "://", 2)[0]
+	return parsed.String(), nil
+}
+
+func internalLoopbackBaseURL(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil || strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https") {
+		scheme = "https"
+	}
+
+	host := strings.TrimSpace(r.Host)
+	if host == "" {
+		if scheme == "https" {
+			return "https://127.0.0.1:443"
+		}
+		return "http://127.0.0.1:80"
+	}
+
+	if _, port, err := net.SplitHostPort(host); err == nil && port != "" {
+		return scheme + "://127.0.0.1:" + port
+	}
+
+	if scheme == "https" {
+		return "https://127.0.0.1:443"
+	}
+	return "http://127.0.0.1:80"
 }
 
 // Options handles OPTIONS requests for CORS preflight
