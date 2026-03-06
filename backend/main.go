@@ -23,7 +23,12 @@ import (
 	"novastream/internal/pool"
 	"novastream/internal/webdav"
 	"novastream/services/accounts"
+	"novastream/services/backup"
 	"novastream/services/calendar"
+	client_settings "novastream/services/client_settings"
+	"novastream/services/clients"
+	content_preferences "novastream/services/content_preferences"
+	"novastream/services/customlists"
 	"novastream/services/debrid"
 	"novastream/services/epg"
 	"novastream/services/history"
@@ -32,17 +37,13 @@ import (
 	"novastream/services/metadata"
 	"novastream/services/playback"
 	"novastream/services/plex"
+	"novastream/services/prewarm"
+	"novastream/services/scheduler"
 	"novastream/services/sessions"
 	"novastream/services/trakt"
 	"novastream/services/usenet"
 	user_settings "novastream/services/user_settings"
 	"novastream/services/users"
-	"novastream/services/clients"
-	client_settings "novastream/services/client_settings"
-	content_preferences "novastream/services/content_preferences"
-	"novastream/services/backup"
-	"novastream/services/prewarm"
-	"novastream/services/scheduler"
 	"novastream/services/watchlist"
 	"novastream/utils"
 
@@ -132,8 +133,8 @@ func main() {
 
 	// Initialize pool manager early so usenet service can use it
 	poolManager := pool.NewManager()
-	settingsHandler.SetPoolManager(poolManager)           // Enable hot reload of usenet providers
-	settingsHandler.SetMetadataService(metadataService)   // Enable hot reload of API keys
+	settingsHandler.SetPoolManager(poolManager)                 // Enable hot reload of usenet providers
+	settingsHandler.SetMetadataService(metadataService)         // Enable hot reload of API keys
 	settingsHandler.SetDebridSearchService(debridSearchService) // Enable hot reload of scrapers
 
 	usenetService := usenet.NewService(cfgManager, poolManager)
@@ -296,6 +297,11 @@ func main() {
 		log.Fatalf("failed to initialise watchlist: %v", err)
 	}
 	watchlistHandler := handlers.NewWatchlistHandler(watchlistService, userService, *demoMode)
+	customListsService, err := customlists.NewService(settings.Cache.Directory)
+	if err != nil {
+		log.Fatalf("failed to initialise custom lists: %v", err)
+	}
+	customListsHandler := handlers.NewCustomListsHandler(customListsService, userService)
 
 	userSettingsService, err := user_settings.NewService(settings.Cache.Directory)
 	if err != nil {
@@ -353,6 +359,7 @@ func main() {
 	metadataHandler.SetHistoryService(historyService)
 	// Wire up history service to watchlist handler for watch state enrichment
 	watchlistHandler.SetHistoryService(historyService)
+	customListsHandler.SetHistoryService(historyService)
 	// Wire up users service to metadata handler for kids profile filtering
 	metadataHandler.SetUsersService(userService)
 	// Wire up watchlist service to metadata handler for AI recommendations
@@ -417,7 +424,7 @@ func main() {
 		prequeueHandler.SetContentPreferencesService(contentPreferencesService)
 		prequeueHandler.SetClientSettingsService(clientSettingsService)
 		prequeueHandler.SetConfigManager(cfgManager)
-		prequeueHandler.SetMetadataService(metadataService) // For episode counting in pack size filtering
+		prequeueHandler.SetMetadataService(metadataService)      // For episode counting in pack size filtering
 		prequeueHandler.SetMovieMetadataService(metadataService) // For movie anime detection
 
 		// Wire up subtitle pre-extraction for direct streaming (SDR content)
@@ -461,6 +468,7 @@ func main() {
 		videoHandler,
 		usersHandler,
 		watchlistHandler,
+		customListsHandler,
 		historyHandler,
 		debugHandler,
 		logsHandler,

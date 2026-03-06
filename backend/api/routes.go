@@ -101,6 +101,7 @@ func Register(
 	videoHandler *handlers.VideoHandler,
 	usersHandler *handlers.UsersHandler,
 	watchlistHandler *handlers.WatchlistHandler,
+	customListsHandler *handlers.CustomListsHandler,
 	historyHandler *handlers.HistoryHandler,
 	debugHandler *handlers.DebugHandler,
 	logsHandler *handlers.LogsHandler,
@@ -125,8 +126,8 @@ func Register(
 	api.Use(corsMiddleware)
 
 	// Rate limiters for auth endpoints
-	loginLimiter := NewIPRateLimiter(rate.Every(12*time.Second), 5)       // 5/min per IP
-	defaultPwLimiter := NewIPRateLimiter(rate.Every(6*time.Second), 10)   // 10/min per IP
+	loginLimiter := NewIPRateLimiter(rate.Every(12*time.Second), 5)     // 5/min per IP
+	defaultPwLimiter := NewIPRateLimiter(rate.Every(6*time.Second), 10) // 10/min per IP
 
 	// Auth routes (no authentication required)
 	authHandler := handlers.NewAuthHandler(accountsSvc, sessionsSvc)
@@ -492,6 +493,17 @@ func Register(
 	profileProtected.HandleFunc("/{userID}/watchlist/{mediaType}/{id}", watchlistHandler.UpdateState).Methods(http.MethodPatch)
 	profileProtected.HandleFunc("/{userID}/watchlist/{mediaType}/{id}", watchlistHandler.Remove).Methods(http.MethodDelete)
 	profileProtected.HandleFunc("/{userID}/watchlist/{mediaType}/{id}", watchlistHandler.Options).Methods(http.MethodOptions)
+	profileProtected.HandleFunc("/{userID}/custom-lists", customListsHandler.ListLists).Methods(http.MethodGet)
+	profileProtected.HandleFunc("/{userID}/custom-lists", customListsHandler.CreateList).Methods(http.MethodPost)
+	profileProtected.HandleFunc("/{userID}/custom-lists", customListsHandler.Options).Methods(http.MethodOptions)
+	profileProtected.HandleFunc("/{userID}/custom-lists/{listID}", customListsHandler.RenameList).Methods(http.MethodPatch)
+	profileProtected.HandleFunc("/{userID}/custom-lists/{listID}", customListsHandler.DeleteList).Methods(http.MethodDelete)
+	profileProtected.HandleFunc("/{userID}/custom-lists/{listID}", customListsHandler.Options).Methods(http.MethodOptions)
+	profileProtected.HandleFunc("/{userID}/custom-lists/{listID}/items", customListsHandler.ListItems).Methods(http.MethodGet)
+	profileProtected.HandleFunc("/{userID}/custom-lists/{listID}/items", customListsHandler.AddItem).Methods(http.MethodPost)
+	profileProtected.HandleFunc("/{userID}/custom-lists/{listID}/items", customListsHandler.Options).Methods(http.MethodOptions)
+	profileProtected.HandleFunc("/{userID}/custom-lists/{listID}/items/{mediaType}/{id}", customListsHandler.RemoveItem).Methods(http.MethodDelete)
+	profileProtected.HandleFunc("/{userID}/custom-lists/{listID}/items/{mediaType}/{id}", customListsHandler.Options).Methods(http.MethodOptions)
 
 	profileProtected.HandleFunc("/{userID}/history/continue", historyHandler.ListContinueWatching).Methods(http.MethodGet)
 	profileProtected.HandleFunc("/{userID}/history/continue", historyHandler.Options).Methods(http.MethodOptions)
