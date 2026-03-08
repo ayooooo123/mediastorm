@@ -2452,9 +2452,32 @@ func (h *VideoHandler) StartLiveHLSSession(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	log.Printf("[video] creating live HLS session for URL: %s", liveURL)
+	profileID := strings.TrimSpace(r.URL.Query().Get("profileId"))
+	profileName := strings.TrimSpace(r.URL.Query().Get("profileName"))
+	target := h.resolveLiveStreamTarget(profileID)
 
-	session, err := h.hlsManager.CreateLiveSession(r.Context(), liveURL)
+	if target.MaxStreams > 0 {
+		usage := h.hlsManager.GetLiveUsage(target.Provider, target.BucketKey, target.MaxStreams)
+		if usage.AtLimit {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"code":           "LIVE_STREAM_LIMIT_REACHED",
+				"message":        fmt.Sprintf("%s stream limit reached (%d/%d)", strings.ToUpper(target.Provider), usage.CurrentStreams, usage.MaxStreams),
+				"provider":       usage.Provider,
+				"bucket":         target.BucketName,
+				"currentStreams": usage.CurrentStreams,
+				"maxStreams":     usage.MaxStreams,
+				"available":      usage.AvailableStreams,
+				"atLimit":        usage.AtLimit,
+			})
+			return
+		}
+	}
+
+	log.Printf("[video] creating live HLS session for URL: %s (provider=%s bucket=%s profile=%s)", liveURL, target.Provider, target.BucketKey, profileID)
+
+	session, err := h.hlsManager.CreateLiveSession(r.Context(), liveURL, target.Provider, target.BucketKey, profileID, profileName, getClientIP(r))
 	if err != nil {
 		log.Printf("[video] failed to create live HLS session: %v", err)
 		http.Error(w, fmt.Sprintf("failed to create live HLS session: %v", err), http.StatusInternalServerError)
@@ -2475,6 +2498,31 @@ func (h *VideoHandler) StartLiveHLSSession(w http.ResponseWriter, r *http.Reques
 	}
 
 	log.Printf("[video] created live HLS session %s", session.ID)
+}
+
+// GetLiveUsage returns current live stream usage and limits for the selected provider.
+func (h *VideoHandler) GetLiveUsage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	profileID := strings.TrimSpace(r.URL.Query().Get("profileId"))
+	target := h.resolveLiveStreamTarget(profileID)
+
+	if h.hlsManager == nil {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"provider":         target.Provider,
+			"bucket":           target.BucketName,
+			"currentStreams":   0,
+			"maxStreams":       target.MaxStreams,
+			"availableStreams": 0,
+			"atLimit":          false,
+			"providers": []map[string]interface{}{
+				{"provider": target.Provider, "current": 0, "max": target.MaxStreams, "available": 0, "atLimit": false},
+			},
+		})
+		return
+	}
+
+	usage := h.hlsManager.GetLiveUsage(target.Provider, target.BucketKey, target.MaxStreams)
+	_ = json.NewEncoder(w).Encode(usage)
 }
 
 // ServeHLSPlaylist serves the HLS playlist for a session
@@ -2641,6 +2689,26 @@ func (h *VideoHandler) GetHLSManager() *HLSManager {
 		return nil
 	}
 	return h.hlsManager
+}
+
+func (h *VideoHandler) resolveLiveStreamTarget(profileID string) liveStreamTarget {
+	if h == nil || h.configManager == nil {
+		return liveStreamTarget{Provider: "m3u", MaxStreams: 0, BucketKey: "m3u:default", BucketName: "M3U shared"}
+	}
+
+	settings, err := h.configManager.Load()
+	if err != nil {
+		return liveStreamTarget{Provider: "m3u", MaxStreams: 0, BucketKey: "m3u:default", BucketName: "M3U shared"}
+	}
+
+	global := buildGlobalLiveSource(settings)
+	var userSettings *models.UserSettings
+	if profileID != "" && h.userSettingsSvc != nil {
+		if us, userErr := h.userSettingsSvc.Get(profileID); userErr == nil && us != nil {
+			userSettings = us
+		}
+	}
+	return resolveLiveStreamTarget(global, userSettings)
 }
 
 // GetSubtitleExtractManager returns the subtitle extract manager for pre-extraction.

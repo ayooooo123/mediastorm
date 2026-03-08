@@ -209,6 +209,7 @@ func isSettingsEmpty(s models.UserSettings) bool {
 		s.LiveTV.XtreamHost != nil ||
 		s.LiveTV.XtreamUsername != nil ||
 		s.LiveTV.XtreamPassword != nil ||
+		s.LiveTV.MaxStreams != nil ||
 		s.LiveTV.PlaylistCacheTTLHours != nil ||
 		s.LiveTV.ProbeSizeMB != nil ||
 		s.LiveTV.AnalyzeDurationSec != nil ||

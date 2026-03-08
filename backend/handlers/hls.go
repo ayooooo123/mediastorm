@@ -305,25 +305,25 @@ func (t *throttledReader) Read(p []byte) (n int, err error) {
 
 // HLSSession represents an active HLS transcoding session
 type HLSSession struct {
-	ID           string
-	Path         string
-	OriginalPath string
-	OutputDir    string
-	CreatedAt    time.Time
-	LastAccess   time.Time
-	FFmpegCmd    *exec.Cmd
-	Cancel       context.CancelFunc
-	mu           sync.RWMutex
-	Completed    bool
-	HasDV        bool
-	DVProfile    string
-	DVDisabled          bool // Set to true if DV metadata parsing fails and we fallback to non-DV
-	HasHDR              bool // HDR10 content (needs fMP4 segments for iOS compatibility)
-	HDRMetadataDisabled bool // Set to true if hevc_metadata filter fails (malformed SEI data)
-	Duration          float64 // Total duration in seconds from ffprobe
-	StartOffset        float64 // Requested start offset in seconds for session warm starts (never changes, for frontend)
-	TranscodingOffset  float64 // Current transcoding position (updated on recovery restarts)
-	ActualStartOffset  float64 // Actual start time from fMP4 tfdt box (keyframe-aligned, for subtitle sync)
+	ID                  string
+	Path                string
+	OriginalPath        string
+	OutputDir           string
+	CreatedAt           time.Time
+	LastAccess          time.Time
+	FFmpegCmd           *exec.Cmd
+	Cancel              context.CancelFunc
+	mu                  sync.RWMutex
+	Completed           bool
+	HasDV               bool
+	DVProfile           string
+	DVDisabled          bool    // Set to true if DV metadata parsing fails and we fallback to non-DV
+	HasHDR              bool    // HDR10 content (needs fMP4 segments for iOS compatibility)
+	HDRMetadataDisabled bool    // Set to true if hevc_metadata filter fails (malformed SEI data)
+	Duration            float64 // Total duration in seconds from ffprobe
+	StartOffset         float64 // Requested start offset in seconds for session warm starts (never changes, for frontend)
+	TranscodingOffset   float64 // Current transcoding position (updated on recovery restarts)
+	ActualStartOffset   float64 // Actual start time from fMP4 tfdt box (keyframe-aligned, for subtitle sync)
 
 	// Profile tracking
 	ProfileID   string
@@ -346,14 +346,14 @@ type HLSSession struct {
 	IdleTimeoutTriggered bool
 
 	// Segment tracking for cleanup and rate limiting
-	MinSegmentRequested      int // Minimum segment number that has been requested (-1 = none yet)
-	MaxSegmentRequested      int // Maximum segment number that has been requested (-1 = none yet)
-	MinSegmentAvailable      int // Minimum segment number still available on disk (for playlist filtering)
-	LastPlaybackSegment      int // Player's actual playback position from keepalive time reports (-1 = unknown)
-	LastSegmentServed        int // Last segment number successfully served to client (-1 = none yet)
-	EarliestBufferedSegment  int // Earliest segment still in player's buffer from keepalive (-1 = unknown)
-	Paused                   bool // True if FFmpeg is paused (SIGSTOP) waiting for player to catch up
-	FinalSegmentCount        int  // Highest segment number created when transcoding completed (-1 = still running or unknown)
+	MinSegmentRequested     int  // Minimum segment number that has been requested (-1 = none yet)
+	MaxSegmentRequested     int  // Maximum segment number that has been requested (-1 = none yet)
+	MinSegmentAvailable     int  // Minimum segment number still available on disk (for playlist filtering)
+	LastPlaybackSegment     int  // Player's actual playback position from keepalive time reports (-1 = unknown)
+	LastSegmentServed       int  // Last segment number successfully served to client (-1 = none yet)
+	EarliestBufferedSegment int  // Earliest segment still in player's buffer from keepalive (-1 = unknown)
+	Paused                  bool // True if FFmpeg is paused (SIGSTOP) waiting for player to catch up
+	FinalSegmentCount       int  // Highest segment number created when transcoding completed (-1 = still running or unknown)
 
 	// Input error recovery (for usenet disconnections)
 	InputErrorDetected bool // Set to true when FFmpeg input stream fails (usenet disconnect)
@@ -362,22 +362,43 @@ type HLSSession struct {
 	SeekInProgress     bool // Set to true during user-initiated seek to prevent recovery logic
 
 	// Fatal error tracking (unplayable streams)
-	FatalError       string // Set when stream is determined to be unplayable (persistent bitstream errors)
+	FatalError string // Set when stream is determined to be unplayable (persistent bitstream errors)
 
 	// Cached probe data from unified probe (avoids multiple ffprobe calls)
 	ProbeData *UnifiedProbeResult
 
 	// Per-track extraction tracking (prevents duplicate extractions without blocking session)
-	subtitleExtractionMu     sync.Mutex      // Protects subtitleExtracting map
-	subtitleExtracting       map[int]bool    // Tracks which subtitle tracks are currently being extracted
-	FatalErrorTime   time.Time
-	BitstreamErrors  int // Count of bitstream filter errors (to detect persistent issues)
+	subtitleExtractionMu sync.Mutex   // Protects subtitleExtracting map
+	subtitleExtracting   map[int]bool // Tracks which subtitle tracks are currently being extracted
+	FatalErrorTime       time.Time
+	BitstreamErrors      int // Count of bitstream filter errors (to detect persistent issues)
 
 	// Live TV session fields
-	IsLive bool // True for live TV streams (no duration, no seeking)
+	IsLive       bool   // True for live TV streams (no duration, no seeking)
+	LiveProvider string // Live TV provider identifier ("m3u" or "xtream")
+	LiveBucket   string // Shared stream bucket identifier for limit accounting
 
 	// Prequeue tracking
 	PrequeueType string // "", "details" (details page), or "next_episode" (auto-play next)
+}
+
+// LiveProviderUsageEntry summarizes active usage for a single live provider.
+type LiveProviderUsageEntry struct {
+	Provider  string `json:"provider"`
+	Current   int    `json:"current"`
+	Max       int    `json:"max"`
+	Available int    `json:"available"`
+	AtLimit   bool   `json:"atLimit"`
+}
+
+// LiveUsageSummary summarizes current live stream usage and limits.
+type LiveUsageSummary struct {
+	Provider         string                   `json:"provider"`
+	CurrentStreams   int                      `json:"currentStreams"`
+	MaxStreams       int                      `json:"maxStreams"`
+	AvailableStreams int                      `json:"availableStreams"`
+	AtLimit          bool                     `json:"atLimit"`
+	Providers        []LiveProviderUsageEntry `json:"providers"`
 }
 
 const (
@@ -414,7 +435,6 @@ const (
 	// Resume when buffer drops to this level
 	hlsBufferResumeThreshold = 20 // ~80 seconds of buffer ahead
 )
-
 
 // HLSManager manages HLS transcoding sessions
 type HLSManager struct {
@@ -773,34 +793,34 @@ func (m *HLSManager) CreateSession(ctx context.Context, path string, originalPat
 	}
 
 	session := &HLSSession{
-		ID:                  sessionID,
-		Path:                path,
-		OriginalPath:        originalPath,
-		OutputDir:           outputDir,
-		CreatedAt:           now,
-		LastAccess:          now,
-		Cancel:              cancel,
-		HasDV:               hasDV,
-		DVProfile:           dvProfile,
-		HasHDR:              hasHDR,
-		Duration:            duration,
-		StartOffset:         startOffset,
-		TranscodingOffset:   actualTranscodingOffset, // May differ from StartOffset if keyframe-aligned
-		ActualStartOffset:   actualTranscodingOffset, // For subtitle sync
-		ProfileID:           profileID,
-		ProfileName:         profileName,
-		ClientIP:            clientIP,
-		AudioTrackIndex:     audioTrackIndex,
-		SubtitleTrackIndex:  subtitleTrackIndex,
-		StreamStartTime:      now,
-		LastSegmentRequest:      now, // Initialize to now to avoid immediate timeout
-		MinSegmentRequested:     -1,  // Initialize to -1 (no segments requested yet)
-		MaxSegmentRequested:     -1,  // Initialize to -1 (no segments requested yet)
-		LastPlaybackSegment:     -1,  // Initialize to -1 (no keepalive time reported yet)
-		LastSegmentServed:       -1,  // Initialize to -1 (no segments served yet)
-		EarliestBufferedSegment: -1,  // Initialize to -1 (no buffer info reported yet)
-		FinalSegmentCount:       -1,  // Initialize to -1 (transcoding still running)
-		ProbeData:               probeData, // Cache unified probe results for startTranscoding
+		ID:                      sessionID,
+		Path:                    path,
+		OriginalPath:            originalPath,
+		OutputDir:               outputDir,
+		CreatedAt:               now,
+		LastAccess:              now,
+		Cancel:                  cancel,
+		HasDV:                   hasDV,
+		DVProfile:               dvProfile,
+		HasHDR:                  hasHDR,
+		Duration:                duration,
+		StartOffset:             startOffset,
+		TranscodingOffset:       actualTranscodingOffset, // May differ from StartOffset if keyframe-aligned
+		ActualStartOffset:       actualTranscodingOffset, // For subtitle sync
+		ProfileID:               profileID,
+		ProfileName:             profileName,
+		ClientIP:                clientIP,
+		AudioTrackIndex:         audioTrackIndex,
+		SubtitleTrackIndex:      subtitleTrackIndex,
+		StreamStartTime:         now,
+		LastSegmentRequest:      now,          // Initialize to now to avoid immediate timeout
+		MinSegmentRequested:     -1,           // Initialize to -1 (no segments requested yet)
+		MaxSegmentRequested:     -1,           // Initialize to -1 (no segments requested yet)
+		LastPlaybackSegment:     -1,           // Initialize to -1 (no keepalive time reported yet)
+		LastSegmentServed:       -1,           // Initialize to -1 (no segments served yet)
+		EarliestBufferedSegment: -1,           // Initialize to -1 (no buffer info reported yet)
+		FinalSegmentCount:       -1,           // Initialize to -1 (transcoding still running)
+		ProbeData:               probeData,    // Cache unified probe results for startTranscoding
 		PrequeueType:            prequeueType, // "", "details", or "next_episode"
 	}
 
@@ -832,7 +852,7 @@ func (m *HLSManager) CreateSession(ctx context.Context, path string, originalPat
 
 // CreateLiveSession creates an HLS session for live TV streams
 // Unlike VOD sessions, live sessions don't have a known duration and don't support seeking
-func (m *HLSManager) CreateLiveSession(ctx context.Context, liveURL string) (*HLSSession, error) {
+func (m *HLSManager) CreateLiveSession(ctx context.Context, liveURL, provider, bucketKey, profileID, profileName, clientIP string) (*HLSSession, error) {
 	sessionID := generateSessionID()
 	outputDir := filepath.Join(m.baseDir, sessionID)
 
@@ -852,6 +872,8 @@ func (m *HLSManager) CreateLiveSession(ctx context.Context, liveURL string) (*HL
 		LastAccess:              now,
 		Cancel:                  cancel,
 		IsLive:                  true,
+		LiveProvider:            normalizeLiveProvider(provider),
+		LiveBucket:              strings.TrimSpace(bucketKey),
 		Duration:                0, // Unknown for live
 		StartOffset:             0,
 		TranscodingOffset:       0,
@@ -862,9 +884,12 @@ func (m *HLSManager) CreateLiveSession(ctx context.Context, liveURL string) (*HL
 		LastPlaybackSegment:     -1,
 		LastSegmentServed:       -1,
 		EarliestBufferedSegment: -1,
-		FinalSegmentCount:       -1,  // Initialize to -1 (transcoding still running)
+		FinalSegmentCount:       -1, // Initialize to -1 (transcoding still running)
 		AudioTrackIndex:         -1, // Use default
 		SubtitleTrackIndex:      -1, // No subtitles for live TV
+		ProfileID:               profileID,
+		ProfileName:             profileName,
+		ClientIP:                clientIP,
 	}
 
 	m.mu.Lock()
@@ -883,6 +908,68 @@ func (m *HLSManager) CreateLiveSession(ctx context.Context, liveURL string) (*HL
 
 	log.Printf("[hls] created live session %s for URL %q", sessionID, liveURL)
 	return session, nil
+}
+
+func normalizeLiveProvider(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "xtream":
+		return "xtream"
+	default:
+		return "m3u"
+	}
+}
+
+// GetLiveUsage returns concurrent live stream usage for the requested provider.
+func (m *HLSManager) GetLiveUsage(provider, bucketKey string, maxStreams int) LiveUsageSummary {
+	targetProvider := normalizeLiveProvider(provider)
+	targetBucket := strings.TrimSpace(bucketKey)
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	current := 0
+	for _, session := range m.sessions {
+		session.mu.RLock()
+		isCounted := session.IsLive && !session.Completed
+		sessionProvider := normalizeLiveProvider(session.LiveProvider)
+		sessionBucket := strings.TrimSpace(session.LiveBucket)
+		session.mu.RUnlock()
+
+		if !isCounted {
+			continue
+		}
+		if sessionProvider != targetProvider {
+			continue
+		}
+		if targetBucket != "" && sessionBucket != targetBucket {
+			continue
+		}
+		current++
+	}
+	atLimit := maxStreams > 0 && current >= maxStreams
+	available := 0
+	if maxStreams > 0 {
+		available = maxStreams - current
+		if available < 0 {
+			available = 0
+		}
+	}
+
+	return LiveUsageSummary{
+		Provider:         targetProvider,
+		CurrentStreams:   current,
+		MaxStreams:       maxStreams,
+		AvailableStreams: available,
+		AtLimit:          atLimit,
+		Providers: []LiveProviderUsageEntry{
+			{
+				Provider:  targetProvider,
+				Current:   current,
+				Max:       maxStreams,
+				Available: available,
+				AtLimit:   atLimit,
+			},
+		},
+	}
 }
 
 // startLiveTranscoding starts FFmpeg for live TV HLS output
@@ -1347,7 +1434,7 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 		"-loglevel", "error",
 		"-protocol_whitelist", "file,http,https,pipe,tcp,tls,crypto",
 		// Reduce probe/analyze time for faster startup (default is 5MB/5s)
-		"-probesize", "1000000",      // 1MB
+		"-probesize", "1000000", // 1MB
 		"-analyzeduration", "500000", // 0.5s
 		// A/V sync flags: generate PTS if missing, discard corrupt packets
 		"-fflags", "+genpts+discardcorrupt",
@@ -1699,7 +1786,7 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 		args = append(args,
 			"-f", "hls",
 			"-hls_init_time", "1", // First segment is 1s for faster startup
-			"-hls_time", "2",      // Subsequent segments are 2s
+			"-hls_time", "2", // Subsequent segments are 2s
 			"-hls_list_size", "0",
 			"-hls_playlist_type", "event",
 			"-hls_flags", "independent_segments+temp_file",
@@ -1735,7 +1822,7 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 		args = append(args,
 			"-f", "hls",
 			"-hls_init_time", "1", // First segment is 1s for faster startup
-			"-hls_time", "2",      // Subsequent segments are 2s
+			"-hls_time", "2", // Subsequent segments are 2s
 			"-hls_list_size", "0",
 			"-hls_playlist_type", "event",
 			"-hls_flags", "independent_segments+temp_file",
@@ -2412,7 +2499,7 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 		session.InputErrorDetected = false // Reset so we can detect new errors
 		session.RecoveryAttempts++
 		session.TranscodingOffset = newTranscodingOffset // Update transcoding offset to resume position
-		session.CreatedAt = time.Now()       // Reset so startup timeout doesn't immediately fire
+		session.CreatedAt = time.Now()                   // Reset so startup timeout doesn't immediately fire
 		session.LastSegmentRequest = time.Now()
 		// Keep SegmentsCreated, BytesStreamed, SegmentRequestCount as-is for tracking
 		session.mu.Unlock()
@@ -2783,7 +2870,7 @@ func (m *HLSManager) Seek(w http.ResponseWriter, r *http.Request, sessionID stri
 	session.FFmpegCmd = nil
 	session.FFmpegPID = 0
 	session.Completed = false
-	session.FinalSegmentCount = -1 // Reset since we're restarting transcoding from new position
+	session.FinalSegmentCount = -1         // Reset since we're restarting transcoding from new position
 	session.StartOffset = targetTime       // User's new position (for frontend display)
 	session.TranscodingOffset = targetTime // FFmpeg will seek to nearest keyframe
 	session.ActualStartOffset = targetTime // Will be updated from fMP4 tfdt after first segment
@@ -2794,7 +2881,7 @@ func (m *HLSManager) Seek(w http.ResponseWriter, r *http.Request, sessionID stri
 	session.MaxSegmentRequested = -1
 	session.LastPlaybackSegment = 0
 	session.EarliestBufferedSegment = 0
-	session.RecoveryAttempts = 0 // Reset recovery attempts for new seek position
+	session.RecoveryAttempts = 0   // Reset recovery attempts for new seek position
 	session.SeekInProgress = false // Clear seek flag now that we're starting fresh
 	cachedForceAAC := session.forceAAC
 	session.mu.Unlock()

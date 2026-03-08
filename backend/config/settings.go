@@ -14,31 +14,31 @@ import (
 
 // Settings represents the application configuration persisted to disk.
 type Settings struct {
-	Server          ServerSettings         `json:"server"`
-	Usenet          []UsenetSettings       `json:"usenet"`
-	Indexers        []IndexerConfig        `json:"indexers"`
-	TorrentScrapers []TorrentScraperConfig `json:"torrentScrapers"`
-	Metadata        MetadataSettings       `json:"metadata"`
-	Cache           CacheSettings          `json:"cache"`
-	WebDAV          WebDAVSettings         `json:"webdav"`
-	Database        DatabaseSettings       `json:"database"`
-	Streaming       StreamingSettings      `json:"streaming"`
-	Import          ImportSettings         `json:"import"`
-	SABnzbd         SABnzbdSettings        `json:"sabnzbd"`
-	AltMount        *AltMountSettings      `json:"altmount,omitempty"`
-	Transmux        TransmuxSettings       `json:"transmux"`
-	Playback        PlaybackSettings       `json:"playback"`
-	Live            LiveSettings           `json:"live"`
-	HomeShelves     HomeShelvesSettings    `json:"homeShelves"`
-	Filtering       FilterSettings         `json:"filtering"`
-	AnimeFiltering  AnimeFilteringSettings `json:"animeFiltering"`
-	UI              UISettings             `json:"ui"`
-	Display         DisplaySettings        `json:"display"`
-	Subtitles       SubtitleSettings       `json:"subtitles"`
-	MDBList         MDBListSettings        `json:"mdblist"`
-	Trakt           TraktSettings          `json:"trakt,omitempty"`
-	Plex            PlexSettings           `json:"plex,omitempty"`
-	Log             LogConfig              `json:"log"`
+	Server          ServerSettings          `json:"server"`
+	Usenet          []UsenetSettings        `json:"usenet"`
+	Indexers        []IndexerConfig         `json:"indexers"`
+	TorrentScrapers []TorrentScraperConfig  `json:"torrentScrapers"`
+	Metadata        MetadataSettings        `json:"metadata"`
+	Cache           CacheSettings           `json:"cache"`
+	WebDAV          WebDAVSettings          `json:"webdav"`
+	Database        DatabaseSettings        `json:"database"`
+	Streaming       StreamingSettings       `json:"streaming"`
+	Import          ImportSettings          `json:"import"`
+	SABnzbd         SABnzbdSettings         `json:"sabnzbd"`
+	AltMount        *AltMountSettings       `json:"altmount,omitempty"`
+	Transmux        TransmuxSettings        `json:"transmux"`
+	Playback        PlaybackSettings        `json:"playback"`
+	Live            LiveSettings            `json:"live"`
+	HomeShelves     HomeShelvesSettings     `json:"homeShelves"`
+	Filtering       FilterSettings          `json:"filtering"`
+	AnimeFiltering  AnimeFilteringSettings  `json:"animeFiltering"`
+	UI              UISettings              `json:"ui"`
+	Display         DisplaySettings         `json:"display"`
+	Subtitles       SubtitleSettings        `json:"subtitles"`
+	MDBList         MDBListSettings         `json:"mdblist"`
+	Trakt           TraktSettings           `json:"trakt,omitempty"`
+	Plex            PlexSettings            `json:"plex,omitempty"`
+	Log             LogConfig               `json:"log"`
 	ScheduledTasks  ScheduledTasksSettings  `json:"scheduledTasks,omitempty"`
 	Network         NetworkSettings         `json:"network,omitempty"`
 	Ranking         RankingSettings         `json:"ranking,omitempty"`
@@ -126,16 +126,16 @@ type DatabaseSettings struct {
 
 // StreamingSettings defines streaming and download configuration
 type StreamingSettings struct {
-	MaxDownloadWorkers          int                      `json:"maxDownloadWorkers"`
-	MaxCacheSizeMB              int                      `json:"maxCacheSizeMB"`
-	ServiceMode                 StreamingServiceMode     `json:"serviceMode"`
-	ServicePriority             StreamingServicePriority `json:"servicePriority"`                 // Priority for service type in search results
-	SearchMode                  SearchMode               `json:"searchMode"`                      // Fast (early return) vs Accurate (wait for all results)
-	DebridProviders             []DebridProviderSettings `json:"debridProviders,omitempty"`
-	MultiProviderMode           MultiProviderMode        `json:"multiProviderMode,omitempty"`     // How to select provider when multiple are enabled
-	UsenetResolutionTimeoutSec  int                      `json:"usenetResolutionTimeoutSec"`      // Timeout for usenet content resolution in seconds (0 = no limit)
-	IndexerTimeoutSec           int                      `json:"indexerTimeoutSec"`               // Timeout for indexer/scraper searches in seconds (default: 5)
-	MaxAlternateTitleSearches   int                      `json:"maxAlternateTitleSearches"`       // Max alternate/international titles to search per item (0 = unlimited)
+	MaxDownloadWorkers         int                      `json:"maxDownloadWorkers"`
+	MaxCacheSizeMB             int                      `json:"maxCacheSizeMB"`
+	ServiceMode                StreamingServiceMode     `json:"serviceMode"`
+	ServicePriority            StreamingServicePriority `json:"servicePriority"` // Priority for service type in search results
+	SearchMode                 SearchMode               `json:"searchMode"`      // Fast (early return) vs Accurate (wait for all results)
+	DebridProviders            []DebridProviderSettings `json:"debridProviders,omitempty"`
+	MultiProviderMode          MultiProviderMode        `json:"multiProviderMode,omitempty"` // How to select provider when multiple are enabled
+	UsenetResolutionTimeoutSec int                      `json:"usenetResolutionTimeoutSec"`  // Timeout for usenet content resolution in seconds (0 = no limit)
+	IndexerTimeoutSec          int                      `json:"indexerTimeoutSec"`           // Timeout for indexer/scraper searches in seconds (default: 5)
+	MaxAlternateTitleSearches  int                      `json:"maxAlternateTitleSearches"`   // Max alternate/international titles to search per item (0 = unlimited)
 }
 
 // SearchMode determines how scraper/indexer results are aggregated
@@ -213,14 +213,14 @@ type PlaybackSettings struct {
 	PreferredSubtitleLanguage string  `json:"preferredSubtitleLanguage,omitempty"`
 	PreferredSubtitleMode     string  `json:"preferredSubtitleMode,omitempty"`
 	UseLoadingScreen          bool    `json:"useLoadingScreen,omitempty"`
-	SubtitleSize              float64 `json:"subtitleSize,omitempty"`    // Scaling factor for subtitle size (1.0 = default)
-	SeekForwardSeconds        int     `json:"seekForwardSeconds"`        // Seconds to skip forward (default 30)
-	SeekBackwardSeconds       int     `json:"seekBackwardSeconds"`       // Seconds to skip backward (default 10)
-	ForceAACTranscoding       bool    `json:"forceAacTranscoding"`       // Force transcoding of AC3/EAC3/DTS audio to AAC for Bluetooth compatibility
+	SubtitleSize              float64 `json:"subtitleSize,omitempty"`       // Scaling factor for subtitle size (1.0 = default)
+	SeekForwardSeconds        int     `json:"seekForwardSeconds"`           // Seconds to skip forward (default 30)
+	SeekBackwardSeconds       int     `json:"seekBackwardSeconds"`          // Seconds to skip backward (default 10)
+	ForceAACTranscoding       bool    `json:"forceAacTranscoding"`          // Force transcoding of AC3/EAC3/DTS audio to AAC for Bluetooth compatibility
 	AutoPlayTrailersTV        bool    `json:"autoPlayTrailersTV,omitempty"` // Auto-play trailers in backdrop on TV details pages
-	RewindOnResumeFromPause   int     `json:"rewindOnResumeFromPause"`    // Seconds to rewind when unpausing (default 0)
-	RewindOnPlaybackStart     int     `json:"rewindOnPlaybackStart"`      // Seconds to rewind when resuming from saved progress (default 0)
-	DisablePrequeue           bool    `json:"disablePrequeue"`            // Disable automatic prequeue on page load (streams only resolve when Play is pressed)
+	RewindOnResumeFromPause   int     `json:"rewindOnResumeFromPause"`      // Seconds to rewind when unpausing (default 0)
+	RewindOnPlaybackStart     int     `json:"rewindOnPlaybackStart"`        // Seconds to rewind when resuming from saved progress (default 0)
+	DisablePrequeue           bool    `json:"disablePrequeue"`              // Disable automatic prequeue on page load (streams only resolve when Play is pressed)
 }
 
 // LiveTVFilterSettings controls backend-side filtering for Live TV channels.
@@ -233,7 +233,7 @@ type LiveTVFilterSettings struct {
 type EPGSource struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
-	Type     string `json:"type"`     // "xmltv"
+	Type     string `json:"type"` // "xmltv"
 	URL      string `json:"url"`
 	Priority int    `json:"priority"` // Lower = higher priority
 	Enabled  bool   `json:"enabled"`
@@ -242,7 +242,7 @@ type EPGSource struct {
 // EPGSettings controls Electronic Program Guide configuration.
 type EPGSettings struct {
 	Enabled              bool        `json:"enabled"`
-	XmltvUrl             string      `json:"xmltvUrl,omitempty"`   // Simple XMLTV URL (alternative to Sources array)
+	XmltvUrl             string      `json:"xmltvUrl,omitempty"` // Simple XMLTV URL (alternative to Sources array)
 	Sources              []EPGSource `json:"sources,omitempty"`
 	RefreshIntervalHours int         `json:"refreshIntervalHours"` // Default: 12
 	RetentionDays        int         `json:"retentionDays"`        // Default: 7
@@ -250,17 +250,18 @@ type EPGSettings struct {
 
 // LiveSettings controls Live TV playlist caching behavior.
 type LiveSettings struct {
-	Mode                  string               `json:"mode"`                  // "m3u" or "xtream" - how to source the playlist
-	PlaylistURL           string               `json:"playlistUrl"`           // M3U playlist URL (used when mode is "m3u")
-	XtreamHost            string               `json:"xtreamHost"`            // Xtream Codes server URL (e.g., "http://example.com:8080")
-	XtreamUsername        string               `json:"xtreamUsername"`        // Xtream Codes username
-	XtreamPassword        string               `json:"xtreamPassword"`        // Xtream Codes password
+	Mode                  string               `json:"mode"`           // "m3u" or "xtream" - how to source the playlist
+	PlaylistURL           string               `json:"playlistUrl"`    // M3U playlist URL (used when mode is "m3u")
+	XtreamHost            string               `json:"xtreamHost"`     // Xtream Codes server URL (e.g., "http://example.com:8080")
+	XtreamUsername        string               `json:"xtreamUsername"` // Xtream Codes username
+	XtreamPassword        string               `json:"xtreamPassword"` // Xtream Codes password
+	MaxStreams            int                  `json:"maxStreams"`     // Maximum concurrent Live TV streams per provider (0 = unlimited)
 	PlaylistCacheTTLHours int                  `json:"playlistCacheTtlHours"`
-	ProbeSizeMB           int                  `json:"probeSizeMb"`           // FFmpeg probesize in MB (0 = default ~5MB)
-	AnalyzeDurationSec    int                  `json:"analyzeDurationSec"`    // FFmpeg analyzeduration in seconds (0 = default ~5s)
-	LowLatency            bool                 `json:"lowLatency"`            // Enable low-latency mode (nobuffer + low_delay flags)
-	Filtering             LiveTVFilterSettings `json:"filtering"`             // Backend-side channel filtering
-	EPG                   EPGSettings          `json:"epg"`                   // Electronic Program Guide settings
+	ProbeSizeMB           int                  `json:"probeSizeMb"`        // FFmpeg probesize in MB (0 = default ~5MB)
+	AnalyzeDurationSec    int                  `json:"analyzeDurationSec"` // FFmpeg analyzeduration in seconds (0 = default ~5s)
+	LowLatency            bool                 `json:"lowLatency"`         // Enable low-latency mode (nobuffer + low_delay flags)
+	Filtering             LiveTVFilterSettings `json:"filtering"`          // Backend-side channel filtering
+	EPG                   EPGSettings          `json:"epg"`                // Electronic Program Guide settings
 }
 
 // GetEffectivePlaylistURL returns the playlist URL based on the configured mode.
@@ -539,12 +540,12 @@ type ScheduledTask struct {
 	Name          string                 `json:"name"`
 	Enabled       bool                   `json:"enabled"`
 	Frequency     ScheduledTaskFrequency `json:"frequency"`
-	Config        map[string]string      `json:"config"`                    // Task-specific config (e.g., plexAccountId, profileId)
+	Config        map[string]string      `json:"config"` // Task-specific config (e.g., plexAccountId, profileId)
 	LastRunAt     *time.Time             `json:"lastRunAt,omitempty"`
 	LastStatus    ScheduledTaskStatus    `json:"lastStatus"`
 	LastError     string                 `json:"lastError,omitempty"`
 	ItemsImported int                    `json:"itemsImported,omitempty"`
-	DryRunDetails *DryRunDetails         `json:"dryRunDetails,omitempty"`   // Results from dry run (what would be added/removed)
+	DryRunDetails *DryRunDetails         `json:"dryRunDetails,omitempty"` // Results from dry run (what would be added/removed)
 	CreatedAt     time.Time              `json:"createdAt"`
 }
 
@@ -568,13 +569,13 @@ type NetworkSettings struct {
 type RankingCriterionID string
 
 const (
-	RankingServicePriority RankingCriterionID = "service-priority"
-	RankingPreferredTerms     RankingCriterionID = "preferred-terms"
-	RankingNonPreferredTerms  RankingCriterionID = "non-preferred-terms"
-	RankingResolution         RankingCriterionID = "resolution"
-	RankingHDR             RankingCriterionID = "hdr"
-	RankingLanguage        RankingCriterionID = "language"
-	RankingSize            RankingCriterionID = "size"
+	RankingServicePriority   RankingCriterionID = "service-priority"
+	RankingPreferredTerms    RankingCriterionID = "preferred-terms"
+	RankingNonPreferredTerms RankingCriterionID = "non-preferred-terms"
+	RankingResolution        RankingCriterionID = "resolution"
+	RankingHDR               RankingCriterionID = "hdr"
+	RankingLanguage          RankingCriterionID = "language"
+	RankingSize              RankingCriterionID = "size"
 )
 
 // RankingCriterion represents a single ranking criterion with its configuration.
@@ -623,7 +624,7 @@ func DefaultSettings() Settings {
 		AltMount:  nil,
 		Transmux:  TransmuxSettings{Enabled: true, FFmpegPath: "ffmpeg", FFprobePath: "ffprobe", HLSTempDirectory: "/tmp/novastream-hls"},
 		Playback:  PlaybackSettings{PreferredPlayer: "native", UseLoadingScreen: false, SubtitleSize: 1.0, SeekForwardSeconds: 30, SeekBackwardSeconds: 10},
-		Live:      LiveSettings{Mode: "m3u", PlaylistURL: "", PlaylistCacheTTLHours: 24},
+		Live:      LiveSettings{Mode: "m3u", PlaylistURL: "", MaxStreams: 0, PlaylistCacheTTLHours: 24},
 		HomeShelves: HomeShelvesSettings{
 			Shelves: []ShelfConfig{
 				{ID: "continue-watching", Name: "Continue Watching", Enabled: true, Order: 0},
@@ -633,10 +634,10 @@ func DefaultSettings() Settings {
 			},
 		},
 		Filtering: FilterSettings{
-			MaxSizeMovieGB:   0,                        // 0 means no limit
-			MaxSizeEpisodeGB: 0,                        // 0 means no limit
-			HDRDVPolicy:      HDRDVPolicyIncludeHDRDV,  // "hdr_dv" = allow all content (no HDR/DV filtering)
-			PrioritizeHdr:    true,                     // true = prioritize HDR/DV content when available
+			MaxSizeMovieGB:   0,                       // 0 means no limit
+			MaxSizeEpisodeGB: 0,                       // 0 means no limit
+			HDRDVPolicy:      HDRDVPolicyIncludeHDRDV, // "hdr_dv" = allow all content (no HDR/DV filtering)
+			PrioritizeHdr:    true,                    // true = prioritize HDR/DV content when available
 		},
 		AnimeFiltering: AnimeFilteringSettings{},
 		UI: UISettings{
@@ -991,6 +992,9 @@ func (m *Manager) Load() (Settings, error) {
 	// Backfill Live settings
 	if s.Live.PlaylistCacheTTLHours == 0 {
 		s.Live.PlaylistCacheTTLHours = 24
+	}
+	if s.Live.MaxStreams < 0 {
+		s.Live.MaxStreams = 0
 	}
 	// Backfill Mode to "m3u" for backward compatibility
 	if s.Live.Mode == "" {

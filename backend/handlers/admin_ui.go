@@ -1,8 +1,8 @@
 package handlers
 
 import (
-	"bytes"
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
@@ -38,9 +38,9 @@ import (
 	"novastream/services/plex"
 	"novastream/services/sessions"
 	"novastream/services/trakt"
-	"novastream/services/watchlist"
 	user_settings "novastream/services/user_settings"
 	"novastream/services/users"
+	"novastream/services/watchlist"
 )
 
 //go:embed admin_templates/*
@@ -341,7 +341,7 @@ var SettingsSchema = map[string]interface{}{
 			"prioritizeHdr":                    map[string]interface{}{"type": "boolean", "label": "Prioritize HDR", "description": "Prioritize HDR/DV content in results"},
 			"filterOutTerms":                   map[string]interface{}{"type": "tags", "label": "Filter Out Terms", "description": "Terms to exclude from results (case-insensitive substring match; wrap in /slashes/ for regex, e.g. /\\bDUB\\b/)"},
 			"preferredTerms":                   map[string]interface{}{"type": "tags", "label": "Preferred Terms", "description": "Terms to prioritize in results (case-insensitive substring match, ranked higher; wrap in /slashes/ for regex)"},
-			"nonPreferredTerms":               map[string]interface{}{"type": "tags", "label": "Non-Preferred Terms", "description": "Terms to derank in results (case-insensitive substring match, ranked lower but not removed; wrap in /slashes/ for regex)"},
+			"nonPreferredTerms":                map[string]interface{}{"type": "tags", "label": "Non-Preferred Terms", "description": "Terms to derank in results (case-insensitive substring match, ranked lower but not removed; wrap in /slashes/ for regex)"},
 			"bypassFilteringForAioStreamsOnly": map[string]interface{}{"type": "boolean", "label": "Bypass Filtering for AIOStreams Only", "description": "Skip mediastorm filtering/ranking when AIOStreams is the only enabled scraper in debrid-only mode (use AIOStreams' own ranking). Does not apply in hybrid mode with usenet."},
 		},
 	},
@@ -396,22 +396,23 @@ var SettingsSchema = map[string]interface{}{
 		"order":    2,
 		"testable": true,
 		"fields": map[string]interface{}{
-			"mode":                         map[string]interface{}{"type": "select", "label": "Source Type", "options": []map[string]string{{"value": "m3u", "label": "M3U Playlist URL"}, {"value": "xtream", "label": "Xtream Codes"}}, "description": "How to source the IPTV playlist", "order": 0},
-			"playlistUrl":                  map[string]interface{}{"type": "text", "label": "Playlist URL", "description": "M3U playlist URL", "showWhen": map[string]interface{}{"field": "mode", "value": "m3u"}, "order": 1},
-			"xtreamHost":                   map[string]interface{}{"type": "text", "label": "Server URL", "description": "Xtream Codes server URL (e.g., http://example.com:8080)", "placeholder": "http://example.com:8080", "showWhen": map[string]interface{}{"field": "mode", "value": "xtream"}, "order": 2},
-			"xtreamUsername":               map[string]interface{}{"type": "text", "label": "Username", "description": "Xtream Codes username", "showWhen": map[string]interface{}{"field": "mode", "value": "xtream"}, "order": 3},
-			"xtreamPassword":               map[string]interface{}{"type": "password", "label": "Password", "description": "Xtream Codes password", "showWhen": map[string]interface{}{"field": "mode", "value": "xtream"}, "order": 4},
-			"playlistCacheTtlHours":        map[string]interface{}{"type": "number", "label": "Cache TTL (hours)", "description": "Playlist cache duration", "order": 5},
-			"probeSizeMb":                  map[string]interface{}{"type": "number", "label": "Probe Size (MB)", "description": "FFmpeg probesize for stream analysis (0 = default ~5MB). Higher values improve stability but increase initial buffering.", "order": 6},
-			"analyzeDurationSec":           map[string]interface{}{"type": "number", "label": "Analyze Duration (sec)", "description": "FFmpeg analyzeduration in seconds (0 = default ~5s). Higher values help with problematic streams.", "order": 7},
-			"lowLatency":                   map[string]interface{}{"type": "boolean", "label": "Low Latency Mode", "description": "Reduce buffering for lower latency (may cause instability with poor connections)", "order": 8},
-			"filtering.enabledCategories": map[string]interface{}{"type": "multiselect", "label": "Enabled Categories", "description": "Only show channels in these categories (empty = show all)", "optionsEndpoint": "/live/categories", "order": 9},
-			"filtering.maxChannels":       map[string]interface{}{"type": "number", "label": "Max Total Channels", "description": "Overall channel limit (0 = no limit)", "order": 10},
+			"mode":                        map[string]interface{}{"type": "select", "label": "Source Type", "options": []map[string]string{{"value": "m3u", "label": "M3U Playlist URL"}, {"value": "xtream", "label": "Xtream Codes"}}, "description": "How to source the IPTV playlist", "order": 0},
+			"playlistUrl":                 map[string]interface{}{"type": "text", "label": "Playlist URL", "description": "M3U playlist URL", "showWhen": map[string]interface{}{"field": "mode", "value": "m3u"}, "order": 1},
+			"xtreamHost":                  map[string]interface{}{"type": "text", "label": "Server URL", "description": "Xtream Codes server URL (e.g., http://example.com:8080)", "placeholder": "http://example.com:8080", "showWhen": map[string]interface{}{"field": "mode", "value": "xtream"}, "order": 2},
+			"xtreamUsername":              map[string]interface{}{"type": "text", "label": "Username", "description": "Xtream Codes username", "showWhen": map[string]interface{}{"field": "mode", "value": "xtream"}, "order": 3},
+			"xtreamPassword":              map[string]interface{}{"type": "password", "label": "Password", "description": "Xtream Codes password", "showWhen": map[string]interface{}{"field": "mode", "value": "xtream"}, "order": 4},
+			"maxStreams":                  map[string]interface{}{"type": "number", "label": "Max Streams", "description": "Maximum concurrent Live TV streams per provider (0 = unlimited)", "order": 5},
+			"playlistCacheTtlHours":       map[string]interface{}{"type": "number", "label": "Cache TTL (hours)", "description": "Playlist cache duration", "order": 6},
+			"probeSizeMb":                 map[string]interface{}{"type": "number", "label": "Probe Size (MB)", "description": "FFmpeg probesize for stream analysis (0 = default ~5MB). Higher values improve stability but increase initial buffering.", "order": 7},
+			"analyzeDurationSec":          map[string]interface{}{"type": "number", "label": "Analyze Duration (sec)", "description": "FFmpeg analyzeduration in seconds (0 = default ~5s). Higher values help with problematic streams.", "order": 8},
+			"lowLatency":                  map[string]interface{}{"type": "boolean", "label": "Low Latency Mode", "description": "Reduce buffering for lower latency (may cause instability with poor connections)", "order": 9},
+			"filtering.enabledCategories": map[string]interface{}{"type": "multiselect", "label": "Enabled Categories", "description": "Only show channels in these categories (empty = show all)", "optionsEndpoint": "/live/categories", "order": 10},
+			"filtering.maxChannels":       map[string]interface{}{"type": "number", "label": "Max Total Channels", "description": "Overall channel limit (0 = no limit)", "order": 11},
 			// EPG (Electronic Program Guide) settings
-			"epg.enabled":              map[string]interface{}{"type": "boolean", "label": "Enable EPG", "description": "Enable Electronic Program Guide for live TV channels", "order": 11},
-			"epg.xmltvUrl":             map[string]interface{}{"type": "text", "label": "XMLTV URL", "description": "URL to XMLTV EPG data (supports .xml and .xml.gz). For Xtream mode, leave empty to auto-fetch from provider.", "placeholder": "http://example.com/epg.xml.gz", "showWhen": map[string]interface{}{"field": "epg.enabled", "value": true}, "order": 12},
-			"epg.refreshIntervalHours": map[string]interface{}{"type": "number", "label": "EPG Refresh Interval (hours)", "description": "How often to refresh EPG data (default: 12)", "showWhen": map[string]interface{}{"field": "epg.enabled", "value": true}, "order": 13},
-			"epg.retentionDays":        map[string]interface{}{"type": "number", "label": "EPG Retention (days)", "description": "How many days of EPG data to keep (default: 7)", "showWhen": map[string]interface{}{"field": "epg.enabled", "value": true}, "order": 14},
+			"epg.enabled":              map[string]interface{}{"type": "boolean", "label": "Enable EPG", "description": "Enable Electronic Program Guide for live TV channels", "order": 12},
+			"epg.xmltvUrl":             map[string]interface{}{"type": "text", "label": "XMLTV URL", "description": "URL to XMLTV EPG data (supports .xml and .xml.gz). For Xtream mode, leave empty to auto-fetch from provider.", "placeholder": "http://example.com/epg.xml.gz", "showWhen": map[string]interface{}{"field": "epg.enabled", "value": true}, "order": 13},
+			"epg.refreshIntervalHours": map[string]interface{}{"type": "number", "label": "EPG Refresh Interval (hours)", "description": "How often to refresh EPG data (default: 12)", "showWhen": map[string]interface{}{"field": "epg.enabled", "value": true}, "order": 14},
+			"epg.retentionDays":        map[string]interface{}{"type": "number", "label": "EPG Retention (days)", "description": "How many days of EPG data to keep (default: 7)", "showWhen": map[string]interface{}{"field": "epg.enabled", "value": true}, "order": 15},
 		},
 	},
 	"indexers": map[string]interface{}{
@@ -436,15 +437,15 @@ var SettingsSchema = map[string]interface{}{
 		"order":    1,
 		"is_array": true,
 		"fields": map[string]interface{}{
-			"name":    map[string]interface{}{"type": "text", "label": "Name", "description": "Scraper name", "order": 0},
-			"type":    map[string]interface{}{"type": "select", "label": "Type", "options": []string{"torrentio", "jackett", "zilean", "aiostreams", "nyaa", "comet"}, "description": "Scraper type", "order": 1},
-			"options": map[string]interface{}{"type": "text", "label": "Options", "description": "URL options (e.g., sort=qualitysize|qualityfilter=480p,scr,cam)", "showWhen": map[string]interface{}{"field": "type", "value": "torrentio"}, "order": 2, "placeholder": "sort=qualitysize|qualityfilter=480p,scr,cam"},
-			"url":     map[string]interface{}{"type": "text", "label": "URL", "description": "API URL (for AIOStreams/Comet: full Stremio addon URL)", "showWhen": map[string]interface{}{"operator": "or", "conditions": []map[string]interface{}{{"field": "type", "value": "jackett"}, {"field": "type", "value": "zilean"}, {"field": "type", "value": "aiostreams"}, {"field": "type", "value": "comet"}}}, "order": 3},
-			"apiKey":  map[string]interface{}{"type": "password", "label": "API Key", "description": "Jackett API key", "showWhen": map[string]interface{}{"field": "type", "value": "jackett"}, "order": 4},
+			"name":                     map[string]interface{}{"type": "text", "label": "Name", "description": "Scraper name", "order": 0},
+			"type":                     map[string]interface{}{"type": "select", "label": "Type", "options": []string{"torrentio", "jackett", "zilean", "aiostreams", "nyaa", "comet"}, "description": "Scraper type", "order": 1},
+			"options":                  map[string]interface{}{"type": "text", "label": "Options", "description": "URL options (e.g., sort=qualitysize|qualityfilter=480p,scr,cam)", "showWhen": map[string]interface{}{"field": "type", "value": "torrentio"}, "order": 2, "placeholder": "sort=qualitysize|qualityfilter=480p,scr,cam"},
+			"url":                      map[string]interface{}{"type": "text", "label": "URL", "description": "API URL (for AIOStreams/Comet: full Stremio addon URL)", "showWhen": map[string]interface{}{"operator": "or", "conditions": []map[string]interface{}{{"field": "type", "value": "jackett"}, {"field": "type", "value": "zilean"}, {"field": "type", "value": "aiostreams"}, {"field": "type", "value": "comet"}}}, "order": 3},
+			"apiKey":                   map[string]interface{}{"type": "password", "label": "API Key", "description": "Jackett API key", "showWhen": map[string]interface{}{"field": "type", "value": "jackett"}, "order": 4},
 			"config.passthroughFormat": map[string]interface{}{"type": "boolean", "label": "Passthrough Format", "description": "Show raw AIOStreams format in manual selection (emoji-formatted details)", "showWhen": map[string]interface{}{"field": "type", "value": "aiostreams"}, "order": 5},
-			"config.category": map[string]interface{}{"type": "select", "label": "Category", "options": []string{"1_0", "1_2", "1_3", "1_4"}, "description": "Nyaa category (1_0=All Anime, 1_2=English-translated, 1_3=Non-English, 1_4=Raw)", "showWhen": map[string]interface{}{"field": "type", "value": "nyaa"}, "order": 6},
-			"config.filter": map[string]interface{}{"type": "select", "label": "Filter", "options": []string{"0", "1", "2"}, "description": "Nyaa filter (0=All, 1=No remakes, 2=Trusted only)", "showWhen": map[string]interface{}{"field": "type", "value": "nyaa"}, "order": 7},
-			"enabled": map[string]interface{}{"type": "boolean", "label": "Enabled", "description": "Enable this scraper", "order": 8},
+			"config.category":          map[string]interface{}{"type": "select", "label": "Category", "options": []string{"1_0", "1_2", "1_3", "1_4"}, "description": "Nyaa category (1_0=All Anime, 1_2=English-translated, 1_3=Non-English, 1_4=Raw)", "showWhen": map[string]interface{}{"field": "type", "value": "nyaa"}, "order": 6},
+			"config.filter":            map[string]interface{}{"type": "select", "label": "Filter", "options": []string{"0", "1", "2"}, "description": "Nyaa filter (0=All, 1=No remakes, 2=Trusted only)", "showWhen": map[string]interface{}{"field": "type", "value": "nyaa"}, "order": 7},
+			"enabled":                  map[string]interface{}{"type": "boolean", "label": "Enabled", "description": "Enable this scraper", "order": 8},
 		},
 	},
 	"playback": map[string]interface{}{
@@ -714,48 +715,54 @@ var SettingsSchema = map[string]interface{}{
 				"order":       4,
 				"showWhen":    map[string]interface{}{"field": "mode", "value": "xtream"},
 			},
+			"maxStreams": map[string]interface{}{
+				"type":        "number",
+				"label":       "Max Streams",
+				"description": "Maximum concurrent Live TV streams per provider (0 = unlimited)",
+				"order":       5,
+			},
 			"playlistCacheTtlHours": map[string]interface{}{
 				"type":        "number",
 				"label":       "Cache TTL (hours)",
 				"description": "Playlist cache duration",
-				"order":       5,
+				"order":       6,
 			},
 			"probeSizeMb": map[string]interface{}{
 				"type":        "number",
 				"label":       "Probe Size (MB)",
 				"description": "FFmpeg probesize for stream analysis (0 = default ~5MB). Higher values improve stability but increase initial buffering.",
-				"order":       6,
+				"order":       7,
 			},
 			"analyzeDurationSec": map[string]interface{}{
 				"type":        "number",
 				"label":       "Analyze Duration (sec)",
 				"description": "FFmpeg analyzeduration in seconds (0 = default ~5s). Higher values help with problematic streams.",
-				"order":       7,
+				"order":       8,
 			},
 			"lowLatency": map[string]interface{}{
 				"type":        "boolean",
 				"label":       "Low Latency Mode",
 				"description": "Reduce buffering for lower latency (may cause instability with poor connections)",
-				"order":       8,
+				"order":       9,
 			},
 			"filtering.enabledCategories": map[string]interface{}{
-				"type":             "multiselect",
-				"label":            "Enabled Categories",
+				"type":            "multiselect",
+				"label":           "Enabled Categories",
 				"description":     "Only show channels in these categories (empty = show all)",
 				"optionsEndpoint": "/live/categories",
-				"order":           9,
+				"order":           10,
 			},
 			"filtering.maxChannels": map[string]interface{}{
 				"type":        "number",
 				"label":       "Max Total Channels",
 				"description": "Overall channel limit (0 = no limit)",
-				"order":       10,
+				"order":       11,
 			},
 			"epg.enabled": map[string]interface{}{
 				"type":        "boolean",
 				"label":       "Enable EPG",
 				"description": "Enable Electronic Program Guide for live TV channels",
-				"order":       11,
+				"order":       12,
 			},
 			"epg.xmltvUrl": map[string]interface{}{
 				"type":        "text",
@@ -763,21 +770,21 @@ var SettingsSchema = map[string]interface{}{
 				"description": "URL to XMLTV EPG data (supports .xml and .xml.gz). For Xtream mode, leave empty to auto-fetch from provider.",
 				"placeholder": "http://example.com/epg.xml.gz",
 				"showWhen":    map[string]interface{}{"field": "epg.enabled", "value": true},
-				"order":       12,
+				"order":       13,
 			},
 			"epg.refreshIntervalHours": map[string]interface{}{
 				"type":        "number",
 				"label":       "EPG Refresh Interval (hours)",
 				"description": "How often to refresh EPG data (default: 12)",
 				"showWhen":    map[string]interface{}{"field": "epg.enabled", "value": true},
-				"order":       13,
+				"order":       14,
 			},
 			"epg.retentionDays": map[string]interface{}{
 				"type":        "number",
 				"label":       "EPG Retention (days)",
 				"description": "How many days of EPG data to keep (default: 7)",
 				"showWhen":    map[string]interface{}{"field": "epg.enabled", "value": true},
-				"order":       14,
+				"order":       15,
 			},
 		},
 	},
@@ -1014,12 +1021,12 @@ func NewAdminUIHandler(settingsPath, logFile string, hlsManager *HLSManager, use
 		prequeueTemplate:     createPageTemplate("prequeue.html"),
 		settingsPath:         settingsPath,
 		logFile:              logFile,
-		hlsManager:          hlsManager,
-		usersService:        usersService,
-		userSettingsService: userSettingsService,
-		configManager:       configManager,
-		plexClient:          plex.NewClient(plex.GenerateClientID()),
-		traktClient:         trakt.NewClient("", ""), // Will be updated with credentials from settings
+		hlsManager:           hlsManager,
+		usersService:         usersService,
+		userSettingsService:  userSettingsService,
+		configManager:        configManager,
+		plexClient:           plex.NewClient(plex.GenerateClientID()),
+		traktClient:          trakt.NewClient("", ""), // Will be updated with credentials from settings
 	}
 }
 
@@ -1178,9 +1185,9 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 	now := time.Now()
 
 	// Get allowed profile IDs for this account (for filtering)
+	scopedUsers := h.getScopedUsers(isAdmin, accountID)
 	allowedProfileIDs := make(map[string]bool)
 	if !isAdmin {
-		scopedUsers := h.getScopedUsers(isAdmin, accountID)
 		for _, u := range scopedUsers {
 			allowedProfileIDs[u.ID] = true
 		}
@@ -1448,9 +1455,14 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 		streams = append(streams, streamData)
 	}
 
+	liveUsage, liveUsageByUser, liveUsageBuckets := h.buildDashboardLiveUsage(isAdmin, scopedUsers, allowedProfileIDs)
+
 	return json.Marshal(map[string]interface{}{
-		"streams":     streams,
-		"server_time": now.UTC(),
+		"streams":          streams,
+		"server_time":      now.UTC(),
+		"liveUsage":        liveUsage,
+		"liveUsageByUser":  liveUsageByUser,
+		"liveUsageBuckets": liveUsageBuckets,
 	})
 }
 
@@ -2896,22 +2908,22 @@ type TestDebridProviderRequest struct {
 
 // ProfileWithPinStatus represents a profile with its PIN status
 type ProfileWithPinStatus struct {
-	ID               string    `json:"id"`
-	AccountID        string    `json:"accountId,omitempty"`
-	Name             string    `json:"name"`
-	Color            string    `json:"color,omitempty"`
-	IconURL          string    `json:"iconUrl,omitempty"`
-	HasPin           bool      `json:"hasPin"`
-	HasIcon          bool      `json:"hasIcon"`
-	IsKidsProfile    bool      `json:"isKidsProfile"`
-	KidsMode         string    `json:"kidsMode,omitempty"`
+	ID                 string    `json:"id"`
+	AccountID          string    `json:"accountId,omitempty"`
+	Name               string    `json:"name"`
+	Color              string    `json:"color,omitempty"`
+	IconURL            string    `json:"iconUrl,omitempty"`
+	HasPin             bool      `json:"hasPin"`
+	HasIcon            bool      `json:"hasIcon"`
+	IsKidsProfile      bool      `json:"isKidsProfile"`
+	KidsMode           string    `json:"kidsMode,omitempty"`
 	KidsMaxRating      string    `json:"kidsMaxRating,omitempty"`
 	KidsMaxMovieRating string    `json:"kidsMaxMovieRating,omitempty"`
 	KidsMaxTVRating    string    `json:"kidsMaxTVRating,omitempty"`
 	KidsAllowedLists   []string  `json:"kidsAllowedLists,omitempty"`
-	TraktAccountID   string    `json:"traktAccountId,omitempty"`
-	CreatedAt        time.Time `json:"createdAt"`
-	UpdatedAt        time.Time `json:"updatedAt"`
+	TraktAccountID     string    `json:"traktAccountId,omitempty"`
+	CreatedAt          time.Time `json:"createdAt"`
+	UpdatedAt          time.Time `json:"updatedAt"`
 }
 
 // GetProfiles returns all profiles with their PIN status (for admin dashboard)
@@ -2928,22 +2940,22 @@ func (h *AdminUIHandler) GetProfiles(w http.ResponseWriter, r *http.Request) {
 	profiles := make([]ProfileWithPinStatus, len(users))
 	for i, u := range users {
 		profiles[i] = ProfileWithPinStatus{
-			ID:               u.ID,
-			AccountID:        u.AccountID,
-			Name:             u.Name,
-			Color:            u.Color,
-			IconURL:          u.IconURL,
-			HasPin:           u.HasPin(),
-			HasIcon:          u.HasIcon(),
-			IsKidsProfile:    u.IsKidsProfile,
-			KidsMode:         u.KidsMode,
+			ID:                 u.ID,
+			AccountID:          u.AccountID,
+			Name:               u.Name,
+			Color:              u.Color,
+			IconURL:            u.IconURL,
+			HasPin:             u.HasPin(),
+			HasIcon:            u.HasIcon(),
+			IsKidsProfile:      u.IsKidsProfile,
+			KidsMode:           u.KidsMode,
 			KidsMaxRating:      u.KidsMaxRating,
 			KidsMaxMovieRating: u.KidsMaxMovieRating,
 			KidsMaxTVRating:    u.KidsMaxTVRating,
 			KidsAllowedLists:   u.KidsAllowedLists,
-			TraktAccountID:   u.TraktAccountID,
-			CreatedAt:        u.CreatedAt,
-			UpdatedAt:        u.UpdatedAt,
+			TraktAccountID:     u.TraktAccountID,
+			CreatedAt:          u.CreatedAt,
+			UpdatedAt:          u.UpdatedAt,
 		}
 	}
 
@@ -2989,20 +3001,20 @@ func (h *AdminUIHandler) SetProfilePin(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(ProfileWithPinStatus{
-		ID:               user.ID,
-		Name:             user.Name,
-		Color:            user.Color,
-		IconURL:          user.IconURL,
-		HasPin:           user.HasPin(),
-		HasIcon:          user.HasIcon(),
-		IsKidsProfile:    user.IsKidsProfile,
-		KidsMode:         user.KidsMode,
+		ID:                 user.ID,
+		Name:               user.Name,
+		Color:              user.Color,
+		IconURL:            user.IconURL,
+		HasPin:             user.HasPin(),
+		HasIcon:            user.HasIcon(),
+		IsKidsProfile:      user.IsKidsProfile,
+		KidsMode:           user.KidsMode,
 		KidsMaxRating:      user.KidsMaxRating,
 		KidsMaxMovieRating: user.KidsMaxMovieRating,
 		KidsMaxTVRating:    user.KidsMaxTVRating,
 		KidsAllowedLists:   user.KidsAllowedLists,
-		CreatedAt:        user.CreatedAt,
-		UpdatedAt:        user.UpdatedAt,
+		CreatedAt:          user.CreatedAt,
+		UpdatedAt:          user.UpdatedAt,
 	})
 }
 
@@ -3031,20 +3043,20 @@ func (h *AdminUIHandler) ClearProfilePin(w http.ResponseWriter, r *http.Request)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(ProfileWithPinStatus{
-		ID:               user.ID,
-		Name:             user.Name,
-		Color:            user.Color,
-		IconURL:          user.IconURL,
-		HasPin:           user.HasPin(),
-		HasIcon:          user.HasIcon(),
-		IsKidsProfile:    user.IsKidsProfile,
-		KidsMode:         user.KidsMode,
+		ID:                 user.ID,
+		Name:               user.Name,
+		Color:              user.Color,
+		IconURL:            user.IconURL,
+		HasPin:             user.HasPin(),
+		HasIcon:            user.HasIcon(),
+		IsKidsProfile:      user.IsKidsProfile,
+		KidsMode:           user.KidsMode,
 		KidsMaxRating:      user.KidsMaxRating,
 		KidsMaxMovieRating: user.KidsMaxMovieRating,
 		KidsMaxTVRating:    user.KidsMaxTVRating,
 		KidsAllowedLists:   user.KidsAllowedLists,
-		CreatedAt:        user.CreatedAt,
-		UpdatedAt:        user.UpdatedAt,
+		CreatedAt:          user.CreatedAt,
+		UpdatedAt:          user.UpdatedAt,
 	})
 }
 
@@ -3098,21 +3110,21 @@ func (h *AdminUIHandler) CreateProfile(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(ProfileWithPinStatus{
-		ID:               user.ID,
-		AccountID:        user.AccountID,
-		Name:             user.Name,
-		Color:            user.Color,
-		IconURL:          user.IconURL,
-		HasPin:           user.HasPin(),
-		HasIcon:          user.HasIcon(),
-		IsKidsProfile:    user.IsKidsProfile,
-		KidsMode:         user.KidsMode,
+		ID:                 user.ID,
+		AccountID:          user.AccountID,
+		Name:               user.Name,
+		Color:              user.Color,
+		IconURL:            user.IconURL,
+		HasPin:             user.HasPin(),
+		HasIcon:            user.HasIcon(),
+		IsKidsProfile:      user.IsKidsProfile,
+		KidsMode:           user.KidsMode,
 		KidsMaxRating:      user.KidsMaxRating,
 		KidsMaxMovieRating: user.KidsMaxMovieRating,
 		KidsMaxTVRating:    user.KidsMaxTVRating,
 		KidsAllowedLists:   user.KidsAllowedLists,
-		CreatedAt:        user.CreatedAt,
-		UpdatedAt:        user.UpdatedAt,
+		CreatedAt:          user.CreatedAt,
+		UpdatedAt:          user.UpdatedAt,
 	})
 }
 
@@ -3154,20 +3166,20 @@ func (h *AdminUIHandler) RenameProfile(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(ProfileWithPinStatus{
-		ID:               user.ID,
-		Name:             user.Name,
-		Color:            user.Color,
-		IconURL:          user.IconURL,
-		HasPin:           user.HasPin(),
-		HasIcon:          user.HasIcon(),
-		IsKidsProfile:    user.IsKidsProfile,
-		KidsMode:         user.KidsMode,
+		ID:                 user.ID,
+		Name:               user.Name,
+		Color:              user.Color,
+		IconURL:            user.IconURL,
+		HasPin:             user.HasPin(),
+		HasIcon:            user.HasIcon(),
+		IsKidsProfile:      user.IsKidsProfile,
+		KidsMode:           user.KidsMode,
 		KidsMaxRating:      user.KidsMaxRating,
 		KidsMaxMovieRating: user.KidsMaxMovieRating,
 		KidsMaxTVRating:    user.KidsMaxTVRating,
 		KidsAllowedLists:   user.KidsAllowedLists,
-		CreatedAt:        user.CreatedAt,
-		UpdatedAt:        user.UpdatedAt,
+		CreatedAt:          user.CreatedAt,
+		UpdatedAt:          user.UpdatedAt,
 	})
 }
 
@@ -3236,20 +3248,20 @@ func (h *AdminUIHandler) SetProfileColor(w http.ResponseWriter, r *http.Request)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(ProfileWithPinStatus{
-		ID:               user.ID,
-		Name:             user.Name,
-		Color:            user.Color,
-		IconURL:          user.IconURL,
-		HasPin:           user.HasPin(),
-		HasIcon:          user.HasIcon(),
-		IsKidsProfile:    user.IsKidsProfile,
-		KidsMode:         user.KidsMode,
+		ID:                 user.ID,
+		Name:               user.Name,
+		Color:              user.Color,
+		IconURL:            user.IconURL,
+		HasPin:             user.HasPin(),
+		HasIcon:            user.HasIcon(),
+		IsKidsProfile:      user.IsKidsProfile,
+		KidsMode:           user.KidsMode,
 		KidsMaxRating:      user.KidsMaxRating,
 		KidsMaxMovieRating: user.KidsMaxMovieRating,
 		KidsMaxTVRating:    user.KidsMaxTVRating,
 		KidsAllowedLists:   user.KidsAllowedLists,
-		CreatedAt:        user.CreatedAt,
-		UpdatedAt:        user.UpdatedAt,
+		CreatedAt:          user.CreatedAt,
+		UpdatedAt:          user.UpdatedAt,
 	})
 }
 
@@ -3289,20 +3301,20 @@ func (h *AdminUIHandler) SetKidsProfile(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(ProfileWithPinStatus{
-		ID:               user.ID,
-		Name:             user.Name,
-		Color:            user.Color,
-		IconURL:          user.IconURL,
-		HasPin:           user.HasPin(),
-		HasIcon:          user.HasIcon(),
-		IsKidsProfile:    user.IsKidsProfile,
-		KidsMode:         user.KidsMode,
+		ID:                 user.ID,
+		Name:               user.Name,
+		Color:              user.Color,
+		IconURL:            user.IconURL,
+		HasPin:             user.HasPin(),
+		HasIcon:            user.HasIcon(),
+		IsKidsProfile:      user.IsKidsProfile,
+		KidsMode:           user.KidsMode,
 		KidsMaxRating:      user.KidsMaxRating,
 		KidsMaxMovieRating: user.KidsMaxMovieRating,
 		KidsMaxTVRating:    user.KidsMaxTVRating,
 		KidsAllowedLists:   user.KidsAllowedLists,
-		CreatedAt:        user.CreatedAt,
-		UpdatedAt:        user.UpdatedAt,
+		CreatedAt:          user.CreatedAt,
+		UpdatedAt:          user.UpdatedAt,
 	})
 }
 
@@ -3344,20 +3356,20 @@ func (h *AdminUIHandler) SetProfileIcon(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(ProfileWithPinStatus{
-		ID:               user.ID,
-		Name:             user.Name,
-		Color:            user.Color,
-		IconURL:          user.IconURL,
-		HasPin:           user.HasPin(),
-		HasIcon:          user.HasIcon(),
-		IsKidsProfile:    user.IsKidsProfile,
-		KidsMode:         user.KidsMode,
+		ID:                 user.ID,
+		Name:               user.Name,
+		Color:              user.Color,
+		IconURL:            user.IconURL,
+		HasPin:             user.HasPin(),
+		HasIcon:            user.HasIcon(),
+		IsKidsProfile:      user.IsKidsProfile,
+		KidsMode:           user.KidsMode,
 		KidsMaxRating:      user.KidsMaxRating,
 		KidsMaxMovieRating: user.KidsMaxMovieRating,
 		KidsMaxTVRating:    user.KidsMaxTVRating,
 		KidsAllowedLists:   user.KidsAllowedLists,
-		CreatedAt:        user.CreatedAt,
-		UpdatedAt:        user.UpdatedAt,
+		CreatedAt:          user.CreatedAt,
+		UpdatedAt:          user.UpdatedAt,
 	})
 }
 
@@ -3386,20 +3398,20 @@ func (h *AdminUIHandler) ClearProfileIcon(w http.ResponseWriter, r *http.Request
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(ProfileWithPinStatus{
-		ID:               user.ID,
-		Name:             user.Name,
-		Color:            user.Color,
-		IconURL:          user.IconURL,
-		HasPin:           user.HasPin(),
-		HasIcon:          user.HasIcon(),
-		IsKidsProfile:    user.IsKidsProfile,
-		KidsMode:         user.KidsMode,
+		ID:                 user.ID,
+		Name:               user.Name,
+		Color:              user.Color,
+		IconURL:            user.IconURL,
+		HasPin:             user.HasPin(),
+		HasIcon:            user.HasIcon(),
+		IsKidsProfile:      user.IsKidsProfile,
+		KidsMode:           user.KidsMode,
 		KidsMaxRating:      user.KidsMaxRating,
 		KidsMaxMovieRating: user.KidsMaxMovieRating,
 		KidsMaxTVRating:    user.KidsMaxTVRating,
 		KidsAllowedLists:   user.KidsAllowedLists,
-		CreatedAt:        user.CreatedAt,
-		UpdatedAt:        user.UpdatedAt,
+		CreatedAt:          user.CreatedAt,
+		UpdatedAt:          user.UpdatedAt,
 	})
 }
 
@@ -3454,20 +3466,20 @@ func (h *AdminUIHandler) UploadProfileIcon(w http.ResponseWriter, r *http.Reques
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(ProfileWithPinStatus{
-		ID:               user.ID,
-		Name:             user.Name,
-		Color:            user.Color,
-		IconURL:          user.IconURL,
-		HasPin:           user.HasPin(),
-		HasIcon:          user.HasIcon(),
-		IsKidsProfile:    user.IsKidsProfile,
-		KidsMode:         user.KidsMode,
+		ID:                 user.ID,
+		Name:               user.Name,
+		Color:              user.Color,
+		IconURL:            user.IconURL,
+		HasPin:             user.HasPin(),
+		HasIcon:            user.HasIcon(),
+		IsKidsProfile:      user.IsKidsProfile,
+		KidsMode:           user.KidsMode,
 		KidsMaxRating:      user.KidsMaxRating,
 		KidsMaxMovieRating: user.KidsMaxMovieRating,
 		KidsMaxTVRating:    user.KidsMaxTVRating,
 		KidsAllowedLists:   user.KidsAllowedLists,
-		CreatedAt:        user.CreatedAt,
-		UpdatedAt:        user.UpdatedAt,
+		CreatedAt:          user.CreatedAt,
+		UpdatedAt:          user.UpdatedAt,
 	})
 }
 
@@ -4415,11 +4427,11 @@ func (h *AdminUIHandler) TestMDBList(w http.ResponseWriter, r *http.Request) {
 
 // TestLiveTVRequest represents a request to test a Live TV connection
 type TestLiveTVRequest struct {
-	Mode            string `json:"mode"`
-	PlaylistURL     string `json:"playlistUrl"`
-	XtreamHost      string `json:"xtreamHost"`
-	XtreamUsername  string `json:"xtreamUsername"`
-	XtreamPassword  string `json:"xtreamPassword"`
+	Mode           string `json:"mode"`
+	PlaylistURL    string `json:"playlistUrl"`
+	XtreamHost     string `json:"xtreamHost"`
+	XtreamUsername string `json:"xtreamUsername"`
+	XtreamPassword string `json:"xtreamPassword"`
 }
 
 // TestLiveTV tests a Live TV source connection (M3U or Xtream)
@@ -5553,10 +5565,10 @@ func (h *AdminUIHandler) PlexImportWatchlist(w http.ResponseWriter, r *http.Requ
 
 	w.Header().Set("Content-Type", "application/json")
 	response := map[string]interface{}{
-		"success":      errorCount == 0,
-		"imported":     successCount,
-		"failed":       errorCount,
-		"totalItems":   len(req.Items),
+		"success":    errorCount == 0,
+		"imported":   successCount,
+		"failed":     errorCount,
+		"totalItems": len(req.Items),
 	}
 	if len(errors) > 0 {
 		response["errors"] = errors
@@ -6562,33 +6574,33 @@ func (c *cpuTracker) sample() float64 {
 
 // PerformanceMetrics is the JSON payload for the performance page.
 type PerformanceMetrics struct {
-	CPUPercent     float64 `json:"cpuPercent"`
-	NumCPU         int     `json:"numCPU"`
-	NumCgoCall     int64   `json:"numCgoCall"`
-	HeapAlloc      uint64  `json:"heapAlloc"`
-	HeapSys        uint64  `json:"heapSys"`
-	HeapInuse      uint64  `json:"heapInuse"`
-	HeapIdle       uint64  `json:"heapIdle"`
-	HeapReleased   uint64  `json:"heapReleased"`
-	HeapObjects    uint64  `json:"heapObjects"`
-	StackInuse     uint64  `json:"stackInuse"`
-	StackSys       uint64  `json:"stackSys"`
-	MSpanInuse     uint64  `json:"mSpanInuse"`
-	MCacheInuse    uint64  `json:"mCacheInuse"`
-	Sys            uint64  `json:"sys"`
-	TotalAlloc     uint64  `json:"totalAlloc"`
-	NumGC          uint32  `json:"numGC"`
-	LastGC         uint64  `json:"lastGC"`
-	PauseTotalNs   uint64  `json:"pauseTotalNs"`
-	LastPauseNs    uint64  `json:"lastPauseNs"`
-	GCCPUFraction  float64 `json:"gcCPUFraction"`
-	NextGC         uint64  `json:"nextGC"`
-	Goroutines     int     `json:"goroutines"`
-	UptimeSeconds  float64 `json:"uptimeSeconds"`
-	GoVersion      string  `json:"goVersion"`
-	GOOS           string  `json:"goos"`
-	GOARCH         string  `json:"goarch"`
-	OpenFDs        int     `json:"openFDs"`
+	CPUPercent    float64 `json:"cpuPercent"`
+	NumCPU        int     `json:"numCPU"`
+	NumCgoCall    int64   `json:"numCgoCall"`
+	HeapAlloc     uint64  `json:"heapAlloc"`
+	HeapSys       uint64  `json:"heapSys"`
+	HeapInuse     uint64  `json:"heapInuse"`
+	HeapIdle      uint64  `json:"heapIdle"`
+	HeapReleased  uint64  `json:"heapReleased"`
+	HeapObjects   uint64  `json:"heapObjects"`
+	StackInuse    uint64  `json:"stackInuse"`
+	StackSys      uint64  `json:"stackSys"`
+	MSpanInuse    uint64  `json:"mSpanInuse"`
+	MCacheInuse   uint64  `json:"mCacheInuse"`
+	Sys           uint64  `json:"sys"`
+	TotalAlloc    uint64  `json:"totalAlloc"`
+	NumGC         uint32  `json:"numGC"`
+	LastGC        uint64  `json:"lastGC"`
+	PauseTotalNs  uint64  `json:"pauseTotalNs"`
+	LastPauseNs   uint64  `json:"lastPauseNs"`
+	GCCPUFraction float64 `json:"gcCPUFraction"`
+	NextGC        uint64  `json:"nextGC"`
+	Goroutines    int     `json:"goroutines"`
+	UptimeSeconds float64 `json:"uptimeSeconds"`
+	GoVersion     string  `json:"goVersion"`
+	GOOS          string  `json:"goos"`
+	GOARCH        string  `json:"goarch"`
+	OpenFDs       int     `json:"openFDs"`
 }
 
 func buildPerformanceMetrics() PerformanceMetrics {

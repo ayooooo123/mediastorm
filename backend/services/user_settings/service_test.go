@@ -59,6 +59,18 @@ func TestIsSettingsEmpty_WithIPTVXtreamCredentials(t *testing.T) {
 	}
 }
 
+func TestIsSettingsEmpty_WithLiveTVMaxStreams(t *testing.T) {
+	limit := 3
+	s := models.UserSettings{
+		LiveTV: models.LiveTVSettings{
+			MaxStreams: &limit,
+		},
+	}
+	if isSettingsEmpty(s) {
+		t.Error("settings with LiveTV.MaxStreams set should NOT be empty")
+	}
+}
+
 func TestUpdate_PreservesIPTVFields(t *testing.T) {
 	dir := t.TempDir()
 	svc, err := NewService(dir)
@@ -102,5 +114,35 @@ func TestUpdate_PreservesIPTVFields(t *testing.T) {
 	}
 	if len(data) == 0 {
 		t.Fatal("settings file should not be empty")
+	}
+}
+
+func TestUpdate_PreservesLiveTVMaxStreamsOnly(t *testing.T) {
+	dir := t.TempDir()
+	svc, err := NewService(dir)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	limit := 4
+	settings := models.UserSettings{
+		LiveTV: models.LiveTVSettings{
+			MaxStreams: &limit,
+		},
+	}
+
+	if err := svc.Update("profile-2", settings); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	got, err := svc.Get("profile-2")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected settings to be saved, got nil")
+	}
+	if got.LiveTV.MaxStreams == nil || *got.LiveTV.MaxStreams != 4 {
+		t.Fatalf("MaxStreams = %v, want 4", got.LiveTV.MaxStreams)
 	}
 }

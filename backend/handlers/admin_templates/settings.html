@@ -1372,7 +1372,8 @@
                 }).join('');
                 return '<select class="form-select'+invalidClass+'" id="'+id+'" onchange="handleFieldChange(\''+basePath+'\', \''+fieldKey+'\', this.value)">'+options+'</select>';
             case 'number':
-                return '<input type="number" class="form-input'+invalidClass+'" id="'+id+'" value="'+(value || 0)+'" '+isReadonly+' onchange="handleFieldChange(\''+basePath+'\', \''+fieldKey+'\', parseFloat(this.value) || 0)">';
+                const numberValue = (value === undefined || value === null) ? '' : value;
+                return '<input type="number" class="form-input'+invalidClass+'" id="'+id+'" value="'+numberValue+'" '+isReadonly+' onchange="handleNumberFieldChange(\''+basePath+'\', \''+fieldKey+'\', this.value)">';
             case 'password':
                 return '<input type="password" class="form-input'+invalidClass+'" id="'+id+'" value="'+(value || '')+'" '+isReadonly+' onchange="handleFieldChange(\''+basePath+'\', \''+fieldKey+'\', this.value)">';
             case 'tags':
@@ -1419,6 +1420,32 @@
 
         // Re-render to update validation indicators (renderSettings runs validation)
         renderSettings();
+    }
+    function handleNumberFieldChange(basePath, fieldKey, rawValue) {
+        const topKey = (basePath || '').split('.')[0];
+        const isPerUserNumber = selectedUserId && perUserSections.includes(topKey);
+        const trimmed = String(rawValue ?? '').trim();
+
+        // Empty numeric input on profile settings means "inherit" instead of coercing to 0.
+        if (trimmed === '') {
+            handleFieldChange(basePath, fieldKey, isPerUserNumber ? null : 0);
+            return;
+        }
+
+        const parsed = Number(trimmed);
+        if (Number.isNaN(parsed)) {
+            return;
+        }
+
+        handleFieldChange(basePath, fieldKey, parsed);
+    }
+
+    function renderAdditionalFieldHint(sectionKey, fieldKey) {
+        if (fieldKey !== 'maxStreams') return '';
+        if (sectionKey === 'liveTV' && selectedUserId) {
+            return '<p class="form-hint">Leave empty to inherit global.</p>';
+        }
+        return '';
     }
     function handleTagInput(event, basePath, fieldKey) {
         if (event.key === 'Enter' || event.key === ',') {
@@ -2075,7 +2102,7 @@
                 } else {
                     fieldValue = item[fieldKey];
                 }
-                return '<div class="form-group'+(fieldDef.type === 'boolean' ? ' form-group-toggle' : '')+'"><label class="form-label">'+fieldDef.label+'</label>'+renderInput(fieldKey, fieldDef, fieldValue, basePath+'.'+index, sectionKey)+(fieldDef.description ? '<p class="form-hint">'+fieldDef.description+'</p>' : '')+'</div>';
+                return '<div class="form-group'+(fieldDef.type === 'boolean' ? ' form-group-toggle' : '')+'"><label class="form-label">'+fieldDef.label+'</label>'+renderInput(fieldKey, fieldDef, fieldValue, basePath+'.'+index, sectionKey)+(fieldDef.description ? '<p class="form-hint">'+fieldDef.description+'</p>' : '')+renderAdditionalFieldHint(sectionKey, fieldKey)+'</div>';
             }).join('');
             const testBtn = isTestable ? '<button id="test-btn-'+sectionKey+'-'+index+'" class="btn btn-sm btn-secondary" onclick="testProvider(\''+sectionKey+'\', '+index+')"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg> Test</button>' : '';
             let hintHtml = '';
@@ -2948,7 +2975,7 @@
                 const inheritanceClass = (selectedUserId || selectedClientId)
                     ? (inheritanceInfo.isOverridden ? ' field-overridden' : ' field-inherited')
                     : '';
-                return '<div class="form-group'+(fieldDef.type === 'boolean' ? ' form-group-toggle' : '')+invalidClass+inheritanceClass+'"><label class="form-label"><span>'+fieldDef.label+'</span>'+inheritanceBadge+'</label>'+renderInput(fieldKey, fieldDef, fieldValue, sectionKey, sectionKey)+(fieldDef.description ? '<p class="form-hint">'+fieldDef.description+'</p>' : '')+errorHtml+'</div>';
+                return '<div class="form-group'+(fieldDef.type === 'boolean' ? ' form-group-toggle' : '')+invalidClass+inheritanceClass+'"><label class="form-label"><span>'+fieldDef.label+'</span>'+inheritanceBadge+'</label>'+renderInput(fieldKey, fieldDef, fieldValue, sectionKey, sectionKey)+(fieldDef.description ? '<p class="form-hint">'+fieldDef.description+'</p>' : '')+renderAdditionalFieldHint(sectionKey, fieldKey)+errorHtml+'</div>';
             }).join('');
 
         // Add provider priority UI for streaming section

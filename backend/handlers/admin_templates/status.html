@@ -26,24 +26,22 @@
             </svg>
             Active Streams
         </h2>
-        <div style="display: flex; gap: 0.5rem; align-items: center;">
-            <div class="view-toggle" style="display: flex; background: var(--bg-tertiary); border-radius: var(--radius); padding: 2px;">
-                <button id="viewCardBtn" class="view-toggle-btn active" onclick="setStreamView('card')" title="Card View">
-                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-                        <rect x="3" y="3" width="7" height="7" rx="1"/>
-                        <rect x="14" y="3" width="7" height="7" rx="1"/>
-                        <rect x="3" y="14" width="7" height="7" rx="1"/>
-                        <rect x="14" y="14" width="7" height="7" rx="1"/>
-                    </svg>
-                </button>
-                <button id="viewTableBtn" class="view-toggle-btn" onclick="setStreamView('table')" title="Table View">
-                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-                        <line x1="3" y1="6" x2="21" y2="6"/>
-                        <line x1="3" y1="12" x2="21" y2="12"/>
-                        <line x1="3" y1="18" x2="21" y2="18"/>
-                    </svg>
-                </button>
-            </div>
+        <div class="view-toggle" style="display: flex; background: var(--bg-tertiary); border-radius: var(--radius); padding: 2px;">
+            <button id="viewCardBtn" class="view-toggle-btn active" onclick="setStreamView('card')" title="Card View">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="3" width="7" height="7" rx="1"/>
+                    <rect x="14" y="3" width="7" height="7" rx="1"/>
+                    <rect x="3" y="14" width="7" height="7" rx="1"/>
+                    <rect x="14" y="14" width="7" height="7" rx="1"/>
+                </svg>
+            </button>
+            <button id="viewTableBtn" class="view-toggle-btn" onclick="setStreamView('table')" title="Table View">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="3" y1="6" x2="21" y2="6"/>
+                    <line x1="3" y1="12" x2="21" y2="12"/>
+                    <line x1="3" y1="18" x2="21" y2="18"/>
+                </svg>
+            </button>
         </div>
     </div>
     <div class="card-body">
@@ -52,6 +50,41 @@
                 <div class="spinner" style="margin-right: 0.5rem;"></div>
                 Loading streams...
             </div>
+        </div>
+    </div>
+</div>
+
+<!-- Live Stream Buckets -->
+<div class="card" style="margin-bottom: 1.5rem;">
+    <div class="card-header">
+        <h2>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M5 12h14"/>
+                <path d="M12 5v14"/>
+                <circle cx="12" cy="12" r="9"/>
+            </svg>
+            Live Stream Buckets
+        </h2>
+    </div>
+    <div class="card-body">
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Bucket</th>
+                        <th>Provider</th>
+                        <th>Active</th>
+                        <th>Limit</th>
+                        <th>Available</th>
+                        <th>Users</th>
+                    </tr>
+                </thead>
+                <tbody id="liveUsageBucketsBody">
+                    <tr>
+                        <td colspan="6" style="color: var(--text-muted); text-align: center; padding: 1rem;">No live stream buckets active</td>
+                    </tr>
+                </tbody>
+            </table>
         </div>
     </div>
 </div>
@@ -955,6 +988,117 @@
         }
     }
 
+    function renderLiveUsageBuckets(liveUsageBuckets, liveUsageByUser, liveUsage) {
+        const body = document.getElementById('liveUsageBucketsBody');
+        if (!body) return;
+        const buckets = Array.isArray(liveUsageBuckets) ? liveUsageBuckets : [];
+        if (buckets.length > 0) {
+            body.innerHTML = buckets
+                .map((entry) => {
+                    const label = String(entry.label || String(entry.provider || '').toUpperCase() || 'LIVE');
+                    const provider = String(entry.provider || '').toUpperCase();
+                    const current = Number(entry.current || 0);
+                    const max = Number(entry.max || 0);
+                    const available = Number(entry.available || 0);
+                    const users = Array.isArray(entry.users) ? entry.users.join(', ') : '';
+                    const atLimit = !!entry.atLimit;
+                    const value = max > 0 ? `${current}/${max}` : `${current}/∞`;
+                    return `
+                        <tr>
+                            <td>${label}</td>
+                            <td>${provider}</td>
+                            <td>${current}</td>
+                            <td>${max > 0 ? max : '∞'}</td>
+                            <td>${max > 0 ? available : '∞'}</td>
+                            <td style="max-width: 320px; white-space: normal; color: ${atLimit ? '#f87171' : 'var(--text-secondary)'};">${users || '-'}</td>
+                        </tr>
+                    `;
+                })
+                .join('');
+            return;
+        }
+
+        const rows = Array.isArray(liveUsageByUser) ? liveUsageByUser : [];
+        if (rows.length > 0) {
+            const combined = new Map();
+            for (const entry of rows) {
+                const provider = String(entry.provider || '').toUpperCase();
+                const bucket = String(entry.bucket || provider || 'LIVE');
+                const key = `${provider}|${bucket}`;
+                const current = Number(entry.current || 0);
+                const max = Number(entry.max || 0);
+                const available = Number(entry.available || 0);
+                const user = String(entry.user || entry.profileId || 'User');
+
+                if (!combined.has(key)) {
+                    combined.set(key, {
+                        bucket,
+                        provider,
+                        current,
+                        max,
+                        available,
+                        users: new Set([user]),
+                    });
+                    continue;
+                }
+
+                const existing = combined.get(key);
+                existing.current = Math.max(existing.current, current);
+                if (existing.max === 0 || (max > 0 && max < existing.max)) {
+                    existing.max = max;
+                }
+                if (existing.max > 0) {
+                    existing.available = Math.max(0, existing.max - existing.current);
+                } else {
+                    existing.available = available;
+                }
+                existing.users.add(user);
+            }
+
+            body.innerHTML = Array.from(combined.values())
+                .map((entry) => {
+                    const users = Array.from(entry.users).sort().join(', ');
+                    return `
+                        <tr>
+                            <td>${entry.bucket}</td>
+                            <td>${entry.provider}</td>
+                            <td>${entry.current}</td>
+                            <td>${entry.max > 0 ? entry.max : '∞'}</td>
+                            <td>${entry.max > 0 ? entry.available : '∞'}</td>
+                            <td>${users || '-'}</td>
+                        </tr>
+                    `;
+                })
+                .join('');
+            return;
+        }
+
+        const providers = Array.isArray(liveUsage?.providers) ? liveUsage.providers : [];
+        if (providers.length > 0) {
+            body.innerHTML = providers
+            .map((entry) => {
+                const provider = String(entry.provider || '').toUpperCase();
+                const current = Number(entry.current || 0);
+                const max = Number(entry.max || 0);
+                const available = Number(entry.available || 0);
+                return `
+                    <tr>
+                        <td>${provider}</td>
+                        <td>${provider}</td>
+                        <td>${current}</td>
+                        <td>${max > 0 ? max : '∞'}</td>
+                        <td>${max > 0 ? available : '∞'}</td>
+                        <td>-</td>
+                    </tr>
+                `;
+            })
+            .join('');
+            return;
+        }
+
+        body.innerHTML = '<tr><td colspan="6" style="color: var(--text-muted); text-align: center; padding: 1rem;">No live stream buckets active</td></tr>';
+    }
+
     async function refreshStatus() {
         try {
             // Re-test endpoints
@@ -1040,6 +1184,7 @@
 
     function handleStreamUpdate(data) {
         const streams = data.streams || [];
+        renderLiveUsageBuckets(data.liveUsageBuckets, data.liveUsageByUser, data.liveUsage);
         const serverTime = data.server_time ? new Date(data.server_time).getTime() : Date.now();
         const receivedAt = Date.now();
 

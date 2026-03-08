@@ -279,6 +279,8 @@ func Register(
 	protected.HandleFunc("/live/stream", liveHandler.StreamChannel).Methods(http.MethodGet, http.MethodHead)
 	protected.HandleFunc("/live/stream", handleOptions).Methods(http.MethodOptions)
 	protected.HandleFunc("/live/hls/start", videoHandler.StartLiveHLSSession).Methods(http.MethodGet, http.MethodOptions)
+	protected.HandleFunc("/live/usage", videoHandler.GetLiveUsage).Methods(http.MethodGet)
+	protected.HandleFunc("/live/usage", handleOptions).Methods(http.MethodOptions)
 
 	// EPG (Electronic Program Guide) endpoints
 	if epgHandler != nil {
