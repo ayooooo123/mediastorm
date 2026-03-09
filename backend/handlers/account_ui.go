@@ -366,6 +366,11 @@ func (h *AccountUIHandler) GetUserSettings(w http.ResponseWriter, r *http.Reques
 			if globalSettings.Playback.SubtitleSize != 0 {
 				defaults.Playback.SubtitleSize = globalSettings.Playback.SubtitleSize
 			}
+			maxStreams := globalSettings.Live.MaxStreams
+			if maxStreams < 0 {
+				maxStreams = 0
+			}
+			defaults.LiveTV.MaxStreams = &maxStreams
 		}
 	}
 

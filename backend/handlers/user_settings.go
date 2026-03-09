@@ -106,6 +106,10 @@ func (h *UserSettingsHandler) getDefaultsFromGlobal() models.UserSettings {
 	if err != nil {
 		return models.DefaultUserSettings()
 	}
+	maxStreams := globalSettings.Live.MaxStreams
+	if maxStreams < 0 {
+		maxStreams = 0
+	}
 
 	return models.UserSettings{
 		Playback: models.PlaybackSettings{
@@ -136,6 +140,7 @@ func (h *UserSettingsHandler) getDefaultsFromGlobal() models.UserSettings {
 			HiddenChannels:     []string{},
 			FavoriteChannels:   []string{},
 			SelectedCategories: []string{},
+			MaxStreams:         &maxStreams,
 		},
 	}
 }

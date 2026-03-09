@@ -61,14 +61,14 @@ func NewStartupHandler(
 
 // StartupResponse is the combined payload returned by GET /api/users/{userID}/startup.
 type StartupResponse struct {
-	UserSettings          *models.UserSettings     `json:"userSettings"`
-	Watchlist             []models.WatchlistItem   `json:"watchlist"`
-	WatchlistTotal        int                      `json:"watchlistTotal"`
+	UserSettings          *models.UserSettings      `json:"userSettings"`
+	Watchlist             []models.WatchlistItem    `json:"watchlist"`
+	WatchlistTotal        int                       `json:"watchlistTotal"`
 	ContinueWatching      []models.SeriesWatchState `json:"continueWatching"`
-	ContinueWatchingTotal int                      `json:"continueWatchingTotal"`
+	ContinueWatchingTotal int                       `json:"continueWatchingTotal"`
 	WatchHistory          []models.WatchHistoryItem `json:"watchHistory"`
-	TrendingMovies        *DiscoverNewResponse     `json:"trendingMovies"`
-	TrendingSeries        *DiscoverNewResponse     `json:"trendingSeries"`
+	TrendingMovies        *DiscoverNewResponse      `json:"trendingMovies"`
+	TrendingSeries        *DiscoverNewResponse      `json:"trendingSeries"`
 }
 
 // GetStartup returns all initial user data in a single response.
@@ -400,22 +400,22 @@ func slimTrendingItems(items []models.TrendingItem) []models.TrendingItem {
 		slim[i] = models.TrendingItem{
 			Rank: item.Rank,
 			Title: models.Title{
-				ID:             item.Title.ID,
-				Name:           item.Title.Name,
-				OriginalName:   item.Title.OriginalName,
-				Overview:       item.Title.Overview,
-				Year:           item.Title.Year,
-				Language:       item.Title.Language,
-				Poster:         item.Title.Poster,
-				Backdrop:       item.Title.Backdrop,
-				MediaType:      item.Title.MediaType,
-				TVDBID:         item.Title.TVDBID,
-				IMDBID:         item.Title.IMDBID,
-				TMDBID:         item.Title.TMDBID,
-				Theatrical:     item.Title.Theatrical,
-				HomeRelease:    item.Title.HomeRelease,
-				Certification:  item.Title.Certification,
-				Genres:         item.Title.Genres,
+				ID:            item.Title.ID,
+				Name:          item.Title.Name,
+				OriginalName:  item.Title.OriginalName,
+				Overview:      item.Title.Overview,
+				Year:          item.Title.Year,
+				Language:      item.Title.Language,
+				Poster:        item.Title.Poster,
+				Backdrop:      item.Title.Backdrop,
+				MediaType:     item.Title.MediaType,
+				TVDBID:        item.Title.TVDBID,
+				IMDBID:        item.Title.IMDBID,
+				TMDBID:        item.Title.TMDBID,
+				Theatrical:    item.Title.Theatrical,
+				HomeRelease:   item.Title.HomeRelease,
+				Certification: item.Title.Certification,
+				Genres:        item.Title.Genres,
 			},
 		}
 	}
@@ -428,6 +428,10 @@ func (h *StartupHandler) getDefaultsFromGlobal() models.UserSettings {
 	globalSettings, err := h.cfgManager.Load()
 	if err != nil {
 		return models.DefaultUserSettings()
+	}
+	maxStreams := globalSettings.Live.MaxStreams
+	if maxStreams < 0 {
+		maxStreams = 0
 	}
 
 	return models.UserSettings{
@@ -457,7 +461,7 @@ func (h *StartupHandler) getDefaultsFromGlobal() models.UserSettings {
 			HiddenChannels:     []string{},
 			FavoriteChannels:   []string{},
 			SelectedCategories: []string{},
+			MaxStreams:         &maxStreams,
 		},
 	}
 }
-

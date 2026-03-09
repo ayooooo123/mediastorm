@@ -1702,6 +1702,10 @@ func (h *AdminUIHandler) GetUserSettings(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "Failed to load global settings", http.StatusInternalServerError)
 		return
 	}
+	maxStreams := globalSettings.Live.MaxStreams
+	if maxStreams < 0 {
+		maxStreams = 0
+	}
 
 	defaults := models.UserSettings{
 		Playback: models.PlaybackSettings{
@@ -1731,6 +1735,7 @@ func (h *AdminUIHandler) GetUserSettings(w http.ResponseWriter, r *http.Request)
 			HiddenChannels:     []string{},
 			FavoriteChannels:   []string{},
 			SelectedCategories: []string{},
+			MaxStreams:         &maxStreams,
 		},
 		Display: models.DisplaySettings{
 			BadgeVisibility:     globalSettings.Display.BadgeVisibility,
