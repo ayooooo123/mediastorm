@@ -8,6 +8,99 @@ import (
 	"novastream/models"
 )
 
+func TestSanitizeLanguageCode(t *testing.T) {
+	tests := []struct {
+		input, want string
+	}{
+		{"eng", "eng"},
+		{"'eng'", "eng"},
+		{"''", ""},
+		{"  fre  ", "fre"},
+		{"\"jpn\"", "jpn"},
+		{"'fra'", "fra"},
+		{"  'deu'  ", "deu"},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		got := sanitizeLanguageCode(tt.input)
+		if got != tt.want {
+			t.Errorf("sanitizeLanguageCode(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestGetWithDefaults_SanitizesQuotedLanguages(t *testing.T) {
+	dir := t.TempDir()
+	svc, err := NewService(dir)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	// Save settings with stray-quoted language codes
+	settings := models.UserSettings{
+		Playback: models.PlaybackSettings{
+			PreferredAudioLanguage:    "'fre'",
+			PreferredSubtitleLanguage: "''",
+			PreferredSubtitleMode:     "'forced-only'",
+		},
+	}
+	if err := svc.Update("user1", settings); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	// Verify Update sanitized on save
+	raw, _ := svc.Get("user1")
+	if raw.Playback.PreferredAudioLanguage != "fre" {
+		t.Errorf("Update should sanitize: got audioLang=%q, want %q", raw.Playback.PreferredAudioLanguage, "fre")
+	}
+
+	// Verify GetWithDefaults also sanitizes
+	defaults := models.UserSettings{
+		Playback: models.PlaybackSettings{
+			PreferredAudioLanguage: "'eng'",
+		},
+	}
+	got, err := svc.GetWithDefaults("user1", defaults)
+	if err != nil {
+		t.Fatalf("GetWithDefaults: %v", err)
+	}
+	if got.Playback.PreferredAudioLanguage != "fre" {
+		t.Errorf("audioLang = %q, want %q", got.Playback.PreferredAudioLanguage, "fre")
+	}
+	if got.Playback.PreferredSubtitleLanguage != "" {
+		t.Errorf("subLang = %q, want empty (''  should sanitize to empty)", got.Playback.PreferredSubtitleLanguage)
+	}
+	if got.Playback.PreferredSubtitleMode != "forced-only" {
+		t.Errorf("subMode = %q, want %q", got.Playback.PreferredSubtitleMode, "forced-only")
+	}
+}
+
+func TestGetWithDefaults_SanitizesDefaultsFallback(t *testing.T) {
+	dir := t.TempDir()
+	svc, err := NewService(dir)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	// No user settings saved — should fall back to defaults and sanitize them
+	defaults := models.UserSettings{
+		Playback: models.PlaybackSettings{
+			PreferredAudioLanguage:    "'spa'",
+			PreferredSubtitleLanguage: "\"eng\"",
+		},
+	}
+	got, err := svc.GetWithDefaults("no-settings-user", defaults)
+	if err != nil {
+		t.Fatalf("GetWithDefaults: %v", err)
+	}
+	if got.Playback.PreferredAudioLanguage != "spa" {
+		t.Errorf("audioLang = %q, want %q", got.Playback.PreferredAudioLanguage, "spa")
+	}
+	if got.Playback.PreferredSubtitleLanguage != "eng" {
+		t.Errorf("subLang = %q, want %q", got.Playback.PreferredSubtitleLanguage, "eng")
+	}
+}
+
 func TestIsSettingsEmpty_Default(t *testing.T) {
 	if !isSettingsEmpty(models.UserSettings{}) {
 		t.Error("empty UserSettings should be considered empty")

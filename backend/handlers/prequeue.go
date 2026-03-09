@@ -133,6 +133,14 @@ type SubtitlePreExtractor interface {
 	StartPreExtraction(ctx context.Context, path string, tracks []SubtitleTrackInfo, startOffset float64) map[int]*SubtitleExtractSession
 }
 
+// sanitizeLanguageCode strips stray quotes and whitespace from language codes.
+func sanitizeLanguageCode(code string) string {
+	code = strings.TrimSpace(code)
+	code = strings.Trim(code, "'\"")
+	code = strings.TrimSpace(code)
+	return code
+}
+
 // normalizeSubtitleMode maps legacy subtitle mode values to canonical ones.
 func normalizeSubtitleMode(mode string) string {
 	switch mode {
@@ -1086,11 +1094,23 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 			}
 		}
 
+		// Log global defaults for diagnostics
+		log.Printf("[prequeue] Global defaults: audioLang=%q, subLang=%q, subMode=%q",
+			defaults.Playback.PreferredAudioLanguage,
+			defaults.Playback.PreferredSubtitleLanguage,
+			defaults.Playback.PreferredSubtitleMode)
+
 		// Get user settings with global defaults as fallback
 		userSettings, err := h.userSettingsSvc.GetWithDefaults(userID, defaults)
 		if err != nil {
 			log.Printf("[prequeue] Failed to get user settings (non-fatal): %v", err)
 		}
+
+		// Log after user settings merge (before content overrides)
+		log.Printf("[prequeue] After user settings merge: audioLang=%q, subLang=%q, subMode=%q",
+			userSettings.Playback.PreferredAudioLanguage,
+			userSettings.Playback.PreferredSubtitleLanguage,
+			userSettings.Playback.PreferredSubtitleMode)
 
 		// Check for per-content language preferences (overrides user settings)
 		if h.contentPreferencesSvc != nil {
@@ -1100,8 +1120,13 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 				if contentPref, err := h.contentPreferencesSvc.Get(userID, contentID); err == nil && contentPref != nil {
 					log.Printf("[prequeue] Found per-content preference for %s: audioLang=%q, subLang=%q, subMode=%q",
 						contentID, contentPref.AudioLanguage, contentPref.SubtitleLanguage, contentPref.SubtitleMode)
+						// Sanitize content preference values
+					contentPref.AudioLanguage = sanitizeLanguageCode(contentPref.AudioLanguage)
+					contentPref.SubtitleLanguage = sanitizeLanguageCode(contentPref.SubtitleLanguage)
+					contentPref.SubtitleMode = strings.TrimSpace(strings.Trim(contentPref.SubtitleMode, "'\""))
 					// Override user settings with content-specific preferences
 					if contentPref.AudioLanguage != "" {
+						log.Printf("[prequeue] Content preference overriding audioLang: %q -> %q", userSettings.Playback.PreferredAudioLanguage, contentPref.AudioLanguage)
 						userSettings.Playback.PreferredAudioLanguage = contentPref.AudioLanguage
 					}
 					if contentPref.SubtitleLanguage != "" {
