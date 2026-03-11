@@ -461,7 +461,8 @@ var SettingsSchema = map[string]interface{}{
 			"subtitleSize":              map[string]interface{}{"type": "number", "label": "Subtitle Size", "description": "Subtitle size scaling factor (1.0 = default, 0.5 = half, 2.0 = double)", "step": 0.05, "min": 0.25, "max": 3.0},
 			"seekForwardSeconds":        map[string]interface{}{"type": "number", "label": "Skip Forward", "description": "Seconds to skip forward (default 30)", "step": 5, "min": 5, "max": 120},
 			"seekBackwardSeconds":       map[string]interface{}{"type": "number", "label": "Skip Backward", "description": "Seconds to skip backward (default 10)", "step": 5, "min": 5, "max": 120},
-			"useLoadingScreen":          map[string]interface{}{"type": "boolean", "label": "Loading Screen", "description": "Show loading screen during playback init"},
+			// Temporarily hidden: loading screen disabled across the board
+			// "useLoadingScreen":          map[string]interface{}{"type": "boolean", "label": "Loading Screen", "description": "Show loading screen during playback init"},
 			"forceAacTranscoding":       map[string]interface{}{"type": "boolean", "label": "Force AAC Audio Transcoding", "description": "Transcode AC3/EAC3/DTS surround audio to AAC. Enable this if using Bluetooth headphones, as they cannot decode surround codecs directly.", "order": 99},
 			"autoPlayTrailersTV":        map[string]interface{}{"type": "boolean", "label": "Auto-Play Trailers (TV)", "description": "Replace backdrop artwork with playing trailer on TV details pages once loaded", "order": 100},
 			"rewindOnResumeFromPause":   map[string]interface{}{"type": "number", "label": "Rewind on Unpause", "description": "Seconds to rewind when resuming from pause (default 0)", "step": 1, "min": 0, "max": 30},
