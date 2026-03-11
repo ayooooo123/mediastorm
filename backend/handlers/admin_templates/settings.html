@@ -29,7 +29,7 @@
         <select id="userSelector" class="form-select" style="min-width: 180px;" onchange="handleUserChange(this.value)">
             {{if .IsAdmin}}<option value="">Global Defaults</option>{{end}}
             {{range .Users}}
-            <option value="{{.ID}}" data-has-overrides="{{if index $.UserOverrides .ID}}true{{else}}false{{end}}">{{.Name}}{{if index $.UserOverrides .ID}} ●{{end}}</option>
+            <option value="{{.ID}}">{{.Name}}</option>
             {{end}}
         </select>
         <select id="clientSelector" class="form-select" style="min-width: 180px; display: none;" onchange="handleClientChange(this.value)">
@@ -103,6 +103,39 @@
         </div>
         <div class="test-modal-footer">
             <button class="btn btn-secondary" onclick="closeTestModal()">Close</button>
+        </div>
+    </div>
+</div>
+
+<!-- Propagate Prompt Modal -->
+<div id="propagateModal" class="test-modal" onclick="closePropagateModal()">
+    <div class="test-modal-content" onclick="event.stopPropagation()" style="max-width: 480px;">
+        <div class="test-modal-header">
+            <h3>
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 5v14"/><path d="M19 12l-7 7-7-7"/>
+                </svg>
+                <span id="propagateModalTitle">Propagate settings?</span>
+            </h3>
+            <button class="test-modal-close" onclick="closePropagateModal()">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+            </button>
+        </div>
+        <div class="test-modal-body">
+            <p id="propagateModalDesc" style="margin-bottom: 0.75rem; color: var(--text-secondary);"></p>
+            <ul id="propagateTargetList" style="list-style: none; padding: 0; margin: 0 0 1rem 0;"></ul>
+            <p id="propagateModalNote" style="color: var(--text-secondary); font-size: 0.85rem;"></p>
+        </div>
+        <div class="test-modal-footer" style="display: flex; gap: 0.5rem; justify-content: flex-end;">
+            <button class="btn btn-secondary" onclick="closePropagateModal()">Skip</button>
+            <button id="propagateConfirmBtn" class="btn btn-primary" onclick="confirmPropagate()">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 5v14"/><path d="M19 12l-7 7-7-7"/>
+                </svg>
+                Propagate
+            </button>
         </div>
     </div>
 </div>
@@ -375,9 +408,8 @@
 
             // Show client selector if there are clients
             if (clientsForUser.length > 0) {
-                const profileHasOverrides = userOverrides && userOverrides[userId];
-                clientSelector.innerHTML = `<option value="">Profile Defaults${profileHasOverrides ? ' ●' : ''}</option>` +
-                    clientsForUser.map(c => `<option value="${c.id}">${c.name}${c.hasOverrides ? ' ●' : ''}</option>`).join('');
+                clientSelector.innerHTML = `<option value="">Profile Defaults</option>` +
+                    clientsForUser.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
                 clientSelector.style.display = 'block';
             } else {
                 clientSelector.style.display = 'none';
@@ -492,74 +524,138 @@
         }
     }
 
-    // Recalculate hasOverrides for all users on page load
-    // This compares actual values to global defaults, not just record existence
+    // Per-profile override details: { userId: { sectionLabel: [fieldLabel, ...] } }
+    let userOverrideDetails = {};
+
+    // Sections to check for overrides and their global mapping
+    const overrideSections = [
+        { key: 'playback', globalKey: 'playback', label: 'Playback' },
+        { key: 'filtering', globalKey: 'filtering', label: 'Content Filtering' },
+        { key: 'animeFiltering', globalKey: 'animeFiltering', label: 'Anime Language' },
+        { key: 'display', globalKey: 'display', label: 'Display' },
+        { key: 'homeShelves', globalKey: 'homeShelves', label: 'Home Shelves' },
+        { key: 'liveTV', globalKey: 'live', label: 'Live TV' },
+        { key: 'network', globalKey: 'network', label: 'Network' },
+    ];
+
+    // LiveTV fields that are inherently per-user (channel preferences), never overrides
+    const liveTVPerUserFields = new Set(['hiddenChannels', 'favoriteChannels', 'selectedCategories']);
+
+    // Get the field label from schema, falling back to the raw key
+    function getFieldLabel(sectionKey, fieldKey) {
+        const sectionDef = schema[sectionKey];
+        if (!sectionDef || !sectionDef.fields) return fieldKey;
+        const fieldDef = sectionDef.fields[fieldKey];
+        if (!fieldDef) return fieldKey;
+        return fieldDef.label || fieldKey;
+    }
+
+    // Recalculate overrides for all users — fetches each profile's stored settings
+    // and compares field-by-field against global to build detailed override info.
     async function recalculateAllUserOverrides() {
         if (!userOverrides) return;
 
-        const userIds = Object.keys(userOverrides).filter(id => userOverrides[id]);
-        for (const userId of userIds) {
+        userOverrideDetails = {};
+
+        // Collect all user IDs from the dropdown (not just ones previously marked)
+        const userSelector = document.getElementById('userSelector');
+        if (!userSelector) return;
+        const allUserIds = Array.from(userSelector.options)
+            .filter(o => o.value)
+            .map(o => o.value);
+
+        for (const userId of allUserIds) {
             try {
                 const response = await fetch(basePath + '/api/user-settings?userId=' + encodeURIComponent(userId), {
                     credentials: 'same-origin'
                 });
-                if (response.ok) {
-                    const settings = await response.json();
-                    if (!settings || Object.keys(settings).length === 0) {
-                        userOverrides[userId] = false;
+                if (!response.ok) {
+                    userOverrides[userId] = false;
+                    continue;
+                }
+                const settings = await response.json();
+                if (!settings || Object.keys(settings).length === 0) {
+                    userOverrides[userId] = false;
+                    continue;
+                }
+
+                const details = {};
+
+                for (const sec of overrideSections) {
+                    const profileSection = settings[sec.key];
+                    if (!profileSection) continue;
+                    const globalSection = currentSettings[sec.globalKey] || {};
+
+                    // Special case: homeShelves — compare shelves array
+                    if (sec.key === 'homeShelves') {
+                        const profileShelves = profileSection.shelves;
+                        const globalShelves = globalSection.shelves;
+                        if (profileShelves && globalShelves && !shelvesEqual(profileShelves, globalShelves)) {
+                            // Find which shelves differ
+                            const globalById = {};
+                            for (const gs of globalShelves) globalById[gs.id] = gs;
+                            const diffs = [];
+                            for (const ps of profileShelves) {
+                                const gs = globalById[ps.id];
+                                if (!gs) { diffs.push(ps.name + ' (added)'); continue; }
+                                if (!shelfEqual(ps, gs)) diffs.push(ps.name);
+                            }
+                            // Check for removed shelves
+                            const profileIds = new Set(profileShelves.map(s => s.id));
+                            for (const gs of globalShelves) {
+                                if (!profileIds.has(gs.id)) diffs.push(gs.name + ' (removed)');
+                            }
+                            if (diffs.length > 0) details[sec.label] = diffs;
+                        }
+                        // Also check non-shelves fields (e.g. exploreCardPosition)
+                        for (const fieldKey of Object.keys(profileSection)) {
+                            if (fieldKey === 'shelves') continue;
+                            const profileVal = normalizeForComparison(profileSection[fieldKey]);
+                            if (profileVal === null) continue;
+                            const globalVal = normalizeForComparison(globalSection[fieldKey]);
+                            if (!deepEqual(profileVal, globalVal)) {
+                                if (!details[sec.label]) details[sec.label] = [];
+                                details[sec.label].push(getFieldLabel(sec.key, fieldKey));
+                            }
+                        }
                         continue;
                     }
 
-                    // Check all per-user sections for any actual differences
-                    let hasActualOverrides = false;
-
-                    // Check filtering section
-                    if (settings.filtering) {
-                        const globalFiltering = currentSettings.filtering || {};
-                        for (const key of Object.keys(settings.filtering)) {
-                            const profileVal = normalizeForComparison(settings.filtering[key]);
-                            // If profile value is null (empty/inherit), skip - not an override
-                            if (profileVal === null) continue;
-                            const globalVal = normalizeForComparison(globalFiltering[key]);
-                            if (!deepEqual(profileVal, globalVal)) {
-                                hasActualOverrides = true;
-                                break;
-                            }
+                    const diffFields = [];
+                    for (const fieldKey of Object.keys(profileSection)) {
+                        // Skip inherently per-user LiveTV fields
+                        if (sec.key === 'liveTV' && liveTVPerUserFields.has(fieldKey)) continue;
+                        const profileVal = normalizeForComparison(profileSection[fieldKey]);
+                        if (profileVal === null) continue;
+                        const globalVal = normalizeForComparison(globalSection[fieldKey]);
+                        if (!deepEqual(profileVal, globalVal)) {
+                            diffFields.push(getFieldLabel(sec.key, fieldKey));
                         }
                     }
-
-                    // Check playback section
-                    if (!hasActualOverrides && settings.playback) {
-                        const globalPlayback = currentSettings.playback || {};
-                        for (const key of Object.keys(settings.playback)) {
-                            const profileVal = normalizeForComparison(settings.playback[key]);
-                            // If profile value is null (empty/inherit), skip - not an override
-                            if (profileVal === null) continue;
-                            const globalVal = normalizeForComparison(globalPlayback[key]);
-                            if (!deepEqual(profileVal, globalVal)) {
-                                hasActualOverrides = true;
-                                break;
-                            }
-                        }
+                    if (diffFields.length > 0) {
+                        details[sec.label] = diffFields;
                     }
+                }
 
-                    // Check homeShelves section - use lenient comparison for shelves
-                    if (!hasActualOverrides && settings.homeShelves) {
-                        const globalHomeShelves = currentSettings.homeShelves || {};
-                        if (!homeShelvesEqual(settings.homeShelves, globalHomeShelves)) {
-                            hasActualOverrides = true;
-                        }
+                // Check ranking separately (nested structure)
+                if (settings.ranking && settings.ranking.criteria) {
+                    const globalRanking = currentSettings.ranking || {};
+                    const globalCriteria = globalRanking.criteria || [];
+                    const profileCriteria = settings.ranking.criteria;
+                    if (!deepEqual(normalizeForComparison(profileCriteria), normalizeForComparison(globalCriteria))) {
+                        details['Result Ranking'] = ['Ranking criteria'];
                     }
+                }
 
-                    userOverrides[userId] = hasActualOverrides;
-                } else {
-                    userOverrides[userId] = false;
+                const hasOverrides = Object.keys(details).length > 0;
+                userOverrides[userId] = hasOverrides;
+                if (hasOverrides) {
+                    userOverrideDetails[userId] = details;
                 }
             } catch (e) {
                 console.warn('Failed to load settings for user', userId, e);
             }
         }
-        updateUserDropdownIndicators();
     }
 
     async function handleClientChange(clientId) {
@@ -797,41 +893,180 @@
         }
     }
 
-    // Update the user dropdown to show/hide override indicators
-    function updateUserDropdownIndicators() {
+    // Track which propagation level the modal is showing for
+    let propagateLevel = ''; // 'global' or 'profile'
+    let propagateUserId = ''; // userId when propagating at profile level
+
+    // After saving global settings, check which profiles have overrides and prompt to propagate
+    async function promptPropagateIfNeeded() {
+        if (!isAdmin || !userOverrides) return;
+
+        // Recalculate which profiles actually have overrides against the new global values
+        await recalculateAllUserOverrides();
+
+        // Build list of profiles with actual overrides
+        const profilesWithOverrides = [];
         const userSelector = document.getElementById('userSelector');
         if (!userSelector) return;
 
         Array.from(userSelector.options).forEach(option => {
-            if (!option.value) return; // Skip "Global Defaults" option
-            const hasOverride = userOverrides && userOverrides[option.value];
-            const currentText = option.text.replace(/ ●$/, ''); // Remove existing indicator
-            option.text = hasOverride ? currentText + ' ●' : currentText;
-            option.dataset.hasOverrides = hasOverride ? 'true' : 'false';
-        });
-    }
-
-    // Update the client dropdown to show/hide override indicators
-    function updateClientDropdownIndicators() {
-        const clientSelector = document.getElementById('clientSelector');
-        if (!clientSelector) return;
-
-        // Update "Profile Defaults" option
-        const profileDefaultsOption = clientSelector.querySelector('option[value=""]');
-        if (profileDefaultsOption && selectedUserId) {
-            const profileHasOverrides = userOverrides && userOverrides[selectedUserId];
-            profileDefaultsOption.text = profileHasOverrides ? 'Profile Defaults ●' : 'Profile Defaults';
-        }
-
-        // Update individual client options
-        clientsForUser.forEach(client => {
-            const option = clientSelector.querySelector(`option[value="${client.id}"]`);
-            if (option) {
-                const currentText = option.text.replace(/ ●$/, '');
-                option.text = client.hasOverrides ? currentText + ' ●' : currentText;
+            if (!option.value) return;
+            if (userOverrides[option.value]) {
+                profilesWithOverrides.push({
+                    id: option.value,
+                    name: option.text.trim(),
+                    details: userOverrideDetails[option.value] || {}
+                });
             }
         });
+
+        if (profilesWithOverrides.length === 0) return;
+
+        // Configure modal for global→profiles propagation
+        propagateLevel = 'global';
+        propagateUserId = '';
+        document.getElementById('propagateModalTitle').textContent = 'Propagate to profiles?';
+        document.getElementById('propagateModalDesc').textContent =
+            'These profiles have overrides that differ from the new global settings. Select which to overwrite:';
+        document.getElementById('propagateModalNote').textContent =
+            'Selected profiles will have their settings overwritten with the current global values and their client-level overrides cleared.';
+
+        const list = document.getElementById('propagateTargetList');
+        list.innerHTML = profilesWithOverrides.map(p => {
+            const detailHtml = Object.entries(p.details).map(([section, fields]) =>
+                `<span style="display:inline-block;background:var(--bg-tertiary);padding:0.15rem 0.4rem;border-radius:3px;font-size:0.75rem;margin:0.15rem 0.1rem;">${section}: ${fields.join(', ')}</span>`
+            ).join(' ');
+            return `<li style="padding: 0.5rem 0.6rem; margin-bottom: 0.35rem; background: var(--bg-secondary); border-radius: var(--radius);">
+                <label style="display: flex; align-items: flex-start; gap: 0.5rem; cursor: pointer; margin: 0;">
+                    <input type="checkbox" class="propagate-check" value="${p.id}" checked style="margin-top: 0.2rem; flex-shrink: 0;">
+                    <div style="min-width: 0;">
+                        <div style="font-weight: 500;">${p.name}</div>
+                        <div style="margin-top: 0.25rem; line-height: 1.6;">${detailHtml}</div>
+                    </div>
+                </label>
+            </li>`;
+        }).join('');
+
+        document.getElementById('propagateModal').classList.add('visible');
     }
+
+    // After saving profile settings, check which clients have overrides and prompt to propagate
+    async function promptPropagateClientsIfNeeded() {
+        if (!selectedUserId) return;
+
+        // Reload clients and recalculate their override status
+        await loadClientsForUser(selectedUserId);
+
+        const clientsWithOverrides = clientsForUser.filter(c => c.hasOverrides);
+        if (clientsWithOverrides.length === 0) return;
+
+        // Configure modal for profile→clients propagation
+        propagateLevel = 'profile';
+        propagateUserId = selectedUserId;
+        document.getElementById('propagateModalTitle').textContent = 'Propagate to devices?';
+        document.getElementById('propagateModalDesc').textContent =
+            'These devices have custom overrides that differ from this profile\u2019s settings. Select which to reset:';
+        document.getElementById('propagateModalNote').textContent =
+            'Selected devices will have their filter overrides cleared so they inherit from the profile.';
+
+        const list = document.getElementById('propagateTargetList');
+        list.innerHTML = clientsWithOverrides.map(c =>
+            `<li style="padding: 0.5rem 0.6rem; margin-bottom: 0.35rem; background: var(--bg-secondary); border-radius: var(--radius);">
+                <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; margin: 0;">
+                    <input type="checkbox" class="propagate-check" value="${c.id}" checked style="flex-shrink: 0;">
+                    <span style="font-weight: 500;">${c.name || c.deviceType || c.id}</span>
+                </label>
+            </li>`
+        ).join('');
+
+        document.getElementById('propagateModal').classList.add('visible');
+    }
+
+    function closePropagateModal() {
+        document.getElementById('propagateModal').classList.remove('visible');
+    }
+
+    async function confirmPropagate() {
+        const checkedIds = Array.from(document.querySelectorAll('.propagate-check:checked')).map(cb => cb.value);
+        if (checkedIds.length === 0) {
+            closePropagateModal();
+            return;
+        }
+
+        const btn = document.getElementById('propagateConfirmBtn');
+        const originalHTML = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-small"></span> Propagating...';
+
+        try {
+            let successCount = 0;
+            let failCount = 0;
+
+            if (propagateLevel === 'global') {
+                // Reset selected profiles so they inherit global defaults
+                for (const userId of checkedIds) {
+                    try {
+                        const response = await fetch(basePath + '/api/user-settings?userId=' + encodeURIComponent(userId), {
+                            method: 'DELETE',
+                            credentials: 'same-origin'
+                        });
+                        if (response.ok) {
+                            userOverrides[userId] = false;
+                            delete userOverrideDetails[userId];
+                            // Also clear client overrides for this profile
+                            if (clientsForUser) {
+                                // We don't have all clients loaded here, but the backend
+                                // strip_redundant will handle cleanup on next global save
+                            }
+                            successCount++;
+                        } else {
+                            failCount++;
+                        }
+                    } catch (e) {
+                        failCount++;
+                    }
+                }
+            } else if (propagateLevel === 'profile') {
+                // Reset selected client overrides so they inherit from profile
+                for (const clientId of checkedIds) {
+                    try {
+                        const response = await fetch(basePath + '/api/clients/' + encodeURIComponent(clientId) + '/settings', {
+                            method: 'DELETE',
+                            credentials: 'same-origin'
+                        });
+                        if (response.ok) {
+                            const client = clientsForUser.find(c => c.id === clientId);
+                            if (client) client.hasOverrides = false;
+                            successCount++;
+                        } else {
+                            failCount++;
+                        }
+                    } catch (e) {
+                        failCount++;
+                    }
+                }
+            }
+
+            if (failCount === 0) {
+                showToast(`Settings propagated to ${successCount} ${propagateLevel === 'global' ? 'profile' : 'device'}${successCount !== 1 ? 's' : ''}`);
+            } else {
+                showToast(`Propagated to ${successCount}, failed for ${failCount}`, 'error');
+            }
+
+            updateRevertButtonVisibility();
+        } catch (e) {
+            showToast('Failed to propagate: ' + e.message, 'error');
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = originalHTML;
+            closePropagateModal();
+        }
+    }
+
+    // Update the user dropdown to show/hide override indicators
+    // No-ops: pip indicators removed from dropdowns
+    function updateUserDropdownIndicators() {}
+    function updateClientDropdownIndicators() {}
 
     // Check if user settings have any actual differences from global settings
     // This recalculates userOverrides based on actual value comparison, not just record existence
@@ -2020,6 +2255,8 @@
                     updateClientDropdownIndicators();
                     updateRevertButtonVisibility();
                     setTimeout(() => renderSettings(), 500);
+                    // Check if any clients for this profile have overrides
+                    await promptPropagateClientsIfNeeded();
                 } else {
                     const result = await response.text();
                     showToast(result || 'Failed to save settings', 'error');
@@ -2039,6 +2276,8 @@
                     btn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>';
                     showToast('Settings saved successfully');
                     setTimeout(() => renderSettings(), 500);
+                    // Check if any profiles have overrides
+                    await promptPropagateIfNeeded();
                 } else {
                     const result = await response.json();
                     showToast(result.error || 'Failed to save settings', 'error');
@@ -3918,6 +4157,8 @@
                     updateClientDropdownIndicators(); // Update "Profile Defaults" indicator
                     updateRevertButtonVisibility();
                     renderSettings(); // Re-render to update inherited field styling
+                    // Check if any clients for this profile have overrides and offer to propagate
+                    await promptPropagateClientsIfNeeded();
                 } else {
                     const result = await response.text();
                     showToast(result || 'Failed to save user settings', 'error');
@@ -3933,6 +4174,8 @@
                 if (response.ok) {
                     originalSettings = JSON.parse(JSON.stringify(currentSettings));
                     showToast('Settings saved successfully');
+                    // Check if any profiles have overrides and offer to propagate
+                    await promptPropagateIfNeeded();
                 } else {
                     const result = await response.json();
                     showToast(result.error || 'Failed to save settings', 'error');

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -128,6 +129,8 @@ func (s *Service) GetWithDefaults(userID string, defaults models.UserSettings) (
 	defer s.mu.RUnlock()
 
 	if settings, ok := s.settings[userID]; ok {
+		log.Printf("[user-settings] GetWithDefaults(%q): found in cache, raw subMode=%q, defaults subMode=%q",
+			userID, settings.Playback.PreferredSubtitleMode, defaults.Playback.PreferredSubtitleMode)
 		// Sanitize language codes (strip stray quotes/whitespace)
 		settings.Playback.PreferredAudioLanguage = sanitizeLanguageCode(settings.Playback.PreferredAudioLanguage)
 		settings.Playback.PreferredSubtitleLanguage = sanitizeLanguageCode(settings.Playback.PreferredSubtitleLanguage)
@@ -148,6 +151,7 @@ func (s *Service) GetWithDefaults(userID string, defaults models.UserSettings) (
 			settings.Playback.PreferredSubtitleMode = defaults.Playback.PreferredSubtitleMode
 		}
 		settings.Playback.PreferredSubtitleMode = normalizeSubtitleMode(settings.Playback.PreferredSubtitleMode)
+		log.Printf("[user-settings] GetWithDefaults(%q): final subMode=%q", userID, settings.Playback.PreferredSubtitleMode)
 		// SubtitleSize of 0 means "use default"
 		if settings.Playback.SubtitleSize == 0 {
 			settings.Playback.SubtitleSize = defaults.Playback.SubtitleSize
@@ -179,13 +183,18 @@ func (s *Service) Update(userID string, settings models.UserSettings) error {
 	settings.Playback.PreferredSubtitleLanguage = sanitizeLanguageCode(settings.Playback.PreferredSubtitleLanguage)
 	settings.Playback.PreferredSubtitleMode = strings.TrimSpace(strings.Trim(settings.Playback.PreferredSubtitleMode, "'\""))
 
+	log.Printf("[user-settings] Update(%q): subMode=%q, audioLang=%q, subLang=%q",
+		userID, settings.Playback.PreferredSubtitleMode, settings.Playback.PreferredAudioLanguage, settings.Playback.PreferredSubtitleLanguage)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	// If settings are empty, delete the entry instead of saving
 	if isSettingsEmpty(settings) {
+		log.Printf("[user-settings] Update(%q): settings empty, deleting entry", userID)
 		delete(s.settings, userID)
 	} else {
+		log.Printf("[user-settings] Update(%q): storing in cache", userID)
 		s.settings[userID] = settings
 	}
 
@@ -250,6 +259,25 @@ func isSettingsEmpty(s models.UserSettings) bool {
 	if s.Network.HomeWifiSSID != "" ||
 		s.Network.HomeBackendUrl != "" ||
 		s.Network.RemoteBackendUrl != "" {
+		return false
+	}
+
+	// Check AnimeFiltering
+	if s.AnimeFiltering.AnimeLanguageEnabled != nil ||
+		s.AnimeFiltering.AnimePreferredLanguage != nil {
+		return false
+	}
+
+	// Check Ranking
+	if s.Ranking != nil && len(s.Ranking.Criteria) > 0 {
+		return false
+	}
+
+	// Check Calendar
+	if s.Calendar.Watchlist != nil ||
+		s.Calendar.History != nil ||
+		s.Calendar.Trending != nil ||
+		len(s.Calendar.MDBListShelves) > 0 {
 		return false
 	}
 
@@ -319,6 +347,10 @@ func (s *Service) load() error {
 	}
 
 	s.settings = settings
+	for userID, us := range s.settings {
+		log.Printf("[user-settings] load: user=%q subMode=%q audioLang=%q subLang=%q",
+			userID, us.Playback.PreferredSubtitleMode, us.Playback.PreferredAudioLanguage, us.Playback.PreferredSubtitleLanguage)
+	}
 	return nil
 }
 

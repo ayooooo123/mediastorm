@@ -85,6 +85,34 @@ func (s *Service) Update(clientID string, settings models.ClientFilterSettings) 
 	return s.saveLocked()
 }
 
+// GetAll returns a copy of all client settings.
+func (s *Service) GetAll() map[string]models.ClientFilterSettings {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make(map[string]models.ClientFilterSettings, len(s.settings))
+	for k, v := range s.settings {
+		out[k] = v
+	}
+	return out
+}
+
+// UpdateBatch replaces all client settings with the provided map and saves.
+// Empty entries are removed.
+func (s *Service) UpdateBatch(settings map[string]models.ClientFilterSettings) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cleaned := make(map[string]models.ClientFilterSettings, len(settings))
+	for k, v := range settings {
+		if !v.IsEmpty() {
+			cleaned[k] = v
+		}
+	}
+	s.settings = cleaned
+	return s.saveLocked()
+}
+
 // Delete removes a client's filter settings.
 func (s *Service) Delete(clientID string) error {
 	clientID = strings.TrimSpace(clientID)

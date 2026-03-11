@@ -13,16 +13,20 @@ import (
 	"novastream/services/debrid"
 	"novastream/services/epg"
 	"novastream/services/metadata"
+	user_settings "novastream/services/user_settings"
 )
 
 type SettingsHandler struct {
-	Manager             *config.Manager
-	DemoMode            bool
-	PoolManager         pool.Manager
-	MetadataService     *metadata.Service
-	DebridSearchService *debrid.SearchService
-	ImageHandler        *ImageHandler
-	EPGService          *epg.Service
+	Manager              *config.Manager
+	DemoMode             bool
+	PoolManager          pool.Manager
+	MetadataService      *metadata.Service
+	DebridSearchService  *debrid.SearchService
+	ImageHandler         *ImageHandler
+	EPGService           *epg.Service
+	UserSettingsService  *user_settings.Service
+	ClientsLister        user_settings.ClientsLister
+	ClientSettingsBatch  user_settings.ClientSettingsBatch
 }
 
 func NewSettingsHandler(m *config.Manager) *SettingsHandler {
@@ -56,6 +60,21 @@ func (h *SettingsHandler) SetImageHandler(ih *ImageHandler) {
 // SetEPGService sets the EPG service for auto-refresh when new sources are added
 func (h *SettingsHandler) SetEPGService(es *epg.Service) {
 	h.EPGService = es
+}
+
+// SetUserSettingsService sets the user settings service for stripping redundant overrides
+func (h *SettingsHandler) SetUserSettingsService(us *user_settings.Service) {
+	h.UserSettingsService = us
+}
+
+// SetClientsLister sets the clients lister for client→profile mapping
+func (h *SettingsHandler) SetClientsLister(cl user_settings.ClientsLister) {
+	h.ClientsLister = cl
+}
+
+// SetClientSettingsBatch sets the client settings batch service for stripping redundant overrides
+func (h *SettingsHandler) SetClientSettingsBatch(cs user_settings.ClientSettingsBatch) {
+	h.ClientSettingsBatch = cs
 }
 
 // SettingsResponse wraps config.Settings with additional runtime information.
@@ -122,6 +141,11 @@ func (h *SettingsHandler) PutSettings(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
+	}
+
+	// Strip redundant per-profile and per-client overrides
+	if h.UserSettingsService != nil {
+		go h.UserSettingsService.StripRedundantOverrides(s, h.ClientsLister, h.ClientSettingsBatch)
 	}
 
 	// Hot reload services that need it
