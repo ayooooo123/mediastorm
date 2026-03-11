@@ -585,6 +585,12 @@ func (m *SubtitleExtractManager) startExtraction(session *SubtitleExtractSession
 		return
 	}
 
+	// DEBUG: log all available subtitle streams for track selection debugging
+	for i, ss := range subtitleStreams {
+		log.Printf("[subtitle-extract] session %s: available subtitle stream [%d] index=%d codec=%s language=%s title=%s",
+			session.ID, i, ss.Index, ss.Codec, ss.Language, ss.Title)
+	}
+
 	if session.SubtitleTrack < 0 || session.SubtitleTrack >= len(subtitleStreams) {
 		log.Printf("[subtitle-extract] session %s: subtitle track %d out of range (file has %d subtitle streams), using track 0",
 			session.ID, session.SubtitleTrack, len(subtitleStreams))
@@ -594,8 +600,8 @@ func (m *SubtitleExtractManager) startExtraction(session *SubtitleExtractSession
 
 	// Get the actual stream index for the selected track
 	actualStreamIndex := subtitleStreams[session.SubtitleTrack].Index
-	log.Printf("[subtitle-extract] session %s: track %d maps to stream index %d (codec: %s)",
-		session.ID, session.SubtitleTrack, actualStreamIndex, subtitleStreams[session.SubtitleTrack].Codec)
+	log.Printf("[subtitle-extract] session %s: SELECTED track %d → stream index %d (codec: %s, language: %s, title: %s)",
+		session.ID, session.SubtitleTrack, actualStreamIndex, subtitleStreams[session.SubtitleTrack].Codec, subtitleStreams[session.SubtitleTrack].Language, subtitleStreams[session.SubtitleTrack].Title)
 
 	log.Printf("[subtitle-extract] session %s: starting extraction from %s (startOffset=%.1f)", session.ID, streamURL, session.StartOffset)
 
@@ -1119,6 +1125,8 @@ func (h *VideoHandler) StartSubtitleExtract(w http.ResponseWriter, r *http.Reque
 	if startOffsetStr := r.URL.Query().Get("startOffset"); startOffsetStr != "" {
 		startOffset, _ = strconv.ParseFloat(startOffsetStr, 64)
 	}
+
+	log.Printf("[subtitle-extract] StartSubtitleExtract request: path=%s subtitleTrack=%d startOffset=%.1f", cleanPath, subtitleTrack, startOffset)
 
 	if h.subtitleExtractManager == nil {
 		http.Error(w, "subtitle extraction not configured", http.StatusServiceUnavailable)
