@@ -91,6 +91,81 @@ type VideoHandler struct {
 	// In-flight probe deduplication: prevents parallel ffprobe calls for the same path
 	// Key: path, Value: channel that closes when probe completes
 	probeInFlight sync.Map
+
+	// Read-ahead range cache — prevents seek storms from hammering the debrid CDN.
+	// When ExoPlayer seeks rapidly through DV files with interleaved tracks, it generates
+	// hundreds of tiny (2-byte) range requests. The cache fetches a larger chunk on the first
+	// miss and serves subsequent nearby requests from memory.
+	rangeCache rangeBlockCache
+}
+
+// rangeBlockCache stores recently-fetched byte ranges to serve tiny range requests
+// from memory instead of making round trips to the debrid CDN.
+const (
+	rangeCacheMinFetchSize = 512 * 1024 // Fetch at least 512KB from CDN
+	rangeCacheTTL          = 30 * time.Second
+	rangeCacheMaxBlocks    = 8 // Max cached blocks per path
+)
+
+type rangeCacheBlock struct {
+	offset int64
+	data   []byte
+	expiry time.Time
+}
+
+type rangeBlockCache struct {
+	mu     sync.Mutex
+	blocks map[string][]rangeCacheBlock // keyed by file path
+}
+
+func (c *rangeBlockCache) get(path string, start, end int64) ([]byte, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.blocks == nil {
+		return nil, false
+	}
+	now := time.Now()
+	blocks := c.blocks[path]
+	for _, b := range blocks {
+		if now.After(b.expiry) {
+			continue
+		}
+		blockEnd := b.offset + int64(len(b.data))
+		if start >= b.offset && end <= blockEnd {
+			s := start - b.offset
+			e := end - b.offset
+			return b.data[s:e], true
+		}
+	}
+	return nil, false
+}
+
+func (c *rangeBlockCache) put(path string, offset int64, data []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.blocks == nil {
+		c.blocks = make(map[string][]rangeCacheBlock)
+	}
+	// Evict expired blocks
+	now := time.Now()
+	blocks := c.blocks[path]
+	live := blocks[:0]
+	for _, b := range blocks {
+		if !now.After(b.expiry) {
+			live = append(live, b)
+		}
+	}
+	// Add new block (evict oldest if at capacity)
+	if len(live) >= rangeCacheMaxBlocks {
+		live = live[1:]
+	}
+	buf := make([]byte, len(data))
+	copy(buf, data)
+	c.blocks[path] = append(live, rangeCacheBlock{
+		offset: offset,
+		data:   buf,
+		expiry: now.Add(rangeCacheTTL),
+	})
 }
 
 // UserSettingsProvider interface for accessing user settings
@@ -303,6 +378,72 @@ func (h *VideoHandler) streamViaProvider(w http.ResponseWriter, r *http.Request,
 	defer cancel()
 
 	rangeHeader := r.Header.Get("Range")
+
+	// Read-ahead range cache: serve tiny range requests from memory to prevent
+	// seek storms from hammering the debrid CDN. ExoPlayer on Android TV generates
+	// hundreds of 2-byte range requests when seeking through DV files with
+	// interleaved tracks. Each CDN round trip takes ~1s, causing multi-second stalls.
+	if rangeHeader != "" && r.Method == http.MethodGet {
+		if rangeStart, rangeEnd, ok := parseByteRange(rangeHeader); ok {
+			rangeLen := rangeEnd - rangeStart + 1
+			if rangeLen > 0 && rangeLen <= rangeCacheMinFetchSize {
+				// Check cache first
+				if cached, hit := h.rangeCache.get(cleanPath, rangeStart, rangeEnd+1); hit {
+					log.Printf("[video] range cache HIT: path=%q range=%q (%d bytes)", cleanPath, rangeHeader, rangeLen)
+					h.writeCommonHeaders(w)
+					w.Header().Set("Content-Type", "video/mp4")
+					w.Header().Set("Accept-Ranges", "bytes")
+					w.Header().Set("Content-Length", strconv.FormatInt(int64(len(cached)), 10))
+					// We don't know total file size from cache alone, but the client already knows it
+					// from previous requests. Omit Content-Range for cache hits of tiny requests.
+					w.WriteHeader(http.StatusPartialContent)
+					w.Write(cached)
+					return true, nil
+				}
+
+				// Cache miss for a small request — expand to fetch a larger chunk from CDN,
+				// then cache it so subsequent nearby requests are instant.
+				fetchStart := rangeStart
+				fetchEnd := rangeStart + rangeCacheMinFetchSize - 1
+				expandedRange := fmt.Sprintf("bytes=%d-%d", fetchStart, fetchEnd)
+				log.Printf("[video] range cache MISS: expanding %q to %q for path=%q", rangeHeader, expandedRange, cleanPath)
+
+				fetchCtx, fetchCancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer fetchCancel()
+				fetchResp, fetchErr := h.streamer.Stream(fetchCtx, streaming.Request{
+					Path:        cleanPath,
+					RangeHeader: expandedRange,
+					Method:      r.Method,
+				})
+				if fetchErr == nil {
+					defer fetchResp.Close()
+					fetchBuf := make([]byte, rangeCacheMinFetchSize+4096)
+					n, _ := io.ReadFull(fetchResp.Body, fetchBuf)
+					if n > 0 {
+						fetchBuf = fetchBuf[:n]
+						h.rangeCache.put(cleanPath, fetchStart, fetchBuf)
+						log.Printf("[video] range cache FILL: path=%q offset=%d size=%d", cleanPath, fetchStart, n)
+
+						// Serve the originally requested bytes from the fetched data
+						reqOffset := rangeStart - fetchStart
+						reqEnd := reqOffset + rangeLen
+						if reqEnd <= int64(n) {
+							h.writeCommonHeaders(w)
+							w.Header().Set("Content-Type", "video/mp4")
+							w.Header().Set("Accept-Ranges", "bytes")
+							w.Header().Set("Content-Length", strconv.FormatInt(rangeLen, 10))
+							w.WriteHeader(http.StatusPartialContent)
+							w.Write(fetchBuf[reqOffset:reqEnd])
+							return true, nil
+						}
+					}
+				} else {
+					log.Printf("[video] range cache fetch failed: path=%q err=%v", cleanPath, fetchErr)
+				}
+				// Fall through to normal streaming if cache fill failed
+			}
+		}
+	}
 
 	// Track this stream for admin monitoring
 	tracker := GetStreamTracker()
@@ -525,6 +666,32 @@ func (h *VideoHandler) HandleOptions(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges, Content-Type, X-Filename")
 	w.Header().Set("Cross-Origin-Resource-Policy", "cross-origin")
 	w.WriteHeader(http.StatusOK)
+}
+
+// parseByteRange parses a Range header like "bytes=100-200" into start and end offsets.
+// Returns (start, end, true) on success. Both open-ended ranges (bytes=100-) and
+// suffix ranges (bytes=-500) return false — only bounded ranges are supported.
+func parseByteRange(rangeHeader string) (int64, int64, bool) {
+	rangeHeader = strings.TrimSpace(rangeHeader)
+	if !strings.HasPrefix(rangeHeader, "bytes=") {
+		return 0, 0, false
+	}
+	spec := strings.TrimPrefix(rangeHeader, "bytes=")
+	dash := strings.IndexByte(spec, '-')
+	if dash < 0 {
+		return 0, 0, false
+	}
+	startStr := strings.TrimSpace(spec[:dash])
+	endStr := strings.TrimSpace(spec[dash+1:])
+	if startStr == "" || endStr == "" {
+		return 0, 0, false // open-ended or suffix range
+	}
+	start, err1 := strconv.ParseInt(startStr, 10, 64)
+	end, err2 := strconv.ParseInt(endStr, 10, 64)
+	if err1 != nil || err2 != nil || end < start {
+		return 0, 0, false
+	}
+	return start, end, true
 }
 
 func isClientGone(err error) bool {
