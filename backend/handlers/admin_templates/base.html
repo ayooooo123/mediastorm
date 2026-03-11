@@ -1528,6 +1528,7 @@
                 <img src="/api/static/icon-rounded.png" alt="mediastorm" style="width: 32px; height: 32px; border-radius: 6px;">
                 <div style="display: flex; flex-direction: column; line-height: 1.2;">
                     <span>{{if .IsAdmin}}mediastorm admin{{else}}mediastorm account{{end}} <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: 400;">v{{.Version}}</span></span>
+                    <span style="font-size: 0.65rem; color: #f59e0b; font-weight: 400;">build {{.BuildID}}</span>
                     <span class="navbar-username" style="font-size: 0.75rem; color: var(--text-secondary); font-weight: 400;">{{.Username}}</span>
                 </div>
             </a>

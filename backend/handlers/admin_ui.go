@@ -1045,6 +1045,7 @@ type AdminPageData struct {
 	Users         []models.User
 	UserOverrides map[string]bool // Map of userID -> hasOverrides for showing indicators
 	Version       string
+	BuildID       string
 	NoProfiles    bool // true when non-admin user has no profiles
 }
 
@@ -1090,6 +1091,7 @@ func (h *AdminUIHandler) SettingsPage(w http.ResponseWriter, r *http.Request) {
 		Users:         usersList,
 		UserOverrides: userOverrides,
 		Version:       GetBackendVersion(),
+		BuildID:       GetBackendBuildID(),
 		NoProfiles:    noProfiles,
 	}
 
@@ -1123,6 +1125,7 @@ func (h *AdminUIHandler) StatusPage(w http.ResponseWriter, r *http.Request) {
 		Schema:      SettingsSchema,
 		Status:      status,
 		Version:     GetBackendVersion(),
+		BuildID:     GetBackendBuildID(),
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -1148,6 +1151,7 @@ func (h *AdminUIHandler) HistoryPage(w http.ResponseWriter, r *http.Request) {
 		Username:    username,
 		Users:       usersList,
 		Version:     GetBackendVersion(),
+		BuildID:     GetBackendBuildID(),
 		NoProfiles:  noProfiles,
 	}
 
@@ -4898,6 +4902,7 @@ func (h *AdminUIHandler) ToolsPage(w http.ResponseWriter, r *http.Request) {
 		Username:    username,
 		Users:       usersList,
 		Version:     GetBackendVersion(),
+		BuildID:     GetBackendBuildID(),
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -4922,6 +4927,7 @@ func (h *AdminUIHandler) PrequeuePage(w http.ResponseWriter, r *http.Request) {
 		AccountID:   accountID,
 		Username:    username,
 		Version:     GetBackendVersion(),
+		BuildID:     GetBackendBuildID(),
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -4957,6 +4963,7 @@ func (h *AdminUIHandler) SearchPage(w http.ResponseWriter, r *http.Request) {
 		Settings:    settings,
 		Users:       usersList,
 		Version:     GetBackendVersion(),
+		BuildID:     GetBackendBuildID(),
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -4989,6 +4996,7 @@ func (h *AdminUIHandler) AccountsPage(w http.ResponseWriter, r *http.Request) {
 		Username:    username,
 		Settings:    settings,
 		Version:     GetBackendVersion(),
+		BuildID:     GetBackendBuildID(),
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -5034,6 +5042,7 @@ func (h *AdminUIHandler) KidsSettingsPage(w http.ResponseWriter, r *http.Request
 		Username:    username,
 		Settings:    settings,
 		Version:     GetBackendVersion(),
+		BuildID:     GetBackendBuildID(),
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -5064,6 +5073,7 @@ func (h *AdminUIHandler) BackupPage(w http.ResponseWriter, r *http.Request) {
 		AccountID:   accountID,
 		Username:    username,
 		Version:     GetBackendVersion(),
+		BuildID:     GetBackendBuildID(),
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -5096,6 +5106,7 @@ func (h *AdminUIHandler) ConnectionsPage(w http.ResponseWriter, r *http.Request)
 		AccountID:   accountID,
 		Username:    username,
 		Version:     GetBackendVersion(),
+		BuildID:     GetBackendBuildID(),
 		Settings:    settings,
 	}
 
@@ -5129,6 +5140,7 @@ func (h *AdminUIHandler) CalendarPage(w http.ResponseWriter, r *http.Request) {
 		Users:       usersList,
 		Settings:    settings,
 		Version:     GetBackendVersion(),
+		BuildID:     GetBackendBuildID(),
 		NoProfiles:  noProfiles,
 	}
 
@@ -6665,6 +6677,7 @@ func (h *AdminUIHandler) PerformancePage(w http.ResponseWriter, r *http.Request)
 		AccountID:   accountID,
 		Username:    username,
 		Version:     GetBackendVersion(),
+		BuildID:     GetBackendBuildID(),
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -6738,6 +6751,7 @@ func (h *AdminUIHandler) LogsPage(w http.ResponseWriter, r *http.Request) {
 		AccountID:   accountID,
 		Username:    username,
 		Version:     GetBackendVersion(),
+		BuildID:     GetBackendBuildID(),
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
