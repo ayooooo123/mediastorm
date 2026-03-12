@@ -44,22 +44,27 @@ func Similarity(s1, s2 string) float64 {
 	return 1.0 - float64(distance)/float64(maxLen)
 }
 
-// suffixContainmentScore returns a high similarity score if one string is a suffix
-// of the other and represents a substantial portion of the longer string.
-// Returns 0 if no suffix containment is found.
+// suffixContainmentScore returns a high similarity score if s2 (parsed/result title)
+// is a suffix of s1 (candidate/expected title). This handles cases where the result
+// drops a possessive prefix like "Disney's" from "Disney's Claymation Christmas".
+//
+// Direction matters: we only boost when s1 is longer (result is a subset of expected).
+// If the result title is longer and has extra prefix words (e.g., "After the First 48"
+// vs expected "The First 48"), the extra words may indicate a different show (spinoff),
+// so we don't boost in that direction.
 func suffixContainmentScore(s1, s2 string) float64 {
-	longer, shorter := s1, s2
-	if len(s1) < len(s2) {
-		longer, shorter = s2, s1
+	// Only match when s1 (candidate/expected) is longer and s2 (parsed/result) is its suffix
+	if len(s1) <= len(s2) {
+		return 0
 	}
 
-	// Check if shorter is a suffix of longer (with space boundary)
-	if strings.HasSuffix(longer, shorter) {
+	// Check if s2 is a suffix of s1 (with space boundary)
+	if strings.HasSuffix(s1, s2) {
 		// Ensure the prefix ends at a word boundary (space before the suffix)
-		prefixLen := len(longer) - len(shorter)
-		if prefixLen == 0 || longer[prefixLen-1] == ' ' {
+		prefixLen := len(s1) - len(s2)
+		if prefixLen == 0 || s1[prefixLen-1] == ' ' {
 			// The shorter string must be substantial (>60% of the longer)
-			ratio := float64(len(shorter)) / float64(len(longer))
+			ratio := float64(len(s2)) / float64(len(s1))
 			if ratio >= 0.6 {
 				// Return high score proportional to how much of the title matches
 				// 60% containment -> 0.92, 80% containment -> 0.96, 100% -> 1.0

@@ -89,6 +89,38 @@ func TestSimilarity(t *testing.T) {
 			s2:       "Amélie",
 			minScore: 1.0,
 		},
+		{
+			name:     "Suffix containment - possessive prefix dropped",
+			s1:       "Disney's Claymation Christmas",
+			s2:       "Claymation Christmas",
+			minScore: 0.90,
+		},
+	}
+
+	// Also run tests that verify LOW scores (below threshold)
+	lowScoreTests := []struct {
+		name     string
+		s1       string
+		s2       string
+		maxScore float64 // must be BELOW this
+	}{
+		{
+			name:     "Spinoff title - After the First 48 vs The First 48",
+			s1:       "The First 48",
+			s2:       "After the First 48",
+			maxScore: 0.90, // Must be below 90% to be correctly rejected
+		},
+	}
+
+	for _, tt := range lowScoreTests {
+		t.Run(tt.name, func(t *testing.T) {
+			score := Similarity(tt.s1, tt.s2)
+			t.Logf("Similarity(%q, %q) = %.2f", tt.s1, tt.s2, score)
+
+			if score >= tt.maxScore {
+				t.Errorf("Expected score < %.2f, got %.2f (spinoff should not match)", tt.maxScore, score)
+			}
+		})
 	}
 
 	for _, tt := range tests {

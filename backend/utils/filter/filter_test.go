@@ -665,58 +665,88 @@ func TestResults_RegressionMovieVsTVPatterns(t *testing.T) {
 }
 
 func TestTitleContainmentScore(t *testing.T) {
+	// Note: titleContainmentScore(parsedTitle, candidate)
+	// parsedTitle = result's parsed title, candidate = expected/search title
 	tests := []struct {
-		name     string
-		title1   string
-		title2   string
-		wantHigh bool // expect score >= 0.90
+		name        string
+		parsedTitle string
+		candidate   string
+		wantHigh    bool // expect score >= 0.90
 	}{
 		{
-			name:     "F1 contained in F1 The Movie",
-			title1:   "f1 the movie",
-			title2:   "f1",
-			wantHigh: true,
+			name:        "F1 contained in F1 The Movie (prefix match)",
+			parsedTitle: "f1 the movie",
+			candidate:   "f1",
+			wantHigh:    true,
 		},
 		{
-			name:     "Matrix contained in The Matrix Reloaded",
-			title1:   "the matrix reloaded",
-			title2:   "matrix",
-			wantHigh: true,
+			name:        "candidate contains parsed - Matrix in The Matrix Reloaded",
+			parsedTitle: "matrix",
+			candidate:   "the matrix reloaded",
+			wantHigh:    true,
 		},
 		{
-			name:     "exact match",
-			title1:   "the matrix",
-			title2:   "the matrix",
-			wantHigh: true,
+			name:        "exact match",
+			parsedTitle: "the matrix",
+			candidate:   "the matrix",
+			wantHigh:    true,
 		},
 		{
-			name:     "partial word match should not match",
-			title1:   "the matrix",
-			title2:   "mat",
-			wantHigh: false, // "mat" is not at word boundary
+			name:        "partial word match should not match",
+			parsedTitle: "the matrix",
+			candidate:   "mat",
+			wantHigh:    false, // "mat" is not at word boundary
 		},
 		{
-			name:     "completely different titles",
-			title1:   "inception",
-			title2:   "interstellar",
-			wantHigh: false,
+			name:        "completely different titles",
+			parsedTitle: "inception",
+			candidate:   "interstellar",
+			wantHigh:    false,
 		},
 		{
-			name:     "single character should not match",
-			title1:   "a movie",
-			title2:   "a",
-			wantHigh: false,
+			name:        "single character should not match",
+			parsedTitle: "a movie",
+			candidate:   "a",
+			wantHigh:    false,
+		},
+		{
+			// KEY BUG FIX: "After the First 48" should NOT match "The First 48"
+			// The candidate is NOT a prefix of the parsed title
+			name:        "spinoff title rejected - After the First 48 vs The First 48",
+			parsedTitle: "after the first 48",
+			candidate:   "the first 48",
+			wantHigh:    false,
+		},
+		{
+			name:        "spinoff title rejected - Beyond Scared Straight vs Scared Straight",
+			parsedTitle: "beyond scared straight",
+			candidate:   "scared straight",
+			wantHigh:    false,
+		},
+		{
+			// Candidate (expected) contains parsed (result) — valid
+			name:        "candidate contains parsed - Matrix Reloaded in The Matrix Reloaded",
+			parsedTitle: "matrix reloaded",
+			candidate:   "the matrix reloaded",
+			wantHigh:    true,
+		},
+		{
+			// Prefix match — parsed starts with candidate
+			name:        "prefix match - Show Name Extended vs Show Name",
+			parsedTitle: "show name extended edition",
+			candidate:   "show name",
+			wantHigh:    true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			score := titleContainmentScore(tt.title1, tt.title2)
+			score := titleContainmentScore(tt.parsedTitle, tt.candidate)
 			if tt.wantHigh && score < 0.90 {
-				t.Errorf("titleContainmentScore(%q, %q) = %.2f, want >= 0.90", tt.title1, tt.title2, score)
+				t.Errorf("titleContainmentScore(%q, %q) = %.2f, want >= 0.90", tt.parsedTitle, tt.candidate, score)
 			}
 			if !tt.wantHigh && score >= 0.90 {
-				t.Errorf("titleContainmentScore(%q, %q) = %.2f, want < 0.90", tt.title1, tt.title2, score)
+				t.Errorf("titleContainmentScore(%q, %q) = %.2f, want < 0.90", tt.parsedTitle, tt.candidate, score)
 			}
 		})
 	}
@@ -872,6 +902,42 @@ func TestResults_TitleContainment(t *testing.T) {
 		for _, r := range filtered {
 			if r.Title == "Fast.And.Furious.2025.1080p.BluRay.x264" {
 				t.Error("Non-matching title should have been filtered")
+			}
+		}
+	})
+}
+
+func TestResults_SpinoffTitleRejection(t *testing.T) {
+	// Regression test: "After the First 48" is a different show from "The First 48"
+	// and should be rejected by title similarity filtering
+	t.Run("After the First 48 rejected when searching The First 48", func(t *testing.T) {
+		results := []models.NZBResult{
+			{Title: "The.First.48.S10E01.WS.DSR.XviD-CRiMSON"},                  // Correct show - should match
+			{Title: "After.the.First.48.S10E01.1080p.HEVC.x265-MeGusta"},         // Spinoff - should be rejected
+			{Title: "After.the.First.48.S10E01.1080p.WEB.h264-EDITH"},            // Spinoff - should be rejected
+			{Title: "After.the.First.48.S10E01.720p.HEVC.x265-MeGusta"},          // Spinoff - should be rejected
+			{Title: "Art.in.the.Twenty-First.Century.S10E01.480p.x264-mSD"},      // Different show - should be rejected
+		}
+
+		opts := Options{
+			ExpectedTitle: "The First 48",
+			ExpectedYear:  2004,
+			IsMovie:       false,
+		}
+
+		filtered := Results(results, opts)
+
+		// Only "The First 48" should pass, all "After the First 48" should be rejected
+		if len(filtered) != 1 {
+			t.Errorf("Expected 1 result (only The First 48), got %d", len(filtered))
+			for i, r := range filtered {
+				t.Logf("  Result[%d]: %s", i, r.Title)
+			}
+		}
+
+		for _, r := range filtered {
+			if r.Title != "The.First.48.S10E01.WS.DSR.XviD-CRiMSON" {
+				t.Errorf("Unexpected result passed filter: %s", r.Title)
 			}
 		}
 	})

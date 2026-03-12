@@ -658,27 +658,49 @@ func stripDiacritics(s string) string {
 	return b.String()
 }
 
-// titleContainmentScore returns a similarity score if one title contains the other.
-// Returns 0 if no containment is found or if the contained portion is too small.
-// The contained title must be at least 2 characters and represent a word boundary match.
-func titleContainmentScore(title1, title2 string) float64 {
-	longer, shorter := title1, title2
-	if len(title1) < len(title2) {
-		longer, shorter = title2, title1
-	}
-
+// titleContainmentScore returns a similarity score based on containment between
+// a parsed result title (title1) and a candidate/expected title (title2).
+//
+// Direction matters to avoid false positives from spinoff shows:
+//   - candidate contains parsed (result is subset of expected): always valid
+//     e.g., expected "The Matrix Reloaded" contains result "Matrix Reloaded"
+//   - parsed contains candidate (result has MORE words than expected): only valid
+//     if the candidate appears at the START of the parsed title (prefix match)
+//     e.g., expected "F1" at start of result "F1 The Movie" → OK
+//     e.g., expected "The First 48" NOT at start of "After the First 48" → rejected
+func titleContainmentScore(parsedTitle, candidate string) float64 {
 	// Require minimum length to avoid matching single characters
-	if len(shorter) < 2 {
+	if len(candidate) < 2 || len(parsedTitle) < 2 {
 		return 0
 	}
 
-	// Check if the shorter title is contained in the longer one
-	if !strings.Contains(longer, shorter) {
-		return 0
+	// Case 1: candidate (expected) is longer or equal and contains the parsed title
+	// This means the result is a subset of the expected title — always valid
+	if len(candidate) >= len(parsedTitle) && strings.Contains(candidate, parsedTitle) {
+		return containmentScoreWithBoundaryCheck(candidate, parsedTitle)
 	}
 
-	// Verify word boundary: the match should be at word boundaries
-	// (start/end of string or adjacent to space)
+	// Case 2: parsed title (result) is longer and contains the candidate
+	// Only valid if the candidate appears at the START (prefix match)
+	// This prevents "After the First 48" from matching "The First 48"
+	// but allows "F1 The Movie" to match "F1"
+	if len(parsedTitle) > len(candidate) && strings.HasPrefix(parsedTitle, candidate) {
+		// Verify word boundary at end of prefix
+		endIdx := len(candidate)
+		if endIdx == len(parsedTitle) || parsedTitle[endIdx] == ' ' {
+			ratio := float64(len(candidate)) / float64(len(parsedTitle))
+			if len(candidate) <= 3 && ratio < 0.2 {
+				return 0.92
+			}
+			return 0.90 + (ratio * 0.10)
+		}
+	}
+
+	return 0
+}
+
+// containmentScoreWithBoundaryCheck checks word boundaries and returns a containment score.
+func containmentScoreWithBoundaryCheck(longer, shorter string) float64 {
 	idx := strings.Index(longer, shorter)
 	if idx == -1 {
 		return 0
@@ -694,20 +716,12 @@ func titleContainmentScore(title1, title2 string) float64 {
 		return 0
 	}
 
-	// Score based on how much of the longer title is matched
-	// A higher ratio means a better match
 	ratio := float64(len(shorter)) / float64(len(longer))
 
-	// For very short matches (e.g., "F1" in "F1 The Movie"), require the short title
-	// to be a significant starting portion or the ratio to be reasonable
 	if len(shorter) <= 3 && ratio < 0.2 {
-		// Short title like "F1" matching "F1 The Movie" - still valid if at word boundary
-		// Give it a moderate score since it's a valid match but could be coincidental
 		return 0.92
 	}
 
-	// Higher containment ratio = higher score
-	// 20% containment -> 0.92, 50% -> 0.95, 80% -> 0.98
 	return 0.90 + (ratio * 0.10)
 }
 
