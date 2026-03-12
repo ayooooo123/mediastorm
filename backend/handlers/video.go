@@ -2831,6 +2831,30 @@ func (h *VideoHandler) KeepAliveHLSSession(w http.ResponseWriter, r *http.Reques
 	h.hlsManager.KeepAlive(w, r, sessionID)
 }
 
+// StopHLSSession explicitly stops and cleans up an HLS session.
+// Called by the frontend when the player exits to immediately free resources.
+func (h *VideoHandler) StopHLSSession(w http.ResponseWriter, r *http.Request) {
+	if h.hlsManager == nil {
+		http.Error(w, "HLS not enabled", http.StatusServiceUnavailable)
+		return
+	}
+
+	vars := mux.Vars(r)
+	sessionID := vars["sessionID"]
+
+	if sessionID == "" {
+		http.Error(w, "missing session ID", http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("[hls] explicit stop requested for session %s", sessionID)
+	h.hlsManager.CleanupSession(sessionID)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"stopped":true}`))
+}
+
 // GetHLSSessionStatus returns the current status of an HLS session
 // Used by the frontend to poll for errors during playback
 func (h *VideoHandler) GetHLSSessionStatus(w http.ResponseWriter, r *http.Request) {

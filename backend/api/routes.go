@@ -309,6 +309,7 @@ func Register(
 	protected.HandleFunc("/video/hls/{sessionID}/stream.m3u8", videoHandler.ServeHLSPlaylist).Methods(http.MethodGet, http.MethodOptions)
 	protected.HandleFunc("/video/hls/{sessionID}/subtitles.vtt", videoHandler.ServeHLSSubtitles).Methods(http.MethodGet, http.MethodOptions)
 	protected.HandleFunc("/video/hls/{sessionID}/keepalive", videoHandler.KeepAliveHLSSession).Methods(http.MethodPost, http.MethodOptions)
+	protected.HandleFunc("/video/hls/{sessionID}/stop", videoHandler.StopHLSSession).Methods(http.MethodPost, http.MethodOptions)
 	protected.HandleFunc("/video/hls/{sessionID}/status", videoHandler.GetHLSSessionStatus).Methods(http.MethodGet, http.MethodOptions)
 	protected.HandleFunc("/video/hls/{sessionID}/seek", videoHandler.SeekHLSSession).Methods(http.MethodPost, http.MethodOptions)
 	protected.HandleFunc("/video/hls/{sessionID}/{segment}", videoHandler.ServeHLSSegment).Methods(http.MethodGet, http.MethodOptions)

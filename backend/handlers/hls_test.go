@@ -504,6 +504,54 @@ func TestHLSManager_CleanupSession_NotFound(t *testing.T) {
 	manager.CleanupSession("nonexistent-session")
 }
 
+func TestStopHLSSession_CleanupRemovesSession(t *testing.T) {
+	tmpDir := t.TempDir()
+	manager := NewHLSManager(tmpDir, "", "", nil)
+	defer manager.Shutdown()
+
+	// Manually insert a session
+	sessionID := "stop-test-session"
+	outputDir := filepath.Join(tmpDir, sessionID)
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	session := &HLSSession{
+		ID:         sessionID,
+		OutputDir:  outputDir,
+		CreatedAt:  time.Now(),
+		LastAccess: time.Now(),
+		IsLive:     true,
+		Cancel:     cancel,
+	}
+	_ = ctx
+
+	manager.mu.Lock()
+	manager.sessions[sessionID] = session
+	manager.mu.Unlock()
+
+	// Verify session exists and is counted
+	_, exists := manager.GetSession(sessionID)
+	if !exists {
+		t.Fatal("session should exist before cleanup")
+	}
+
+	// Clean up the session (simulating what StopHLSSession does)
+	manager.CleanupSession(sessionID)
+
+	// Verify session is removed
+	_, exists = manager.GetSession(sessionID)
+	if exists {
+		t.Error("session should be removed after cleanup")
+	}
+
+	// Verify output directory is removed
+	if _, err := os.Stat(outputDir); !os.IsNotExist(err) {
+		t.Error("output directory should be removed after cleanup")
+	}
+}
+
 // --- buildLocalWebDAVURL tests ---
 
 func TestHLSManager_BuildLocalWebDAVURLFromPath(t *testing.T) {
