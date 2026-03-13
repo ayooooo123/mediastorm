@@ -39,20 +39,58 @@ type HealthService struct {
 	// Track which hashes are currently being probed
 	probing   map[string]bool
 	probingMu sync.Mutex
+	// Track torrents currently in use by active playback sessions.
+	// Key: "provider:torrentID", value: true.
+	// Health checks skip deletion for torrents in this set.
+	activeTorrents   map[string]bool
+	activeTorrentsMu sync.Mutex
 }
 
 // NewHealthService creates a new debrid health check service.
 func NewHealthService(cfg *config.Manager) *HealthService {
 	return &HealthService{
-		cfg:        cfg,
-		trackCache: make(map[string]*trackCacheEntry),
-		probing:    make(map[string]bool),
+		cfg:            cfg,
+		trackCache:     make(map[string]*trackCacheEntry),
+		probing:        make(map[string]bool),
+		activeTorrents: make(map[string]bool),
 	}
 }
 
 // SetFFProbePath sets the ffprobe path for probing pre-resolved streams.
 func (s *HealthService) SetFFProbePath(path string) {
 	s.ffprobePath = path
+}
+
+// MarkTorrentActive registers a torrent as in-use by playback so that
+// concurrent health checks will not delete it.
+func (s *HealthService) MarkTorrentActive(provider, torrentID string) {
+	key := provider + ":" + torrentID
+	s.activeTorrentsMu.Lock()
+	s.activeTorrents[key] = true
+	s.activeTorrentsMu.Unlock()
+	log.Printf("[debrid-health] torrent %s marked active for %s", torrentID, provider)
+}
+
+// MarkTorrentInactive removes a torrent from the active set, allowing
+// future health checks to clean it up normally.
+func (s *HealthService) MarkTorrentInactive(provider, torrentID string) {
+	key := provider + ":" + torrentID
+	s.activeTorrentsMu.Lock()
+	delete(s.activeTorrents, key)
+	s.activeTorrentsMu.Unlock()
+	log.Printf("[debrid-health] torrent %s marked inactive for %s", torrentID, provider)
+}
+
+// isTorrentActive checks whether any torrent for the given provider is active
+// for playback. Since TorBox reuses torrent IDs for the same hash, we need to
+// check by provider name — the health checker's torrentID may differ from the
+// playback torrentID even though they reference the same underlying content.
+func (s *HealthService) isTorrentActive(provider, torrentID string) bool {
+	key := provider + ":" + torrentID
+	s.activeTorrentsMu.Lock()
+	active := s.activeTorrents[key]
+	s.activeTorrentsMu.Unlock()
+	return active
 }
 
 // DebridHealthCheck represents the health status of a debrid item.
@@ -580,13 +618,19 @@ func (s *HealthService) checkProviderHealth(ctx context.Context, client Provider
 	}
 
 	// Always remove the torrent after checking - especially important for non-cached torrents
-	// which may have started downloading (e.g., Torbox starts downloads immediately)
-	if !isCached {
-		log.Printf("[debrid-health] torrent %s is not cached (status=%s), removing from %s account", torrentID, info.Status, providerName)
-	}
-	deleteErr := client.DeleteTorrent(ctx, torrentID)
-	if deleteErr != nil {
-		log.Printf("[debrid-health] warning: failed to delete torrent %s: %v", torrentID, deleteErr)
+	// which may have started downloading (e.g., Torbox starts downloads immediately).
+	// But skip deletion if playback has marked this torrent as active — deleting it would
+	// break the in-progress stream (TorBox reuses the same torrent ID for the same hash).
+	if s.isTorrentActive(providerName, torrentID) {
+		log.Printf("[debrid-health] skipping delete of torrent %s — active playback session on %s", torrentID, providerName)
+	} else {
+		if !isCached {
+			log.Printf("[debrid-health] torrent %s is not cached (status=%s), removing from %s account", torrentID, info.Status, providerName)
+		}
+		deleteErr := client.DeleteTorrent(ctx, torrentID)
+		if deleteErr != nil {
+			log.Printf("[debrid-health] warning: failed to delete torrent %s: %v", torrentID, deleteErr)
+		}
 	}
 
 	return healthResult, nil

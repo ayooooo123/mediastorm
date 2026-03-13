@@ -1,6 +1,7 @@
 package debrid
 
 import (
+	"sync"
 	"testing"
 )
 
@@ -50,4 +51,51 @@ func TestExtractInfoHashFromMagnet(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestActiveTorrentTracking(t *testing.T) {
+	hs := NewHealthService(nil)
+
+	// Initially not active
+	if hs.isTorrentActive("torbox", "123") {
+		t.Fatal("torrent should not be active initially")
+	}
+
+	// Mark active
+	hs.MarkTorrentActive("torbox", "123")
+	if !hs.isTorrentActive("torbox", "123") {
+		t.Fatal("torrent should be active after MarkTorrentActive")
+	}
+
+	// Different provider should not be active
+	if hs.isTorrentActive("realdebrid", "123") {
+		t.Fatal("different provider should not be active")
+	}
+
+	// Mark inactive
+	hs.MarkTorrentInactive("torbox", "123")
+	if hs.isTorrentActive("torbox", "123") {
+		t.Fatal("torrent should not be active after MarkTorrentInactive")
+	}
+}
+
+func TestActiveTorrentConcurrency(t *testing.T) {
+	hs := NewHealthService(nil)
+
+	var wg sync.WaitGroup
+	// Simulate concurrent mark/check from health + playback goroutines
+	for i := 0; i < 100; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			hs.MarkTorrentActive("torbox", "456")
+			hs.isTorrentActive("torbox", "456")
+		}()
+		go func() {
+			defer wg.Done()
+			hs.isTorrentActive("torbox", "456")
+			hs.MarkTorrentInactive("torbox", "456")
+		}()
+	}
+	wg.Wait()
 }

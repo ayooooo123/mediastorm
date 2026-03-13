@@ -290,8 +290,18 @@ func (s *PlaybackService) resolveWithProvider(ctx context.Context, client Provid
 	}
 
 	// Keep torrent in provider for playback
-	// Note: We don't delete the torrent here because we need it for streaming
+	// Note: We don't delete the torrent here because we need it for streaming.
+	// Mark it as active so concurrent health checks won't delete it.
 	log.Printf("[debrid-playback] keeping torrent %s in %s for playback", torrentID, providerName)
+	if s.healthService != nil {
+		s.healthService.MarkTorrentActive(providerName, torrentID)
+		// Auto-release after 5 minutes — long enough for probing and stream start,
+		// after which the streaming provider has cached the unrestricted URL.
+		go func(hs *HealthService, prov, tid string) {
+			time.Sleep(5 * time.Minute)
+			hs.MarkTorrentInactive(prov, tid)
+		}(s.healthService, providerName, torrentID)
+	}
 
 	// Return webdavPath as a path that the streaming provider can recognize
 	// Format: /debrid/{provider}/TORRENT_ID[/file/ID][/FILENAME]
@@ -465,6 +475,13 @@ func (s *PlaybackService) completeResolution(
 	}
 
 	log.Printf("[debrid-playback] keeping torrent %s in %s for playback", torrentID, providerName)
+	if s.healthService != nil {
+		s.healthService.MarkTorrentActive(providerName, torrentID)
+		go func(hs *HealthService, prov, tid string) {
+			time.Sleep(5 * time.Minute)
+			hs.MarkTorrentInactive(prov, tid)
+		}(s.healthService, providerName, torrentID)
+	}
 
 	// Build WebDAV path
 	webdavPath := fmt.Sprintf("/debrid/%s/%s", providerName, torrentID)
