@@ -708,8 +708,8 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBR
 		})
 	}
 
-	// Debug: log top results after sorting
-	for idx := 0; idx < len(aggregated) && idx < 5; idx++ {
+	// Debug: log all results after sorting
+	for idx := 0; idx < len(aggregated); idx++ {
 		res := extractResolutionFromResult(aggregated[idx])
 		log.Printf("[indexer] Result #%d: ServiceType=%q Resolution=%d Size=%d Title=%q", idx, aggregated[idx].ServiceType, res, aggregated[idx].SizeBytes, aggregated[idx].Title)
 	}
