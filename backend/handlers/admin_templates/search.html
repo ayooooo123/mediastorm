@@ -158,6 +158,11 @@
 <script>
     const basePath = {{json .BasePath}};
     let selectedContent = null;
+
+    function escAttr(s) {
+        if (!s) return '';
+        return s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
     let seriesDetails = null;
     let allScrapeResults = [];
 
@@ -261,7 +266,7 @@
                         <div style="display: flex; gap: 1rem; align-items: center;">
                             ${posterUrl ? `<img src="${posterUrl}" style="width: 50px; height: 75px; object-fit: cover; border-radius: 4px;">` : '<div style="width: 50px; height: 75px; background: var(--bg-tertiary); border-radius: 4px; display: flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: 0.75rem;">No Image</div>'}
                             <div style="flex: 1;">
-                                <div style="font-weight: 500;">${title.name || 'Unknown'}</div>
+                                <div style="font-weight: 500;" title="${escAttr(title.name || '')}">${title.name || 'Unknown'}</div>
                                 <div style="font-size: 0.875rem; color: var(--text-muted);">
                                     ${year ? year + ' - ' : ''}${mediaType === 'series' ? 'TV Series' : 'Movie'}
                                     ${title.imdbId ? ' - ' + title.imdbId : ''}
@@ -526,7 +531,7 @@
                             <tr>
                                 <td style="color: var(--text-muted);">${displayIdx + 1}</td>
                                 <td>
-                                    <div style="max-width: 350px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${r.title || '-'}">
+                                    <div style="max-width: 350px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escAttr(r.title || '-')}">
                                         ${r.title || '-'}
                                     </div>
                                     <div style="font-size: 0.75rem; color: var(--text-muted);">${r.indexer || '-'}</div>
