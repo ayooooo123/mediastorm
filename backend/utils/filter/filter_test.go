@@ -1021,3 +1021,48 @@ func TestResults_ForeignLanguageTitles(t *testing.T) {
 		}
 	})
 }
+
+func TestResults_ParsedMetadataAttributes(t *testing.T) {
+	results := []models.NZBResult{
+		{Title: "The.Matrix.1999.1080p.BluRay.x264.DTS-SPARKS"},
+	}
+
+	opts := Options{
+		ExpectedTitle: "The Matrix",
+		ExpectedYear:  1999,
+		IsMovie:       true,
+	}
+
+	filtered := Results(results, opts)
+
+	if len(filtered) != 1 {
+		t.Fatalf("Expected 1 result, got %d", len(filtered))
+	}
+
+	r := filtered[0]
+
+	// Check that parsed metadata attributes are populated
+	// parsett normalizes codec names (x264->avc) and audio (DTS->DTS Lossy)
+	checks := map[string]string{
+		"resolution":  "1080p",
+		"parsedTitle": "The Matrix",
+		"quality":     "BluRay",
+		"codec":       "avc",
+	}
+
+	for key, expected := range checks {
+		val, ok := r.Attributes[key]
+		if !ok {
+			t.Errorf("Expected attribute %q to be set", key)
+			continue
+		}
+		if val != expected {
+			t.Errorf("Attribute %q: expected %q, got %q", key, expected, val)
+		}
+	}
+
+	// Audio should be set
+	if _, ok := r.Attributes["audio"]; !ok {
+		t.Error("Expected attribute \"audio\" to be set")
+	}
+}

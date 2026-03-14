@@ -123,6 +123,9 @@ type PrequeueStatusResponse struct {
 	PassthroughName        string `json:"passthroughName,omitempty"`        // Raw display name from AIOStreams
 	PassthroughDescription string `json:"passthroughDescription,omitempty"` // Raw description from AIOStreams
 
+	// Parsed metadata attributes from the selected result (for badge display)
+	ResultAttributes map[string]string `json:"resultAttributes,omitempty"`
+
 	// On failure:
 	Error string `json:"error,omitempty"`
 }
@@ -171,6 +174,9 @@ type PrequeueEntry struct {
 	// AIOStreams passthrough format
 	PassthroughName        string `json:"passthroughName,omitempty"`
 	PassthroughDescription string `json:"passthroughDescription,omitempty"`
+
+	// Parsed metadata attributes from selected result
+	ResultAttributes map[string]string `json:"resultAttributes,omitempty"`
 
 	Error     string    `json:"error,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
@@ -592,6 +598,7 @@ func (e *PrequeueEntry) ToResponse() *PrequeueStatusResponse {
 		SubtitleSessions:       e.SubtitleSessions,
 		PassthroughName:        e.PassthroughName,
 		PassthroughDescription: e.PassthroughDescription,
+		ResultAttributes:       e.ResultAttributes,
 		Error:                  e.Error,
 	}
 }

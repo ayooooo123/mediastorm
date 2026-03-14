@@ -469,6 +469,29 @@ func Results(results []models.NZBResult, opts Options) []models.NZBResult {
 			result.Attributes["resolution"] = parsed.Resolution
 		}
 
+		// Store additional parsed metadata for frontend badge display
+		if parsed.Title != "" {
+			result.Attributes["parsedTitle"] = parsed.Title
+		}
+		if parsed.Quality != "" {
+			result.Attributes["quality"] = parsed.Quality
+		}
+		if parsed.Codec != "" {
+			result.Attributes["codec"] = parsed.Codec
+		}
+		if len(parsed.Audio) > 0 {
+			result.Attributes["audio"] = strings.Join(parsed.Audio, ",")
+		}
+		if len(parsed.Channels) > 0 {
+			result.Attributes["channels"] = strings.Join(parsed.Channels, ",")
+		}
+		if parsed.BitDepth != "" {
+			result.Attributes["bitDepth"] = parsed.BitDepth
+		}
+		if parsed.Group != "" {
+			result.Attributes["group"] = parsed.Group
+		}
+
 		// Result passed all filters
 		filtered = append(filtered, filteredResult{
 			result:     result,

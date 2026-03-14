@@ -1062,6 +1062,9 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 		e.Status = playback.PrequeueStatusProbing
 		e.StreamPath = resolution.WebDAVPath
 		e.FileSize = resolution.FileSize
+		if e.FileSize == 0 && selectedResult != nil && selectedResult.SizeBytes > 0 {
+			e.FileSize = selectedResult.SizeBytes
+		}
 		e.HealthStatus = resolution.HealthStatus
 		// Store magnet link for re-adding expired torrents after restart
 		if selectedResult != nil && strings.HasPrefix(strings.ToLower(selectedResult.Link), "magnet:") {
@@ -1071,6 +1074,10 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 		if selectedResult != nil && selectedResult.Attributes["passthrough_format"] == "true" {
 			e.PassthroughName = selectedResult.Attributes["raw_name"]
 			e.PassthroughDescription = selectedResult.Attributes["raw_description"]
+		}
+		// Copy parsed metadata attributes for badge display
+		if selectedResult != nil && len(selectedResult.Attributes) > 0 {
+			e.ResultAttributes = selectedResult.Attributes
 		}
 	})
 
