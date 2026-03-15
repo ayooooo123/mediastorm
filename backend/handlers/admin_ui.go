@@ -444,7 +444,7 @@ var SettingsSchema = map[string]interface{}{
 			"name":                     map[string]interface{}{"type": "text", "label": "Name", "description": "Scraper name", "order": 0},
 			"type":                     map[string]interface{}{"type": "select", "label": "Type", "options": []string{"torrentio", "jackett", "zilean", "aiostreams", "nyaa", "comet"}, "description": "Scraper type", "order": 1},
 			"options":                  map[string]interface{}{"type": "text", "label": "Options", "description": "URL options (e.g., sort=qualitysize|qualityfilter=480p,scr,cam)", "showWhen": map[string]interface{}{"field": "type", "value": "torrentio"}, "order": 2, "placeholder": "sort=qualitysize|qualityfilter=480p,scr,cam"},
-			"url":                      map[string]interface{}{"type": "text", "label": "URL", "description": "API URL (for AIOStreams/Comet: full Stremio addon URL)", "showWhen": map[string]interface{}{"operator": "or", "conditions": []map[string]interface{}{{"field": "type", "value": "jackett"}, {"field": "type", "value": "zilean"}, {"field": "type", "value": "aiostreams"}, {"field": "type", "value": "comet"}}}, "order": 3},
+			"url":                      map[string]interface{}{"type": "text", "label": "URL", "description": "API URL (for AIOStreams/Comet: full Stremio addon URL; for Torrentio: custom base URL replacing https://torrentio.strem.fun — use for self-hosted instances or pre-configured Torrentio URLs, leave blank for default)", "showWhen": map[string]interface{}{"operator": "or", "conditions": []map[string]interface{}{{"field": "type", "value": "jackett"}, {"field": "type", "value": "zilean"}, {"field": "type", "value": "aiostreams"}, {"field": "type", "value": "comet"}, {"field": "type", "value": "torrentio"}}}, "order": 3, "placeholder": "https://torrentio.strem.fun"},
 			"apiKey":                   map[string]interface{}{"type": "password", "label": "API Key", "description": "Jackett API key", "showWhen": map[string]interface{}{"field": "type", "value": "jackett"}, "order": 4},
 			"config.passthroughFormat": map[string]interface{}{"type": "boolean", "label": "Passthrough Format", "description": "Show raw AIOStreams format in manual selection (emoji-formatted details)", "showWhen": map[string]interface{}{"field": "type", "value": "aiostreams"}, "order": 5},
 			"config.category":          map[string]interface{}{"type": "select", "label": "Category", "options": []string{"1_0", "1_2", "1_3", "1_4"}, "description": "Nyaa category (1_0=All Anime, 1_2=English-translated, 1_3=Non-English, 1_4=Raw)", "showWhen": map[string]interface{}{"field": "type", "value": "nyaa"}, "order": 6},
@@ -2352,12 +2352,12 @@ func (h *AdminUIHandler) TestScraper(w http.ResponseWriter, r *http.Request) {
 	case "torrentio":
 		fallthrough
 	default:
-		h.testTorrentioScraper(w, req.Options)
+		h.testTorrentioScraper(w, req.Options, req.URL)
 	}
 }
 
 // testTorrentioScraper tests torrentio by checking cinemeta and then torrentio endpoints
-func (h *AdminUIHandler) testTorrentioScraper(w http.ResponseWriter, options string) {
+func (h *AdminUIHandler) testTorrentioScraper(w http.ResponseWriter, options, customURL string) {
 	client := &http.Client{Timeout: 15 * time.Second}
 
 	// First test cinemeta (used by torrentio)
@@ -2391,13 +2391,17 @@ func (h *AdminUIHandler) testTorrentioScraper(w http.ResponseWriter, options str
 	}
 
 	// Test torrentio with a known IMDB ID (The Matrix)
-	// Include options in URL if provided
+	// Include options in URL if provided, use custom URL if set
+	baseURL := "https://torrentio.strem.fun"
+	if u := strings.TrimRight(strings.TrimSpace(customURL), "/"); u != "" {
+		baseURL = u
+	}
 	var torrentioURL string
 	options = strings.TrimSpace(options)
 	if options != "" {
-		torrentioURL = fmt.Sprintf("https://torrentio.strem.fun/%s/stream/movie/tt0133093.json", options)
+		torrentioURL = fmt.Sprintf("%s/%s/stream/movie/tt0133093.json", baseURL, options)
 	} else {
-		torrentioURL = "https://torrentio.strem.fun/stream/movie/tt0133093.json"
+		torrentioURL = fmt.Sprintf("%s/stream/movie/tt0133093.json", baseURL)
 	}
 	torrentioReq, err := http.NewRequest(http.MethodGet, torrentioURL, nil)
 	if err != nil {

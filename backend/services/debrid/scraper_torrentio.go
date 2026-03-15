@@ -38,13 +38,18 @@ type TorrentioScraper struct {
 // The name parameter is the user-configured display name (empty falls back to "torrentio").
 // The options parameter is inserted between the base URL and /stream path
 // (e.g., "sort=qualitysize|qualityfilter=480p,scr,cam").
-func NewTorrentioScraper(client *http.Client, options, name string) *TorrentioScraper {
+// The customURL parameter overrides the default base URL (https://torrentio.strem.fun).
+func NewTorrentioScraper(client *http.Client, options, name, customURL string) *TorrentioScraper {
 	if client == nil {
 		client = &http.Client{Timeout: 15 * time.Second}
 	}
+	baseURL := torrentioDefaultBaseURL
+	if u := strings.TrimSpace(customURL); u != "" {
+		baseURL = strings.TrimRight(u, "/")
+	}
 	return &TorrentioScraper{
 		name:       strings.TrimSpace(name),
-		baseURL:    torrentioDefaultBaseURL,
+		baseURL:    baseURL,
 		options:    strings.TrimSpace(options),
 		httpClient: client,
 	}
