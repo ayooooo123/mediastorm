@@ -222,6 +222,7 @@ type PlaybackSettings struct {
 	RewindOnPlaybackStart     int     `json:"rewindOnPlaybackStart"`        // Seconds to rewind when resuming from saved progress (default 0)
 	DisablePrequeue           bool    `json:"disablePrequeue"`              // Disable automatic prequeue on page load (streams only resolve when Play is pressed)
 	MaxConcurrentStreams      int     `json:"maxConcurrentStreams"`         // Global max concurrent VOD streams across all accounts (0 = unlimited)
+	MaxResultsPerResolution   int     `json:"maxResultsPerResolution"`     // Maximum number of results per resolution tier (0 = no limit)
 }
 
 // LiveTVFilterSettings controls backend-side filtering for Live TV channels.
@@ -318,17 +319,13 @@ const (
 
 // FilterSettings controls content filtering preferences.
 type FilterSettings struct {
-	MaxSizeMovieGB                   float64     `json:"maxSizeMovieGb"`
-	MaxSizeEpisodeGB                 float64     `json:"maxSizeEpisodeGb"`
-	MaxResolution                    string      `json:"maxResolution"`                    // Maximum resolution (e.g., "720p", "1080p", "2160p", empty = no limit)
-	HDRDVPolicy                      HDRDVPolicy `json:"hdrDvPolicy"`                      // HDR/DV inclusion policy: "none" (no exclusion), "hdr" (include HDR + DV 7/8), "hdr_dv" (include all HDR/DV)
-	PrioritizeHdr                    bool        `json:"prioritizeHdr"`                    // Prioritize HDR/DV content in search results
-	FilterOutTerms                   []string    `json:"filterOutTerms"`                   // Terms to filter out from results (case-insensitive match in title)
-	PreferredTerms                   []string    `json:"preferredTerms"`                   // Terms to prioritize in results (case-insensitive match in title)
-	NonPreferredTerms                []string    `json:"nonPreferredTerms"`                // Terms to derank in results (case-insensitive match in title, ranked lower but not removed)
-	BypassFilteringForAIOStreamsOnly bool        `json:"bypassFilteringForAioStreamsOnly"` // Skip mediastorm filtering/ranking when AIOStreams is the only enabled scraper (debrid-only mode)
-	ShowParsedBadges                bool        `json:"showParsedBadges,omitempty"`       // Show parsed metadata badges instead of raw titles in manual selection
-	MaxResultsPerResolution         int         `json:"maxResultsPerResolution"`          // Maximum number of results per resolution tier (0 = no limit)
+	MaxSizeMovieGB    float64     `json:"maxSizeMovieGb"`
+	MaxSizeEpisodeGB  float64     `json:"maxSizeEpisodeGb"`
+	MaxResolution     string      `json:"maxResolution"`     // Maximum resolution (e.g., "720p", "1080p", "2160p", empty = no limit)
+	HDRDVPolicy       HDRDVPolicy `json:"hdrDvPolicy"`       // HDR/DV inclusion policy: "none" (no exclusion), "hdr" (include HDR + DV 7/8), "hdr_dv" (include all HDR/DV)
+	FilterOutTerms    []string    `json:"filterOutTerms"`    // Terms to filter out from results (case-insensitive match in title)
+	PreferredTerms    []string    `json:"preferredTerms"`    // Terms to prioritize in results (case-insensitive match in title)
+	NonPreferredTerms []string    `json:"nonPreferredTerms"` // Terms to derank in results (case-insensitive match in title, ranked lower but not removed)
 }
 
 // AnimeFilteringSettings controls anime-specific language preferences.
@@ -354,6 +351,10 @@ type DisplaySettings struct {
 	HideWatched bool `json:"hideWatched,omitempty"`
 	// AlwaysShowProfileSelector forces the profile picker on every app open / un-background.
 	AlwaysShowProfileSelector bool `json:"alwaysShowProfileSelector"`
+	// BypassFilteringForAIOStreamsOnly skips mediastorm filtering/ranking when AIOStreams is the only enabled scraper (debrid-only mode).
+	BypassFilteringForAIOStreamsOnly bool `json:"bypassFilteringForAioStreamsOnly"`
+	// ShowParsedBadges shows parsed metadata badges instead of raw titles in manual selection.
+	ShowParsedBadges bool `json:"showParsedBadges,omitempty"`
 }
 
 // SubtitleSettings defines subtitle provider configuration.
@@ -578,7 +579,6 @@ const (
 	RankingPreferredTerms    RankingCriterionID = "preferred-terms"
 	RankingNonPreferredTerms RankingCriterionID = "non-preferred-terms"
 	RankingResolution        RankingCriterionID = "resolution"
-	RankingHDR               RankingCriterionID = "hdr"
 	RankingLanguage          RankingCriterionID = "language"
 	RankingSize              RankingCriterionID = "size"
 )
@@ -603,9 +603,8 @@ func DefaultRankingCriteria() []RankingCriterion {
 		{ID: RankingPreferredTerms, Name: "Preferred Terms", Enabled: true, Order: 1},
 		{ID: RankingNonPreferredTerms, Name: "Non-Preferred Terms", Enabled: true, Order: 2},
 		{ID: RankingResolution, Name: "Resolution", Enabled: true, Order: 3},
-		{ID: RankingHDR, Name: "HDR/Dolby Vision", Enabled: true, Order: 4},
-		{ID: RankingLanguage, Name: "Language", Enabled: true, Order: 5},
-		{ID: RankingSize, Name: "File Size", Enabled: true, Order: 6},
+		{ID: RankingLanguage, Name: "Language", Enabled: true, Order: 4},
+		{ID: RankingSize, Name: "File Size", Enabled: true, Order: 5},
 	}
 }
 
@@ -642,8 +641,7 @@ func DefaultSettings() Settings {
 			MaxSizeMovieGB:   0,                       // 0 means no limit
 			MaxSizeEpisodeGB: 0,                       // 0 means no limit
 			HDRDVPolicy:      HDRDVPolicyIncludeHDRDV, // "hdr_dv" = allow all content (no HDR/DV filtering)
-			PrioritizeHdr:    true,                    // true = prioritize HDR/DV content when available
-		},
+			},
 		AnimeFiltering: AnimeFilteringSettings{},
 		UI: UISettings{
 			LoadingAnimationEnabled: true,
@@ -810,6 +808,9 @@ func (m *Manager) Load() (Settings, error) {
 	} else {
 		raw["ui"] = map[string]interface{}{"loadingAnimationEnabled": true}
 	}
+
+	// Apply versioned migrations (settings field relocations)
+	MigrateRawSettings(raw)
 
 	// Migrate servicePriority from filtering to streaming
 	if filteringRaw, ok := raw["filtering"].(map[string]interface{}); ok {

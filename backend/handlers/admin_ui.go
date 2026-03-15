@@ -320,7 +320,7 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"filtering": map[string]interface{}{
-		"label": "Content Filtering",
+		"label": "Ranking & Filtering",
 		"icon":  "filter",
 		"group": "searchFiltering",
 		"order": 1,
@@ -338,13 +338,9 @@ var SettingsSchema = map[string]interface{}{
 				},
 				"description": "Content filtering: 'All content' allows everything. 'SDR + HDR only' excludes DV profile 5 (detected at probe time). 'SDR only' excludes all HDR/DV content.",
 			},
-			"prioritizeHdr":                    map[string]interface{}{"type": "boolean", "label": "Prioritize HDR", "description": "Prioritize HDR/DV content in results"},
-			"filterOutTerms":                   map[string]interface{}{"type": "tags", "label": "Filter Out Terms", "description": "Terms to exclude from results (case-insensitive substring match; wrap in /slashes/ for regex, e.g. /\\bDUB\\b/)"},
-			"preferredTerms":                   map[string]interface{}{"type": "tags", "label": "Preferred Terms", "description": "Terms to prioritize in results (case-insensitive substring match, ranked higher; wrap in /slashes/ for regex)"},
-			"nonPreferredTerms":                map[string]interface{}{"type": "tags", "label": "Non-Preferred Terms", "description": "Terms to derank in results (case-insensitive substring match, ranked lower but not removed; wrap in /slashes/ for regex)"},
-			"bypassFilteringForAioStreamsOnly": map[string]interface{}{"type": "boolean", "label": "Bypass Filtering for AIOStreams Only", "description": "Skip mediastorm filtering/ranking when AIOStreams is the only enabled scraper in debrid-only mode (use AIOStreams' own ranking). Does not apply in hybrid mode with usenet."},
-			"showParsedBadges":          map[string]interface{}{"type": "boolean", "label": "Show Parsed Metadata Badges", "description": "Show parsed quality badges (resolution, codec, HDR, audio) instead of raw release titles in manual source selection"},
-			"maxResultsPerResolution": map[string]interface{}{"type": "number", "label": "Max Results Per Resolution", "description": "Maximum number of results per resolution tier (0 = no limit)"},
+			"filterOutTerms":   map[string]interface{}{"type": "tags", "label": "Filter Out Terms", "description": "Terms to exclude from results (case-insensitive substring match; wrap in /slashes/ for regex, e.g. /\\bDUB\\b/)"},
+			"preferredTerms":   map[string]interface{}{"type": "tags", "label": "Preferred Terms", "description": "Terms to prioritize in results (case-insensitive substring match, ranked higher; wrap in /slashes/ for regex)"},
+			"nonPreferredTerms": map[string]interface{}{"type": "tags", "label": "Non-Preferred Terms", "description": "Terms to derank in results (case-insensitive substring match, ranked lower but not removed; wrap in /slashes/ for regex)"},
 		},
 	},
 	"animeFiltering": map[string]interface{}{
@@ -372,7 +368,7 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"ranking": map[string]interface{}{
-		"label":  "Result Ranking",
+		"label":  "Overall Ranking",
 		"icon":   "list",
 		"group":  "searchFiltering",
 		"order":  3,
@@ -472,7 +468,8 @@ var SettingsSchema = map[string]interface{}{
 			"rewindOnResumeFromPause":   map[string]interface{}{"type": "number", "label": "Rewind on Unpause", "description": "Seconds to rewind when resuming from pause (default 0)", "step": 1, "min": 0, "max": 30},
 			"rewindOnPlaybackStart":     map[string]interface{}{"type": "number", "label": "Rewind on Resume", "description": "Seconds to rewind when resuming from saved progress (default 0)", "step": 1, "min": 0, "max": 60},
 			"disablePrequeue":           map[string]interface{}{"type": "boolean", "label": "Disable Prequeue", "description": "Disable automatic stream pre-loading when opening a details page. Streams will only be resolved when you press Play. Useful to reduce unnecessary backend load or API calls.", "order": 101},
-			"ytdlpCookies":             map[string]interface{}{"type": "file_upload", "label": "YouTube Cookies (Experimental)", "description": "Upload a Netscape-format cookies.txt file to help yt-dlp bypass YouTube restrictions on VPS/cloud servers. Export cookies from a browser where you are logged into YouTube using a browser extension like 'Get cookies.txt LOCALLY'.", "order": 102, "endpoint": "/admin/api/ytdlp-cookies", "accept": ".txt", "globalOnly": true},
+			"maxResultsPerResolution":   map[string]interface{}{"type": "number", "label": "Max Results Per Resolution", "description": "Maximum number of results per resolution tier (0 = no limit)", "order": 102},
+			"ytdlpCookies":             map[string]interface{}{"type": "file_upload", "label": "YouTube Cookies (Experimental)", "description": "Upload a Netscape-format cookies.txt file to help yt-dlp bypass YouTube restrictions on VPS/cloud servers. Export cookies from a browser where you are logged into YouTube using a browser extension like 'Get cookies.txt LOCALLY'.", "order": 103, "endpoint": "/admin/api/ytdlp-cookies", "accept": ".txt", "globalOnly": true},
 		},
 	},
 	"homeShelves": map[string]interface{}{
@@ -558,6 +555,8 @@ var SettingsSchema = map[string]interface{}{
 				"description": "Show the profile selector when the app is opened or returns from background",
 				"order":       3,
 			},
+			"bypassFilteringForAioStreamsOnly": map[string]interface{}{"type": "boolean", "label": "Bypass Filtering for AIOStreams Only", "description": "Skip mediastorm filtering/ranking when AIOStreams is the only enabled scraper in debrid-only mode (use AIOStreams' own ranking). Does not apply in hybrid mode with usenet.", "order": 4},
+			"showParsedBadges": map[string]interface{}{"type": "boolean", "label": "Show Parsed Metadata Badges", "description": "Show parsed quality badges (resolution, codec, HDR, audio) instead of raw release titles in manual source selection", "order": 5},
 		},
 	},
 	"metadata": map[string]interface{}{
@@ -1066,6 +1065,7 @@ type AdminPageData struct {
 	Version       string
 	BuildID       string
 	NoProfiles    bool // true when non-admin user has no profiles
+	Presets       []config.Preset
 }
 
 // AdminStatus holds backend status information
@@ -1112,6 +1112,7 @@ func (h *AdminUIHandler) SettingsPage(w http.ResponseWriter, r *http.Request) {
 		Version:       GetBackendVersion(),
 		BuildID:       GetBackendBuildID(),
 		NoProfiles:    noProfiles,
+		Presets:       config.LoadPresets(),
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -1760,15 +1761,13 @@ func (h *AdminUIHandler) GetUserSettings(w http.ResponseWriter, r *http.Request)
 			Shelves: convertShelves(globalSettings.HomeShelves.Shelves),
 		},
 		Filtering: models.FilterSettings{
-			MaxSizeMovieGB:                   models.FloatPtr(globalSettings.Filtering.MaxSizeMovieGB),
-			MaxSizeEpisodeGB:                 models.FloatPtr(globalSettings.Filtering.MaxSizeEpisodeGB),
-			MaxResolution:                    globalSettings.Filtering.MaxResolution,
-			HDRDVPolicy:                      models.HDRDVPolicy(globalSettings.Filtering.HDRDVPolicy),
-			PrioritizeHdr:                    models.BoolPtr(globalSettings.Filtering.PrioritizeHdr),
-			FilterOutTerms:                   globalSettings.Filtering.FilterOutTerms,
-			PreferredTerms:                   globalSettings.Filtering.PreferredTerms,
-			NonPreferredTerms:                globalSettings.Filtering.NonPreferredTerms,
-			BypassFilteringForAIOStreamsOnly: models.BoolPtr(globalSettings.Filtering.BypassFilteringForAIOStreamsOnly),
+			MaxSizeMovieGB:    models.FloatPtr(globalSettings.Filtering.MaxSizeMovieGB),
+			MaxSizeEpisodeGB:  models.FloatPtr(globalSettings.Filtering.MaxSizeEpisodeGB),
+			MaxResolution:     globalSettings.Filtering.MaxResolution,
+			HDRDVPolicy:       models.HDRDVPolicy(globalSettings.Filtering.HDRDVPolicy),
+			FilterOutTerms:    globalSettings.Filtering.FilterOutTerms,
+			PreferredTerms:    globalSettings.Filtering.PreferredTerms,
+			NonPreferredTerms: globalSettings.Filtering.NonPreferredTerms,
 		},
 		LiveTV: models.LiveTVSettings{
 			HiddenChannels:     []string{},
@@ -1777,8 +1776,9 @@ func (h *AdminUIHandler) GetUserSettings(w http.ResponseWriter, r *http.Request)
 			MaxStreams:         &maxStreams,
 		},
 		Display: models.DisplaySettings{
-			BadgeVisibility:     globalSettings.Display.BadgeVisibility,
-			WatchStateIconStyle: globalSettings.Display.WatchStateIconStyle,
+			BadgeVisibility:                 globalSettings.Display.BadgeVisibility,
+			WatchStateIconStyle:             globalSettings.Display.WatchStateIconStyle,
+			BypassFilteringForAIOStreamsOnly: models.BoolPtr(globalSettings.Display.BypassFilteringForAIOStreamsOnly),
 		},
 	}
 
@@ -1863,15 +1863,13 @@ func (h *AdminUIHandler) PropagateSettings(w http.ResponseWriter, r *http.Reques
 
 	// Build the filtering settings from global
 	globalFilterSettings := models.FilterSettings{
-		MaxSizeMovieGB:                   models.FloatPtr(globalSettings.Filtering.MaxSizeMovieGB),
-		MaxSizeEpisodeGB:                 models.FloatPtr(globalSettings.Filtering.MaxSizeEpisodeGB),
-		MaxResolution:                    globalSettings.Filtering.MaxResolution,
-		HDRDVPolicy:                      models.HDRDVPolicy(globalSettings.Filtering.HDRDVPolicy),
-		PrioritizeHdr:                    models.BoolPtr(globalSettings.Filtering.PrioritizeHdr),
-		FilterOutTerms:                   globalSettings.Filtering.FilterOutTerms,
-		PreferredTerms:                   globalSettings.Filtering.PreferredTerms,
-		NonPreferredTerms:                globalSettings.Filtering.NonPreferredTerms,
-		BypassFilteringForAIOStreamsOnly: models.BoolPtr(globalSettings.Filtering.BypassFilteringForAIOStreamsOnly),
+		MaxSizeMovieGB:    models.FloatPtr(globalSettings.Filtering.MaxSizeMovieGB),
+		MaxSizeEpisodeGB:  models.FloatPtr(globalSettings.Filtering.MaxSizeEpisodeGB),
+		MaxResolution:     globalSettings.Filtering.MaxResolution,
+		HDRDVPolicy:       models.HDRDVPolicy(globalSettings.Filtering.HDRDVPolicy),
+		FilterOutTerms:    globalSettings.Filtering.FilterOutTerms,
+		PreferredTerms:    globalSettings.Filtering.PreferredTerms,
+		NonPreferredTerms: globalSettings.Filtering.NonPreferredTerms,
 	}
 
 	var propagatedProfiles, propagatedClients int
@@ -4637,9 +4635,10 @@ func (h *AdminUIHandler) TestLiveTV(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer resp.Body.Close()
-		buf := make([]byte, 1024)
-		n, _ := io.ReadAtLeast(resp.Body, buf, 7) // #EXTM3U is 7 bytes
-		if n >= 7 && strings.HasPrefix(string(buf[:n]), "#EXTM3U") {
+		buf := make([]byte, 4096)
+		n, _ := resp.Body.Read(buf)
+		content := strings.TrimLeft(string(buf[:n]), "\xef\xbb\xbf \t\r\n") // strip BOM and whitespace
+		if strings.HasPrefix(content, "#EXTM3U") || strings.Contains(content, "#EXTINF") {
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"success": true,
 				"message": "Valid M3U playlist",
@@ -4647,7 +4646,7 @@ func (h *AdminUIHandler) TestLiveTV(w http.ResponseWriter, r *http.Request) {
 		} else {
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"success": false,
-				"error":   "Response is not a valid M3U playlist (missing #EXTM3U header)",
+				"error":   "Response is not a valid M3U playlist (missing #EXTM3U header or #EXTINF entries)",
 			})
 		}
 

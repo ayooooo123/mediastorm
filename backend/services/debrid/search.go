@@ -202,14 +202,14 @@ func isOnlyAIOStreamsEnabled(scrapers []config.TorrentScraperConfig) bool {
 
 // getEffectiveFilterSettings returns the filtering settings to use for a search.
 // Settings cascade: Global -> Profile -> Client (client settings win)
-func (s *SearchService) getEffectiveFilterSettings(userID, clientID string, globalSettings config.Settings) models.FilterSettings {
+func (s *SearchService) getEffectiveFilterSettings(userID, clientID string, globalSettings config.Settings) (models.FilterSettings, bool) {
+	bypassForAIO := globalSettings.Display.BypassFilteringForAIOStreamsOnly
 	// Start with global settings (as pointers)
 	filterSettings := models.FilterSettings{
 		MaxSizeMovieGB:   models.FloatPtr(globalSettings.Filtering.MaxSizeMovieGB),
 		MaxSizeEpisodeGB: models.FloatPtr(globalSettings.Filtering.MaxSizeEpisodeGB),
 		MaxResolution:    globalSettings.Filtering.MaxResolution,
 		HDRDVPolicy:      models.HDRDVPolicy(globalSettings.Filtering.HDRDVPolicy),
-		PrioritizeHdr:    models.BoolPtr(globalSettings.Filtering.PrioritizeHdr),
 		FilterOutTerms:    globalSettings.Filtering.FilterOutTerms,
 		PreferredTerms:    globalSettings.Filtering.PreferredTerms,
 		NonPreferredTerms: globalSettings.Filtering.NonPreferredTerms,
@@ -235,9 +235,6 @@ func (s *SearchService) getEffectiveFilterSettings(userID, clientID string, glob
 			if profileFiltering.HDRDVPolicy != "" {
 				filterSettings.HDRDVPolicy = profileFiltering.HDRDVPolicy
 			}
-			if profileFiltering.PrioritizeHdr != nil {
-				filterSettings.PrioritizeHdr = profileFiltering.PrioritizeHdr
-			}
 			if profileFiltering.FilterOutTerms != nil {
 				filterSettings.FilterOutTerms = profileFiltering.FilterOutTerms
 			}
@@ -247,8 +244,8 @@ func (s *SearchService) getEffectiveFilterSettings(userID, clientID string, glob
 			if profileFiltering.NonPreferredTerms != nil {
 				filterSettings.NonPreferredTerms = profileFiltering.NonPreferredTerms
 			}
-			if profileFiltering.BypassFilteringForAIOStreamsOnly != nil {
-				filterSettings.BypassFilteringForAIOStreamsOnly = profileFiltering.BypassFilteringForAIOStreamsOnly
+			if userSettings.Display.BypassFilteringForAIOStreamsOnly != nil {
+				bypassForAIO = *userSettings.Display.BypassFilteringForAIOStreamsOnly
 			}
 		}
 	}
@@ -272,9 +269,6 @@ func (s *SearchService) getEffectiveFilterSettings(userID, clientID string, glob
 			if clientSettings.HDRDVPolicy != nil {
 				filterSettings.HDRDVPolicy = *clientSettings.HDRDVPolicy
 			}
-			if clientSettings.PrioritizeHdr != nil {
-				filterSettings.PrioritizeHdr = clientSettings.PrioritizeHdr
-			}
 			if clientSettings.FilterOutTerms != nil {
 				filterSettings.FilterOutTerms = *clientSettings.FilterOutTerms
 			}
@@ -284,10 +278,13 @@ func (s *SearchService) getEffectiveFilterSettings(userID, clientID string, glob
 			if clientSettings.NonPreferredTerms != nil {
 				filterSettings.NonPreferredTerms = *clientSettings.NonPreferredTerms
 			}
+			if clientSettings.BypassFilteringForAIOStreamsOnly != nil {
+				bypassForAIO = *clientSettings.BypassFilteringForAIOStreamsOnly
+			}
 		}
 	}
 
-	return filterSettings
+	return filterSettings, bypassForAIO
 }
 
 // Search executes scraper-backed torrent discovery across enabled debrid providers.
@@ -302,7 +299,7 @@ func (s *SearchService) Search(ctx context.Context, opts SearchOptions) ([]model
 	}
 
 	// Get effective filtering settings (cascade: global -> profile -> client)
-	filterSettings := s.getEffectiveFilterSettings(opts.UserID, opts.ClientID, settings)
+	filterSettings, bypassForAIO := s.getEffectiveFilterSettings(opts.UserID, opts.ClientID, settings)
 
 	if !hasActiveDebridProviders(settings.Streaming.DebridProviders) {
 		return []models.NZBResult{}, nil
@@ -499,7 +496,7 @@ func (s *SearchService) Search(ctx context.Context, opts SearchOptions) ([]model
 	}
 
 	// Check if filtering should be bypassed for AIOStreams-only mode
-	bypassFiltering := settings.Filtering.BypassFilteringForAIOStreamsOnly && isOnlyAIOStreamsEnabled(settings.TorrentScrapers)
+	bypassFiltering := bypassForAIO && isOnlyAIOStreamsEnabled(settings.TorrentScrapers)
 	if bypassFiltering {
 		log.Printf("[debrid] Bypassing mediastorm filtering - AIOStreams is the only enabled scraper and bypass setting is enabled")
 	}
@@ -518,7 +515,6 @@ func (s *SearchService) Search(ctx context.Context, opts SearchOptions) ([]model
 			MaxSizeEpisodeGB:      models.FloatVal(filterSettings.MaxSizeEpisodeGB, 0),
 			MaxResolution:         filterSettings.MaxResolution,
 			HDRDVPolicy:           filter.HDRDVPolicy(filterSettings.HDRDVPolicy),
-			PrioritizeHdr:         models.BoolVal(filterSettings.PrioritizeHdr, false),
 			AlternateTitles:       opts.AlternateTitles,
 			FilterOutTerms:        filterSettings.FilterOutTerms,
 			TotalSeriesEpisodes:   opts.TotalSeriesEpisodes,

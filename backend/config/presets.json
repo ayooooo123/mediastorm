@@ -1,0 +1,98 @@
+[
+  {
+    "id": "quality-first",
+    "name": "Quality First",
+    "description": "Highest quality, no size limits, HDR/DV preferred",
+    "filtering": {
+      "maxSizeMovieGb": 0,
+      "maxSizeEpisodeGb": 0,
+      "maxResolution": "",
+      "hdrDvPolicy": "hdr_dv",
+      "filterOutTerms": ["CAM", "HDTS", "TELESYNC", "HDTC"],
+      "preferredTerms": ["REMUX", "ATMOS", "HDR", "HDR10", "HDR10+", "DV", "Dolby Vision"],
+      "nonPreferredTerms": ["HDCAM", "TS"]
+    },
+    "ranking": {
+      "criteria": [
+        {"id": "resolution", "name": "Resolution", "enabled": true, "order": 0},
+        {"id": "preferred-terms", "name": "Preferred Terms", "enabled": true, "order": 1},
+        {"id": "service-priority", "name": "Service Priority", "enabled": true, "order": 2},
+        {"id": "language", "name": "Language", "enabled": true, "order": 3},
+        {"id": "size", "name": "File Size", "enabled": true, "order": 4},
+        {"id": "non-preferred-terms", "name": "Non-Preferred Terms", "enabled": true, "order": 5}
+      ]
+    }
+  },
+  {
+    "id": "balanced",
+    "name": "Balanced",
+    "description": "Good quality with reasonable size limits",
+    "filtering": {
+      "maxSizeMovieGb": 25,
+      "maxSizeEpisodeGb": 8,
+      "maxResolution": "2160p",
+      "hdrDvPolicy": "hdr_dv",
+      "filterOutTerms": ["CAM", "HDTS", "TELESYNC"],
+      "preferredTerms": ["REMUX", "HDR", "HDR10", "DV", "Dolby Vision"],
+      "nonPreferredTerms": ["HDCAM", "TS"]
+    },
+    "ranking": {
+      "criteria": [
+        {"id": "service-priority", "name": "Service Priority", "enabled": true, "order": 0},
+        {"id": "preferred-terms", "name": "Preferred Terms", "enabled": true, "order": 1},
+        {"id": "non-preferred-terms", "name": "Non-Preferred Terms", "enabled": true, "order": 2},
+        {"id": "resolution", "name": "Resolution", "enabled": true, "order": 3},
+        {"id": "language", "name": "Language", "enabled": true, "order": 4},
+        {"id": "size", "name": "File Size", "enabled": true, "order": 5}
+      ]
+    }
+  },
+  {
+    "id": "bandwidth-saver",
+    "name": "Bandwidth Saver",
+    "description": "Smaller files, 1080p max, SDR+HDR only",
+    "filtering": {
+      "maxSizeMovieGb": 8,
+      "maxSizeEpisodeGb": 3,
+      "maxResolution": "1080p",
+      "hdrDvPolicy": "hdr",
+      "filterOutTerms": ["CAM", "HDTS", "TELESYNC", "REMUX"],
+      "preferredTerms": ["x265", "HEVC"],
+      "nonPreferredTerms": ["x264", "AVC"]
+    },
+    "ranking": {
+      "criteria": [
+        {"id": "size", "name": "File Size", "enabled": true, "order": 0},
+        {"id": "resolution", "name": "Resolution", "enabled": true, "order": 1},
+        {"id": "service-priority", "name": "Service Priority", "enabled": true, "order": 2},
+        {"id": "preferred-terms", "name": "Preferred Terms", "enabled": true, "order": 3},
+        {"id": "language", "name": "Language", "enabled": true, "order": 4},
+        {"id": "non-preferred-terms", "name": "Non-Preferred Terms", "enabled": true, "order": 5}
+      ]
+    }
+  },
+  {
+    "id": "minimal",
+    "name": "Minimal",
+    "description": "Smallest files, 720p max, SDR only",
+    "filtering": {
+      "maxSizeMovieGb": 4,
+      "maxSizeEpisodeGb": 1.5,
+      "maxResolution": "720p",
+      "hdrDvPolicy": "none",
+      "filterOutTerms": ["CAM", "HDTS", "TELESYNC", "REMUX", "ATMOS"],
+      "preferredTerms": ["x265", "HEVC", "WEB-DL"],
+      "nonPreferredTerms": ["x264", "AVC", "BLURAY"]
+    },
+    "ranking": {
+      "criteria": [
+        {"id": "size", "name": "File Size", "enabled": true, "order": 0},
+        {"id": "service-priority", "name": "Service Priority", "enabled": true, "order": 1},
+        {"id": "resolution", "name": "Resolution", "enabled": true, "order": 2},
+        {"id": "language", "name": "Language", "enabled": true, "order": 3},
+        {"id": "preferred-terms", "name": "Preferred Terms", "enabled": true, "order": 4},
+        {"id": "non-preferred-terms", "name": "Non-Preferred Terms", "enabled": true, "order": 5}
+      ]
+    }
+  }
+]

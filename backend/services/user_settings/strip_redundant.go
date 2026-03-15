@@ -129,19 +129,18 @@ func globalToUserSettings(g config.Settings) models.UserSettings {
 			MaxSizeEpisodeGB:                 models.FloatPtr(g.Filtering.MaxSizeEpisodeGB),
 			MaxResolution:                    g.Filtering.MaxResolution,
 			HDRDVPolicy:                      models.HDRDVPolicy(g.Filtering.HDRDVPolicy),
-			PrioritizeHdr:                    models.BoolPtr(g.Filtering.PrioritizeHdr),
 			FilterOutTerms:                   g.Filtering.FilterOutTerms,
 			PreferredTerms:                   g.Filtering.PreferredTerms,
-			NonPreferredTerms:                g.Filtering.NonPreferredTerms,
-			BypassFilteringForAIOStreamsOnly: models.BoolPtr(g.Filtering.BypassFilteringForAIOStreamsOnly),
+			NonPreferredTerms: g.Filtering.NonPreferredTerms,
 		},
 		AnimeFiltering: models.AnimeFilteringSettings{
 			AnimeLanguageEnabled:   models.BoolPtr(g.AnimeFiltering.AnimeLanguageEnabled),
 			AnimePreferredLanguage: models.StringPtr(g.AnimeFiltering.AnimePreferredLanguage),
 		},
 		Display: models.DisplaySettings{
-			BadgeVisibility:     g.Display.BadgeVisibility,
-			WatchStateIconStyle: g.Display.WatchStateIconStyle,
+			BadgeVisibility:                 g.Display.BadgeVisibility,
+			WatchStateIconStyle:             g.Display.WatchStateIconStyle,
+			BypassFilteringForAIOStreamsOnly: models.BoolPtr(g.Display.BypassFilteringForAIOStreamsOnly),
 		},
 		HomeShelves: models.HomeShelvesSettings{
 			Shelves: configShelvesToModel(g.HomeShelves.Shelves),
@@ -214,9 +213,6 @@ func mergeWithGlobal(us models.UserSettings, g config.Settings) models.UserSetti
 	if eff.Filtering.HDRDVPolicy == "" {
 		eff.Filtering.HDRDVPolicy = models.HDRDVPolicy(g.Filtering.HDRDVPolicy)
 	}
-	if eff.Filtering.PrioritizeHdr == nil {
-		eff.Filtering.PrioritizeHdr = models.BoolPtr(g.Filtering.PrioritizeHdr)
-	}
 	if eff.Filtering.FilterOutTerms == nil {
 		eff.Filtering.FilterOutTerms = g.Filtering.FilterOutTerms
 	}
@@ -226,8 +222,8 @@ func mergeWithGlobal(us models.UserSettings, g config.Settings) models.UserSetti
 	if eff.Filtering.NonPreferredTerms == nil {
 		eff.Filtering.NonPreferredTerms = g.Filtering.NonPreferredTerms
 	}
-	if eff.Filtering.BypassFilteringForAIOStreamsOnly == nil {
-		eff.Filtering.BypassFilteringForAIOStreamsOnly = models.BoolPtr(g.Filtering.BypassFilteringForAIOStreamsOnly)
+	if eff.Display.BypassFilteringForAIOStreamsOnly == nil {
+		eff.Display.BypassFilteringForAIOStreamsOnly = models.BoolPtr(g.Display.BypassFilteringForAIOStreamsOnly)
 	}
 
 	// AnimeFiltering
@@ -336,10 +332,6 @@ func stripFiltering(f *models.FilterSettings, g config.FilterSettings) bool {
 		f.HDRDVPolicy = ""
 		changed = true
 	}
-	if f.PrioritizeHdr != nil && *f.PrioritizeHdr == g.PrioritizeHdr {
-		f.PrioritizeHdr = nil
-		changed = true
-	}
 	if f.FilterOutTerms != nil && stringSliceEqualUnordered(f.FilterOutTerms, g.FilterOutTerms) {
 		f.FilterOutTerms = nil
 		changed = true
@@ -350,10 +342,6 @@ func stripFiltering(f *models.FilterSettings, g config.FilterSettings) bool {
 	}
 	if f.NonPreferredTerms != nil && stringSliceEqualUnordered(f.NonPreferredTerms, g.NonPreferredTerms) {
 		f.NonPreferredTerms = nil
-		changed = true
-	}
-	if f.BypassFilteringForAIOStreamsOnly != nil && *f.BypassFilteringForAIOStreamsOnly == g.BypassFilteringForAIOStreamsOnly {
-		f.BypassFilteringForAIOStreamsOnly = nil
 		changed = true
 	}
 	return changed
@@ -378,6 +366,10 @@ func stripDisplay(d *models.DisplaySettings, g config.DisplaySettings) bool {
 	}
 	if d.WatchStateIconStyle != "" && d.WatchStateIconStyle == g.WatchStateIconStyle {
 		d.WatchStateIconStyle = ""
+		changed = true
+	}
+	if d.BypassFilteringForAIOStreamsOnly != nil && *d.BypassFilteringForAIOStreamsOnly == g.BypassFilteringForAIOStreamsOnly {
+		d.BypassFilteringForAIOStreamsOnly = nil
 		changed = true
 	}
 	return changed
@@ -448,10 +440,6 @@ func stripClientSettings(cs *models.ClientFilterSettings, eff models.UserSetting
 		cs.HDRDVPolicy = nil
 		changed = true
 	}
-	if cs.PrioritizeHdr != nil && eff.Filtering.PrioritizeHdr != nil && *cs.PrioritizeHdr == *eff.Filtering.PrioritizeHdr {
-		cs.PrioritizeHdr = nil
-		changed = true
-	}
 	if cs.FilterOutTerms != nil && stringSliceEqualUnordered(*cs.FilterOutTerms, eff.Filtering.FilterOutTerms) {
 		cs.FilterOutTerms = nil
 		changed = true
@@ -464,7 +452,7 @@ func stripClientSettings(cs *models.ClientFilterSettings, eff models.UserSetting
 		cs.NonPreferredTerms = nil
 		changed = true
 	}
-	if cs.BypassFilteringForAIOStreamsOnly != nil && eff.Filtering.BypassFilteringForAIOStreamsOnly != nil && *cs.BypassFilteringForAIOStreamsOnly == *eff.Filtering.BypassFilteringForAIOStreamsOnly {
+	if cs.BypassFilteringForAIOStreamsOnly != nil && eff.Display.BypassFilteringForAIOStreamsOnly != nil && *cs.BypassFilteringForAIOStreamsOnly == *eff.Display.BypassFilteringForAIOStreamsOnly {
 		cs.BypassFilteringForAIOStreamsOnly = nil
 		changed = true
 	}

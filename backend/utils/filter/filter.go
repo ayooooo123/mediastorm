@@ -97,7 +97,6 @@ type Options struct {
 	MaxSizeEpisodeGB    float64     // Maximum size in GB for episodes (0 = no limit)
 	MaxResolution       string      // Maximum resolution (e.g., "720p", "1080p", "2160p", empty = no limit)
 	HDRDVPolicy         HDRDVPolicy // HDR/DV inclusion policy
-	PrioritizeHdr       bool        // Prioritize HDR/DV content in results
 	AlternateTitles     []string
 	FilterOutTerms      []string               // Terms to filter out from results (case-insensitive match in title)
 	TotalSeriesEpisodes int                    // Deprecated: use EpisodeResolver instead
@@ -506,10 +505,6 @@ func Results(results []models.NZBResult, opts Options) []models.NZBResult {
 	// Note: HDR prioritization is now handled in the indexer service sorting
 	// which considers resolution BEFORE HDR (so 2160p SDR ranks above 1080p HDR).
 	// We still log that HDR info was processed for debugging.
-	if opts.PrioritizeHdr {
-		log.Printf("[filter] HDR attributes set on results (sorting handled by indexer)")
-	}
-
 	// Extract just the results for return
 	finalResults := make([]models.NZBResult, len(filtered))
 	for i, fr := range filtered {

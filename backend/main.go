@@ -468,7 +468,8 @@ func main() {
 
 	// Create image proxy handler for resizing and caching TMDB images
 	imageHandler := handlers.NewImageHandler(settings.Cache.Directory)
-	settingsHandler.SetImageHandler(imageHandler) // Enable clearing image cache
+	settingsHandler.SetImageHandler(imageHandler)                     // Enable clearing image cache
+	settingsHandler.SetPrequeueStore(prequeueHandler.GetStore()) // Clear prequeue when ShowParsedBadges changes
 
 	api.Register(
 		r,

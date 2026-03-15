@@ -81,6 +81,8 @@ type DisplaySettings struct {
 	// WatchStateIconStyle controls the color of watch state icons.
 	// "colored" (default) = green/yellow circles, "white" = all white circles
 	WatchStateIconStyle string `json:"watchStateIconStyle,omitempty"`
+	// BypassFilteringForAIOStreamsOnly skips mediastorm filtering/ranking when AIOStreams is the only enabled scraper.
+	BypassFilteringForAIOStreamsOnly *bool `json:"bypassFilteringForAioStreamsOnly,omitempty"`
 }
 
 // LiveTVSettings contains per-user Live TV preferences.
@@ -224,6 +226,7 @@ type PlaybackSettings struct {
 	RewindOnResumeFromPause   int     `json:"rewindOnResumeFromPause,omitempty"` // Seconds to rewind when unpausing (default 0)
 	RewindOnPlaybackStart     int     `json:"rewindOnPlaybackStart,omitempty"`   // Seconds to rewind when resuming from saved progress (default 0)
 	MaxConcurrentStreams      *int    `json:"maxConcurrentStreams,omitempty"`     // Per-profile concurrent stream limit (nil = use account limit)
+	MaxResultsPerResolution   *int    `json:"maxResultsPerResolution,omitempty"` // Maximum number of results per resolution tier (0 = no limit)
 }
 
 // ShelfConfig represents a configurable home screen shelf.
@@ -258,16 +261,13 @@ const (
 // FilterSettings controls content filtering preferences.
 // Pointer types with omitempty allow distinguishing between "not set" (nil) and "set to zero/false".
 type FilterSettings struct {
-	MaxSizeMovieGB                   *float64    `json:"maxSizeMovieGb,omitempty"`
-	MaxSizeEpisodeGB                 *float64    `json:"maxSizeEpisodeGb,omitempty"`
-	MaxResolution                    string      `json:"maxResolution,omitempty"`                    // Maximum resolution (e.g., "720p", "1080p", "2160p", empty = no limit)
-	HDRDVPolicy                      HDRDVPolicy `json:"hdrDvPolicy,omitempty"`                      // HDR/DV inclusion policy: "none" (no exclusion), "hdr" (include HDR + DV 7/8), "hdr_dv" (include all HDR/DV)
-	PrioritizeHdr                    *bool       `json:"prioritizeHdr,omitempty"`                    // Prioritize HDR/DV content in search results
-	FilterOutTerms                   []string    `json:"filterOutTerms,omitempty"`                   // Terms to filter out from results (case-insensitive match in title)
-	PreferredTerms                   []string    `json:"preferredTerms,omitempty"`                   // Terms to prioritize in results (case-insensitive match in title)
-	NonPreferredTerms                []string    `json:"nonPreferredTerms,omitempty"`                // Terms to derank in results (case-insensitive match in title, ranked lower but not removed)
-	BypassFilteringForAIOStreamsOnly *bool       `json:"bypassFilteringForAioStreamsOnly,omitempty"` // Skip mediastorm filtering/ranking when AIOStreams is the only enabled scraper
-	MaxResultsPerResolution         *int        `json:"maxResultsPerResolution,omitempty"`          // Maximum number of results per resolution tier (0 = no limit)
+	MaxSizeMovieGB    *float64    `json:"maxSizeMovieGb,omitempty"`
+	MaxSizeEpisodeGB  *float64    `json:"maxSizeEpisodeGb,omitempty"`
+	MaxResolution     string      `json:"maxResolution,omitempty"`     // Maximum resolution (e.g., "720p", "1080p", "2160p", empty = no limit)
+	HDRDVPolicy       HDRDVPolicy `json:"hdrDvPolicy,omitempty"`       // HDR/DV inclusion policy: "none" (no exclusion), "hdr" (include HDR + DV 7/8), "hdr_dv" (include all HDR/DV)
+	FilterOutTerms    []string    `json:"filterOutTerms,omitempty"`    // Terms to filter out from results (case-insensitive match in title)
+	PreferredTerms    []string    `json:"preferredTerms,omitempty"`    // Terms to prioritize in results (case-insensitive match in title)
+	NonPreferredTerms []string    `json:"nonPreferredTerms,omitempty"` // Terms to derank in results (case-insensitive match in title, ranked lower but not removed)
 }
 
 // AnimeFilteringSettings controls anime-specific language preferences (per-user overrides).
@@ -296,7 +296,6 @@ func DefaultUserSettings() UserSettings {
 			MaxSizeMovieGB:   FloatPtr(0),
 			MaxSizeEpisodeGB: FloatPtr(0),
 			HDRDVPolicy:      HDRDVPolicyNoExclusion,
-			PrioritizeHdr:    BoolPtr(true),
 		},
 		LiveTV: LiveTVSettings{
 			HiddenChannels:     []string{},

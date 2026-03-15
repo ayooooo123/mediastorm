@@ -7,12 +7,22 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"novastream/config"
 	"novastream/services/epg"
 )
+
+// mockPrequeueClearer records whether DeleteAll was called.
+type mockPrequeueClearer struct {
+	called atomic.Int32
+}
+
+func (m *mockPrequeueClearer) DeleteAll() {
+	m.called.Add(1)
+}
 
 func TestSettingsHandler_GetSettings(t *testing.T) {
 	cfg := config.Settings{
@@ -278,4 +288,93 @@ func TestSettingsHandler_EPGAutoRefreshOnNewSource(t *testing.T) {
 
 	// Give the background goroutine a moment to start (it will fail because the URL is fake, but that's okay)
 	time.Sleep(100 * time.Millisecond)
+}
+
+func TestSettingsHandler_ShowParsedBadges_ClearsPrequeue(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := config.NewManager(filepath.Join(tmpDir, "settings.json"))
+
+	// Save initial settings with ShowParsedBadges = false
+	initial := config.Settings{
+		Server:  config.ServerSettings{Host: "127.0.0.1", Port: 7777},
+		Display: config.DisplaySettings{ShowParsedBadges: false},
+	}
+	if err := mgr.Save(initial); err != nil {
+		t.Fatalf("save initial: %v", err)
+	}
+
+	handler := NewSettingsHandler(mgr)
+	mock := &mockPrequeueClearer{}
+	handler.SetPrequeueStore(mock)
+
+	// Toggle ShowParsedBadges to true — should clear prequeue
+	updated := initial
+	updated.Display.ShowParsedBadges = true
+	buf, _ := json.Marshal(updated)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/settings", bytes.NewReader(buf))
+	rec := httptest.NewRecorder()
+	handler.PutSettings(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT status %d: %s", rec.Code, rec.Body.String())
+	}
+	if mock.called.Load() != 1 {
+		t.Fatalf("expected DeleteAll to be called once, got %d", mock.called.Load())
+	}
+
+	// Save again with the same value — should NOT clear prequeue
+	buf, _ = json.Marshal(updated)
+	req = httptest.NewRequest(http.MethodPut, "/api/settings", bytes.NewReader(buf))
+	rec = httptest.NewRecorder()
+	handler.PutSettings(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT status %d: %s", rec.Code, rec.Body.String())
+	}
+	if mock.called.Load() != 1 {
+		t.Fatalf("expected DeleteAll call count to remain 1, got %d", mock.called.Load())
+	}
+
+	// Toggle back to false — should clear prequeue again
+	updated.Display.ShowParsedBadges = false
+	buf, _ = json.Marshal(updated)
+	req = httptest.NewRequest(http.MethodPut, "/api/settings", bytes.NewReader(buf))
+	rec = httptest.NewRecorder()
+	handler.PutSettings(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT status %d: %s", rec.Code, rec.Body.String())
+	}
+	if mock.called.Load() != 2 {
+		t.Fatalf("expected DeleteAll to be called twice, got %d", mock.called.Load())
+	}
+}
+
+func TestSettingsHandler_ShowParsedBadges_NoPrequeueStore(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := config.NewManager(filepath.Join(tmpDir, "settings.json"))
+
+	initial := config.Settings{
+		Server:  config.ServerSettings{Host: "127.0.0.1", Port: 7777},
+		Display: config.DisplaySettings{ShowParsedBadges: false},
+	}
+	if err := mgr.Save(initial); err != nil {
+		t.Fatalf("save initial: %v", err)
+	}
+
+	handler := NewSettingsHandler(mgr)
+	// No prequeue store set — should not panic
+
+	updated := initial
+	updated.Display.ShowParsedBadges = true
+	buf, _ := json.Marshal(updated)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/settings", bytes.NewReader(buf))
+	rec := httptest.NewRecorder()
+	handler.PutSettings(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT status %d: %s", rec.Code, rec.Body.String())
+	}
 }

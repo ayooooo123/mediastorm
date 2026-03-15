@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"novastream/config"
 	"novastream/models"
 )
 
@@ -224,10 +225,8 @@ func isSettingsEmpty(s models.UserSettings) bool {
 		s.Filtering.MaxSizeEpisodeGB != nil ||
 		s.Filtering.MaxResolution != "" ||
 		s.Filtering.HDRDVPolicy != "" ||
-		s.Filtering.PrioritizeHdr != nil ||
 		len(s.Filtering.FilterOutTerms) > 0 ||
-		len(s.Filtering.PreferredTerms) > 0 ||
-		s.Filtering.BypassFilteringForAIOStreamsOnly != nil {
+		len(s.Filtering.PreferredTerms) > 0 {
 		return false
 	}
 
@@ -251,7 +250,13 @@ func isSettingsEmpty(s models.UserSettings) bool {
 	}
 
 	// Check Display
-	if len(s.Display.BadgeVisibility) > 0 {
+	if len(s.Display.BadgeVisibility) > 0 ||
+		s.Display.BypassFilteringForAIOStreamsOnly != nil {
+		return false
+	}
+
+	// Check Playback - MaxResultsPerResolution
+	if s.Playback.MaxResultsPerResolution != nil {
 		return false
 	}
 
@@ -326,8 +331,40 @@ func (s *Service) load() error {
 		return nil
 	}
 
+	// First decode into raw map to apply migrations before struct unmarshalling
+	var rawMap map[string]json.RawMessage
+	if err := json.Unmarshal(data, &rawMap); err != nil {
+		return fmt.Errorf("decode user settings (raw): %w", err)
+	}
+	needsSave := false
+	for userID, rawUser := range rawMap {
+		var userRaw map[string]interface{}
+		if err := json.Unmarshal(rawUser, &userRaw); err != nil {
+			continue
+		}
+		// Check if migration is needed (old field exists in filtering)
+		if filteringRaw, ok := userRaw["filtering"].(map[string]interface{}); ok {
+			if _, has := filteringRaw["bypassFilteringForAioStreamsOnly"]; has {
+				config.MigrateRawUserSettings(userRaw)
+				migrated, _ := json.Marshal(userRaw)
+				rawMap[userID] = migrated
+				needsSave = true
+			} else if _, has := filteringRaw["maxResultsPerResolution"]; has {
+				config.MigrateRawUserSettings(userRaw)
+				migrated, _ := json.Marshal(userRaw)
+				rawMap[userID] = migrated
+				needsSave = true
+			}
+		}
+	}
+	// Re-encode and decode into typed map
+	migratedData, err := json.Marshal(rawMap)
+	if err != nil {
+		return fmt.Errorf("re-encode user settings: %w", err)
+	}
+
 	var settings map[string]models.UserSettings
-	if err := json.Unmarshal(data, &settings); err != nil {
+	if err := json.Unmarshal(migratedData, &settings); err != nil {
 		return fmt.Errorf("decode user settings: %w", err)
 	}
 
@@ -351,6 +388,15 @@ func (s *Service) load() error {
 		log.Printf("[user-settings] load: user=%q subMode=%q audioLang=%q subLang=%q",
 			userID, us.Playback.PreferredSubtitleMode, us.Playback.PreferredAudioLanguage, us.Playback.PreferredSubtitleLanguage)
 	}
+
+	// Persist migrated data so migration only runs once
+	if needsSave {
+		log.Printf("[user-settings] persisting migrated user settings")
+		if err := s.saveLocked(); err != nil {
+			log.Printf("[user-settings] warning: failed to persist migration: %v", err)
+		}
+	}
+
 	return nil
 }
 

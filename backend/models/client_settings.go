@@ -9,19 +9,22 @@ type ClientFilterSettings struct {
 	MaxSizeEpisodeGB                 *float64     `json:"maxSizeEpisodeGb,omitempty"`
 	MaxResolution                    *string      `json:"maxResolution,omitempty"`
 	HDRDVPolicy                      *HDRDVPolicy `json:"hdrDvPolicy,omitempty"`
-	PrioritizeHdr                    *bool        `json:"prioritizeHdr,omitempty"`
 	FilterOutTerms                   *[]string    `json:"filterOutTerms,omitempty"`
 	PreferredTerms                   *[]string    `json:"preferredTerms,omitempty"`
-	NonPreferredTerms                *[]string    `json:"nonPreferredTerms,omitempty"`
-	BypassFilteringForAIOStreamsOnly *bool        `json:"bypassFilteringForAioStreamsOnly,omitempty"`
-	MaxResultsPerResolution         *int         `json:"maxResultsPerResolution,omitempty"`
-	AnimeLanguageEnabled            *bool        `json:"animeLanguageEnabled,omitempty"`
+	NonPreferredTerms       *[]string    `json:"nonPreferredTerms,omitempty"`
+	AnimeLanguageEnabled    *bool        `json:"animeLanguageEnabled,omitempty"`
 	AnimePreferredLanguage          *string      `json:"animePreferredLanguage,omitempty"`
 
 	// Network settings for URL switching based on WiFi
 	HomeWifiSSID     *string `json:"homeWifiSSID,omitempty"`
 	HomeBackendUrl   *string `json:"homeBackendUrl,omitempty"`
 	RemoteBackendUrl *string `json:"remoteBackendUrl,omitempty"`
+
+	// Display overrides
+	BypassFilteringForAIOStreamsOnly *bool `json:"bypassFilteringForAioStreamsOnly,omitempty"`
+
+	// Playback overrides
+	MaxResultsPerResolution *int `json:"maxResultsPerResolution,omitempty"`
 
 	// Ranking criteria overrides
 	RankingCriteria *[]ClientRankingCriterion `json:"rankingCriteria,omitempty"`
@@ -33,14 +36,13 @@ func (c *ClientFilterSettings) IsEmpty() bool {
 		c.MaxSizeEpisodeGB == nil &&
 		c.MaxResolution == nil &&
 		c.HDRDVPolicy == nil &&
-		c.PrioritizeHdr == nil &&
 		c.FilterOutTerms == nil &&
 		c.PreferredTerms == nil &&
 		c.NonPreferredTerms == nil &&
-		c.BypassFilteringForAIOStreamsOnly == nil &&
-		c.MaxResultsPerResolution == nil &&
 		c.AnimeLanguageEnabled == nil &&
 		c.AnimePreferredLanguage == nil &&
+		c.BypassFilteringForAIOStreamsOnly == nil &&
+		c.MaxResultsPerResolution == nil &&
 		c.HomeWifiSSID == nil &&
 		c.HomeBackendUrl == nil &&
 		c.RemoteBackendUrl == nil &&

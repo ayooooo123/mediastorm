@@ -35,7 +35,6 @@ func globalDefaults() config.Settings {
 			MaxSizeEpisodeGB: 5,
 			MaxResolution:    "2160p",
 			HDRDVPolicy:      config.HDRDVPolicy("hdr"),
-			PrioritizeHdr:    true,
 			FilterOutTerms:   []string{"cam", "ts"},
 			PreferredTerms:   []string{"remux"},
 		},
@@ -160,7 +159,6 @@ func TestStripProfilePointerFieldMatches(t *testing.T) {
 	us := models.UserSettings{
 		Filtering: models.FilterSettings{
 			MaxSizeMovieGB: models.FloatPtr(10),
-			PrioritizeHdr:  models.BoolPtr(true),
 		},
 	}
 	svc.settings["user1"] = us
@@ -392,8 +390,8 @@ func TestStripClientFieldAlreadyNil(t *testing.T) {
 	clientsSvc := &mockClientSettingsBatch{
 		settings: map[string]models.ClientFilterSettings{
 			"client1": {
-				MaxSizeMovieGB: nil, // Already nil
-				PrioritizeHdr:  models.BoolPtr(false), // Differs from global default (true)
+				MaxSizeMovieGB:   nil,                // Already nil
+				MaxSizeEpisodeGB: models.FloatPtr(3), // Differs from global default (5)
 			},
 		},
 	}
@@ -407,8 +405,8 @@ func TestStripClientFieldAlreadyNil(t *testing.T) {
 	if cs.MaxSizeMovieGB != nil {
 		t.Error("expected MaxSizeMovieGB to remain nil")
 	}
-	if cs.PrioritizeHdr == nil || *cs.PrioritizeHdr != false {
-		t.Error("expected PrioritizeHdr=false preserved (differs from global)")
+	if cs.MaxSizeEpisodeGB == nil || *cs.MaxSizeEpisodeGB != 3 {
+		t.Error("expected MaxSizeEpisodeGB=3 preserved (differs from global)")
 	}
 }
 

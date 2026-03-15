@@ -16,6 +16,11 @@ import (
 	user_settings "novastream/services/user_settings"
 )
 
+// PrequeueClearer can clear all prequeue entries.
+type PrequeueClearer interface {
+	DeleteAll()
+}
+
 type SettingsHandler struct {
 	Manager              *config.Manager
 	DemoMode             bool
@@ -27,6 +32,7 @@ type SettingsHandler struct {
 	UserSettingsService  *user_settings.Service
 	ClientsLister        user_settings.ClientsLister
 	ClientSettingsBatch  user_settings.ClientSettingsBatch
+	PrequeueStore        PrequeueClearer
 }
 
 func NewSettingsHandler(m *config.Manager) *SettingsHandler {
@@ -75,6 +81,11 @@ func (h *SettingsHandler) SetClientsLister(cl user_settings.ClientsLister) {
 // SetClientSettingsBatch sets the client settings batch service for stripping redundant overrides
 func (h *SettingsHandler) SetClientSettingsBatch(cs user_settings.ClientSettingsBatch) {
 	h.ClientSettingsBatch = cs
+}
+
+// SetPrequeueStore sets the prequeue store for clearing cache when display settings change
+func (h *SettingsHandler) SetPrequeueStore(ps PrequeueClearer) {
+	h.PrequeueStore = ps
 }
 
 // SettingsResponse wraps config.Settings with additional runtime information.
@@ -141,6 +152,12 @@ func (h *SettingsHandler) PutSettings(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
+	}
+
+	// Clear prequeue cache when ShowParsedBadges changes (affects badge display in cached entries)
+	if h.PrequeueStore != nil && oldSettings.Display.ShowParsedBadges != s.Display.ShowParsedBadges {
+		log.Printf("[settings] ShowParsedBadges changed from %v to %v, clearing prequeue cache", oldSettings.Display.ShowParsedBadges, s.Display.ShowParsedBadges)
+		h.PrequeueStore.DeleteAll()
 	}
 
 	// Strip redundant per-profile and per-client overrides

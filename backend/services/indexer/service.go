@@ -140,20 +140,29 @@ func (s *Service) SetClientSettingsProvider(provider clientSettingsProvider) {
 	s.clientSettings = provider
 }
 
+// effectiveOverrides holds settings that were relocated from FilterSettings but
+// still cascade through the global -> profile -> client override chain.
+type effectiveOverrides struct {
+	BypassFilteringForAIOStreamsOnly *bool
+	MaxResultsPerResolution         *int
+}
+
 // getEffectiveFilterSettings returns the filtering settings to use for a search.
 // Settings cascade: Global -> Profile -> Client (client settings win)
-func (s *Service) getEffectiveFilterSettings(userID, clientID string, globalSettings config.Settings) (models.FilterSettings, models.AnimeFilteringSettings) {
+func (s *Service) getEffectiveFilterSettings(userID, clientID string, globalSettings config.Settings) (models.FilterSettings, models.AnimeFilteringSettings, effectiveOverrides) {
 	// Start with global settings (as pointers)
 	filterSettings := models.FilterSettings{
 		MaxSizeMovieGB:    models.FloatPtr(globalSettings.Filtering.MaxSizeMovieGB),
 		MaxSizeEpisodeGB:  models.FloatPtr(globalSettings.Filtering.MaxSizeEpisodeGB),
 		MaxResolution:     globalSettings.Filtering.MaxResolution,
 		HDRDVPolicy:       models.HDRDVPolicy(globalSettings.Filtering.HDRDVPolicy),
-		PrioritizeHdr:     models.BoolPtr(globalSettings.Filtering.PrioritizeHdr),
 		FilterOutTerms:    globalSettings.Filtering.FilterOutTerms,
 		PreferredTerms:    globalSettings.Filtering.PreferredTerms,
-		NonPreferredTerms:       globalSettings.Filtering.NonPreferredTerms,
-		MaxResultsPerResolution: models.IntPtr(globalSettings.Filtering.MaxResultsPerResolution),
+		NonPreferredTerms: globalSettings.Filtering.NonPreferredTerms,
+	}
+	overrides := effectiveOverrides{
+		BypassFilteringForAIOStreamsOnly: models.BoolPtr(globalSettings.Display.BypassFilteringForAIOStreamsOnly),
+		MaxResultsPerResolution:         models.IntPtr(globalSettings.Playback.MaxResultsPerResolution),
 	}
 	animeSettings := models.AnimeFilteringSettings{
 		AnimeLanguageEnabled:   models.BoolPtr(globalSettings.AnimeFiltering.AnimeLanguageEnabled),
@@ -180,9 +189,6 @@ func (s *Service) getEffectiveFilterSettings(userID, clientID string, globalSett
 			if profileFiltering.HDRDVPolicy != "" {
 				filterSettings.HDRDVPolicy = profileFiltering.HDRDVPolicy
 			}
-			if profileFiltering.PrioritizeHdr != nil {
-				filterSettings.PrioritizeHdr = profileFiltering.PrioritizeHdr
-			}
 			if profileFiltering.FilterOutTerms != nil {
 				filterSettings.FilterOutTerms = profileFiltering.FilterOutTerms
 			}
@@ -192,11 +198,11 @@ func (s *Service) getEffectiveFilterSettings(userID, clientID string, globalSett
 			if profileFiltering.NonPreferredTerms != nil {
 				filterSettings.NonPreferredTerms = profileFiltering.NonPreferredTerms
 			}
-			if profileFiltering.BypassFilteringForAIOStreamsOnly != nil {
-				filterSettings.BypassFilteringForAIOStreamsOnly = profileFiltering.BypassFilteringForAIOStreamsOnly
+			if userSettings.Display.BypassFilteringForAIOStreamsOnly != nil {
+				overrides.BypassFilteringForAIOStreamsOnly = userSettings.Display.BypassFilteringForAIOStreamsOnly
 			}
-			if profileFiltering.MaxResultsPerResolution != nil {
-				filterSettings.MaxResultsPerResolution = profileFiltering.MaxResultsPerResolution
+			if userSettings.Playback.MaxResultsPerResolution != nil {
+				overrides.MaxResultsPerResolution = userSettings.Playback.MaxResultsPerResolution
 			}
 			profileAnime := userSettings.AnimeFiltering
 			if profileAnime.AnimeLanguageEnabled != nil {
@@ -227,9 +233,6 @@ func (s *Service) getEffectiveFilterSettings(userID, clientID string, globalSett
 			if clientSettings.HDRDVPolicy != nil {
 				filterSettings.HDRDVPolicy = *clientSettings.HDRDVPolicy
 			}
-			if clientSettings.PrioritizeHdr != nil {
-				filterSettings.PrioritizeHdr = clientSettings.PrioritizeHdr
-			}
 			if clientSettings.FilterOutTerms != nil {
 				filterSettings.FilterOutTerms = *clientSettings.FilterOutTerms
 			}
@@ -239,8 +242,11 @@ func (s *Service) getEffectiveFilterSettings(userID, clientID string, globalSett
 			if clientSettings.NonPreferredTerms != nil {
 				filterSettings.NonPreferredTerms = *clientSettings.NonPreferredTerms
 			}
+			if clientSettings.BypassFilteringForAIOStreamsOnly != nil {
+				overrides.BypassFilteringForAIOStreamsOnly = clientSettings.BypassFilteringForAIOStreamsOnly
+			}
 			if clientSettings.MaxResultsPerResolution != nil {
-				filterSettings.MaxResultsPerResolution = clientSettings.MaxResultsPerResolution
+				overrides.MaxResultsPerResolution = clientSettings.MaxResultsPerResolution
 			}
 			if clientSettings.AnimeLanguageEnabled != nil {
 				animeSettings.AnimeLanguageEnabled = clientSettings.AnimeLanguageEnabled
@@ -251,7 +257,7 @@ func (s *Service) getEffectiveFilterSettings(userID, clientID string, globalSett
 		}
 	}
 
-	return filterSettings, animeSettings
+	return filterSettings, animeSettings, overrides
 }
 
 // getEffectiveRankingCriteria returns the ranking criteria to use for sorting search results.
@@ -406,31 +412,6 @@ func compareResolution(i, j models.NZBResult) int {
 	return 0
 }
 
-func compareHDR(i, j models.NZBResult, prioritizeHdr bool) int {
-	if !prioritizeHdr {
-		return 0
-	}
-	iHasHDR := i.Attributes["hdr"] != ""
-	jHasHDR := j.Attributes["hdr"] != ""
-	iHasDV := i.Attributes["hasDV"] == "true"
-	jHasDV := j.Attributes["hasDV"] == "true"
-
-	// DV > HDR > SDR
-	if iHasDV && !jHasDV {
-		return -1
-	}
-	if !iHasDV && jHasDV {
-		return 1
-	}
-	if iHasHDR && !jHasHDR {
-		return -1
-	}
-	if !iHasHDR && jHasHDR {
-		return 1
-	}
-	return 0
-}
-
 func compareLanguage(i, j models.NZBResult, preferredLang string) int {
 	if preferredLang == "" {
 		return 0
@@ -505,7 +486,7 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBR
 	}
 
 	// Get effective filtering settings (cascade: global -> profile -> client)
-	filterSettings, animeSettings := s.getEffectiveFilterSettings(opts.UserID, opts.ClientID, settings)
+	filterSettings, animeSettings, filterOverrides := s.getEffectiveFilterSettings(opts.UserID, opts.ClientID, settings)
 
 	// Inject anime language filter-out terms early (before search/filter calls)
 	if opts.IsAnime && models.BoolVal(animeSettings.AnimeLanguageEnabled, false) {
@@ -637,7 +618,7 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBR
 
 	// Check if ranking should be bypassed for AIOStreams-only mode
 	// Only bypass when: setting is enabled, AIOStreams is the only scraper, and no usenet results are mixed in
-	bypassRanking := settings.Filtering.BypassFilteringForAIOStreamsOnly &&
+	bypassRanking := models.BoolVal(filterOverrides.BypassFilteringForAIOStreamsOnly, false) &&
 		isOnlyAIOStreamsEnabled(settings.TorrentScrapers) &&
 		!includeUsenet
 
@@ -672,7 +653,6 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBR
 			log.Printf("[indexer] Anime language preference enabled (lang=%s): injected %d preferred + %d non-preferred terms", langCode, len(animePref), len(animeNonPref))
 		}
 
-		prioritizeHdr := models.BoolVal(filterSettings.PrioritizeHdr, false)
 		preferredLang := settings.Metadata.Language
 
 		sort.SliceStable(aggregated, func(i, j int) bool {
@@ -699,8 +679,6 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBR
 					result = compareNonPreferredTerms(aggregated[i], aggregated[j], nonPreferredTerms)
 				case config.RankingResolution:
 					result = compareResolution(aggregated[i], aggregated[j])
-				case config.RankingHDR:
-					result = compareHDR(aggregated[i], aggregated[j], prioritizeHdr)
 				case config.RankingLanguage:
 					result = compareLanguage(aggregated[i], aggregated[j], preferredLang)
 				case config.RankingSize:
@@ -722,7 +700,7 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBR
 	}
 
 	// Apply per-resolution limit before global MaxResults truncation
-	maxPerRes := models.IntVal(filterSettings.MaxResultsPerResolution, 0)
+	maxPerRes := models.IntVal(filterOverrides.MaxResultsPerResolution, 0)
 	if maxPerRes > 0 {
 		resolutionCounts := map[int]int{}
 		var limited []models.NZBResult
@@ -791,7 +769,7 @@ func (s *Service) SearchSplit(ctx context.Context, opts SearchOptions) (debridCh
 		return debridOut, usenetOut
 	}
 
-	filterSettings, animeSettings2 := s.getEffectiveFilterSettings(opts.UserID, opts.ClientID, settings)
+	filterSettings, animeSettings2, _ := s.getEffectiveFilterSettings(opts.UserID, opts.ClientID, settings)
 
 	// Inject anime language filter-out terms early (before search/filter calls)
 	if opts.IsAnime && models.BoolVal(animeSettings2.AnimeLanguageEnabled, false) {
@@ -841,7 +819,6 @@ func (s *Service) SearchSplit(ctx context.Context, opts SearchOptions) (debridCh
 		log.Printf("[indexer] Anime language preference enabled (lang=%s): injected %d preferred + %d non-preferred terms", langCode, len(animePref), len(animeNonPref))
 	}
 
-	prioritizeHdr := models.BoolVal(filterSettings.PrioritizeHdr, false)
 	preferredLang := settings.Metadata.Language
 
 	// Helper to inject daily show attributes into results (same as Search path)
@@ -890,8 +867,6 @@ func (s *Service) SearchSplit(ctx context.Context, opts SearchOptions) (debridCh
 					result = compareNonPreferredTerms(results[i], results[j], nonPreferredTerms)
 				case config.RankingResolution:
 					result = compareResolution(results[i], results[j])
-				case config.RankingHDR:
-					result = compareHDR(results[i], results[j], prioritizeHdr)
 				case config.RankingLanguage:
 					result = compareLanguage(results[i], results[j], preferredLang)
 				case config.RankingSize:
@@ -1370,7 +1345,6 @@ func (s *Service) searchUsenet(ctx context.Context, settings config.Settings, op
 		MaxSizeEpisodeGB: models.FloatPtr(settings.Filtering.MaxSizeEpisodeGB),
 		MaxResolution:    settings.Filtering.MaxResolution,
 		HDRDVPolicy:      models.HDRDVPolicy(settings.Filtering.HDRDVPolicy),
-		PrioritizeHdr:    models.BoolPtr(settings.Filtering.PrioritizeHdr),
 		FilterOutTerms:   settings.Filtering.FilterOutTerms,
 	}
 	return s.searchUsenetWithFilter(ctx, settings, opts, baseParsed, alternateTitles, searchQueries, filterSettings)
@@ -1486,7 +1460,6 @@ func (s *Service) applyUsenetFilteringWithSettings(results []models.NZBResult, o
 		MaxSizeEpisodeGB: models.FloatVal(filterSettings.MaxSizeEpisodeGB, 0),
 		MaxResolution:    filterSettings.MaxResolution,
 		HDRDVPolicy:      filter.HDRDVPolicy(filterSettings.HDRDVPolicy),
-		PrioritizeHdr:    models.BoolVal(filterSettings.PrioritizeHdr, false),
 		AlternateTitles:  alternateTitles,
 		FilterOutTerms:   filterSettings.FilterOutTerms,
 		IsDaily:          opts.IsDaily,
@@ -1506,7 +1479,6 @@ func (s *Service) applyUsenetFiltering(results []models.NZBResult, settings conf
 		MaxSizeEpisodeGB: models.FloatPtr(settings.Filtering.MaxSizeEpisodeGB),
 		MaxResolution:    settings.Filtering.MaxResolution,
 		HDRDVPolicy:      models.HDRDVPolicy(settings.Filtering.HDRDVPolicy),
-		PrioritizeHdr:    models.BoolPtr(settings.Filtering.PrioritizeHdr),
 		FilterOutTerms:   settings.Filtering.FilterOutTerms,
 	}
 	return s.applyUsenetFilteringWithSettings(results, opts, baseParsed, queryParsed, alternateTitles, filterSettings)

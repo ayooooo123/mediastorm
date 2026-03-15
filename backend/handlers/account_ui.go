@@ -1065,7 +1065,6 @@ func (h *AccountUIHandler) GetProfileSettings(w http.ResponseWriter, r *http.Req
 			"maxSizeMovieGb":   0,
 			"maxSizeEpisodeGb": 0,
 			"hdrDvPolicy":      "none",
-			"prioritizeHdr":    true,
 		},
 	}
 

@@ -148,6 +148,7 @@
     let currentSettings = {{json .Settings}};
     let schema = {{json .Schema}};
     let groups = {{json .Groups}};
+    let presets = {{json .Presets}};
     let originalSettings = JSON.parse(JSON.stringify(currentSettings));
     let selectedUserId = '';
     let userSettings = null;
@@ -1272,17 +1273,27 @@
     }
 
     // Map filtering field paths to client settings keys
-    const clientFilterFields = ['maxSizeMovieGb', 'maxSizeEpisodeGb', 'maxResolution', 'hdrDvPolicy', 'prioritizeHdr', 'filterOutTerms', 'preferredTerms', 'nonPreferredTerms', 'bypassFilteringForAioStreamsOnly', 'maxResultsPerResolution'];
+    const clientFilterFields = ['maxSizeMovieGb', 'maxSizeEpisodeGb', 'maxResolution', 'hdrDvPolicy', 'filterOutTerms', 'preferredTerms', 'nonPreferredTerms'];
+    const clientDisplayFields = ['bypassFilteringForAioStreamsOnly'];
+    const clientPlaybackFields = ['maxResultsPerResolution'];
     const clientAnimeFilterFields = ['animeLanguageEnabled', 'animePreferredLanguage'];
     // Map network field paths to client settings keys
     const clientNetworkFields = ['homeWifiSSID', 'homeBackendUrl', 'remoteBackendUrl'];
 
     function getClientSettingsKey(path) {
         // filtering.maxSizeMovieGb -> maxSizeMovieGb
+        // display.bypassFilteringForAioStreamsOnly -> bypassFilteringForAioStreamsOnly
+        // playback.maxResultsPerResolution -> maxResultsPerResolution
         // network.homeWifiSSID -> homeWifiSSID
         const keys = path.split('.');
         if (keys.length === 2) {
             if (keys[0] === 'filtering' && clientFilterFields.includes(keys[1])) {
+                return keys[1];
+            }
+            if (keys[0] === 'display' && clientDisplayFields.includes(keys[1])) {
+                return keys[1];
+            }
+            if (keys[0] === 'playback' && clientPlaybackFields.includes(keys[1])) {
                 return keys[1];
             }
             if (keys[0] === 'animeFiltering' && clientAnimeFilterFields.includes(keys[1])) {
@@ -1383,6 +1394,16 @@
         return clientSettings[fieldKey] !== undefined && clientSettings[fieldKey] !== null;
     }
 
+    // Resolve which settings section a client field key belongs to
+    function getClientFieldSection(fieldKey) {
+        if (clientFilterFields.includes(fieldKey)) return 'filtering';
+        if (clientDisplayFields.includes(fieldKey)) return 'display';
+        if (clientPlaybackFields.includes(fieldKey)) return 'playback';
+        if (clientAnimeFilterFields.includes(fieldKey)) return 'animeFiltering';
+        if (clientNetworkFields.includes(fieldKey)) return 'network';
+        return 'filtering'; // fallback
+    }
+
     // Check if a client value is actually different from what it would inherit
     function isClientValueDifferent(fieldKey) {
         if (!selectedClientId || !clientSettings) return false;
@@ -1390,11 +1411,12 @@
         if (clientVal === undefined || clientVal === null) return false;
 
         // Get the effective inherited value (profile if different from global, otherwise global)
-        const globalVal = currentSettings.filtering ? currentSettings.filtering[fieldKey] : undefined;
+        const section = getClientFieldSection(fieldKey);
+        const globalVal = currentSettings[section] ? currentSettings[section][fieldKey] : undefined;
         let inheritedVal;
 
-        if (selectedUserId && userSettings && userSettings.filtering) {
-            const profileVal = userSettings.filtering[fieldKey];
+        if (selectedUserId && userSettings && userSettings[section]) {
+            const profileVal = userSettings[section][fieldKey];
             // Use profile value if it's set AND differs from global
             if (profileVal !== undefined && profileVal !== null &&
                 !deepEqual(normalizeForComparison(profileVal), normalizeForComparison(globalVal))) {
@@ -2955,6 +2977,123 @@
         renderSettings();
     }
 
+    // --- Preset functions ---
+
+    function detectCurrentPreset() {
+        if (!presets || presets.length === 0) return 'custom';
+
+        // Get current filtering and ranking values
+        let filtering, ranking;
+        if (selectedUserId && userSettings) {
+            filtering = userSettings.filtering || {};
+            ranking = userSettings.ranking?.criteria;
+        } else {
+            filtering = currentSettings.filtering || {};
+            ranking = currentSettings.ranking?.criteria;
+        }
+
+        if (!ranking || ranking.length === 0) return 'custom';
+
+        for (const preset of presets) {
+            // Compare filtering fields
+            const pf = preset.filtering;
+            if ((pf.maxSizeMovieGb || 0) !== (filtering.maxSizeMovieGb || 0)) continue;
+            if ((pf.maxSizeEpisodeGb || 0) !== (filtering.maxSizeEpisodeGb || 0)) continue;
+            if ((pf.maxResolution || '') !== (filtering.maxResolution || '')) continue;
+            if ((pf.hdrDvPolicy || 'none') !== (filtering.hdrDvPolicy || 'none')) continue;
+
+            // Compare term arrays
+            const arrEq = (a, b) => {
+                const aa = (a || []), bb = (b || []);
+                if (aa.length !== bb.length) return false;
+                return aa.every((v, i) => v === bb[i]);
+            };
+            if (!arrEq(pf.filterOutTerms, filtering.filterOutTerms)) continue;
+            if (!arrEq(pf.preferredTerms, filtering.preferredTerms)) continue;
+            if (!arrEq(pf.nonPreferredTerms, filtering.nonPreferredTerms)) continue;
+
+            // Compare ranking criteria (id, enabled, order)
+            const pr = preset.ranking.criteria;
+            if (pr.length !== ranking.length) continue;
+            const sortedPreset = [...pr].sort((a, b) => a.order - b.order);
+            const sortedCurrent = [...ranking].sort((a, b) => (a.order || 0) - (b.order || 0));
+            let rankMatch = true;
+            for (let i = 0; i < sortedPreset.length; i++) {
+                if (sortedPreset[i].id !== sortedCurrent[i].id ||
+                    sortedPreset[i].enabled !== sortedCurrent[i].enabled ||
+                    sortedPreset[i].order !== (sortedCurrent[i].order || 0)) {
+                    rankMatch = false;
+                    break;
+                }
+            }
+            if (!rankMatch) continue;
+
+            return preset.id;
+        }
+        return 'custom';
+    }
+
+    function renderPresetDropdown() {
+        const currentPresetId = detectCurrentPreset();
+        const options = ['<option value="custom"' + (currentPresetId === 'custom' ? ' selected' : '') + '>Custom</option>'];
+        for (const p of (presets || [])) {
+            options.push('<option value="' + p.id + '"' + (currentPresetId === p.id ? ' selected' : '') + '>' + p.name + '</option>');
+        }
+
+        // Find description for current preset
+        let descHtml = '';
+        if (currentPresetId !== 'custom') {
+            const p = presets.find(x => x.id === currentPresetId);
+            if (p) descHtml = '<span style="margin-left: 0.75rem; color: var(--text-muted); font-size: 0.8rem;">' + p.description + '</span>';
+        }
+
+        return '<div style="margin-bottom: 1.25rem; padding-bottom: 1rem; border-bottom: 1px solid var(--border-color);">' +
+            '<label style="display: block; font-size: 0.8rem; font-weight: 600; margin-bottom: 0.4rem; color: var(--text-secondary);">Preset</label>' +
+            '<div style="display: flex; align-items: center;">' +
+            '<select class="form-select" style="max-width: 220px;" onchange="applyPreset(this.value)">' +
+            options.join('') +
+            '</select>' +
+            descHtml +
+            '</div>' +
+            '<p class="form-hint" style="margin-top: 0.35rem;">Quickly apply a filtering &amp; ranking configuration. Changes are not saved until you click Save.</p>' +
+            '</div>';
+    }
+
+    function applyPreset(presetId) {
+        if (presetId === 'custom') return;
+        const preset = (presets || []).find(p => p.id === presetId);
+        if (!preset) return;
+
+        // Apply filtering values
+        const target = (selectedUserId && userSettings) ? userSettings : currentSettings;
+
+        // For per-user settings, filtering uses pointer types — set values directly
+        if (selectedUserId && userSettings) {
+            target.filtering = target.filtering || {};
+            target.filtering.maxSizeMovieGb = preset.filtering.maxSizeMovieGb;
+            target.filtering.maxSizeEpisodeGb = preset.filtering.maxSizeEpisodeGb;
+            target.filtering.maxResolution = preset.filtering.maxResolution;
+            target.filtering.hdrDvPolicy = preset.filtering.hdrDvPolicy;
+            target.filtering.filterOutTerms = preset.filtering.filterOutTerms || [];
+            target.filtering.preferredTerms = preset.filtering.preferredTerms || [];
+            target.filtering.nonPreferredTerms = preset.filtering.nonPreferredTerms || [];
+        } else {
+            target.filtering = JSON.parse(JSON.stringify(preset.filtering));
+        }
+
+        // Apply ranking criteria
+        const rankingCriteria = JSON.parse(JSON.stringify(preset.ranking.criteria));
+        if (selectedUserId && userSettings) {
+            if (!target.ranking) target.ranking = {};
+            target.ranking.criteria = rankingCriteria;
+        } else {
+            if (!target.ranking) target.ranking = {};
+            target.ranking.criteria = rankingCriteria;
+        }
+
+        renderSettings();
+    }
+
     // Render ranking criteria UI with drag-and-drop (similar to shelves)
     function renderRankingCriteriaUI() {
         let criteria;
@@ -3456,6 +3595,11 @@
             contentHtml = renderUserAccountsSection();
         } else {
             contentHtml = sectionDef.is_array ? renderArraySection(sectionKey, sectionDef) : '<div class="grid grid-2">'+renderObjectSection(sectionKey, sectionDef)+'</div>';
+        }
+
+        // Add preset dropdown before filtering section content
+        if (sectionKey === 'filtering' && !selectedClientId) {
+            contentHtml = renderPresetDropdown() + contentHtml;
         }
 
         // Add clear cache button for cache section
