@@ -34,9 +34,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates wget xz-utils python3 python3-venv python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-# Create Python virtual environment and install PTT (parsett) and subliminal (subtitle search)
+# Create Python virtual environment and install dependencies
 RUN python3 -m venv /.venv && \
-    /.venv/bin/pip install --no-cache-dir parsett subliminal
+    /.venv/bin/pip install --no-cache-dir parsett subliminal easyocr numpy Pillow
+
+# Pre-download EasyOCR model so first detection doesn't incur download latency
+RUN /.venv/bin/python3 -c "import easyocr; easyocr.Reader(['en'], gpu=False)"
 
 # Download static ffmpeg build with Dolby Vision (libdovi) support
 # Use TARGETARCH to select the correct binary for multi-platform builds
@@ -79,8 +82,8 @@ COPY --from=builder /app/strmr .
 COPY backend/version.txt /app/version.txt
 RUN head -1 /app/version.txt > /tmp/ver && echo "$(date +%Y%m%d)" >> /tmp/ver && mv /tmp/ver /app/version.txt
 
-# Copy Python scripts to root (title parsing and subtitle search)
-COPY backend/parse_title.py backend/parse_title_batch.py backend/search_subtitles.py backend/download_subtitle.py /
+# Copy Python scripts to root (title parsing, subtitle search, credits detection)
+COPY backend/parse_title.py backend/parse_title_batch.py backend/search_subtitles.py backend/download_subtitle.py backend/detect_credits.py /
 
 # Expose port
 EXPOSE 7777

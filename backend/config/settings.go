@@ -226,6 +226,7 @@ type PlaybackSettings struct {
 	RewindOnResumeFromPause   int     `json:"rewindOnResumeFromPause"`      // Seconds to rewind when unpausing (default 0)
 	RewindOnPlaybackStart     int     `json:"rewindOnPlaybackStart"`        // Seconds to rewind when resuming from saved progress (default 0)
 	DisablePrequeue           bool    `json:"disablePrequeue"`              // Disable automatic prequeue on page load (streams only resolve when Play is pressed)
+	CreditsDetection          bool    `json:"creditsDetection"`             // Show a marker on the seek bar where credits begin
 	MaxConcurrentStreams      int     `json:"maxConcurrentStreams"`         // Global max concurrent VOD streams across all accounts (0 = unlimited)
 	MaxResultsPerResolution   int     `json:"maxResultsPerResolution"`     // Maximum number of results per resolution tier (0 = no limit)
 }

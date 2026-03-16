@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"novastream/config"
+	"novastream/services/credits"
 	"novastream/services/streaming"
 )
 
@@ -997,4 +999,124 @@ func TestIsConnectionError_StringPatterns(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- Credits detection handler tests ---
+
+func TestVideoHandler_DetectCredits_Disabled(t *testing.T) {
+	handler := NewVideoHandler(false, "", "")
+	handler.creditsDetector = newTestCreditsDetector()
+	// No config manager or config with creditsDetection=false → disabled
+
+	req := httptest.NewRequest(http.MethodPost, "/video/credits/detect?path=test.mkv&duration=3600", nil)
+	rr := httptest.NewRecorder()
+
+	handler.DetectCredits(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected status %d, got %d", http.StatusOK, rr.Code)
+	}
+	body := rr.Body.String()
+	if !bytes.Contains([]byte(body), []byte(`"status":"disabled"`)) {
+		t.Errorf("expected disabled status, got %s", body)
+	}
+}
+
+func TestVideoHandler_DetectCredits_MissingPath(t *testing.T) {
+	handler := NewVideoHandler(false, "", "")
+	handler.creditsDetector = newTestCreditsDetector()
+	handler.configManager = creditsEnabledConfig()
+
+	req := httptest.NewRequest(http.MethodPost, "/video/credits/detect?duration=3600", nil)
+	rr := httptest.NewRecorder()
+
+	handler.DetectCredits(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected status %d, got %d", http.StatusBadRequest, rr.Code)
+	}
+}
+
+func TestVideoHandler_DetectCredits_MissingDuration(t *testing.T) {
+	handler := NewVideoHandler(false, "", "")
+	handler.creditsDetector = newTestCreditsDetector()
+	handler.configManager = creditsEnabledConfig()
+
+	req := httptest.NewRequest(http.MethodPost, "/video/credits/detect?path=test.mkv", nil)
+	rr := httptest.NewRecorder()
+
+	handler.DetectCredits(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected status %d, got %d", http.StatusBadRequest, rr.Code)
+	}
+}
+
+func TestVideoHandler_GetCreditsStatus_Disabled(t *testing.T) {
+	handler := NewVideoHandler(false, "", "")
+	handler.creditsDetector = newTestCreditsDetector()
+	// No config manager → disabled
+
+	req := httptest.NewRequest(http.MethodGet, "/video/credits/status?path=test.mkv", nil)
+	rr := httptest.NewRecorder()
+
+	handler.GetCreditsStatus(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected status %d, got %d", http.StatusOK, rr.Code)
+	}
+	body := rr.Body.String()
+	if !bytes.Contains([]byte(body), []byte(`"status":"disabled"`)) {
+		t.Errorf("expected disabled status, got %s", body)
+	}
+}
+
+func TestVideoHandler_GetCreditsStatus_MissingPath(t *testing.T) {
+	handler := NewVideoHandler(false, "", "")
+	handler.creditsDetector = newTestCreditsDetector()
+	handler.configManager = creditsEnabledConfig()
+
+	req := httptest.NewRequest(http.MethodGet, "/video/credits/status", nil)
+	rr := httptest.NewRecorder()
+
+	handler.GetCreditsStatus(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected status %d, got %d", http.StatusBadRequest, rr.Code)
+	}
+}
+
+func TestVideoHandler_GetCreditsStatus_Pending(t *testing.T) {
+	handler := NewVideoHandler(false, "", "")
+	handler.creditsDetector = newTestCreditsDetector()
+	handler.configManager = creditsEnabledConfig()
+
+	req := httptest.NewRequest(http.MethodGet, "/video/credits/status?path=unknown/path", nil)
+	rr := httptest.NewRecorder()
+
+	handler.GetCreditsStatus(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected status %d, got %d", http.StatusOK, rr.Code)
+	}
+	body := rr.Body.String()
+	if !bytes.Contains([]byte(body), []byte(`"status":"pending"`)) {
+		t.Errorf("expected pending status, got %s", body)
+	}
+}
+
+func newTestCreditsDetector() *credits.Detector {
+	return credits.NewDetector()
+}
+
+type mockConfigProvider struct {
+	settings config.Settings
+}
+
+func (m *mockConfigProvider) Load() (config.Settings, error) {
+	return m.settings, nil
+}
+
+func creditsEnabledConfig() *mockConfigProvider {
+	return &mockConfigProvider{settings: config.Settings{Playback: config.PlaybackSettings{CreditsDetection: true}}}
 }

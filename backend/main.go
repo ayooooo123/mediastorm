@@ -28,6 +28,7 @@ import (
 	"novastream/services/calendar"
 	client_settings "novastream/services/client_settings"
 	"novastream/services/clients"
+	"novastream/services/credits"
 	content_preferences "novastream/services/content_preferences"
 	"novastream/services/customlists"
 	"novastream/services/debrid"
@@ -563,6 +564,11 @@ func main() {
 			log.Printf("[main] Subtitle pre-extraction configured for prequeue and playback handlers")
 		}
 		log.Printf("[main] Prequeue handler configured with video prober, HLS creator, full prober, user settings, client settings, config, and metadata")
+
+		// Configure credits detection
+		creditsDetector := credits.NewDetector()
+		videoHandler.SetCreditsDetector(creditsDetector)
+		log.Printf("[main] Credits detector configured")
 
 		// Configure video handler with user settings for HDR/DV policy checks
 		videoHandler.SetUserSettingsService(userSettingsService)

@@ -28,6 +28,7 @@ import (
 	"novastream/config"
 	"novastream/internal/integration"
 	"novastream/models"
+	"novastream/services/credits"
 	"novastream/services/streaming"
 
 	"github.com/gorilla/mux"
@@ -110,6 +111,9 @@ type VideoHandler struct {
 	// client disconnects. Prevents seek storms when players alternate between audio
 	// and video track positions in non-interleaved MP4 files.
 	streamPool *streamPool
+
+	// Credits detection
+	creditsDetector *credits.Detector
 
 	// User/account services for stream limit enforcement
 	usersSvc    UsersProvider
@@ -339,6 +343,115 @@ func (h *VideoHandler) SetUsersService(svc UsersProvider) {
 // SetAccountsService sets the accounts service for looking up stream limits.
 func (h *VideoHandler) SetAccountsService(svc AccountsProvider) {
 	h.accountsSvc = svc
+}
+
+// SetCreditsDetector sets the credits detection service.
+func (h *VideoHandler) SetCreditsDetector(d *credits.Detector) {
+	h.creditsDetector = d
+}
+
+// isCreditsDetectionEnabled checks if credits detection is enabled in settings.
+func (h *VideoHandler) isCreditsDetectionEnabled() bool {
+	if h.configManager == nil {
+		return false
+	}
+	cfg, err := h.configManager.Load()
+	if err != nil {
+		return false
+	}
+	return cfg.Playback.CreditsDetection
+}
+
+// DetectCredits triggers async credits detection for a video path.
+func (h *VideoHandler) DetectCredits(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		h.HandleOptions(w, r)
+		return
+	}
+
+	if h.creditsDetector == nil || !h.isCreditsDetectionEnabled() {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "disabled"})
+		return
+	}
+
+	streamPath := strings.TrimSpace(r.URL.Query().Get("path"))
+	if streamPath == "" {
+		http.Error(w, "missing path parameter", http.StatusBadRequest)
+		return
+	}
+
+	durationStr := strings.TrimSpace(r.URL.Query().Get("duration"))
+	if durationStr == "" {
+		http.Error(w, "missing duration parameter", http.StatusBadRequest)
+		return
+	}
+	duration, err := strconv.ParseFloat(durationStr, 64)
+	if err != nil || duration <= 0 {
+		http.Error(w, "invalid duration parameter", http.StatusBadRequest)
+		return
+	}
+
+	// Get direct URL for the video
+	directProvider, ok := h.streamer.(streaming.DirectURLProvider)
+	if !ok {
+		http.Error(w, "direct URL not supported for this path", http.StatusNotImplemented)
+		return
+	}
+
+	directURL, err := directProvider.GetDirectURL(r.Context(), streamPath)
+	if err != nil {
+		log.Printf("[credits] failed to get direct URL for path=%q: %v", streamPath, err)
+		http.Error(w, "failed to resolve video URL", http.StatusInternalServerError)
+		return
+	}
+
+	h.creditsDetector.DetectAsync(r.Context(), streamPath, directURL, duration)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]string{"status": "detecting"})
+}
+
+// GetCreditsStatus returns the cached credits detection result for a video path.
+func (h *VideoHandler) GetCreditsStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		h.HandleOptions(w, r)
+		return
+	}
+
+	if h.creditsDetector == nil || !h.isCreditsDetectionEnabled() {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "disabled"})
+		return
+	}
+
+	streamPath := strings.TrimSpace(r.URL.Query().Get("path"))
+	if streamPath == "" {
+		http.Error(w, "missing path parameter", http.StatusBadRequest)
+		return
+	}
+
+	result := h.creditsDetector.Get(streamPath)
+	w.Header().Set("Content-Type", "application/json")
+
+	if result == nil {
+		if h.creditsDetector.IsInflight(streamPath) {
+			json.NewEncoder(w).Encode(map[string]string{"status": "detecting"})
+		} else {
+			json.NewEncoder(w).Encode(map[string]string{"status": "pending"})
+		}
+		return
+	}
+
+	resp := map[string]interface{}{
+		"status":   "complete",
+		"detected": result.Detected,
+	}
+	if result.Detected {
+		resp["creditsStartSec"] = result.CreditsStartSec
+	}
+	json.NewEncoder(w).Encode(resp)
 }
 
 // resolveAccountID resolves a profile ID from the request into an account ID.

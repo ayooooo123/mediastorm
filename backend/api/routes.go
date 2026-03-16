@@ -316,6 +316,8 @@ func Register(
 	protected.HandleFunc("/video/metadata", RateLimitHandlerFunc(probeLimiter, videoHandler.ProbeVideo)).Methods(http.MethodGet, http.MethodOptions)
 	protected.HandleFunc("/video/direct-url", videoHandler.GetDirectURL).Methods(http.MethodGet, http.MethodOptions)
 	protected.HandleFunc("/video/cropdetect", RateLimitHandlerFunc(probeLimiter, videoHandler.CropDetect)).Methods(http.MethodGet, http.MethodOptions)
+	protected.HandleFunc("/video/credits/detect", videoHandler.DetectCredits).Methods(http.MethodPost, http.MethodOptions)
+	protected.HandleFunc("/video/credits/status", videoHandler.GetCreditsStatus).Methods(http.MethodGet, http.MethodOptions)
 
 	// HLS streaming endpoints for Dolby Vision
 	protected.HandleFunc("/video/hls/start", RateLimitHandlerFunc(hlsStartLimiter, videoHandler.StartHLSSession)).Methods(http.MethodGet, http.MethodOptions)
