@@ -451,6 +451,21 @@ func compareSize(i, j models.NZBResult) int {
 	return 0
 }
 
+func comparePreferredScraper(i, j models.NZBResult, preferredScraper string) int {
+	if preferredScraper == "" {
+		return 0
+	}
+	iMatch := strings.EqualFold(i.Indexer, preferredScraper)
+	jMatch := strings.EqualFold(j.Indexer, preferredScraper)
+	if iMatch && !jMatch {
+		return -1
+	}
+	if !iMatch && jMatch {
+		return 1
+	}
+	return 0
+}
+
 type SearchOptions struct {
 	Query                 string
 	Categories            []string
@@ -654,6 +669,7 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBR
 		}
 
 		preferredLang := settings.Metadata.Language
+		preferredScraper := settings.Filtering.PreferredScraper
 
 		sort.SliceStable(aggregated, func(i, j int) bool {
 			// Year match is a correctness concern, not a preference — always applied first.
@@ -683,6 +699,8 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBR
 					result = compareLanguage(aggregated[i], aggregated[j], preferredLang)
 				case config.RankingSize:
 					result = compareSize(aggregated[i], aggregated[j])
+				case config.RankingPreferredScraper:
+					result = comparePreferredScraper(aggregated[i], aggregated[j], preferredScraper)
 				}
 
 				if result != 0 {
@@ -820,6 +838,7 @@ func (s *Service) SearchSplit(ctx context.Context, opts SearchOptions) (debridCh
 	}
 
 	preferredLang := settings.Metadata.Language
+	preferredScraper2 := settings.Filtering.PreferredScraper
 
 	// Helper to inject daily show attributes into results (same as Search path)
 	injectDailyAttrs := func(results []models.NZBResult) {
@@ -871,6 +890,8 @@ func (s *Service) SearchSplit(ctx context.Context, opts SearchOptions) (debridCh
 					result = compareLanguage(results[i], results[j], preferredLang)
 				case config.RankingSize:
 					result = compareSize(results[i], results[j])
+				case config.RankingPreferredScraper:
+					result = comparePreferredScraper(results[i], results[j], preferredScraper2)
 				}
 				if result != 0 {
 					return result < 0

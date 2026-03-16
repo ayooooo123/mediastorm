@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 
@@ -662,4 +663,163 @@ func TestPerResolutionLimiting(t *testing.T) {
 			t.Errorf("expected first 720p result, got %q", limited[2].Title)
 		}
 	})
+}
+
+func TestComparePreferredScraper(t *testing.T) {
+	torrentio := models.NZBResult{Title: "Movie.2160p", Indexer: "Torrentio"}
+	jackett := models.NZBResult{Title: "Movie.2160p", Indexer: "Jackett"}
+	zilean := models.NZBResult{Title: "Movie.1080p", Indexer: "Zilean"}
+
+	t.Run("no preferred scraper returns 0", func(t *testing.T) {
+		result := comparePreferredScraper(torrentio, jackett, "")
+		if result != 0 {
+			t.Errorf("expected 0 when no preferred scraper, got %d", result)
+		}
+	})
+
+	t.Run("preferred scraper ranks higher", func(t *testing.T) {
+		result := comparePreferredScraper(torrentio, jackett, "Torrentio")
+		if result != -1 {
+			t.Errorf("expected -1 (preferred first), got %d", result)
+		}
+	})
+
+	t.Run("non-preferred scraper ranks lower", func(t *testing.T) {
+		result := comparePreferredScraper(jackett, torrentio, "Torrentio")
+		if result != 1 {
+			t.Errorf("expected 1 (preferred second), got %d", result)
+		}
+	})
+
+	t.Run("both from preferred scraper returns 0", func(t *testing.T) {
+		torrentio2 := models.NZBResult{Title: "Movie.1080p", Indexer: "Torrentio"}
+		result := comparePreferredScraper(torrentio, torrentio2, "Torrentio")
+		if result != 0 {
+			t.Errorf("expected 0 when both match, got %d", result)
+		}
+	})
+
+	t.Run("neither from preferred scraper returns 0", func(t *testing.T) {
+		result := comparePreferredScraper(jackett, zilean, "Torrentio")
+		if result != 0 {
+			t.Errorf("expected 0 when neither match, got %d", result)
+		}
+	})
+
+	t.Run("case insensitive matching", func(t *testing.T) {
+		result := comparePreferredScraper(torrentio, jackett, "torrentio")
+		if result != -1 {
+			t.Errorf("expected -1 (case insensitive match), got %d", result)
+		}
+	})
+}
+
+func TestPreferredScraperRankingIntegration(t *testing.T) {
+	// Test that the preferred-scraper criterion integrates correctly with the ranking system
+	results := []models.NZBResult{
+		{Title: "Movie.2160p.WEB-DL", Indexer: "Jackett", SizeBytes: 5000},
+		{Title: "Movie.2160p.BluRay", Indexer: "Torrentio", SizeBytes: 8000},
+		{Title: "Movie.1080p.WEB-DL", Indexer: "Torrentio", SizeBytes: 3000},
+		{Title: "Movie.1080p.BluRay", Indexer: "Zilean", SizeBytes: 4000},
+	}
+
+	t.Run("preferred scraper criterion boosts matching results", func(t *testing.T) {
+		criteria := []config.RankingCriterion{
+			{ID: config.RankingPreferredScraper, Name: "Preferred Scraper", Enabled: true, Order: 0},
+			{ID: config.RankingResolution, Name: "Resolution", Enabled: true, Order: 1},
+		}
+		preferredScraper := "Torrentio"
+
+		sorted := make([]models.NZBResult, len(results))
+		copy(sorted, results)
+
+		sort.SliceStable(sorted, func(i, j int) bool {
+			for _, criterion := range criteria {
+				if !criterion.Enabled {
+					continue
+				}
+				var result int
+				switch criterion.ID {
+				case config.RankingPreferredScraper:
+					result = comparePreferredScraper(sorted[i], sorted[j], preferredScraper)
+				case config.RankingResolution:
+					result = compareResolution(sorted[i], sorted[j])
+				}
+				if result != 0 {
+					return result < 0
+				}
+			}
+			return false
+		})
+
+		// Torrentio results should come first
+		if sorted[0].Indexer != "Torrentio" {
+			t.Errorf("expected first result from Torrentio, got %q", sorted[0].Indexer)
+		}
+		if sorted[1].Indexer != "Torrentio" {
+			t.Errorf("expected second result from Torrentio, got %q", sorted[1].Indexer)
+		}
+		// Within Torrentio results, higher resolution should come first
+		if !strings.Contains(sorted[0].Title, "2160p") {
+			t.Errorf("expected 2160p Torrentio result first, got %q", sorted[0].Title)
+		}
+	})
+
+	t.Run("disabled criterion has no effect", func(t *testing.T) {
+		criteria := []config.RankingCriterion{
+			{ID: config.RankingPreferredScraper, Name: "Preferred Scraper", Enabled: false, Order: 0},
+			{ID: config.RankingResolution, Name: "Resolution", Enabled: true, Order: 1},
+		}
+
+		sorted := make([]models.NZBResult, len(results))
+		copy(sorted, results)
+
+		sort.SliceStable(sorted, func(i, j int) bool {
+			for _, criterion := range criteria {
+				if !criterion.Enabled {
+					continue
+				}
+				var result int
+				switch criterion.ID {
+				case config.RankingPreferredScraper:
+					result = comparePreferredScraper(sorted[i], sorted[j], "Torrentio")
+				case config.RankingResolution:
+					result = compareResolution(sorted[i], sorted[j])
+				}
+				if result != 0 {
+					return result < 0
+				}
+			}
+			return false
+		})
+
+		// Should sort purely by resolution since preferred scraper is disabled
+		if !strings.Contains(sorted[0].Title, "2160p") {
+			t.Errorf("expected 2160p result first when criterion disabled, got %q", sorted[0].Title)
+		}
+		if !strings.Contains(sorted[1].Title, "2160p") {
+			t.Errorf("expected 2160p result second when criterion disabled, got %q", sorted[1].Title)
+		}
+	})
+}
+
+func TestDefaultRankingCriteriaIncludesPreferredScraper(t *testing.T) {
+	criteria := config.DefaultRankingCriteria()
+
+	found := false
+	for _, c := range criteria {
+		if c.ID == config.RankingPreferredScraper {
+			found = true
+			if c.Enabled {
+				t.Error("expected preferred-scraper criterion to be disabled by default")
+			}
+			if c.Name != "Preferred Scraper" {
+				t.Errorf("expected name 'Preferred Scraper', got %q", c.Name)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected preferred-scraper criterion in default ranking criteria")
+	}
 }

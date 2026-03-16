@@ -341,6 +341,13 @@ var SettingsSchema = map[string]interface{}{
 			"filterOutTerms":   map[string]interface{}{"type": "tags", "label": "Filter Out Terms", "description": "Terms to exclude from results (case-insensitive substring match; wrap in /slashes/ for regex, e.g. /\\bDUB\\b/)"},
 			"preferredTerms":   map[string]interface{}{"type": "tags", "label": "Preferred Terms", "description": "Terms to prioritize in results (case-insensitive substring match, ranked higher; wrap in /slashes/ for regex)"},
 			"nonPreferredTerms": map[string]interface{}{"type": "tags", "label": "Non-Preferred Terms", "description": "Terms to derank in results (case-insensitive substring match, ranked lower but not removed; wrap in /slashes/ for regex)"},
+			"preferredScraper": map[string]interface{}{
+				"type":        "select",
+				"label":       "Preferred Scraper",
+				"description": "Boost results from this scraper when the Preferred Scraper ranking criterion is enabled",
+				"order":       10,
+				"optionsFrom": "torrentScrapers",
+			},
 		},
 	},
 	"animeFiltering": map[string]interface{}{

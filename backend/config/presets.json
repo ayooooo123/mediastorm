@@ -19,7 +19,8 @@
         {"id": "service-priority", "name": "Service Priority", "enabled": true, "order": 2},
         {"id": "language", "name": "Language", "enabled": true, "order": 3},
         {"id": "size", "name": "File Size", "enabled": true, "order": 4},
-        {"id": "non-preferred-terms", "name": "Non-Preferred Terms", "enabled": true, "order": 5}
+        {"id": "non-preferred-terms", "name": "Non-Preferred Terms", "enabled": true, "order": 5},
+        {"id": "preferred-scraper", "name": "Preferred Scraper", "enabled": false, "order": 6}
       ]
     }
   },
@@ -43,7 +44,8 @@
         {"id": "non-preferred-terms", "name": "Non-Preferred Terms", "enabled": true, "order": 2},
         {"id": "resolution", "name": "Resolution", "enabled": true, "order": 3},
         {"id": "language", "name": "Language", "enabled": true, "order": 4},
-        {"id": "size", "name": "File Size", "enabled": true, "order": 5}
+        {"id": "size", "name": "File Size", "enabled": true, "order": 5},
+        {"id": "preferred-scraper", "name": "Preferred Scraper", "enabled": false, "order": 6}
       ]
     }
   },
@@ -67,7 +69,8 @@
         {"id": "service-priority", "name": "Service Priority", "enabled": true, "order": 2},
         {"id": "preferred-terms", "name": "Preferred Terms", "enabled": true, "order": 3},
         {"id": "language", "name": "Language", "enabled": true, "order": 4},
-        {"id": "non-preferred-terms", "name": "Non-Preferred Terms", "enabled": true, "order": 5}
+        {"id": "non-preferred-terms", "name": "Non-Preferred Terms", "enabled": true, "order": 5},
+        {"id": "preferred-scraper", "name": "Preferred Scraper", "enabled": false, "order": 6}
       ]
     }
   },
@@ -91,7 +94,8 @@
         {"id": "resolution", "name": "Resolution", "enabled": true, "order": 2},
         {"id": "language", "name": "Language", "enabled": true, "order": 3},
         {"id": "preferred-terms", "name": "Preferred Terms", "enabled": true, "order": 4},
-        {"id": "non-preferred-terms", "name": "Non-Preferred Terms", "enabled": true, "order": 5}
+        {"id": "non-preferred-terms", "name": "Non-Preferred Terms", "enabled": true, "order": 5},
+        {"id": "preferred-scraper", "name": "Preferred Scraper", "enabled": false, "order": 6}
       ]
     }
   }
