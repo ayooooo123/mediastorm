@@ -20,6 +20,7 @@ var (
 	ErrStorageDirRequired = errors.New("storage directory not provided")
 	ErrClientIDRequired   = errors.New("client id is required")
 	ErrClientNotFound     = errors.New("client not found")
+	ErrUserNotFound       = errors.New("user not found")
 )
 
 // Service manages persistence of client devices.
@@ -76,14 +77,31 @@ func (s *Service) Register(id, userID, deviceType, os, appVersion string) (model
 		return models.Client{}, ErrClientIDRequired
 	}
 
+	// When backed by PostgreSQL, verify the user exists before inserting
+	// to avoid FK constraint violations on clients.user_id → users.id.
+	if s.useDB() && userID != "" {
+		u, err := s.store.Users().Get(context.Background(), userID)
+		if err != nil {
+			return models.Client{}, fmt.Errorf("check user: %w", err)
+		}
+		if u == nil {
+			return models.Client{}, ErrUserNotFound
+		}
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	now := time.Now().UTC()
 
 	if existing, ok := s.clients[id]; ok {
-		// Update existing client
-		existing.UserID = userID
+		// Update existing client — only overwrite UserID when a
+		// non-empty value is provided so that re-registration from
+		// AuthContext (which omits userId) doesn't blank it out and
+		// violate the FK constraint on the clients table.
+		if userID != "" {
+			existing.UserID = userID
+		}
 		existing.DeviceType = deviceType
 		existing.OS = os
 		existing.AppVersion = appVersion
@@ -94,6 +112,11 @@ func (s *Service) Register(id, userID, deviceType, os, appVersion string) (model
 			return models.Client{}, err
 		}
 		return existing, nil
+	}
+
+	// New clients require a userId (FK constraint on clients.user_id → users.id).
+	if userID == "" {
+		return models.Client{}, errors.New("userId is required for new client registration")
 	}
 
 	// Create new client with auto-generated name
@@ -291,6 +314,16 @@ func (s *Service) ReassignUser(id, newUserID string) (models.Client, error) {
 	newUserID = strings.TrimSpace(newUserID)
 	if newUserID == "" {
 		return models.Client{}, errors.New("new user ID is required")
+	}
+
+	if s.useDB() {
+		u, err := s.store.Users().Get(context.Background(), newUserID)
+		if err != nil {
+			return models.Client{}, fmt.Errorf("check user: %w", err)
+		}
+		if u == nil {
+			return models.Client{}, ErrUserNotFound
+		}
 	}
 
 	s.mu.Lock()

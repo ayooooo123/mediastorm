@@ -83,6 +83,10 @@ func (h *ClientsHandler) Register(w http.ResponseWriter, r *http.Request) {
 
 	client, err := h.clients.Register(req.ID, req.UserID, req.DeviceType, req.OS, req.AppVersion)
 	if err != nil {
+		if errors.Is(err, clients.ErrUserNotFound) {
+			writeJSONError(w, "user not found: "+req.UserID, http.StatusBadRequest)
+			return
+		}
 		writeJSONError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
