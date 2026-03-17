@@ -2,9 +2,12 @@
 """
 Credits detection — finds the timestamp where end credits begin in a video.
 
-Uses FFmpeg keyframe extraction + EasyOCR text detection.
-Phase 1: Extract keyframes from last 10% of video (skip_frame nokey).
-Phase 2: Fine 1fps scan of 20s window around first detected credits.
+Uses brightness analysis + Canny edge detection (no OCR).
+
+Phase 1: Extract micro-thumbnails every 2s from last 20%, compute mean brightness.
+         Find the last sustained dark region that extends to near the end.
+Phase 2: Extract 1fps thumbnails around the transition for exact timing.
+Phase 3: Edge detection on a few frames to confirm text presence (not just black).
 
 Output: JSON to stdout: {"detected": true, "credits_start_sec": 3562.0}
 """
@@ -20,78 +23,25 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-# Lazy-load EasyOCR (slow import)
-_reader = None
-def get_reader():
-    global _reader
-    if _reader is None:
-        import easyocr
-        _reader = easyocr.Reader(['en'], gpu=False, verbose=False)
-    return _reader
-
 
 # --- Thresholds ---
+# A frame is "dark" if this fraction of pixels have brightness < 40
+DARK_PIXEL_THRESH = 40
 DARK_RATIO_GATE = 0.70
+# Mid-tone check: credits have very few mid-tone pixels
+MID_TONE_LO = 50
+MID_TONE_HI = 200
 MID_TONE_GATE = 0.30
-TEXT_REGIONS_CREDITS = 3
-TEXT_REGIONS_SPARSE = 1
+# Minimum sustained dark seconds to count as credits
+MIN_CREDITS_DURATION = 20
+# Edge density threshold: fraction of pixels that are edges (Canny)
+# Credits text produces edges; a plain black screen does not.
+EDGE_DENSITY_THRESH = 0.005
 
 
 def vlog(msg, verbose=False):
     if verbose:
         print(msg, file=sys.stderr, flush=True)
-
-
-def extract_frames(video_url, start_sec, count, fps, out_dir, prefix="frame"):
-    pattern = os.path.join(out_dir, f"{prefix}_{start_sec:.0f}_%04d.png")
-    cmd = [
-        "ffmpeg", "-y", "-v", "quiet",
-        "-ss", str(start_sec),
-        "-i", video_url,
-        "-vf", f"fps={fps},scale=960:-1",
-        "-frames:v", str(count),
-        pattern,
-    ]
-    subprocess.run(cmd, check=True, timeout=120)
-    frames = sorted(Path(out_dir).glob(f"{prefix}_{start_sec:.0f}_*.png"))
-    return [str(f) for f in frames]
-
-
-def analyze_frame_quick(img_path):
-    img = Image.open(img_path).convert("L")
-    pixels = np.array(img, dtype=np.float32)
-    dark_ratio = float(np.mean(pixels < 40))
-    mid_tones = float(np.mean((pixels >= 50) & (pixels <= 200)))
-    return {
-        "dark_ratio": round(dark_ratio, 3),
-        "mid_tones": round(mid_tones, 3),
-        "is_dark_enough": dark_ratio > DARK_RATIO_GATE and mid_tones < MID_TONE_GATE,
-    }
-
-
-def count_text_regions(img_path):
-    reader = get_reader()
-    try:
-        result = reader.detect(img_path)
-        h_boxes = len(result[0][0]) if result[0] else 0
-        f_boxes = len(result[1][0]) if result[1] else 0
-        return h_boxes + f_boxes
-    except Exception:
-        return 0
-
-
-def is_credits_frame(img_path, quick=None):
-    if quick is None:
-        quick = analyze_frame_quick(img_path)
-
-    if not quick["is_dark_enough"]:
-        return False
-
-    text_regions = count_text_regions(img_path)
-
-    if quick["dark_ratio"] > 0.98:
-        return text_regions >= TEXT_REGIONS_SPARSE
-    return text_regions >= TEXT_REGIONS_CREDITS
 
 
 def format_time(seconds):
@@ -102,147 +52,191 @@ def format_time(seconds):
     return f"{m}:{s:02d}"
 
 
+def extract_thumbs(video_url, start_sec, count, fps, out_dir, prefix="thumb", width=160):
+    """Extract small thumbnails — fast to decode and process."""
+    pattern = os.path.join(out_dir, f"{prefix}_%05d.png")
+    cmd = [
+        "ffmpeg", "-y", "-v", "quiet",
+        "-ss", str(start_sec),
+        "-i", video_url,
+        "-vf", f"fps={fps},scale={width}:-1",
+        "-frames:v", str(count),
+        pattern,
+    ]
+    subprocess.run(cmd, check=True, timeout=180)
+    frames = sorted(Path(out_dir).glob(f"{prefix}_*.png"))
+    return [str(f) for f in frames]
+
+
+def frame_brightness(img_path):
+    """Return mean brightness (0-255) of a grayscale frame."""
+    img = Image.open(img_path).convert("L")
+    pixels = np.array(img, dtype=np.uint8)
+    return float(np.mean(pixels))
+
+
+def is_dark(img_path):
+    """Check if a frame is dark enough to be credits (fast, <1ms)."""
+    return frame_brightness(img_path) < 35
+
+
+def edge_density(img_path):
+    """Compute Canny edge density — high for text on dark bg, low for plain black."""
+    img = Image.open(img_path).convert("L")
+    pixels = np.array(img, dtype=np.uint8)
+
+    # Simple Sobel-based edge detection (no OpenCV dependency)
+    # Horizontal and vertical gradients
+    gx = np.abs(pixels[:, 2:].astype(np.int16) - pixels[:, :-2].astype(np.int16))
+    gy = np.abs(pixels[2:, :].astype(np.int16) - pixels[:-2, :].astype(np.int16))
+    # Crop to same size
+    gx = gx[1:-1, :]
+    gy = gy[:, 1:-1]
+    edges = np.sqrt(gx.astype(np.float32) ** 2 + gy.astype(np.float32) ** 2)
+    # Threshold: pixel is an edge if gradient magnitude > 30
+    edge_pixels = float(np.mean(edges > 30))
+    return edge_pixels
+
+
 def detect_credits(video_url, duration, verbose=False):
     """
-    Two-phase forward scan:
-      Phase 1: Keyframes from 90% onwards, find coarse credits position.
-      Phase 2: Fine 1fps scan of 20s window around first coarse hit.
-    Returns {"detected": bool, "credits_start_sec": float}
+    Three-phase detection:
+      Phase 1: Brightness scan (every 2s) — find sustained dark region at end.
+      Phase 2: Fine scan (1fps) — exact transition timestamp.
+      Phase 3: Edge confirmation — verify text presence (not just black screen).
     """
     tmp_dir = tempfile.mkdtemp(prefix="credits_")
 
     try:
-        # Phase 1a: fast coarse scan using keyframes only (I-frames, ~10s)
-        scan_start = duration * 0.90
+        # Phase 1: coarse brightness scan of last 8 minutes (or 15%, whichever is less)
+        max_scan_secs = 480  # 8 minutes max
+        scan_start = max(0, duration - min(duration * 0.15, max_scan_secs))
         scan_duration = duration - scan_start
+        coarse_interval = 10
+        coarse_count = min(int(scan_duration / coarse_interval), 50)
 
-        vlog(f"Phase 1a: keyframe scan from {format_time(scan_start)}...", verbose)
-        pattern = os.path.join(tmp_dir, "coarse_%04d.png")
-        cmd = [
-            "ffmpeg", "-y", "-v", "quiet",
-            "-skip_frame", "nokey",
-            "-ss", str(scan_start),
-            "-i", video_url,
-            "-vf", "scale=960:-1",
-            "-vsync", "vfr",
-            "-frames:v", "100",
-            pattern,
-        ]
-        subprocess.run(cmd, check=True, timeout=120)
-        coarse_samples = sorted(str(p) for p in Path(tmp_dir).glob("coarse_*.png"))
-        coarse_interval = scan_duration / max(len(coarse_samples), 1)
+        vlog(f"Phase 1: brightness scan from {format_time(scan_start)} "
+             f"({coarse_count} frames, {coarse_interval}s apart)...", verbose)
 
-        vlog(f"  Got {len(coarse_samples)} keyframes (~{coarse_interval:.1f}s apart)", verbose)
+        thumbs = extract_thumbs(video_url, scan_start, coarse_count,
+                                fps=f"1/{coarse_interval}", out_dir=tmp_dir,
+                                prefix="coarse")
+        vlog(f"  Extracted {len(thumbs)} thumbnails", verbose)
 
-        first_credits_sample = None
-        consecutive_credits = 0
+        # Classify each frame as dark (D) or scene (S)
+        dark_flags = []
+        for f in thumbs:
+            dark_flags.append(is_dark(f))
 
-        for idx, f in enumerate(coarse_samples):
-            quick = analyze_frame_quick(f)
+        vlog(f"  {sum(dark_flags)}/{len(dark_flags)} dark frames", verbose)
 
-            if not quick["is_dark_enough"]:
-                consecutive_credits = 0
-                continue
+        timeline = "".join("D" if d else "S" for d in dark_flags)
+        # Print timeline in rows of 60
+        if verbose:
+            for row_start in range(0, len(timeline), 60):
+                chunk = timeline[row_start:row_start + 60]
+                ts = format_time(scan_start + row_start * coarse_interval)
+                vlog(f"  {ts} {chunk}", verbose)
 
-            if is_credits_frame(f, quick):
-                consecutive_credits += 1
-                if first_credits_sample is None:
-                    first_credits_sample = idx
-            elif quick["dark_ratio"] > 0.95 and quick["mid_tones"] < 0.05:
-                pass  # black frame between credit cards
-            else:
-                if consecutive_credits < 2:
-                    first_credits_sample = None
-                consecutive_credits = 0
+        # Find the LAST sustained dark run that extends to near the end.
+        # "Near the end" = within 60s of video end (allows for post-credits bumper).
+        # Walk backward from end to find where the dark region starts.
+        total_frames = len(dark_flags)
+        end_tolerance = int(60 / coarse_interval)  # frames within 60s of end
 
-            if consecutive_credits >= 2 and first_credits_sample is not None:
-                break
+        # Check that frames near the end are dark
+        end_check_start = max(0, total_frames - end_tolerance)
+        end_dark_count = sum(1 for d in dark_flags[end_check_start:] if d)
+        end_dark_ratio = end_dark_count / max(1, total_frames - end_check_start)
 
-        # Phase 1b: if keyframes found nothing, fall back to 1/10fps regular extraction.
-        # Keyframes land on scene boundaries and can miss scrolling credits text.
-        if first_credits_sample is None:
-            vlog("  Keyframes found nothing, falling back to 1/10fps scan...", verbose)
-            fallback_interval = 10
-            fallback_count = min(int(scan_duration / fallback_interval), 100)
-            fb_pattern = os.path.join(tmp_dir, "fb_%04d.png")
-            cmd = [
-                "ffmpeg", "-y", "-v", "quiet",
-                "-ss", str(scan_start),
-                "-i", video_url,
-                "-vf", f"fps=1/{fallback_interval},scale=960:-1",
-                "-frames:v", str(fallback_count),
-                fb_pattern,
-            ]
-            subprocess.run(cmd, check=True, timeout=180)
-            coarse_samples = sorted(str(p) for p in Path(tmp_dir).glob("fb_*.png"))
-            coarse_interval = fallback_interval
-
-            vlog(f"  Got {len(coarse_samples)} frames ({fallback_interval}s apart)", verbose)
-
-            for idx, f in enumerate(coarse_samples):
-                quick = analyze_frame_quick(f)
-
-                if not quick["is_dark_enough"]:
-                    consecutive_credits = 0
-                    continue
-
-                if is_credits_frame(f, quick):
-                    consecutive_credits += 1
-                    if first_credits_sample is None:
-                        first_credits_sample = idx
-                elif quick["dark_ratio"] > 0.95 and quick["mid_tones"] < 0.05:
-                    pass
-                else:
-                    if consecutive_credits < 2:
-                        first_credits_sample = None
-                    consecutive_credits = 0
-
-                if consecutive_credits >= 2 and first_credits_sample is not None:
-                    break
-
-        if first_credits_sample is None:
+        if end_dark_ratio < 0.5:
+            vlog(f"  End region not dark enough ({end_dark_ratio:.0%}), no credits", verbose)
             return {"detected": False}
 
-        # Phase 2: fine scan
-        # The coarse keyframe timestamp is approximate (index * average interval).
-        # Keyframes are not evenly spaced, so the real timestamp could be off by
-        # a full interval in either direction. Scan a wide window to be safe:
-        # 20s before the estimated hit through 2*interval + 30s after.
-        coarse_hit_sec = scan_start + (first_credits_sample * coarse_interval)
-        fine_start = max(scan_start, coarse_hit_sec - 20)
-        fine_count = int(20 + 2 * coarse_interval + 30)
+        # Walk backward from end to find where sustained darkness begins.
+        # Allow up to 2 non-dark frames as gaps (scene flash within credits).
+        max_gap = 2
+        gap_count = 0
+        dark_run_start = total_frames - 1
 
-        vlog(f"Phase 2: fine scan from {format_time(fine_start)}...", verbose)
-        fine_frames = extract_frames(video_url, fine_start, count=fine_count,
-                                     fps=1, out_dir=tmp_dir, prefix="fine")
-        vlog(f"  Got {len(fine_frames)} frames", verbose)
-
-        fine_states = []
-        for f in fine_frames:
-            quick = analyze_frame_quick(f)
-            if not quick["is_dark_enough"]:
-                fine_states.append("S")
-                continue
-            if is_credits_frame(f, quick):
-                fine_states.append("C")
-            elif quick["dark_ratio"] > 0.95 and quick["mid_tones"] < 0.05:
-                fine_states.append(".")
+        for i in range(total_frames - 1, -1, -1):
+            if dark_flags[i]:
+                dark_run_start = i
+                gap_count = 0
             else:
-                fine_states.append("S")
+                gap_count += 1
+                if gap_count > max_gap:
+                    break
 
-        vlog(f"  Fine timeline: {format_time(fine_start)} {''.join(fine_states)}", verbose)
+        dark_run_duration = (total_frames - dark_run_start) * coarse_interval
+        transition_estimate = scan_start + (dark_run_start * coarse_interval)
 
-        # Find exact transition
-        first_credits_fine = None
-        for i, s in enumerate(fine_states):
-            if s == "C":
-                first_credits_fine = i
-                break
+        vlog(f"  Dark run: {format_time(transition_estimate)} → end "
+             f"({dark_run_duration}s)", verbose)
 
-        if first_credits_fine is not None:
-            transition_sec = fine_start + first_credits_fine
-        else:
-            transition_sec = max(scan_start, coarse_hit_sec - 5)
+        if dark_run_duration < MIN_CREDITS_DURATION:
+            vlog(f"  Dark run too short ({dark_run_duration}s < "
+                 f"{MIN_CREDITS_DURATION}s), no credits", verbose)
+            return {"detected": False}
+
+        # Phase 2: fine 1fps scan around the transition
+        fine_start = max(0, transition_estimate - 15)
+        fine_count = 30  # 30s window around transition
+
+        vlog(f"Phase 2: fine scan {format_time(fine_start)} "
+             f"({fine_count} frames @ 1fps)...", verbose)
+
+        fine_thumbs = extract_thumbs(video_url, fine_start, fine_count,
+                                     fps=1, out_dir=tmp_dir, prefix="fine")
+        vlog(f"  Extracted {len(fine_thumbs)} thumbnails", verbose)
+
+        fine_dark = [is_dark(f) for f in fine_thumbs]
+        fine_tl = "".join("D" if d else "S" for d in fine_dark)
+        vlog(f"  {format_time(fine_start)} {fine_tl}", verbose)
+
+        # Find the transition: last S→D that leads into a sustained dark run
+        # Walk backward from end of fine scan to find where dark started
+        fine_transition = 0
+        gap = 0
+        for i in range(len(fine_dark) - 1, -1, -1):
+            if fine_dark[i]:
+                fine_transition = i
+                gap = 0
+            else:
+                gap += 1
+                if gap > 1:
+                    break
+
+        transition_sec = fine_start + fine_transition
+
+        vlog(f"  Transition at {format_time(transition_sec)}", verbose)
+
+        # Phase 3: edge confirmation — verify credits have text, not just black
+        vlog(f"Phase 3: edge confirmation...", verbose)
+
+        # Sample 3 frames from middle of the dark region
+        dark_middle = transition_sec + dark_run_duration / 2
+        sample_times = [dark_middle - 10, dark_middle, dark_middle + 10]
+        sample_times = [max(transition_sec + 5, min(t, duration - 5)) for t in sample_times]
+
+        has_text = False
+        for st in sample_times:
+            sample_frames = extract_thumbs(video_url, st, 1, fps=1,
+                                           out_dir=tmp_dir, prefix=f"edge_{int(st)}",
+                                           width=960)  # higher res for edge detection
+            if sample_frames:
+                density = edge_density(sample_frames[0])
+                vlog(f"  Edge density at {format_time(st)}: {density:.4f} "
+                     f"(thresh={EDGE_DENSITY_THRESH})", verbose)
+                if density >= EDGE_DENSITY_THRESH:
+                    has_text = True
+                    break
+
+        if not has_text:
+            vlog("  No text edges detected — plain black ending, not credits", verbose)
+            return {"detected": False}
+
+        vlog(f"  Confirmed credits at {format_time(transition_sec)}", verbose)
 
         return {
             "detected": True,
@@ -250,7 +244,6 @@ def detect_credits(video_url, duration, verbose=False):
         }
 
     finally:
-        # Clean up temp files
         import shutil
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -261,11 +254,6 @@ def main():
     parser.add_argument("--duration", required=True, type=float, help="Video duration in seconds")
     parser.add_argument("--verbose", action="store_true", help="Print progress to stderr")
     args = parser.parse_args()
-
-    # Pre-load OCR model
-    vlog("Loading EasyOCR model...", args.verbose)
-    get_reader()
-    vlog("Model loaded", args.verbose)
 
     result = detect_credits(args.url, args.duration, args.verbose)
     print(json.dumps(result))
