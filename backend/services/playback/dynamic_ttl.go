@@ -28,67 +28,37 @@ func DynamicTTL(airDate string, airDateTimeUTC string, year int, mediaType strin
 	// Fall back to year + media type
 	if year > 0 {
 		currentYear := now.Year()
-		if mediaType == "movie" {
-			if year >= currentYear {
-				return 1 * time.Hour // Current year movie
-			}
-			return 6 * time.Hour // Older movie
-		}
-		// Series with year but no air date
 		if year >= currentYear {
-			return 1 * time.Hour
+			return 1 * time.Hour // Current year content
 		}
-		return 6 * time.Hour
+		return 24 * time.Hour // Older content
 	}
 
 	// No date info at all
-	return 30 * time.Minute
+	return 1 * time.Hour
 }
 
 // ttlFromDistance returns TTL based on signed distance from air date.
 // Negative = before air date, positive = after air date.
+//
+//	>7 days before → 1h before:  12h
+//	 1h before → 2h after:       15min
+//	 2h after → 24h after:       1h
+//	>24h after:                   24h
 func ttlFromDistance(distance time.Duration) time.Duration {
-	// Convert to hours for cleaner comparisons
 	hours := distance.Hours()
 
-	// Before air date (negative distance)
-	if hours < -7*24 { // > 7 days before
-		return 6 * time.Hour
+	if hours < -1 { // More than 1 hour before airtime
+		return 12 * time.Hour
 	}
-	if hours < -3*24 { // 3-7 days before
-		return 2 * time.Hour
-	}
-	if hours < -24 { // 1-3 days before
-		return 1 * time.Hour
-	}
-	if hours < -6 { // 6-24h before
-		return 30 * time.Minute
-	}
-	if hours < -1 { // 1-6h before
+	if hours <= 2 { // 1h before to 2h after airtime
 		return 15 * time.Minute
 	}
-
-	// Peak volatility: ±1h of air time through 6h after
-	if hours <= 6 { // -1h to +6h
-		return 15 * time.Minute
-	}
-
-	// After air date (positive distance)
-	if hours <= 24 { // 6-24h after
-		return 30 * time.Minute
-	}
-	if hours <= 3*24 { // 1-3 days after
-		return 45 * time.Minute
-	}
-	if hours <= 7*24 { // 3-7 days after
+	if hours <= 24 { // 2h to 24h after airtime
 		return 1 * time.Hour
 	}
-	if hours <= 4*7*24 { // 1-4 weeks after
-		return 2 * time.Hour
-	}
-
-	// > 4 weeks after
-	return 6 * time.Hour
+	// > 24h after airtime
+	return 24 * time.Hour
 }
 
 // DynamicTTL is a convenience method on PrequeueEntry that extracts fields

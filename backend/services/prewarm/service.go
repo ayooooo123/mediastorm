@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -267,7 +268,7 @@ func (s *Service) RunOnce(ctx context.Context) (SyncResult, error) {
 			continue
 		}
 
-		for _, state := range states {
+		for i, state := range states {
 			key := entryKey(state.SeriesID, user.ID)
 			activeKeys[key] = true
 
@@ -284,6 +285,16 @@ func (s *Service) RunOnce(ctx context.Context) (SyncResult, error) {
 				}
 				log.Printf("[prewarm] Re-warming %q for user %s: existing prequeue missing track metadata or not ready",
 					state.SeriesTitle, user.Name)
+			}
+
+			// Random jitter between resolve calls to avoid interfering with concurrent usage
+			if i > 0 {
+				jitter := time.Duration(30+rand.Intn(91)) * time.Second // 30s-2min
+				select {
+				case <-ctx.Done():
+					return result, ctx.Err()
+				case <-time.After(jitter):
+				}
 			}
 
 			// Determine target episode
