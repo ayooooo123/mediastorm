@@ -2517,10 +2517,7 @@ func (s *Service) executePrewarm(task config.ScheduledTask) (SyncResult, error) 
 		return SyncResult{}, errors.New("prewarm service not configured")
 	}
 
-	ctx, cancel := context.WithTimeout(s.ctx, 10*time.Minute)
-	defer cancel()
-
-	prewarmResult, err := s.prewarmService.RunOnce(ctx)
+	prewarmResult, err := s.prewarmService.RunOnce(s.ctx)
 	if err != nil {
 		return SyncResult{}, fmt.Errorf("prewarm failed: %w", err)
 	}
