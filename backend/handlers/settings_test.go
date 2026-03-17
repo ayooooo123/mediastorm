@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -13,7 +12,6 @@ import (
 	"time"
 
 	"novastream/config"
-	"novastream/internal/auth"
 	"novastream/services/epg"
 )
 
@@ -41,10 +39,7 @@ func TestSettingsHandler_GetSettings(t *testing.T) {
 
 	handler := NewSettingsHandler(mgr)
 
-	// Simulate a master account request so credentials are not redacted
 	req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
-	ctx := context.WithValue(req.Context(), auth.ContextKeyIsMaster, true)
-	req = req.WithContext(ctx)
 	rec := httptest.NewRecorder()
 
 	handler.GetSettings(rec, req)
@@ -61,11 +56,16 @@ func TestSettingsHandler_GetSettings(t *testing.T) {
 		t.Fatalf("decode response: %v", err)
 	}
 
+	// Non-sensitive fields returned as-is
 	if got.Server.Port != cfg.Server.Port || got.Server.Host != cfg.Server.Host {
 		t.Fatalf("unexpected server settings: %+v", got.Server)
 	}
-	if len(got.Usenet) != 1 || got.Usenet[0].Username != cfg.Usenet[0].Username || got.Usenet[0].Password != cfg.Usenet[0].Password {
+	if len(got.Usenet) != 1 || got.Usenet[0].Username != "user" {
 		t.Fatalf("unexpected usenet settings: %+v", got.Usenet)
+	}
+	// Credentials are always redacted — even for master accounts
+	if got.Usenet[0].Password != "••••••••" {
+		t.Fatalf("expected password to be redacted, got %q", got.Usenet[0].Password)
 	}
 }
 

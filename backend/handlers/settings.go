@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"novastream/config"
-	"novastream/internal/auth"
 	"novastream/internal/pool"
 	"novastream/services/debrid"
 	"novastream/services/epg"
@@ -116,11 +115,8 @@ func (h *SettingsHandler) GetSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Redact sensitive fields for non-master users
-	isMaster, _ := r.Context().Value(auth.ContextKeyIsMaster).(bool)
-	if !isMaster {
-		redactSettings(&s)
-	}
+	// Always redact credentials — secrets are write-only, never sent back to any client
+	redactSettings(&s)
 
 	// Build response with computed effective playlist URL
 	resp := SettingsResponseWithLive{
@@ -187,16 +183,32 @@ func redactSettings(s *config.Settings) {
 	// MDBList
 	mask(&s.MDBList.APIKey)
 
-	// Trakt
+	// Trakt (legacy fields + account-level tokens)
 	mask(&s.Trakt.ClientSecret)
 	mask(&s.Trakt.AccessToken)
 	mask(&s.Trakt.RefreshToken)
+	for i := range s.Trakt.Accounts {
+		mask(&s.Trakt.Accounts[i].ClientSecret)
+		mask(&s.Trakt.Accounts[i].AccessToken)
+		mask(&s.Trakt.Accounts[i].RefreshToken)
+	}
 
-	// Plex
+	// Plex (legacy field + account-level tokens)
 	mask(&s.Plex.AuthToken)
+	for i := range s.Plex.Accounts {
+		mask(&s.Plex.Accounts[i].AuthToken)
+	}
+
+	// Jellyfin account tokens
+	for i := range s.Jellyfin.Accounts {
+		mask(&s.Jellyfin.Accounts[i].Token)
+	}
 
 	// Live (Xtream)
 	mask(&s.Live.XtreamPassword)
+
+	// Database URL (may contain credentials in the connection string)
+	mask(&s.Database.URL)
 }
 
 const redactedPlaceholder = "••••••••"
@@ -259,16 +271,38 @@ func preserveRedactedFields(incoming *config.Settings, existing *config.Settings
 	// MDBList
 	restore(&incoming.MDBList.APIKey, existing.MDBList.APIKey)
 
-	// Trakt
+	// Trakt (legacy fields + account-level tokens)
 	restore(&incoming.Trakt.ClientSecret, existing.Trakt.ClientSecret)
 	restore(&incoming.Trakt.AccessToken, existing.Trakt.AccessToken)
 	restore(&incoming.Trakt.RefreshToken, existing.Trakt.RefreshToken)
+	for i := range incoming.Trakt.Accounts {
+		if i < len(existing.Trakt.Accounts) {
+			restore(&incoming.Trakt.Accounts[i].ClientSecret, existing.Trakt.Accounts[i].ClientSecret)
+			restore(&incoming.Trakt.Accounts[i].AccessToken, existing.Trakt.Accounts[i].AccessToken)
+			restore(&incoming.Trakt.Accounts[i].RefreshToken, existing.Trakt.Accounts[i].RefreshToken)
+		}
+	}
 
-	// Plex
+	// Plex (legacy field + account-level tokens)
 	restore(&incoming.Plex.AuthToken, existing.Plex.AuthToken)
+	for i := range incoming.Plex.Accounts {
+		if i < len(existing.Plex.Accounts) {
+			restore(&incoming.Plex.Accounts[i].AuthToken, existing.Plex.Accounts[i].AuthToken)
+		}
+	}
+
+	// Jellyfin account tokens
+	for i := range incoming.Jellyfin.Accounts {
+		if i < len(existing.Jellyfin.Accounts) {
+			restore(&incoming.Jellyfin.Accounts[i].Token, existing.Jellyfin.Accounts[i].Token)
+		}
+	}
 
 	// Live (Xtream)
 	restore(&incoming.Live.XtreamPassword, existing.Live.XtreamPassword)
+
+	// Database URL
+	restore(&incoming.Database.URL, existing.Database.URL)
 }
 
 func (h *SettingsHandler) PutSettings(w http.ResponseWriter, r *http.Request) {
@@ -317,6 +351,9 @@ func (h *SettingsHandler) PutSettings(w http.ResponseWriter, r *http.Request) {
 
 	// Auto-refresh EPG if new sources were added
 	h.triggerEPGRefreshIfNewSources(oldSettings, s)
+
+	// Redact credentials before returning — secrets are write-only
+	redactSettings(&s)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)

@@ -30,6 +30,24 @@ func TestRedactSettings(t *testing.T) {
 		MDBList: config.MDBListSettings{
 			APIKey: "mdblist-key",
 		},
+		Trakt: config.TraktSettings{
+			Accounts: []config.TraktAccount{
+				{ID: "t1", ClientSecret: "trakt-secret", AccessToken: "trakt-access", RefreshToken: "trakt-refresh"},
+			},
+		},
+		Plex: config.PlexSettings{
+			Accounts: []config.PlexAccount{
+				{ID: "p1", AuthToken: "plex-token"},
+			},
+		},
+		Jellyfin: config.JellyfinSettings{
+			Accounts: []config.JellyfinAccount{
+				{ID: "j1", Token: "jellyfin-token"},
+			},
+		},
+		Database: config.DatabaseSettings{
+			URL: "postgres://user:secret@localhost:5432/db",
+		},
 	}
 
 	redactSettings(&s)
@@ -61,6 +79,24 @@ func TestRedactSettings(t *testing.T) {
 	if s.MDBList.APIKey != redacted {
 		t.Errorf("MDBList APIKey not redacted: %q", s.MDBList.APIKey)
 	}
+	if s.Trakt.Accounts[0].ClientSecret != redacted {
+		t.Errorf("Trakt account ClientSecret not redacted: %q", s.Trakt.Accounts[0].ClientSecret)
+	}
+	if s.Trakt.Accounts[0].AccessToken != redacted {
+		t.Errorf("Trakt account AccessToken not redacted: %q", s.Trakt.Accounts[0].AccessToken)
+	}
+	if s.Trakt.Accounts[0].RefreshToken != redacted {
+		t.Errorf("Trakt account RefreshToken not redacted: %q", s.Trakt.Accounts[0].RefreshToken)
+	}
+	if s.Plex.Accounts[0].AuthToken != redacted {
+		t.Errorf("Plex account AuthToken not redacted: %q", s.Plex.Accounts[0].AuthToken)
+	}
+	if s.Jellyfin.Accounts[0].Token != redacted {
+		t.Errorf("Jellyfin account Token not redacted: %q", s.Jellyfin.Accounts[0].Token)
+	}
+	if s.Database.URL != redacted {
+		t.Errorf("Database URL not redacted: %q", s.Database.URL)
+	}
 
 	// Verify non-sensitive fields are untouched
 	if s.Server.Host != "0.0.0.0" {
@@ -71,6 +107,15 @@ func TestRedactSettings(t *testing.T) {
 	}
 	if s.Usenet[0].Name != "provider1" {
 		t.Errorf("Usenet name was modified: %q", s.Usenet[0].Name)
+	}
+	if s.Trakt.Accounts[0].ID != "t1" {
+		t.Errorf("Trakt account ID was modified: %q", s.Trakt.Accounts[0].ID)
+	}
+	if s.Plex.Accounts[0].ID != "p1" {
+		t.Errorf("Plex account ID was modified: %q", s.Plex.Accounts[0].ID)
+	}
+	if s.Jellyfin.Accounts[0].ID != "j1" {
+		t.Errorf("Jellyfin account ID was modified: %q", s.Jellyfin.Accounts[0].ID)
 	}
 }
 
@@ -90,6 +135,24 @@ func TestPreserveRedactedFields_RestoresRealCredentials(t *testing.T) {
 		MDBList: config.MDBListSettings{
 			APIKey: "real-mdblist-key",
 		},
+		Trakt: config.TraktSettings{
+			Accounts: []config.TraktAccount{
+				{ID: "t1", ClientSecret: "real-trakt-secret", AccessToken: "real-trakt-access", RefreshToken: "real-trakt-refresh"},
+			},
+		},
+		Plex: config.PlexSettings{
+			Accounts: []config.PlexAccount{
+				{ID: "p1", AuthToken: "real-plex-token"},
+			},
+		},
+		Jellyfin: config.JellyfinSettings{
+			Accounts: []config.JellyfinAccount{
+				{ID: "j1", Token: "real-jellyfin-token"},
+			},
+		},
+		Database: config.DatabaseSettings{
+			URL: "postgres://user:secret@localhost:5432/db",
+		},
 	}
 
 	// Simulate a non-master user saving back redacted settings
@@ -107,6 +170,24 @@ func TestPreserveRedactedFields_RestoresRealCredentials(t *testing.T) {
 		},
 		MDBList: config.MDBListSettings{
 			APIKey: redactedPlaceholder,
+		},
+		Trakt: config.TraktSettings{
+			Accounts: []config.TraktAccount{
+				{ID: "t1", ClientSecret: redactedPlaceholder, AccessToken: redactedPlaceholder, RefreshToken: redactedPlaceholder},
+			},
+		},
+		Plex: config.PlexSettings{
+			Accounts: []config.PlexAccount{
+				{ID: "p1", AuthToken: redactedPlaceholder},
+			},
+		},
+		Jellyfin: config.JellyfinSettings{
+			Accounts: []config.JellyfinAccount{
+				{ID: "j1", Token: redactedPlaceholder},
+			},
+		},
+		Database: config.DatabaseSettings{
+			URL: redactedPlaceholder,
 		},
 	}
 
@@ -127,6 +208,24 @@ func TestPreserveRedactedFields_RestoresRealCredentials(t *testing.T) {
 	}
 	if incoming.MDBList.APIKey != "real-mdblist-key" {
 		t.Errorf("MDBList APIKey not restored: got %q", incoming.MDBList.APIKey)
+	}
+	if incoming.Trakt.Accounts[0].ClientSecret != "real-trakt-secret" {
+		t.Errorf("Trakt account ClientSecret not restored: got %q", incoming.Trakt.Accounts[0].ClientSecret)
+	}
+	if incoming.Trakt.Accounts[0].AccessToken != "real-trakt-access" {
+		t.Errorf("Trakt account AccessToken not restored: got %q", incoming.Trakt.Accounts[0].AccessToken)
+	}
+	if incoming.Trakt.Accounts[0].RefreshToken != "real-trakt-refresh" {
+		t.Errorf("Trakt account RefreshToken not restored: got %q", incoming.Trakt.Accounts[0].RefreshToken)
+	}
+	if incoming.Plex.Accounts[0].AuthToken != "real-plex-token" {
+		t.Errorf("Plex account AuthToken not restored: got %q", incoming.Plex.Accounts[0].AuthToken)
+	}
+	if incoming.Jellyfin.Accounts[0].Token != "real-jellyfin-token" {
+		t.Errorf("Jellyfin account Token not restored: got %q", incoming.Jellyfin.Accounts[0].Token)
+	}
+	if incoming.Database.URL != "postgres://user:secret@localhost:5432/db" {
+		t.Errorf("Database URL not restored: got %q", incoming.Database.URL)
 	}
 }
 
