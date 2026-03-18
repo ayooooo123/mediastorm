@@ -520,10 +520,11 @@ func (s *poolSlot) backgroundReader(resp *streaming.Response) {
 		if n > 0 {
 			s.mu.Lock()
 			s.data = append(s.data, buf[:n]...)
-			// Trim when buffer exceeds the sliding window size.
-			// Active readers that fall behind the new startByte will detect
-			// the trim (pos < startByte check) and fall back gracefully.
-			if len(s.data) > poolSlotBufferMax {
+			// Trim when buffer exceeds the sliding window size, but ONLY
+			// when no readers are active. When readers are consuming data,
+			// let the buffer grow toward the hard limit (poolSlotBufferHard)
+			// to avoid trimming past their read position and causing errors.
+			if len(s.data) > poolSlotBufferMax && atomic.LoadInt32(&s.readers) == 0 {
 				trimAmount := len(s.data) - poolSlotBufferTrim
 				remaining := len(s.data) - trimAmount
 				newData := make([]byte, remaining, remaining+4*1024*1024)
