@@ -3040,6 +3040,9 @@ func (h *VideoHandler) StartLiveHLSSession(w http.ResponseWriter, r *http.Reques
 		"sessionId":   session.ID,
 		"playlistUrl": fmt.Sprintf("/video/hls/%s/stream.m3u8", session.ID),
 		"isLive":      true,
+		// CC detection runs async — frontend polls /video/hls/{id}/cc-status
+		// Include initial state (always false at creation time since detection is background)
+		"hasClosedCaptions": false,
 	}
 
 	if err := json.NewEncoder(w).Encode(response); err != nil {
@@ -3177,6 +3180,42 @@ func (h *VideoHandler) ServeHLSSubtitles(w http.ResponseWriter, r *http.Request)
 	}
 
 	h.hlsManager.ServeSubtitles(w, r, sessionID)
+}
+
+// ServeHLSLiveCaptions serves the WebVTT captions extracted from EIA-608 CC for a live session
+func (h *VideoHandler) ServeHLSLiveCaptions(w http.ResponseWriter, r *http.Request) {
+	if h.hlsManager == nil {
+		http.Error(w, "HLS not enabled", http.StatusServiceUnavailable)
+		return
+	}
+
+	vars := mux.Vars(r)
+	sessionID := vars["sessionID"]
+
+	if sessionID == "" {
+		http.Error(w, "missing session ID", http.StatusBadRequest)
+		return
+	}
+
+	h.hlsManager.ServeLiveCaptions(w, r, sessionID)
+}
+
+// GetHLSLiveCCStatus returns the CC detection status for a live session
+func (h *VideoHandler) GetHLSLiveCCStatus(w http.ResponseWriter, r *http.Request) {
+	if h.hlsManager == nil {
+		http.Error(w, "HLS not enabled", http.StatusServiceUnavailable)
+		return
+	}
+
+	vars := mux.Vars(r)
+	sessionID := vars["sessionID"]
+
+	if sessionID == "" {
+		http.Error(w, "missing session ID", http.StatusBadRequest)
+		return
+	}
+
+	h.hlsManager.ServeLiveCCStatus(w, r, sessionID)
 }
 
 // KeepAliveHLSSession extends the idle timeout for a paused HLS session

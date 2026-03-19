@@ -382,6 +382,11 @@ type HLSSession struct {
 	LiveBucket   string // Shared stream bucket identifier for limit accounting
 	LiveTuning   LiveTuningSettings // FFmpeg tuning settings for live sessions
 
+	// Closed caption support (live TV EIA-608)
+	HasClosedCaptions bool          // True if EIA-608 CC detected in stream
+	CCDetectionDone   bool          // True once CC detection has completed (regardless of result)
+	ccExtractor       *ccExtractor  // Running ccextractor process for this session (nil if not started)
+
 	// Prequeue tracking
 	PrequeueType string // "", "details" (details page), or "next_episode" (auto-play next)
 }
@@ -925,6 +930,9 @@ func (m *HLSManager) CreateLiveSession(ctx context.Context, liveURL, provider, b
 			session.mu.Unlock()
 		}
 	}()
+
+	// Detect closed captions in background (non-blocking)
+	m.detectAndSetClosedCaptions(session)
 
 	log.Printf("[hls] created live session %s for URL %q", sessionID, liveURL)
 	return session, nil
@@ -3784,6 +3792,15 @@ func (m *HLSManager) CleanupSession(sessionID string) {
 
 	log.Printf("[hls] SESSION_SUMMARY: id=%s elapsed=%v stream_duration=%v bytes=%d segments_created=%d segments_requested=%d first_segment_delay=%v idle_timeout=%v",
 		sessionID, elapsed, streamDuration, bytesStreamed, segmentsCreated, segmentRequestCount, firstSegmentDelay, idleTriggered)
+
+	// Stop ccextractor if running (live TV CC extraction)
+	session.mu.Lock()
+	if session.ccExtractor != nil {
+		log.Printf("[hls] stopping ccextractor for session %s", sessionID)
+		session.ccExtractor.stop()
+		session.ccExtractor = nil
+	}
+	session.mu.Unlock()
 
 	// Kill FFmpeg process first (more forceful than context cancellation)
 	session.mu.Lock()
