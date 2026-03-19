@@ -36,10 +36,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Create Python virtual environment and install dependencies
 RUN python3 -m venv /.venv && \
-    /.venv/bin/pip install --no-cache-dir parsett subliminal easyocr numpy Pillow
-
-# Pre-download EasyOCR model so first detection doesn't incur download latency
-RUN /.venv/bin/python3 -c "import easyocr; easyocr.Reader(['en'], gpu=False)"
+    /.venv/bin/pip install --no-cache-dir parsett subliminal
 
 # Download static ffmpeg build with Dolby Vision (libdovi) support
 # Use TARGETARCH to select the correct binary for multi-platform builds
