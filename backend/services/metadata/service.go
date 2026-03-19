@@ -542,17 +542,37 @@ func (s *Service) warmRatingsForCachedItems(ctx context.Context) {
 
 	log.Printf("[metadata] cache manager: warming ratings for %d/%d items (rest already on disk)", len(jobs), len(jobs)+len(seen)-len(jobs))
 
-	// Single sequential worker to respect MDBList rate limits (~2 req/sec)
+	// Single sequential worker to respect MDBList rate limits (~2 req/sec).
+	// On 429 errors, apply exponential backoff and abort after consecutive failures.
 	fetched := 0
+	consecutive429 := 0
+	const max429Retries = 5
+	backoff429 := 30 * time.Second
 	for _, j := range jobs {
 		if ctx.Err() != nil {
 			break
 		}
 		// GetMDBListAllRatings checks disk cache first, then API, then persists to disk
 		if _, err := s.GetMDBListAllRatings(ctx, j.imdbID, j.mediaType); err != nil {
-			log.Printf("[metadata] cache manager: rating warm error for %s: %v", j.imdbID, err)
+			if strings.Contains(err.Error(), "status 429") {
+				consecutive429++
+				if consecutive429 >= max429Retries {
+					log.Printf("[metadata] cache manager: aborting ratings warm after %d consecutive 429s", consecutive429)
+					break
+				}
+				log.Printf("[metadata] cache manager: 429 for %s, backing off %v (%d/%d)", j.imdbID, backoff429, consecutive429, max429Retries)
+				select {
+				case <-time.After(backoff429):
+				case <-ctx.Done():
+				}
+				backoff429 *= 2
+			} else {
+				log.Printf("[metadata] cache manager: rating warm error for %s: %v", j.imdbID, err)
+			}
 		} else {
 			fetched++
+			consecutive429 = 0
+			backoff429 = 30 * time.Second
 		}
 	}
 	log.Printf("[metadata] cache manager: ratings warm complete — fetched %d, total cached %d", fetched, len(seen))

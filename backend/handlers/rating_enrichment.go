@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"log"
+	"strings"
 	"time"
 
 	"novastream/models"
@@ -28,12 +29,32 @@ func warmCacheMisses(misses []cacheMiss, meta metadataService) {
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cancel()
 
+		consecutive429 := 0
+		const max429Retries = 3
+		backoff429 := 15 * time.Second
 		for _, m := range misses {
 			if ctx.Err() != nil {
 				break
 			}
 			if _, err := meta.GetMDBListAllRatings(ctx, m.imdbID, m.mediaType); err != nil {
-				log.Printf("[rating-enrichment] background warm error for %s: %v", m.imdbID, err)
+				if strings.Contains(err.Error(), "status 429") {
+					consecutive429++
+					if consecutive429 >= max429Retries {
+						log.Printf("[rating-enrichment] aborting warm after %d consecutive 429s", consecutive429)
+						break
+					}
+					log.Printf("[rating-enrichment] 429 for %s, backing off %v (%d/%d)", m.imdbID, backoff429, consecutive429, max429Retries)
+					select {
+					case <-time.After(backoff429):
+					case <-ctx.Done():
+					}
+					backoff429 *= 2
+				} else {
+					log.Printf("[rating-enrichment] background warm error for %s: %v", m.imdbID, err)
+				}
+			} else {
+				consecutive429 = 0
+				backoff429 = 15 * time.Second
 			}
 		}
 		log.Printf("[rating-enrichment] background cache warm done for %d items", len(misses))
