@@ -385,8 +385,13 @@ func (h *PrequeueHandler) Prequeue(w http.ResponseWriter, r *http.Request) {
 				log.Printf("[prequeue] Pre-warmed entry %s episode mismatch (warm=%v, requested=%v), resolving fresh",
 					warm.PrequeueID, warmEntry.TargetEpisode, targetEpisode)
 			} else {
-				log.Printf("[prequeue] Ignoring pre-warmed entry %s: not ready or missing track metadata, resolving fresh",
-					warm.PrequeueID)
+				if _, storeOK := h.store.Get(warm.PrequeueID); !storeOK {
+					log.Printf("[prequeue] Ignoring pre-warmed entry %s: no longer in store (replaced by newer prequeue), resolving fresh",
+						warm.PrequeueID)
+				} else {
+					log.Printf("[prequeue] Ignoring pre-warmed entry %s: not ready or missing track metadata, resolving fresh",
+						warm.PrequeueID)
+				}
 			}
 		}
 	}
@@ -413,6 +418,8 @@ func (h *PrequeueHandler) Prequeue(w http.ResponseWriter, r *http.Request) {
 			json.NewEncoder(w).Encode(resp)
 			return
 		}
+		log.Printf("[prequeue] Existing ready entry %s episode mismatch (cached=%v, requested=%v), resolving fresh",
+			existing.ID, existing.TargetEpisode, targetEpisode)
 	} else if ok {
 		log.Printf("[prequeue] Existing ready entry %s missing track metadata, resolving fresh", existing.ID)
 	}
