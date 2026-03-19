@@ -121,7 +121,7 @@ func startCCExtraction(ctx context.Context, outputDir string) (*ccExtractor, err
 func (e *ccExtractor) extractionLoop(ctx context.Context) {
 	log.Printf("[hls-cc] starting extraction loop for %s", e.outputDir)
 
-	ticker := time.NewTicker(3 * time.Second)
+	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -264,6 +264,7 @@ func (e *ccExtractor) processNewSegments(ctx context.Context) {
 	defer execCancel()
 	cmd := exec.CommandContext(execCtx, e.ffmpegPath, // #nosec G204
 		"-y",
+		"-copyts", // Preserve original PTS so SRT timestamps match HLS player timeline
 		"-f", "lavfi", "-i", movieSrc,
 		"-map", "0:s", "-c:s", "text",
 		"-f", "srt",
