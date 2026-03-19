@@ -320,7 +320,16 @@ func (s *PrequeueStore) loadFromDisk() error {
 
 // loadFromDB restores ready entries from PostgreSQL.
 func (s *PrequeueStore) loadFromDB() error {
-	blobs, err := s.store.Prequeue().List(context.Background())
+	ctx := context.Background()
+
+	// Clean up expired entries first
+	if n, err := s.store.Prequeue().DeleteExpired(ctx); err != nil {
+		log.Printf("[prequeue] Warning: failed to delete expired DB rows on load: %v", err)
+	} else if n > 0 {
+		log.Printf("[prequeue] Cleaned up %d expired rows from database on startup", n)
+	}
+
+	blobs, err := s.store.Prequeue().List(ctx)
 	if err != nil {
 		return fmt.Errorf("load prequeue from db: %w", err)
 	}
@@ -330,6 +339,10 @@ func (s *PrequeueStore) loadFromDB() error {
 
 	now := time.Now()
 	restored := 0
+	// Track which IDs we keep so we can delete superseded duplicates
+	keptIDs := make(map[string]bool)
+	var supersededIDs []string
+
 	for _, data := range blobs {
 		var e PrequeueEntry
 		if err := json.Unmarshal(data, &e); err != nil {
@@ -339,11 +352,32 @@ func (s *PrequeueStore) loadFromDB() error {
 		if now.After(e.ExpiresAt) || e.Status != PrequeueStatusReady || e.StreamPath == "" {
 			continue
 		}
-		s.entries[e.ID] = &e
+
 		key := titleUserKey(e.TitleID, e.UserID)
+		// If we already have an entry for this title+user, the new one (later in created_at order) supersedes it
+		if prevID, exists := s.byTitleUser[key]; exists {
+			delete(s.entries, prevID)
+			delete(keptIDs, prevID)
+			supersededIDs = append(supersededIDs, prevID)
+		}
+
+		s.entries[e.ID] = &e
 		s.byTitleUser[key] = e.ID
+		keptIDs[e.ID] = true
 		restored++
 	}
+
+	// Delete superseded duplicates from DB
+	if len(supersededIDs) > 0 {
+		for _, id := range supersededIDs {
+			if err := s.store.Prequeue().Delete(ctx, id); err != nil {
+				log.Printf("[prequeue] Warning: failed to delete superseded DB entry %s: %v", id, err)
+			}
+		}
+		log.Printf("[prequeue] Removed %d superseded duplicate entries from database", len(supersededIDs))
+		restored -= len(supersededIDs)
+	}
+
 	if restored > 0 {
 		log.Printf("[prequeue] Restored %d ready entries from database", restored)
 	}
@@ -436,8 +470,13 @@ func (s *PrequeueStore) Create(titleID, titleName, userID, mediaType string, yea
 			if existing.cancelFunc != nil {
 				existing.cancelFunc()
 			}
-			// Remove old entry
+			// Remove old entry from memory and DB
 			delete(s.entries, existingID)
+			if s.useDB() {
+				if err := s.store.Prequeue().Delete(context.Background(), existingID); err != nil {
+					log.Printf("[prequeue] Warning: failed to delete old DB entry %s: %v", existingID, err)
+				}
+			}
 			log.Printf("[prequeue] Replaced existing prequeue %s for title=%s user=%s", existingID, titleID, userID)
 		}
 	}
@@ -579,6 +618,13 @@ func (s *PrequeueStore) Delete(id string) {
 	}
 
 	delete(s.entries, id)
+
+	// Remove from DB
+	if s.useDB() {
+		if err := s.store.Prequeue().Delete(context.Background(), id); err != nil {
+			log.Printf("[prequeue] Warning: failed to delete entry %s from DB: %v", id, err)
+		}
+	}
 }
 
 // DeleteAll removes all prequeue entries
@@ -638,6 +684,15 @@ func (s *PrequeueStore) cleanup() {
 	}
 	if len(toDelete) > 0 {
 		s.saveToDisk()
+	}
+
+	// Bulk-delete expired rows from DB (covers both in-memory and orphaned rows)
+	if s.useDB() {
+		if n, err := s.store.Prequeue().DeleteExpired(context.Background()); err != nil {
+			log.Printf("[prequeue] Warning: failed to delete expired DB rows: %v", err)
+		} else if n > 0 {
+			log.Printf("[prequeue] Cleaned up %d expired rows from database", n)
+		}
 	}
 }
 

@@ -77,6 +77,7 @@ type Service struct {
 	debridStreaming DebridURLRefresher
 	configManager   *config.Manager
 	workerFn        playback.PrequeueWorkerFunc
+	jitterFn        func() time.Duration // override inter-item jitter (for testing)
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -134,8 +135,12 @@ func (s *Service) SetWorkerFunc(fn playback.PrequeueWorkerFunc) {
 }
 
 // SetDataStore sets the PostgreSQL backing store for persistence.
+// If entries were already loaded from JSON, they are discarded and reloaded from the database.
 func (s *Service) SetDataStore(store *datastore.DataStore) {
 	s.store = store
+	if err := s.load(); err != nil {
+		log.Printf("[prewarm] Warning: failed to reload from database: %v", err)
+	}
 }
 
 // useDB returns true when the service is backed by PostgreSQL.
@@ -176,9 +181,21 @@ func (s *Service) RestorePrequeueEntries() {
 			continue
 		}
 
-		// Skip entries with errors or no stream path
-		if entry.Error != "" || entry.StreamPath == "" {
-			log.Printf("[prewarm] Removing entry with error/no stream: %s (%s) error=%q streamPath=%q", key, entry.TitleName, entry.Error, entry.StreamPath)
+		// Keep failed entries if their retry TTL hasn't expired yet
+		if entry.Error != "" {
+			if now.Before(entry.ExpiresAt) {
+				log.Printf("[prewarm] Keeping failed entry %s (%s) until retry at %v", key, entry.TitleName, entry.ExpiresAt)
+			} else {
+				log.Printf("[prewarm] Removing expired failed entry: %s (%s)", key, entry.TitleName)
+				delete(s.entries, key)
+				removed++
+			}
+			continue
+		}
+
+		// Remove entries with no stream path (incomplete)
+		if entry.StreamPath == "" {
+			log.Printf("[prewarm] Removing entry with no stream: %s (%s)", key, entry.TitleName)
 			delete(s.entries, key)
 			removed++
 			continue
@@ -261,6 +278,10 @@ func (s *Service) RunOnce(ctx context.Context) (SyncResult, error) {
 	// Track which entries are still valid (in continue watching)
 	activeKeys := make(map[string]bool)
 
+	// Track which keys have been processed in this cycle to avoid duplicates
+	// (can happen when multiple profiles share the same user ID)
+	processedKeys := make(map[string]bool)
+
 	for _, user := range users {
 		states, err := s.historySvc.ListContinueWatching(user.ID)
 		if err != nil {
@@ -268,9 +289,17 @@ func (s *Service) RunOnce(ctx context.Context) (SyncResult, error) {
 			continue
 		}
 
-		for i, state := range states {
+			resolveCount := 0
+		for _, state := range states {
 			key := entryKey(state.SeriesID, user.ID)
 			activeKeys[key] = true
+
+			// Skip if we already processed this title+user in this cycle
+			if processedKeys[key] {
+				log.Printf("[prewarm] Skipping duplicate key=%s title=%q", key, state.SeriesTitle)
+				result.Skipped++
+				continue
+			}
 
 			// Check if we already have a warm entry that's ready
 			s.mu.RLock()
@@ -283,18 +312,36 @@ func (s *Service) RunOnce(ctx context.Context) (SyncResult, error) {
 					result.Skipped++
 					continue
 				}
+				// If the entry failed, respect its TTL before retrying
+				if existing.Error != "" && time.Now().Before(existing.ExpiresAt) {
+					result.Skipped++
+					continue
+				}
 				log.Printf("[prewarm] Re-warming %q for user %s: existing prequeue missing track metadata or not ready",
 					state.SeriesTitle, user.Name)
 			}
 
-			// Random jitter between resolve calls to avoid interfering with concurrent usage
-			if i > 0 {
-				jitter := time.Duration(30+rand.Intn(91)) * time.Second // 30s-2min
-				select {
-				case <-ctx.Done():
-					return result, ctx.Err()
-				case <-time.After(jitter):
+			// Check the prequeue store directly — there may be a valid ready entry
+			// from a previous session that wasn't tracked in prewarm
+			if pqEntry, ok := s.prequeueStore.GetByTitleUser(state.SeriesID, user.ID); ok && pqEntry.Status == playback.PrequeueStatusReady && hasTrackMetadata(pqEntry) {
+				// Adopt this prequeue entry into prewarm (batch save after loop)
+				s.mu.Lock()
+				s.entries[key] = &WarmEntry{
+					TitleID:       state.SeriesID,
+					TitleName:     state.SeriesTitle,
+					UserID:        user.ID,
+					MediaType:     "series",
+					Year:          state.Year,
+					PrequeueID:    pqEntry.ID,
+					StreamPath:    pqEntry.StreamPath,
+					LastResolve:   pqEntry.CreatedAt,
+					LastRefresh:   time.Now(),
+					ExpiresAt:     pqEntry.ExpiresAt,
 				}
+				s.mu.Unlock()
+				log.Printf("[prewarm] Adopted existing prequeue entry %s for %q (skipping resolve)", pqEntry.ID, state.SeriesTitle)
+				result.Skipped++
+				continue
 			}
 
 			// Determine target episode
@@ -310,6 +357,23 @@ func (s *Service) RunOnce(ctx context.Context) (SyncResult, error) {
 				continue
 			}
 
+			// Random jitter between resolve calls to avoid interfering with concurrent usage
+			if resolveCount > 0 {
+				var jitter time.Duration
+				if s.jitterFn != nil {
+					jitter = s.jitterFn()
+				} else {
+					jitter = time.Duration(30+rand.Intn(91)) * time.Second // 30s-2min
+				}
+				if jitter > 0 {
+					select {
+					case <-ctx.Done():
+						return result, ctx.Err()
+					case <-time.After(jitter):
+					}
+				}
+			}
+
 			// Get IMDB ID from external IDs
 			imdbID := ""
 			if state.ExternalIDs != nil {
@@ -317,6 +381,8 @@ func (s *Service) RunOnce(ctx context.Context) (SyncResult, error) {
 			}
 
 			log.Printf("[prewarm] Warming: %q (%s) for user %s", state.SeriesTitle, mediaType, user.Name)
+			processedKeys[key] = true
+			resolveCount++
 
 			// Run the prequeue worker synchronously
 			prequeueID, err := s.workerFn(ctx, state.SeriesID, state.SeriesTitle, imdbID, mediaType, state.Year, user.ID, targetEpisode)
@@ -336,8 +402,15 @@ func (s *Service) RunOnce(ctx context.Context) (SyncResult, error) {
 
 			if err != nil {
 				warmEntry.Error = err.Error()
+				// Use dynamic TTL for retry — near-release content retries sooner
+				warmEntry.ExpiresAt = time.Now().Add(playback.DynamicTTL(
+					targetEpisodeAirDate(targetEpisode),
+					targetEpisodeAirDateTimeUTC(targetEpisode),
+					state.Year, mediaType,
+				))
 				result.Failed++
-				log.Printf("[prewarm] Failed to warm %q for user %s: %v", state.SeriesTitle, user.Name, err)
+				log.Printf("[prewarm] Failed to warm %q for user %s (retry after %v): %v",
+					state.SeriesTitle, user.Name, time.Until(warmEntry.ExpiresAt).Round(time.Minute), err)
 			} else {
 				// Get stream path from prequeue entry for URL refresh and extend its TTL
 				if pqEntry, ok := s.prequeueStore.Get(prequeueID); ok {
@@ -359,6 +432,13 @@ func (s *Service) RunOnce(ctx context.Context) (SyncResult, error) {
 			s.mu.Unlock()
 		}
 	}
+
+	// Persist any adopted entries in bulk
+	s.mu.Lock()
+	if err := s.saveLocked(); err != nil {
+		log.Printf("[prewarm] Warning: failed to persist after adoption pass: %v", err)
+	}
+	s.mu.Unlock()
 
 	// Remove entries that are no longer in continue watching (but keep ad-hoc adopted ones)
 	s.mu.Lock()
@@ -738,4 +818,18 @@ func (s *Service) isAdoptedEntry(entry *WarmEntry) bool {
 
 func entryKey(titleID, userID string) string {
 	return titleID + ":" + userID
+}
+
+func targetEpisodeAirDate(ep *models.EpisodeReference) string {
+	if ep == nil {
+		return ""
+	}
+	return ep.AirDate
+}
+
+func targetEpisodeAirDateTimeUTC(ep *models.EpisodeReference) string {
+	if ep == nil {
+		return ""
+	}
+	return ep.AirDateTimeUTC
 }

@@ -423,6 +423,7 @@ func TestRunOnce_MultipleUsersMultipleItems(t *testing.T) {
 	svc.SetUsersService(&mockUsersProvider{users: users})
 	svc.SetPrequeueStore(store)
 	svc.SetWorkerFunc(workerFn)
+	svc.jitterFn = func() time.Duration { return 0 } // no jitter in tests
 
 	result, err := svc.RunOnce(context.Background())
 	if err != nil {
@@ -697,5 +698,59 @@ func TestPersistence_ExpiredEntriesRemovedOnRestore(t *testing.T) {
 
 	if len(svc2.entries) != 0 {
 		t.Errorf("expected 0 entries after restoring expired data, got %d", len(svc2.entries))
+	}
+}
+
+func TestRunOnce_DeduplicatesSameTitleUser(t *testing.T) {
+	store := playback.NewPrequeueStore(30 * time.Minute)
+
+	// Two profiles with the same user ID (simulates the duplicate profile bug)
+	users := []models.User{
+		{ID: "user1", Name: "Alice"},
+		{ID: "user1", Name: "Alice-copy"},
+	}
+
+	continueWatching := map[string][]models.SeriesWatchState{
+		"user1": {
+			{
+				SeriesID:    "title1",
+				SeriesTitle: "Breaking Bad",
+				Year:        2008,
+				NextEpisode: &models.EpisodeReference{SeasonNumber: 2, EpisodeNumber: 3},
+			},
+		},
+	}
+
+	workerCalls := 0
+	workerFn := func(ctx context.Context, titleID, titleName, imdbID, mediaType string, year int, userID string, targetEpisode *models.EpisodeReference) (string, error) {
+		workerCalls++
+		entry, _ := store.Create(titleID, titleName, userID, mediaType, year, targetEpisode, "prewarm")
+		store.Update(entry.ID, func(e *playback.PrequeueEntry) {
+			e.Status = playback.PrequeueStatusReady
+			e.StreamPath = "/debrid/rd/123/456"
+		})
+		return entry.ID, nil
+	}
+
+	svc := NewService(nil, "")
+	svc.SetHistoryService(&mockHistoryProvider{continueWatching: continueWatching})
+	svc.SetUsersService(&mockUsersProvider{users: users})
+	svc.SetPrequeueStore(store)
+	svc.SetWorkerFunc(workerFn)
+
+	result, err := svc.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnce failed: %v", err)
+	}
+
+	// Should warm once and skip the duplicate
+	if workerCalls != 1 {
+		t.Errorf("expected 1 worker call (deduped), got %d", workerCalls)
+	}
+	if result.Warmed != 1 {
+		t.Errorf("expected 1 warmed, got %d", result.Warmed)
+	}
+	if result.Skipped != 1 {
+		t.Errorf("expected 1 skipped (deduped), got %d", result.Skipped)
 	}
 }

@@ -1056,15 +1056,8 @@ func main() {
 	// Start prewarm background URL refresh
 	prewarmService.Start(context.Background())
 
-	// Run initial prewarm cycle in background
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-		defer cancel()
-		log.Printf("[prewarm] Running initial startup cycle...")
-		if _, err := prewarmService.RunOnce(ctx); err != nil {
-			log.Printf("[prewarm] Initial startup cycle failed: %v", err)
-		}
-	}()
+	// Note: initial prewarm cycle is handled by the scheduler's immediate
+	// checkAndRunTasks() call on startup — no separate goroutine needed.
 
 	// Start background cache manager to warm trending data and custom lists
 	// on startup and refresh periodically (every 2 hours)
