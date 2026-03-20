@@ -181,6 +181,41 @@ func (h *ScheduledTasksHandler) CreateTask(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
+	// Validate config for MDBList watchlist sync
+	if req.Type == config.ScheduledTaskTypeMDBListWatchlistSync {
+		if req.Config == nil || req.Config["mdblistAccountId"] == "" || req.Config["profileId"] == "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error": "MDBList watchlist sync requires mdblistAccountId and profileId in config",
+			})
+			return
+		}
+	}
+
+	// Validate config for MDBList history sync
+	if req.Type == config.ScheduledTaskTypeMDBListHistorySync {
+		if req.Config == nil || req.Config["mdblistAccountId"] == "" || req.Config["profileId"] == "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error": "MDBList history sync requires mdblistAccountId and profileId in config",
+			})
+			return
+		}
+		// Default syncDirection to mdblist_to_local
+		if req.Config["syncDirection"] == "" {
+			req.Config["syncDirection"] = "mdblist_to_local"
+		} else if req.Config["syncDirection"] != "mdblist_to_local" && req.Config["syncDirection"] != "local_to_mdblist" && req.Config["syncDirection"] != "bidirectional" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error": "Invalid sync direction. Must be mdblist_to_local, local_to_mdblist, or bidirectional",
+			})
+			return
+		}
+	}
+
 	task := config.ScheduledTask{
 		ID:         uuid.New().String(),
 		Type:       req.Type,

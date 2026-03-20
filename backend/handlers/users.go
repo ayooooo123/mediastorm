@@ -34,6 +34,8 @@ type usersService interface {
 	ClearPin(id string) (models.User, error)
 	VerifyPin(id, pin string) error
 	HasPin(id string) bool
+	SetMdblistAccountID(id, mdblistAccountID string) (models.User, error)
+	ClearMdblistAccountID(id string) (models.User, error)
 	SetTraktAccountID(id, traktAccountID string) (models.User, error)
 	ClearTraktAccountID(id string) (models.User, error)
 	SetPlexAccountID(id, plexAccountID string) (models.User, error)
@@ -557,6 +559,86 @@ func (h *UsersHandler) ClearTraktAccount(w http.ResponseWriter, r *http.Request)
 	}
 
 	user, err := h.Service.ClearTraktAccountID(id)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, users.ErrUserNotFound) {
+			status = http.StatusNotFound
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(user)
+}
+
+// SetMdblistAccount associates an MDBList account with a user profile.
+func (h *UsersHandler) SetMdblistAccount(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id := strings.TrimSpace(vars["userID"])
+	if id == "" {
+		http.Error(w, "user id is required", http.StatusBadRequest)
+		return
+	}
+
+	// Verify profile belongs to the logged-in account (skip for master accounts)
+	if !auth.IsMaster(r) {
+		accountID := auth.GetAccountID(r)
+		if !h.Service.BelongsToAccount(id, accountID) {
+			http.Error(w, "profile not found", http.StatusNotFound)
+			return
+		}
+	} else if !h.Service.Exists(id) {
+		http.Error(w, "profile not found", http.StatusNotFound)
+		return
+	}
+
+	var body struct {
+		MdblistAccountID string `json:"mdblistAccountId"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	user, err := h.Service.SetMdblistAccountID(id, body.MdblistAccountID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, users.ErrUserNotFound) {
+			status = http.StatusNotFound
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(user)
+}
+
+// ClearMdblistAccount removes the MDBList account association from a user profile.
+func (h *UsersHandler) ClearMdblistAccount(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id := strings.TrimSpace(vars["userID"])
+	if id == "" {
+		http.Error(w, "user id is required", http.StatusBadRequest)
+		return
+	}
+
+	// Verify profile belongs to the logged-in account (skip for master accounts)
+	if !auth.IsMaster(r) {
+		accountID := auth.GetAccountID(r)
+		if !h.Service.BelongsToAccount(id, accountID) {
+			http.Error(w, "profile not found", http.StatusNotFound)
+			return
+		}
+	} else if !h.Service.Exists(id) {
+		http.Error(w, "profile not found", http.StatusNotFound)
+		return
+	}
+
+	user, err := h.Service.ClearMdblistAccountID(id)
 	if err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, users.ErrUserNotFound) {

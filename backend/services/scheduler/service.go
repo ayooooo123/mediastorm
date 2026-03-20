@@ -2,10 +2,13 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"math"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -274,6 +277,10 @@ func (s *Service) executeTask(task config.ScheduledTask) {
 		result, err = s.executeJellyfinFavoritesSync(task)
 	case config.ScheduledTaskTypeJellyfinHistorySync:
 		result, err = s.executeJellyfinHistorySync(task)
+	case config.ScheduledTaskTypeMDBListWatchlistSync:
+		result, err = s.executeMDBListWatchlistSync(task)
+	case config.ScheduledTaskTypeMDBListHistorySync:
+		result, err = s.executeMDBListHistorySync(task)
 	default:
 		log.Printf("[scheduler] Unknown task type: %s", task.Type)
 		return
@@ -2933,4 +2940,699 @@ func (s *Service) executeJellyfinHistorySync(task config.ScheduledTask) (SyncRes
 	}
 
 	return result, nil
+}
+
+// executeMDBListWatchlistSync imports an MDBList user's watchlist to local.
+func (s *Service) executeMDBListWatchlistSync(task config.ScheduledTask) (SyncResult, error) {
+	mdblistAccountID := task.Config["mdblistAccountId"]
+	profileID := task.Config["profileId"]
+
+	if mdblistAccountID == "" || profileID == "" {
+		return SyncResult{}, errors.New("missing mdblistAccountId or profileId in task config")
+	}
+
+	syncDirection := task.Config["syncDirection"]
+	if syncDirection == "" {
+		syncDirection = "source_to_target"
+	}
+	deleteBehavior := task.Config["deleteBehavior"]
+	if deleteBehavior == "" {
+		deleteBehavior = "additive"
+	}
+	dryRun := task.Config["dryRun"] == "true"
+
+	settings, err := s.configManager.Load()
+	if err != nil {
+		return SyncResult{}, fmt.Errorf("load settings: %w", err)
+	}
+
+	mdblistAccount := settings.MDBList.GetAccountByID(mdblistAccountID)
+	if mdblistAccount == nil {
+		return SyncResult{}, errors.New("MDBList account not found")
+	}
+
+	if mdblistAccount.APIKey == "" {
+		return SyncResult{}, errors.New("MDBList account has no API key")
+	}
+
+	syncSource := fmt.Sprintf("mdblist:%s:%s", mdblistAccountID, task.ID)
+
+	return s.syncMDBListWatchlistToLocal(mdblistAccount, profileID, syncSource, deleteBehavior, dryRun)
+}
+
+func (s *Service) syncMDBListWatchlistToLocal(account *config.MDBListAccount, profileID, syncSource, deleteBehavior string, dryRun bool) (SyncResult, error) {
+	now := time.Now().UTC()
+	result := SyncResult{DryRun: dryRun}
+
+	// Fetch watchlist from MDBList API (/watchlist/items)
+	url := fmt.Sprintf("https://api.mdblist.com/watchlist/items?apikey=%s", account.APIKey)
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	req, _ := http.NewRequest(http.MethodGet, url, nil)
+	req.Header.Set("User-Agent", "mediastorm/1.0")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return result, fmt.Errorf("fetch MDBList watchlist: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return result, fmt.Errorf("MDBList /watchlist/items returned %d", resp.StatusCode)
+	}
+
+	type mdblistWatchlistItem struct {
+		Title       string `json:"title"`
+		ReleaseYear int    `json:"release_year"`
+		MediaType   string `json:"mediatype"` // "movie" or "show"
+		IMDBID      string `json:"imdb_id"`
+		IDs         struct {
+			IMDB    string `json:"imdb"`
+			TMDB    int    `json:"tmdb"`
+			TVDB    *int   `json:"tvdb"` // nullable
+		} `json:"ids"`
+	}
+
+	var watchlistResp struct {
+		Movies []mdblistWatchlistItem `json:"movies"`
+		Shows  []mdblistWatchlistItem `json:"shows"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&watchlistResp); err != nil {
+		return result, fmt.Errorf("decode MDBList watchlist: %w", err)
+	}
+
+	// Combine movies and shows into a single list
+	var items []mdblistWatchlistItem
+	for i := range watchlistResp.Movies {
+		watchlistResp.Movies[i].MediaType = "movie"
+		items = append(items, watchlistResp.Movies[i])
+	}
+	for i := range watchlistResp.Shows {
+		watchlistResp.Shows[i].MediaType = "show"
+		items = append(items, watchlistResp.Shows[i])
+	}
+
+	log.Printf("[scheduler] Fetched %d items from MDBList watchlist (%d movies, %d shows)",
+		len(items), len(watchlistResp.Movies), len(watchlistResp.Shows))
+
+	// Build set of MDBList item keys for deletion checking
+	mdblistItemKeys := make(map[string]bool)
+
+	// Build existing keys index using ALL external IDs for cross-ID matching
+	// Local items may use different primary IDs (e.g. TMDB "1111873") while
+	// MDBList returns IMDB ("tt27489557") — both refer to the same item.
+	existingItems, _ := s.watchlistService.List(profileID)
+	existingKeys := make(map[string]bool)
+	for _, item := range existingItems {
+		existingKeys[item.MediaType+":"+item.ID] = true
+		for _, v := range item.ExternalIDs {
+			if v != "" {
+				existingKeys[item.MediaType+":"+v] = true
+			}
+		}
+	}
+
+	imported := 0
+	for _, item := range items {
+		// Map MDBList mediatype to internal format
+		mediaType := "movie"
+		if item.MediaType == "show" {
+			mediaType = "series"
+		}
+
+		// Build item ID and external IDs from the nested ids object
+		var itemID string
+		extIDs := make(map[string]string)
+		if item.IDs.IMDB != "" {
+			extIDs["imdb"] = item.IDs.IMDB
+			itemID = item.IDs.IMDB
+		}
+		if item.IDs.TMDB != 0 {
+			extIDs["tmdb"] = strconv.Itoa(item.IDs.TMDB)
+			if itemID == "" {
+				itemID = strconv.Itoa(item.IDs.TMDB)
+			}
+		}
+		if item.IDs.TVDB != nil && *item.IDs.TVDB != 0 {
+			extIDs["tvdb"] = strconv.Itoa(*item.IDs.TVDB)
+			if itemID == "" {
+				itemID = strconv.Itoa(*item.IDs.TVDB)
+			}
+		}
+
+		if itemID == "" {
+			continue
+		}
+
+		itemKey := mediaType + ":" + itemID
+		mdblistItemKeys[itemKey] = true
+
+		// Check if ANY of this item's IDs match an existing local item
+		isNew := true
+		for _, v := range extIDs {
+			if existingKeys[mediaType+":"+v] {
+				isNew = false
+				break
+			}
+		}
+		if !isNew && !existingKeys[itemKey] {
+			// Item exists by cross-ID but not by primary key — still not new
+		}
+
+		if dryRun {
+			if isNew {
+				result.ToAdd = append(result.ToAdd, config.DryRunItem{
+					Name:      item.Title,
+					MediaType: mediaType,
+					ID:        itemID,
+				})
+			}
+			imported++
+			continue
+		}
+
+		input := models.WatchlistUpsert{
+			ID:          itemID,
+			MediaType:   mediaType,
+			Name:        item.Title,
+			Year:        item.ReleaseYear,
+			ExternalIDs: extIDs,
+			SyncSource:  syncSource,
+			SyncedAt:    &now,
+		}
+
+		if _, err := s.watchlistService.AddOrUpdate(profileID, input); err != nil {
+			log.Printf("[scheduler] Failed to import MDBList watchlist item %s: %v", item.Title, err)
+			continue
+		}
+		imported++
+	}
+
+	// Handle deletions for delete/mirror modes
+	if deleteBehavior != "additive" && !dryRun {
+		localItems, err := s.watchlistService.List(profileID)
+		if err == nil {
+			for _, item := range localItems {
+				if item.SyncSource == syncSource && !mdblistItemKeys[item.MediaType+":"+item.ID] {
+					if _, err := s.watchlistService.Remove(profileID, item.MediaType, item.ID); err != nil {
+						log.Printf("[scheduler] Failed to remove stale MDBList watchlist item: %v", err)
+					}
+				}
+			}
+		}
+	}
+
+	result.Count = imported
+	log.Printf("[scheduler] Imported %d items from MDBList watchlist", imported)
+
+	return result, nil
+}
+
+// executeMDBListHistorySync syncs watch history between MDBList and local.
+func (s *Service) executeMDBListHistorySync(task config.ScheduledTask) (SyncResult, error) {
+	s.mu.RLock()
+	historySvc := s.historyService
+	s.mu.RUnlock()
+
+	if historySvc == nil {
+		return SyncResult{}, errors.New("history service not configured")
+	}
+
+	mdblistAccountID := task.Config["mdblistAccountId"]
+	profileID := task.Config["profileId"]
+
+	if mdblistAccountID == "" || profileID == "" {
+		return SyncResult{}, errors.New("missing mdblistAccountId or profileId in task config")
+	}
+
+	syncDirection := task.Config["syncDirection"]
+	if syncDirection == "" {
+		syncDirection = "mdblist_to_local"
+	}
+	dryRun := task.Config["dryRun"] == "true"
+
+	// Load settings to get MDBList account
+	settings, err := s.configManager.Load()
+	if err != nil {
+		return SyncResult{}, fmt.Errorf("load settings: %w", err)
+	}
+
+	mdblistAccount := settings.MDBList.GetAccountByID(mdblistAccountID)
+	if mdblistAccount == nil {
+		return SyncResult{}, errors.New("MDBList account not found")
+	}
+
+	if mdblistAccount.APIKey == "" {
+		return SyncResult{}, errors.New("MDBList account has no API key")
+	}
+
+	switch syncDirection {
+	case "mdblist_to_local":
+		return s.syncMDBListHistoryToLocal(task, mdblistAccount, profileID, dryRun)
+	case "local_to_mdblist":
+		return s.syncLocalHistoryToMDBList(task, mdblistAccount, profileID, dryRun)
+	case "bidirectional":
+		// Import first, then export
+		importResult, err := s.syncMDBListHistoryToLocal(task, mdblistAccount, profileID, dryRun)
+		if err != nil {
+			return importResult, err
+		}
+		exportResult, err := s.syncLocalHistoryToMDBList(task, mdblistAccount, profileID, dryRun)
+		if err != nil {
+			return exportResult, err
+		}
+		return SyncResult{
+			Count:  importResult.Count + exportResult.Count,
+			DryRun: dryRun,
+			ToAdd:  append(importResult.ToAdd, exportResult.ToAdd...),
+		}, nil
+	default:
+		return SyncResult{}, fmt.Errorf("unknown sync direction: %s", syncDirection)
+	}
+}
+
+// syncMDBListHistoryToLocal imports watch history from MDBList into local.
+func (s *Service) syncMDBListHistoryToLocal(task config.ScheduledTask, account *config.MDBListAccount, profileID string, dryRun bool) (SyncResult, error) {
+	result := SyncResult{DryRun: dryRun}
+
+	s.mu.RLock()
+	historySvc := s.historyService
+	s.mu.RUnlock()
+
+	// Determine incremental cursor
+	var since string
+	if task.LastRunAt != nil {
+		since = task.LastRunAt.Add(-5 * time.Minute).UTC().Format(time.RFC3339)
+	}
+
+	// Fetch watched history from MDBList API with pagination
+	apiKey := account.APIKey
+	var allMovies []json.RawMessage
+	var allEpisodes []json.RawMessage
+	offset := 0
+	limit := 500
+
+	for {
+		url := fmt.Sprintf("https://api.mdblist.com/sync/watched?apikey=%s&limit=%d&offset=%d", apiKey, limit, offset)
+		if since != "" {
+			url += "&since=" + since
+		}
+
+		req, _ := http.NewRequest(http.MethodGet, url, nil)
+		req.Header.Set("User-Agent", "mediastorm/1.0")
+		httpClient := &http.Client{Timeout: 30 * time.Second}
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return result, fmt.Errorf("fetch MDBList history: %w", err)
+		}
+
+		var page struct {
+			Movies     []json.RawMessage `json:"movies"`
+			Episodes   []json.RawMessage `json:"episodes"`
+			Pagination struct {
+				HasMore bool `json:"has_more"`
+			} `json:"pagination"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
+			resp.Body.Close()
+			return result, fmt.Errorf("decode MDBList history: %w", err)
+		}
+		resp.Body.Close()
+
+		allMovies = append(allMovies, page.Movies...)
+		allEpisodes = append(allEpisodes, page.Episodes...)
+
+		if !page.Pagination.HasMore {
+			break
+		}
+		offset += limit
+	}
+
+	log.Printf("[scheduler] Fetched %d movies + %d episodes from MDBList watch history", len(allMovies), len(allEpisodes))
+
+	// Convert to WatchHistoryUpdate items
+	watched := true
+	var updates []models.WatchHistoryUpdate
+
+	// Parse movies
+	for _, raw := range allMovies {
+		var m struct {
+			LastWatchedAt string `json:"last_watched_at"`
+			Movie         struct {
+				Title string `json:"title"`
+				Year  int    `json:"year"`
+				IDs   struct {
+					IMDB string `json:"imdb"`
+					TMDB int    `json:"tmdb"`
+					TVDB int    `json:"tvdb"`
+				} `json:"ids"`
+			} `json:"movie"`
+		}
+		if err := json.Unmarshal(raw, &m); err != nil {
+			continue
+		}
+
+		watchedAt, _ := time.Parse(time.RFC3339, m.LastWatchedAt)
+		extIDs := make(map[string]string)
+		var itemID string
+		if m.Movie.IDs.IMDB != "" {
+			extIDs["imdb"] = m.Movie.IDs.IMDB
+			itemID = m.Movie.IDs.IMDB
+		}
+		if m.Movie.IDs.TMDB != 0 {
+			extIDs["tmdb"] = strconv.Itoa(m.Movie.IDs.TMDB)
+			if itemID == "" {
+				itemID = strconv.Itoa(m.Movie.IDs.TMDB)
+			}
+		}
+		if itemID == "" {
+			continue
+		}
+
+		if dryRun {
+			result.ToAdd = append(result.ToAdd, config.DryRunItem{
+				Name:      m.Movie.Title,
+				MediaType: "movie",
+				ID:        itemID,
+			})
+			continue
+		}
+
+		updates = append(updates, models.WatchHistoryUpdate{
+			MediaType:   "movie",
+			ItemID:      itemID,
+			Name:        m.Movie.Title,
+			Year:        m.Movie.Year,
+			Watched:     &watched,
+			WatchedAt:   watchedAt,
+			ExternalIDs: extIDs,
+		})
+	}
+
+	// Parse episodes
+	for _, raw := range allEpisodes {
+		var e struct {
+			LastWatchedAt string `json:"last_watched_at"`
+			Episode       struct {
+				Season int    `json:"season"`
+				Number int    `json:"number"`
+				Name   string `json:"name"`
+				Show   struct {
+					Title string `json:"title"`
+					Year  int    `json:"year"`
+					IDs   struct {
+						IMDB string `json:"imdb"`
+						TMDB int    `json:"tmdb"`
+						TVDB int    `json:"tvdb"`
+					} `json:"ids"`
+				} `json:"show"`
+			} `json:"episode"`
+		}
+		if err := json.Unmarshal(raw, &e); err != nil {
+			continue
+		}
+
+		watchedAt, _ := time.Parse(time.RFC3339, e.LastWatchedAt)
+		extIDs := make(map[string]string)
+		var seriesID string
+
+		show := e.Episode.Show
+		if show.IDs.TVDB != 0 {
+			extIDs["tvdb"] = strconv.Itoa(show.IDs.TVDB)
+			seriesID = fmt.Sprintf("tvdb:series:%d", show.IDs.TVDB)
+		}
+		if show.IDs.TMDB != 0 {
+			extIDs["tmdb"] = strconv.Itoa(show.IDs.TMDB)
+			if seriesID == "" {
+				seriesID = fmt.Sprintf("tmdb:tv:%d", show.IDs.TMDB)
+			}
+		}
+		if show.IDs.IMDB != "" {
+			extIDs["imdb"] = show.IDs.IMDB
+		}
+		if seriesID == "" {
+			continue
+		}
+
+		itemID := fmt.Sprintf("%s:s%02de%02d", seriesID, e.Episode.Season, e.Episode.Number)
+
+		if dryRun {
+			result.ToAdd = append(result.ToAdd, config.DryRunItem{
+				Name:      fmt.Sprintf("%s S%02dE%02d", show.Title, e.Episode.Season, e.Episode.Number),
+				MediaType: "episode",
+				ID:        itemID,
+			})
+			continue
+		}
+
+		updates = append(updates, models.WatchHistoryUpdate{
+			MediaType:     "episode",
+			ItemID:        itemID,
+			Name:          e.Episode.Name,
+			Watched:       &watched,
+			WatchedAt:     watchedAt,
+			ExternalIDs:   extIDs,
+			SeasonNumber:  e.Episode.Season,
+			EpisodeNumber: e.Episode.Number,
+			SeriesID:      seriesID,
+			SeriesName:    show.Title,
+		})
+	}
+
+	if dryRun {
+		result.Count = len(result.ToAdd)
+		return result, nil
+	}
+
+	if len(updates) > 0 {
+		imported, err := historySvc.ImportWatchHistory(profileID, updates)
+		if err != nil {
+			return result, fmt.Errorf("import watch history: %w", err)
+		}
+		result.Count = imported
+		log.Printf("[scheduler] Imported %d/%d items from MDBList history", imported, len(updates))
+	}
+
+	return result, nil
+}
+
+// syncLocalHistoryToMDBList exports local watch history to MDBList.
+func (s *Service) syncLocalHistoryToMDBList(task config.ScheduledTask, account *config.MDBListAccount, profileID string, dryRun bool) (SyncResult, error) {
+	result := SyncResult{DryRun: dryRun}
+
+	s.mu.RLock()
+	historySvc := s.historyService
+	s.mu.RUnlock()
+
+	// Get all local watch history for this profile
+	items, err := historySvc.ListWatchHistory(profileID)
+	if err != nil {
+		return result, fmt.Errorf("list local history: %w", err)
+	}
+
+	// Filter to items watched since last run (with 5min safety buffer)
+	var since time.Time
+	if task.LastRunAt != nil {
+		since = task.LastRunAt.Add(-5 * time.Minute)
+	}
+
+	var toSync []models.WatchHistoryItem
+	for _, item := range items {
+		if item.Watched {
+			if since.IsZero() || item.WatchedAt.After(since) {
+				toSync = append(toSync, item)
+			}
+		}
+	}
+
+	log.Printf("[scheduler] Found %d watched items to sync to MDBList (since %v)", len(toSync), since)
+
+	if len(toSync) == 0 {
+		return result, nil
+	}
+
+	if dryRun {
+		for _, item := range toSync {
+			result.ToAdd = append(result.ToAdd, config.DryRunItem{
+				Name:      item.Name,
+				MediaType: item.MediaType,
+				ID:        item.ItemID,
+			})
+		}
+		result.Count = len(result.ToAdd)
+		return result, nil
+	}
+
+	// Build MDBList sync requests batched by type.
+	// MDBList format: movies=[{"ids":{...}, "watched_at":"..."}],
+	//                 shows=[{"ids":{...}, "seasons":[{"number":N, "episodes":[{"number":N, "watched_at":"..."}]}]}]
+	apiKey := account.APIKey
+
+	// Collect movies
+	var moviePayloads []map[string]interface{}
+	for _, item := range toSync {
+		if item.MediaType != "movie" {
+			continue
+		}
+		ids := extractMDBListIDs(item.ExternalIDs)
+		if ids.imdb == "" && ids.tmdb == 0 {
+			continue
+		}
+		m := map[string]interface{}{
+			"ids": formatMDBListIDsMap(ids),
+		}
+		if !item.WatchedAt.IsZero() {
+			m["watched_at"] = item.WatchedAt.UTC().Format(time.RFC3339)
+		}
+		moviePayloads = append(moviePayloads, m)
+	}
+
+	// Collect episodes grouped by show
+	type showKey struct {
+		imdb string
+		tmdb int
+	}
+	type epEntry struct {
+		season    int
+		episode   int
+		watchedAt time.Time
+	}
+	showMap := make(map[showKey][]epEntry)
+	showOrder := make([]showKey, 0)
+	for _, item := range toSync {
+		if item.MediaType != "episode" {
+			continue
+		}
+		ids := extractMDBListIDs(item.ExternalIDs)
+		if ids.imdb == "" && ids.tmdb == 0 {
+			continue
+		}
+		key := showKey{imdb: ids.imdb, tmdb: ids.tmdb}
+		if _, exists := showMap[key]; !exists {
+			showOrder = append(showOrder, key)
+		}
+		showMap[key] = append(showMap[key], epEntry{
+			season:    item.SeasonNumber,
+			episode:   item.EpisodeNumber,
+			watchedAt: item.WatchedAt,
+		})
+	}
+
+	var showPayloads []map[string]interface{}
+	for _, key := range showOrder {
+		eps := showMap[key]
+		ids := mdblistIDs{imdb: key.imdb, tmdb: key.tmdb}
+
+		// Group episodes by season
+		seasonMap := make(map[int][]map[string]interface{})
+		for _, ep := range eps {
+			epObj := map[string]interface{}{
+				"number": ep.episode,
+			}
+			if !ep.watchedAt.IsZero() {
+				epObj["watched_at"] = ep.watchedAt.UTC().Format(time.RFC3339)
+			}
+			seasonMap[ep.season] = append(seasonMap[ep.season], epObj)
+		}
+
+		var seasons []map[string]interface{}
+		for sNum, sEps := range seasonMap {
+			seasons = append(seasons, map[string]interface{}{
+				"number":   sNum,
+				"episodes": sEps,
+			})
+		}
+
+		showPayloads = append(showPayloads, map[string]interface{}{
+			"ids":     formatMDBListIDsMap(ids),
+			"seasons": seasons,
+		})
+	}
+
+	// Send batched request
+	syncCount := 0
+	batchSize := 100
+
+	// Sync movies in batches
+	for i := 0; i < len(moviePayloads); i += batchSize {
+		end := i + batchSize
+		if end > len(moviePayloads) {
+			end = len(moviePayloads)
+		}
+		batch := map[string]interface{}{
+			"movies": moviePayloads[i:end],
+		}
+		body, _ := json.Marshal(batch)
+		if err := postToMDBList(apiKey, "/sync/watched", string(body)); err != nil {
+			log.Printf("[scheduler] MDBList sync movies batch error: %v", err)
+			continue
+		}
+		syncCount += end - i
+	}
+
+	// Sync shows in batches
+	for i := 0; i < len(showPayloads); i += batchSize {
+		end := i + batchSize
+		if end > len(showPayloads) {
+			end = len(showPayloads)
+		}
+		batch := map[string]interface{}{
+			"shows": showPayloads[i:end],
+		}
+		body, _ := json.Marshal(batch)
+		if err := postToMDBList(apiKey, "/sync/watched", string(body)); err != nil {
+			log.Printf("[scheduler] MDBList sync shows batch error: %v", err)
+			continue
+		}
+		for _, show := range showPayloads[i:end] {
+			for _, season := range show["seasons"].([]map[string]interface{}) {
+				syncCount += len(season["episodes"].([]map[string]interface{}))
+			}
+		}
+	}
+
+	result.Count = syncCount
+	log.Printf("[scheduler] Synced %d/%d items to MDBList", syncCount, len(toSync))
+
+	return result, nil
+}
+
+type mdblistIDs struct {
+	imdb string
+	tmdb int
+}
+
+func extractMDBListIDs(extIDs map[string]string) mdblistIDs {
+	var ids mdblistIDs
+	if v, ok := extIDs["imdb"]; ok {
+		ids.imdb = v
+	}
+	if v, ok := extIDs["tmdb"]; ok {
+		ids.tmdb, _ = strconv.Atoi(v)
+	}
+	// Note: MDBList does not support TVDB IDs
+	return ids
+}
+
+func formatMDBListIDsMap(ids mdblistIDs) map[string]interface{} {
+	m := make(map[string]interface{})
+	if ids.imdb != "" {
+		m["imdb"] = ids.imdb
+	}
+	if ids.tmdb != 0 {
+		m["tmdb"] = ids.tmdb
+	}
+	return m
+}
+
+func postToMDBList(apiKey, path, body string) error {
+	url := fmt.Sprintf("https://api.mdblist.com%s?apikey=%s", path, apiKey)
+	resp, err := http.Post(url, "application/json", strings.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("mdblist %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("mdblist %s returned %d: %s", path, resp.StatusCode, string(respBody))
+	}
+	return nil
 }

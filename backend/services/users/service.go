@@ -933,6 +933,51 @@ func (s *Service) RemoveKidsAllowedList(id, listURL string) (models.User, error)
 	return user, nil
 }
 
+// SetMdblistAccountID associates an MDBList account with the user.
+func (s *Service) SetMdblistAccountID(id, mdblistAccountID string) (models.User, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return models.User{}, ErrUserNotFound
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	user, ok := s.users[id]
+	if !ok {
+		return models.User{}, ErrUserNotFound
+	}
+
+	user.MdblistAccountID = strings.TrimSpace(mdblistAccountID)
+	user.UpdatedAt = time.Now().UTC()
+	s.users[id] = user
+
+	if err := s.saveLocked(); err != nil {
+		return models.User{}, err
+	}
+
+	return user, nil
+}
+
+// ClearMdblistAccountID removes the MDBList account association from the user.
+func (s *Service) ClearMdblistAccountID(id string) (models.User, error) {
+	return s.SetMdblistAccountID(id, "")
+}
+
+// GetUsersByMdblistAccountID returns all users that have the specified MDBList account linked.
+func (s *Service) GetUsersByMdblistAccountID(mdblistAccountID string) []models.User {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var users []models.User
+	for _, user := range s.users {
+		if user.MdblistAccountID == mdblistAccountID {
+			users = append(users, user)
+		}
+	}
+	return users
+}
+
 // SetTraktAccountID associates a Trakt account with the user.
 func (s *Service) SetTraktAccountID(id, traktAccountID string) (models.User, error) {
 	id = strings.TrimSpace(id)

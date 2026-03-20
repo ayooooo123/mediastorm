@@ -33,26 +33,24 @@ func (s *Scrobbler) SetUserService(userService UserService) {
 	s.userService = userService
 }
 
-// IsEnabled returns whether scrobbling is enabled for any account.
-// This is a general check - specific user scrobbling depends on their linked account.
+// IsEnabled returns whether any Trakt account is connected and available for scrobbling.
 func (s *Scrobbler) IsEnabled() bool {
 	settings, err := s.configManager.Load()
 	if err != nil {
 		return false
 	}
-	// Check if any account has scrobbling enabled
 	for _, account := range settings.Trakt.Accounts {
-		if account.ScrobblingEnabled && account.AccessToken != "" {
+		if account.AccessToken != "" {
 			return true
 		}
 	}
 	return false
 }
 
-// IsEnabledForUser returns whether scrobbling is enabled for a specific user.
+// IsEnabledForUser returns whether a specific user is linked to a connected Trakt account.
 func (s *Scrobbler) IsEnabledForUser(userID string) bool {
 	account := s.getAccountForUser(userID)
-	return account != nil && account.ScrobblingEnabled && account.AccessToken != ""
+	return account != nil && account.AccessToken != ""
 }
 
 // getAccountForUser returns the Trakt account associated with the given user, or nil if none.

@@ -374,11 +374,51 @@ type SubtitleSettings struct {
 	EnableTranslatedSubs  bool   `json:"enableTranslatedSubs"`
 }
 
-// MDBListSettings defines MDBList integration for aggregated ratings.
+// MDBListAccount represents a registered MDBList account with its API key.
+type MDBListAccount struct {
+	ID     string `json:"id"`     // UUID for this account
+	Name   string `json:"name"`   // Display name
+	APIKey string `json:"apiKey"` // MDBList API key
+}
+
+// MDBListSettings defines MDBList integration for aggregated ratings and scrobbling.
 type MDBListSettings struct {
-	APIKey         string   `json:"apiKey"`
-	Enabled        bool     `json:"enabled"`
-	EnabledRatings []string `json:"enabledRatings"` // Which rating sources to display: trakt, imdb, tmdb, letterboxd, tomatoes, audience, metacritic
+	APIKey         string           `json:"apiKey"`                     // Legacy global API key (used for ratings when no accounts configured)
+	Enabled        bool             `json:"enabled"`
+	EnabledRatings []string         `json:"enabledRatings"`             // Which rating sources to display: trakt, imdb, tmdb, letterboxd, tomatoes, audience, metacritic
+	Accounts       []MDBListAccount `json:"accounts,omitempty"`         // Registered MDBList accounts
+}
+
+// GetAccountByID returns an MDBList account by its ID, or nil if not found.
+func (m *MDBListSettings) GetAccountByID(id string) *MDBListAccount {
+	for i := range m.Accounts {
+		if m.Accounts[i].ID == id {
+			return &m.Accounts[i]
+		}
+	}
+	return nil
+}
+
+// UpdateAccount updates an existing MDBList account or adds it if not found.
+func (m *MDBListSettings) UpdateAccount(account MDBListAccount) {
+	for i := range m.Accounts {
+		if m.Accounts[i].ID == account.ID {
+			m.Accounts[i] = account
+			return
+		}
+	}
+	m.Accounts = append(m.Accounts, account)
+}
+
+// RemoveAccount removes an MDBList account by ID.
+func (m *MDBListSettings) RemoveAccount(id string) bool {
+	for i := range m.Accounts {
+		if m.Accounts[i].ID == id {
+			m.Accounts = append(m.Accounts[:i], m.Accounts[i+1:]...)
+			return true
+		}
+	}
+	return false
 }
 
 // TraktAccount represents a registered Trakt account with its own credentials and OAuth tokens.
@@ -553,6 +593,8 @@ const (
 	ScheduledTaskTypePlexHistorySync       ScheduledTaskType = "plex_history_sync"
 	ScheduledTaskTypeJellyfinFavoritesSync ScheduledTaskType = "jellyfin_favorites_sync"
 	ScheduledTaskTypeJellyfinHistorySync   ScheduledTaskType = "jellyfin_history_sync"
+	ScheduledTaskTypeMDBListWatchlistSync  ScheduledTaskType = "mdblist_watchlist_sync"
+	ScheduledTaskTypeMDBListHistorySync    ScheduledTaskType = "mdblist_history_sync"
 )
 
 // BackupRetentionSettings controls how backups are automatically cleaned up
@@ -1211,6 +1253,25 @@ func (m *Manager) Load() (Settings, error) {
 		s.Trakt.ExpiresAt = 0
 		s.Trakt.Username = ""
 		s.Trakt.ScrobblingEnabled = false
+	}
+
+	// Ensure the global MDBList API key (used for ratings) is available as an account
+	// so it can be linked to profiles for scrobbling without re-entering it.
+	if s.MDBList.APIKey != "" {
+		keyExists := false
+		for _, acc := range s.MDBList.Accounts {
+			if acc.APIKey == s.MDBList.APIKey {
+				keyExists = true
+				break
+			}
+		}
+		if !keyExists {
+			s.MDBList.Accounts = append(s.MDBList.Accounts, MDBListAccount{
+				ID:     "ratings-key",
+				Name:   "MDBList (Ratings Key)",
+				APIKey: s.MDBList.APIKey,
+			})
+		}
 	}
 
 	return s, nil

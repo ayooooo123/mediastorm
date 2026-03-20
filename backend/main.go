@@ -37,6 +37,7 @@ import (
 	"novastream/services/indexer"
 	"novastream/services/invitations"
 	"novastream/services/metadata"
+	"novastream/services/mdblist"
 	"novastream/services/playback"
 	"novastream/services/jellyfin"
 	"novastream/services/plex"
@@ -468,12 +469,23 @@ func main() {
 	traktClient := trakt.NewClient("", "") // Credentials are per-account now
 	traktScrobbler := trakt.NewScrobbler(traktClient, cfgManager)
 	traktScrobbler.SetUserService(userService) // For per-profile Trakt account lookup
-	historyService.SetTraktScrobbler(traktScrobbler)
 
 	// Wire up real-time Trakt scrobble tracker for live playback events
 	scrobbleTracker := trakt.NewScrobbleStateTracker(traktClient, traktScrobbler, 15*time.Minute)
-	historyService.SetTraktRealTimeScrobbler(scrobbleTracker)
 	go scrobbleTracker.StartCleanup(context.Background())
+
+	// Wire up MDBList scrobbler
+	mdblistScrobbleClient := mdblist.NewScrobbleClient(settings.MDBList.APIKey)
+	mdblistScrobbler := mdblist.NewScrobbler(mdblistScrobbleClient, cfgManager)
+	mdblistScrobbler.SetUserService(userService)
+	mdblistRTScrobbler := mdblist.NewScrobbleStateTracker(mdblistScrobbleClient, mdblistScrobbler, 15*time.Minute)
+	go mdblistRTScrobbler.StartCleanup(context.Background())
+
+	// Wire up multi-scrobblers that fan out to all enabled providers
+	multiScrobbler := history.NewMultiScrobbler(traktScrobbler, mdblistScrobbler)
+	multiRTScrobbler := history.NewMultiRealTimeScrobbler(scrobbleTracker, mdblistRTScrobbler)
+	historyService.SetTraktScrobbler(multiScrobbler)
+	historyService.SetTraktRealTimeScrobbler(multiRTScrobbler)
 
 	// Wire up history service to metadata handler for hideWatched filtering
 	metadataHandler.SetHistoryService(historyService)
@@ -816,6 +828,16 @@ func main() {
 	r.HandleFunc("/admin/api/users/{userID}/trakt", adminUIHandler.RequireAuth(usersHandler.SetTraktAccount)).Methods(http.MethodPut)
 	r.HandleFunc("/admin/api/users/{userID}/trakt", adminUIHandler.RequireAuth(usersHandler.ClearTraktAccount)).Methods(http.MethodDelete)
 
+	// Profile MDBList linking (admin routes)
+	r.HandleFunc("/admin/api/users/{userID}/mdblist", adminUIHandler.RequireAuth(usersHandler.SetMdblistAccount)).Methods(http.MethodPut)
+	r.HandleFunc("/admin/api/users/{userID}/mdblist", adminUIHandler.RequireAuth(usersHandler.ClearMdblistAccount)).Methods(http.MethodDelete)
+
+	// MDBList multi-account management (admin routes)
+	r.HandleFunc("/admin/api/mdblist/accounts", adminUIHandler.RequireAuth(adminUIHandler.GetMDBListAccounts)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/api/mdblist/accounts", adminUIHandler.RequireAuth(adminUIHandler.CreateMDBListAccount)).Methods(http.MethodPost)
+	r.HandleFunc("/admin/api/mdblist/accounts/{accountID}", adminUIHandler.RequireAuth(adminUIHandler.UpdateMDBListAccount)).Methods(http.MethodPatch)
+	r.HandleFunc("/admin/api/mdblist/accounts/{accountID}", adminUIHandler.RequireAuth(adminUIHandler.DeleteMDBListAccount)).Methods(http.MethodDelete)
+
 	// Plex multi-account management (admin routes)
 	r.HandleFunc("/admin/api/plex/accounts", adminUIHandler.RequireAuth(plexAccountsHandler.ListAccounts)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/plex/accounts", adminUIHandler.RequireAuth(plexAccountsHandler.CreateAccount)).Methods(http.MethodPost)
@@ -963,6 +985,8 @@ func main() {
 	r.HandleFunc("/account/api/users/{userID}/kids/lists", adminUIHandler.RequireAuth(usersHandler.RemoveKidsAllowedList)).Methods(http.MethodDelete)
 	r.HandleFunc("/account/api/profiles/max-streams", accountUIHandler.RequireAuth(accountUIHandler.GetProfileMaxStreams)).Methods(http.MethodGet)
 	r.HandleFunc("/account/api/profiles/max-streams", accountUIHandler.RequireAuth(accountUIHandler.SetProfileMaxStreams)).Methods(http.MethodPut)
+	r.HandleFunc("/account/api/profiles/mdblist", accountUIHandler.RequireAuth(accountUIHandler.SetProfileMdblist)).Methods(http.MethodPut)
+	r.HandleFunc("/account/api/profiles/mdblist", accountUIHandler.RequireAuth(accountUIHandler.ClearProfileMdblist)).Methods(http.MethodDelete)
 	r.HandleFunc("/account/api/password", accountUIHandler.RequireAuth(accountUIHandler.ChangePassword)).Methods(http.MethodPut)
 
 	// Protected account routes - User Settings API
@@ -984,6 +1008,9 @@ func main() {
 	// Protected account routes - History API
 	r.HandleFunc("/account/api/history/watched", adminUIHandler.RequireAuth(adminUIHandler.GetWatchHistory)).Methods(http.MethodGet)
 	r.HandleFunc("/account/api/history/continue", adminUIHandler.RequireAuth(adminUIHandler.GetContinueWatching)).Methods(http.MethodGet)
+
+	// Protected account routes - MDBList accounts (read-only for regular accounts)
+	r.HandleFunc("/account/api/mdblist/accounts", adminUIHandler.RequireAuth(adminUIHandler.GetMDBListAccounts)).Methods(http.MethodGet)
 
 	// Protected account routes - Trakt API (using account-scoped handler)
 	r.HandleFunc("/account/api/trakt/accounts", accountUIHandler.RequireAuth(accountUIHandler.GetTraktAccounts)).Methods(http.MethodGet)

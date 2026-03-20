@@ -112,6 +112,12 @@ func (f *fakeUsersService) ClearPin(id string) (models.User, error) {
 }
 func (f *fakeUsersService) VerifyPin(id, pin string) error { return f.verifyPinErr }
 func (f *fakeUsersService) HasPin(id string) bool          { return f.hasPinVal }
+func (f *fakeUsersService) SetMdblistAccountID(id, mdblistAccountID string) (models.User, error) {
+	return models.User{}, nil
+}
+func (f *fakeUsersService) ClearMdblistAccountID(id string) (models.User, error) {
+	return models.User{}, nil
+}
 func (f *fakeUsersService) SetTraktAccountID(id, traktAccountID string) (models.User, error) {
 	return f.setTraktUser, f.setTraktErr
 }
