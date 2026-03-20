@@ -4464,13 +4464,6 @@ func (h *VideoHandler) CropDetect(w http.ResponseWriter, r *http.Request) {
 		medianTop := topFractions[len(topFractions)/2]
 		medianBottom := bottomFractions[len(bottomFractions)/2]
 
-		// Threshold: < 3% → treat as no letterbox
-		if medianTop < 0.03 {
-			medianTop = 0
-		}
-		if medianBottom < 0.03 {
-			medianBottom = 0
-		}
 
 		// Asymmetry check: if top and bottom differ by more than 3%, discard both
 		if math.Abs(medianTop-medianBottom) > 0.03 {
