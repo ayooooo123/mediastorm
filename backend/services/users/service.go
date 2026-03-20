@@ -65,10 +65,12 @@ type Service struct {
 func (s *Service) useDB() bool { return s.store != nil }
 
 // NewServiceWithStore creates a users service backed by PostgreSQL.
-func NewServiceWithStore(store *datastore.DataStore) (*Service, error) {
+// storageDir is used for profile icon files on disk.
+func NewServiceWithStore(store *datastore.DataStore, storageDir string) (*Service, error) {
 	svc := &Service{
-		store: store,
-		users: make(map[string]models.User),
+		store:      store,
+		storageDir: storageDir,
+		users:      make(map[string]models.User),
 	}
 	if err := svc.load(); err != nil {
 		return nil, err

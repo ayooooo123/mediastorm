@@ -330,7 +330,7 @@ func main() {
 
 	var userService *users.Service
 	if store != nil {
-		userService, err = users.NewServiceWithStore(store)
+		userService, err = users.NewServiceWithStore(store, settings.Cache.Directory)
 	} else {
 		userService, err = users.NewService(settings.Cache.Directory)
 	}
