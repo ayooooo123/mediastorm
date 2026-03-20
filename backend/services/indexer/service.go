@@ -1072,22 +1072,77 @@ func (s *Service) searchRawResults(ctx context.Context, opts SearchOptions) ([]m
 
 // fetchUsenetResultsAllQueries fetches raw usenet results from all queries without filtering.
 func (s *Service) fetchUsenetResultsAllQueries(ctx context.Context, settings config.Settings, opts SearchOptions, queries []string) ([]models.NZBResult, error) {
+	// Filter out empty queries
+	var validQueries []string
+	for _, q := range queries {
+		if trimmed := strings.TrimSpace(q); trimmed != "" {
+			validQueries = append(validQueries, trimmed)
+		}
+	}
+	if len(validQueries) == 0 {
+		return nil, nil
+	}
+
+	// Single query — no parallelization overhead
+	if len(validQueries) == 1 {
+		queryOpts := opts
+		queryOpts.Query = validQueries[0]
+		return s.fetchUsenetResults(ctx, settings, queryOpts)
+	}
+
+	// Parallelize searches across all alternate queries
+	log.Printf("[indexer/usenet] fetching %d queries in parallel (raw)", len(validQueries))
+
+	type searchResult struct {
+		results []models.NZBResult
+		err     error
+	}
+
+	resultsChan := make(chan searchResult, len(validQueries))
+	for _, query := range validQueries {
+		go func(q string) {
+			queryOpts := opts
+			queryOpts.Query = q
+			results, err := s.fetchUsenetResults(ctx, settings, queryOpts)
+			resultsChan <- searchResult{results: results, err: err}
+		}(query)
+	}
+
 	var allResults []models.NZBResult
 	var lastErr error
-	for _, query := range queries {
-		queryOpts := opts
-		queryOpts.Query = query
-		results, err := s.fetchUsenetResults(ctx, settings, queryOpts)
-		if err != nil {
-			lastErr = err
+	for range validQueries {
+		res := <-resultsChan
+		if res.err != nil {
+			lastErr = res.err
 			continue
 		}
-		allResults = append(allResults, results...)
+		allResults = append(allResults, res.results...)
 	}
 	if len(allResults) == 0 && lastErr != nil {
 		return nil, lastErr
 	}
-	return allResults, nil
+
+	// Deduplicate results that appear across multiple alternate-title queries
+	seen := make(map[string]struct{}, len(allResults))
+	deduped := make([]models.NZBResult, 0, len(allResults))
+	for _, r := range allResults {
+		key := r.GUID
+		if key == "" {
+			key = r.DownloadURL
+		}
+		if key == "" {
+			key = r.Link
+		}
+		if key == "" {
+			deduped = append(deduped, r)
+			continue
+		}
+		if _, exists := seen[key]; !exists {
+			seen[key] = struct{}{}
+			deduped = append(deduped, r)
+		}
+	}
+	return deduped, nil
 }
 
 // buildFilterOptions constructs filter.Options from SearchOptions and FilterSettings.
@@ -1815,31 +1870,50 @@ func (s *Service) searchUsenetSingle(ctx context.Context, settings config.Settin
 }
 
 func (s *Service) fetchUsenetResults(ctx context.Context, settings config.Settings, opts SearchOptions) ([]models.NZBResult, error) {
-	var allResults []models.NZBResult
-	var lastErr error
-
+	// Collect enabled indexers
+	var enabled []config.IndexerConfig
 	for _, idx := range settings.Indexers {
 		if !idx.Enabled {
 			continue
 		}
-
-		switch strings.ToLower(strings.TrimSpace(idx.Type)) {
-		case "", "newznab", "torznab":
-			results, err := s.searchTorznab(ctx, idx, opts)
-			if err != nil {
-				lastErr = err
-				continue
-			}
-			allResults = append(allResults, results...)
-		default:
-			lastErr = fmt.Errorf("unsupported indexer type %q", idx.Type)
-		}
-
-		if opts.MaxResults > 0 && len(allResults) >= opts.MaxResults {
-			break
+		t := strings.ToLower(strings.TrimSpace(idx.Type))
+		if t == "" || t == "newznab" || t == "torznab" {
+			enabled = append(enabled, idx)
 		}
 	}
 
+	if len(enabled) == 0 {
+		return nil, nil
+	}
+
+	// Single indexer — no parallelization overhead
+	if len(enabled) == 1 {
+		return s.searchTorznab(ctx, enabled[0], opts)
+	}
+
+	type indexerResult struct {
+		results []models.NZBResult
+		err     error
+	}
+
+	resultsChan := make(chan indexerResult, len(enabled))
+	for _, idx := range enabled {
+		go func(ix config.IndexerConfig) {
+			results, err := s.searchTorznab(ctx, ix, opts)
+			resultsChan <- indexerResult{results: results, err: err}
+		}(idx)
+	}
+
+	var allResults []models.NZBResult
+	var lastErr error
+	for range enabled {
+		res := <-resultsChan
+		if res.err != nil {
+			lastErr = res.err
+			continue
+		}
+		allResults = append(allResults, res.results...)
+	}
 	if len(allResults) == 0 && lastErr != nil {
 		return nil, lastErr
 	}
