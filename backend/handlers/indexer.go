@@ -19,6 +19,8 @@ import (
 
 type indexerService interface {
 	Search(context.Context, indexer.SearchOptions) ([]models.NZBResult, error)
+	SearchTest(context.Context, indexer.SearchOptions) ([]models.ScoredNZBResult, error)
+	SearchWithScoring(context.Context, indexer.SearchOptions) ([]models.ScoredNZBResult, error)
 }
 
 var _ indexerService = (*indexer.Service)(nil)
@@ -131,6 +133,33 @@ func (h *IndexerHandler) Search(w http.ResponseWriter, r *http.Request) {
 		EpisodeAirYear:  episodeAirYear,
 	}
 
+	// Check if caller wants filtered results included
+	includeFiltered := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("includeFiltered"))) == "true"
+
+	if includeFiltered {
+		opts.IncludeFiltered = true
+		scored, err := h.Service.SearchWithScoring(r.Context(), opts)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			statusCode, errResponse := classifySearchError(err)
+			w.WriteHeader(statusCode)
+			json.NewEncoder(w).Encode(errResponse)
+			return
+		}
+
+		if h.DemoMode {
+			maskedTitle := buildMaskedTitle(query, year, mediaType)
+			for i := range scored {
+				scored[i].Title = maskedTitle
+				scored[i].Indexer = "Demo"
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(scored)
+		return
+	}
+
 	results, err := h.Service.Search(r.Context(), opts)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
@@ -147,6 +176,97 @@ func (h *IndexerHandler) Search(w http.ResponseWriter, r *http.Request) {
 			results[i].Title = maskedTitle
 			results[i].Indexer = "Demo"
 		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(results)
+}
+
+// SearchTest handles the admin search test endpoint with full scoring breakdown.
+func (h *IndexerHandler) SearchTest(w http.ResponseWriter, r *http.Request) {
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	categories := r.URL.Query()["cat"]
+	imdbID := strings.TrimSpace(r.URL.Query().Get("imdbId"))
+	mediaType := strings.TrimSpace(r.URL.Query().Get("mediaType"))
+	userID := strings.TrimSpace(r.URL.Query().Get("userId"))
+	clientID := strings.TrimSpace(r.Header.Get("X-Client-ID"))
+	if clientID == "" {
+		clientID = strings.TrimSpace(r.URL.Query().Get("clientId"))
+	}
+	year := 0
+	if rawYear := r.URL.Query().Get("year"); rawYear != "" {
+		if parsed, err := strconv.Atoi(rawYear); err == nil && parsed > 0 {
+			year = parsed
+		}
+	}
+	max := 0 // No limit for search test by default
+	if rawLimit := r.URL.Query().Get("limit"); rawLimit != "" {
+		if parsed, err := strconv.Atoi(rawLimit); err == nil && parsed > 0 {
+			max = parsed
+		}
+	}
+
+	// Get series metadata for TV shows
+	var episodeResolver *filter.SeriesEpisodeResolver
+	var isDaily bool
+	var isAnime bool
+	var targetAirDate string
+	var episodeAirYear int
+	if mediaType == "series" && h.MetadataSvc != nil {
+		seriesMeta := h.getSeriesSearchMetadata(r.Context(), query, year, imdbID)
+		if seriesMeta != nil {
+			episodeResolver = seriesMeta.EpisodeResolver
+			isDaily = seriesMeta.IsDaily
+			isAnime = seriesMeta.IsAnime
+			targetAirDate = seriesMeta.TargetAirDate
+			episodeAirYear = seriesMeta.EpisodeAirYear
+			if year == 0 && seriesMeta.Year > 0 {
+				year = seriesMeta.Year
+			}
+		}
+	}
+
+	// Detect anime for movies
+	if mediaType == "movie" && h.MovieMetadataSvc != nil {
+		movieQuery := models.MovieDetailsQuery{
+			Name:   strings.TrimSpace(query),
+			Year:   year,
+			IMDBID: imdbID,
+		}
+		if movieTitle, err := h.MovieMetadataSvc.MovieInfo(r.Context(), movieQuery); err == nil && movieTitle != nil {
+			for _, genre := range movieTitle.Genres {
+				genreLower := strings.ToLower(genre)
+				if genreLower == "animation" || genreLower == "anime" {
+					isAnime = true
+					break
+				}
+			}
+		}
+	}
+
+	opts := indexer.SearchOptions{
+		Query:           query,
+		Categories:      categories,
+		MaxResults:      max,
+		IMDBID:          imdbID,
+		MediaType:       mediaType,
+		Year:            year,
+		UserID:          userID,
+		ClientID:        clientID,
+		EpisodeResolver: episodeResolver,
+		IsDaily:         isDaily,
+		IsAnime:         isAnime,
+		TargetAirDate:   targetAirDate,
+		EpisodeAirYear:  episodeAirYear,
+	}
+
+	results, err := h.Service.SearchTest(r.Context(), opts)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		statusCode, errResponse := classifySearchError(err)
+		w.WriteHeader(statusCode)
+		json.NewEncoder(w).Encode(errResponse)
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")

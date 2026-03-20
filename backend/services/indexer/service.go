@@ -488,6 +488,8 @@ type SearchOptions struct {
 	IsDaily               bool                        // True for daily shows (talk shows, news) that use date-based naming
 	TargetAirDate         string                      // For daily shows: air date in YYYY-MM-DD format
 	EpisodeAirYear        int                         // Year the target episode aired (for year filter tolerance)
+	IncludeFiltered       bool                        // When true, return filtered results alongside passed results
+	SkipFilter            bool                        // When true, skip filtering entirely (used by SearchTest)
 }
 
 func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBResult, error) {
@@ -764,6 +766,408 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBR
 		callNum, len(aggregated), time.Since(searchStart),
 		s.searchCount.Load(), s.searchSplitCount.Load(), s.usenetAPICallCount.Load())
 	return aggregated, nil
+}
+
+// SearchWithScoring runs Search and wraps results as ScoredNZBResult with filter status.
+// When opts.IncludeFiltered is true, filtered results are appended after passed results.
+func (s *Service) SearchWithScoring(ctx context.Context, opts SearchOptions) ([]models.ScoredNZBResult, error) {
+	if !opts.IncludeFiltered {
+		// Standard path: just wrap passed results
+		results, err := s.Search(ctx, opts)
+		if err != nil {
+			return nil, err
+		}
+		scored := make([]models.ScoredNZBResult, len(results))
+		for i, r := range results {
+			scored[i] = models.ScoredNZBResult{
+				NZBResult:    r,
+				FilterStatus: "passed",
+			}
+		}
+		return scored, nil
+	}
+
+	// IncludeFiltered path: collect raw results, filter with details, then wrap
+	rawOpts := opts
+	rawOpts.SkipFilter = true
+	rawOpts.IncludeFiltered = false
+	rawResults, err := s.searchRawResults(ctx, rawOpts)
+	if err != nil {
+		return nil, err
+	}
+
+	// Build filter options from effective settings
+	settings, err := s.cfg.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load settings: %w", err)
+	}
+
+	filterSettings, _, _ := s.getEffectiveFilterSettings(opts.UserID, opts.ClientID, settings)
+	filterOpts := s.buildFilterOptions(rawOpts, filterSettings)
+
+	detailed := filter.ResultsWithDetails(rawResults, filterOpts)
+
+	// Separate passed and filtered
+	var passed, filtered []models.ScoredNZBResult
+	for _, fr := range detailed {
+		sr := models.ScoredNZBResult{
+			NZBResult: fr.Result,
+		}
+		if fr.Passed {
+			sr.FilterStatus = "passed"
+			passed = append(passed, sr)
+		} else {
+			sr.FilterStatus = "filtered"
+			sr.FilterReason = fr.RejectReason
+			filtered = append(filtered, sr)
+		}
+	}
+
+	// Sort passed results using standard ranking
+	if len(passed) > 0 {
+		passedNZB := make([]models.NZBResult, len(passed))
+		for i, p := range passed {
+			passedNZB[i] = p.NZBResult
+		}
+		s.sortResults(passedNZB, opts, settings, filterSettings)
+		for i, r := range passedNZB {
+			passed[i].NZBResult = r
+		}
+	}
+
+	// Combine: passed first, then filtered
+	result := append(passed, filtered...)
+	return result, nil
+}
+
+// SearchTest runs search with full scoring breakdown and filter details for the admin search tester.
+func (s *Service) SearchTest(ctx context.Context, opts SearchOptions) ([]models.ScoredNZBResult, error) {
+	searchStart := time.Now()
+	log.Printf("[indexer] SearchTest started for query=%q mediaType=%q", opts.Query, opts.MediaType)
+
+	// Collect all raw results (no filtering)
+	rawOpts := opts
+	rawOpts.SkipFilter = true
+	rawResults, err := s.searchRawResults(ctx, rawOpts)
+	if err != nil {
+		return nil, err
+	}
+
+	settings, err := s.cfg.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load settings: %w", err)
+	}
+
+	filterSettings, animeSettings, _ := s.getEffectiveFilterSettings(opts.UserID, opts.ClientID, settings)
+
+	// Inject anime language filter-out terms
+	if opts.IsAnime && models.BoolVal(animeSettings.AnimeLanguageEnabled, false) {
+		langCode := ""
+		if animeSettings.AnimePreferredLanguage != nil {
+			langCode = *animeSettings.AnimePreferredLanguage
+		}
+		if langCode == "" {
+			langCode = "eng"
+		}
+		_, _, animeFilterOut := filter.GetAnimeLanguageTerms(langCode)
+		if len(animeFilterOut) > 0 {
+			filterSettings.FilterOutTerms = append(filterSettings.FilterOutTerms, animeFilterOut...)
+		}
+	}
+
+	// Run filter with details
+	filterOpts := s.buildFilterOptions(opts, filterSettings)
+	detailed := filter.ResultsWithDetails(rawResults, filterOpts)
+
+	// Build scoring context
+	rankingCriteria := s.getEffectiveRankingCriteria(opts.UserID, opts.ClientID, settings)
+	preferredTerms := filter.CompileTerms(filterSettings.PreferredTerms)
+	nonPreferredTerms := filter.CompileTerms(filterSettings.NonPreferredTerms)
+
+	// Inject anime language terms for scoring
+	if opts.IsAnime && models.BoolVal(animeSettings.AnimeLanguageEnabled, false) {
+		langCode := ""
+		if animeSettings.AnimePreferredLanguage != nil {
+			langCode = *animeSettings.AnimePreferredLanguage
+		}
+		if langCode == "" {
+			langCode = "eng"
+		}
+		animePref, animeNonPref, _ := filter.GetAnimeLanguageTerms(langCode)
+		if len(animePref) > 0 {
+			preferredTerms = append(preferredTerms, filter.CompileTerms(animePref)...)
+		}
+		if len(animeNonPref) > 0 {
+			nonPreferredTerms = append(nonPreferredTerms, filter.CompileTerms(animeNonPref)...)
+		}
+	}
+
+	scoringCtx := ScoringContext{
+		RankingCriteria:   rankingCriteria,
+		ServicePriority:   settings.Filtering.ServicePriority,
+		PreferredTerms:    preferredTerms,
+		NonPreferredTerms: nonPreferredTerms,
+		PreferredLang:     settings.Metadata.Language,
+		PreferredScraper:  settings.Filtering.PreferredScraper,
+	}
+
+	// Score all results and separate passed/filtered
+	var passed, filtered []models.ScoredNZBResult
+	for _, fr := range detailed {
+		score, breakdown := ScoreResult(fr.Result, scoringCtx)
+		sr := models.ScoredNZBResult{
+			NZBResult:      fr.Result,
+			TotalScore:     score,
+			ScoreBreakdown: breakdown,
+		}
+		if fr.Passed {
+			sr.FilterStatus = "passed"
+			passed = append(passed, sr)
+		} else {
+			sr.FilterStatus = "filtered"
+			sr.FilterReason = fr.RejectReason
+			filtered = append(filtered, sr)
+		}
+	}
+
+	// Sort passed results by score descending
+	sort.SliceStable(passed, func(i, j int) bool {
+		return passed[i].TotalScore > passed[j].TotalScore
+	})
+
+	// Combine: passed first, then filtered
+	result := append(passed, filtered...)
+
+	log.Printf("[indexer] SearchTest complete: %d total (%d passed, %d filtered) in %v",
+		len(result), len(passed), len(filtered), time.Since(searchStart))
+	return result, nil
+}
+
+// searchRawResults collects unfiltered results from all search sources.
+func (s *Service) searchRawResults(ctx context.Context, opts SearchOptions) ([]models.NZBResult, error) {
+	if s.cfg == nil {
+		return nil, errors.New("config manager not configured")
+	}
+
+	settings, err := s.cfg.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load settings: %w", err)
+	}
+
+	includeUsenet := shouldUseUsenet(settings.Streaming.ServiceMode)
+	includeDebrid := shouldUseDebrid(settings.Streaming.ServiceMode)
+
+	alternateTitles := s.resolveAlternateTitles(ctx, opts, settings.Metadata.Language, settings.Streaming.MaxAlternateTitleSearches)
+	parsedQuery := debrid.ParseQuery(opts.Query)
+	searchQueries := buildSearchQueries(opts, parsedQuery, alternateTitles)
+
+	type searchResult struct {
+		results []models.NZBResult
+		err     error
+		source  string
+	}
+
+	var wg sync.WaitGroup
+	resultsChan := make(chan searchResult, 2)
+
+	if includeUsenet {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if opts.SkipFilter {
+				// Fetch raw results without filtering
+				usenetResults, err := s.fetchUsenetResultsAllQueries(ctx, settings, opts, searchQueries)
+				if err != nil {
+					resultsChan <- searchResult{err: err, source: "usenet"}
+					return
+				}
+				for i := range usenetResults {
+					if usenetResults[i].ServiceType == models.ServiceTypeUnknown {
+						usenetResults[i].ServiceType = models.ServiceTypeUsenet
+					}
+				}
+				resultsChan <- searchResult{results: usenetResults, source: "usenet"}
+			} else {
+				filterSettings, _, _ := s.getEffectiveFilterSettings(opts.UserID, opts.ClientID, settings)
+				usenetResults, err := s.searchUsenetWithFilter(ctx, settings, opts, parsedQuery, alternateTitles, searchQueries, filterSettings)
+				if err != nil {
+					resultsChan <- searchResult{err: err, source: "usenet"}
+					return
+				}
+				for i := range usenetResults {
+					if usenetResults[i].ServiceType == models.ServiceTypeUnknown {
+						usenetResults[i].ServiceType = models.ServiceTypeUsenet
+					}
+				}
+				resultsChan <- searchResult{results: usenetResults, source: "usenet"}
+			}
+		}()
+	}
+
+	if includeDebrid {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if s.debrid == nil {
+				resultsChan <- searchResult{err: fmt.Errorf("debrid search service not configured"), source: "debrid"}
+				return
+			}
+			debOpts := debrid.SearchOptions{
+				Query:                 opts.Query,
+				Categories:            append([]string{}, opts.Categories...),
+				MaxResults:            opts.MaxResults,
+				IMDBID:                opts.IMDBID,
+				MediaType:             opts.MediaType,
+				Year:                  opts.Year,
+				AlternateTitles:       append([]string{}, alternateTitles...),
+				UserID:                opts.UserID,
+				ClientID:              opts.ClientID,
+				TotalSeriesEpisodes:   opts.TotalSeriesEpisodes,
+				EpisodeResolver:       opts.EpisodeResolver,
+				AbsoluteEpisodeNumber: opts.AbsoluteEpisodeNumber,
+				IsAnime:               opts.IsAnime,
+				IsDaily:               opts.IsDaily,
+				TargetAirDate:         opts.TargetAirDate,
+				EpisodeAirYear:        opts.EpisodeAirYear,
+			}
+			debridResults, err := s.debrid.Search(ctx, debOpts)
+			if err != nil {
+				resultsChan <- searchResult{err: err, source: "debrid"}
+				return
+			}
+			for i := range debridResults {
+				if debridResults[i].ServiceType == models.ServiceTypeUnknown {
+					debridResults[i].ServiceType = models.ServiceTypeDebrid
+				}
+			}
+			resultsChan <- searchResult{results: debridResults, source: "debrid"}
+		}()
+	}
+
+	go func() {
+		wg.Wait()
+		close(resultsChan)
+	}()
+
+	var aggregated []models.NZBResult
+	var lastErr error
+
+	for sr := range resultsChan {
+		if sr.err != nil {
+			log.Printf("[indexer] %s search failed: %v", sr.source, sr.err)
+			lastErr = sr.err
+			continue
+		}
+		if len(sr.results) > 0 {
+			aggregated = append(aggregated, sr.results...)
+		}
+	}
+
+	if len(aggregated) == 0 && lastErr != nil {
+		return nil, lastErr
+	}
+
+	return aggregated, nil
+}
+
+// fetchUsenetResultsAllQueries fetches raw usenet results from all queries without filtering.
+func (s *Service) fetchUsenetResultsAllQueries(ctx context.Context, settings config.Settings, opts SearchOptions, queries []string) ([]models.NZBResult, error) {
+	var allResults []models.NZBResult
+	var lastErr error
+	for _, query := range queries {
+		queryOpts := opts
+		queryOpts.Query = query
+		results, err := s.fetchUsenetResults(ctx, settings, queryOpts)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		allResults = append(allResults, results...)
+	}
+	if len(allResults) == 0 && lastErr != nil {
+		return nil, lastErr
+	}
+	return allResults, nil
+}
+
+// buildFilterOptions constructs filter.Options from SearchOptions and FilterSettings.
+func (s *Service) buildFilterOptions(opts SearchOptions, filterSettings models.FilterSettings) filter.Options {
+	parsedQuery := debrid.ParseQuery(opts.Query)
+	expectedTitle := strings.TrimSpace(parsedQuery.Title)
+	if expectedTitle == "" {
+		expectedTitle = strings.TrimSpace(opts.Query)
+	}
+
+	expectedYear := opts.Year
+	if expectedYear == 0 {
+		expectedYear = parsedQuery.Year
+	}
+
+	isMovie := strings.ToLower(opts.MediaType) == "movie"
+
+	alternateTitles := s.resolveAlternateTitles(context.Background(), opts, "", 0)
+
+	return filter.Options{
+		ExpectedTitle:    expectedTitle,
+		ExpectedYear:     expectedYear,
+		EpisodeAirYear:   opts.EpisodeAirYear,
+		IsMovie:          isMovie,
+		MaxSizeMovieGB:   models.FloatVal(filterSettings.MaxSizeMovieGB, 0),
+		MaxSizeEpisodeGB: models.FloatVal(filterSettings.MaxSizeEpisodeGB, 0),
+		MaxResolution:    filterSettings.MaxResolution,
+		HDRDVPolicy:      filter.HDRDVPolicy(filterSettings.HDRDVPolicy),
+		AlternateTitles:  alternateTitles,
+		FilterOutTerms:   filterSettings.FilterOutTerms,
+		EpisodeResolver:  opts.EpisodeResolver,
+		IsDaily:          opts.IsDaily,
+		TargetAirDate:    opts.TargetAirDate,
+	}
+}
+
+// sortResults applies ranking sort to results in-place.
+func (s *Service) sortResults(results []models.NZBResult, opts SearchOptions, settings config.Settings, filterSettings models.FilterSettings) {
+	if len(results) == 0 {
+		return
+	}
+
+	rankingCriteria := s.getEffectiveRankingCriteria(opts.UserID, opts.ClientID, settings)
+	servicePriority := settings.Filtering.ServicePriority
+	preferredTerms := filter.CompileTerms(filterSettings.PreferredTerms)
+	nonPreferredTerms := filter.CompileTerms(filterSettings.NonPreferredTerms)
+	preferredLang := settings.Metadata.Language
+	preferredScraper := settings.Filtering.PreferredScraper
+
+	sort.SliceStable(results, func(i, j int) bool {
+		for _, criterion := range rankingCriteria {
+			if !criterion.Enabled {
+				continue
+			}
+			var result int
+			switch criterion.ID {
+			case config.RankingServicePriority:
+				result = compareServicePriority(results[i], results[j], servicePriority)
+			case config.RankingPreferredTerms:
+				result = comparePreferredTerms(results[i], results[j], preferredTerms)
+			case config.RankingNonPreferredTerms:
+				result = compareNonPreferredTerms(results[i], results[j], nonPreferredTerms)
+			case config.RankingResolution:
+				result = compareResolution(results[i], results[j])
+			case config.RankingLanguage:
+				result = compareLanguage(results[i], results[j], preferredLang)
+			case config.RankingSize:
+				result = compareSize(results[i], results[j])
+			case config.RankingPreferredScraper:
+				result = comparePreferredScraper(results[i], results[j], preferredScraper)
+			}
+			if result != 0 {
+				return result < 0
+			}
+		}
+		if ym := compareYearMatch(results[i], results[j]); ym != 0 {
+			return ym < 0
+		}
+		return false
+	})
 }
 
 // SplitSearchResult holds results from either debrid or usenet search

@@ -179,17 +179,41 @@ func extractResolutionFromTitle(title string) int {
 	return 0
 }
 
+// FilteredResult holds a result with its pass/fail status and rejection reason.
+type FilteredResult struct {
+	Result       models.NZBResult
+	Passed       bool
+	RejectReason string
+}
+
 // Results filters NZB search results based on parsed title information
 // For movies: filters by title similarity (90%+) and year (±1 year)
 // For TV shows: filters by title similarity (90%+) only
 func Results(results []models.NZBResult, opts Options) []models.NZBResult {
+	detailed := ResultsWithDetails(results, opts)
+	passed := make([]models.NZBResult, 0, len(detailed))
+	for _, fr := range detailed {
+		if fr.Passed {
+			passed = append(passed, fr.Result)
+		}
+	}
+	return passed
+}
+
+// ResultsWithDetails filters NZB search results and returns all results with pass/fail status
+// and rejection reasons. This is the detailed version of Results() used by the search tester.
+func ResultsWithDetails(results []models.NZBResult, opts Options) []FilteredResult {
 	if len(results) == 0 {
-		return results
+		return nil
 	}
 
 	// Don't filter if we don't have an expected title
 	if strings.TrimSpace(opts.ExpectedTitle) == "" {
-		return results
+		out := make([]FilteredResult, len(results))
+		for i, r := range results {
+			out[i] = FilteredResult{Result: r, Passed: true}
+		}
+		return out
 	}
 
 	mediaType := "series"
@@ -211,16 +235,26 @@ func Results(results []models.NZBResult, opts Options) []models.NZBResult {
 	parsedMap, err := parsett.ParseTitleBatch(titles)
 	if err != nil {
 		log.Printf("[filter] Batch parsing failed: %v - falling back to keeping all results", err)
-		return results
+		out := make([]FilteredResult, len(results))
+		for i, r := range results {
+			out[i] = FilteredResult{Result: r, Passed: true}
+		}
+		return out
 	}
 
-	filtered := make([]filteredResult, 0, len(results))
+	detailed := make([]FilteredResult, 0, len(results))
 	compiledFilterOutTerms := CompileTerms(opts.FilterOutTerms)
+
+	reject := func(result models.NZBResult, reason string) {
+		detailed = append(detailed, FilteredResult{Result: result, Passed: false, RejectReason: reason})
+	}
 
 	for i, result := range results {
 		// Check filter out terms first (before parsing)
-		if MatchesAnyTerm(result.Title, compiledFilterOutTerms) {
-			log.Printf("[filter] Rejecting %q: matches filter-out term", result.Title)
+		if matchedTerm := MatchedTerm(result.Title, compiledFilterOutTerms); matchedTerm != "" {
+			reason := fmt.Sprintf("matches filter-out term '%s'", matchedTerm)
+			log.Printf("[filter] Rejecting %q: %s", result.Title, reason)
+			reject(result, reason)
 			continue
 		}
 
@@ -233,7 +267,7 @@ func Results(results []models.NZBResult, opts Options) []models.NZBResult {
 		if parsed == nil {
 			log.Printf("[filter] Failed to parse title %q - keeping result", result.Title)
 			// Keep results we can't parse to avoid false negatives
-			filtered = append(filtered, filteredResult{result: result, hasHDR: false})
+			detailed = append(detailed, FilteredResult{Result: result, Passed: true})
 			continue
 		}
 
@@ -260,8 +294,9 @@ func Results(results []models.NZBResult, opts Options) []models.NZBResult {
 		}
 
 		if titleSim < MinTitleSimilarity {
-			log.Printf("[filter] Rejecting %q: title similarity %.2f%% < %.2f%% (parsed title: %q, best match: %q)",
-				result.Title, titleSim*100, MinTitleSimilarity*100, parsed.Title, matchedTitle)
+			reason := fmt.Sprintf("title similarity %.0f%% < %.0f%% (parsed: '%s')", titleSim*100, MinTitleSimilarity*100, parsed.Title)
+			log.Printf("[filter] Rejecting %q: %s", result.Title, reason)
+			reject(result, reason)
 			continue
 		}
 
@@ -273,9 +308,10 @@ func Results(results []models.NZBResult, opts Options) []models.NZBResult {
 		hasEpisodeResolver := opts.EpisodeResolver != nil
 
 		if opts.IsMovie && hasTVPattern {
-			// Searching for a movie but result has TV show pattern (S01E01, volumes, etc)
+			reason := fmt.Sprintf("movie result has TV pattern (S%v E%v)", parsed.Seasons, parsed.Episodes)
 			log.Printf("[filter] Rejecting %q: searching for movie but result has TV pattern (seasons=%v, episodes=%v, volumes=%v)",
 				result.Title, parsed.Seasons, parsed.Episodes, parsed.Volumes)
+			reject(result, reason)
 			continue
 		}
 
@@ -283,10 +319,10 @@ func Results(results []models.NZBResult, opts Options) []models.NZBResult {
 		hasDailyDate := opts.IsDaily && opts.TargetAirDate != "" && mediaresolve.CandidateMatchesDailyDate(result.Title, opts.TargetAirDate, 0)
 
 		if !opts.IsMovie && !hasTVPattern && !isCompletePack && !hasEpisodeResolver && !hasDailyDate {
-			// Searching for a TV show but result has no TV indicators, isn't a complete pack,
-			// we don't have an episode resolver to map files to episodes, and it's not a daily show with matching date
+			reason := "no season/episode info for TV show"
 			log.Printf("[filter] Rejecting %q: searching for TV show but result has no season/episode info",
 				result.Title)
+			reject(result, reason)
 			continue
 		}
 
@@ -296,6 +332,7 @@ func Results(results []models.NZBResult, opts Options) []models.NZBResult {
 		if !opts.IsMovie && (opts.TargetSeason > 0 || opts.TargetAbsoluteEpisode > 0) && !hasDailyDate {
 			if rejected, reason := shouldRejectByTargetEpisode(parsed, opts); rejected {
 				log.Printf("[filter] Rejecting %q: %s", result.Title, reason)
+				reject(result, reason)
 				continue
 			}
 		}
@@ -308,8 +345,10 @@ func Results(results []models.NZBResult, opts Options) []models.NZBResult {
 				// This handles shows where S02 airs years after the series premiere
 				episodeYearMatch := opts.EpisodeAirYear > 0 && abs(opts.EpisodeAirYear-parsed.Year) <= MaxYearDifference
 				if yearDiff > MaxYearDifference && !episodeYearMatch {
-					log.Printf("[filter] Rejecting %q: year difference %d > %d (expected: %d, got: %d, episodeAirYear: %d)",
-						result.Title, yearDiff, MaxYearDifference, opts.ExpectedYear, parsed.Year, opts.EpisodeAirYear)
+					reason := fmt.Sprintf("year difference %d > %d (expected: %d, got: %d)", yearDiff, MaxYearDifference, opts.ExpectedYear, parsed.Year)
+					log.Printf("[filter] Rejecting %q: %s, episodeAirYear: %d",
+						result.Title, reason, opts.EpisodeAirYear)
+					reject(result, reason)
 					continue
 				}
 				result.Attributes["yearMatch"] = "true"
@@ -331,8 +370,9 @@ func Results(results []models.NZBResult, opts Options) []models.NZBResult {
 
 			if opts.IsMovie && opts.MaxSizeMovieGB > 0 {
 				if sizeGB > opts.MaxSizeMovieGB {
-					log.Printf("[filter] Rejecting %q: size %.2f GB > %.2f GB limit (movie)",
-						result.Title, sizeGB, opts.MaxSizeMovieGB)
+					reason := fmt.Sprintf("size %.1f GB > %.1f GB limit", sizeGB, opts.MaxSizeMovieGB)
+					log.Printf("[filter] Rejecting %q: %s (movie)", result.Title, reason)
+					reject(result, reason)
 					continue
 				}
 			} else if !opts.IsMovie && opts.MaxSizeEpisodeGB > 0 {
@@ -396,8 +436,9 @@ func Results(results []models.NZBResult, opts Options) []models.NZBResult {
 				}
 
 				if effectiveSizeGB > opts.MaxSizeEpisodeGB {
-					log.Printf("[filter] Rejecting %q: size %.2f GB > %.2f GB limit (episode)",
-						result.Title, effectiveSizeGB, opts.MaxSizeEpisodeGB)
+					reason := fmt.Sprintf("size %.1f GB > %.1f GB limit", effectiveSizeGB, opts.MaxSizeEpisodeGB)
+					log.Printf("[filter] Rejecting %q: %s (episode)", result.Title, reason)
+					reject(result, reason)
 					continue
 				}
 			}
@@ -421,8 +462,9 @@ func Results(results []models.NZBResult, opts Options) []models.NZBResult {
 			}
 			// Only filter if we can parse both resolutions
 			if maxRes > 0 && parsedRes > 0 && parsedRes > maxRes {
-				log.Printf("[filter] Rejecting %q: resolution %s > %s limit",
-					result.Title, resSource, opts.MaxResolution)
+				reason := fmt.Sprintf("resolution %s > %s limit", resSource, opts.MaxResolution)
+				log.Printf("[filter] Rejecting %q: %s", result.Title, reason)
+				reject(result, reason)
 				continue
 			}
 		}
@@ -439,7 +481,9 @@ func Results(results []models.NZBResult, opts Options) []models.NZBResult {
 		case HDRDVPolicyNoExclusion:
 			// Exclude all HDR/DV content - only allow SDR
 			if hasHDR || hasDV {
-				log.Printf("[filter] Rejecting %q: policy excludes HDR/DV content", result.Title)
+				reason := "HDR/DV policy excludes HDR content"
+				log.Printf("[filter] Rejecting %q: %s", result.Title, reason)
+				reject(result, reason)
 				continue
 			}
 		case HDRDVPolicyIncludeHDR:
@@ -492,26 +536,22 @@ func Results(results []models.NZBResult, opts Options) []models.NZBResult {
 		}
 
 		// Result passed all filters
-		filtered = append(filtered, filteredResult{
-			result:     result,
-			hasHDR:     hasHDR,
-			hdrFormats: parsed.HDR,
+		detailed = append(detailed, FilteredResult{
+			Result: result,
+			Passed: true,
 		})
 	}
 
-	log.Printf("[filter] Filtered %d -> %d results (removed %d)",
-		len(results), len(filtered), len(results)-len(filtered))
-
-	// Note: HDR prioritization is now handled in the indexer service sorting
-	// which considers resolution BEFORE HDR (so 2160p SDR ranks above 1080p HDR).
-	// We still log that HDR info was processed for debugging.
-	// Extract just the results for return
-	finalResults := make([]models.NZBResult, len(filtered))
-	for i, fr := range filtered {
-		finalResults[i] = fr.result
+	passedCount := 0
+	for _, fr := range detailed {
+		if fr.Passed {
+			passedCount++
+		}
 	}
+	log.Printf("[filter] Filtered %d -> %d results (removed %d)",
+		len(results), passedCount, len(results)-passedCount)
 
-	return finalResults
+	return detailed
 }
 
 // hasDolbyVision checks if the HDR formats include Dolby Vision

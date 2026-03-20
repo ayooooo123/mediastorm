@@ -457,7 +457,7 @@
                 params.set('userId', selectedUserId);
             }
 
-            const results = await apiCall(`/api/indexers/search?${params.toString()}`);
+            const results = await apiCall(`/api/indexers/search-test?${params.toString()}`);
 
             loadingDiv.style.display = 'none';
 
@@ -471,15 +471,12 @@
                 return;
             }
 
-            // Store all results for filtering
-            allScrapeResults = results.map((r, idx) => ({
-                ...r,
-                _idx: idx,
-                _filterStatus: 'passed', // Placeholder - would come from actual filter info
-                _score: 100 - idx // Placeholder score
-            }));
+            // Store all results with real filter status and scoring from backend
+            allScrapeResults = results;
 
-            resultsCount.textContent = `(${results.length} results)`;
+            const passedCount = results.filter(r => r.filterStatus === 'passed').length;
+            const filteredCount = results.filter(r => r.filterStatus === 'filtered').length;
+            resultsCount.textContent = `(${passedCount} passed, ${filteredCount} filtered — ${results.length} total)`;
             renderScrapeResults(allScrapeResults);
         } catch (e) {
             loadingDiv.style.display = 'none';
@@ -502,7 +499,7 @@
                         <th style="width: 40px;">#</th>
                         <th>Title</th>
                         <th>Source</th>
-                        <th>Type</th>
+                        <th>Scraper</th>
                         <th>Size</th>
                         <th>Resolution</th>
                         <th>HDR</th>
@@ -522,12 +519,45 @@
                             ? '<span class="status-badge warning">Debrid</span>'
                             : '<span class="status-badge">' + serviceType + '</span>';
 
-                        const statusBadge = r._filterStatus === 'passed'
-                            ? '<span class="status-badge online"><span class="status-dot"></span> Passed</span>'
-                            : '<span class="status-badge offline"><span class="status-dot"></span> Filtered</span>';
+                        const isFiltered = r.filterStatus === 'filtered';
+                        const statusBadge = !isFiltered
+                            ? '<span class="status-badge online"><span class="status-dot"></span> Included</span>'
+                            : '<span class="status-badge offline"><span class="status-dot"></span> Excluded</span>';
+
+                        const filterReasonHtml = isFiltered && r.filterReason
+                            ? `<div style="font-size: 0.7rem; color: var(--danger); margin-top: 2px;">${escAttr(r.filterReason)}</div>`
+                            : '';
+
+                        const rowStyle = isFiltered
+                            ? 'border-left: 3px solid var(--danger); color: var(--text-muted); opacity: 0.7;'
+                            : 'border-left: 3px solid var(--success);';
+
+                        const scoreDisplay = r.totalScore != null ? r.totalScore : '-';
+                        const hasBreakdown = r.scoreBreakdown && r.scoreBreakdown.length > 0;
+                        const scoreCell = hasBreakdown
+                            ? `<td style="font-weight: 500; cursor: pointer; user-select: none;" onclick="toggleBreakdown(${displayIdx})" title="Click for details">${scoreDisplay} <span style="font-size: 0.7rem; color: var(--text-muted);">▶</span></td>`
+                            : `<td style="font-weight: 500;">${scoreDisplay}</td>`;
+
+                        const breakdownHtml = hasBreakdown
+                            ? `<tr id="breakdown-${displayIdx}" style="display: none;">
+                                <td colspan="9" style="padding: 0.5rem 1rem; background: var(--bg-tertiary);">
+                                    <div style="font-size: 0.8rem;">
+                                        ${r.scoreBreakdown.map(b => {
+                                            const color = b.points > 0 ? 'var(--success)' : b.points < 0 ? 'var(--danger)' : 'var(--text-muted)';
+                                            const sign = b.points > 0 ? '+' : '';
+                                            return `<div style="display: flex; gap: 0.75rem; padding: 2px 0;">
+                                                <span style="min-width: 60px; text-align: right; font-weight: 500; color: ${color};">${sign}${b.points}</span>
+                                                <span style="min-width: 140px; color: var(--text-secondary);">${b.criterion}</span>
+                                                <span style="color: var(--text-muted);">${b.reason}</span>
+                                            </div>`;
+                                        }).join('')}
+                                    </div>
+                                </td>
+                            </tr>`
+                            : '';
 
                         return `
-                            <tr>
+                            <tr style="${rowStyle}">
                                 <td style="color: var(--text-muted);">${displayIdx + 1}</td>
                                 <td>
                                     <div style="max-width: 350px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escAttr(r.title || '-')}">
@@ -540,14 +570,29 @@
                                 <td style="font-size: 0.875rem;">${sizeGB}</td>
                                 <td style="font-size: 0.875rem;">${resolution}</td>
                                 <td style="font-size: 0.875rem;">${hdr !== '-' ? '<span style="color: var(--warning);">' + hdr + '</span>' : '-'}</td>
-                                <td style="font-weight: 500;">${r._score || '-'}</td>
-                                <td>${statusBadge}</td>
+                                ${scoreCell}
+                                <td>${statusBadge}${filterReasonHtml}</td>
                             </tr>
+                            ${breakdownHtml}
                         `;
                     }).join('')}
                 </tbody>
             </table>
         `;
+    }
+
+    function toggleBreakdown(idx) {
+        const row = document.getElementById('breakdown-' + idx);
+        if (row) {
+            const isHidden = row.style.display === 'none';
+            row.style.display = isHidden ? '' : 'none';
+            // Update arrow
+            const parent = row.previousElementSibling;
+            if (parent) {
+                const arrow = parent.querySelector('td:nth-child(8) span');
+                if (arrow) arrow.textContent = isHidden ? '▼' : '▶';
+            }
+        }
     }
 
     function filterResults() {
@@ -561,13 +606,15 @@
         }
 
         if (statusFilter) {
-            filtered = filtered.filter(r => r._filterStatus === statusFilter);
+            filtered = filtered.filter(r => r.filterStatus === statusFilter);
         }
 
         renderScrapeResults(filtered);
 
         const resultsCount = document.getElementById('resultsCount');
-        resultsCount.textContent = `(${filtered.length} of ${allScrapeResults.length} results)`;
+        const passedCount = filtered.filter(r => r.filterStatus === 'passed').length;
+        const filteredCount = filtered.filter(r => r.filterStatus === 'filtered').length;
+        resultsCount.textContent = `(${passedCount} passed, ${filteredCount} filtered — showing ${filtered.length} of ${allScrapeResults.length})`;
     }
 
     function clearSelection() {

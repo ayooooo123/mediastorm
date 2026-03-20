@@ -25,3 +25,19 @@ type NZBResult struct {
 	EpisodeCount int                `json:"episodeCount,omitempty"` // Number of episodes in pack (0 if not a pack)
 	SizePerFile  bool               `json:"sizePerFile,omitempty"`  // True when sizeBytes is per-file (Stremio scrapers), false when total pack
 }
+
+// ScoreBreakdownItem represents a single scoring criterion's contribution to a result's total score.
+type ScoreBreakdownItem struct {
+	Criterion string `json:"criterion"` // Display name of the criterion
+	Points    int    `json:"points"`    // Points awarded (positive or negative)
+	Reason    string `json:"reason"`    // Human-readable explanation
+}
+
+// ScoredNZBResult extends NZBResult with filter status, scoring breakdown, and rejection reason.
+type ScoredNZBResult struct {
+	NZBResult
+	FilterStatus   string               `json:"filterStatus"`             // "passed" or "filtered"
+	FilterReason   string               `json:"filterReason,omitempty"`   // Reason for exclusion (empty if passed)
+	TotalScore     int                  `json:"totalScore"`               // Sum of all scoring points
+	ScoreBreakdown []ScoreBreakdownItem `json:"scoreBreakdown,omitempty"` // Per-criterion scoring details
+}

@@ -38,6 +38,30 @@ func (f *fakeIndexerService) Search(_ context.Context, opts indexer.SearchOption
 	return f.results, nil
 }
 
+func (f *fakeIndexerService) SearchTest(_ context.Context, opts indexer.SearchOptions) ([]models.ScoredNZBResult, error) {
+	f.lastOpts = opts
+	if f.err != nil {
+		return nil, f.err
+	}
+	scored := make([]models.ScoredNZBResult, len(f.results))
+	for i, r := range f.results {
+		scored[i] = models.ScoredNZBResult{NZBResult: r, FilterStatus: "passed"}
+	}
+	return scored, nil
+}
+
+func (f *fakeIndexerService) SearchWithScoring(_ context.Context, opts indexer.SearchOptions) ([]models.ScoredNZBResult, error) {
+	f.lastOpts = opts
+	if f.err != nil {
+		return nil, f.err
+	}
+	scored := make([]models.ScoredNZBResult, len(f.results))
+	for i, r := range f.results {
+		scored[i] = models.ScoredNZBResult{NZBResult: r, FilterStatus: "passed"}
+	}
+	return scored, nil
+}
+
 func TestIndexerHandler_Search(t *testing.T) {
 	fake := &fakeIndexerService{
 		results: []models.NZBResult{{Title: "The Expanse", Indexer: "nzbPlanet", SizeBytes: 1234}},
@@ -149,5 +173,80 @@ func TestIndexerHandler_SearchMovieNonAnime(t *testing.T) {
 	}
 	if fake.lastOpts.IsAnime {
 		t.Fatal("expected IsAnime=false for non-anime movie, got true")
+	}
+}
+
+func TestIndexerHandler_SearchTest(t *testing.T) {
+	fake := &fakeIndexerService{
+		results: []models.NZBResult{
+			{Title: "The Expanse S01E01", Indexer: "nzbPlanet", SizeBytes: 1234},
+		},
+	}
+	handler := NewIndexerHandler(fake, false)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/indexers/search-test?q=The+Expanse+S01E01&mediaType=series&limit=50", nil)
+	rec := httptest.NewRecorder()
+
+	handler.SearchTest(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d", http.StatusOK, rec.Code)
+	}
+
+	var payload []models.ScoredNZBResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if len(payload) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(payload))
+	}
+	if payload[0].FilterStatus != "passed" {
+		t.Fatalf("expected filterStatus=passed, got %q", payload[0].FilterStatus)
+	}
+	if payload[0].Title != "The Expanse S01E01" {
+		t.Fatalf("expected title 'The Expanse S01E01', got %q", payload[0].Title)
+	}
+}
+
+func TestIndexerHandler_SearchTestError(t *testing.T) {
+	fake := &fakeIndexerService{err: errors.New("indexer down")}
+	handler := NewIndexerHandler(fake, false)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/indexers/search-test?q=test", nil)
+	rec := httptest.NewRecorder()
+
+	handler.SearchTest(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected %d, got %d", http.StatusBadGateway, rec.Code)
+	}
+}
+
+func TestIndexerHandler_SearchIncludeFiltered(t *testing.T) {
+	fake := &fakeIndexerService{
+		results: []models.NZBResult{
+			{Title: "Movie 2024", Indexer: "test"},
+		},
+	}
+	handler := NewIndexerHandler(fake, false)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/indexers/search?q=Movie&includeFiltered=true", nil)
+	rec := httptest.NewRecorder()
+
+	handler.Search(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d", http.StatusOK, rec.Code)
+	}
+
+	var payload []models.ScoredNZBResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if len(payload) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(payload))
+	}
+	if payload[0].FilterStatus != "passed" {
+		t.Fatalf("expected filterStatus=passed, got %q", payload[0].FilterStatus)
 	}
 }

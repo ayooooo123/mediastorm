@@ -31,7 +31,6 @@ func (h *UsenetHandler) CheckHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
 	if err := dec.Decode(&request); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

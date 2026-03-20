@@ -1066,3 +1066,166 @@ func TestResults_ParsedMetadataAttributes(t *testing.T) {
 		t.Error("Expected attribute \"audio\" to be set")
 	}
 }
+
+func TestResultsWithDetails_FilterOutTermReason(t *testing.T) {
+	results := []models.NZBResult{
+		{Title: "Movie.2024.CAM.x264"},
+		{Title: "Movie.2024.1080p.BluRay.x264"},
+	}
+	opts := Options{
+		ExpectedTitle:  "Movie",
+		ExpectedYear:   2024,
+		IsMovie:        true,
+		FilterOutTerms: []string{"cam"},
+	}
+
+	detailed := ResultsWithDetails(results, opts)
+	if len(detailed) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(detailed))
+	}
+
+	// First result should be filtered
+	if detailed[0].Passed {
+		t.Error("expected CAM result to be filtered")
+	}
+	if detailed[0].RejectReason == "" {
+		t.Error("expected filter-out reason")
+	}
+
+	// Second result should pass
+	if !detailed[1].Passed {
+		t.Errorf("expected BluRay result to pass, got reason: %s", detailed[1].RejectReason)
+	}
+}
+
+func TestResultsWithDetails_YearMismatchReason(t *testing.T) {
+	results := []models.NZBResult{
+		{Title: "Movie.2020.1080p.BluRay.x264"},
+	}
+	opts := Options{
+		ExpectedTitle: "Movie",
+		ExpectedYear:  2024,
+		IsMovie:       true,
+	}
+
+	detailed := ResultsWithDetails(results, opts)
+	if len(detailed) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(detailed))
+	}
+
+	if detailed[0].Passed {
+		t.Error("expected year mismatch to filter result")
+	}
+	if detailed[0].RejectReason == "" {
+		t.Error("expected year mismatch reason")
+	}
+}
+
+func TestResultsWithDetails_SizeLimitReason(t *testing.T) {
+	results := []models.NZBResult{
+		{Title: "Movie.2024.1080p.BluRay.x264", SizeBytes: 20 * 1024 * 1024 * 1024}, // 20GB
+	}
+	opts := Options{
+		ExpectedTitle:  "Movie",
+		ExpectedYear:   2024,
+		IsMovie:        true,
+		MaxSizeMovieGB: 10.0,
+	}
+
+	detailed := ResultsWithDetails(results, opts)
+	if len(detailed) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(detailed))
+	}
+
+	if detailed[0].Passed {
+		t.Error("expected size limit to filter result")
+	}
+	if detailed[0].RejectReason == "" {
+		t.Error("expected size limit reason")
+	}
+}
+
+func TestResultsWithDetails_ResolutionLimitReason(t *testing.T) {
+	results := []models.NZBResult{
+		{Title: "Movie.2024.2160p.BluRay.x264"},
+	}
+	opts := Options{
+		ExpectedTitle: "Movie",
+		ExpectedYear:  2024,
+		IsMovie:       true,
+		MaxResolution: "1080p",
+	}
+
+	detailed := ResultsWithDetails(results, opts)
+	if len(detailed) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(detailed))
+	}
+
+	if detailed[0].Passed {
+		t.Error("expected resolution limit to filter result")
+	}
+	if detailed[0].RejectReason == "" {
+		t.Error("expected resolution limit reason")
+	}
+}
+
+func TestResultsWithDetails_HDRPolicyReason(t *testing.T) {
+	results := []models.NZBResult{
+		{Title: "Movie.2024.2160p.HDR.BluRay.x264"},
+	}
+	opts := Options{
+		ExpectedTitle: "Movie",
+		ExpectedYear:  2024,
+		IsMovie:       true,
+		HDRDVPolicy:   HDRDVPolicyNoExclusion,
+	}
+
+	detailed := ResultsWithDetails(results, opts)
+	if len(detailed) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(detailed))
+	}
+
+	if detailed[0].Passed {
+		t.Error("expected HDR policy to filter result")
+	}
+	if detailed[0].RejectReason == "" {
+		t.Error("expected HDR policy reason")
+	}
+}
+
+func TestResultsWithDetails_ConsistentWithResults(t *testing.T) {
+	results := []models.NZBResult{
+		{Title: "The.Matrix.1999.1080p.BluRay.x264-SPARKS"},
+		{Title: "The.Matrix.Reloaded.2003.1080p.BluRay.x264"},
+		{Title: "Inception.2010.1080p.BluRay.x264"},
+		{Title: "The.Matrix.1999.720p.WEB-DL.x264"},
+	}
+
+	opts := Options{
+		ExpectedTitle: "The Matrix",
+		ExpectedYear:  1999,
+		IsMovie:       true,
+	}
+
+	// Results() should return only passed results
+	passed := Results(results, opts)
+
+	// ResultsWithDetails() should have the same passed results
+	detailed := ResultsWithDetails(results, opts)
+	var detailedPassed []models.NZBResult
+	for _, fr := range detailed {
+		if fr.Passed {
+			detailedPassed = append(detailedPassed, fr.Result)
+		}
+	}
+
+	if len(passed) != len(detailedPassed) {
+		t.Fatalf("Results() returned %d, ResultsWithDetails() passed %d", len(passed), len(detailedPassed))
+	}
+
+	for i := range passed {
+		if passed[i].Title != detailedPassed[i].Title {
+			t.Errorf("mismatch at index %d: Results=%q, WithDetails=%q", i, passed[i].Title, detailedPassed[i].Title)
+		}
+	}
+}

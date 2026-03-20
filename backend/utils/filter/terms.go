@@ -51,6 +51,27 @@ func CompileTerms(terms []string) []CompiledTerm {
 	return compiled
 }
 
+// MatchedTerm returns the first matching term string, or "" if none match.
+// Used to provide rejection reasons in filter details.
+func MatchedTerm(title string, terms []CompiledTerm) string {
+	if len(terms) == 0 {
+		return ""
+	}
+	titleLower := strings.ToLower(title)
+	for _, t := range terms {
+		if t.regex != nil {
+			if t.regex.MatchString(title) {
+				return t.regex.String()
+			}
+		} else {
+			if strings.Contains(titleLower, t.plain) {
+				return t.plain
+			}
+		}
+	}
+	return ""
+}
+
 // MatchesAnyTerm checks if the title matches any of the compiled terms.
 // Returns false if terms is empty.
 func MatchesAnyTerm(title string, terms []CompiledTerm) bool {
