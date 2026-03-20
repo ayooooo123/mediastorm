@@ -137,14 +137,19 @@ Respond with ONLY a JSON array, no other text. Each object must have exactly the
 Example format:
 [{"title": "Inception", "year": 2010, "mediaType": "movie"}, {"title": "Dark", "year": 2017, "mediaType": "series"}]`, titleList, emphasis)
 
-	// Rate limiting
+	// Rate limiting — compute wait outside the lock to avoid blocking other goroutines
 	c.throttleMu.Lock()
-	since := time.Since(c.lastRequest)
-	if since < c.minInterval {
-		time.Sleep(c.minInterval - since)
+	wait := c.minInterval - time.Since(c.lastRequest)
+	if wait > 0 {
+		c.lastRequest = time.Now().Add(wait)
+	} else {
+		c.lastRequest = time.Now()
+		wait = 0
 	}
-	c.lastRequest = time.Now()
 	c.throttleMu.Unlock()
+	if wait > 0 {
+		time.Sleep(wait)
+	}
 
 	// Build request - use gemma-3n-e4b-it (free tier, fast, good at structured output)
 	endpoint := fmt.Sprintf("%s/models/gemma-3n-e4b-it:generateContent?key=%s", geminiBaseURL, c.apiKey)
@@ -261,14 +266,19 @@ Respond with ONLY a JSON array, no other text. Each object must have exactly the
 Example format:
 [{"title": "Inception", "year": 2010, "mediaType": "movie"}, {"title": "Dark", "year": 2017, "mediaType": "series"}]`, seedTitle, mediaType, seedTitle)
 
-	// Rate limiting
+	// Rate limiting — compute wait outside the lock to avoid blocking other goroutines
 	c.throttleMu.Lock()
-	since := time.Since(c.lastRequest)
-	if since < c.minInterval {
-		time.Sleep(c.minInterval - since)
+	wait := c.minInterval - time.Since(c.lastRequest)
+	if wait > 0 {
+		c.lastRequest = time.Now().Add(wait)
+	} else {
+		c.lastRequest = time.Now()
+		wait = 0
 	}
-	c.lastRequest = time.Now()
 	c.throttleMu.Unlock()
+	if wait > 0 {
+		time.Sleep(wait)
+	}
 
 	endpoint := fmt.Sprintf("%s/models/gemma-3n-e4b-it:generateContent?key=%s", geminiBaseURL, c.apiKey)
 
@@ -376,13 +386,19 @@ Respond with ONLY a JSON array, no other text. Each object must have exactly the
 Example format:
 [{"title": "Inception", "year": 2010, "mediaType": "movie"}, {"title": "Dark", "year": 2017, "mediaType": "series"}]`, query)
 
+	// Rate limiting — compute wait outside the lock to avoid blocking other goroutines
 	c.throttleMu.Lock()
-	since := time.Since(c.lastRequest)
-	if since < c.minInterval {
-		time.Sleep(c.minInterval - since)
+	wait := c.minInterval - time.Since(c.lastRequest)
+	if wait > 0 {
+		c.lastRequest = time.Now().Add(wait)
+	} else {
+		c.lastRequest = time.Now()
+		wait = 0
 	}
-	c.lastRequest = time.Now()
 	c.throttleMu.Unlock()
+	if wait > 0 {
+		time.Sleep(wait)
+	}
 
 	endpoint := fmt.Sprintf("%s/models/gemma-3n-e4b-it:generateContent?key=%s", geminiBaseURL, c.apiKey)
 
@@ -522,13 +538,19 @@ Constraints:
 Respond with ONLY a JSON array containing exactly 1 object, no other text:
 [{"title": "exact TMDB title", "year": 1234, "mediaType": "%s"}]`, mediaTypeConstraint, vibe, decade, mediaTypeConstraint, mediaTypeExample)
 
+	// Rate limiting — compute wait outside the lock to avoid blocking other goroutines
 	c.throttleMu.Lock()
-	since := time.Since(c.lastRequest)
-	if since < c.minInterval {
-		time.Sleep(c.minInterval - since)
+	wait := c.minInterval - time.Since(c.lastRequest)
+	if wait > 0 {
+		c.lastRequest = time.Now().Add(wait)
+	} else {
+		c.lastRequest = time.Now()
+		wait = 0
 	}
-	c.lastRequest = time.Now()
 	c.throttleMu.Unlock()
+	if wait > 0 {
+		time.Sleep(wait)
+	}
 
 	endpoint := fmt.Sprintf("%s/models/gemma-3n-e4b-it:generateContent?key=%s", geminiBaseURL, c.apiKey)
 

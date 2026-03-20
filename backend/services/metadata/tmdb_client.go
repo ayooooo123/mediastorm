@@ -64,6 +64,13 @@ func resolveGenreIDs(ids []int, mediaType string) []string {
 	return names
 }
 
+// movieDetailsCacheEntry provides singleflight-style deduplication for movieDetails calls
+type movieDetailsCacheEntry struct {
+	result *models.Title
+	err    error
+	done   chan struct{}
+}
+
 type tmdbClient struct {
 	apiKey   string
 	language string
@@ -74,6 +81,9 @@ type tmdbClient struct {
 	throttleMu  sync.Mutex
 	lastRequest time.Time
 	minInterval time.Duration
+
+	// In-memory cache for movieDetails (process-lifetime, deduplicated)
+	movieCache sync.Map
 }
 
 func newTMDBClient(apiKey, language string, httpc *http.Client, cache *fileCache) *tmdbClient {
@@ -95,14 +105,19 @@ func (c *tmdbClient) doGET(ctx context.Context, endpoint string, v any) error {
 	backoff := 300 * time.Millisecond
 
 	for attempt := 0; attempt < 3; attempt++ {
-		// Rate limiting
+		// Rate limiting — compute wait outside the lock to avoid blocking other goroutines
 		c.throttleMu.Lock()
-		since := time.Since(c.lastRequest)
-		if since < c.minInterval {
-			time.Sleep(c.minInterval - since)
+		wait := c.minInterval - time.Since(c.lastRequest)
+		if wait > 0 {
+			c.lastRequest = time.Now().Add(wait) // reserve slot
+		} else {
+			c.lastRequest = time.Now()
+			wait = 0
 		}
-		c.lastRequest = time.Now()
 		c.throttleMu.Unlock()
+		if wait > 0 {
+			time.Sleep(wait)
+		}
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 		if err != nil {
@@ -123,8 +138,14 @@ func (c *tmdbClient) doGET(ctx context.Context, endpoint string, v any) error {
 			resp.Body.Close()
 			log.Printf("[tmdb] rate limited or server error (attempt %d/3): status %d", attempt+1, resp.StatusCode)
 			lastErr = fmt.Errorf("tmdb request failed: %s", resp.Status)
-			time.Sleep(backoff)
-			backoff *= 2
+			if ra := resp.Header.Get("Retry-After"); ra != "" {
+				if secs, err := strconv.Atoi(ra); err == nil {
+					time.Sleep(time.Duration(secs) * time.Second)
+				}
+			} else {
+				time.Sleep(backoff)
+				backoff *= 2
+			}
 			continue
 		}
 
@@ -822,11 +843,30 @@ func (c *tmdbClient) fetchSeasonTrailers(ctx context.Context, tmdbID int64, seas
 }
 
 // fetchExternalID retrieves the IMDB ID for a TMDB movie or TV show
-// movieDetails fetches movie details from TMDB including poster and backdrop
+// movieDetails fetches movie details from TMDB including poster and backdrop.
+// Results are cached in-memory with singleflight deduplication — concurrent calls
+// for the same TMDB ID share one HTTP request.
 func (c *tmdbClient) movieDetails(ctx context.Context, tmdbID int64) (*models.Title, error) {
 	if !c.isConfigured() {
 		return nil, errors.New("tmdb api key not configured")
 	}
+
+	// Singleflight-style in-memory cache
+	entry := &movieDetailsCacheEntry{done: make(chan struct{})}
+	if existing, loaded := c.movieCache.LoadOrStore(tmdbID, entry); loaded {
+		e := existing.(*movieDetailsCacheEntry)
+		<-e.done
+		return e.result, e.err
+	}
+	// We won the race — fetch and populate
+	defer close(entry.done)
+	result, err := c.movieDetailsFetch(ctx, tmdbID)
+	entry.result = result
+	entry.err = err
+	return result, err
+}
+
+func (c *tmdbClient) movieDetailsFetch(ctx context.Context, tmdbID int64) (*models.Title, error) {
 
 	endpoint, err := url.JoinPath(tmdbBaseURL, "movie", fmt.Sprintf("%d", tmdbID))
 	if err != nil {
@@ -1320,14 +1360,19 @@ func (c *tmdbClient) fetchExternalID(ctx context.Context, mediaType string, tmdb
 	backoff := 300 * time.Millisecond
 
 	for attempt := 0; attempt < 3; attempt++ {
-		// Rate limiting
+		// Rate limiting — compute wait outside the lock to avoid blocking other goroutines
 		c.throttleMu.Lock()
-		since := time.Since(c.lastRequest)
-		if since < c.minInterval {
-			time.Sleep(c.minInterval - since)
+		wait := c.minInterval - time.Since(c.lastRequest)
+		if wait > 0 {
+			c.lastRequest = time.Now().Add(wait)
+		} else {
+			c.lastRequest = time.Now()
+			wait = 0
 		}
-		c.lastRequest = time.Now()
 		c.throttleMu.Unlock()
+		if wait > 0 {
+			time.Sleep(wait)
+		}
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 		if err != nil {
@@ -1348,8 +1393,14 @@ func (c *tmdbClient) fetchExternalID(ctx context.Context, mediaType string, tmdb
 			resp.Body.Close()
 			log.Printf("[tmdb] fetchExternalID rate limited (attempt %d/3): status %d", attempt+1, resp.StatusCode)
 			lastErr = fmt.Errorf("tmdb external_ids for %s/%d failed: %s", apiMediaType, tmdbID, resp.Status)
-			time.Sleep(backoff)
-			backoff *= 2
+			if ra := resp.Header.Get("Retry-After"); ra != "" {
+				if secs, err := strconv.Atoi(ra); err == nil {
+					time.Sleep(time.Duration(secs) * time.Second)
+				}
+			} else {
+				time.Sleep(backoff)
+				backoff *= 2
+			}
 			continue
 		}
 
@@ -1394,14 +1445,19 @@ func (c *tmdbClient) findMovieByIMDBID(ctx context.Context, imdbID string) (int6
 			return 0, ctx.Err()
 		}
 
-		// Rate limiting
+		// Rate limiting — compute wait outside the lock to avoid blocking other goroutines
 		c.throttleMu.Lock()
-		since := time.Since(c.lastRequest)
-		if since < c.minInterval {
-			time.Sleep(c.minInterval - since)
+		wait := c.minInterval - time.Since(c.lastRequest)
+		if wait > 0 {
+			c.lastRequest = time.Now().Add(wait)
+		} else {
+			c.lastRequest = time.Now()
+			wait = 0
 		}
-		c.lastRequest = time.Now()
 		c.throttleMu.Unlock()
+		if wait > 0 {
+			time.Sleep(wait)
+		}
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 		if err != nil {
@@ -1424,8 +1480,14 @@ func (c *tmdbClient) findMovieByIMDBID(ctx context.Context, imdbID string) (int6
 			resp.Body.Close()
 			log.Printf("[tmdb] findMovieByIMDBID rate limited (attempt %d/3): status %d", attempt+1, resp.StatusCode)
 			lastErr = fmt.Errorf("tmdb find %s failed: %s", imdbID, resp.Status)
-			time.Sleep(backoff)
-			backoff *= 2
+			if ra := resp.Header.Get("Retry-After"); ra != "" {
+				if secs, err := strconv.Atoi(ra); err == nil {
+					time.Sleep(time.Duration(secs) * time.Second)
+				}
+			} else {
+				time.Sleep(backoff)
+				backoff *= 2
+			}
 			continue
 		}
 
@@ -1468,46 +1530,83 @@ func (c *tmdbClient) findTVByIMDBID(ctx context.Context, imdbID string) (int64, 
 
 	endpoint := fmt.Sprintf("%s/find/%s?api_key=%s&external_source=imdb_id", tmdbBaseURL, imdbID, c.apiKey)
 
-	if ctx.Err() != nil {
-		return 0, ctx.Err()
+	var lastErr error
+	backoff := 300 * time.Millisecond
+
+	for attempt := 0; attempt < 3; attempt++ {
+		if ctx.Err() != nil {
+			return 0, ctx.Err()
+		}
+
+		// Rate limiting — compute wait outside the lock to avoid blocking other goroutines
+		c.throttleMu.Lock()
+		wait := c.minInterval - time.Since(c.lastRequest)
+		if wait > 0 {
+			c.lastRequest = time.Now().Add(wait)
+		} else {
+			c.lastRequest = time.Now()
+			wait = 0
+		}
+		c.throttleMu.Unlock()
+		if wait > 0 {
+			time.Sleep(wait)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return 0, err
+		}
+
+		resp, err := c.httpc.Do(req)
+		if err != nil {
+			if ctx.Err() != nil {
+				return 0, ctx.Err()
+			}
+			lastErr = err
+			log.Printf("[tmdb] findTVByIMDBID http error (attempt %d/3): %v", attempt+1, err)
+			time.Sleep(backoff)
+			backoff *= 2
+			continue
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+			resp.Body.Close()
+			log.Printf("[tmdb] findTVByIMDBID rate limited (attempt %d/3): status %d", attempt+1, resp.StatusCode)
+			lastErr = fmt.Errorf("tmdb find TV %s failed: %s", imdbID, resp.Status)
+			if ra := resp.Header.Get("Retry-After"); ra != "" {
+				if secs, err := strconv.Atoi(ra); err == nil {
+					time.Sleep(time.Duration(secs) * time.Second)
+				}
+			} else {
+				time.Sleep(backoff)
+				backoff *= 2
+			}
+			continue
+		}
+
+		if resp.StatusCode >= 400 {
+			resp.Body.Close()
+			return 0, fmt.Errorf("tmdb find TV %s failed: %s", imdbID, resp.Status)
+		}
+
+		var result struct {
+			TVResults []struct {
+				ID int64 `json:"id"`
+			} `json:"tv_results"`
+		}
+		err = json.NewDecoder(resp.Body).Decode(&result)
+		resp.Body.Close()
+		if err != nil {
+			return 0, err
+		}
+
+		if len(result.TVResults) > 0 {
+			return result.TVResults[0].ID, nil
+		}
+		return 0, fmt.Errorf("no TV show found for IMDB ID %s", imdbID)
 	}
 
-	c.throttleMu.Lock()
-	since := time.Since(c.lastRequest)
-	if since < c.minInterval {
-		time.Sleep(c.minInterval - since)
-	}
-	c.lastRequest = time.Now()
-	c.throttleMu.Unlock()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return 0, err
-	}
-
-	resp, err := c.httpc.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		return 0, fmt.Errorf("tmdb find TV %s failed: %s", imdbID, resp.Status)
-	}
-
-	var result struct {
-		TVResults []struct {
-			ID int64 `json:"id"`
-		} `json:"tv_results"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return 0, err
-	}
-
-	if len(result.TVResults) > 0 {
-		return result.TVResults[0].ID, nil
-	}
-	return 0, fmt.Errorf("no TV show found for IMDB ID %s", imdbID)
+	return 0, lastErr
 }
 
 func mapTMDBReleaseType(releaseType int) string {

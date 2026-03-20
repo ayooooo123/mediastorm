@@ -943,9 +943,21 @@ func (s *Service) enrichTrendingMovieReleases(ctx context.Context, items []model
 		needsRelease bool
 		needsRuntime bool
 	}
-	var jobs []enrichJob
+	// Pass 1: collect candidates and identify which need IMDB→TMDB resolution
+	type resolveTask struct {
+		candidateIdx int // index into candidates slice
+		itemIdx      int // index into items slice
+	}
+	type candidate struct {
+		idx          int
+		tmdbID       int64
+		needsRelease bool
+		needsRuntime bool
+	}
+	var candidates []candidate
+	var toResolve []resolveTask
 	for idx := range items {
-		if len(jobs) >= enrichLimit {
+		if len(candidates) >= enrichLimit {
 			break
 		}
 		if items[idx].Title.MediaType != "movie" {
@@ -957,16 +969,40 @@ func (s *Service) enrichTrendingMovieReleases(ctx context.Context, items []model
 			continue
 		}
 		tmdbID := items[idx].Title.TMDBID
+		candIdx := len(candidates)
+		candidates = append(candidates, candidate{idx: idx, tmdbID: tmdbID, needsRelease: needsRelease, needsRuntime: needsRuntime})
 		if tmdbID <= 0 && items[idx].Title.IMDBID != "" {
-			tmdbID = s.getTMDBIDForIMDB(ctx, items[idx].Title.IMDBID)
-			if tmdbID > 0 {
-				items[idx].Title.TMDBID = tmdbID
-			}
+			toResolve = append(toResolve, resolveTask{candidateIdx: candIdx, itemIdx: idx})
 		}
-		if tmdbID <= 0 {
+	}
+
+	// Pass 2: resolve IMDB→TMDB IDs in parallel (5 workers)
+	if len(toResolve) > 0 {
+		resolveSem := make(chan struct{}, 5)
+		var resolveWg sync.WaitGroup
+		for _, rt := range toResolve {
+			resolveWg.Add(1)
+			go func(rt resolveTask) {
+				defer resolveWg.Done()
+				resolveSem <- struct{}{}
+				defer func() { <-resolveSem }()
+				tmdbID := s.getTMDBIDForIMDB(ctx, items[rt.itemIdx].Title.IMDBID)
+				if tmdbID > 0 {
+					items[rt.itemIdx].Title.TMDBID = tmdbID
+					candidates[rt.candidateIdx].tmdbID = tmdbID
+				}
+			}(rt)
+		}
+		resolveWg.Wait()
+	}
+
+	// Pass 3: build final jobs from resolved candidates
+	var jobs []enrichJob
+	for _, c := range candidates {
+		if c.tmdbID <= 0 {
 			continue
 		}
-		jobs = append(jobs, enrichJob{idx: idx, tmdbID: tmdbID, needsRelease: needsRelease, needsRuntime: needsRuntime})
+		jobs = append(jobs, enrichJob{idx: c.idx, tmdbID: c.tmdbID, needsRelease: c.needsRelease, needsRuntime: c.needsRuntime})
 	}
 
 	queued = len(jobs)
@@ -2415,58 +2451,103 @@ func (s *Service) SeriesDetails(ctx context.Context, req models.SeriesDetailsQue
 			_ = s.cache.set(cacheID, cached)
 		}
 
-		// If cached data doesn't have credits, fetch them from TMDB
-		if cached.Title.Credits == nil && cachedTMDBID > 0 && s.tmdb != nil && s.tmdb.isConfigured() {
-			log.Printf("[metadata] cached series missing credits, fetching from TMDB tvdbId=%d tmdbId=%d", tvdbID, cachedTMDBID)
-			if credits, err := s.tmdb.fetchCredits(ctx, "series", cachedTMDBID); err == nil && credits != nil && len(credits.Cast) > 0 {
-				cached.Title.Credits = credits
-				log.Printf("[metadata] credits added to cached series: %d cast members", len(credits.Cast))
-				// Update cache with enriched data
-				_ = s.cache.set(cacheID, cached)
-			} else if err != nil {
-				log.Printf("[metadata] failed to fetch credits for cached series tmdbId=%d err=%v", cachedTMDBID, err)
-			}
-		}
+		// Parallel enrichment of cached series data from TMDB
+		tmdbOK := cachedTMDBID > 0 && s.tmdb != nil && s.tmdb.isConfigured()
+		var (
+			enrichWg      sync.WaitGroup
+			enrichCredits *models.Credits
+			enrichLogo    *models.Image
+			enrichGenres  []string
+			enrichCertOK  bool
+			enrichCert    string
+		)
 
-		// Only fetch logo if missing - don't replace existing poster to avoid visual flash
-		if cached.Title.Logo == nil && cachedTMDBID > 0 && s.tmdb != nil && s.tmdb.isConfigured() {
-			if images, err := s.tmdb.fetchImages(ctx, "series", cachedTMDBID); err == nil && images != nil {
-				if images.Logo != nil {
-					cached.Title.Logo = images.Logo
-					log.Printf("[metadata] logo added to cached series tmdbId=%d", cachedTMDBID)
-					_ = s.cache.set(cacheID, cached)
+		if cached.Title.Credits == nil && tmdbOK {
+			enrichWg.Add(1)
+			go func() {
+				defer enrichWg.Done()
+				log.Printf("[metadata] cached series missing credits, fetching from TMDB tvdbId=%d tmdbId=%d", tvdbID, cachedTMDBID)
+				if c, err := s.tmdb.fetchCredits(ctx, "series", cachedTMDBID); err == nil && c != nil && len(c.Cast) > 0 {
+					enrichCredits = c
+				} else if err != nil {
+					log.Printf("[metadata] failed to fetch credits for cached series tmdbId=%d err=%v", cachedTMDBID, err)
 				}
-			}
+			}()
 		}
 
-		// If cached data doesn't have genres, fetch them from TMDB
-		if len(cached.Title.Genres) == 0 && cachedTMDBID > 0 && s.tmdb != nil && s.tmdb.isConfigured() {
-			if genres, err := s.tmdb.fetchSeriesGenres(ctx, cachedTMDBID); err == nil && len(genres) > 0 {
-				cached.Title.Genres = genres
-				log.Printf("[metadata] genres added to cached series tmdbId=%d", cachedTMDBID)
-				_ = s.cache.set(cacheID, cached)
-			}
+		if cached.Title.Logo == nil && tmdbOK {
+			enrichWg.Add(1)
+			go func() {
+				defer enrichWg.Done()
+				if images, err := s.tmdb.fetchImages(ctx, "series", cachedTMDBID); err == nil && images != nil && images.Logo != nil {
+					enrichLogo = images.Logo
+				}
+			}()
 		}
 
-		// Check if IsDaily needs to be set from cached genres (for data cached before daily detection was added)
+		if len(cached.Title.Genres) == 0 && tmdbOK {
+			enrichWg.Add(1)
+			go func() {
+				defer enrichWg.Done()
+				if g, err := s.tmdb.fetchSeriesGenres(ctx, cachedTMDBID); err == nil && len(g) > 0 {
+					enrichGenres = g
+				}
+			}()
+		}
+
+		if cached.Title.Certification == "" && tmdbOK {
+			enrichWg.Add(1)
+			go func() {
+				defer enrichWg.Done()
+				// enrichTVContentRating writes to a local copy; we capture the result
+				titleCopy := cached.Title
+				if s.enrichTVContentRating(ctx, &titleCopy, cachedTMDBID) {
+					enrichCertOK = true
+					enrichCert = titleCopy.Certification
+				}
+			}()
+		}
+
+		enrichWg.Wait()
+
+		// Apply results and do a single cache write
+		cacheUpdated := false
+		if enrichCredits != nil {
+			cached.Title.Credits = enrichCredits
+			log.Printf("[metadata] credits added to cached series: %d cast members", len(enrichCredits.Cast))
+			cacheUpdated = true
+		}
+		if enrichLogo != nil {
+			cached.Title.Logo = enrichLogo
+			log.Printf("[metadata] logo added to cached series tmdbId=%d", cachedTMDBID)
+			cacheUpdated = true
+		}
+		if enrichGenres != nil {
+			cached.Title.Genres = enrichGenres
+			log.Printf("[metadata] genres added to cached series tmdbId=%d", cachedTMDBID)
+			cacheUpdated = true
+		}
+		if enrichCertOK {
+			cached.Title.Certification = enrichCert
+			log.Printf("[metadata] content rating added to cached series tmdbId=%d rating=%s", cachedTMDBID, enrichCert)
+			cacheUpdated = true
+		}
+
+		// IsDaily detection depends on genres, so run after parallel block
 		if !cached.Title.IsDaily && len(cached.Title.Genres) > 0 {
 			for _, genre := range cached.Title.Genres {
 				genreLower := strings.ToLower(genre)
 				if genreLower == "talk" || genreLower == "talk show" || genreLower == "news" {
 					cached.Title.IsDaily = true
 					log.Printf("[metadata] cached series marked as daily based on genre tvdbId=%d genre=%q", tvdbID, genre)
-					_ = s.cache.set(cacheID, cached)
+					cacheUpdated = true
 					break
 				}
 			}
 		}
 
-		// If cached data doesn't have content rating, fetch from TMDB
-		if cached.Title.Certification == "" && cachedTMDBID > 0 && s.tmdb != nil && s.tmdb.isConfigured() {
-			if s.enrichTVContentRating(ctx, &cached.Title, cachedTMDBID) {
-				log.Printf("[metadata] content rating added to cached series tmdbId=%d rating=%s", cachedTMDBID, cached.Title.Certification)
-				_ = s.cache.set(cacheID, cached)
-			}
+		if cacheUpdated {
+			_ = s.cache.set(cacheID, cached)
 		}
 
 		// In demo mode, clamp to season 1 only (skip season 0/specials if present)
@@ -5777,7 +5858,7 @@ func (s *Service) enrichCustomListItem(ctx context.Context, item mdblistItem) mo
 		log.Printf("[metadata] no tvdb match for custom list item title=%q year=%d type=%s imdbId=%q", item.Title, item.ReleaseYear, mediaType, item.IMDBID)
 	}
 
-	// Enrich movies with release data from TMDB
+	// Enrich movies with release data from TMDB (parallel where possible)
 	if mediaType == "movie" {
 		tmdbID := title.TMDBID
 		if tmdbID <= 0 && title.IMDBID != "" {
@@ -5787,14 +5868,81 @@ func (s *Service) enrichCustomListItem(ctx context.Context, item mdblistItem) mo
 			}
 		}
 		if tmdbID > 0 {
-			s.enrichMovieReleases(ctx, &title, tmdbID)
-			// If TVDB didn't provide a translated overview, try TMDB
-			if !gotTranslatedOverview {
-				s.maybeHydrateOverviewFromTMDB(ctx, &title, tmdbID)
+			// Run enrichMovieReleases concurrently with the hydration calls.
+			// movieDetails() has singleflight dedup so both hydration calls share one HTTP request.
+			var (
+				customWg       sync.WaitGroup
+				relTitle       models.Title // separate copy for releases to avoid data race
+				hydroArtTitle  models.Title // separate copy for artwork hydration
+				hydroOverview  string
+				relOK          bool
+				artOK          bool
+				overviewFilled bool
+			)
+			relTitle = title
+			hydroArtTitle = title
+
+			customWg.Add(1)
+			go func() {
+				defer customWg.Done()
+				relOK = s.enrichMovieReleases(ctx, &relTitle, tmdbID)
+			}()
+
+			customWg.Add(1)
+			go func() {
+				defer customWg.Done()
+				// Hydrate overview from TMDB if TVDB didn't provide translated one
+				if !gotTranslatedOverview {
+					overviewCopy := title
+					s.maybeHydrateOverviewFromTMDB(ctx, &overviewCopy, tmdbID)
+					if overviewCopy.Overview != title.Overview {
+						hydroOverview = overviewCopy.Overview
+						overviewFilled = true
+					}
+				}
+				// Hydrate genres/runtime from TMDB if missing
+				if len(title.Genres) == 0 || title.RuntimeMinutes == 0 {
+					artOK = s.maybeHydrateMovieArtworkFromTMDB(ctx, &hydroArtTitle, models.MovieDetailsQuery{TMDBID: int64(tmdbID)})
+				}
+			}()
+
+			customWg.Wait()
+
+			// Merge results back into title
+			if relOK {
+				title.Releases = relTitle.Releases
+				title.Certification = relTitle.Certification
+				title.HomeRelease = relTitle.HomeRelease
+				title.Theatrical = relTitle.Theatrical
 			}
-			// Hydrate genres/runtime from TMDB if missing
-			if len(title.Genres) == 0 || title.RuntimeMinutes == 0 {
-				s.maybeHydrateMovieArtworkFromTMDB(ctx, &title, models.MovieDetailsQuery{TMDBID: int64(tmdbID)})
+			if overviewFilled {
+				title.Overview = hydroOverview
+			}
+			if artOK {
+				if title.Poster == nil && hydroArtTitle.Poster != nil {
+					title.Poster = hydroArtTitle.Poster
+				}
+				if title.Backdrop == nil && hydroArtTitle.Backdrop != nil {
+					title.Backdrop = hydroArtTitle.Backdrop
+				}
+				if title.IMDBID == "" && hydroArtTitle.IMDBID != "" {
+					title.IMDBID = hydroArtTitle.IMDBID
+				}
+				if title.Name == "" && hydroArtTitle.Name != "" {
+					title.Name = hydroArtTitle.Name
+				}
+				if title.Year == 0 && hydroArtTitle.Year > 0 {
+					title.Year = hydroArtTitle.Year
+				}
+				if title.RuntimeMinutes == 0 && hydroArtTitle.RuntimeMinutes > 0 {
+					title.RuntimeMinutes = hydroArtTitle.RuntimeMinutes
+				}
+				if title.Collection == nil && hydroArtTitle.Collection != nil {
+					title.Collection = hydroArtTitle.Collection
+				}
+				if len(title.Genres) == 0 && len(hydroArtTitle.Genres) > 0 {
+					title.Genres = hydroArtTitle.Genres
+				}
 			}
 		}
 	}

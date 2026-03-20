@@ -171,13 +171,19 @@ func (c *tvdbClient) doGET(u string, q url.Values, v any) error {
 			backoff *= 2
 			continue
 		}
+		// Rate limiting — compute wait outside the lock to avoid blocking other goroutines
 		c.throttleMu.Lock()
-		since := time.Since(c.lastRequest)
-		if since < c.minInterval {
-			time.Sleep(c.minInterval - since)
+		wait := c.minInterval - time.Since(c.lastRequest)
+		if wait > 0 {
+			c.lastRequest = time.Now().Add(wait)
+		} else {
+			c.lastRequest = time.Now()
+			wait = 0
 		}
-		c.lastRequest = time.Now()
 		c.throttleMu.Unlock()
+		if wait > 0 {
+			time.Sleep(wait)
+		}
 
 		req, _ := http.NewRequest(http.MethodGet, u, nil)
 		req.Header.Set("Authorization", "Bearer "+token)
