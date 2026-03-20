@@ -30,7 +30,9 @@ import (
 
 // newznabQuerySanitizer removes special characters that interfere with newznab/torznab search APIs.
 // Characters like !, ?, :, &, etc. are often interpreted as search operators or cause empty results.
-var newznabQuerySanitizer = regexp.MustCompile(`[!?:&'"()[\]{}]+`)
+// Apostrophes/single quotes are handled separately (stripped without adding spaces) to keep
+// contractions intact (e.g. "Don't" → "Dont" not "Don t").
+var newznabQuerySanitizer = regexp.MustCompile(`[!?:&,;"()[\]{}]+`)
 
 // xmlEntityPattern matches valid XML entity references: &name; &#NNN; &#xHHH;
 var xmlEntityPattern = regexp.MustCompile(`^([a-zA-Z]+;|#[0-9]+;|#x[0-9a-fA-F]+;)`)
@@ -63,8 +65,12 @@ func sanitizeXMLAmpersands(data []byte) ([]byte, int) {
 
 // sanitizeNewznabQuery cleans up a search query for newznab/torznab APIs.
 func sanitizeNewznabQuery(query string) string {
-	// Remove problematic special characters
-	cleaned := newznabQuerySanitizer.ReplaceAllString(query, " ")
+	// Strip apostrophes/single quotes without adding spaces (keeps contractions like "Don't" → "Dont")
+	cleaned := strings.ReplaceAll(query, "'", "")
+	cleaned = strings.ReplaceAll(cleaned, "\u2019", "") // right single quotation mark (curly apostrophe)
+	cleaned = strings.ReplaceAll(cleaned, "\u2018", "") // left single quotation mark
+	// Remove other problematic special characters (replace with space)
+	cleaned = newznabQuerySanitizer.ReplaceAllString(cleaned, " ")
 	// Collapse multiple spaces into one and trim
 	cleaned = strings.Join(strings.Fields(cleaned), " ")
 	return cleaned

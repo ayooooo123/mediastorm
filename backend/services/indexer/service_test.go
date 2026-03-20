@@ -823,3 +823,28 @@ func TestDefaultRankingCriteriaIncludesPreferredScraper(t *testing.T) {
 		t.Error("expected preferred-scraper criterion in default ranking criteria")
 	}
 }
+
+func TestSanitizeNewznabQuery(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"Good Luck, Have Fun, Don't Die", "Good Luck Have Fun Dont Die"},
+		{"Don't Stop Me Now", "Dont Stop Me Now"},
+		{"It\u2019s a Wonderful Life", "Its a Wonderful Life"},                // curly apostrophe
+		{"Hello: World!", "Hello World"},                                      // colon and exclamation
+		{"What?", "What"},                                                     // question mark
+		{"Tom & Jerry", "Tom Jerry"},                                          // ampersand
+		{`She said "hi"`, "She said hi"},                                      // double quotes
+		{"normal title", "normal title"},                                      // no change
+		{"multiple   spaces", "multiple spaces"},                              // space collapse
+		{"(brackets) [and] {braces}", "brackets and braces"},                  // brackets
+		{"Udachi, vesel'ia, ne sdokhni 2026", "Udachi veselia ne sdokhni 2026"}, // transliterated apostrophe + commas
+	}
+	for _, tt := range tests {
+		got := sanitizeNewznabQuery(tt.input)
+		if got != tt.want {
+			t.Errorf("sanitizeNewznabQuery(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
