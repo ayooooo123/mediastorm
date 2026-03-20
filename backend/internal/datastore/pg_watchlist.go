@@ -17,7 +17,7 @@ type pgWatchlistRepo struct {
 
 func (r *pgWatchlistRepo) Get(ctx context.Context, userID, itemKey string) (*models.WatchlistItem, error) {
 	row := r.pool.QueryRow(ctx, `
-		SELECT item_key, media_type, item_id, name, overview, year, poster_url, backdrop_url,
+		SELECT item_key, media_type, item_id, name, overview, year, poster_url, text_poster_url, backdrop_url,
 		added_at, external_ids, genres, runtime_minutes, sync_source, synced_at
 		FROM watchlist WHERE user_id = $1 AND item_key = $2`, userID, itemKey)
 	return scanWatchlistItem(row)
@@ -25,7 +25,7 @@ func (r *pgWatchlistRepo) Get(ctx context.Context, userID, itemKey string) (*mod
 
 func (r *pgWatchlistRepo) ListByUser(ctx context.Context, userID string) ([]models.WatchlistItem, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT item_key, media_type, item_id, name, overview, year, poster_url, backdrop_url,
+		SELECT item_key, media_type, item_id, name, overview, year, poster_url, text_poster_url, backdrop_url,
 		added_at, external_ids, genres, runtime_minutes, sync_source, synced_at
 		FROM watchlist WHERE user_id = $1 ORDER BY added_at DESC`, userID)
 	if err != nil {
@@ -37,7 +37,7 @@ func (r *pgWatchlistRepo) ListByUser(ctx context.Context, userID string) ([]mode
 
 func (r *pgWatchlistRepo) ListAll(ctx context.Context) (map[string][]models.WatchlistItem, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT user_id, item_key, media_type, item_id, name, overview, year, poster_url, backdrop_url,
+		SELECT user_id, item_key, media_type, item_id, name, overview, year, poster_url, text_poster_url, backdrop_url,
 		added_at, external_ids, genres, runtime_minutes, sync_source, synced_at
 		FROM watchlist ORDER BY user_id, added_at DESC`)
 	if err != nil {
@@ -51,7 +51,7 @@ func (r *pgWatchlistRepo) ListAll(ctx context.Context) (map[string][]models.Watc
 		var item models.WatchlistItem
 		var idsJSON, genresJSON []byte
 		if err := rows.Scan(&userID, &itemKey, &item.MediaType, &item.ID, &item.Name, &item.Overview, &item.Year,
-			&item.PosterURL, &item.BackdropURL, &item.AddedAt, &idsJSON, &genresJSON,
+			&item.PosterURL, &item.TextPosterURL, &item.BackdropURL, &item.AddedAt, &idsJSON, &genresJSON,
 			&item.RuntimeMinutes, &item.SyncSource, &item.SyncedAt); err != nil {
 			return nil, fmt.Errorf("scan watchlist item: %w", err)
 		}
@@ -68,13 +68,13 @@ func (r *pgWatchlistRepo) Upsert(ctx context.Context, userID string, item *model
 	itemKey := item.Key()
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO watchlist (user_id, item_key, media_type, item_id, name, overview, year,
-		poster_url, backdrop_url, added_at, external_ids, genres, runtime_minutes, sync_source, synced_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+		poster_url, text_poster_url, backdrop_url, added_at, external_ids, genres, runtime_minutes, sync_source, synced_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
 		ON CONFLICT (user_id, item_key) DO UPDATE SET
-		name=$5, overview=$6, year=$7, poster_url=$8, backdrop_url=$9,
-		external_ids=$11, genres=$12, runtime_minutes=$13, sync_source=$14, synced_at=$15`,
+		name=$5, overview=$6, year=$7, poster_url=$8, text_poster_url=$9, backdrop_url=$10,
+		external_ids=$12, genres=$13, runtime_minutes=$14, sync_source=$15, synced_at=$16`,
 		userID, itemKey, item.MediaType, item.ID, item.Name, item.Overview, item.Year,
-		item.PosterURL, item.BackdropURL, item.AddedAt, idsJSON, genresJSON,
+		item.PosterURL, item.TextPosterURL, item.BackdropURL, item.AddedAt, idsJSON, genresJSON,
 		item.RuntimeMinutes, item.SyncSource, item.SyncedAt)
 	if err != nil {
 		return fmt.Errorf("upsert watchlist item: %w", err)
@@ -116,7 +116,7 @@ func scanWatchlistItem(row pgx.Row) (*models.WatchlistItem, error) {
 	var item models.WatchlistItem
 	var idsJSON, genresJSON []byte
 	err := row.Scan(&item.ID, &item.MediaType, &item.ID, &item.Name, &item.Overview, &item.Year,
-		&item.PosterURL, &item.BackdropURL, &item.AddedAt, &idsJSON, &genresJSON,
+		&item.PosterURL, &item.TextPosterURL, &item.BackdropURL, &item.AddedAt, &idsJSON, &genresJSON,
 		&item.RuntimeMinutes, &item.SyncSource, &item.SyncedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -137,7 +137,7 @@ func collectWatchlistItems(rows pgx.Rows) ([]models.WatchlistItem, error) {
 		// item_key is scanned but we derive ID from item_id column
 		var itemKey string
 		if err := rows.Scan(&itemKey, &item.MediaType, &item.ID, &item.Name, &item.Overview, &item.Year,
-			&item.PosterURL, &item.BackdropURL, &item.AddedAt, &idsJSON, &genresJSON,
+			&item.PosterURL, &item.TextPosterURL, &item.BackdropURL, &item.AddedAt, &idsJSON, &genresJSON,
 			&item.RuntimeMinutes, &item.SyncSource, &item.SyncedAt); err != nil {
 			return nil, fmt.Errorf("scan watchlist item: %w", err)
 		}

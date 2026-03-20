@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -207,7 +208,59 @@ func (h *WatchlistHandler) requireUser(w http.ResponseWriter, r *http.Request) (
 	return userID, true
 }
 
-// enrichWatchlistTextPosters populates TextPosterURL from the metadata cache.
+// BackfillTextPosters is a one-time startup task that fills in TextPosterURL
+// for existing watchlist items that are missing it, using the metadata cache.
+// It only writes back items that actually get enriched.
+func (h *WatchlistHandler) BackfillTextPosters(userIDs []string) {
+	if h.MetadataService == nil {
+		return
+	}
+	updated := 0
+	for _, userID := range userIDs {
+		items, err := h.Service.List(userID)
+		if err != nil {
+			continue
+		}
+		for _, item := range items {
+			if item.TextPosterURL != "" {
+				continue // already has a text poster
+			}
+			var tmdbID, tvdbID int64
+			if v, ok := item.ExternalIDs["tmdb"]; ok {
+				if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+					tmdbID = id
+				}
+			}
+			if v, ok := item.ExternalIDs["tvdb"]; ok {
+				if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+					tvdbID = id
+				}
+			}
+			if tmdbID == 0 && tvdbID == 0 {
+				continue
+			}
+			url := h.MetadataService.GetTextPosterURL(item.MediaType, tmdbID, tvdbID)
+			if url == "" {
+				continue
+			}
+			// Write back the enriched text poster URL
+			h.Service.AddOrUpdate(userID, models.WatchlistUpsert{
+				ID:            item.ID,
+				MediaType:     item.MediaType,
+				Name:          item.Name,
+				TextPosterURL: url,
+				ExternalIDs:   item.ExternalIDs,
+			})
+			updated++
+		}
+	}
+	if updated > 0 {
+		log.Printf("[watchlist] backfilled text poster URLs for %d items", updated)
+	}
+}
+
+// enrichWatchlistTextPosters refreshes TextPosterURL from the metadata cache
+// when available, falling back to the persisted value in the DB record.
 // This is a fast, cache-only operation with no API calls.
 func enrichWatchlistTextPosters(items []models.WatchlistItem, meta metadataService) {
 	if meta == nil {
@@ -230,5 +283,6 @@ func enrichWatchlistTextPosters(items []models.WatchlistItem, meta metadataServi
 				items[i].TextPosterURL = url
 			}
 		}
+		// If cache miss, the persisted TextPosterURL from the DB record is kept as-is
 	}
 }

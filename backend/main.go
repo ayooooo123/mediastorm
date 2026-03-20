@@ -500,6 +500,15 @@ func main() {
 	// Wire up watchlist service to metadata handler for AI recommendations
 	metadataHandler.SetWatchlistService(watchlistService)
 
+	// Backfill text poster URLs for existing watchlist items (one-time, background)
+	go func() {
+		var userIDs []string
+		for _, u := range userService.ListAll() {
+			userIDs = append(userIDs, u.ID)
+		}
+		watchlistHandler.BackfillTextPosters(userIDs)
+	}()
+
 	historyHandler := handlers.NewHistoryHandler(historyService, userService, *demoMode)
 
 	// Startup handler bundles multiple API calls for low-power devices

@@ -30,8 +30,9 @@ type WatchlistUpsert struct {
 	Name        string            `json:"name"`
 	Overview    string            `json:"overview,omitempty"`
 	Year        int               `json:"year,omitempty"`
-	PosterURL   string            `json:"posterUrl,omitempty"`
-	BackdropURL string            `json:"backdropUrl,omitempty"`
+	PosterURL      string            `json:"posterUrl,omitempty"`
+	TextPosterURL  string            `json:"textPosterUrl,omitempty"` // Poster with title text
+	BackdropURL    string            `json:"backdropUrl,omitempty"`
 	ExternalIDs    map[string]string `json:"externalIds,omitempty"`
 	Genres         []string          `json:"genres,omitempty"`
 	RuntimeMinutes int               `json:"runtimeMinutes,omitempty"`

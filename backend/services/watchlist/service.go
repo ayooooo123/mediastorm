@@ -165,6 +165,9 @@ func (s *Service) AddOrUpdate(userID string, input models.WatchlistUpsert) (mode
 	if strings.TrimSpace(input.PosterURL) != "" {
 		item.PosterURL = input.PosterURL
 	}
+	if strings.TrimSpace(input.TextPosterURL) != "" {
+		item.TextPosterURL = input.TextPosterURL
+	}
 	if strings.TrimSpace(input.BackdropURL) != "" {
 		item.BackdropURL = input.BackdropURL
 	}
