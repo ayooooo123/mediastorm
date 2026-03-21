@@ -16,15 +16,16 @@ import (
 )
 
 const (
-	poolMaxSlotsPerFile = 4                // max concurrent CDN connections per file
-	poolSlotBufferMax   = 32 * 1024 * 1024 // 32MB sliding window buffer per slot
-	poolSlotBufferTrim  = 24 * 1024 * 1024 // trim to 24MB when buffer exceeds max
-	poolSlotIdleTimeout = 30 * time.Second  // evict slots with no readers for this long
-	poolReaperInterval  = 10 * time.Second  // how often to check for idle slots
-	poolSlotReadChunk   = 256 * 1024       // 256KB CDN read chunks
-	poolSlotBufferHard  = 128 * 1024 * 1024 // 128MB hard limit per slot (when readers prevent trim)
-	poolMaxWaitAhead    = 8 * 1024 * 1024   // reuse slot if CDN reader is within 8MB of target
-	poolWaitTimeout     = 10 * time.Second   // max time to wait for CDN reader to reach target
+	poolMaxSlotsPerFile = 4                 // max concurrent CDN connections per file
+	poolSlotBufferMax   = 32 * 1024 * 1024  // 32MB sliding window buffer per slot
+	poolSlotBufferTrim  = 24 * 1024 * 1024  // trim to 24MB when buffer exceeds max
+	poolSlotIdleTimeout = 30 * time.Second   // evict slots with no readers for this long
+	poolReaperInterval  = 10 * time.Second   // how often to check for idle slots
+	poolSlotReadChunk   = 256 * 1024        // 256KB CDN read chunks
+	poolSlotBufferHard  = 128 * 1024 * 1024  // 128MB hard limit per slot (when readers prevent trim)
+	poolMaxWaitAhead    = 8 * 1024 * 1024    // reuse slot if CDN reader is within 8MB of target
+	poolWaitTimeout     = 10 * time.Second    // max time to wait for CDN reader to reach target
+	poolMinPreBuffer    = 4 * 1024 * 1024    // 4MB minimum buffer before serving starts (prevents stalls on 4K)
 )
 
 // streamPool maintains persistent CDN connections that survive client disconnects.
@@ -176,12 +177,20 @@ func (p *streamPool) serve(
 		return false, nil
 	}
 
-	// If data not yet available at requested position, wait for CDN reader
-	if reqStart >= endPos {
+	// If data not yet available at requested position, wait for CDN reader.
+	// Also wait for minimum pre-buffer to accumulate before serving, so the
+	// client has enough data to start playing without immediately stalling
+	// (especially important for high-bitrate 4K content over slower connections).
+	buffered := endPos - reqStart
+	needsWait := reqStart >= endPos || buffered < poolMinPreBuffer
+	if needsWait {
 		gap := reqStart - endPos
+		if gap < 0 {
+			gap = 0
+		}
 		waitStart := time.Now()
-		log.Printf("[stream-pool] WAIT-START: path=%q reqStart=%d endPos=%d gap=%d slotStart=%d cdnDone=%v",
-			path, reqStart, endPos, gap, slot.startByte, false)
+		log.Printf("[stream-pool] WAIT-START: path=%q reqStart=%d endPos=%d gap=%d slotStart=%d cdnDone=%v preBuffer=%d/%d",
+			path, reqStart, endPos, gap, slot.startByte, false, buffered, poolMinPreBuffer)
 		waitDeadline := time.After(poolWaitTimeout)
 		for {
 			select {
@@ -191,12 +200,13 @@ func (p *streamPool) serve(
 				done := slot.cdnDone
 				ch = slot.signal
 				slot.mu.Unlock()
-				if reqStart < endPos {
-					log.Printf("[stream-pool] WAIT-OK: path=%q waited=%v gap=%d newEndPos=%d",
-						path, time.Since(waitStart).Round(time.Millisecond), gap, endPos)
+				buffered = endPos - reqStart
+				if reqStart < endPos && (buffered >= poolMinPreBuffer || done) {
+					log.Printf("[stream-pool] WAIT-OK: path=%q waited=%v gap=%d newEndPos=%d preBuffer=%d",
+						path, time.Since(waitStart).Round(time.Millisecond), gap, endPos, buffered)
 					goto dataReady
 				}
-				if done {
+				if done && reqStart >= endPos {
 					log.Printf("[stream-pool] CDN finished before reaching reqStart=%d endPos=%d", reqStart, endPos)
 					return false, nil
 				}
@@ -206,6 +216,14 @@ func (p *streamPool) serve(
 				remaining := reqStart - currentEnd
 				cdnDone := slot.cdnDone
 				slot.mu.Unlock()
+				buffered = currentEnd - reqStart
+				if buffered > 0 {
+					// Timeout but we have some data — serve what we have rather than failing
+					log.Printf("[stream-pool] WAIT-PARTIAL: path=%q waited=%v preBuffer=%d/%d (serving with partial buffer)",
+						path, time.Since(waitStart).Round(time.Millisecond), buffered, poolMinPreBuffer)
+					endPos = currentEnd
+					goto dataReady
+				}
 				log.Printf("[stream-pool] TIMEOUT waiting for data: reqStart=%d endPos=%d remaining=%d cdnDone=%v elapsed=%v",
 					reqStart, currentEnd, remaining, cdnDone, time.Since(waitStart).Round(time.Millisecond))
 				return false, nil
@@ -636,4 +654,31 @@ func abs64(x int64) int64 {
 		return -x
 	}
 	return x
+}
+
+// PoolStats holds a snapshot of stream pool memory and slot usage.
+type PoolStats struct {
+	TotalSlots   int
+	ActiveSlots  int   // slots with active readers
+	TotalBufferMB int64 // total buffer memory across all slots
+}
+
+// Stats returns a snapshot of the pool's current resource usage.
+func (p *streamPool) Stats() PoolStats {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	var stats PoolStats
+	for _, slots := range p.files {
+		for _, s := range slots {
+			s.mu.Lock()
+			stats.TotalSlots++
+			stats.TotalBufferMB += int64(len(s.data))
+			if atomic.LoadInt32(&s.readers) > 0 {
+				stats.ActiveSlots++
+			}
+			s.mu.Unlock()
+		}
+	}
+	stats.TotalBufferMB /= 1024 * 1024
+	return stats
 }
