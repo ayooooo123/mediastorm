@@ -244,12 +244,12 @@
         try {
             const results = await apiCall(`/api/search?q=${encodeURIComponent(query)}&type=${type}`);
 
-            if (results.error) {
-                resultsList.innerHTML = `<div style="text-align: center; padding: 1rem; color: var(--danger);">${results.error}</div>`;
+            if (!results || results.error) {
+                resultsList.innerHTML = `<div style="text-align: center; padding: 1rem; color: var(--danger);">${results?.error || 'No results returned'}</div>`;
                 return;
             }
 
-            if (!results || results.length === 0) {
+            if (results.length === 0) {
                 resultsList.innerHTML = '<div style="text-align: center; padding: 1rem; color: var(--text-muted);">No results found</div>';
                 return;
             }
@@ -352,9 +352,9 @@
 
             const details = await apiCall(`/api/metadata/series/details?${params.toString()}`);
 
-            if (details.error) {
-                seasonSelect.innerHTML = `<option>Error: ${details.error}</option>`;
-                console.error('Series details error:', details.error);
+            if (!details || details.error) {
+                seasonSelect.innerHTML = `<option>Error: ${details?.error || 'No details returned'}</option>`;
+                console.error('Series details error:', details?.error || 'null response');
                 return;
             }
 
@@ -461,12 +461,12 @@
 
             loadingDiv.style.display = 'none';
 
-            if (results.error) {
-                resultsList.innerHTML = `<div style="text-align: center; padding: 2rem; color: var(--danger);">${results.error}</div>`;
+            if (!results || results.error) {
+                resultsList.innerHTML = `<div style="text-align: center; padding: 2rem; color: var(--danger);">${results?.error || 'No results returned'}</div>`;
                 return;
             }
 
-            if (!results || results.length === 0) {
+            if (results.length === 0) {
                 resultsList.innerHTML = '<div style="text-align: center; padding: 2rem; color: var(--text-muted);">No results found</div>';
                 return;
             }

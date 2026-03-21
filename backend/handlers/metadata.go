@@ -251,6 +251,11 @@ func (h *MetadataHandler) Search(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Ensure we return [] instead of null for empty results
+	if results == nil {
+		results = []models.SearchResult{}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(results)
 }

@@ -155,6 +155,11 @@ func (h *IndexerHandler) Search(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		// Ensure we return [] instead of null for empty results
+		if scored == nil {
+			scored = []models.ScoredNZBResult{}
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(scored)
 		return
@@ -167,6 +172,11 @@ func (h *IndexerHandler) Search(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(statusCode)
 		json.NewEncoder(w).Encode(errResponse)
 		return
+	}
+
+	// Ensure we return [] instead of null for empty results
+	if results == nil {
+		results = []models.NZBResult{}
 	}
 
 	// In demo mode, mask actual filenames with the search query info
@@ -267,6 +277,11 @@ func (h *IndexerHandler) SearchTest(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(statusCode)
 		json.NewEncoder(w).Encode(errResponse)
 		return
+	}
+
+	// Ensure we return [] instead of null for empty results
+	if results == nil {
+		results = []models.ScoredNZBResult{}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

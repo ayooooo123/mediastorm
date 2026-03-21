@@ -957,6 +957,30 @@ func (s *Service) searchRawResults(ctx context.Context, opts SearchOptions) ([]m
 	includeUsenet := shouldUseUsenet(settings.Streaming.ServiceMode)
 	includeDebrid := shouldUseDebrid(settings.Streaming.ServiceMode)
 
+	// Warn if no indexers/scrapers are enabled for the active service mode
+	if includeUsenet {
+		enabledIndexers := 0
+		for _, idx := range settings.Indexers {
+			if idx.Enabled {
+				enabledIndexers++
+			}
+		}
+		if enabledIndexers == 0 {
+			log.Printf("[indexer] WARNING: service mode %q includes usenet but no indexers are enabled", settings.Streaming.ServiceMode)
+		}
+	}
+	if includeDebrid {
+		enabledScrapers := 0
+		for _, sc := range settings.TorrentScrapers {
+			if sc.Enabled {
+				enabledScrapers++
+			}
+		}
+		if enabledScrapers == 0 {
+			log.Printf("[indexer] WARNING: service mode %q includes debrid but no torrent scrapers are enabled", settings.Streaming.ServiceMode)
+		}
+	}
+
 	alternateTitles := s.resolveAlternateTitles(ctx, opts, settings.Metadata.Language, settings.Streaming.MaxAlternateTitleSearches)
 	parsedQuery := debrid.ParseQuery(opts.Query)
 	searchQueries := buildSearchQueries(opts, parsedQuery, alternateTitles)
