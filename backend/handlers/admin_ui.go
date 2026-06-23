@@ -2260,6 +2260,14 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 		streams = append(streams, streamData)
 	}
 
+	// A single native player (KSPlayer/ExoPlayer) opens many concurrent/short-lived
+	// byte-range connections for one file, each registered as its own tracked stream.
+	// Collapse those into one dashboard row per playback so a single playback doesn't
+	// appear as several duplicate cards. Keyed identically to the stream-limit slot
+	// logic (profile + media), so two distinct profiles watching the same title stay
+	// as separate rows.
+	streams = mergeDashboardStreamRows(streams)
+
 	liveUsage, liveUsageByUser, liveUsageBuckets := h.buildDashboardLiveUsage(isAdmin, scopedUsers, allowedProfileIDs)
 
 	// Build VOD stream usage by account
@@ -2284,6 +2292,92 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 		"globalVODLimit":    globalVODLimit,
 		"globalVODCurrent":  globalVODCurrent,
 	})
+}
+
+// mergeDashboardStreamRows collapses dashboard stream entries that represent the
+// same playback (same profile + media item) into a single row. Native players open
+// multiple concurrent byte-range connections per file, each tracked separately; this
+// dedupes them so the dashboard shows one card per playback. The grouping key matches
+// streamSlotKey so it is consistent with the stream-limit accounting.
+//
+// For each group the most-recently-active entry is kept as the representative (so its
+// progress/state/position are the freshest), while bytes transferred and throughput
+// are summed across all member connections to reflect the true aggregate.
+func mergeDashboardStreamRows(rows []map[string]interface{}) []map[string]interface{} {
+	if len(rows) <= 1 {
+		return rows
+	}
+
+	str := func(m map[string]interface{}, k string) string {
+		if v, ok := m[k].(string); ok {
+			return v
+		}
+		return ""
+	}
+	num := func(m map[string]interface{}, k string) int64 {
+		switch v := m[k].(type) {
+		case int64:
+			return v
+		case int:
+			return int64(v)
+		case float64:
+			return int64(v)
+		}
+		return 0
+	}
+	activityOf := func(m map[string]interface{}) time.Time {
+		for _, k := range []string{"last_updated", "last_access", "created_at"} {
+			if t, ok := m[k].(time.Time); ok && !t.IsZero() {
+				return t
+			}
+		}
+		return time.Time{}
+	}
+	rowKey := func(m map[string]interface{}) string {
+		key := streamSlotKey(str(m, "profile_id"), str(m, "profile_name"), str(m, "client_ip"), str(m, "media_type"), str(m, "item_id"), str(m, "path"))
+		if key == "" {
+			return str(m, "id")
+		}
+		return key
+	}
+
+	order := make([]string, 0, len(rows))
+	groups := make(map[string][]map[string]interface{})
+	for _, row := range rows {
+		key := rowKey(row)
+		if _, seen := groups[key]; !seen {
+			order = append(order, key)
+		}
+		groups[key] = append(groups[key], row)
+	}
+
+	merged := make([]map[string]interface{}, 0, len(order))
+	for _, key := range order {
+		group := groups[key]
+		if len(group) == 1 {
+			merged = append(merged, group[0])
+			continue
+		}
+
+		// Representative = most-recently-active member.
+		rep := group[0]
+		repAct := activityOf(rep)
+		var totalBytes, totalThroughput int64
+		for _, member := range group {
+			totalBytes += num(member, "bytes_streamed")
+			totalThroughput += num(member, "throughput_bps")
+			if act := activityOf(member); act.After(repAct) {
+				rep = member
+				repAct = act
+			}
+		}
+
+		rep["bytes_streamed"] = totalBytes
+		rep["throughput_bps"] = totalThroughput
+		rep["connection_count"] = len(group)
+		merged = append(merged, rep)
+	}
+	return merged
 }
 
 func streamMetadataIsLive(meta StreamMediaMetadata, path string) bool {
