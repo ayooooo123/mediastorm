@@ -1425,10 +1425,16 @@
     }
     .stream-card-meta {
         display: flex;
-        justify-content: space-between;
-        align-items: center;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.25rem;
         font-size: 0.75rem;
         color: var(--text-muted);
+    }
+    .stream-card-meta-secondary {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
     }
     .stream-card-meta-item {
         display: flex;
@@ -2130,15 +2136,17 @@
                                     </svg>
                                     ${duration > 0 ? formatTime(currentPos) + ' / ' + formatTime(duration) : getTimeSince(stream.created_at)}
                                 </span>
-                                <span class="stream-card-meta-item" style="font-weight: 500; color: var(--accent);">
-                                    ${progress > 0 ? progress.toFixed(0) + '%' : '-'}
-                                </span>
-                                <span class="stream-card-meta-item stream-card-speed" style="font-weight: 500;${state.key === 'buffering' ? ' color: #f59e0b;' : ''}"${speedText ? '' : ' hidden'}>
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                        <path d="M12 20v-6"/><path d="m8 17 4 3 4-3"/><path d="M12 4v6"/><circle cx="12" cy="12" r="10"/>
-                                    </svg>
-                                    ${escapeHtml(speedText)}
-                                </span>
+                                <div class="stream-card-meta-secondary">
+                                    <span class="stream-card-meta-item" style="font-weight: 500; color: var(--accent);">
+                                        ${progress > 0 ? progress.toFixed(0) + '%' : '-'}
+                                    </span>
+                                    <span class="stream-card-meta-item stream-card-speed" style="font-weight: 500;${state.key === 'buffering' ? ' color: #f59e0b;' : ''}"${speedText ? '' : ' hidden'}>
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                            <path d="M12 20v-6"/><path d="m8 17 4 3 4-3"/><path d="M12 4v6"/><circle cx="12" cy="12" r="10"/>
+                                        </svg>
+                                        ${escapeHtml(speedText)}
+                                    </span>
+                                </div>
                             </div>
                             ${hasProgress ? `<div class="stream-card-progress"><div class="stream-card-progress-bar" style="width: ${progress.toFixed(1)}%"></div></div>` : ''}
                         </div>
