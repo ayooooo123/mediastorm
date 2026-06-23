@@ -1293,6 +1293,7 @@ type AdminUIHandler struct {
 	historyTemplate       *template.Template
 	toolsTemplate         *template.Template
 	resolvedNZBTemplate   *template.Template
+	shareLinksTemplate    *template.Template
 	searchTemplate        *template.Template
 	playbackTemplate      *template.Template
 	loginTemplate         *template.Template
@@ -1578,6 +1579,7 @@ func NewAdminUIHandler(settingsPath, logFile string, hlsManager *HLSManager, use
 		historyTemplate:      createPageTemplate("history.html"),
 		toolsTemplate:        createPageTemplate("tools.html"),
 		resolvedNZBTemplate:  createPageTemplate("resolved_nzbs.html"),
+		shareLinksTemplate:   createPageTemplate("share_links.html"),
 		searchTemplate:       createPageTemplate("search.html"),
 		playbackTemplate:     createPageTemplate("playback.html"),
 		loginTemplate:        loginTmpl,
@@ -9458,6 +9460,33 @@ func (h *AdminUIHandler) ToolsPage(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.toolsTemplate.ExecuteTemplate(w, "base", data); err != nil {
 		fmt.Printf("Tools template error: %v\n", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+	}
+}
+
+func (h *AdminUIHandler) ShareLinksPage(w http.ResponseWriter, r *http.Request) {
+	isAdmin, accountID, basePath, username := h.getPageRoleInfo(r)
+	usersList := h.getScopedUsers(isAdmin, accountID)
+
+	data := AdminPageData{
+		CurrentPath:    basePath + "/tools",
+		BasePath:       basePath,
+		ServerBasePath: h.serverBasePath,
+		IsAdmin:        isAdmin,
+		AccountID:      accountID,
+		Username:       username,
+		Users:          usersList,
+		Version:        GetBackendVersion(),
+		BuildID:        GetBackendBuildID(),
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if h.shareLinksTemplate == nil {
+		http.Error(w, "Share links template not loaded", http.StatusInternalServerError)
+		return
+	}
+	if err := h.shareLinksTemplate.ExecuteTemplate(w, "base", data); err != nil {
+		fmt.Printf("Share links template error: %v\n", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 	}
 }

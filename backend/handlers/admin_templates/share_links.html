@@ -1,0 +1,211 @@
+{{template "base" .}}
+
+{{define "title"}}Share Links - mediastorm Admin{{end}}
+
+{{define "content"}}
+<style>
+    .share-links-table {
+        width: 100%;
+        min-width: 880px;
+        table-layout: fixed;
+        border-collapse: collapse;
+    }
+    .share-links-table th,
+    .share-links-table td {
+        padding: 0.7rem 0.75rem;
+        vertical-align: middle;
+        text-align: left;
+    }
+    .share-links-table thead tr {
+        border-bottom: 1px solid var(--border);
+        color: var(--text-secondary);
+    }
+    .share-links-table tbody tr {
+        border-bottom: 1px solid var(--border);
+    }
+    .sl-title-cell { width: 26%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .sl-uses-cell { width: 10%; white-space: nowrap; }
+    .sl-status-cell { width: 11%; white-space: nowrap; }
+    .sl-time-cell { width: 15%; color: var(--text-secondary); white-space: nowrap; }
+    .sl-actions-cell { width: 220px; text-align: right; white-space: nowrap; }
+    .sl-actions-cell .btn { margin-left: 0.4rem; }
+    .sl-pill {
+        display: inline-block;
+        padding: 0.15rem 0.55rem;
+        border-radius: 999px;
+        font-size: 0.75rem;
+        font-weight: 600;
+    }
+    .sl-pill.active { background: rgba(54, 199, 130, 0.18); color: #36c782; }
+    .sl-pill.inactive { background: rgba(255, 255, 255, 0.1); color: var(--text-secondary); }
+    .sl-pill.expired { background: rgba(255, 92, 92, 0.16); color: #ff7b7b; }
+    .sl-sub { font-size: 0.78rem; color: var(--text-secondary); }
+</style>
+
+<div class="page-header">
+    <h1>Share Links</h1>
+    <p>One-time and multi-use playback links you've created. Deactivate to disable a link without deleting it, or delete it entirely.</p>
+</div>
+
+<div class="settings-group">
+    <div class="section expanded">
+        <div class="section-header">
+            <div class="section-title">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+                    <path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+                </svg>
+                Active &amp; Recent Links
+            </div>
+        </div>
+        <div class="section-content" style="display:block;">
+            <div style="display:flex; gap:0.75rem; flex-wrap:wrap; align-items:center; margin-bottom:1rem;">
+                <button class="btn btn-secondary" onclick="loadShareLinks()">Refresh</button>
+                <a class="btn btn-secondary" href="{{.BasePath}}/tools">Back to Tools</a>
+            </div>
+            <div id="shareLinksStatus" class="text-muted" style="margin-bottom:0.75rem;">Loading...</div>
+            <div style="overflow-x:auto; -webkit-overflow-scrolling:touch;">
+                <table class="share-links-table">
+                    <thead>
+                        <tr>
+                            <th class="sl-title-cell">Title</th>
+                            <th class="sl-uses-cell">Uses</th>
+                            <th class="sl-status-cell">Status</th>
+                            <th class="sl-time-cell">Expires</th>
+                            <th class="sl-time-cell">Created</th>
+                            <th class="sl-actions-cell"></th>
+                        </tr>
+                    </thead>
+                    <tbody id="shareLinksRows"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function shareApiPath(path) {
+    return '{{.BasePath}}/api' + path;
+}
+
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, function(char) {
+        return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[char];
+    });
+}
+
+function slFormatDate(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    return isNaN(d) ? '' : d.toLocaleString();
+}
+
+function slUsesLabel(link) {
+    if (link.maxUses > 0) return `${link.useCount} / ${link.maxUses}`;
+    return `${link.useCount} / ∞`;
+}
+
+function slStatusPill(link) {
+    if (link.expired) return '<span class="sl-pill expired">Expired</span>';
+    if (!link.active) return '<span class="sl-pill inactive">Inactive</span>';
+    if (link.maxUses > 0 && link.useCount >= link.maxUses) return '<span class="sl-pill inactive">Used up</span>';
+    return '<span class="sl-pill active">Active</span>';
+}
+
+async function loadShareLinks() {
+    document.getElementById('shareLinksStatus').textContent = 'Loading...';
+    let data;
+    try {
+        const response = await fetch(shareApiPath('/share/links'), { credentials: 'same-origin' });
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        data = await response.json();
+    } catch (err) {
+        document.getElementById('shareLinksStatus').textContent = 'Failed to load share links';
+        return;
+    }
+    const links = (data && data.links) || [];
+    renderShareLinks(links);
+    document.getElementById('shareLinksStatus').textContent = `${links.length} link${links.length === 1 ? '' : 's'}`;
+}
+
+function renderShareLinks(links) {
+    const rows = document.getElementById('shareLinksRows');
+    if (!links.length) {
+        rows.innerHTML = '<tr><td colspan="6" class="text-muted" style="padding:1rem; text-align:center;">No share links yet. Create one from the player’s Share button.</td></tr>';
+        return;
+    }
+    rows.innerHTML = links.map(link => {
+        const heading = escapeHtml(link.label || link.title || 'Shared stream');
+        const sub = link.label && link.title ? `<div class="sl-sub">${escapeHtml(link.title)}</div>` : '';
+        const toggleLabel = link.active ? 'Deactivate' : 'Activate';
+        const toggleClass = link.active ? 'btn-secondary' : 'btn-primary';
+        const canToggle = !link.expired;
+        return `
+        <tr>
+            <td class="sl-title-cell" title="${heading}">${heading}${sub}</td>
+            <td class="sl-uses-cell">${slUsesLabel(link)}</td>
+            <td class="sl-status-cell">${slStatusPill(link)}</td>
+            <td class="sl-time-cell">${escapeHtml(slFormatDate(link.expiresAt))}</td>
+            <td class="sl-time-cell">${escapeHtml(slFormatDate(link.createdAt))}</td>
+            <td class="sl-actions-cell">
+                <button class="btn btn-secondary" onclick="copyShareLinkUrl('${escapeHtml(link.url)}', this)">Copy</button>
+                ${canToggle ? `<button class="btn ${toggleClass}" onclick="toggleShareLink('${escapeHtml(link.token)}', ${!link.active})">${toggleLabel}</button>` : ''}
+                <button class="btn btn-danger" onclick="deleteShareLink('${escapeHtml(link.token)}')">Delete</button>
+            </td>
+        </tr>`;
+    }).join('');
+}
+
+async function copyShareLinkUrl(url, btn) {
+    const absolute = new URL(url, window.location.origin).toString();
+    try {
+        if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(absolute);
+        } else {
+            const tmp = document.createElement('input');
+            tmp.value = absolute;
+            document.body.appendChild(tmp);
+            tmp.select();
+            document.execCommand('copy');
+            document.body.removeChild(tmp);
+        }
+        if (btn) {
+            const original = btn.textContent;
+            btn.textContent = 'Copied';
+            setTimeout(() => { btn.textContent = original; }, 1500);
+        }
+    } catch (err) {
+        alert('Could not copy link: ' + (err.message || err));
+    }
+}
+
+async function toggleShareLink(token, active) {
+    const params = new URLSearchParams({ token, active: String(active) });
+    const response = await fetch(shareApiPath('/share/links/active?' + params.toString()), {
+        method: 'POST',
+        credentials: 'same-origin',
+    });
+    if (!response.ok) {
+        alert('Failed to update link');
+        return;
+    }
+    loadShareLinks();
+}
+
+async function deleteShareLink(token) {
+    if (!confirm('Delete this share link? Anyone holding it will no longer be able to open it.')) return;
+    const params = new URLSearchParams({ token });
+    const response = await fetch(shareApiPath('/share/links?' + params.toString()), {
+        method: 'DELETE',
+        credentials: 'same-origin',
+    });
+    if (!response.ok) {
+        alert('Failed to delete link');
+        return;
+    }
+    loadShareLinks();
+}
+
+loadShareLinks();
+</script>
+{{end}}

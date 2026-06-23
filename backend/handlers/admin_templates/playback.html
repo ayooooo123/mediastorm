@@ -107,14 +107,43 @@
     <div class="share-dialog" role="dialog" aria-modal="true" aria-label="Share this stream">
         <div class="section-label">Web Player</div>
         <h2 style="margin: 4px 0 6px;">Share this stream</h2>
-        <p class="share-dialog-desc">Anyone with this link can watch this title once — no account needed. It opens straight into the player, works one time, and expires in 24 hours.</p>
-        <div class="share-row">
-            <input id="shareLinkInput" type="text" readonly onclick="this.select()">
-            <button class="btn btn-primary" type="button" onclick="copyShareLink()">Copy</button>
+        <p class="share-dialog-desc">Anyone with this link can watch this title — no account needed. It opens straight into the player. Choose how long it stays valid and how many times it can be opened.</p>
+
+        <div id="shareOptions">
+            <div class="share-field">
+                <label>Valid for</label>
+                <div class="share-chips" id="shareTtlChips">
+                    <button type="button" class="share-chip" data-ttl="1">1 day</button>
+                    <button type="button" class="share-chip is-active" data-ttl="7">7 days</button>
+                    <button type="button" class="share-chip" data-ttl="30">30 days</button>
+                    <input id="shareTtlCustom" class="share-chip-input" type="number" min="1" max="90" placeholder="#" aria-label="Custom days">
+                    <span class="share-chip-suffix">days</span>
+                </div>
+            </div>
+            <div class="share-field">
+                <label>Number of uses</label>
+                <div class="share-chips" id="shareUsesChips">
+                    <button type="button" class="share-chip" data-uses="1">Once</button>
+                    <button type="button" class="share-chip" data-uses="5">5 times</button>
+                    <button type="button" class="share-chip is-active" data-uses="0">Unlimited</button>
+                </div>
+            </div>
+            <div class="details-actions" style="justify-content: flex-end; margin-top: 14px;">
+                <button class="btn btn-secondary" type="button" onclick="closeShareDialog()">Cancel</button>
+                <button class="btn btn-primary" type="button" onclick="createShareLink()">Create link</button>
+            </div>
         </div>
-        <div id="shareStatus" class="share-status"></div>
-        <div class="details-actions" style="justify-content: flex-end; margin-top: 14px;">
-            <button class="btn btn-secondary" type="button" onclick="closeShareDialog()">Done</button>
+
+        <div id="shareResult" style="display: none;">
+            <div class="share-row">
+                <input id="shareLinkInput" type="text" readonly onclick="this.select()">
+                <button class="btn btn-primary" type="button" onclick="copyShareLink()">Copy</button>
+            </div>
+            <div id="shareStatus" class="share-status"></div>
+            <div class="details-actions" style="justify-content: space-between; margin-top: 14px;">
+                <a class="btn btn-secondary" href="tools/share-links">Manage links</a>
+                <button class="btn btn-secondary" type="button" onclick="closeShareDialog()">Done</button>
+            </div>
         </div>
     </div>
 </div>
@@ -1069,6 +1098,31 @@
         font-size: 0.85rem;
     }
     .share-status { font-size: 0.78rem; opacity: 0.7; margin-top: 0.6rem; min-height: 1rem; }
+    .share-field { margin-bottom: 0.9rem; }
+    .share-field > label { display: block; font-size: 0.78rem; font-weight: 600; opacity: 0.85; margin-bottom: 0.45rem; }
+    .share-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+    .share-chip {
+        padding: 0.35rem 0.75rem;
+        border-radius: 999px;
+        border: 1px solid var(--border-color, rgba(255, 255, 255, 0.14));
+        background: var(--bg-primary, #0c0f16);
+        color: var(--text-primary, #e7eaf0);
+        font-size: 0.78rem;
+        cursor: pointer;
+        transition: background 0.15s, border-color 0.15s;
+    }
+    .share-chip.is-active { background: rgba(122, 162, 255, 0.18); border-color: rgba(122, 162, 255, 0.7); }
+    .share-chip-input {
+        width: 3.4rem;
+        padding: 0.35rem 0.5rem;
+        border-radius: 999px;
+        border: 1px solid var(--border-color, rgba(255, 255, 255, 0.14));
+        background: var(--bg-primary, #0c0f16);
+        color: var(--text-primary, #e7eaf0);
+        font-size: 0.78rem;
+        text-align: center;
+    }
+    .share-chip-suffix { font-size: 0.78rem; opacity: 0.6; }
 
     .web-player-resume-modal.is-open {
         display: flex;
@@ -3913,30 +3967,88 @@
         return params;
     }
 
-    async function openShareDialog() {
+    // Selected TTL (days) and max uses (0 = unlimited) chosen in the share dialog.
+    let shareTtlDays = 7;
+    let shareMaxUses = 0;
+    let shareChipsBound = false;
+
+    function initShareChips() {
+        if (shareChipsBound) return;
+        shareChipsBound = true;
+        const ttlChips = document.getElementById('shareTtlChips');
+        const usesChips = document.getElementById('shareUsesChips');
+        const custom = document.getElementById('shareTtlCustom');
+        ttlChips?.querySelectorAll('.share-chip').forEach((chip) => {
+            chip.addEventListener('click', () => {
+                if (custom) custom.value = '';
+                ttlChips.querySelectorAll('.share-chip').forEach((c) => c.classList.remove('is-active'));
+                chip.classList.add('is-active');
+                shareTtlDays = parseInt(chip.dataset.ttl, 10) || 1;
+            });
+        });
+        custom?.addEventListener('input', () => {
+            if (custom.value) {
+                ttlChips.querySelectorAll('.share-chip').forEach((c) => c.classList.remove('is-active'));
+                shareTtlDays = Math.max(1, Math.min(90, parseInt(custom.value, 10) || 0));
+            }
+        });
+        usesChips?.querySelectorAll('.share-chip').forEach((chip) => {
+            chip.addEventListener('click', () => {
+                usesChips.querySelectorAll('.share-chip').forEach((c) => c.classList.remove('is-active'));
+                chip.classList.add('is-active');
+                shareMaxUses = parseInt(chip.dataset.uses, 10) || 0;
+            });
+        });
+    }
+
+    function openShareDialog() {
+        initShareChips();
         const backdrop = document.getElementById('shareBackdrop');
+        const status = document.getElementById('shareStatus');
+        const options = document.getElementById('shareOptions');
+        const result = document.getElementById('shareResult');
+        if (!backdrop) return;
+        if (status) status.textContent = '';
+        if (result) result.style.display = 'none';
+        if (options) {
+            const params = buildShareParams();
+            if (!params.sourcePath) {
+                options.style.display = 'none';
+                if (result) result.style.display = 'block';
+                if (status) status.textContent = 'No active stream to share.';
+            } else {
+                options.style.display = 'block';
+            }
+        }
+        backdrop.classList.add('is-open');
+    }
+
+    async function createShareLink() {
         const input = document.getElementById('shareLinkInput');
         const status = document.getElementById('shareStatus');
-        if (!backdrop || !input) return;
-        const params = buildShareParams();
-        if (!params.sourcePath) {
-            if (status) status.textContent = 'No active stream to share.';
-            backdrop.classList.add('is-open');
-            return;
-        }
+        const options = document.getElementById('shareOptions');
+        const result = document.getElementById('shareResult');
+        if (!input) return;
+
+        const custom = document.getElementById('shareTtlCustom');
+        const ttlDays = custom && custom.value ? Math.max(1, Math.min(90, parseInt(custom.value, 10) || shareTtlDays)) : shareTtlDays;
+
+        if (options) options.style.display = 'none';
+        if (result) result.style.display = 'block';
         input.value = '';
         if (status) status.textContent = 'Creating link…';
-        backdrop.classList.add('is-open');
         try {
-            const result = await apiCall('/api/share/create', {
+            const res = await apiCall('/api/share/create', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(params),
+                body: JSON.stringify({ params: buildShareParams(), ttlDays, maxUses: shareMaxUses }),
             });
-            const absolute = new URL(result.url, window.location.origin).toString();
+            const absolute = new URL(res.url, window.location.origin).toString();
             input.value = absolute;
             input.select();
-            if (status) status.textContent = 'Link ready — single use, expires in 24 hours.';
+            const usesText = res.maxUses > 0 ? `${res.maxUses} use${res.maxUses === 1 ? '' : 's'}` : 'unlimited uses';
+            const expires = res.expiresAt ? new Date(res.expiresAt).toLocaleDateString() : '';
+            if (status) status.textContent = `Link ready — ${usesText}, expires ${expires}.`;
         } catch (error) {
             if (status) status.textContent = `Could not create link: ${error.message || String(error)}`;
         }

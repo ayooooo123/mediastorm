@@ -35,7 +35,7 @@ func (f *fakeShareSessions) CreateScoped(accountID string, isMaster bool, userAg
 
 func newTestShareHandler() (*ShareHandler, *fakeShareSessions) {
 	sessions := &fakeShareSessions{}
-	return NewShareHandler(NewShareStore(), sessions, ""), sessions
+	return NewShareHandler(NewShareStore(nil), sessions, ""), sessions
 }
 
 func TestShareCreateStoresWhitelistedParams(t *testing.T) {
@@ -56,7 +56,7 @@ func TestShareCreateStoresWhitelistedParams(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
 	}
-	var resp shareCreateResponse
+	var resp shareLinkView
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestShareCreateStoresWhitelistedParams(t *testing.T) {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 
-	stored, ok := h.store.Consume(resp.Token)
+	stored, ok := h.store.Consume(context.Background(), resp.Token)
 	if !ok {
 		t.Fatal("share should have been stored")
 	}
@@ -102,10 +102,10 @@ func TestShareCreateRequiresAuth(t *testing.T) {
 
 func TestShareOpenMintsScopedSessionAndIsSingleUse(t *testing.T) {
 	h, sessions := newTestShareHandler()
-	rec, _ := h.store.Create("acct9", false, map[string]string{
+	rec, _ := h.store.Create(context.Background(), "acct9", false, map[string]string{
 		"sourcePath":            "/movies/a.mkv",
 		"preselectedAudioTrack": "1",
-	})
+	}, time.Hour, 1, "")
 
 	req := httptest.NewRequest(http.MethodGet, "/share/"+rec.Token, nil)
 	w := httptest.NewRecorder()
@@ -147,6 +147,80 @@ func TestShareOpenMintsScopedSessionAndIsSingleUse(t *testing.T) {
 	h.Open(w2, httptest.NewRequest(http.MethodGet, "/share/"+rec.Token, nil))
 	if w2.Code != http.StatusGone {
 		t.Fatalf("second open status = %d, want 410", w2.Code)
+	}
+}
+
+func TestShareCreateHonorsTTLAndMaxUses(t *testing.T) {
+	h, _ := newTestShareHandler()
+
+	body, _ := json.Marshal(shareCreateRequest{
+		Params:  map[string]string{"sourcePath": "/movies/a.mkv"},
+		TTLDays: 7,
+		MaxUses: 2,
+		Label:   "Family movie night",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/share/create", strings.NewReader(string(body)))
+	req = req.WithContext(context.WithValue(req.Context(), auth.ContextKeyAccountID, "acct1"))
+	rec := httptest.NewRecorder()
+
+	h.Create(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var resp shareLinkView
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.MaxUses != 2 || resp.Label != "Family movie night" {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+
+	// Two opens succeed, third is gone (max uses = 2).
+	for i := 0; i < 2; i++ {
+		w := httptest.NewRecorder()
+		h.Open(w, httptest.NewRequest(http.MethodGet, "/share/"+resp.Token, nil))
+		if w.Code != http.StatusSeeOther {
+			t.Fatalf("open %d status = %d, want 303", i+1, w.Code)
+		}
+	}
+	w := httptest.NewRecorder()
+	h.Open(w, httptest.NewRequest(http.MethodGet, "/share/"+resp.Token, nil))
+	if w.Code != http.StatusGone {
+		t.Fatalf("third open status = %d, want 410", w.Code)
+	}
+}
+
+func TestShareListAndDelete(t *testing.T) {
+	h, _ := newTestShareHandler()
+	ctx := context.Background()
+	link, _ := h.store.Create(ctx, "acct1", false, map[string]string{"sourcePath": "/a.mkv", "title": "A"}, time.Hour, 0, "")
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/share/links", nil)
+	req = req.WithContext(context.WithValue(req.Context(), auth.ContextKeyAccountID, "acct1"))
+	rec := httptest.NewRecorder()
+	h.List(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("List status = %d", rec.Code)
+	}
+	var listResp struct {
+		Links []shareLinkView `json:"links"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &listResp); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(listResp.Links) != 1 || listResp.Links[0].Title != "A" {
+		t.Fatalf("unexpected list: %+v", listResp.Links)
+	}
+
+	delReq := httptest.NewRequest(http.MethodDelete, "/admin/api/share/links?token="+link.Token, nil)
+	delReq = delReq.WithContext(context.WithValue(delReq.Context(), auth.ContextKeyAccountID, "acct1"))
+	delRec := httptest.NewRecorder()
+	h.Delete(delRec, delReq)
+	if delRec.Code != http.StatusOK {
+		t.Fatalf("Delete status = %d (body: %s)", delRec.Code, delRec.Body.String())
+	}
+	if links, _ := h.store.List(ctx, "acct1", false); len(links) != 0 {
+		t.Fatalf("link should be deleted, got %d", len(links))
 	}
 }
 
