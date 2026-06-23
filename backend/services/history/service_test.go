@@ -5927,3 +5927,53 @@ func TestContinueWatchingReconcilesCrossProviderWatchedProgress(t *testing.T) {
 		t.Fatalf("expected next episode S1E2 (watched S1E1 must not resurface as resume), got %+v", next)
 	}
 }
+
+func TestDedupeWatchHistoryPrefersSeasonalEpisode(t *testing.T) {
+	earlier := time.Date(2026, 6, 22, 12, 27, 0, 0, time.UTC)
+	// One real watch recorded under both absolute (S23E1167) and seasonal
+	// (S23E12) episode numbering. They collapse to a single entry, and the
+	// seasonal form is kept regardless of which was seen/most-recent first.
+	abs := models.WatchHistoryItem{
+		MediaType: "episode", ItemID: "tmdb:tv:37854:s23e1167",
+		Name:       "Shamrock Appears - Commander of the Knights of God",
+		SeriesName: "One Piece", SeasonNumber: 23, EpisodeNumber: 1167,
+		Watched: true, WatchedAt: earlier.Add(time.Second), // absolute is "fresher"
+	}
+	seasonal := models.WatchHistoryItem{
+		MediaType: "episode", ItemID: "tmdb:tv:37854:s23e12",
+		Name:       "Shamrock Appears - Commander of the Knights of God",
+		SeriesName: "One Piece", SeasonNumber: 23, EpisodeNumber: 12,
+		Watched: true, WatchedAt: earlier,
+	}
+	other := models.WatchHistoryItem{
+		MediaType: "episode", ItemID: "tmdb:tv:37854:s23e5",
+		Name:       "An Encounter on a Snowfield - Loki, the Accursed Prince",
+		SeriesName: "One Piece", SeasonNumber: 23, EpisodeNumber: 5,
+		Watched: true, WatchedAt: earlier.Add(-time.Hour),
+	}
+
+	got := DedupeWatchHistory([]models.WatchHistoryItem{abs, seasonal, other})
+	if len(got) != 2 {
+		t.Fatalf("expected 2 deduped items, got %d", len(got))
+	}
+
+	var shamrock *models.WatchHistoryItem
+	for i := range got {
+		if strings.HasPrefix(got[i].Name, "Shamrock") {
+			shamrock = &got[i]
+		}
+	}
+	if shamrock == nil {
+		t.Fatal("Shamrock episode missing after dedup")
+	}
+	if shamrock.EpisodeNumber != 12 {
+		t.Errorf("expected seasonal episode 12 kept (absolute hidden), got %d", shamrock.EpisodeNumber)
+	}
+
+	// Distinct movies stay distinct.
+	movieA := models.WatchHistoryItem{MediaType: "movie", Name: "Tickled", Year: 2016}
+	movieB := models.WatchHistoryItem{MediaType: "movie", Name: "Pressure", Year: 2015}
+	if len(DedupeWatchHistory([]models.WatchHistoryItem{movieA, movieB})) != 2 {
+		t.Error("distinct movies should not collapse")
+	}
+}

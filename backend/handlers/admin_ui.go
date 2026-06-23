@@ -2516,10 +2516,17 @@ func (h *AdminUIHandler) GetDashboardStats(w http.ResponseWriter, r *http.Reques
 
 		items, err := h.historyService.ListWatchHistory(user.ID)
 		if err == nil {
+			watched := make([]models.WatchHistoryItem, 0, len(items))
 			for _, item := range items {
 				if !item.Watched {
 					continue
 				}
+				watched = append(watched, item)
+			}
+			// Collapse the same watch recorded under multiple identifier forms
+			// (absolute vs seasonal episode numbering, tmdb- vs tvdb-form IDs) so a
+			// single watch yields one card with the seasonal episode form.
+			for _, item := range history.DedupeWatchHistory(watched) {
 				recentSources = append(recentSources, dashboardRecentWatchSource{
 					item:         item,
 					profileID:    user.ID,
@@ -7823,6 +7830,10 @@ func (h *AdminUIHandler) getAllScopedWatchHistory(w http.ResponseWriter, r *http
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
 		}
+		// Collapse the same watch recorded under multiple identifier forms (absolute
+		// vs seasonal episode numbering, tmdb- vs tvdb-form IDs), per profile, so it
+		// shows once with the seasonal episode form.
+		userItems = history.DedupeWatchHistory(userItems)
 		for _, item := range userItems {
 			if mediaTypeFilter != "" && item.MediaType != mediaTypeFilter {
 				continue

@@ -2621,6 +2621,10 @@ func (s *Service) ListWatchHistoryPaginated(userID string, page, pageSize int, m
 		}
 	}
 
+	// Collapse the same watch recorded under multiple identifier forms (absolute
+	// vs seasonal episode numbering, tmdb- vs tvdb-form IDs) so it appears once.
+	items = DedupeWatchHistory(items)
+
 	// Sort by most recently watched
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].WatchedAt.Equal(items[j].WatchedAt) {
@@ -2661,6 +2665,68 @@ func (s *Service) ListWatchHistoryPaginated(userID string, page, pageSize int, m
 		PageSize:   pageSize,
 		TotalPages: totalPages,
 	}, nil
+}
+
+// watchHistoryDedupKey identifies a watch independent of the identifier form it
+// was recorded under. The same episode can be stored under both absolute and
+// seasonal episode numbering (e.g. S23E1167 and S23E12) and under tmdb- vs
+// tvdb-form IDs; keying on the human identity (series + season + episode name,
+// or title + year) lets those collapse to a single entry.
+func watchHistoryDedupKey(item models.WatchHistoryItem) string {
+	if strings.EqualFold(strings.TrimSpace(item.MediaType), "episode") {
+		series := strings.ToLower(strings.TrimSpace(item.SeriesName))
+		episode := strings.ToLower(strings.TrimSpace(item.Name))
+		if series != "" && episode != "" {
+			return "ep|" + series + "|s" + strconv.Itoa(item.SeasonNumber) + "|" + episode
+		}
+		// No episode name to bridge numbering forms on — fall back to the stored
+		// numbering, which still keeps genuinely distinct episodes apart.
+		if series != "" {
+			return "ep|" + series + "|s" + strconv.Itoa(item.SeasonNumber) + "|e" + strconv.Itoa(item.EpisodeNumber)
+		}
+	}
+	title := strings.ToLower(strings.TrimSpace(item.Name))
+	if title == "" {
+		title = strings.ToLower(strings.TrimSpace(item.SeriesName))
+	}
+	return strings.ToLower(strings.TrimSpace(item.MediaType)) + "|" + title + "|y" + strconv.Itoa(item.Year)
+}
+
+// watchHistoryPreferred reports whether candidate should replace current as the
+// representative of a dedup group. The seasonal episode form (the smaller
+// episode number) is preferred over the absolute one — so S23E12 is kept and the
+// duplicate S23E1167 hidden; ties fall back to the most-recently watched entry.
+func watchHistoryPreferred(candidate, current models.WatchHistoryItem) bool {
+	if strings.EqualFold(candidate.MediaType, "episode") && strings.EqualFold(current.MediaType, "episode") &&
+		candidate.EpisodeNumber != current.EpisodeNumber {
+		return candidate.EpisodeNumber < current.EpisodeNumber
+	}
+	return candidate.WatchedAt.After(current.WatchedAt)
+}
+
+// DedupeWatchHistory collapses entries that represent the same watch recorded
+// under multiple identifier forms (absolute vs seasonal episode numbering,
+// tmdb- vs tvdb-form IDs) into one, keeping the seasonal episode form as the
+// representative. Callers pass a single user's items; first-seen order is
+// preserved. See watchHistoryDedupKey / watchHistoryPreferred.
+func DedupeWatchHistory(items []models.WatchHistoryItem) []models.WatchHistoryItem {
+	if len(items) <= 1 {
+		return items
+	}
+	out := make([]models.WatchHistoryItem, 0, len(items))
+	index := make(map[string]int, len(items))
+	for _, item := range items {
+		key := watchHistoryDedupKey(item)
+		if i, ok := index[key]; ok {
+			if watchHistoryPreferred(item, out[i]) {
+				out[i] = item
+			}
+			continue
+		}
+		index[key] = len(out)
+		out = append(out, item)
+	}
+	return out
 }
 
 // GetWatchHistoryItem returns a specific watch history item.
