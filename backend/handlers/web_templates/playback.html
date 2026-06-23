@@ -1654,6 +1654,14 @@
       video.addEventListener('stalled', markBuffering);
       video.addEventListener('playing', clearBuffering);
       video.addEventListener('canplay', clearBuffering);
+      // 'stalled'/'waiting' can fire spuriously with MSE/hls.js and the matching
+      // 'playing'/'canplay' won't necessarily re-fire during continuous playback,
+      // which would otherwise leave the dashboard stuck on "Buffering". Advancing
+      // currentTime is an unambiguous signal that we're not stalled, so use it to
+      // self-correct the buffering flag.
+      video.addEventListener('timeupdate', () => {
+        if (webPlayerBuffering && !video.paused) clearBuffering();
+      });
       video.addEventListener('volumechange', () => {
         webPlayerVolume = Number(video.volume || 0);
         webPlayerMuted = Boolean(video.muted);
