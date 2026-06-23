@@ -171,3 +171,61 @@ func TestStreamUsageRejectsNewPlaybackWhenSlotLimitReached(t *testing.T) {
 		t.Fatalf("expected 1/1 at limit, got %+v", usage)
 	}
 }
+
+func TestMergeDashboardStreamRowsCollapsesNativeConnections(t *testing.T) {
+	base := time.Date(2026, 6, 22, 22, 31, 0, 0, time.UTC)
+	// Mirrors a real capture: one profile, one item (Pressure), several KSPlayer
+	// byte-range connections registered as separate tracked streams.
+	rows := []map[string]interface{}{
+		{
+			"id": "J7", "type": "direct", "profile_id": "9c234ec9", "profile_name": "Primary Profile",
+			"client_ip": "127.0.0.1", "media_type": "movie", "item_id": "tvdb:movie:358587",
+			"bytes_streamed": int64(1000), "throughput_bps": int64(500), "last_access": base,
+		},
+		{
+			"id": "Z3", "type": "direct", "profile_id": "9c234ec9", "profile_name": "Primary Profile",
+			"client_ip": "127.0.0.1", "media_type": "movie", "item_id": "tvdb:movie:358587",
+			"bytes_streamed": int64(20), "throughput_bps": int64(0), "last_access": base.Add(24 * time.Second),
+		},
+		{
+			"id": "A4", "type": "direct", "profile_id": "9c234ec9", "profile_name": "Primary Profile",
+			"client_ip": "127.0.0.1", "media_type": "movie", "item_id": "tvdb:movie:358587",
+			"bytes_streamed": int64(3000), "throughput_bps": int64(800), "last_access": base.Add(25 * time.Second),
+		},
+		// Different profile, same title -> stays a separate row.
+		{
+			"id": "X9", "type": "direct", "profile_id": "df1382af", "profile_name": "Amrit",
+			"client_ip": "10.0.0.5", "media_type": "movie", "item_id": "tvdb:movie:358587",
+			"bytes_streamed": int64(7000), "throughput_bps": int64(900), "last_access": base,
+		},
+	}
+
+	merged := mergeDashboardStreamRows(rows)
+	if len(merged) != 2 {
+		t.Fatalf("expected 2 rows (one per profile), got %d", len(merged))
+	}
+
+	var primary map[string]interface{}
+	for _, row := range merged {
+		if row["profile_name"] == "Primary Profile" {
+			primary = row
+		}
+	}
+	if primary == nil {
+		t.Fatal("merged Primary Profile row not found")
+	}
+	// Representative is the most-recently-active connection (A4).
+	if primary["id"] != "A4" {
+		t.Errorf("expected representative id A4 (latest activity), got %v", primary["id"])
+	}
+	// Bytes and throughput summed across all three connections.
+	if got := primary["bytes_streamed"].(int64); got != 4020 {
+		t.Errorf("expected summed bytes 4020, got %d", got)
+	}
+	if got := primary["throughput_bps"].(int64); got != 1300 {
+		t.Errorf("expected summed throughput 1300, got %d", got)
+	}
+	if got := primary["connection_count"].(int); got != 3 {
+		t.Errorf("expected connection_count 3, got %d", got)
+	}
+}
