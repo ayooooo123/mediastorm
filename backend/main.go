@@ -766,9 +766,15 @@ func main() {
 
 	recordingsHandler := handlers.NewRecordingsHandler(recordingsService, userService)
 
-	// One-time shareable playback links: capture current stream + tracks, mint a
-	// short-lived stream-scoped session on open (single use).
-	shareHandler := handlers.NewShareHandler(handlers.NewShareStore(), sessionsService, settings.Server.BasePath)
+	// Shareable playback links: capture current stream + tracks, mint a
+	// short-lived stream-scoped session on open. Persisted to Postgres so links
+	// survive restarts and can be listed/managed; falls back to in-memory when no
+	// datastore is configured.
+	var shareLinkRepo handlers.ShareLinkRepo
+	if store != nil {
+		shareLinkRepo = store.ShareLinks()
+	}
+	shareHandler := handlers.NewShareHandler(handlers.NewShareStore(shareLinkRepo), sessionsService, settings.Server.BasePath)
 
 	api.Register(
 		r,
@@ -919,6 +925,10 @@ func main() {
 	r.HandleFunc("/admin/api/playback/resolve", adminUIHandler.RequireAuth(playbackHandler.Resolve)).Methods(http.MethodPost)
 	r.HandleFunc("/admin/api/playback/strm", adminUIHandler.RequireAuth(adminUIHandler.DownloadSTRM)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/share/create", adminUIHandler.RequireAuth(shareHandler.Create)).Methods(http.MethodPost)
+	r.HandleFunc("/admin/api/share/links", adminUIHandler.RequireAuth(shareHandler.List)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/api/share/links/active", adminUIHandler.RequireAuth(shareHandler.SetActive)).Methods(http.MethodPost)
+	r.HandleFunc("/admin/api/share/links", adminUIHandler.RequireAuth(shareHandler.Delete)).Methods(http.MethodDelete)
+	r.HandleFunc("/admin/tools/share-links", adminUIHandler.RequireAuth(adminUIHandler.ShareLinksPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/debug/log", adminUIHandler.RequireAuth(adminUIHandler.CaptureDebugLog)).Methods(http.MethodPost, http.MethodOptions)
 	r.HandleFunc("/admin/api/video/metadata", adminUIHandler.RequireAuth(videoHandler.ProbeVideo)).Methods(http.MethodGet, http.MethodOptions)
 	r.HandleFunc("/admin/api/video/hls/start", adminUIHandler.RequireAuth(videoHandler.StartHLSSession)).Methods(http.MethodGet, http.MethodOptions)
@@ -1228,6 +1238,7 @@ func main() {
 	r.HandleFunc("/account/settings", adminUIHandler.RequireAuth(adminUIHandler.SettingsPage)).Methods(http.MethodGet)
 	r.HandleFunc("/account/history", adminUIHandler.RequireAuth(adminUIHandler.HistoryPage)).Methods(http.MethodGet)
 	r.HandleFunc("/account/tools", adminUIHandler.RequireAuth(adminUIHandler.ToolsPage)).Methods(http.MethodGet)
+	r.HandleFunc("/account/tools/share-links", adminUIHandler.RequireAuth(adminUIHandler.ShareLinksPage)).Methods(http.MethodGet)
 	r.HandleFunc("/account/recordings", adminUIHandler.RequireAuth(adminUIHandler.RecordingsPage)).Methods(http.MethodGet)
 	r.HandleFunc("/account/playback", adminUIHandler.RequireAuth(adminUIHandler.PlaybackPage)).Methods(http.MethodGet)
 	r.HandleFunc("/account/library", adminUIHandler.RequireAuth(adminUIHandler.LibraryPage)).Methods(http.MethodGet)
@@ -1265,6 +1276,9 @@ func main() {
 	r.HandleFunc("/account/api/playback/resolve", adminUIHandler.RequireAuth(playbackHandler.Resolve)).Methods(http.MethodPost)
 	r.HandleFunc("/account/api/playback/strm", adminUIHandler.RequireAuth(adminUIHandler.DownloadSTRM)).Methods(http.MethodGet)
 	r.HandleFunc("/account/api/share/create", adminUIHandler.RequireAuth(shareHandler.Create)).Methods(http.MethodPost)
+	r.HandleFunc("/account/api/share/links", adminUIHandler.RequireAuth(shareHandler.List)).Methods(http.MethodGet)
+	r.HandleFunc("/account/api/share/links/active", adminUIHandler.RequireAuth(shareHandler.SetActive)).Methods(http.MethodPost)
+	r.HandleFunc("/account/api/share/links", adminUIHandler.RequireAuth(shareHandler.Delete)).Methods(http.MethodDelete)
 	r.HandleFunc("/account/api/debug/log", adminUIHandler.RequireAuth(adminUIHandler.CaptureDebugLog)).Methods(http.MethodPost, http.MethodOptions)
 	r.HandleFunc("/account/api/video/metadata", adminUIHandler.RequireAuth(videoHandler.ProbeVideo)).Methods(http.MethodGet, http.MethodOptions)
 	r.HandleFunc("/account/api/video/hls/start", adminUIHandler.RequireAuth(videoHandler.StartHLSSession)).Methods(http.MethodGet, http.MethodOptions)

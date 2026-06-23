@@ -53,6 +53,20 @@ type InvitationRepository interface {
 	Count(ctx context.Context) (int64, error)
 }
 
+// ShareLinkRepository manages shareable playback link persistence.
+type ShareLinkRepository interface {
+	Create(ctx context.Context, link *models.ShareLink) error
+	Get(ctx context.Context, token string) (*models.ShareLink, error)
+	ListAll(ctx context.Context) ([]models.ShareLink, error)
+	// ConsumeUse atomically records one use of a link, returning the updated
+	// record only if the link is active, unexpired, and under its use cap.
+	// Returns (nil, nil) when the link is not usable.
+	ConsumeUse(ctx context.Context, token string, now time.Time) (*models.ShareLink, error)
+	SetActive(ctx context.Context, token string, active bool) error
+	Delete(ctx context.Context, token string) error
+	DeleteExpired(ctx context.Context, now time.Time) error
+}
+
 type RemoteAccessInviteRepository interface {
 	Get(ctx context.Context, id string) (*models.RemoteAccessInvite, error)
 	GetByTokenHash(ctx context.Context, tokenHash string) (*models.RemoteAccessInvite, error)

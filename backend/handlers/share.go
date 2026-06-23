@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"html"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -53,16 +54,40 @@ func NewShareHandler(store *ShareStore, sessions ShareSessionService, serverBase
 	return &ShareHandler{store: store, sessions: sessions, serverBasePath: serverBasePath}
 }
 
-type shareCreateResponse struct {
-	URL       string `json:"url"`
-	Token     string `json:"token"`
-	ExpiresAt string `json:"expiresAt"`
+// MaxShareLinkTTLDays caps the validity period a share link may request.
+const MaxShareLinkTTLDays = 90
+
+// shareCreateRequest is the body posted to create a share link. Params carries the
+// captured playback parameters; ttlDays and maxUses control validity and reuse.
+type shareCreateRequest struct {
+	Params  map[string]string `json:"params"`
+	TTLDays int               `json:"ttlDays"`
+	MaxUses int               `json:"maxUses"`
+	Label   string            `json:"label"`
 }
 
-// Create generates a one-time share link from captured playback parameters. The
+type shareLinkView struct {
+	URL        string  `json:"url"`
+	Token      string  `json:"token"`
+	Label      string  `json:"label,omitempty"`
+	Title      string  `json:"title,omitempty"`
+	MaxUses    int     `json:"maxUses"`
+	UseCount   int     `json:"useCount"`
+	Active     bool    `json:"active"`
+	Expired    bool    `json:"expired"`
+	Usable     bool    `json:"usable"`
+	CreatedAt  string  `json:"createdAt"`
+	ExpiresAt  string  `json:"expiresAt"`
+	LastUsedAt *string `json:"lastUsedAt,omitempty"`
+}
+
+// Create generates a share link from captured playback parameters. The
 // authenticated account is read from the request context, so this handler works
 // behind both the session-token middleware (web player) and the admin/account
 // cookie auth.
+//
+// It accepts the structured {params, ttlDays, maxUses, label} body, and also
+// tolerates a bare param map for backward compatibility with older clients.
 func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
@@ -75,14 +100,25 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var body map[string]string
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
 		writeShareJSONError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
-	params := make(map[string]string, len(body))
-	for key, value := range body {
+	var req shareCreateRequest
+	if err := json.Unmarshal(raw, &req); err != nil || req.Params == nil {
+		// Backward compatibility: older clients posted a bare param map.
+		var bare map[string]string
+		if err := json.Unmarshal(raw, &bare); err != nil {
+			writeShareJSONError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		req.Params = bare
+	}
+
+	params := make(map[string]string, len(req.Params))
+	for key, value := range req.Params {
 		value = strings.TrimSpace(value)
 		if value == "" || !shareAllowedParams[key] {
 			continue
@@ -95,18 +131,147 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rec, err := h.store.Create(accountID, auth.IsMaster(r), params)
+	ttl := DefaultShareLinkTTL
+	if req.TTLDays > 0 {
+		days := req.TTLDays
+		if days > MaxShareLinkTTLDays {
+			days = MaxShareLinkTTLDays
+		}
+		ttl = time.Duration(days) * 24 * time.Hour
+	}
+
+	link, err := h.store.Create(r.Context(), accountID, auth.IsMaster(r), params, ttl, req.MaxUses, strings.TrimSpace(req.Label))
 	if err != nil {
 		writeShareJSONError(w, http.StatusInternalServerError, "failed to create share link")
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(shareCreateResponse{
-		URL:       h.serverBasePath + "/share/" + rec.Token,
-		Token:     rec.Token,
-		ExpiresAt: rec.ExpiresAt.UTC().Format(time.RFC3339),
-	})
+	json.NewEncoder(w).Encode(h.viewOf(link))
+}
+
+// List returns the share links the caller may manage (own links, or all for the
+// master account).
+func (h *ShareHandler) List(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	accountID := auth.GetAccountID(r)
+	if accountID == "" {
+		writeShareJSONError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	links, err := h.store.List(r.Context(), accountID, auth.IsMaster(r))
+	if err != nil {
+		writeShareJSONError(w, http.StatusInternalServerError, "failed to list share links")
+		return
+	}
+	views := make([]shareLinkView, 0, len(links))
+	for i := range links {
+		views = append(views, h.viewOf(&links[i]))
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"links": views})
+}
+
+// SetActive activates or deactivates a share link (?token=...&active=true|false).
+func (h *ShareHandler) SetActive(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	accountID := auth.GetAccountID(r)
+	if accountID == "" {
+		writeShareJSONError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	token := strings.TrimSpace(r.URL.Query().Get("token"))
+	if token == "" {
+		writeShareJSONError(w, http.StatusBadRequest, "missing token")
+		return
+	}
+	active := r.URL.Query().Get("active") != "false"
+	ok, err := h.store.SetActive(r.Context(), accountID, auth.IsMaster(r), token, active)
+	if err != nil {
+		writeShareJSONError(w, http.StatusInternalServerError, "failed to update share link")
+		return
+	}
+	if !ok {
+		writeShareJSONError(w, http.StatusNotFound, "share link not found")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+}
+
+// Delete removes a share link (?token=...).
+func (h *ShareHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	accountID := auth.GetAccountID(r)
+	if accountID == "" {
+		writeShareJSONError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	token := strings.TrimSpace(r.URL.Query().Get("token"))
+	if token == "" {
+		writeShareJSONError(w, http.StatusBadRequest, "missing token")
+		return
+	}
+	ok, err := h.store.Delete(r.Context(), accountID, auth.IsMaster(r), token)
+	if err != nil {
+		writeShareJSONError(w, http.StatusInternalServerError, "failed to delete share link")
+		return
+	}
+	if !ok {
+		writeShareJSONError(w, http.StatusNotFound, "share link not found")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+}
+
+// viewOf builds the JSON-facing representation of a share link, including its
+// absolute-relative URL and a human title derived from the captured params.
+func (h *ShareHandler) viewOf(link *models.ShareLink) shareLinkView {
+	v := shareLinkView{
+		URL:       h.serverBasePath + "/share/" + link.Token,
+		Token:     link.Token,
+		Label:     link.Label,
+		Title:     shareTitle(link.Params),
+		MaxUses:   link.MaxUses,
+		UseCount:  link.UseCount,
+		Active:    link.Active,
+		Expired:   link.Expired(),
+		Usable:    link.Usable(),
+		CreatedAt: link.CreatedAt.UTC().Format(time.RFC3339),
+		ExpiresAt: link.ExpiresAt.UTC().Format(time.RFC3339),
+	}
+	if link.LastUsedAt != nil {
+		s := link.LastUsedAt.UTC().Format(time.RFC3339)
+		v.LastUsedAt = &s
+	}
+	return v
+}
+
+// shareTitle derives a display title from captured playback params.
+func shareTitle(params map[string]string) string {
+	if t := params["seriesTitle"]; t != "" {
+		if s, e := params["seasonNumber"], params["episodeNumber"]; s != "" && e != "" {
+			return t + " S" + s + "E" + e
+		}
+		return t
+	}
+	if t := params["title"]; t != "" {
+		if y := params["year"]; y != "" {
+			return t + " (" + y + ")"
+		}
+		return t
+	}
+	return params["displayName"]
 }
 
 // Open consumes a one-time share link (GET /share/{token}). It mints a short-lived
@@ -115,7 +280,7 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 func (h *ShareHandler) Open(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimSpace(shareTokenFromPath(r.URL.Path))
 
-	rec, ok := h.store.Consume(token)
+	rec, ok := h.store.Consume(r.Context(), token)
 	if !ok {
 		renderShareUnavailable(w, h.serverBasePath)
 		return
@@ -184,7 +349,7 @@ func renderShareUnavailable(w http.ResponseWriter, basePath string) {
 		`.card{max-width:420px;padding:32px;text-align:center}h1{font-size:20px;margin:0 0 12px}` +
 		`p{opacity:.7;line-height:1.5;margin:0 0 20px}a{color:#7aa2ff;text-decoration:none}` +
 		`</style></head><body><div class="card"><h1>This share link is no longer available</h1>` +
-		`<p>One-time playback links can only be opened once, and expire after 24 hours. ` +
+		`<p>It may have expired, been used up, or been deactivated. ` +
 		`Ask whoever shared it to send a new link.</p>` +
 		`<a href="` + watchURL + `">Go to the app</a></div></body></html>`))
 }
