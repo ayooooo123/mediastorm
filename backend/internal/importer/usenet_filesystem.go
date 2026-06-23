@@ -207,8 +207,13 @@ func (uf *UsenetFile) Read(p []byte) (n int, err error) {
 			if rangeEnd >= uf.size {
 				rangeEnd = uf.size - 1
 			}
-			// Use more workers during analysis for faster RAR header reads
-			workers = uf.maxWorkers
+			// Use a single worker per volume during analysis. Volume indexing
+			// already runs up to maxWorkers volumes concurrently, and each volume
+			// only needs to read a small RAR header (the initial 256KB chunk is a
+			// single segment). Fanning out to maxWorkers here multiplied connection
+			// demand to maxWorkers*maxWorkers, far exceeding the pool and stalling
+			// every reader on connection-acquire waits (turning a ~1s job into ~1m).
+			workers = 1
 		} else {
 			// Streaming mode: read to end of file with full workers
 			rangeEnd = uf.size - 1
