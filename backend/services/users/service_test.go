@@ -61,6 +61,38 @@ func TestServiceCreateRenameAndDelete(t *testing.T) {
 	}
 }
 
+func TestSetAllowShareLinks(t *testing.T) {
+	svc, err := users.NewService(t.TempDir())
+	if err != nil {
+		t.Fatalf("failed to create service: %v", err)
+	}
+
+	created, err := svc.Create("Sharer")
+	if err != nil {
+		t.Fatalf("create returned error: %v", err)
+	}
+	if created.AllowShareLinks {
+		t.Fatalf("expected new profile to default to allowShareLinks=false")
+	}
+
+	updated, err := svc.SetAllowShareLinks(created.ID, true)
+	if err != nil {
+		t.Fatalf("SetAllowShareLinks returned error: %v", err)
+	}
+	if !updated.AllowShareLinks {
+		t.Fatalf("expected allowShareLinks=true after grant")
+	}
+
+	got, ok := svc.Get(created.ID)
+	if !ok || !got.AllowShareLinks {
+		t.Fatalf("expected persisted allowShareLinks=true, got ok=%v value=%v", ok, got.AllowShareLinks)
+	}
+
+	if _, err := svc.SetAllowShareLinks("missing-id", true); err == nil {
+		t.Fatalf("expected error for unknown profile id")
+	}
+}
+
 func TestDeleteLastUserFails(t *testing.T) {
 	svc, err := users.NewService(t.TempDir())
 	if err != nil {

@@ -17,7 +17,7 @@ type pgUserRepo struct {
 
 const userColumns = `id, account_id, name, color, icon_url, pin_hash, trakt_account_id, plex_account_id,
 	mdblist_account_id, simkl_account_id, is_kids_profile, kids_mode, kids_max_rating, kids_max_movie_rating, kids_max_tv_rating,
-	kids_allowed_lists, created_at, updated_at`
+	kids_allowed_lists, allow_share_links, created_at, updated_at`
 
 func (r *pgUserRepo) Get(ctx context.Context, id string) (*models.User, error) {
 	row := r.pool.QueryRow(ctx, `SELECT `+userColumns+` FROM users WHERE id = $1`, id)
@@ -46,11 +46,11 @@ func (r *pgUserRepo) Create(ctx context.Context, user *models.User) error {
 	listsJSON, _ := json.Marshal(user.KidsAllowedLists)
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO users (`+userColumns+`)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
 		user.ID, user.AccountID, user.Name, user.Color, user.IconURL, user.PinHash,
 		user.TraktAccountID, user.PlexAccountID, user.MdblistAccountID, user.SimklAccountID, user.IsKidsProfile,
 		user.KidsMode, user.KidsMaxRating, user.KidsMaxMovieRating, user.KidsMaxTVRating,
-		listsJSON, user.CreatedAt, user.UpdatedAt)
+		listsJSON, user.AllowShareLinks, user.CreatedAt, user.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("create user: %w", err)
 	}
@@ -63,12 +63,12 @@ func (r *pgUserRepo) Update(ctx context.Context, user *models.User) error {
 		UPDATE users SET account_id=$2, name=$3, color=$4, icon_url=$5, pin_hash=$6,
 		trakt_account_id=$7, plex_account_id=$8, mdblist_account_id=$9, simkl_account_id=$10, is_kids_profile=$11,
 		kids_mode=$12, kids_max_rating=$13, kids_max_movie_rating=$14, kids_max_tv_rating=$15,
-		kids_allowed_lists=$16, updated_at=$17
+		kids_allowed_lists=$16, allow_share_links=$17, updated_at=$18
 		WHERE id=$1`,
 		user.ID, user.AccountID, user.Name, user.Color, user.IconURL, user.PinHash,
 		user.TraktAccountID, user.PlexAccountID, user.MdblistAccountID, user.SimklAccountID, user.IsKidsProfile,
 		user.KidsMode, user.KidsMaxRating, user.KidsMaxMovieRating, user.KidsMaxTVRating,
-		listsJSON, user.UpdatedAt)
+		listsJSON, user.AllowShareLinks, user.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("update user: %w", err)
 	}
@@ -95,7 +95,7 @@ func scanUser(row pgx.Row) (*models.User, error) {
 	err := row.Scan(&u.ID, &u.AccountID, &u.Name, &u.Color, &u.IconURL, &u.PinHash,
 		&u.TraktAccountID, &u.PlexAccountID, &u.MdblistAccountID, &u.SimklAccountID, &u.IsKidsProfile,
 		&u.KidsMode, &u.KidsMaxRating, &u.KidsMaxMovieRating, &u.KidsMaxTVRating,
-		&listsJSON, &u.CreatedAt, &u.UpdatedAt)
+		&listsJSON, &u.AllowShareLinks, &u.CreatedAt, &u.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -116,7 +116,7 @@ func collectUsers(rows pgx.Rows) ([]models.User, error) {
 		err := rows.Scan(&u.ID, &u.AccountID, &u.Name, &u.Color, &u.IconURL, &u.PinHash,
 			&u.TraktAccountID, &u.PlexAccountID, &u.MdblistAccountID, &u.SimklAccountID, &u.IsKidsProfile,
 			&u.KidsMode, &u.KidsMaxRating, &u.KidsMaxMovieRating, &u.KidsMaxTVRating,
-			&listsJSON, &u.CreatedAt, &u.UpdatedAt)
+			&listsJSON, &u.AllowShareLinks, &u.CreatedAt, &u.UpdatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("scan user: %w", err)
 		}

@@ -25,6 +25,7 @@ type User struct {
 	MdblistAccountID string `json:"mdblistAccountId,omitempty"` // ID of the linked MDBList account (from config.MDBListAccount)
 	SimklAccountID   string `json:"simklAccountId,omitempty"`   // ID of the linked Simkl account (from config.SimklAccount)
 	IsKidsProfile    bool   `json:"isKidsProfile"`              // Whether this is a kids profile with content restrictions
+	AllowShareLinks  bool   `json:"allowShareLinks"`            // Whether this profile may mint shareable playback links (master-controlled, default off)
 	// Kids profile content restriction settings
 	KidsMode           string    `json:"kidsMode,omitempty"`           // "rating", "content_list", or "" (disabled)
 	KidsMaxRating      string    `json:"kidsMaxRating,omitempty"`      // Deprecated: use KidsMaxMovieRating/KidsMaxTVRating instead

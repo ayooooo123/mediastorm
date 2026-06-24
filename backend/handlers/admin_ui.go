@@ -6318,6 +6318,7 @@ type ProfileWithPinStatus struct {
 	HasPin             bool      `json:"hasPin"`
 	HasIcon            bool      `json:"hasIcon"`
 	IsKidsProfile      bool      `json:"isKidsProfile"`
+	AllowShareLinks    bool      `json:"allowShareLinks"`
 	KidsMode           string    `json:"kidsMode,omitempty"`
 	KidsMaxRating      string    `json:"kidsMaxRating,omitempty"`
 	KidsMaxMovieRating string    `json:"kidsMaxMovieRating,omitempty"`
@@ -6352,6 +6353,7 @@ func (h *AdminUIHandler) GetProfiles(w http.ResponseWriter, r *http.Request) {
 			HasPin:             u.HasPin(),
 			HasIcon:            u.HasIcon(),
 			IsKidsProfile:      u.IsKidsProfile,
+			AllowShareLinks:    u.AllowShareLinks,
 			KidsMode:           u.KidsMode,
 			KidsMaxRating:      u.KidsMaxRating,
 			KidsMaxMovieRating: u.KidsMaxMovieRating,
@@ -7290,6 +7292,37 @@ func (h *AdminUIHandler) SetAccountMaxStreams(w http.ResponseWriter, r *http.Req
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "max streams updated"})
+}
+
+// SetProfileAllowShareLinks grants or revokes a profile's permission to create
+// shareable playback links. Master-only.
+func (h *AdminUIHandler) SetProfileAllowShareLinks(w http.ResponseWriter, r *http.Request) {
+	if h.usersService == nil {
+		http.Error(w, "Users service not available", http.StatusInternalServerError)
+		return
+	}
+
+	profileID := r.URL.Query().Get("profileId")
+	if profileID == "" {
+		http.Error(w, "profileId parameter required", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		AllowShareLinks bool `json:"allowShareLinks"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if _, err := h.usersService.SetAllowShareLinks(profileID, req.AllowShareLinks); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "share permission updated"})
 }
 
 // RenameAccountRequest represents a request to rename an account

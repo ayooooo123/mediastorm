@@ -103,11 +103,11 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[auth] login success accountID=%s username=%q isMaster=%t ip=%s", account.ID, account.Username, account.IsMaster, ipAddress)
 
 	resp := LoginResponse{
-		Token:     session.Token,
-		ExpiresAt: session.ExpiresAt.Format("2006-01-02T15:04:05Z"),
-		AccountID: account.ID,
-		Username:  account.Username,
-		IsMaster:  account.IsMaster,
+		Token:           session.Token,
+		ExpiresAt:       session.ExpiresAt.Format("2006-01-02T15:04:05Z"),
+		AccountID:       account.ID,
+		Username:        account.Username,
+		IsMaster:        account.IsMaster,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -157,9 +157,9 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := AccountResponse{
-		ID:       account.ID,
-		Username: account.Username,
-		IsMaster: account.IsMaster,
+		ID:              account.ID,
+		Username:        account.Username,
+		IsMaster:        account.IsMaster,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -189,11 +189,11 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := LoginResponse{
-		Token:     session.Token,
-		ExpiresAt: session.ExpiresAt.Format("2006-01-02T15:04:05Z"),
-		AccountID: account.ID,
-		Username:  account.Username,
-		IsMaster:  account.IsMaster,
+		Token:           session.Token,
+		ExpiresAt:       session.ExpiresAt.Format("2006-01-02T15:04:05Z"),
+		AccountID:       account.ID,
+		Username:        account.Username,
+		IsMaster:        account.IsMaster,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

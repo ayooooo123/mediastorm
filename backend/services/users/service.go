@@ -719,6 +719,33 @@ func (s *Service) SetKidsProfile(id string, isKids bool) (models.User, error) {
 	return user, nil
 }
 
+// SetAllowShareLinks grants or revokes a profile's permission to mint shareable
+// playback links. Controlled by the master account; defaults to false.
+func (s *Service) SetAllowShareLinks(id string, allow bool) (models.User, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return models.User{}, ErrUserNotFound
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	user, ok := s.users[id]
+	if !ok {
+		return models.User{}, ErrUserNotFound
+	}
+
+	user.AllowShareLinks = allow
+	user.UpdatedAt = time.Now().UTC()
+	s.users[id] = user
+
+	if err := s.saveLocked(); err != nil {
+		return models.User{}, err
+	}
+
+	return user, nil
+}
+
 // SetKidsMode sets the kids mode for a profile ("rating", "content_list", "both", or "").
 func (s *Service) SetKidsMode(id, mode string) (models.User, error) {
 	id = strings.TrimSpace(id)

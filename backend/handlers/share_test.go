@@ -33,9 +33,78 @@ func (f *fakeShareSessions) CreateScoped(accountID string, isMaster bool, userAg
 	}, nil
 }
 
+// fakeShareProfiles satisfies ShareProfileService. The zero value used by
+// newTestShareHandler resolves any profile, grants the share flag, and treats
+// it as owned by the caller's account — the happy path.
+type fakeShareProfiles struct {
+	notFound bool // Get returns ok=false
+	deny     bool // returned profile has AllowShareLinks=false
+	notOwned bool // BelongsToAccount returns false
+}
+
+func (f fakeShareProfiles) Get(id string) (models.User, bool) {
+	if f.notFound {
+		return models.User{}, false
+	}
+	return models.User{ID: id, AllowShareLinks: !f.deny}, true
+}
+
+func (f fakeShareProfiles) BelongsToAccount(profileID, accountID string) bool {
+	return !f.notOwned
+}
+
 func newTestShareHandler() (*ShareHandler, *fakeShareSessions) {
 	sessions := &fakeShareSessions{}
-	return NewShareHandler(NewShareStore(nil), sessions, ""), sessions
+	return NewShareHandler(NewShareStore(nil), sessions, fakeShareProfiles{}, ""), sessions
+}
+
+func TestShareCreateDeniedWithoutProfilePermission(t *testing.T) {
+	sessions := &fakeShareSessions{}
+	h := NewShareHandler(NewShareStore(nil), sessions, fakeShareProfiles{deny: true}, "")
+
+	body, _ := json.Marshal(map[string]string{"sourcePath": "/movies/a.mkv", "profileId": "p1"})
+	req := httptest.NewRequest(http.MethodPost, "/api/share/create", strings.NewReader(string(body)))
+	req = req.WithContext(context.WithValue(req.Context(), auth.ContextKeyAccountID, "acct1"))
+	rec := httptest.NewRecorder()
+
+	h.Create(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (body: %s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestShareCreateDeniedWhenProfileNotOwned(t *testing.T) {
+	sessions := &fakeShareSessions{}
+	// Flag is on, but the profile belongs to a different account and the caller
+	// is not master.
+	h := NewShareHandler(NewShareStore(nil), sessions, fakeShareProfiles{notOwned: true}, "")
+
+	body, _ := json.Marshal(map[string]string{"sourcePath": "/movies/a.mkv", "profileId": "p1"})
+	req := httptest.NewRequest(http.MethodPost, "/api/share/create", strings.NewReader(string(body)))
+	req = req.WithContext(context.WithValue(req.Context(), auth.ContextKeyAccountID, "acct1"))
+	rec := httptest.NewRecorder()
+
+	h.Create(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (body: %s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestShareCreateDeniedWithoutProfileId(t *testing.T) {
+	h, _ := newTestShareHandler() // permissive profile service
+
+	body, _ := json.Marshal(map[string]string{"sourcePath": "/movies/a.mkv"})
+	req := httptest.NewRequest(http.MethodPost, "/api/share/create", strings.NewReader(string(body)))
+	req = req.WithContext(context.WithValue(req.Context(), auth.ContextKeyAccountID, "acct1"))
+	rec := httptest.NewRecorder()
+
+	h.Create(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (body: %s)", rec.Code, rec.Body.String())
+	}
 }
 
 func TestShareCreateStoresWhitelistedParams(t *testing.T) {
@@ -45,6 +114,7 @@ func TestShareCreateStoresWhitelistedParams(t *testing.T) {
 		"sourcePath":            "/movies/a.mkv",
 		"preselectedAudioTrack": "2",
 		"title":                 "A Movie",
+		"profileId":             "p1",
 		"notAllowedKey":         "should-be-dropped",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/share/create", strings.NewReader(string(body)))
@@ -154,7 +224,7 @@ func TestShareCreateHonorsTTLAndMaxUses(t *testing.T) {
 	h, _ := newTestShareHandler()
 
 	body, _ := json.Marshal(shareCreateRequest{
-		Params:  map[string]string{"sourcePath": "/movies/a.mkv"},
+		Params:  map[string]string{"sourcePath": "/movies/a.mkv", "profileId": "p1"},
 		TTLDays: 7,
 		MaxUses: 2,
 		Label:   "Family movie night",

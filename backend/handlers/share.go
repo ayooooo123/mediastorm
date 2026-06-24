@@ -38,24 +38,33 @@ type ShareSessionService interface {
 	CreateScoped(accountID string, isMaster bool, userAgent, ipAddress string, duration time.Duration, scope string) (models.Session, error)
 }
 
+// ShareProfileService resolves the profile a share link is created for so the
+// handler can enforce the per-profile share permission and profile ownership.
+// Satisfied by *users.Service.
+type ShareProfileService interface {
+	Get(id string) (models.User, bool)
+	BelongsToAccount(profileID, accountID string) bool
+}
+
 // ShareHandler creates and consumes one-time shareable playback links.
 type ShareHandler struct {
 	store          *ShareStore
 	sessions       ShareSessionService
+	users          ShareProfileService
 	serverBasePath string
 }
 
 // NewShareHandler creates a ShareHandler.
-func NewShareHandler(store *ShareStore, sessions ShareSessionService, serverBasePath string) *ShareHandler {
+func NewShareHandler(store *ShareStore, sessions ShareSessionService, users ShareProfileService, serverBasePath string) *ShareHandler {
 	serverBasePath = "/" + strings.Trim(serverBasePath, "/")
 	if serverBasePath == "/" {
 		serverBasePath = ""
 	}
-	return &ShareHandler{store: store, sessions: sessions, serverBasePath: serverBasePath}
+	return &ShareHandler{store: store, sessions: sessions, users: users, serverBasePath: serverBasePath}
 }
 
 // MaxShareLinkTTLDays caps the validity period a share link may request.
-const MaxShareLinkTTLDays = 90
+const MaxShareLinkTTLDays = 7
 
 // shareCreateRequest is the body posted to create a share link. Params carries the
 // captured playback parameters; ttlDays and maxUses control validity and reuse.
@@ -129,6 +138,21 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if params["sourcePath"] == "" && params["movie"] == "" {
 		writeShareJSONError(w, http.StatusBadRequest, "no playback source to share")
 		return
+	}
+
+	// Enforce the per-profile share permission. The link is created for the
+	// profile identified by profileId; that profile must belong to the caller's
+	// account (master may act across accounts) and must have the grant the master
+	// sets. There is no master bypass — the flag is always required.
+	if h.users != nil {
+		profileID := params["profileId"]
+		profile, ok := h.users.Get(profileID)
+		if profileID == "" || !ok ||
+			(!auth.IsMaster(r) && !h.users.BelongsToAccount(profileID, accountID)) ||
+			!profile.AllowShareLinks {
+			writeShareJSONError(w, http.StatusForbidden, "share links are not enabled for this profile")
+			return
+		}
 	}
 
 	ttl := DefaultShareLinkTTL
