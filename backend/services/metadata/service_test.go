@@ -196,7 +196,7 @@ func TestGetCachedArtworkURLsResolvesSeriesTMDBToTVDBCache(t *testing.T) {
 	if err := cache.set(cacheKey("tvdb", "resolve", "tmdb", "71712"), int64(328634)); err != nil {
 		t.Fatalf("set resolve cache: %v", err)
 	}
-	if err := cache.set(cacheKey("tvdb", "series", "details", "v10", "eng", "328634"), models.SeriesDetails{
+	if err := cache.set(seriesDetailsCacheKey("eng", 328634, ""), models.SeriesDetails{
 		Title: models.Title{
 			TextPoster:   &models.Image{URL: "https://example.test/text-poster.jpg", Type: "poster"},
 			TextBackdrop: &models.Image{URL: "https://example.test/text-backdrop.jpg", Type: "backdrop"},
@@ -2067,7 +2067,7 @@ func TestSeriesDetailsCacheHitHydratesRatingsFromRatingsCache(t *testing.T) {
 		mdblist:      newMDBListClient("test-key", []string{"tomatoes", "audience"}, true, 24),
 	}
 
-	cacheID := cacheKey("tvdb", "series", "details", "v10", "eng", "75805")
+	cacheID := seriesDetailsCacheKey("eng", 75805, "")
 	if err := svc.cache.set(cacheID, models.SeriesDetails{
 		Title: models.Title{
 			ID:        "tvdb:series:75805",

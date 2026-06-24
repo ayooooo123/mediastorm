@@ -662,6 +662,11 @@ func Register(
 	profileProtected.HandleFunc("/{userID}/history/episodes", historyHandler.RecordEpisode).Methods(http.MethodPost)
 	profileProtected.HandleFunc("/{userID}/history/episodes", historyHandler.Options).Methods(http.MethodOptions)
 
+	// Series episode-ordering preference (alternate TVDB orderings)
+	profileProtected.HandleFunc("/{userID}/series-ordering/{tvdbID}", historyHandler.GetSeriesOrdering).Methods(http.MethodGet)
+	profileProtected.HandleFunc("/{userID}/series-ordering/{tvdbID}", historyHandler.SetSeriesOrdering).Methods(http.MethodPut)
+	profileProtected.HandleFunc("/{userID}/series-ordering/{tvdbID}", historyHandler.Options).Methods(http.MethodOptions)
+
 	// Watch History endpoints (unified watch tracking for all media)
 	profileProtected.HandleFunc("/{userID}/history/watched", historyHandler.ListWatchHistory).Methods(http.MethodGet)
 	profileProtected.HandleFunc("/{userID}/history/watched", historyHandler.UpdateWatchHistory).Methods(http.MethodPost)

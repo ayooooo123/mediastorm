@@ -176,6 +176,13 @@ type ContentPreferencesRepository interface {
 	Count(ctx context.Context) (int64, error)
 }
 
+// SeriesOrderingRepository stores per-user, per-series episode ordering overrides.
+type SeriesOrderingRepository interface {
+	Get(ctx context.Context, userID string, seriesTVDBID int64) (*models.SeriesOrderingPref, error)
+	Upsert(ctx context.Context, userID string, pref *models.SeriesOrderingPref) error
+	Delete(ctx context.Context, userID string, seriesTVDBID int64) error
+}
+
 // PrequeueRepository manages prequeue entries.
 // Entries are stored as JSONB blobs due to their complex nested structure.
 type PrequeueRepository interface {

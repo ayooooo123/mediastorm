@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"novastream/internal/mediaidentity"
@@ -21,6 +22,10 @@ type historyService interface {
 	ListSeriesStates(userID string) ([]models.SeriesWatchState, error)
 	GetSeriesWatchState(userID, seriesID string) (*models.SeriesWatchState, error)
 	HideFromContinueWatching(userID, seriesID string) error
+
+	// Series ordering (alternate TVDB episode orderings)
+	GetSeriesOrdering(userID string, seriesTVDBID int64) (string, error)
+	SetSeriesOrdering(userID string, seriesTVDBID int64, seasonType string) error
 
 	// Watch History methods
 	ListWatchHistory(userID string) ([]models.WatchHistoryItem, error)
@@ -684,6 +689,72 @@ func (h *HistoryHandler) DeletePlaybackProgress(w http.ResponseWriter, r *http.R
 
 func (h *HistoryHandler) Options(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
+}
+
+type seriesOrderingResponse struct {
+	SeasonType string `json:"seasonType"`
+}
+
+type seriesOrderingRequest struct {
+	SeasonType string `json:"seasonType"`
+}
+
+// GetSeriesOrdering returns the user's selected episode ordering for a series.
+// An empty seasonType means the default/official ordering is in effect.
+func (h *HistoryHandler) GetSeriesOrdering(w http.ResponseWriter, r *http.Request) {
+	userID, ok := h.requireUser(w, r)
+	if !ok {
+		return
+	}
+	tvdbID := parseTVDBIDVar(r)
+	if tvdbID <= 0 {
+		http.Error(w, "valid tvdbId is required", http.StatusBadRequest)
+		return
+	}
+	seasonType, err := h.Service.GetSeriesOrdering(userID, tvdbID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(seriesOrderingResponse{SeasonType: seasonType})
+}
+
+// SetSeriesOrdering stores the user's chosen episode ordering for a series.
+func (h *HistoryHandler) SetSeriesOrdering(w http.ResponseWriter, r *http.Request) {
+	userID, ok := h.requireUser(w, r)
+	if !ok {
+		return
+	}
+	tvdbID := parseTVDBIDVar(r)
+	if tvdbID <= 0 {
+		http.Error(w, "valid tvdbId is required", http.StatusBadRequest)
+		return
+	}
+	var req seriesOrderingRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if err := h.Service.SetSeriesOrdering(userID, tvdbID, req.SeasonType); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	normalized := strings.ToLower(strings.TrimSpace(req.SeasonType))
+	if normalized == "official" || normalized == "default" {
+		normalized = ""
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(seriesOrderingResponse{SeasonType: normalized})
+}
+
+func parseTVDBIDVar(r *http.Request) int64 {
+	raw := strings.TrimSpace(mux.Vars(r)["tvdbID"])
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return id
 }
 
 func (h *HistoryHandler) requireUser(w http.ResponseWriter, r *http.Request) (string, bool) {

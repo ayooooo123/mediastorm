@@ -137,6 +137,21 @@ type SeriesDetails struct {
 	Title           Title          `json:"title"`
 	Seasons         []SeriesSeason `json:"seasons"`
 	PreferredSeason *int           `json:"preferredSeason,omitempty"`
+	// AvailableOrderings lists every TVDB season-ordering for this series
+	// (official, dvd, absolute, alternate, regional, …). Populated only when
+	// more than one ordering exists so the client can offer a switcher.
+	AvailableOrderings []SeriesOrdering `json:"availableOrderings,omitempty"`
+	// ActiveOrdering is the lowercase season-type the returned seasons/episodes
+	// are numbered under (e.g. "official", "dvd", "absolute").
+	ActiveOrdering string `json:"activeOrdering,omitempty"`
+}
+
+// SeriesOrdering describes one selectable TVDB episode ordering.
+type SeriesOrdering struct {
+	Type        string `json:"type"`        // canonical lowercase season-type key (official, dvd, absolute, alternate, regional, …)
+	Name        string `json:"name"`        // human-readable label, falls back to Type
+	SeasonCount int    `json:"seasonCount"` // number of seasons under this ordering
+	IsOfficial  bool   `json:"isOfficial"`  // true for the aired/official ordering (sync-safe)
 }
 
 type SeriesDetailsQuery struct {
@@ -146,6 +161,10 @@ type SeriesDetailsQuery struct {
 	TVDBID  int64
 	TMDBID  int64
 	IMDBID  string
+	// SeasonType, when set, overrides the auto-detected primary ordering with a
+	// specific TVDB season-type (lowercase, e.g. "dvd", "absolute"). Empty means
+	// auto-detect the official/primary ordering.
+	SeasonType string
 }
 
 type TrailerQuery struct {
