@@ -1883,8 +1883,15 @@ func (s *Service) searchUsenetWithFilter(ctx context.Context, settings config.Se
 		}(idx, query)
 	}
 
-	// Collect results, preferring higher priority (lower index) results
-	var bestResult *searchResult
+	// Merge results across all queries (deduplicated). The per-query filter
+	// above already enforces title/year relevance, so the union is safe. We must
+	// NOT keep only the primary (priority-0) query's results: a sparse primary
+	// query — e.g. a bare title that returns only the latest uploads — would hide
+	// the far richer set an alternate query (like "<title> <year>") found, which
+	// is exactly how a Dutch WEB rip ended up beating a 4K HDR DV remux that the
+	// "<title> <year>" query had returned.
+	seen := make(map[string]struct{})
+	var merged []models.NZBResult
 	var lastErr error
 	successes := 0
 	resultsReceived := 0
@@ -1892,8 +1899,9 @@ func (s *Service) searchUsenetWithFilter(ctx context.Context, settings config.Se
 	for resultsReceived < len(validQueries) {
 		select {
 		case <-ctx.Done():
-			if bestResult != nil && len(bestResult.results) > 0 {
-				return bestResult.results, nil
+			// Context cancelled (timeout / caller abort): return what we have.
+			if len(merged) > 0 {
+				return merged, nil
 			}
 			return nil, ctx.Err()
 		case res := <-resultsChan:
@@ -1909,27 +1917,45 @@ func (s *Service) searchUsenetWithFilter(ctx context.Context, settings config.Se
 				continue
 			}
 
-			// Keep track of best result (lowest priority number = primary query)
-			if bestResult == nil || res.priority < bestResult.priority {
-				bestResult = &res
-				log.Printf("[indexer/usenet] got %d results from query %q (priority %d)", len(res.results), res.query, res.priority)
-
-				// If we got results from the primary query, we can cancel other searches
-				if res.priority == 0 {
-					cancel()
+			added := 0
+			for _, r := range res.results {
+				key := usenetResultDedupKey(r)
+				if _, dup := seen[key]; dup {
+					continue
 				}
+				seen[key] = struct{}{}
+				merged = append(merged, r)
+				added++
 			}
+			log.Printf("[indexer/usenet] merged %d/%d results from query %q (priority %d), total unique=%d",
+				added, len(res.results), res.query, res.priority, len(merged))
 		}
 	}
 
-	if bestResult != nil && len(bestResult.results) > 0 {
-		return bestResult.results, nil
+	if len(merged) > 0 {
+		return merged, nil
 	}
 
 	if lastErr != nil && successes == 0 {
 		return nil, lastErr
 	}
 	return []models.NZBResult{}, nil
+}
+
+// usenetResultDedupKey returns a stable identity for an NZB result so the same
+// release returned by multiple alternate queries is counted once. Prefers the
+// indexer GUID, then the download URL/link, falling back to title+size.
+func usenetResultDedupKey(r models.NZBResult) string {
+	if g := strings.TrimSpace(r.GUID); g != "" {
+		return "guid:" + g
+	}
+	if d := strings.TrimSpace(r.DownloadURL); d != "" {
+		return "url:" + d
+	}
+	if l := strings.TrimSpace(r.Link); l != "" {
+		return "link:" + l
+	}
+	return fmt.Sprintf("title:%s|size:%d", strings.ToLower(strings.TrimSpace(r.Title)), r.SizeBytes)
 }
 
 func (s *Service) searchUsenet(ctx context.Context, settings config.Settings, opts SearchOptions, baseParsed debrid.ParsedQuery, alternateTitles []string, searchQueries []string) ([]models.NZBResult, error) {

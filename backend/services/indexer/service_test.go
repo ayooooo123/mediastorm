@@ -1114,3 +1114,38 @@ func TestExtractResolutionFromResultIgnoresEmbedded4KInReleaseGroup(t *testing.T
 		t.Fatalf("expected explicit 4K attribute token to map to 2160, got %d", got)
 	}
 }
+
+func TestUsenetResultDedupKey(t *testing.T) {
+	// GUID takes precedence
+	a := models.NZBResult{GUID: "g1", DownloadURL: "u1", Title: "Coco", SizeBytes: 100}
+	b := models.NZBResult{GUID: "g1", DownloadURL: "u2", Title: "Coco different", SizeBytes: 200}
+	if usenetResultDedupKey(a) != usenetResultDedupKey(b) {
+		t.Fatal("same GUID should produce same dedup key")
+	}
+
+	// Falls back to download URL when GUID empty
+	c := models.NZBResult{DownloadURL: "u1", Title: "X"}
+	d := models.NZBResult{DownloadURL: "u1", Title: "Y"}
+	if usenetResultDedupKey(c) != usenetResultDedupKey(d) {
+		t.Fatal("same DownloadURL should produce same dedup key when GUID empty")
+	}
+
+	// Falls back to link when GUID+URL empty
+	e := models.NZBResult{Link: "l1", Title: "X"}
+	f := models.NZBResult{Link: "l1", Title: "Y"}
+	if usenetResultDedupKey(e) != usenetResultDedupKey(f) {
+		t.Fatal("same Link should produce same dedup key when GUID+URL empty")
+	}
+
+	// Falls back to title+size; case-insensitive title
+	g := models.NZBResult{Title: "Coco 2017", SizeBytes: 123}
+	h := models.NZBResult{Title: "coco 2017", SizeBytes: 123}
+	if usenetResultDedupKey(g) != usenetResultDedupKey(h) {
+		t.Fatal("title+size fallback should be case-insensitive on title")
+	}
+
+	// Distinct releases produce distinct keys
+	if usenetResultDedupKey(a) == usenetResultDedupKey(models.NZBResult{GUID: "g2"}) {
+		t.Fatal("different GUIDs should produce different dedup keys")
+	}
+}

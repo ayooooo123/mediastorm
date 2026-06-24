@@ -597,3 +597,29 @@ func TestValidateReadyEntryForReuse(t *testing.T) {
 		}
 	})
 }
+
+func TestNormalizeClientID(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"valid hardware id", "261dc357a50db1db", "261dc357a50db1db"},
+		{"trims whitespace", "  abc123  ", "abc123"},
+		{"unknown sentinel", "unknown", ""},
+		{"unknown mixed case", "Unknown", ""},
+		{"unknown padded", "  UNKNOWN ", ""},
+		{"empty", "", ""},
+		{"null sentinel", "null", ""},
+		{"undefined sentinel", "undefined", ""},
+		{"zero sentinel", "0", ""},
+		{"valid generated id", "18f2a-1a2b-3c4d", "18f2a-1a2b-3c4d"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeClientID(tc.in); got != tc.want {
+				t.Fatalf("normalizeClientID(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
