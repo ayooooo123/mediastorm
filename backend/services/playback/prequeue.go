@@ -51,6 +51,8 @@ type PrequeueRequest struct {
 	UserID    string `json:"userId"`
 	ClientID  string `json:"clientId,omitempty"` // Client device ID for per-client filtering
 	ImdbID    string `json:"imdbId,omitempty"`
+	TmdbID    string `json:"tmdbId,omitempty"` // External IDs used to canonicalize TitleID for prequeue reuse
+	TvdbID    string `json:"tvdbId,omitempty"`
 	Year      int    `json:"year,omitempty"`
 	// For series: episode info (determined by backend based on watch history)
 	SeasonNumber          int     `json:"seasonNumber,omitempty"`
