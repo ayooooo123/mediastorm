@@ -1,0 +1,170 @@
+package handlers
+
+import (
+	"strings"
+	"testing"
+)
+
+func joinArgs(args []string) string { return strings.Join(args, " ") }
+
+func TestBuildVideoEncodePlanCPUNoTonemap(t *testing.T) {
+	plan := buildVideoEncodePlan(HWAccelCaps{Encode: HWNone, Tonemap: "zscale"}, false)
+	if plan.HardwareEncode {
+		t.Fatalf("expected CPU encode, got hardware")
+	}
+	if plan.Tonemapped {
+		t.Fatalf("did not expect tone mapping")
+	}
+	if !strings.Contains(joinArgs(plan.EncoderArgs), "libx264") {
+		t.Fatalf("expected libx264 encoder, got %v", plan.EncoderArgs)
+	}
+	if plan.Filter != "format=yuv420p" {
+		t.Fatalf("expected pixel-format normalization filter, got %q", plan.Filter)
+	}
+	if len(plan.GlobalArgs) != 0 {
+		t.Fatalf("CPU plan should need no device init, got %v", plan.GlobalArgs)
+	}
+}
+
+func TestBuildVideoEncodePlanCPUTonemap(t *testing.T) {
+	plan := buildVideoEncodePlan(HWAccelCaps{Encode: HWNone, Tonemap: "zscale"}, true)
+	if !plan.Tonemapped {
+		t.Fatalf("expected tone mapping")
+	}
+	if !strings.Contains(plan.Filter, "tonemap=tonemap=hable") {
+		t.Fatalf("expected CPU zscale tonemap chain, got %q", plan.Filter)
+	}
+	if !strings.HasSuffix(plan.Filter, "format=yuv420p") {
+		t.Fatalf("tonemap output should be yuv420p, got %q", plan.Filter)
+	}
+}
+
+func TestBuildVideoEncodePlanTonemapWithoutSupportFallsBack(t *testing.T) {
+	// No tone-map implementation available -> cannot tone map; must not claim it did.
+	plan := buildVideoEncodePlan(HWAccelCaps{Encode: HWNone, Tonemap: ""}, true)
+	if plan.Tonemapped {
+		t.Fatalf("must not tone map without a tonemap implementation")
+	}
+	if strings.Contains(plan.Filter, "tonemap") {
+		t.Fatalf("unexpected tonemap filter: %q", plan.Filter)
+	}
+}
+
+func TestBuildVideoEncodePlanLibplaceboTonemap(t *testing.T) {
+	plan := buildVideoEncodePlan(HWAccelCaps{Encode: HWNVENC, Tonemap: "libplacebo"}, true)
+	if !plan.Tonemapped || !plan.HardwareEncode {
+		t.Fatalf("expected GPU tonemap + hardware encode")
+	}
+	if !strings.Contains(plan.Filter, "libplacebo") || !strings.Contains(plan.Filter, "apply_dolbyvision=true") {
+		t.Fatalf("expected libplacebo DV tonemap, got %q", plan.Filter)
+	}
+	if !strings.Contains(joinArgs(plan.GlobalArgs), "vulkan=vk") {
+		t.Fatalf("expected vulkan device init, got %v", plan.GlobalArgs)
+	}
+	if !strings.Contains(joinArgs(plan.EncoderArgs), "h264_nvenc") {
+		t.Fatalf("expected nvenc encoder, got %v", plan.EncoderArgs)
+	}
+}
+
+func TestBuildVideoEncodePlanOpenCLTonemap(t *testing.T) {
+	plan := buildVideoEncodePlan(HWAccelCaps{Encode: HWNVENC, Tonemap: "opencl"}, true)
+	if !strings.Contains(plan.Filter, "tonemap_opencl") {
+		t.Fatalf("expected OpenCL tonemap, got %q", plan.Filter)
+	}
+	if !strings.Contains(joinArgs(plan.GlobalArgs), "opencl=ocl") {
+		t.Fatalf("expected OpenCL device init, got %v", plan.GlobalArgs)
+	}
+}
+
+func TestBuildVideoEncodePlanVAAPIForcesCPUTonemap(t *testing.T) {
+	// VAAPI encode + a GPU tonemap pref must not init a second filter device;
+	// tone mapping is forced onto the CPU (zscale) to avoid the conflict.
+	plan := buildVideoEncodePlan(HWAccelCaps{Encode: HWVAAPI, EncodeDevice: "/dev/dri/renderD128", Tonemap: "libplacebo"}, true)
+	if strings.Contains(joinArgs(plan.GlobalArgs), "vulkan") {
+		t.Fatalf("vaapi must not also init a vulkan filter device, got %v", plan.GlobalArgs)
+	}
+	if !strings.Contains(plan.Filter, "tonemap=tonemap=hable") {
+		t.Fatalf("expected CPU zscale tonemap for vaapi, got %q", plan.Filter)
+	}
+}
+
+func TestBuildVideoEncodePlanVAAPIUploads(t *testing.T) {
+	plan := buildVideoEncodePlan(HWAccelCaps{Encode: HWVAAPI, EncodeDevice: "/dev/dri/renderD128", Tonemap: "zscale"}, true)
+	if !strings.Contains(joinArgs(plan.GlobalArgs), "-vaapi_device /dev/dri/renderD128") {
+		t.Fatalf("expected vaapi device init, got %v", plan.GlobalArgs)
+	}
+	// Tone map (CPU here, TonemapGPU false) then upload to the GPU surface for h264_vaapi.
+	if !strings.Contains(plan.Filter, "tonemap") {
+		t.Fatalf("expected tonemap in filter, got %q", plan.Filter)
+	}
+	if !strings.HasSuffix(plan.Filter, "format=nv12,hwupload") {
+		t.Fatalf("vaapi filter must end with hwupload, got %q", plan.Filter)
+	}
+	if !strings.Contains(joinArgs(plan.EncoderArgs), "h264_vaapi") {
+		t.Fatalf("expected vaapi encoder, got %v", plan.EncoderArgs)
+	}
+}
+
+func TestBuildVideoEncodePlanQSVDeviceInit(t *testing.T) {
+	plan := buildVideoEncodePlan(HWAccelCaps{Encode: HWQSV, EncodeDevice: "/dev/dri/renderD128", Tonemap: "zscale"}, false)
+	if !strings.Contains(joinArgs(plan.GlobalArgs), "qsv=hw:/dev/dri/renderD128") {
+		t.Fatalf("expected qsv device init, got %v", plan.GlobalArgs)
+	}
+	if !strings.Contains(plan.Filter, "format=qsv") {
+		t.Fatalf("expected qsv upload in filter, got %q", plan.Filter)
+	}
+	if !strings.Contains(joinArgs(plan.EncoderArgs), "h264_qsv") {
+		t.Fatalf("expected qsv encoder, got %v", plan.EncoderArgs)
+	}
+}
+
+func TestBuildVideoEncodePlanVideoToolbox(t *testing.T) {
+	plan := buildVideoEncodePlan(HWAccelCaps{Encode: HWVideoToolbox, Tonemap: "zscale"}, false)
+	if !plan.HardwareEncode {
+		t.Fatalf("expected hardware encode")
+	}
+	if !strings.Contains(joinArgs(plan.EncoderArgs), "h264_videotoolbox") {
+		t.Fatalf("expected videotoolbox encoder, got %v", plan.EncoderArgs)
+	}
+	if len(plan.GlobalArgs) != 0 {
+		t.Fatalf("videotoolbox needs no device init, got %v", plan.GlobalArgs)
+	}
+}
+
+func TestDetectHWAccelNonePreference(t *testing.T) {
+	caps := detectHWAccel("/nonexistent/ffmpeg", "none")
+	if caps.Encode != HWNone {
+		t.Fatalf("none preference must yield HWNone, got %v", caps.Encode)
+	}
+}
+
+func TestDetectHWAccelMissingBinary(t *testing.T) {
+	caps := detectHWAccel("", "auto")
+	if caps.Encode != HWNone {
+		t.Fatalf("missing ffmpeg must yield HWNone, got %v", caps.Encode)
+	}
+}
+
+func TestLooksLikeCapabilityFlags(t *testing.T) {
+	cases := map[string]bool{
+		"V.....":   true,
+		"VFS..D.":  true,
+		"------":   false, // separator line
+		"=":        false,
+		"":         false,
+		"Encoders": true, // letters only — header word, filtered out elsewhere by needing a 2nd field
+	}
+	for in, want := range cases {
+		if got := looksLikeCapabilityFlags(in); got != want {
+			t.Errorf("looksLikeCapabilityFlags(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestFFmpegTokenSetParsesNames(t *testing.T) {
+	// Parsing is exercised indirectly; ensure missing binary returns empty set
+	// rather than panicking.
+	if set := ffmpegTokenSet("/nonexistent/ffmpeg", "-encoders"); len(set) != 0 {
+		t.Fatalf("expected empty set for missing binary, got %v", set)
+	}
+}

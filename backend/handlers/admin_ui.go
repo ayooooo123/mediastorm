@@ -1058,10 +1058,11 @@ var SettingsSchema = map[string]interface{}{
 		"order":  99,
 		"hidden": true,
 		"fields": map[string]interface{}{
-			"enabled":          map[string]interface{}{"type": "boolean", "label": "Enabled", "description": "Enable video transmuxing for HLS streaming"},
-			"ffmpegPath":       map[string]interface{}{"type": "text", "label": "FFmpeg Path", "description": "Path to ffmpeg binary"},
-			"ffprobePath":      map[string]interface{}{"type": "text", "label": "FFprobe Path", "description": "Path to ffprobe binary"},
-			"hlsTempDirectory": map[string]interface{}{"type": "text", "label": "HLS Temp Directory", "description": "Directory for HLS segment storage (default: /tmp/novastream-hls)"},
+			"enabled":              map[string]interface{}{"type": "boolean", "label": "Enabled", "description": "Enable video transmuxing for HLS streaming"},
+			"ffmpegPath":           map[string]interface{}{"type": "text", "label": "FFmpeg Path", "description": "Path to ffmpeg binary"},
+			"ffprobePath":          map[string]interface{}{"type": "text", "label": "FFprobe Path", "description": "Path to ffprobe binary"},
+			"hlsTempDirectory":     map[string]interface{}{"type": "text", "label": "HLS Temp Directory", "description": "Directory for HLS segment storage (default: /tmp/novastream-hls)"},
+			"hardwareAcceleration": map[string]interface{}{"type": "select", "label": "Hardware Acceleration", "options": []string{"auto", "none", "nvenc", "qsv", "vaapi", "videotoolbox"}, "description": "GPU-accelerated H.264 encoding and HDR/DV tone mapping for web playback. 'auto' probes for a working encoder. Docker requires device passthrough (e.g. --device /dev/dri for vaapi/qsv, NVIDIA container runtime for nvenc)."},
 		},
 	},
 	"subtitles": map[string]interface{}{

@@ -251,6 +251,13 @@ type TransmuxSettings struct {
 	FFmpegPath       string `json:"ffmpegPath"`
 	FFprobePath      string `json:"ffprobePath"`
 	HLSTempDirectory string `json:"hlsTempDirectory"` // Directory for HLS segment storage (default: /tmp/novastream-hls)
+	// HardwareAcceleration controls GPU-accelerated H.264 encoding (and HDR/DV
+	// tone mapping) for web transcodes. One of: "auto" (probe and pick the best
+	// working encoder), "none" (force CPU libx264), or an explicit backend
+	// ("nvenc", "qsv", "vaapi", "videotoolbox"). Empty is treated as "auto".
+	// For Docker deployments the relevant device must be passed through
+	// (e.g. --device /dev/dri for VAAPI/QSV, or the NVIDIA container runtime).
+	HardwareAcceleration string `json:"hardwareAcceleration,omitempty"`
 }
 
 // WebDAVSettings defines WebDAV server configuration
