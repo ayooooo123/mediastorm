@@ -54,6 +54,45 @@ func TestAvailableSeriesOrderings(t *testing.T) {
 	})
 }
 
+func TestFilterOrderingsByEpisodes(t *testing.T) {
+	t.Run("drops empty auto-generated absolute placeholder", func(t *testing.T) {
+		// FROM-style: TVDB exposes an "absolute" season type but assigns it no
+		// episodes. Only "official" actually has episodes, so no switcher.
+		orderings := []models.SeriesOrdering{
+			{Type: "official", IsOfficial: true},
+			{Type: "absolute"},
+		}
+		hasEps := func(t string) bool { return t == "official" }
+		if got := filterOrderingsByEpisodes(orderings, hasEps); got != nil {
+			t.Fatalf("expected nil when only official has episodes, got %+v", got)
+		}
+	})
+
+	t.Run("keeps curated orderings that have episodes", func(t *testing.T) {
+		// Firefly-style: official + dvd both populated, absolute empty.
+		orderings := []models.SeriesOrdering{
+			{Type: "official", IsOfficial: true},
+			{Type: "absolute"},
+			{Type: "dvd"},
+		}
+		hasEps := func(t string) bool { return t == "official" || t == "dvd" }
+		got := filterOrderingsByEpisodes(orderings, hasEps)
+		if len(got) != 2 {
+			t.Fatalf("expected official + dvd, got %+v", got)
+		}
+		if got[0].Type != "official" || got[1].Type != "dvd" {
+			t.Fatalf("expected [official dvd] order preserved, got %+v", got)
+		}
+	})
+
+	t.Run("single ordering returns nil", func(t *testing.T) {
+		orderings := []models.SeriesOrdering{{Type: "official", IsOfficial: true}}
+		if got := filterOrderingsByEpisodes(orderings, func(string) bool { return true }); got != nil {
+			t.Fatalf("expected nil for single ordering, got %+v", got)
+		}
+	})
+}
+
 func TestResolveSeasonType(t *testing.T) {
 	available := []models.SeriesOrdering{
 		{Type: "official", IsOfficial: true},

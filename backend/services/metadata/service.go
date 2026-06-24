@@ -1355,7 +1355,7 @@ func seriesDetailsCacheKey(lang string, tvdbID int64, seasonType string) string 
 	if st == "" {
 		st = "default"
 	}
-	return cacheKey("tvdb", "series", "details", "v11", lang, strconv.FormatInt(tvdbID, 10), st)
+	return cacheKey("tvdb", "series", "details", "v12", lang, strconv.FormatInt(tvdbID, 10), st)
 }
 
 // ShelfLoadOptions configures fast shelf rendering for list-style endpoints.
@@ -3730,7 +3730,7 @@ func (s *Service) SeriesDetails(ctx context.Context, req models.SeriesDetailsQue
 	// Determine the active episode ordering. availableOrderings is empty when the
 	// series has only one ordering. activeSeasonType is the requested ordering
 	// when valid, otherwise the auto-detected official/primary ordering.
-	availableOrderings := availableSeriesOrderings(extended.Seasons)
+	availableOrderings := s.filterOrderingsWithEpisodes(tvdbID, availableSeriesOrderings(extended.Seasons))
 	primarySeasonTypeForReq := detectPrimarySeasonType(extended.Seasons)
 	if primarySeasonTypeForReq == "" {
 		primarySeasonTypeForReq = "official"
@@ -4365,7 +4365,7 @@ func (s *Service) SeriesDetailsLite(ctx context.Context, req models.SeriesDetail
 	if liteSeasonType == "" {
 		liteSeasonType = "default"
 	}
-	cacheID := cacheKey("tvdb", "series", "details", "v11-lite", s.client.language, strconv.FormatInt(tvdbID, 10), liteSeasonType)
+	cacheID := cacheKey("tvdb", "series", "details", "v12-lite", s.client.language, strconv.FormatInt(tvdbID, 10), liteSeasonType)
 	var cached models.SeriesDetails
 	if ok, _ := s.cache.get(cacheID, &cached); ok && len(cached.Seasons) > 0 {
 		log.Printf("[metadata] series details lite cache hit tvdbId=%d seasons=%d", tvdbID, len(cached.Seasons))
@@ -4441,7 +4441,7 @@ func (s *Service) SeriesDetailsLite(ctx context.Context, req models.SeriesDetail
 	extended := extResult.data
 
 	// Determine the active episode ordering (see SeriesDetails for details).
-	availableOrderings := availableSeriesOrderings(extended.Seasons)
+	availableOrderings := s.filterOrderingsWithEpisodes(tvdbID, availableSeriesOrderings(extended.Seasons))
 	primarySeasonTypeForReq := detectPrimarySeasonType(extended.Seasons)
 	if primarySeasonTypeForReq == "" {
 		primarySeasonTypeForReq = "official"
@@ -6721,6 +6721,57 @@ func availableSeriesOrderings(seasons []tvdbSeason) []models.SeriesOrdering {
 		})
 	}
 	return result
+}
+
+// filterOrderingsWithEpisodes drops candidate orderings that TVDB exposes only as
+// an empty season-type placeholder. TVDB auto-generates an "Absolute Order" (and
+// sometimes other types) for nearly every show even when no episodes are assigned
+// to it, which made us surface bogus alternate orderings (e.g. "Absolute" on FROM,
+// where tvdb.com only lists "Aired Order"). A genuinely-curated ordering returns
+// episodes from its season-type episodes endpoint; an auto-generated placeholder
+// returns none. Validation hits that endpoint (cached + singleflighted, and the
+// active ordering is fetched anyway), so it only costs API calls on a details cache
+// miss. Returns nil when one or fewer orderings survive (no switcher needed).
+func (s *Service) filterOrderingsWithEpisodes(tvdbID int64, orderings []models.SeriesOrdering) []models.SeriesOrdering {
+	if len(orderings) <= 1 {
+		return nil
+	}
+	hasEps := make(map[string]bool, len(orderings))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for i := range orderings {
+		wg.Add(1)
+		go func(seasonType string) {
+			defer wg.Done()
+			eps, err := s.cachedSeriesEpisodesBySeasonType(tvdbID, seasonType, s.client.language)
+			ok := err == nil && len(eps) > 0
+			mu.Lock()
+			hasEps[seasonType] = ok
+			mu.Unlock()
+		}(orderings[i].Type)
+	}
+	wg.Wait()
+	return filterOrderingsByEpisodes(orderings, func(seasonType string) bool { return hasEps[seasonType] })
+}
+
+// filterOrderingsByEpisodes keeps only the orderings whose season-type actually has
+// episodes (per hasEpisodes), returning nil when one or fewer survive. Split out
+// from filterOrderingsWithEpisodes so the pure selection logic is testable without
+// a TVDB client.
+func filterOrderingsByEpisodes(orderings []models.SeriesOrdering, hasEpisodes func(seasonType string) bool) []models.SeriesOrdering {
+	if len(orderings) <= 1 {
+		return nil
+	}
+	filtered := make([]models.SeriesOrdering, 0, len(orderings))
+	for _, o := range orderings {
+		if hasEpisodes(o.Type) {
+			filtered = append(filtered, o)
+		}
+	}
+	if len(filtered) <= 1 {
+		return nil
+	}
+	return filtered
 }
 
 // resolveSeasonType picks the active ordering for a request: the requested type
