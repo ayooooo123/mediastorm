@@ -219,8 +219,12 @@ func (m *TrailerPrequeueManager) downloadTrailer(id, videoURL string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
+	// Prefer HLS (m3u8) H.264 first: YouTube's DASH itags (137/140/etc.) are now
+	// gated behind SABR and return HTTP 403 on download, while the HLS variants of
+	// the same H.264/AAC content are not. The DASH/progressive selectors are kept as
+	// fallbacks for videos that don't expose an HLS manifest.
 	args := []string{
-		"-f", "bestvideo[vcodec^=avc1][height<=1080]+bestaudio[acodec^=mp4a]/best[ext=mp4][vcodec^=avc1][acodec^=mp4a][height<=1080]/22/18/best[height<=720]",
+		"-f", "best[protocol^=m3u8][vcodec^=avc1][height<=1080]/bestvideo[vcodec^=avc1][height<=1080]+bestaudio[acodec^=mp4a]/best[ext=mp4][vcodec^=avc1][acodec^=mp4a][height<=1080]/22/18/best[height<=720]",
 		"--merge-output-format", "mp4",
 		"--no-warnings",
 		"--no-playlist",
