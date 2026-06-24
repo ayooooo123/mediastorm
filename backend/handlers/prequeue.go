@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"novastream/config"
+	"novastream/internal/mediaidentity"
 	"novastream/internal/mediaresolve"
 	"novastream/models"
 	content_preferences "novastream/services/content_preferences"
@@ -78,6 +79,22 @@ func hasTrackMetadata(entry *playback.PrequeueEntry) bool {
 
 func prequeueEpisodeMatches(requested, existing *models.EpisodeReference) bool {
 	return playback.EpisodeReferencesMatch(requested, existing)
+}
+
+// canonicalPrequeueTitleID normalizes a client-supplied title ID to its canonical
+// provider form using the accompanying external IDs, so the same title opened from
+// different shelves (which hand us different ID forms) maps to one prequeue store key.
+// Falls back to the original ID when no canonical form can be derived.
+func canonicalPrequeueTitleID(mediaType, titleID, imdbID, tmdbID, tvdbID string) string {
+	canonical := mediaidentity.CanonicalTitleID(mediaType, titleID, map[string]string{
+		"imdb": imdbID,
+		"tmdb": tmdbID,
+		"tvdb": tvdbID,
+	})
+	if canonical == "" {
+		return titleID
+	}
+	return canonical
 }
 
 func isPrequeueInProgress(status playback.PrequeueStatus) bool {
@@ -671,6 +688,16 @@ func (h *PrequeueHandler) Prequeue(w http.ResponseWriter, r *http.Request) {
 	if titleName == "" {
 		http.Error(w, "titleName is required", http.StatusBadRequest)
 		return
+	}
+
+	// Canonicalize the title ID so the same show resolves to one prequeue key
+	// regardless of which shelf (Continue Watching vs Top Ten/Trending, etc.) it
+	// was opened from. Different entry points hand us different provider forms
+	// (bare TMDB number, tmdb:tv:N, tvdb:series:N, imdb:ttN); without this the
+	// store lookup misses and we needlessly re-resolve a stream we already have.
+	if canonical := canonicalPrequeueTitleID(mediaType, req.TitleID, req.ImdbID, req.TmdbID, req.TvdbID); canonical != req.TitleID {
+		log.Printf("[prequeue] Canonicalized titleId %q -> %q (imdb=%q tmdb=%q tvdb=%q)", req.TitleID, canonical, req.ImdbID, req.TmdbID, req.TvdbID)
+		req.TitleID = canonical
 	}
 
 	// Get client ID from request body or header

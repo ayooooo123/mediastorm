@@ -105,6 +105,86 @@ func TestUnknownTrackPolicyRejects(t *testing.T) {
 	}
 }
 
+func TestCanonicalPrequeueTitleID(t *testing.T) {
+	tests := []struct {
+		name      string
+		mediaType string
+		titleID   string
+		imdbID    string
+		tmdbID    string
+		tvdbID    string
+		want      string
+	}{
+		{
+			name:      "series bare tmdb number canonicalizes via tmdbId",
+			mediaType: "series",
+			titleID:   "2288",
+			tmdbID:    "2288",
+			want:      "tmdb:tv:2288",
+		},
+		{
+			name:      "series already canonical tmdb form unchanged",
+			mediaType: "series",
+			titleID:   "tmdb:tv:2288",
+			tmdbID:    "2288",
+			want:      "tmdb:tv:2288",
+		},
+		{
+			name:      "series tvdb-form id converges to tmdb when tmdbId present",
+			mediaType: "series",
+			titleID:   "tvdb:series:393199",
+			tmdbID:    "2288",
+			tvdbID:    "393199",
+			want:      "tmdb:tv:2288",
+		},
+		{
+			name:      "series imdb-only canonicalizes to imdb form",
+			mediaType: "series",
+			titleID:   "From",
+			imdbID:    "tt9813792",
+			want:      "imdb:tt9813792",
+		},
+		{
+			name:      "tv mediatype alias treated as series",
+			mediaType: "tv",
+			titleID:   "2288",
+			tmdbID:    "2288",
+			want:      "tmdb:tv:2288",
+		},
+		{
+			name:      "no identifiers normalizes case (still consistent across shelves)",
+			mediaType: "series",
+			titleID:   "From",
+			want:      "from",
+		},
+		{
+			name:      "movie bare tmdb number canonicalizes via tmdbId",
+			mediaType: "movie",
+			titleID:   "603",
+			tmdbID:    "603",
+			want:      "tmdb:movie:603",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := canonicalPrequeueTitleID(tt.mediaType, tt.titleID, tt.imdbID, tt.tmdbID, tt.tvdbID)
+			if got != tt.want {
+				t.Errorf("canonicalPrequeueTitleID(%q, %q, imdb=%q, tmdb=%q, tvdb=%q) = %q, want %q",
+					tt.mediaType, tt.titleID, tt.imdbID, tt.tmdbID, tt.tvdbID, got, tt.want)
+			}
+		})
+	}
+
+	// The core guarantee: the same show opened from two shelves with different
+	// ID forms but the same tmdbId resolves to one prequeue store key.
+	fromContinueWatching := canonicalPrequeueTitleID("series", "tvdb:series:393199", "tt9813792", "2288", "393199")
+	fromTopTen := canonicalPrequeueTitleID("series", "2288", "", "2288", "")
+	if fromContinueWatching != fromTopTen {
+		t.Errorf("expected shelves to converge: continueWatching=%q topTen=%q", fromContinueWatching, fromTopTen)
+	}
+}
+
 func TestPrequeueEpisodeMatches(t *testing.T) {
 	tests := []struct {
 		name      string
