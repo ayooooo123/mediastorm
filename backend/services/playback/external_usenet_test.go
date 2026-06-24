@@ -548,6 +548,11 @@ func TestExternalQueueStatusFallsBackToGenericWebDAVRoot(t *testing.T) {
     <D:propstat><D:status>HTTP/1.1 200 OK</D:status><D:prop><D:displayname>Release.Name.mkv</D:displayname><D:getcontentlength>123456789</D:getcontentlength></D:prop></D:propstat>
   </D:response>
 </D:multistatus>`)
+				case r.Method == "PROPFIND" || r.Method == "HEAD":
+					// Fallback probing sweeps several known roots
+					// (completed-symlinks/completed-downloads/content) before
+					// landing on the generic WebDAV root; 404 the misses.
+					w.WriteHeader(http.StatusNotFound)
 				default:
 					t.Fatalf("unexpected request method=%q path=%q mode=%q", r.Method, r.URL.Path, r.URL.Query().Get("mode"))
 				}
@@ -697,7 +702,11 @@ func TestResolveExternalUsenetEngineSelectsMediaFromCompletedWebDAVDirectory(t *
 		}
 		webDAVAuthSeen = true
 		if r.URL.Path != "/webdav/completed-symlinks/movies/Movie/" {
-			t.Fatalf("PROPFIND path = %q", r.URL.Path)
+			// Fallback probing also sweeps title-derived roots
+			// (completed-symlinks/Movie, completed-downloads/Movie, …);
+			// 404 the misses so the mapped storage path wins.
+			w.WriteHeader(http.StatusNotFound)
+			return
 		}
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusMultiStatus)
