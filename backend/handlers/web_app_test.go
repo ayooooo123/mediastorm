@@ -190,6 +190,25 @@ func TestWebPlaybackHandlerScopesProfilesForAccountSession(t *testing.T) {
 	}
 }
 
+func TestWebPlaybackHandlerInjectsProfileShareFlag(t *testing.T) {
+	// The share button is gated client-side on the active profile's allowShareLinks
+	// flag, which rides in the injected PROFILES (.Users) JSON. Assert the flag is
+	// serialized so the player can read it.
+	handler := NewWebPlaybackHandler(fakeWebPlaybackUsers{
+		users: []models.User{{ID: "profile-1", Name: "One", AccountID: "acc", AllowShareLinks: true}},
+	}, fakeWebPlaybackSessions{token: "tok", session: models.Session{AccountID: "acc", IsMaster: false}}, "")
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/watch?token=tok", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, `"allowShareLinks":true`) {
+		t.Fatalf("expected profile allowShareLinks flag in served PROFILES JSON")
+	}
+}
+
 func TestWebPlaybackHandlerRejectsUnsupportedMethods(t *testing.T) {
 	handler := NewWebPlaybackHandler(fakeWebPlaybackUsers{}, fakeWebPlaybackSessions{}, "")
 	req := httptest.NewRequest(http.MethodPost, "/watch", nil)

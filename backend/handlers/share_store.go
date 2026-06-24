@@ -19,7 +19,12 @@ const (
 	DefaultShareLinkTTL = 24 * time.Hour
 
 	// MaxShareLinkTTL caps how far in the future a share link may be valid.
-	MaxShareLinkTTL = 90 * 24 * time.Hour
+	MaxShareLinkTTL = 7 * 24 * time.Hour
+
+	// MaxShareLinkUses is the hard cap on how many times a share link may be
+	// opened. There is no "unlimited" tier: a request for 0/unlimited, or for a
+	// count above this cap, is clamped to MaxShareLinkUses.
+	MaxShareLinkUses = 5
 
 	// shareCleanupInterval is how often the janitor purges expired share links.
 	shareCleanupInterval = 30 * time.Minute
@@ -57,7 +62,8 @@ func NewShareStore(repo ShareLinkRepo) *ShareStore {
 }
 
 // Create stores a new share link for the captured params and returns it. ttl is
-// clamped to (0, MaxShareLinkTTL]; maxUses of 0 means unlimited uses.
+// clamped to (0, MaxShareLinkTTL]; maxUses is clamped to (0, MaxShareLinkUses]
+// — a request for 0/unlimited or above the cap becomes MaxShareLinkUses.
 func (s *ShareStore) Create(ctx context.Context, accountID string, isMaster bool, params map[string]string, ttl time.Duration, maxUses int, label string) (*models.ShareLink, error) {
 	token, err := generateShareToken()
 	if err != nil {
@@ -69,8 +75,8 @@ func (s *ShareStore) Create(ctx context.Context, accountID string, isMaster bool
 	if ttl > MaxShareLinkTTL {
 		ttl = MaxShareLinkTTL
 	}
-	if maxUses < 0 {
-		maxUses = 0
+	if maxUses <= 0 || maxUses > MaxShareLinkUses {
+		maxUses = MaxShareLinkUses
 	}
 
 	now := time.Now().UTC()

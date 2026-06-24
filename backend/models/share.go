@@ -11,7 +11,7 @@ type ShareLink struct {
 	IsMaster   bool              `json:"-"`
 	Label      string            `json:"label,omitempty"`
 	Params     map[string]string `json:"-"`
-	MaxUses    int               `json:"maxUses"` // 0 = unlimited
+	MaxUses    int               `json:"maxUses"` // hard-capped use limit (see handlers.MaxShareLinkUses); legacy 0 = unlimited
 	UseCount   int               `json:"useCount"`
 	Active     bool              `json:"active"`
 	CreatedAt  time.Time         `json:"createdAt"`

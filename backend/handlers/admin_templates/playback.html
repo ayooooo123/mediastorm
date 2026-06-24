@@ -114,9 +114,9 @@
                 <label>Valid for</label>
                 <div class="share-chips" id="shareTtlChips">
                     <button type="button" class="share-chip" data-ttl="1">1 day</button>
+                    <button type="button" class="share-chip" data-ttl="3">3 days</button>
                     <button type="button" class="share-chip is-active" data-ttl="7">7 days</button>
-                    <button type="button" class="share-chip" data-ttl="30">30 days</button>
-                    <input id="shareTtlCustom" class="share-chip-input" type="number" min="1" max="90" placeholder="#" aria-label="Custom days">
+                    <input id="shareTtlCustom" class="share-chip-input" type="number" min="1" max="7" placeholder="#" aria-label="Custom days">
                     <span class="share-chip-suffix">days</span>
                 </div>
             </div>
@@ -124,8 +124,8 @@
                 <label>Number of uses</label>
                 <div class="share-chips" id="shareUsesChips">
                     <button type="button" class="share-chip" data-uses="1">Once</button>
-                    <button type="button" class="share-chip" data-uses="5">5 times</button>
-                    <button type="button" class="share-chip is-active" data-uses="0">Unlimited</button>
+                    <button type="button" class="share-chip" data-uses="3">3 times</button>
+                    <button type="button" class="share-chip is-active" data-uses="5">5 times</button>
                 </div>
             </div>
             <div class="details-actions" style="justify-content: flex-end; margin-top: 14px;">
@@ -1556,6 +1556,7 @@
 
     document.addEventListener('DOMContentLoaded', () => {
         renderProfiles();
+        updateShareButtonVisibility();
         if (activeProfileId) void loadProfileSettings(activeProfileId);
         if (activeProfileId) loadPlaybackShelves();
     });
@@ -1713,6 +1714,7 @@
         activeProfileId = profile.id;
         activeProfileName = profile.name || profile.id;
         renderProfiles();
+        updateShareButtonVisibility();
         clearDetails();
         void loadProfileSettings(activeProfileId);
         continueWatchingExpanded = false;
@@ -3967,9 +3969,10 @@
         return params;
     }
 
-    // Selected TTL (days) and max uses (0 = unlimited) chosen in the share dialog.
+    // Selected TTL (days) and max uses chosen in the share dialog. Both are hard
+    // capped server-side (7 days / 5 uses); there is no unlimited tier.
     let shareTtlDays = 7;
-    let shareMaxUses = 0;
+    let shareMaxUses = 5;
     let shareChipsBound = false;
 
     function initShareChips() {
@@ -3989,7 +3992,7 @@
         custom?.addEventListener('input', () => {
             if (custom.value) {
                 ttlChips.querySelectorAll('.share-chip').forEach((c) => c.classList.remove('is-active'));
-                shareTtlDays = Math.max(1, Math.min(90, parseInt(custom.value, 10) || 0));
+                shareTtlDays = Math.max(1, Math.min(7, parseInt(custom.value, 10) || 0));
             }
         });
         usesChips?.querySelectorAll('.share-chip').forEach((chip) => {
@@ -4001,7 +4004,20 @@
         });
     }
 
+    // The active profile may mint share links only when the master has granted it.
+    function activeProfileCanShare() {
+        const p = profiles.find((profile) => profile.id === activeProfileId);
+        return !!(p && p.allowShareLinks);
+    }
+
+    // Hide the share button for profiles without the share-link grant.
+    function updateShareButtonVisibility() {
+        const btn = document.getElementById('webPlayerShareButton');
+        if (btn) btn.style.display = activeProfileCanShare() ? '' : 'none';
+    }
+
     function openShareDialog() {
+        if (!activeProfileCanShare()) return;
         initShareChips();
         const backdrop = document.getElementById('shareBackdrop');
         const status = document.getElementById('shareStatus');
@@ -4024,6 +4040,7 @@
     }
 
     async function createShareLink() {
+        if (!activeProfileCanShare()) return;
         const input = document.getElementById('shareLinkInput');
         const status = document.getElementById('shareStatus');
         const options = document.getElementById('shareOptions');
@@ -4031,7 +4048,7 @@
         if (!input) return;
 
         const custom = document.getElementById('shareTtlCustom');
-        const ttlDays = custom && custom.value ? Math.max(1, Math.min(90, parseInt(custom.value, 10) || shareTtlDays)) : shareTtlDays;
+        const ttlDays = custom && custom.value ? Math.max(1, Math.min(7, parseInt(custom.value, 10) || shareTtlDays)) : shareTtlDays;
 
         if (options) options.style.display = 'none';
         if (result) result.style.display = 'block';

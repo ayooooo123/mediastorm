@@ -774,7 +774,7 @@ func main() {
 	if store != nil {
 		shareLinkRepo = store.ShareLinks()
 	}
-	shareHandler := handlers.NewShareHandler(handlers.NewShareStore(shareLinkRepo), sessionsService, settings.Server.BasePath)
+	shareHandler := handlers.NewShareHandler(handlers.NewShareStore(shareLinkRepo), sessionsService, userService, settings.Server.BasePath)
 
 	api.Register(
 		r,
@@ -1015,6 +1015,7 @@ func main() {
 	r.HandleFunc("/admin/api/accounts", adminUIHandler.RequireAuth(adminUIHandler.DeleteUserAccount)).Methods(http.MethodDelete)
 	r.HandleFunc("/admin/api/accounts/password", adminUIHandler.RequireAuth(adminUIHandler.ResetUserAccountPassword)).Methods(http.MethodPut)
 	r.HandleFunc("/admin/api/accounts/max-streams", adminUIHandler.RequireMasterAuth(adminUIHandler.SetAccountMaxStreams)).Methods(http.MethodPut)
+	r.HandleFunc("/admin/api/profiles/share-links", adminUIHandler.RequireMasterAuth(adminUIHandler.SetProfileAllowShareLinks)).Methods(http.MethodPut)
 	r.HandleFunc("/admin/api/accounts/default-password", adminUIHandler.RequireAuth(adminUIHandler.HasDefaultPassword)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/library/libraries", adminUIHandler.RequireAuth(adminUIHandler.ListLocalMediaLibraries)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/library/libraries", adminUIHandler.RequireAuth(adminUIHandler.CreateLocalMediaLibrary)).Methods(http.MethodPost)

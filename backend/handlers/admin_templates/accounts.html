@@ -277,6 +277,7 @@ function renderProfiles() {
         if (p.isKidsProfile) badges.push('<span class="status-badge warning" style="font-size: 0.65rem;">Kids</span>');
         if (p.hasPin) badges.push('<span class="status-badge" style="font-size: 0.65rem;">PIN</span>');
         if (p._maxStreams > 0) badges.push(`<span class="status-badge" style="font-size: 0.65rem;">Max ${p._maxStreams} streams</span>`);
+        if (isAdmin && p.allowShareLinks) badges.push('<span class="status-badge" style="font-size: 0.65rem;">Share</span>');
 
         const avatarHtml = p.hasIcon
             ? `<img class="profile-avatar" src="${basePath}/api/profiles/icon?profileId=${p.id}" alt="${escapeHtml(p.name)}" style="object-fit: cover;">`
@@ -299,6 +300,7 @@ function renderProfiles() {
                     <button class="btn btn-secondary btn-sm" onclick="showEditProfileModal('${p.id}')">Edit</button>
                     <a class="btn btn-secondary btn-sm" href="${basePath}/settings?profileId=${p.id}">Settings</a>
                     ${isAdmin ? `<button class="btn btn-secondary btn-sm" onclick="showProfileStreamsModal('${p.id}', '${escapeHtml(p.name)}', '${p.accountId}')">Streams</button>` : ''}
+                    ${isAdmin ? `<button class="btn ${p.allowShareLinks ? 'btn-primary' : 'btn-secondary'} btn-sm" onclick="toggleProfileShareLinks('${p.id}', '${escapeHtml(p.name)}', ${p.allowShareLinks ? 'true' : 'false'})">Share Links: ${p.allowShareLinks ? '✓ On' : 'Off'}</button>` : ''}
                     ${isAdmin ? `<button class="btn btn-secondary btn-sm" onclick="showReassignModal('${p.id}')">Reassign</button>` : ''}
                     <button class="btn btn-danger btn-sm" onclick="deleteProfile('${p.id}', '${escapeHtml(p.name)}')">Delete</button>
                 </div>
@@ -941,6 +943,22 @@ async function setMaxStreams(e, accountId) {
         if (!res.ok) throw new Error(await res.text());
         hideModal();
         showToast('Stream limit updated');
+        loadData();
+    } catch (err) {
+        showToast('Error: ' + err.message, 'error');
+    }
+}
+
+async function toggleProfileShareLinks(profileId, name, current) {
+    const allow = !current;
+    try {
+        const res = await fetch(basePath + '/api/profiles/share-links?profileId=' + profileId, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ allowShareLinks: allow })
+        });
+        if (!res.ok) throw new Error(await res.text());
+        showToast(allow ? `Share links enabled for ${name}` : `Share links disabled for ${name}`);
         loadData();
     } catch (err) {
         showToast('Error: ' + err.message, 'error');
