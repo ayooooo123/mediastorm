@@ -536,7 +536,17 @@ func selectStartupWatchlistItems(items []models.WatchlistItem, shelfLimit, overf
 	return result
 }
 
+// selectStartupContinueWatchingItems applies the startup recency cap but always
+// retains continue-watching series whose next episode has not aired yet. The home
+// "My Upcoming" shelf is derived from the continue-watching list, so a
+// stale-but-upcoming series (e.g. a returning show last watched months ago) would
+// otherwise silently drop off once newer activity pushed it past the cap.
 func selectStartupContinueWatchingItems(items []models.SeriesWatchState, shelfLimit, overflowCount int) []models.SeriesWatchState {
+	capped := selectStartupContinueWatchingCapped(items, shelfLimit, overflowCount)
+	return appendUpcomingContinueWatchingItems(capped, items)
+}
+
+func selectStartupContinueWatchingCapped(items []models.SeriesWatchState, shelfLimit, overflowCount int) []models.SeriesWatchState {
 	if shelfLimit <= 0 || len(items) <= shelfLimit || overflowCount <= 0 {
 		if shelfLimit > 0 && len(items) > shelfLimit {
 			return items[:shelfLimit]
@@ -582,6 +592,55 @@ func selectStartupContinueWatchingItems(items []models.SeriesWatchState, shelfLi
 		addStartupIdentityKeys(seen, keys)
 	}
 	return result
+}
+
+// appendUpcomingContinueWatchingItems appends any continue-watching series with an
+// unreleased next episode that the recency cap excluded, deduplicating against the
+// already-selected items. This keeps the "My Upcoming" home shelf complete without
+// inflating the startup payload with the full continue-watching list.
+func appendUpcomingContinueWatchingItems(result, all []models.SeriesWatchState) []models.SeriesWatchState {
+	if len(result) >= len(all) {
+		return result
+	}
+	seen := make(map[string]struct{}, len(result)*2)
+	for _, item := range result {
+		addStartupIdentityKeys(seen, startupContinueWatchingIdentityKeys(item))
+	}
+	for _, item := range all {
+		if !continueWatchingHasUpcomingEpisode(item) {
+			continue
+		}
+		keys := startupContinueWatchingIdentityKeys(item)
+		if hasStartupIdentityKey(seen, keys) {
+			continue
+		}
+		result = append(result, item)
+		addStartupIdentityKeys(seen, keys)
+	}
+	return result
+}
+
+// continueWatchingHasUpcomingEpisode reports whether the series' next episode has a
+// known air date that is still in the future. Mirrors the frontend
+// isUpcomingContinueWatchingItem/isEpisodeUnreleased helpers so the "My Upcoming"
+// shelf stays in sync with what the backend ships.
+func continueWatchingHasUpcomingEpisode(item models.SeriesWatchState) bool {
+	next := item.NextEpisode
+	if next == nil || strings.TrimSpace(next.AirDate) == "" {
+		return false
+	}
+	now := time.Now()
+	if ts := strings.TrimSpace(next.AirDateTimeUTC); ts != "" {
+		if airDT, err := time.Parse(time.RFC3339, ts); err == nil {
+			return airDT.After(now)
+		}
+	}
+	// Date-only fallback: compare against the start of today in local time.
+	if airDate, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(next.AirDate), now.Location()); err == nil {
+		today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+		return airDate.After(today)
+	}
+	return false
 }
 
 func startupWatchlistHasUsableExploreArtwork(item models.WatchlistItem) bool {

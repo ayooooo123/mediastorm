@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"fmt"
 	"testing"
+	"time"
 
 	"novastream/models"
 )
@@ -175,4 +177,111 @@ func TestMergeProgressIntoContinueWatching_NoFalseMatch(t *testing.T) {
 	if got := merged[0].PercentWatched; got != 0 {
 		t.Fatalf("PercentWatched = %v, want 0 (unrelated series must not match)", got)
 	}
+}
+
+// TestSelectStartupContinueWatchingItems_RetainsUpcomingPastCap verifies that a
+// stale-but-upcoming series (next episode not yet aired) survives the recency cap
+// so the home "My Upcoming" shelf does not silently drop it. Regression for The
+// Bear dropping off after months without activity pushed it past the top-N cap.
+func TestSelectStartupContinueWatchingItems_RetainsUpcomingPastCap(t *testing.T) {
+	future := time.Now().Add(48 * time.Hour).UTC().Format(time.RFC3339)
+
+	items := make([]models.SeriesWatchState, 0, 6)
+	// 5 recent, already-aired series fill the cap (shelfLimit=3, overflow=1 => 4 slots).
+	for i := 0; i < 5; i++ {
+		items = append(items, models.SeriesWatchState{
+			SeriesID:    fmt.Sprintf("tvdb:series:recent%d", i),
+			SeriesTitle: fmt.Sprintf("Recent %d", i),
+			PosterURL:   "https://image.tmdb.org/t/p/w500/recent.jpg",
+			NextEpisode: &models.EpisodeReference{SeasonNumber: 1, EpisodeNumber: 2},
+		})
+	}
+	// Stale series at the end of the recency-ordered list, but with an upcoming episode.
+	items = append(items, models.SeriesWatchState{
+		SeriesID:    "tvdb:series:thebear",
+		SeriesTitle: "The Bear",
+		PosterURL:   "https://image.tmdb.org/t/p/w500/bear.jpg",
+		NextEpisode: &models.EpisodeReference{
+			SeasonNumber:   5,
+			EpisodeNumber:  1,
+			AirDate:        "2999-01-01",
+			AirDateTimeUTC: future,
+		},
+	})
+
+	got := selectStartupContinueWatchingItems(items, 3, 1)
+
+	found := false
+	for _, item := range got {
+		if item.SeriesID == "tvdb:series:thebear" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("upcoming series dropped by cap; got %d items: %+v", len(got), seriesIDs(got))
+	}
+}
+
+// TestSelectStartupContinueWatchingItems_NoDuplicateUpcoming ensures an upcoming
+// series already inside the cap is not appended a second time.
+func TestSelectStartupContinueWatchingItems_NoDuplicateUpcoming(t *testing.T) {
+	future := time.Now().Add(48 * time.Hour).UTC().Format(time.RFC3339)
+	items := []models.SeriesWatchState{
+		{
+			SeriesID:    "tvdb:series:onepiece",
+			SeriesTitle: "One Piece",
+			ExternalIDs: map[string]string{"tvdb": "81797"},
+			NextEpisode: &models.EpisodeReference{AirDate: "2999-01-01", AirDateTimeUTC: future},
+		},
+		{
+			SeriesID:    "tvdb:series:from",
+			SeriesTitle: "FROM",
+			NextEpisode: &models.EpisodeReference{SeasonNumber: 4, EpisodeNumber: 1},
+		},
+	}
+
+	got := selectStartupContinueWatchingItems(items, 5, 2)
+
+	count := 0
+	for _, item := range got {
+		if item.SeriesID == "tvdb:series:onepiece" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("One Piece appeared %d times, want 1: %+v", count, seriesIDs(got))
+	}
+}
+
+func TestContinueWatchingHasUpcomingEpisode(t *testing.T) {
+	future := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
+	past := time.Now().Add(-24 * time.Hour).UTC().Format(time.RFC3339)
+	cases := []struct {
+		name string
+		item models.SeriesWatchState
+		want bool
+	}{
+		{"nil next episode", models.SeriesWatchState{}, false},
+		{"no air date", models.SeriesWatchState{NextEpisode: &models.EpisodeReference{SeasonNumber: 1}}, false},
+		{"future utc", models.SeriesWatchState{NextEpisode: &models.EpisodeReference{AirDate: "2999-01-01", AirDateTimeUTC: future}}, true},
+		{"past utc", models.SeriesWatchState{NextEpisode: &models.EpisodeReference{AirDate: "2000-01-01", AirDateTimeUTC: past}}, false},
+		{"future date only", models.SeriesWatchState{NextEpisode: &models.EpisodeReference{AirDate: "2999-01-01"}}, true},
+		{"past date only", models.SeriesWatchState{NextEpisode: &models.EpisodeReference{AirDate: "2000-01-01"}}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := continueWatchingHasUpcomingEpisode(tc.item); got != tc.want {
+				t.Fatalf("continueWatchingHasUpcomingEpisode = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func seriesIDs(items []models.SeriesWatchState) []string {
+	ids := make([]string, len(items))
+	for i, item := range items {
+		ids[i] = item.SeriesID
+	}
+	return ids
 }
