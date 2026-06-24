@@ -654,6 +654,23 @@ func (h *PrequeueHandler) RunWorkerSyncScoped(ctx context.Context, titleID, titl
 	return entry.ID, nil
 }
 
+// invalidClientIDs are sentinel values that must never be used as a client ID.
+// "unknown" is what react-native-device-info's getUniqueId() returns on
+// unsupported platforms (notably web); the rest guard against empty-ish values.
+var invalidClientIDs = map[string]struct{}{
+	"unknown": {}, "null": {}, "undefined": {}, "0": {},
+}
+
+// normalizeClientID trims a candidate client ID and drops sentinel values,
+// returning "" when the value should be treated as "no client".
+func normalizeClientID(raw string) string {
+	id := strings.TrimSpace(raw)
+	if _, bad := invalidClientIDs[strings.ToLower(id)]; bad {
+		return ""
+	}
+	return id
+}
+
 // Prequeue initiates a prequeue request for a title
 func (h *PrequeueHandler) Prequeue(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
@@ -700,10 +717,13 @@ func (h *PrequeueHandler) Prequeue(w http.ResponseWriter, r *http.Request) {
 		req.TitleID = canonical
 	}
 
-	// Get client ID from request body or header
-	clientID := strings.TrimSpace(req.ClientID)
+	// Get client ID from request body or header. Reject the "unknown" sentinel
+	// (emitted by react-native-device-info's getUniqueId() on unsupported
+	// platforms) so a bogus, shared client ID never collapses per-client
+	// settings into a single junk scope.
+	clientID := normalizeClientID(req.ClientID)
 	if clientID == "" {
-		clientID = strings.TrimSpace(r.Header.Get("X-Client-ID"))
+		clientID = normalizeClientID(r.Header.Get("X-Client-ID"))
 	}
 
 	log.Printf("[prequeue] Received request: titleId=%s titleName=%q userId=%s clientId=%s mediaType=%s", req.TitleID, titleName, req.UserID, clientID, mediaType)
