@@ -376,15 +376,15 @@ type HLSSession struct {
 	UsesSubtitleRendition bool
 
 	// Performance tracking
-	StreamStartTime      time.Time
-	FirstSegmentTime     time.Time
-	BytesStreamed        int64
-	SegmentsCreated      int
-	FFmpegCPUStart       float64
+	StreamStartTime  time.Time
+	FirstSegmentTime time.Time
+	BytesStreamed    int64
+	SegmentsCreated  int
+	FFmpegCPUStart   float64
 	// Rolling throughput sample state (bits/sec), updated atomically.
-	throughputLastBytes int64
-	throughputLastNanos int64
-	throughputBps       int64
+	throughputLastBytes  int64
+	throughputLastNanos  int64
+	throughputBps        int64
 	FFmpegPID            int
 	LastSegmentRequest   time.Time
 	SegmentRequestCount  int
@@ -438,6 +438,11 @@ type HLSSession struct {
 	PrequeueType   string // "", "details" (details page), or "next_episode" (auto-play next)
 	CastMode       bool   // True when the session is being prepared for Chromecast-style HLS playback
 	PlaybackTarget string // Optional client target hint, e.g. "web"
+
+	// TonemappedToSDR is set when an HDR/DV source was tone mapped down to SDR
+	// H.264 during transcode. The HLS playlist must then advertise SDR rather
+	// than PQ video range.
+	TonemappedToSDR bool
 
 	// YouTube HLS sessions are assembled from separate direct video/audio URLs.
 	YouTubeVideoURL string
@@ -785,6 +790,10 @@ type HLSManager struct {
 	// Global probe cache - shared between prequeue (ProbeVideoFull) and HLS (probeAllMetadata)
 	probeCache   map[string]*cachedProbeEntry
 	probeCacheMu sync.RWMutex
+
+	// Hardware-accelerated encode capabilities, detected once on first transcode.
+	hwAccelOnce sync.Once
+	hwAccel     HWAccelCaps
 }
 
 // inputLooksLikeHLS reports whether a live source URL is an HLS playlist. The
@@ -2185,6 +2194,24 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 		videoWillTranscode = true
 	}
 
+	// Build the web video encode plan up-front so any hardware-device
+	// initialization (-vaapi_device / -init_hw_device) can be injected as a
+	// global option BEFORE -i. The plan picks a GPU H.264 encoder when one is
+	// detected and working, and tone maps HDR/DV down to SDR for the browser.
+	// Only the web player path is affected; native/live transcodes are untouched.
+	var webEncodePlan videoEncodePlan
+	useWebEncodePlan := videoWillTranscode && session.PlaybackTarget == "web"
+	if useWebEncodePlan {
+		caps := m.hwAccelCaps()
+		tonemapNeeded := session.HasDV || session.HasHDR
+		webEncodePlan = buildVideoEncodePlan(caps, tonemapNeeded)
+		if len(webEncodePlan.GlobalArgs) > 0 {
+			args = append(args, webEncodePlan.GlobalArgs...)
+		}
+		log.Printf("[hls] session %s: web encode plan kind=%s hwEncode=%v tonemapped=%v filter=%q",
+			session.ID, webEncodePlan.Kind, webEncodePlan.HardwareEncode, webEncodePlan.Tonemapped, webEncodePlan.Filter)
+	}
+
 	// Force INPUT seeking when muxing a same-pass subtitle so the single -ss before -i applies to
 	// BOTH the video and the subtitle output. OUTPUT seeking only seeks the first output, which
 	// would leave the subtitle starting at the beginning of the file and wildly out of sync.
@@ -2377,22 +2404,42 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 		// requires decoding away keyframe pre-roll.
 		// Use ultrafast preset + zerolatency tune for fastest possible startup
 		// Quality is slightly lower than veryfast but startup is significantly faster
-		if forceVideoTranscodeForWebSubtitleSeek {
-			log.Printf("[hls] session %s: transcoding video codec %q to H.264 for accurate web subtitle seek/resume (ultrafast)", session.ID, videoCodec)
+		if useWebEncodePlan {
+			// Web player path: GPU-accelerated H.264 encode (when available) plus
+			// HDR/DV -> SDR tone mapping. webEncodePlan was built above so its
+			// device-init globals could precede -i.
+			if webEncodePlan.Filter != "" {
+				args = append(args, "-vf", webEncodePlan.Filter)
+			}
+			args = append(args, webEncodePlan.EncoderArgs...)
+			args = append(args,
+				"-force_key_frames", fmt.Sprintf("expr:gte(t,n_forced*%.3f)", hlsSegmentDuration),
+				"-threads", "0", // Ignored by hardware encoders; used by libx264.
+			)
+			session.mu.Lock()
+			session.TonemappedToSDR = webEncodePlan.Tonemapped
+			session.mu.Unlock()
+			log.Printf("[hls] session %s: transcoding to H.264 via %s (hwEncode=%v, tonemapped=%v)",
+				session.ID, webEncodePlan.Kind, webEncodePlan.HardwareEncode, webEncodePlan.Tonemapped)
 		} else {
-			log.Printf("[hls] session %s: video transcode required for codec %q, transcoding to H.264 (ultrafast)", session.ID, videoCodec)
+			// Native/live transcode of an incompatible codec — CPU H.264, no tone mapping.
+			if forceVideoTranscodeForWebSubtitleSeek {
+				log.Printf("[hls] session %s: transcoding video codec %q to H.264 for accurate web subtitle seek/resume (ultrafast)", session.ID, videoCodec)
+			} else {
+				log.Printf("[hls] session %s: video transcode required for codec %q, transcoding to H.264 (ultrafast)", session.ID, videoCodec)
+			}
+			args = append(args,
+				"-c:v", "libx264",
+				"-preset", "ultrafast",
+				"-tune", "zerolatency",
+				"-crf", "23",
+				"-profile:v", "high",
+				"-level", "4.1",
+				"-pix_fmt", "yuv420p",
+				"-force_key_frames", fmt.Sprintf("expr:gte(t,n_forced*%.3f)", hlsSegmentDuration),
+				"-threads", "0", // Use all available CPU cores
+			)
 		}
-		args = append(args,
-			"-c:v", "libx264",
-			"-preset", "ultrafast",
-			"-tune", "zerolatency",
-			"-crf", "23",
-			"-profile:v", "high",
-			"-level", "4.1",
-			"-pix_fmt", "yuv420p",
-			"-force_key_frames", fmt.Sprintf("expr:gte(t,n_forced*%.3f)", hlsSegmentDuration),
-			"-threads", "0", // Use all available CPU cores
-		)
 		// When transcoding video for fMP4, also check if audio needs transcoding
 		// MP3 audio doesn't work well in fMP4 containers on iOS - must use AAC
 		if len(audioStreams) > 0 && audioStreams[0].Codec == "mp3" {
@@ -3977,14 +4024,17 @@ func (m *HLSManager) ServePlaylist(w http.ResponseWriter, r *http.Request, sessi
 	playlistContent := string(content)
 	session.mu.RLock()
 	seekGeneration := session.SeekGeneration
+	tonemappedToSDR := session.TonemappedToSDR
 	session.mu.RUnlock()
 
 	// Build header tags to inject after #EXTM3U
 	var headerTags []string
 
 	// Inject EXT-X-VIDEO-RANGE for HDR/DV content - tells iOS AVPlayer to enable HDR mode
-	// Without this, iOS treats HDR content as SDR causing color banding and incorrect display
-	if (session.HasDV || session.HasHDR) && !strings.Contains(playlistContent, "#EXT-X-VIDEO-RANGE") {
+	// Without this, iOS treats HDR content as SDR causing color banding and incorrect display.
+	// Skip when the source was tone mapped down to SDR for the web player — the
+	// stream is genuinely SDR H.264 and must not be advertised as PQ.
+	if (session.HasDV || session.HasHDR) && !tonemappedToSDR && !strings.Contains(playlistContent, "#EXT-X-VIDEO-RANGE") {
 		headerTags = append(headerTags, "#EXT-X-VIDEO-RANGE:PQ")
 	}
 
@@ -4082,7 +4132,7 @@ func (m *HLSManager) ServePlaylist(w http.ResponseWriter, r *http.Request, sessi
 	w.Write([]byte(playlistContent))
 
 	videoRange := "SDR"
-	if session.HasDV || session.HasHDR {
+	if (session.HasDV || session.HasHDR) && !tonemappedToSDR {
 		videoRange = "PQ"
 	}
 	log.Printf("[hls] served playlist for session %s, VIDEO-RANGE=%s, auth token=%v", sessionID, videoRange, authToken != "")
