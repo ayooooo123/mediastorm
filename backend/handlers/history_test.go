@@ -15,13 +15,17 @@ import (
 )
 
 type fakeHistoryService struct {
-	state        models.SeriesWatchState
-	items        []models.SeriesWatchState
-	watchItems   []models.WatchHistoryItem
-	revision     string
-	err          error
-	hideUserID   string
-	hideSeriesID string
+	state          models.SeriesWatchState
+	items          []models.SeriesWatchState
+	watchItems     []models.WatchHistoryItem
+	revision       string
+	err            error
+	hideUserID     string
+	hideSeriesID   string
+	orderingValue  string
+	setOrderTVDBID int64
+	setOrderType   string
+	setOrderUserID string
 }
 
 func (f *fakeHistoryService) RecordEpisode(userID string, payload models.EpisodeWatchPayload) (models.SeriesWatchState, error) {
@@ -45,6 +49,17 @@ func (f *fakeHistoryService) GetSeriesWatchState(userID, seriesID string) (*mode
 		return nil, f.err
 	}
 	return &f.state, nil
+}
+
+func (f *fakeHistoryService) GetSeriesOrdering(userID string, tvdbID int64) (string, error) {
+	return f.orderingValue, f.err
+}
+
+func (f *fakeHistoryService) SetSeriesOrdering(userID string, tvdbID int64, seasonType string) error {
+	f.setOrderUserID = userID
+	f.setOrderTVDBID = tvdbID
+	f.setOrderType = seasonType
+	return f.err
 }
 
 func (f *fakeHistoryService) ListWatchHistory(userID string) ([]models.WatchHistoryItem, error) {
@@ -314,5 +329,62 @@ func TestHistoryHandler_HideFromContinueWatchingByBody(t *testing.T) {
 	}
 	if svc.hideSeriesID != "localmedia:folder/file.mkv" {
 		t.Fatalf("unexpected series id %q", svc.hideSeriesID)
+	}
+}
+
+func TestGetSeriesOrdering(t *testing.T) {
+	svc := &fakeHistoryService{orderingValue: "dvd"}
+	handler := handlers.NewHistoryHandler(svc, nil, false)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/users/user1/series-ordering/75805", nil)
+	req = mux.SetURLVars(req, map[string]string{"userID": "user1", "tvdbID": "75805"})
+	rec := httptest.NewRecorder()
+
+	handler.GetSeriesOrdering(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var resp struct {
+		SeasonType string `json:"seasonType"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.SeasonType != "dvd" {
+		t.Fatalf("seasonType = %q, want dvd", resp.SeasonType)
+	}
+}
+
+func TestGetSeriesOrderingBadTVDBID(t *testing.T) {
+	handler := handlers.NewHistoryHandler(&fakeHistoryService{}, nil, false)
+	req := httptest.NewRequest(http.MethodGet, "/api/users/user1/series-ordering/abc", nil)
+	req = mux.SetURLVars(req, map[string]string{"userID": "user1", "tvdbID": "abc"})
+	rec := httptest.NewRecorder()
+
+	handler.GetSeriesOrdering(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestSetSeriesOrdering(t *testing.T) {
+	svc := &fakeHistoryService{}
+	handler := handlers.NewHistoryHandler(svc, nil, false)
+
+	body := []byte(`{"seasonType":"absolute"}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/users/user1/series-ordering/75805", bytes.NewReader(body))
+	req = mux.SetURLVars(req, map[string]string{"userID": "user1", "tvdbID": "75805"})
+	rec := httptest.NewRecorder()
+
+	handler.SetSeriesOrdering(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if svc.setOrderUserID != "user1" || svc.setOrderTVDBID != 75805 || svc.setOrderType != "absolute" {
+		t.Fatalf("SetSeriesOrdering recorded (%q, %d, %q), want (user1, 75805, absolute)",
+			svc.setOrderUserID, svc.setOrderTVDBID, svc.setOrderType)
 	}
 }

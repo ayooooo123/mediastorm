@@ -481,11 +481,12 @@ func (h *MetadataHandler) SeriesDetails(w http.ResponseWriter, r *http.Request) 
 	}
 
 	req := models.SeriesDetailsQuery{
-		TitleID: strings.TrimSpace(query.Get("titleId")),
-		Name:    strings.TrimSpace(query.Get("name")),
-		Year:    trimAndParseInt(query.Get("year")),
-		TVDBID:  trimAndParseInt64(query.Get("tvdbId")),
-		TMDBID:  trimAndParseInt64(query.Get("tmdbId")),
+		TitleID:    strings.TrimSpace(query.Get("titleId")),
+		Name:       strings.TrimSpace(query.Get("name")),
+		Year:       trimAndParseInt(query.Get("year")),
+		TVDBID:     trimAndParseInt64(query.Get("tvdbId")),
+		TMDBID:     trimAndParseInt64(query.Get("tmdbId")),
+		SeasonType: strings.ToLower(strings.TrimSpace(query.Get("seasonType"))),
 	}
 
 	details, err := service.SeriesDetails(r.Context(), req)

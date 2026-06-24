@@ -92,6 +92,12 @@ func (m *mockHistoryService) GetSeriesWatchState(userID, seriesID string) (*mode
 	return nil, nil
 }
 func (m *mockHistoryService) HideFromContinueWatching(userID, seriesID string) error { return nil }
+func (m *mockHistoryService) GetSeriesOrdering(userID string, tvdbID int64) (string, error) {
+	return "", nil
+}
+func (m *mockHistoryService) SetSeriesOrdering(userID string, tvdbID int64, seasonType string) error {
+	return nil
+}
 func (m *mockHistoryService) ListWatchHistory(userID string) ([]models.WatchHistoryItem, error) {
 	return m.watchHistory, m.whErr
 }

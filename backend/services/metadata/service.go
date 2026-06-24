@@ -1138,7 +1138,7 @@ func (s *Service) GetCachedArtworkURLs(mediaType string, tmdbID int64, tvdbID in
 			}
 		}
 		if seriesTVDBID > 0 {
-			cacheID := cacheKey("tvdb", "series", "details", "v10", s.client.language, strconv.FormatInt(seriesTVDBID, 10))
+			cacheID := seriesDetailsCacheKey(s.client.language, seriesTVDBID, "")
 			var cached models.SeriesDetails
 			if ok, _ := s.cache.get(cacheID, &cached); ok {
 				mergeTitle(cached.Title)
@@ -1195,7 +1195,7 @@ func (s *Service) GetCachedOverview(mediaType string, tmdbID int64, tvdbID int64
 			}
 		}
 	} else if tvdbID > 0 {
-		cacheID := cacheKey("tvdb", "series", "details", "v10", s.client.language, strconv.FormatInt(tvdbID, 10))
+		cacheID := seriesDetailsCacheKey(s.client.language, tvdbID, "")
 		var cached models.SeriesDetails
 		if ok, _ := s.cache.get(cacheID, &cached); ok {
 			overview = mergeOverview(overview, cached.Title.Overview)
@@ -1345,6 +1345,17 @@ func (s *Service) getTMDBIDForIMDBTV(ctx context.Context, imdbID string) int64 {
 func cacheKey(parts ...string) string {
 	h := sha1.Sum([]byte(strings.Join(parts, ":")))
 	return hex.EncodeToString(h[:])
+}
+
+// seriesDetailsCacheKey builds the cache key for series details, scoped by the
+// active episode ordering. An empty seasonType maps to "default" (the
+// auto-detected official/primary ordering).
+func seriesDetailsCacheKey(lang string, tvdbID int64, seasonType string) string {
+	st := strings.ToLower(strings.TrimSpace(seasonType))
+	if st == "" {
+		st = "default"
+	}
+	return cacheKey("tvdb", "series", "details", "v11", lang, strconv.FormatInt(tvdbID, 10), st)
 }
 
 // ShelfLoadOptions configures fast shelf rendering for list-style endpoints.
@@ -3448,7 +3459,7 @@ func (s *Service) SeriesDetails(ctx context.Context, req models.SeriesDetailsQue
 		return nil, fmt.Errorf("unable to resolve tvdb id for series")
 	}
 
-	cacheID := cacheKey("tvdb", "series", "details", "v10", s.client.language, strconv.FormatInt(tvdbID, 10))
+	cacheID := seriesDetailsCacheKey(s.client.language, tvdbID, req.SeasonType)
 	var cached models.SeriesDetails
 	if ok, _ := s.cache.get(cacheID, &cached); ok && len(cached.Seasons) > 0 {
 		metadataTracef("[metadata] series details cache hit tvdbId=%d lang=%s seasons=%d hasPoster=%v hasBackdrop=%v",
@@ -3699,7 +3710,7 @@ func (s *Service) SeriesDetails(ctx context.Context, req models.SeriesDetailsQue
 		if strings.Contains(err.Error(), "404 Not Found") {
 			if altID := s.tryFallbackSeriesTVDBID(ctx, req, tvdbID); altID > 0 {
 				tvdbID = altID
-				cacheID = cacheKey("tvdb", "series", "details", "v10", s.client.language, strconv.FormatInt(tvdbID, 10))
+				cacheID = seriesDetailsCacheKey(s.client.language, tvdbID, req.SeasonType)
 				base, err = s.getTVDBSeriesDetails(tvdbID)
 			}
 		}
@@ -3715,6 +3726,17 @@ func (s *Service) SeriesDetails(ctx context.Context, req models.SeriesDetailsQue
 
 		return nil, fmt.Errorf("failed to fetch extended series metadata: %w", err)
 	}
+
+	// Determine the active episode ordering. availableOrderings is empty when the
+	// series has only one ordering. activeSeasonType is the requested ordering
+	// when valid, otherwise the auto-detected official/primary ordering.
+	availableOrderings := availableSeriesOrderings(extended.Seasons)
+	primarySeasonTypeForReq := detectPrimarySeasonType(extended.Seasons)
+	if primarySeasonTypeForReq == "" {
+		primarySeasonTypeForReq = "official"
+	}
+	activeSeasonType := resolveSeasonType(req.SeasonType, primarySeasonTypeForReq, availableOrderings)
+	log.Printf("[metadata] series ordering tvdbId=%d requested=%q active=%q orderings=%d", tvdbID, req.SeasonType, activeSeasonType, len(availableOrderings))
 
 	// Fetch translations and localized episodes in parallel
 	type translationResult struct {
@@ -3741,11 +3763,8 @@ func (s *Service) SeriesDetails(ctx context.Context, req models.SeriesDetailsQue
 		var mu sync.Mutex
 		var wg sync.WaitGroup
 
-		// Detect primary season type to only fetch translations for relevant seasons
-		primaryType := detectPrimarySeasonType(extended.Seasons)
-		if primaryType == "" {
-			primaryType = "official"
-		}
+		// Only fetch translations for seasons matching the active ordering
+		primaryType := activeSeasonType
 
 		for _, season := range extended.Seasons {
 			if season.ID <= 0 || season.Number < 0 {
@@ -3776,14 +3795,10 @@ func (s *Service) SeriesDetails(ctx context.Context, req models.SeriesDetailsQue
 		seasonTransChan <- seasonTrans
 	}()
 
-	// Fetch localized episodes in background
+	// Fetch localized episodes in background (numbered under the active ordering)
 	go func() {
-		seasonType := detectPrimarySeasonType(extended.Seasons)
-		if seasonType == "" {
-			seasonType = "official"
-		}
 		englishEpisodes := make(map[int64]tvdbEpisode)
-		if localized, err := s.cachedSeriesEpisodesBySeasonType(tvdbID, seasonType, s.client.language); err == nil {
+		if localized, err := s.cachedSeriesEpisodesBySeasonType(tvdbID, activeSeasonType, s.client.language); err == nil {
 			for _, ep := range localized {
 				englishEpisodes[ep.ID] = ep
 			}
@@ -3890,12 +3905,10 @@ func (s *Service) SeriesDetails(ctx context.Context, req models.SeriesDetailsQue
 	seasonOrder := make([]int, 0)
 	seasonMap := make(map[int]*models.SeriesSeason)
 
-	// Detect the primary season type to filter seasons correctly
-	primarySeasonType := detectPrimarySeasonType(extended.Seasons)
-	if primarySeasonType == "" {
-		primarySeasonType = "official"
-	}
-	log.Printf("[metadata] using primary season type tvdbId=%d type=%q", tvdbID, primarySeasonType)
+	// Filter seasons to the active ordering (official by default, or the
+	// requested alternate ordering when one was selected).
+	primarySeasonType := activeSeasonType
+	log.Printf("[metadata] using season type tvdbId=%d type=%q", tvdbID, primarySeasonType)
 
 	ensureSeason := func(number int) *models.SeriesSeason {
 		if number < 0 {
@@ -3965,9 +3978,21 @@ func (s *Service) SeriesDetails(ctx context.Context, req models.SeriesDetailsQue
 	englishEpisodes := <-localizedEpsChan
 	log.Printf("[metadata] received localized episodes tvdbId=%d count=%d", tvdbID, len(englishEpisodes))
 
+	// For the default ordering, extended.Episodes already carries the correct
+	// season/episode numbering. For an alternate ordering, source numbering from
+	// the active-ordering episode list (englishEpisodes), which was fetched via
+	// the season-type-specific TVDB endpoint.
+	orderingEpisodes := extended.Episodes
+	if activeSeasonType != primarySeasonTypeForReq && len(englishEpisodes) > 0 {
+		orderingEpisodes = make([]tvdbEpisode, 0, len(englishEpisodes))
+		for _, ep := range englishEpisodes {
+			orderingEpisodes = append(orderingEpisodes, ep)
+		}
+	}
+
 	episodesWithImage := 0
 	episodesWithoutImage := 0
-	for _, episode := range extended.Episodes {
+	for _, episode := range orderingEpisodes {
 		if episode.SeasonNumber < 0 {
 			continue
 		}
@@ -4034,8 +4059,10 @@ func (s *Service) SeriesDetails(ctx context.Context, req models.SeriesDetailsQue
 	}
 
 	details := models.SeriesDetails{
-		Title:   seriesTitle,
-		Seasons: seasons,
+		Title:              seriesTitle,
+		Seasons:            seasons,
+		AvailableOrderings: availableOrderings,
+		ActiveOrdering:     activeSeasonType,
 	}
 
 	// In demo mode, clamp to season 1 only (skip season 0/specials if present)
@@ -4327,14 +4354,18 @@ func (s *Service) SeriesDetailsLite(ctx context.Context, req models.SeriesDetail
 		return nil, fmt.Errorf("unable to resolve tvdb id for series")
 	}
 
-	fullCacheID := cacheKey("tvdb", "series", "details", "v10", s.client.language, strconv.FormatInt(tvdbID, 10))
+	fullCacheID := seriesDetailsCacheKey(s.client.language, tvdbID, req.SeasonType)
 	var fullCached models.SeriesDetails
 	if ok, _ := s.cache.get(fullCacheID, &fullCached); ok && len(fullCached.Seasons) > 0 {
 		log.Printf("[metadata] series details lite full-cache hit tvdbId=%d seasons=%d", tvdbID, len(fullCached.Seasons))
 		return &fullCached, nil
 	}
 
-	cacheID := cacheKey("tvdb", "series", "details", "v10-lite", s.client.language, strconv.FormatInt(tvdbID, 10))
+	liteSeasonType := strings.ToLower(strings.TrimSpace(req.SeasonType))
+	if liteSeasonType == "" {
+		liteSeasonType = "default"
+	}
+	cacheID := cacheKey("tvdb", "series", "details", "v11-lite", s.client.language, strconv.FormatInt(tvdbID, 10), liteSeasonType)
 	var cached models.SeriesDetails
 	if ok, _ := s.cache.get(cacheID, &cached); ok && len(cached.Seasons) > 0 {
 		log.Printf("[metadata] series details lite cache hit tvdbId=%d seasons=%d", tvdbID, len(cached.Seasons))
@@ -4379,7 +4410,7 @@ func (s *Service) SeriesDetailsLite(ctx context.Context, req models.SeriesDetail
 		if strings.Contains(extResult.err.Error(), "404 Not Found") {
 			if altID := s.tryFallbackSeriesTVDBID(ctx, req, tvdbID); altID > 0 {
 				tvdbID = altID
-				cacheID = cacheKey("tvdb", "series", "details", "v10", s.client.language, strconv.FormatInt(tvdbID, 10))
+				cacheID = seriesDetailsCacheKey(s.client.language, tvdbID, req.SeasonType)
 				// Drain the translation channel from the failed ID
 				<-transChan
 				// Re-fetch with the correct ID
@@ -4409,14 +4440,18 @@ func (s *Service) SeriesDetailsLite(ctx context.Context, req models.SeriesDetail
 	}
 	extended := extResult.data
 
+	// Determine the active episode ordering (see SeriesDetails for details).
+	availableOrderings := availableSeriesOrderings(extended.Seasons)
+	primarySeasonTypeForReq := detectPrimarySeasonType(extended.Seasons)
+	if primarySeasonTypeForReq == "" {
+		primarySeasonTypeForReq = "official"
+	}
+	activeSeasonType := resolveSeasonType(req.SeasonType, primarySeasonTypeForReq, availableOrderings)
+
 	// Now that we have extended data, fetch localized episodes in background
 	go func() {
-		seasonType := detectPrimarySeasonType(extended.Seasons)
-		if seasonType == "" {
-			seasonType = "official"
-		}
 		localizedEps := make(map[int64]tvdbEpisode)
-		if localized, err := s.cachedSeriesEpisodesBySeasonType(tvdbID, seasonType, s.client.language); err == nil {
+		if localized, err := s.cachedSeriesEpisodesBySeasonType(tvdbID, activeSeasonType, s.client.language); err == nil {
 			for _, ep := range localized {
 				localizedEps[ep.ID] = ep
 			}
@@ -4488,11 +4523,9 @@ func (s *Service) SeriesDetailsLite(ctx context.Context, req models.SeriesDetail
 	localizedEps := <-localizedEpsChan
 	log.Printf("[metadata] lite: received localized episodes tvdbId=%d count=%d", tvdbID, len(localizedEps))
 
-	// Build seasons and episodes from extended data + localized translations
-	primarySeasonType := detectPrimarySeasonType(extended.Seasons)
-	if primarySeasonType == "" {
-		primarySeasonType = "official"
-	}
+	// Build seasons and episodes from extended data + localized translations,
+	// filtered to the active ordering.
+	primarySeasonType := activeSeasonType
 
 	seasonOrder := make([]int, 0)
 	seasonMap := make(map[int]*models.SeriesSeason)
@@ -4542,7 +4575,16 @@ func (s *Service) SeriesDetailsLite(ctx context.Context, req models.SeriesDetail
 		}
 	}
 
-	for _, episode := range extended.Episodes {
+	// Source episode numbering from the active ordering (see SeriesDetails).
+	orderingEpisodes := extended.Episodes
+	if activeSeasonType != primarySeasonTypeForReq && len(localizedEps) > 0 {
+		orderingEpisodes = make([]tvdbEpisode, 0, len(localizedEps))
+		for _, ep := range localizedEps {
+			orderingEpisodes = append(orderingEpisodes, ep)
+		}
+	}
+
+	for _, episode := range orderingEpisodes {
 		if episode.SeasonNumber < 0 {
 			continue
 		}
@@ -4600,8 +4642,10 @@ func (s *Service) SeriesDetailsLite(ctx context.Context, req models.SeriesDetail
 	}
 
 	details := models.SeriesDetails{
-		Title:   seriesTitle,
-		Seasons: seasons,
+		Title:              seriesTitle,
+		Seasons:            seasons,
+		AvailableOrderings: availableOrderings,
+		ActiveOrdering:     activeSeasonType,
 	}
 
 	// In demo mode, clamp to season 1 only
@@ -4701,7 +4745,7 @@ func (s *Service) BatchSeriesDetails(ctx context.Context, queries []models.Serie
 			continue
 		}
 
-		cacheID := cacheKey("tvdb", "series", "details", "v10", s.client.language, strconv.FormatInt(tvdbID, 10))
+		cacheID := seriesDetailsCacheKey(s.client.language, tvdbID, query.SeasonType)
 		var cached models.SeriesDetails
 		if ok, _ := s.cache.get(cacheID, &cached); ok && len(cached.Seasons) > 0 {
 			log.Printf("[metadata] batch series cache hit index=%d tvdbId=%d name=%q", i, tvdbID, query.Name)
@@ -4850,7 +4894,7 @@ func (s *Service) BatchSeriesTitleFields(ctx context.Context, queries []models.S
 		}
 
 		// Check the full SeriesDetails cache
-		cacheID := cacheKey("tvdb", "series", "details", "v10", s.client.language, strconv.FormatInt(tvdbID, 10))
+		cacheID := seriesDetailsCacheKey(s.client.language, tvdbID, query.SeasonType)
 		var cached models.SeriesDetails
 		if ok, _ := s.cache.get(cacheID, &cached); ok {
 			extracted := extractTitleFields(&cached.Title, fields)
@@ -6617,6 +6661,81 @@ func detectPrimarySeasonType(seasons []tvdbSeason) string {
 		}
 	}
 	return ""
+}
+
+// seasonTypeKey returns the canonical lowercase key for a season's type,
+// preferring the machine "type" slug over the display name.
+func seasonTypeKey(season tvdbSeason) string {
+	t := strings.ToLower(strings.TrimSpace(season.Type.Type))
+	if t == "" {
+		t = strings.ToLower(strings.TrimSpace(season.Type.Name))
+	}
+	return t
+}
+
+// availableSeriesOrderings enumerates the distinct TVDB season-orderings present
+// in the extended season list, counting non-special (Number >= 1) seasons per
+// ordering. The "official"/"default" ordering is flagged sync-safe. Returns nil
+// when only a single ordering exists (no switcher needed).
+func availableSeriesOrderings(seasons []tvdbSeason) []models.SeriesOrdering {
+	type agg struct {
+		name    string
+		seasons map[int]struct{}
+	}
+	order := make([]string, 0, 4)
+	byType := make(map[string]*agg)
+	for _, season := range seasons {
+		key := seasonTypeKey(season)
+		if key == "" {
+			continue
+		}
+		a, ok := byType[key]
+		if !ok {
+			name := strings.TrimSpace(season.Type.Name)
+			if name == "" {
+				name = strings.TrimSpace(season.Type.Type)
+			}
+			a = &agg{name: name, seasons: make(map[int]struct{})}
+			byType[key] = a
+			order = append(order, key)
+		}
+		if season.Number >= 1 {
+			a.seasons[season.Number] = struct{}{}
+		}
+	}
+	if len(order) <= 1 {
+		return nil
+	}
+	result := make([]models.SeriesOrdering, 0, len(order))
+	for _, key := range order {
+		a := byType[key]
+		name := a.name
+		if name == "" {
+			name = key
+		}
+		result = append(result, models.SeriesOrdering{
+			Type:        key,
+			Name:        name,
+			SeasonCount: len(a.seasons),
+			IsOfficial:  key == "official",
+		})
+	}
+	return result
+}
+
+// resolveSeasonType picks the active ordering for a request: the requested type
+// when it exists among the available orderings, otherwise the primary/default.
+func resolveSeasonType(requested, primary string, available []models.SeriesOrdering) string {
+	requested = strings.ToLower(strings.TrimSpace(requested))
+	if requested == "" {
+		return primary
+	}
+	for _, o := range available {
+		if o.Type == requested {
+			return requested
+		}
+	}
+	return primary
 }
 
 func (s *Service) fetchTMDBTrailers(ctx context.Context, mediaType string, tmdbID int64) ([]models.Trailer, error) {

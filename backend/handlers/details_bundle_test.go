@@ -173,6 +173,12 @@ type mockHistoryServiceDetailsBundle struct {
 func (m *mockHistoryServiceDetailsBundle) GetSeriesWatchState(_, _ string) (*models.SeriesWatchState, error) {
 	return m.watchState, m.watchStateErr
 }
+func (m *mockHistoryServiceDetailsBundle) GetSeriesOrdering(_ string, _ int64) (string, error) {
+	return "", nil
+}
+func (m *mockHistoryServiceDetailsBundle) SetSeriesOrdering(_ string, _ int64, _ string) error {
+	return nil
+}
 func (m *mockHistoryServiceDetailsBundle) ListPlaybackProgress(_ string) ([]models.PlaybackProgress, error) {
 	return m.playbackProgress, m.playbackProgressErr
 }

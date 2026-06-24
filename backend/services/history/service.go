@@ -259,6 +259,72 @@ func (s *Service) scrobbleWatchedItem(userID string, item models.WatchHistoryIte
 	s.doScrobble(scrobbler, userID, item)
 }
 
+// seriesTVDBIDFromUpdate extracts a series TVDB id from a progress update,
+// checking the external-ID map first and then a "tvdb:series:N" SeriesID.
+func seriesTVDBIDFromUpdate(update models.PlaybackProgressUpdate) int {
+	if update.ExternalIDs != nil {
+		if raw, ok := update.ExternalIDs["tvdb"]; ok {
+			if id, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil && id > 0 {
+				return id
+			}
+		}
+	}
+	if sid := strings.TrimSpace(update.SeriesID); sid != "" {
+		if idx := strings.LastIndex(sid, ":"); idx >= 0 {
+			if id, err := strconv.Atoi(sid[idx+1:]); err == nil && id > 0 && strings.Contains(sid, "tvdb") {
+				return id
+			}
+		}
+	}
+	return 0
+}
+
+// GetSeriesOrdering returns the user's selected ordering season-type for a
+// series (lowercase), or "" when none is set (the default/official ordering).
+func (s *Service) GetSeriesOrdering(userID string, seriesTVDBID int64) (string, error) {
+	if s.store == nil || seriesTVDBID <= 0 {
+		return "", nil
+	}
+	pref, err := s.store.SeriesOrdering().Get(context.Background(), userID, seriesTVDBID)
+	if err != nil || pref == nil {
+		return "", err
+	}
+	return strings.ToLower(strings.TrimSpace(pref.SeasonType)), nil
+}
+
+// SetSeriesOrdering records the user's chosen ordering for a series. Selecting
+// the official/default ordering clears any override.
+func (s *Service) SetSeriesOrdering(userID string, seriesTVDBID int64, seasonType string) error {
+	if s.store == nil {
+		return fmt.Errorf("series ordering requires database storage")
+	}
+	if seriesTVDBID <= 0 {
+		return fmt.Errorf("invalid series tvdb id")
+	}
+	seasonType = strings.ToLower(strings.TrimSpace(seasonType))
+	if seasonType == "" || seasonType == "official" || seasonType == "default" {
+		return s.store.SeriesOrdering().Delete(context.Background(), userID, seriesTVDBID)
+	}
+	return s.store.SeriesOrdering().Upsert(context.Background(), userID, &models.SeriesOrderingPref{
+		SeriesTVDBID: seriesTVDBID,
+		SeasonType:   seasonType,
+		UpdatedAt:    time.Now().UTC(),
+	})
+}
+
+// seriesOrderingIsAlternate reports whether the user has a non-official ordering
+// active for the series, which disables scrobbling and external watch-sync.
+func (s *Service) seriesOrderingIsAlternate(userID string, seriesTVDBID int) bool {
+	if seriesTVDBID <= 0 {
+		return false
+	}
+	st, err := s.GetSeriesOrdering(userID, int64(seriesTVDBID))
+	if err != nil {
+		return false
+	}
+	return st != "" && st != "official"
+}
+
 // doScrobble performs the actual scrobbling. This is separated from scrobbleWatchedItem
 // to allow callers holding the lock to pass the scrobbler directly without re-acquiring the lock.
 func (s *Service) doScrobble(scrobbler TraktScrobbler, userID string, item models.WatchHistoryItem) {
@@ -299,6 +365,13 @@ func (s *Service) doScrobble(scrobbler TraktScrobbler, userID string, item model
 			}()
 		}
 	case "episode":
+		// Skip scrobbling when the user is viewing this series under a non-official
+		// TVDB ordering: season/episode numbers diverge from the canonical aired
+		// order that Trakt/Simkl/MDBList expect, so any sync would be wrong.
+		if s.seriesOrderingIsAlternate(userID, tvdbID) {
+			log.Printf("[trakt] skipping episode scrobble: alternate ordering active for series tvdb=%d user=%s", tvdbID, userID)
+			return
+		}
 		// For episodes we need season/episode numbers plus at least one show
 		// identifier. The scrobblers receive the full external-ID map and pick
 		// whatever provider IDs they support (tvdb/tmdb/imdb), so a tvdb-less
@@ -4578,6 +4651,13 @@ func (s *Service) UpdatePlaybackProgress(userID string, update models.PlaybackPr
 	// Grab real-time scrobbler reference while holding the lock
 	rtScrobbler := s.traktRTScrobbler
 	allowRealtimeScrobble := !isLiveProgress && !isLiveTVRecordingProgressUpdate(update)
+	// Disable realtime scrobbling for episodes under a non-official ordering
+	// (season/episode numbers don't match the canonical order used for sync).
+	if allowRealtimeScrobble && update.MediaType == "episode" {
+		if s.seriesOrderingIsAlternate(userID, seriesTVDBIDFromUpdate(update)) {
+			allowRealtimeScrobble = false
+		}
+	}
 
 	// Auto-mark as watched if >= 90% complete
 	if !isLiveProgress && percentWatched >= 90 {

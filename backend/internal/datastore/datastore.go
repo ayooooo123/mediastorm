@@ -82,7 +82,7 @@ func (ds *DataStore) RemoteAccessInvites() RemoteAccessInviteRepository {
 	return &pgRemoteAccessInviteRepo{pool: ds.pool}
 }
 func (ds *DataStore) ShareLinks() ShareLinkRepository { return &pgShareLinkRepo{pool: ds.pool} }
-func (ds *DataStore) Clients() ClientRepository { return &pgClientRepo{pool: ds.pool} }
+func (ds *DataStore) Clients() ClientRepository       { return &pgClientRepo{pool: ds.pool} }
 func (ds *DataStore) ClientSettings() ClientSettingsRepository {
 	return &pgClientSettingsRepo{pool: ds.pool}
 }
@@ -95,6 +95,9 @@ func (ds *DataStore) PlaybackProgress() PlaybackProgressRepository {
 }
 func (ds *DataStore) ContentPreferences() ContentPreferencesRepository {
 	return &pgContentPrefsRepo{pool: ds.pool}
+}
+func (ds *DataStore) SeriesOrdering() SeriesOrderingRepository {
+	return &pgSeriesOrderingRepo{pool: ds.pool}
 }
 func (ds *DataStore) Prequeue() PrequeueRepository       { return &pgPrequeueRepo{pool: ds.pool} }
 func (ds *DataStore) Prewarm() PrewarmRepository         { return &pgPrewarmRepo{pool: ds.pool} }
@@ -134,7 +137,7 @@ func (t *Tx) Invitations() InvitationRepository { return &pgInvitationRepo{pool:
 func (t *Tx) RemoteAccessInvites() RemoteAccessInviteRepository {
 	return &pgRemoteAccessInviteRepo{pool: t.tx}
 }
-func (t *Tx) ShareLinks() ShareLinkRepository { return &pgShareLinkRepo{pool: t.tx} }
+func (t *Tx) ShareLinks() ShareLinkRepository          { return &pgShareLinkRepo{pool: t.tx} }
 func (t *Tx) Clients() ClientRepository                { return &pgClientRepo{pool: t.tx} }
 func (t *Tx) ClientSettings() ClientSettingsRepository { return &pgClientSettingsRepo{pool: t.tx} }
 func (t *Tx) UserSettings() UserSettingsRepository     { return &pgUserSettingsRepo{pool: t.tx} }
@@ -146,6 +149,9 @@ func (t *Tx) PlaybackProgress() PlaybackProgressRepository {
 }
 func (t *Tx) ContentPreferences() ContentPreferencesRepository {
 	return &pgContentPrefsRepo{pool: t.tx}
+}
+func (t *Tx) SeriesOrdering() SeriesOrderingRepository {
+	return &pgSeriesOrderingRepo{pool: t.tx}
 }
 func (t *Tx) Prequeue() PrequeueRepository       { return &pgPrequeueRepo{pool: t.tx} }
 func (t *Tx) Prewarm() PrewarmRepository         { return &pgPrewarmRepo{pool: t.tx} }

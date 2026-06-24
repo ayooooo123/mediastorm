@@ -178,6 +178,23 @@ func parseDetailsRequest(r *http.Request) (contentType, titleID, name, imdbID st
 	return
 }
 
+// resolveSeasonType picks the active episode ordering for a series details
+// request: an explicit ?seasonType= query param wins (the client just toggled),
+// otherwise the user's stored per-series preference is applied.
+func (h *DetailsBundleHandler) resolveSeasonType(r *http.Request, userID string, tvdbID int64) string {
+	if st := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("seasonType"))); st != "" {
+		return st
+	}
+	if h.history == nil || tvdbID <= 0 {
+		return ""
+	}
+	st, err := h.history.GetSeriesOrdering(userID, tvdbID)
+	if err != nil {
+		return ""
+	}
+	return st
+}
+
 // GetDetailsShell returns lightweight title metadata so the client can begin
 // artwork/logo work before the full details bundle completes.
 func (h *DetailsBundleHandler) GetDetailsShell(w http.ResponseWriter, r *http.Request) {
@@ -199,11 +216,12 @@ func (h *DetailsBundleHandler) GetDetailsShell(w http.ResponseWriter, r *http.Re
 	switch contentType {
 	case "series":
 		query := models.SeriesDetailsQuery{
-			TitleID: titleID,
-			Name:    name,
-			Year:    year,
-			TVDBID:  tvdbID,
-			TMDBID:  tmdbID,
+			TitleID:    titleID,
+			Name:       name,
+			Year:       year,
+			TVDBID:     tvdbID,
+			TMDBID:     tmdbID,
+			SeasonType: h.resolveSeasonType(r, userID, tvdbID),
 		}
 
 		start := time.Now()
@@ -280,11 +298,12 @@ func (h *DetailsBundleHandler) GetDetailsBundle(w http.ResponseWriter, r *http.R
 		start := time.Now()
 		if contentType == "series" {
 			details, err := metadataSvc.SeriesDetails(r.Context(), models.SeriesDetailsQuery{
-				TitleID: titleID,
-				Name:    name,
-				Year:    year,
-				TVDBID:  tvdbID,
-				TMDBID:  tmdbID,
+				TitleID:    titleID,
+				Name:       name,
+				Year:       year,
+				TVDBID:     tvdbID,
+				TMDBID:     tmdbID,
+				SeasonType: h.resolveSeasonType(r, userID, tvdbID),
 			})
 			log.Printf("[details-bundle timing] series details: %dms (err=%v)", time.Since(start).Milliseconds(), err)
 			if err != nil {
