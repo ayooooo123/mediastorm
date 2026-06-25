@@ -197,6 +197,11 @@
       text-shadow: 0 2px 7px #000, 0 0 2px #000;
       white-space: pre-line;
       pointer-events: none;
+      transition: bottom 0.18s ease;
+    }
+
+    #videoHost:not(.controls-hidden) .subtitle-overlay {
+      bottom: clamp(5.25rem, 12vh, 8rem);
     }
 
     .pause-overlay {

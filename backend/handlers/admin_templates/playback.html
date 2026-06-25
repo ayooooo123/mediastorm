@@ -689,10 +689,15 @@
         text-shadow: 0 2px 6px black, 0 0 2px black;
         white-space: pre-line;
         pointer-events: none;
+        transition: bottom 0.18s ease;
     }
 
     #videoHost.web-player-fullscreen .web-player-subtitle-overlay {
         bottom: 7%;
+    }
+
+    #videoHost.web-player-fullscreen:not(.web-player-controls-hidden) .web-player-subtitle-overlay {
+        bottom: 14%;
     }
 
     /* Native HLS subtitle cue styling (used when WEB_PLAYER_NATIVE_SUBTITLES is on) */
