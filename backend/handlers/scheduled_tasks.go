@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -47,6 +48,22 @@ func validateScheduledTaskConfig(taskType config.ScheduledTaskType, taskConfig m
 	}
 
 	switch taskType {
+	case config.ScheduledTaskTypePrewarm:
+		if taskConfig == nil {
+			taskConfig = map[string]string{}
+		}
+		days := 7
+		if val := strings.TrimSpace(taskConfig["stableReresolveDays"]); val != "" {
+			parsed, err := strconv.Atoi(val)
+			if err != nil {
+				return errors.New("Pre-warm stable re-resolve days must be a whole number between 1 and 30")
+			}
+			days = parsed
+		}
+		if days < 1 || days > 30 {
+			return errors.New("Pre-warm stable re-resolve days must be between 1 and 30")
+		}
+		taskConfig["stableReresolveDays"] = strconv.Itoa(days)
 	case config.ScheduledTaskTypePlexWatchlistSync:
 		return requireProfile("plexAccountId", "Plex watchlist sync requires plexAccountId and profileId in config")
 	case config.ScheduledTaskTypeTraktListSync:
@@ -202,6 +219,9 @@ func (h *ScheduledTasksHandler) CreateTask(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	if req.Type == config.ScheduledTaskTypePrewarm && req.Config == nil {
+		req.Config = map[string]string{}
+	}
 	if err := validateScheduledTaskConfig(req.Type, req.Config, h.usersService); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
@@ -325,6 +345,9 @@ func (h *ScheduledTasksHandler) UpdateTask(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	if updatedTask.Type == config.ScheduledTaskTypePrewarm && updatedTask.Config == nil {
+		updatedTask.Config = map[string]string{}
+	}
 	if err := validateScheduledTaskFrequency(updatedTask.Type, updatedTask.Frequency); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)

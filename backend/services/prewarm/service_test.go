@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"novastream/config"
 	"novastream/models"
 	"novastream/services/playback"
 )
@@ -1049,6 +1050,62 @@ func TestReResolveExpired(t *testing.T) {
 	warmEntry := svc.entries[entryKey("title1", "user1")]
 	if warmEntry.PrequeueID == entry.ID {
 		t.Error("expected warm entry to be updated with new prequeue ID")
+	}
+}
+
+func TestGetStableReResolveIntervalFromTaskConfig(t *testing.T) {
+	mgr := config.NewManager(filepath.Join(t.TempDir(), "settings.json"))
+	if err := mgr.Save(config.Settings{
+		ScheduledTasks: config.ScheduledTasksSettings{
+			Tasks: []config.ScheduledTask{
+				{
+					Type:   config.ScheduledTaskTypePrewarm,
+					Config: map[string]string{"stableReresolveDays": "30"},
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	svc := NewService(mgr, "")
+	if got := svc.getStableReResolveInterval(); got != 30*24*time.Hour {
+		t.Fatalf("getStableReResolveInterval() = %s, want 720h", got)
+	}
+}
+
+func TestGetStableReResolveIntervalClampsTaskConfig(t *testing.T) {
+	tests := []struct {
+		name string
+		val  string
+		want time.Duration
+	}{
+		{name: "too low", val: "0", want: 24 * time.Hour},
+		{name: "too high", val: "31", want: 30 * 24 * time.Hour},
+		{name: "invalid uses default", val: "not-a-number", want: 7 * 24 * time.Hour},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mgr := config.NewManager(filepath.Join(t.TempDir(), "settings.json"))
+			if err := mgr.Save(config.Settings{
+				ScheduledTasks: config.ScheduledTasksSettings{
+					Tasks: []config.ScheduledTask{
+						{
+							Type:   config.ScheduledTaskTypePrewarm,
+							Config: map[string]string{"stableReresolveDays": tt.val},
+						},
+					},
+				},
+			}); err != nil {
+				t.Fatalf("save settings: %v", err)
+			}
+
+			svc := NewService(mgr, "")
+			if got := svc.getStableReResolveInterval(); got != tt.want {
+				t.Fatalf("getStableReResolveInterval() = %s, want %s", got, tt.want)
+			}
+		})
 	}
 }
 

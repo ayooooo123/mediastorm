@@ -4,16 +4,25 @@ import (
 	"time"
 )
 
+const DefaultStableDynamicTTL = 7 * 24 * time.Hour
+
 // DynamicTTL computes TTL based on distance from air date (V-shaped curve).
 // Uses airDateTimeUTC (RFC3339) if available, falls back to airDate (YYYY-MM-DD),
 // then year+mediaType, then a 30-minute default.
 func DynamicTTL(airDate string, airDateTimeUTC string, year int, mediaType string) time.Duration {
+	return DynamicTTLWithStableTTL(airDate, airDateTimeUTC, year, mediaType, DefaultStableDynamicTTL)
+}
+
+func DynamicTTLWithStableTTL(airDate string, airDateTimeUTC string, year int, mediaType string, stableTTL time.Duration) time.Duration {
+	if stableTTL <= 0 {
+		stableTTL = DefaultStableDynamicTTL
+	}
 	now := time.Now()
 
 	// Try to parse precise air time first (RFC3339)
 	if airDateTimeUTC != "" {
 		if t, err := time.Parse(time.RFC3339, airDateTimeUTC); err == nil {
-			return ttlFromDistance(now.Sub(t))
+			return ttlFromDistance(now.Sub(t), stableTTL)
 		}
 	}
 
@@ -21,7 +30,7 @@ func DynamicTTL(airDate string, airDateTimeUTC string, year int, mediaType strin
 	if airDate != "" {
 		if t, err := time.Parse("2006-01-02", airDate); err == nil {
 			midday := t.Add(12 * time.Hour)
-			return ttlFromDistance(now.Sub(midday))
+			return ttlFromDistance(now.Sub(midday), stableTTL)
 		}
 	}
 
@@ -31,7 +40,7 @@ func DynamicTTL(airDate string, airDateTimeUTC string, year int, mediaType strin
 		if year >= currentYear {
 			return 1 * time.Hour // Current year content
 		}
-		return 24 * time.Hour // Older content
+		return stableTTL // Older content
 	}
 
 	// No date info at all
@@ -44,8 +53,8 @@ func DynamicTTL(airDate string, airDateTimeUTC string, year int, mediaType strin
 //	>7 days before → 1h before:  12h
 //	 1h before → 2h after:       15min
 //	 2h after → 24h after:       1h
-//	>24h after:                   24h
-func ttlFromDistance(distance time.Duration) time.Duration {
+//	>24h after:                   stable TTL
+func ttlFromDistance(distance time.Duration, stableTTL time.Duration) time.Duration {
 	hours := distance.Hours()
 
 	if hours < -1 { // More than 1 hour before airtime
@@ -58,7 +67,7 @@ func ttlFromDistance(distance time.Duration) time.Duration {
 		return 1 * time.Hour
 	}
 	// > 24h after airtime
-	return 24 * time.Hour
+	return stableTTL
 }
 
 // DynamicTTL is a convenience method on PrequeueEntry that extracts fields
