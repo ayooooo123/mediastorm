@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"novastream/internal/apiusage"
 	"novastream/models"
 )
 
@@ -296,7 +297,7 @@ func (j *JackettScraper) fetchResults(ctx context.Context, params url.Values) ([
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 
-	resp, err := j.httpClient.Do(req)
+	resp, err := apiusage.Do(j.httpClient, j.Name(), "Torznab search", req)
 	if err != nil {
 		return nil, fmt.Errorf("jackett request failed: %w", err)
 	}
@@ -499,7 +500,7 @@ func (j *JackettScraper) TestConnection(ctx context.Context) error {
 		return fmt.Errorf("create request: %w", err)
 	}
 
-	resp, err := j.httpClient.Do(req)
+	resp, err := apiusage.Do(j.httpClient, j.Name(), "Connection test", req)
 	if err != nil {
 		return fmt.Errorf("connection failed: %w", err)
 	}

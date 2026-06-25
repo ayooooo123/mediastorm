@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"novastream/internal/apiusage"
 	"novastream/internal/mediaresolve"
 	"novastream/models"
 )
@@ -117,11 +118,11 @@ type zileanItem struct {
 	InfoHash   string        `json:"info_hash"`
 	Resolution string        `json:"resolution"`
 	Quality    string        `json:"quality"`
-	Codec      *string       `json:"codec"`       // Can be null or string
-	Audio      []string      `json:"audio"`       // Always array
-	Channels   []string      `json:"channels"`    // Always array
-	HDR        []string      `json:"hdr"`         // Always array
-	Languages  []string      `json:"languages"`   // Always array
+	Codec      *string       `json:"codec"`     // Can be null or string
+	Audio      []string      `json:"audio"`     // Always array
+	Channels   []string      `json:"channels"`  // Always array
+	HDR        []string      `json:"hdr"`       // Always array
+	Languages  []string      `json:"languages"` // Always array
 	Year       int           `json:"year"`
 	Season     int           `json:"season"`
 	Episode    int           `json:"episode"`
@@ -290,7 +291,7 @@ func (z *ZileanScraper) fetchResults(ctx context.Context, params url.Values) ([]
 
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := z.httpClient.Do(req)
+	resp, err := apiusage.Do(z.httpClient, z.Name(), "DMM filtered search", req)
 	if err != nil {
 		return nil, fmt.Errorf("zilean request failed: %w", err)
 	}
@@ -322,7 +323,7 @@ func (z *ZileanScraper) parseResponse(body []byte) ([]ScrapeResult, error) {
 
 	for _, item := range items {
 		infoHash := strings.ToLower(strings.TrimSpace(item.InfoHash))
-		
+
 		// Skip items without info hash
 		if infoHash == "" {
 			filteredNoHash++
@@ -347,9 +348,9 @@ func (z *ZileanScraper) parseResponse(body []byte) ([]ScrapeResult, error) {
 
 		// Build attributes map with all available metadata
 		attrs := map[string]string{
-			"scraper":    "zilean",
-			"raw_title":  item.RawTitle,
-			"label":      item.RawTitle,
+			"scraper":   "zilean",
+			"raw_title": item.RawTitle,
+			"label":     item.RawTitle,
 		}
 
 		if item.Quality != "" {
@@ -470,7 +471,7 @@ func (z *ZileanScraper) TestConnection(ctx context.Context) error {
 
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := z.httpClient.Do(req)
+	resp, err := apiusage.Do(z.httpClient, z.Name(), "Connection test", req)
 	if err != nil {
 		return fmt.Errorf("connection failed: %w", err)
 	}

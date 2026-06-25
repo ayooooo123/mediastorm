@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"novastream/internal/apiusage"
 	"novastream/internal/mediaresolve"
 	"novastream/models"
 )
@@ -357,7 +358,7 @@ func (m *MediaFusionScraper) fetchAddonPayload(ctx context.Context, resource, me
 	}
 	addBrowserHeaders(req)
 
-	resp, err := m.httpClient.Do(req)
+	resp, err := apiusage.Do(m.httpClient, m.Name(), resource+" search", req)
 	if err != nil {
 		return nil, err
 	}

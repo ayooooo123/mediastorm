@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"novastream/config"
+	"novastream/internal/apiusage"
 	"novastream/internal/auth"
 	"novastream/internal/importer"
 	"novastream/internal/netproxy"
@@ -3932,7 +3933,16 @@ func (h *AdminUIHandler) TestIndexer(w http.ResponseWriter, r *http.Request) {
 	client := &http.Client{Timeout: 15 * time.Second}
 	searchURL := fmt.Sprintf("%s?t=search&q=test&apikey=%s", testURL, req.APIKey)
 
-	resp, err := client.Get(searchURL)
+	searchReq, err := http.NewRequest(http.MethodGet, searchURL, nil)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("Failed to create request: %v", err),
+		})
+		return
+	}
+	resp, err := apiusage.Do(client, displayName(req.Name, "Indexer"), "Indexer search test", searchReq)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
@@ -4110,6 +4120,14 @@ func (h *AdminUIHandler) RunSearchDiagnostics(w http.ResponseWriter, r *http.Req
 	json.NewEncoder(w).Encode(resp)
 }
 
+func (h *AdminUIHandler) GetConnectionsUsage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"entries":         apiusage.GetTracker().Snapshot(),
+		"outboundEntries": apiusage.GetTracker().SnapshotOutbound(),
+	})
+}
+
 func (h *AdminUIHandler) runIndexerSearchDiagnostic(ctx context.Context, idx config.IndexerConfig, query string, timeout float64) SearchDiagnosticSourceResult {
 	startedAt := time.Now()
 	result := SearchDiagnosticSourceResult{
@@ -4157,7 +4175,7 @@ func (h *AdminUIHandler) runIndexerSearchDiagnostic(ctx context.Context, idx con
 	addBrowserHeaders(httpReq)
 
 	httpClient := &http.Client{Timeout: time.Duration(timeout * float64(time.Second))}
-	httpResp, err := httpClient.Do(httpReq)
+	httpResp, err := apiusage.Do(httpClient, displayName(idx.Name, "Indexer"), "Indexer search diagnostic", httpReq)
 	if err != nil {
 		result.Error = err.Error()
 		result.DurationMS = time.Since(startedAt).Milliseconds()
@@ -4396,7 +4414,7 @@ func (h *AdminUIHandler) testTorrentioScraper(w http.ResponseWriter, options, cu
 	}
 	addBrowserHeaders(cinemetaReq)
 
-	resp, err := client.Do(cinemetaReq)
+	resp, err := apiusage.Do(client, "Cinemeta", "Torrentio metadata search", cinemetaReq)
 	if err != nil {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": false,
@@ -4437,7 +4455,7 @@ func (h *AdminUIHandler) testTorrentioScraper(w http.ResponseWriter, options, cu
 	}
 	addBrowserHeaders(torrentioReq)
 
-	resp, err = client.Do(torrentioReq)
+	resp, err = apiusage.Do(client, "Torrentio", "Stream search", torrentioReq)
 	if err != nil {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": false,
@@ -4497,7 +4515,7 @@ func (h *AdminUIHandler) testJackettScraper(w http.ResponseWriter, req TestScrap
 		return
 	}
 
-	resp, err := client.Do(capsReq)
+	resp, err := apiusage.Do(client, "Jackett", "Capabilities", capsReq)
 	if err != nil {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": false,
@@ -4612,7 +4630,7 @@ func (h *AdminUIHandler) testZileanScraper(w http.ResponseWriter, req TestScrape
 	}
 	testReq.Header.Set("Accept", "application/json")
 
-	resp, err := client.Do(testReq)
+	resp, err := apiusage.Do(client, "Zilean", "Search test", testReq)
 	if err != nil {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": false,
@@ -4663,7 +4681,7 @@ func (h *AdminUIHandler) testAIOStreamsScraper(w http.ResponseWriter, req TestSc
 	}
 	addBrowserHeaders(manifestReq)
 
-	resp, err := client.Do(manifestReq)
+	resp, err := apiusage.Do(client, "AIOStreams", "Manifest", manifestReq)
 	if err != nil {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": false,
@@ -4706,7 +4724,7 @@ func (h *AdminUIHandler) testAIOStreamsScraper(w http.ResponseWriter, req TestSc
 	}
 	addBrowserHeaders(streamReq)
 
-	streamResp, err := client.Do(streamReq)
+	streamResp, err := apiusage.Do(client, "AIOStreams", "Stream search", streamReq)
 	if err != nil {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": true,
@@ -4759,7 +4777,7 @@ func (h *AdminUIHandler) testNyaaScraper(w http.ResponseWriter) {
 	testReq.Header.Set("Accept", "application/rss+xml, application/xml, text/xml")
 	testReq.Header.Set("User-Agent", "Mozilla/5.0 (compatible; mediastorm/1.0)")
 
-	resp, err := client.Do(testReq)
+	resp, err := apiusage.Do(client, "Nyaa", "RSS search", testReq)
 	if err != nil {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": false,
@@ -4815,7 +4833,7 @@ func (h *AdminUIHandler) testCometScraper(w http.ResponseWriter, req TestScraper
 	}
 	addBrowserHeaders(manifestReq)
 
-	resp, err := client.Do(manifestReq)
+	resp, err := apiusage.Do(client, "Comet", "Manifest", manifestReq)
 	if err != nil {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": false,
@@ -4866,7 +4884,7 @@ func (h *AdminUIHandler) testCometScraper(w http.ResponseWriter, req TestScraper
 	}
 	addBrowserHeaders(streamReq)
 
-	streamResp, err := client.Do(streamReq)
+	streamResp, err := apiusage.Do(client, "Comet", "Stream search", streamReq)
 	if err != nil {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": true,
@@ -4923,7 +4941,7 @@ func (h *AdminUIHandler) testMediaFusionScraper(w http.ResponseWriter, req TestS
 	}
 	addBrowserHeaders(manifestReq)
 
-	resp, err := client.Do(manifestReq)
+	resp, err := apiusage.Do(client, "MediaFusion", "Manifest", manifestReq)
 	if err != nil {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": false,
@@ -4966,7 +4984,7 @@ func (h *AdminUIHandler) testMediaFusionScraper(w http.ResponseWriter, req TestS
 		}
 		addBrowserHeaders(streamReq)
 
-		streamResp, err := client.Do(streamReq)
+		streamResp, err := apiusage.Do(client, "MediaFusion", "Stream search", streamReq)
 		if err != nil {
 			continue
 		}
@@ -5442,7 +5460,7 @@ func testUsenetEngineWebDAV(ctx context.Context, engine config.UsenetEngineSetti
 	if engine.WebDAVUsername != "" || engine.WebDAVPassword != "" {
 		req.SetBasicAuth(engine.WebDAVUsername, engine.WebDAVPassword)
 	}
-	resp, err := (&http.Client{Timeout: 12 * time.Second}).Do(req)
+	resp, err := apiusage.Do(&http.Client{Timeout: 12 * time.Second}, "Usenet Engine WebDAV", "PROPFIND", req)
 	if err != nil {
 		return fmt.Errorf("send PROPFIND request: %w", err)
 	}
@@ -5548,7 +5566,7 @@ func listAdminWebDAVDirectory(ctx context.Context, engine config.UsenetEngineSet
 	if engine.WebDAVUsername != "" || engine.WebDAVPassword != "" {
 		req.SetBasicAuth(engine.WebDAVUsername, engine.WebDAVPassword)
 	}
-	resp, err := (&http.Client{Timeout: 12 * time.Second}).Do(req)
+	resp, err := apiusage.Do(&http.Client{Timeout: 12 * time.Second}, "Usenet Engine WebDAV", "Directory listing", req)
 	if err != nil {
 		return nil, fmt.Errorf("send WebDAV listing request: %w", err)
 	}
@@ -5717,7 +5735,7 @@ func getUsenetEngineRemoteConfig(ctx context.Context, engine config.UsenetEngine
 		return nil, fmt.Errorf("build get_config request: %w", err)
 	}
 	applyUsenetEngineAPIAuth(req, engine)
-	resp, err := (&http.Client{Timeout: 12 * time.Second}).Do(req)
+	resp, err := apiusage.Do(&http.Client{Timeout: 12 * time.Second}, "Usenet Engine", "get_config", req)
 	if err != nil {
 		return nil, fmt.Errorf("send get_config request: %w", err)
 	}
@@ -6065,7 +6083,7 @@ func deleteUsenetEngineHistoryJob(ctx context.Context, engine config.UsenetEngin
 		return fmt.Errorf("build history cleanup request: %w", err)
 	}
 	applyUsenetEngineAPIAuth(req, engine)
-	resp, err := (&http.Client{Timeout: 12 * time.Second}).Do(req)
+	resp, err := apiusage.Do(&http.Client{Timeout: 12 * time.Second}, "Usenet Engine", "history cleanup", req)
 	if err != nil {
 		return fmt.Errorf("send history cleanup request: %w", err)
 	}
@@ -6086,7 +6104,7 @@ func latestCompletedUsenetEngineOutputPath(ctx context.Context, engine config.Us
 		return "", "", fmt.Errorf("build history request: %w", err)
 	}
 	applyUsenetEngineAPIAuth(req, engine)
-	resp, err := (&http.Client{Timeout: 12 * time.Second}).Do(req)
+	resp, err := apiusage.Do(&http.Client{Timeout: 12 * time.Second}, "Usenet Engine", "history", req)
 	if err != nil {
 		return "", "", fmt.Errorf("send history request: %w", err)
 	}
@@ -6276,7 +6294,7 @@ func testUsenetEngineMappedWebDAVURL(ctx context.Context, engine config.UsenetEn
 	if engine.WebDAVUsername != "" || engine.WebDAVPassword != "" {
 		req.SetBasicAuth(engine.WebDAVUsername, engine.WebDAVPassword)
 	}
-	resp, err := (&http.Client{Timeout: 12 * time.Second}).Do(req)
+	resp, err := apiusage.Do(&http.Client{Timeout: 12 * time.Second}, "Usenet Engine WebDAV", "Mapped path check", req)
 	if err != nil {
 		return fmt.Errorf("send mapped WebDAV request: %w", err)
 	}
@@ -6304,7 +6322,7 @@ func deleteUsenetEngineMappedWebDAVURL(ctx context.Context, engine config.Usenet
 	if engine.WebDAVUsername != "" || engine.WebDAVPassword != "" {
 		req.SetBasicAuth(engine.WebDAVUsername, engine.WebDAVPassword)
 	}
-	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	resp, err := apiusage.Do(&http.Client{Timeout: 15 * time.Second}, "Usenet Engine WebDAV", "Delete artifact", req)
 	if err != nil {
 		return fmt.Errorf("send WebDAV delete request: %w", err)
 	}
@@ -8334,7 +8352,7 @@ func (h *AdminUIHandler) TestMetadata(w http.ResponseWriter, r *http.Request) {
 		body, _ := json.Marshal(map[string]string{"apikey": req.TVDBApiKey})
 		tvdbReq, _ := http.NewRequest(http.MethodPost, "https://api4.thetvdb.com/v4/login", bytes.NewReader(body))
 		tvdbReq.Header.Set("Content-Type", "application/json")
-		resp, err := client.Do(tvdbReq)
+		resp, err := apiusage.Do(client, "TVDB", "Credential validation", tvdbReq)
 		if err != nil {
 			results = append(results, providerResult{Provider: "TVDB", Success: false, Error: err.Error()})
 			allSuccess = false
@@ -8354,7 +8372,7 @@ func (h *AdminUIHandler) TestMetadata(w http.ResponseWriter, r *http.Request) {
 	// Test TMDB API key
 	if req.TMDBApiKey != "" {
 		tmdbReq, _ := http.NewRequest(http.MethodGet, "https://api.themoviedb.org/3/configuration?api_key="+req.TMDBApiKey, nil)
-		resp, err := client.Do(tmdbReq)
+		resp, err := apiusage.Do(client, "TMDB", "Credential validation", tmdbReq)
 		if err != nil {
 			results = append(results, providerResult{Provider: "TMDB", Success: false, Error: err.Error()})
 			allSuccess = false
@@ -8375,7 +8393,7 @@ func (h *AdminUIHandler) TestMetadata(w http.ResponseWriter, r *http.Request) {
 	if req.AIApiKey != "" {
 		aiProvider := normalizeAdminAIProvider(req.AIProvider)
 		providerName, aiReq := buildAIValidationRequest(aiProvider, req.AIApiKey, req.AIBaseURL)
-		resp, err := client.Do(aiReq)
+		resp, err := apiusage.Do(client, providerName, "Credential validation", aiReq)
 		if err != nil {
 			results = append(results, providerResult{Provider: providerName, Success: false, Error: err.Error()})
 			allSuccess = false
@@ -8440,7 +8458,7 @@ func (h *AdminUIHandler) TestMDBList(w http.ResponseWriter, r *http.Request) {
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	apiReq, _ := http.NewRequest(http.MethodGet, "https://api.mdblist.com/imdb/movie/tt0120338?apikey="+req.APIKey, nil)
-	resp, err := client.Do(apiReq)
+	resp, err := apiusage.Do(client, "MDBList", "Credential validation", apiReq)
 	if err != nil {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": false,
@@ -9080,7 +9098,7 @@ func testLiveGetWithUserAgents(ctx context.Context, client *http.Client, request
 			req.Header.Set("User-Agent", userAgent)
 		}
 
-		resp, err := client.Do(req)
+		resp, err := apiusage.Do(client, "Live TV", "Source fetch", req)
 		if err != nil {
 			lastErr = err
 			continue
@@ -9149,7 +9167,7 @@ func testSubtitleJSONEndpoint(endpoint string, headers map[string]string, provid
 		req.Header.Set(key, value)
 	}
 
-	resp, err := client.Do(req)
+	resp, err := apiusage.Do(client, provider, "Subtitle API test", req)
 	if err != nil {
 		return false, fmt.Sprintf("Connection failed: %v", err)
 	}
@@ -9228,7 +9246,7 @@ func testOpenSubtitlesXMLRPC(username, password string) (bool, string) {
 	}
 	apiReq.Header.Set("Content-Type", "text/xml")
 
-	resp, err := client.Do(apiReq)
+	resp, err := apiusage.Do(client, "OpenSubtitles", "XML-RPC login", apiReq)
 	if err != nil {
 		return false, fmt.Sprintf("Connection failed: %v", err)
 	}
@@ -9354,7 +9372,7 @@ func (h *AdminUIHandler) TestDebridProvider(w http.ResponseWriter, r *http.Reque
 		apiReq.Header.Set("User-Agent", "mediastorm/1.0")
 		apiReq.Header.Set("Accept", "application/json")
 
-		resp, err := client.Do(apiReq)
+		resp, err := apiusage.Do(client, "Real-Debrid", "Credential validation", apiReq)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]interface{}{
@@ -9417,7 +9435,7 @@ func (h *AdminUIHandler) TestDebridProvider(w http.ResponseWriter, r *http.Reque
 		}
 		apiReq.Header.Set("Authorization", fmt.Sprintf("Bearer %s", req.APIKey))
 
-		resp, err := client.Do(apiReq)
+		resp, err := apiusage.Do(client, "TorBox", "Credential validation", apiReq)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]interface{}{
@@ -9502,7 +9520,7 @@ func (h *AdminUIHandler) TestDebridProvider(w http.ResponseWriter, r *http.Reque
 		}
 		apiReq.Header.Set("Authorization", fmt.Sprintf("Bearer %s", req.APIKey))
 
-		resp, err := client.Do(apiReq)
+		resp, err := apiusage.Do(client, "AllDebrid", "Credential validation", apiReq)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]interface{}{

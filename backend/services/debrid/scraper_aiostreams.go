@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"novastream/internal/apiusage"
 	"novastream/internal/mediaresolve"
 	"novastream/models"
 )
@@ -285,7 +286,7 @@ func (a *AIOStreamsScraper) fetchStreams(ctx context.Context, mediaType, id stri
 	}
 	addBrowserHeaders(req)
 
-	resp, err := a.httpClient.Do(req)
+	resp, err := apiusage.Do(a.httpClient, a.Name(), "Stream search", req)
 	if err != nil {
 		return nil, err
 	}
@@ -520,7 +521,7 @@ func (a *AIOStreamsScraper) TestConnection() error {
 	}
 	addBrowserHeaders(req)
 
-	resp, err := a.httpClient.Do(req)
+	resp, err := apiusage.Do(a.httpClient, a.Name(), "Connection test", req)
 	if err != nil {
 		return fmt.Errorf("failed to connect to AIOStreams: %w", err)
 	}
