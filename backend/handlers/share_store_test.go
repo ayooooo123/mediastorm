@@ -45,14 +45,30 @@ func TestShareStoreMultiUseUntilCap(t *testing.T) {
 	}
 }
 
-func TestShareStoreUnlimitedUses(t *testing.T) {
+func TestShareStoreUsesAreHardCapped(t *testing.T) {
 	store := NewShareStore(nil)
 	ctx := context.Background()
+
+	// A request for 0 ("unlimited") is clamped to the hard cap, not left open-ended.
 	rec, _ := store.Create(ctx, "acct1", false, map[string]string{"sourcePath": "/a.mkv"}, time.Hour, 0, "")
-	for i := 0; i < 5; i++ {
+	if rec.MaxUses != MaxShareLinkUses {
+		t.Fatalf("maxUses=0 should clamp to %d, got %d", MaxShareLinkUses, rec.MaxUses)
+	}
+
+	// A request above the cap is clamped down to it.
+	rec2, _ := store.Create(ctx, "acct1", false, map[string]string{"sourcePath": "/b.mkv"}, time.Hour, MaxShareLinkUses+50, "")
+	if rec2.MaxUses != MaxShareLinkUses {
+		t.Fatalf("oversized maxUses should clamp to %d, got %d", MaxShareLinkUses, rec2.MaxUses)
+	}
+
+	// The link is exhausted once the cap is reached.
+	for i := 0; i < MaxShareLinkUses; i++ {
 		if _, ok := store.Consume(ctx, rec.Token); !ok {
-			t.Fatalf("unlimited link use %d should succeed", i+1)
+			t.Fatalf("use %d within cap should succeed", i+1)
 		}
+	}
+	if _, ok := store.Consume(ctx, rec.Token); ok {
+		t.Fatalf("use beyond cap of %d should fail", MaxShareLinkUses)
 	}
 }
 
