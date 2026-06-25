@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"novastream/internal/apiusage"
 	"novastream/internal/mediaresolve"
 	"novastream/models"
 )
@@ -298,7 +299,7 @@ func (c *CometScraper) fetchStreams(ctx context.Context, mediaType, id, fallback
 	}
 	addBrowserHeaders(req)
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := apiusage.Do(c.httpClient, c.Name(), "Stream search", req)
 	if err != nil {
 		return nil, err
 	}
@@ -429,7 +430,7 @@ func (c *CometScraper) TestConnection(ctx context.Context) error {
 	}
 	addBrowserHeaders(req)
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := apiusage.Do(c.httpClient, c.Name(), "Connection test", req)
 	if err != nil {
 		return fmt.Errorf("failed to connect to Comet: %w", err)
 	}

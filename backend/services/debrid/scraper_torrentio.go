@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"novastream/internal/apiusage"
 	"novastream/internal/mediaresolve"
 	"novastream/models"
 )
@@ -300,7 +301,7 @@ func (t *TorrentioScraper) fetchCinemeta(ctx context.Context, title string, medi
 		return nil, err
 	}
 	addBrowserHeaders(req)
-	resp, err := t.httpClient.Do(req)
+	resp, err := apiusage.Do(t.httpClient, "Cinemeta", "Torrentio metadata search", req)
 	if err != nil {
 		return nil, err
 	}
@@ -509,7 +510,7 @@ func (t *TorrentioScraper) fetchStreams(ctx context.Context, mediaType MediaType
 		return nil, err
 	}
 	addBrowserHeaders(req)
-	resp, err := t.httpClient.Do(req)
+	resp, err := apiusage.Do(t.httpClient, "Torrentio", "Stream search", req)
 	if err != nil {
 		return nil, err
 	}

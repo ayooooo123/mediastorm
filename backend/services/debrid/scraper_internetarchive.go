@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"novastream/internal/apiusage"
 	"novastream/internal/mediaresolve"
 	"novastream/models"
 )
@@ -190,7 +191,7 @@ func (i *InternetArchiveScraper) getJSON(ctx context.Context, endpoint string, d
 	}
 	httpReq.Header.Set("Accept", "application/json")
 	httpReq.Header.Set("User-Agent", "strmr/1.0 (+https://github.com/godver3/mediastorm)")
-	resp, err := i.httpClient.Do(httpReq)
+	resp, err := apiusage.Do(i.httpClient, i.Name(), "Catalog API", httpReq)
 	if err != nil {
 		return err
 	}

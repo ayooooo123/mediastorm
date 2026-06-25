@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"novastream/internal/apiusage"
 	"novastream/models"
 )
 
@@ -170,7 +171,7 @@ func (n *NyaaScraper) searchRSS(ctx context.Context, query string) ([]ScrapeResu
 	req.Header.Set("Accept", "application/rss+xml, application/xml, text/xml")
 	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; mediastorm/1.0)")
 
-	resp, err := n.httpClient.Do(req)
+	resp, err := apiusage.Do(n.httpClient, n.Name(), "RSS search", req)
 	if err != nil {
 		return nil, fmt.Errorf("nyaa request failed: %w", err)
 	}
@@ -353,7 +354,7 @@ func (n *NyaaScraper) TestConnection(ctx context.Context) error {
 	req.Header.Set("Accept", "application/rss+xml, application/xml, text/xml")
 	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; mediastorm/1.0)")
 
-	resp, err := n.httpClient.Do(req)
+	resp, err := apiusage.Do(n.httpClient, n.Name(), "Connection test", req)
 	if err != nil {
 		return fmt.Errorf("connection failed: %w", err)
 	}

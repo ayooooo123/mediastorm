@@ -20,6 +20,7 @@ import (
 	"github.com/gorilla/mux"
 
 	"novastream/config"
+	"novastream/internal/apiusage"
 	"novastream/internal/pool"
 	"novastream/services/debrid"
 	"novastream/services/epg"
@@ -939,7 +940,7 @@ func fetchProwlarrIndexers(ctx context.Context, baseURL, apiKey string) ([]prowl
 	req.Header.Set("X-Api-Key", apiKey)
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := apiusage.Do(http.DefaultClient, "Prowlarr", "Indexer discovery", req)
 	if err != nil {
 		return nil, err
 	}

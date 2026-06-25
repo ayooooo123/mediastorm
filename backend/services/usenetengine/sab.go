@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"novastream/internal/apiusage"
 )
 
 type SABConfig struct {
@@ -267,7 +269,13 @@ func (c *SABClient) applyAuth(req *http.Request) {
 }
 
 func (c *SABClient) doJSON(req *http.Request) ([]byte, error) {
-	resp, err := c.httpClient.Do(req)
+	var resp *http.Response
+	var err error
+	if client, ok := c.httpClient.(*http.Client); ok {
+		resp, err = apiusage.Do(client, c.Name(), "SAB-compatible "+req.URL.Query().Get("mode"), req)
+	} else {
+		resp, err = c.httpClient.Do(req)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("send %s request: %w", req.URL.Query().Get("mode"), err)
 	}

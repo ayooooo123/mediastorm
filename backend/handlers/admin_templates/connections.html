@@ -68,6 +68,36 @@
     </div>
 </div>
 
+<div class="api-usage-panel">
+    <div class="api-usage-header">
+        <div>
+            <h2>Outbound API Usage</h2>
+            <p>Provider calls tracked in the backend cache with rotating history.</p>
+        </div>
+        <button class="btn btn-secondary" type="button" onclick="refreshConnectionsUsage()">Refresh</button>
+    </div>
+    <div class="api-usage-summary" id="api-usage-summary">No tracked calls yet.</div>
+    <div class="api-usage-table-wrap">
+        <table class="api-usage-table">
+            <thead>
+                <tr>
+                    <th>Provider</th>
+                    <th>Operation</th>
+                    <th>Last Hour</th>
+                    <th>Last 24h</th>
+                    <th>Count</th>
+                    <th>Failures</th>
+                    <th>Avg</th>
+                    <th>Last</th>
+                </tr>
+            </thead>
+            <tbody id="api-usage-results">
+                <tr><td colspan="8" class="empty-row">No tracked calls yet.</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
 <div id="connections-grid" class="connections-grid"></div>
 
 <style>
@@ -97,6 +127,18 @@
 .diag-status-pass { color: var(--success-color, #4caf50); }
 .diag-status-warn { color: var(--warning-color, #ff9800); }
 .diag-status-fail { color: var(--error-color, #f44336); max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
+.api-usage-panel { background: var(--card-bg, #1a1a2e); border: 1px solid var(--border-color, #333); border-radius: 8px; padding: 16px; margin-bottom: 24px; display: flex; flex-direction: column; gap: 12px; }
+.api-usage-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+.api-usage-header h2 { margin: 0 0 4px 0; font-size: 18px; }
+.api-usage-header p { margin: 0; color: var(--text-secondary, #888); font-size: 13px; }
+.api-usage-summary { font-size: 13px; color: var(--text-secondary, #888); min-height: 20px; }
+.api-usage-table-wrap { overflow-x: auto; }
+.api-usage-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.api-usage-table th,
+.api-usage-table td { text-align: left; padding: 9px 8px; border-top: 1px solid var(--border-color, #333); white-space: nowrap; }
+.api-usage-table th { color: var(--text-secondary, #888); font-weight: 600; }
+.api-usage-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.api-usage-table .empty-row { color: var(--text-secondary, #888); text-align: center; }
 .connections-grid { display: flex; flex-direction: column; gap: 24px; }
 .conn-group h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-secondary, #888); margin: 0 0 12px 0; padding-bottom: 8px; border-bottom: 1px solid var(--border-color, #333); }
 .conn-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
@@ -163,6 +205,60 @@ function formatDuration(durationMs) {
     if (durationMs == null || Number.isNaN(durationMs)) return '';
     if (durationMs < 1000) return `${Math.round(durationMs)} ms`;
     return `${(durationMs / 1000).toFixed(durationMs >= 10000 ? 0 : 1)} s`;
+}
+
+function formatUsageTime(value) {
+    if (!value) return 'Never';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return 'Never';
+    return date.toLocaleString();
+}
+
+function renderConnectionsUsage(entries) {
+    const summary = document.getElementById('api-usage-summary');
+    const tbody = document.getElementById('api-usage-results');
+    const rows = Array.isArray(entries) ? entries : [];
+    if (!summary || !tbody) return;
+
+    const totalCalls = rows.reduce((sum, entry) => sum + Number(entry.last24HourCount || 0), 0);
+    const hourCalls = rows.reduce((sum, entry) => sum + Number(entry.lastHourCount || 0), 0);
+    const failures = rows.reduce((sum, entry) => sum + Number(entry.failureCount || 0), 0);
+    summary.textContent = totalCalls
+        ? `${hourCalls.toLocaleString()} outbound call${hourCalls === 1 ? '' : 's'} in the last hour, ${totalCalls.toLocaleString()} in the last 24 hours across ${rows.length} provider operation${rows.length === 1 ? '' : 's'}${failures ? `, ${failures.toLocaleString()} lifetime HTTP failure${failures === 1 ? '' : 's'}` : ''}.`
+        : 'No tracked calls yet.';
+
+    if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="8" class="empty-row">No tracked calls yet.</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = rows.map(entry => {
+        const count = Number(entry.count || 0);
+        const avg = count > 0 ? Number(entry.totalDurationMs || 0) / count : 0;
+        return `
+            <tr>
+                <td>${escapeHtml(entry.provider || entry.host || 'Provider')}</td>
+                <td>${escapeHtml(entry.operation || entry.lastPath || 'Request')}</td>
+                <td class="num">${Number(entry.lastHourCount || 0).toLocaleString()}</td>
+                <td class="num">${Number(entry.last24HourCount || 0).toLocaleString()}</td>
+                <td class="num">${count.toLocaleString()}</td>
+                <td class="num">${Number(entry.failureCount || 0).toLocaleString()}</td>
+                <td class="num">${formatDuration(avg)}</td>
+                <td>${escapeHtml(formatUsageTime(entry.lastCalledAt))}</td>
+            </tr>
+        `;
+    }).join('');
+}
+
+async function refreshConnectionsUsage() {
+    const summary = document.getElementById('api-usage-summary');
+    try {
+        const resp = await fetch(basePath + '/api/connections/usage', { headers: { 'Accept': 'application/json' } });
+        const result = await resp.json();
+        renderConnectionsUsage(result.outboundEntries || []);
+    } catch (err) {
+        if (summary) summary.textContent = 'Failed to load API usage: ' + err.message;
+    }
 }
 
 function getTimeoutProjection(timeoutSec) {
@@ -495,6 +591,7 @@ async function runSearchDiagnostics() {
         tbody.innerHTML = '<tr><td colspan="5" class="empty-row">Search diagnostics failed.</td></tr>';
     } finally {
         btn.disabled = false;
+        refreshConnectionsUsage();
     }
 }
 
@@ -517,6 +614,7 @@ async function saveSearchTimeout() {
         summary.textContent = 'Failed to save timeout: ' + err.message;
     } finally {
         btn.disabled = false;
+        refreshConnectionsUsage();
     }
 }
 
@@ -641,6 +739,7 @@ async function runAllTests() {
 
     await Promise.allSettled(promises);
     btn.disabled = false;
+    refreshConnectionsUsage();
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -654,6 +753,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     buildCards();
     renderCards();
+    refreshConnectionsUsage();
     runAllTests();
 });
 </script>
