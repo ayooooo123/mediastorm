@@ -15,19 +15,70 @@ import (
 	"novastream/services/users"
 )
 
-// streamScopedPathPrefixes are the only API paths a stream-scoped session
-// (one-time share link) may access. Everything else is rejected so a shared
-// link cannot be used to browse the sharer's library or hit other account APIs.
-var streamScopedPathPrefixes = []string{"/api/video/", "/api/live/"}
+// streamScopedSourcePaths are source-bearing endpoints a stream-scoped session
+// may call only when the request source matches the resource captured at
+// share-link creation time.
+var streamScopedSourcePaths = map[string]string{
+	"/api/video/metadata":         "path",
+	"/api/video/direct-url":       "path",
+	"/api/video/cropdetect":       "path",
+	"/api/video/thumbnails/start": "path",
+	"/api/video/credits/detect":   "path",
+	"/api/video/hls/start":        "path",
+	"/api/video/subtitles/tracks": "path",
+	"/api/video/subtitles/start":  "path",
+	"/api/live/hls/start":         "url",
+	"/api/live/stream":            "url",
+}
 
-// isStreamScopedPathAllowed reports whether a stream-scoped session may access path.
-func isStreamScopedPathAllowed(path string) bool {
-	for _, prefix := range streamScopedPathPrefixes {
-		if strings.HasPrefix(path, prefix) {
-			return true
-		}
+// isStreamScopedRequestAllowed reports whether a stream-scoped share session may
+// access this request. Source-bearing routes must match the captured resource.
+func isStreamScopedRequestAllowed(r *http.Request, session models.Session) bool {
+	path := r.URL.Path
+	if isStreamScopedSessionPath(path) {
+		return true
+	}
+	if path == "/api/video/share-progress" {
+		return true
+	}
+	if path == "/api/video/stream" || strings.HasPrefix(path, "/api/video/stream/") {
+		return streamScopedSourceMatches(session.ScopeResource, r.URL.Query().Get("path"))
+	}
+	if queryParam, ok := streamScopedSourcePaths[path]; ok {
+		return streamScopedSourceMatches(session.ScopeResource, r.URL.Query().Get(queryParam))
 	}
 	return false
+}
+
+func isStreamScopedSessionPath(path string) bool {
+	if strings.HasPrefix(path, "/api/video/hls/") {
+		return path != "/api/video/hls/start"
+	}
+	return strings.HasPrefix(path, "/api/video/subtitles/") &&
+		path != "/api/video/subtitles/tracks" &&
+		path != "/api/video/subtitles/start"
+}
+
+func streamScopedSourceMatches(scopeResource, requested string) bool {
+	scopeResource = normalizeStreamScopedSource(scopeResource)
+	requested = normalizeStreamScopedSource(requested)
+	if requested == models.SessionScopeResourcePlaceholder {
+		return scopeResource != ""
+	}
+	return scopeResource != "" && requested != "" && scopeResource == requested
+}
+
+func normalizeStreamScopedSource(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if strings.HasPrefix(value, "webdav/") {
+		value = "/" + strings.TrimPrefix(value, "webdav/")
+	} else if strings.HasPrefix(value, "/webdav/") {
+		value = strings.TrimPrefix(value, "/webdav")
+	}
+	return value
 }
 
 // Re-export from auth package for backward compatibility
@@ -83,7 +134,7 @@ func AccountAuthMiddleware(sessionsSvc *sessions.Service, accountsSvc *accounts.
 
 			// Stream-scoped sessions (one-time share links) may only reach
 			// streaming/playback endpoints — never the rest of the account API.
-			if session.Scope == models.SessionScopeStream && !isStreamScopedPathAllowed(r.URL.Path) {
+			if session.Scope == models.SessionScopeStream && !isStreamScopedRequestAllowed(r, session) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusForbidden)
 				json.NewEncoder(w).Encode(map[string]string{"error": "session not permitted for this endpoint"})

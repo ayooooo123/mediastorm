@@ -112,13 +112,20 @@ func (s *Service) CreatePersistent(accountID string, isMaster bool, userAgent, i
 
 // CreateWithDuration generates a new session with a custom duration.
 func (s *Service) CreateWithDuration(accountID string, isMaster bool, userAgent, ipAddress string, duration time.Duration) (models.Session, error) {
-	return s.CreateScoped(accountID, isMaster, userAgent, ipAddress, duration, "")
+	return s.CreateScopedWithResource(accountID, isMaster, userAgent, ipAddress, duration, "", "")
 }
 
 // CreateScoped generates a new session with a custom duration and access scope.
 // An empty scope grants full account access; models.SessionScopeStream limits the
 // session to streaming/playback endpoints (used for one-time share links).
 func (s *Service) CreateScoped(accountID string, isMaster bool, userAgent, ipAddress string, duration time.Duration, scope string) (models.Session, error) {
+	return s.CreateScopedWithResource(accountID, isMaster, userAgent, ipAddress, duration, scope, "")
+}
+
+// CreateScopedWithResource generates a scoped session bound to a specific
+// source resource. Stream-scoped share sessions use this to prevent a shared
+// token from being reused against unrelated media/live URLs.
+func (s *Service) CreateScopedWithResource(accountID string, isMaster bool, userAgent, ipAddress string, duration time.Duration, scope string, scopeResource string) (models.Session, error) {
 	token, err := generateToken()
 	if err != nil {
 		return models.Session{}, err
@@ -126,14 +133,15 @@ func (s *Service) CreateScoped(accountID string, isMaster bool, userAgent, ipAdd
 
 	now := time.Now().UTC()
 	session := models.Session{
-		Token:     token,
-		AccountID: accountID,
-		IsMaster:  isMaster,
-		ExpiresAt: now.Add(duration),
-		CreatedAt: now,
-		UserAgent: userAgent,
-		IPAddress: ipAddress,
-		Scope:     scope,
+		Token:         token,
+		AccountID:     accountID,
+		IsMaster:      isMaster,
+		ExpiresAt:     now.Add(duration),
+		CreatedAt:     now,
+		UserAgent:     userAgent,
+		IPAddress:     ipAddress,
+		Scope:         scope,
+		ScopeResource: scopeResource,
 	}
 
 	s.mu.Lock()

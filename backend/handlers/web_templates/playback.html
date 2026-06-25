@@ -739,6 +739,7 @@
     }
     .share-dialog h2 { margin: 0 0 6px; font-size: 18px; }
     .share-dialog p { margin: 0 0 16px; font-size: 13px; line-height: 1.5; opacity: 0.7; }
+    .share-warning { color: #fbbf24; opacity: 1 !important; }
     .share-row { display: flex; gap: 8px; }
     .share-row input {
       flex: 1;
@@ -809,6 +810,7 @@
     <div class="share-dialog" role="dialog" aria-modal="true" aria-label="Share this stream">
       <h2>Share this stream</h2>
       <p>Anyone with this link can watch this title — no account needed. It opens straight into the player. Choose how long it stays valid and how many times it can be opened.</p>
+      <p class="share-warning">Only share with people you trust. This grants temporary direct playback access without asking them to sign in.</p>
 
       <div id="shareOptions">
         <div class="share-field">
@@ -857,6 +859,7 @@
     // affordances (no back buttons / no share button) and do not write playback
     // progress back to the sharer's history.
     const SHARE_MODE = routeParam('shareMode') === '1' || routeParam('shareMode') === 'true';
+    const SHARED_SOURCE_PLACEHOLDER = '__shared_source__';
     const WEB_PLAYER_PROGRESS_INTERVAL_MS = 10000;
     const WEB_PLAYER_PROGRESS_MIN_DELTA_SECONDS = 5;
 
@@ -1166,14 +1169,17 @@
       if (!sourcePath && directMovieUrl) {
         sourcePath = sourcePathFromStreamUrl(directMovieUrl);
       }
+      if (SHARE_MODE && routeParam('sharedSource') === '1' && !sourcePath && !directMovieUrl) {
+        sourcePath = SHARED_SOURCE_PLACEHOLDER;
+      }
 
       const rawMediaType = (routeParam('mediaType') || 'movie').toLowerCase();
       const isLive = rawMediaType === 'channel' || rawMediaType === 'live';
       const mediaType = isLive ? 'live' : rawMediaType === 'episode' || rawMediaType === 'series' ? 'episode' : 'movie';
       const title = routeParam('title') || routeParam('seriesTitle') || routeParam('displayName') || 'Untitled';
       const itemId = isLive
-        ? routeParam('tvgId') || routeParam('liveSourceUrl') || hlsSessionId || title
-        : routeParam('titleId') || routeParam('imdbId') || routeParam('tvdbId') || sourcePath || directMovieUrl || title;
+        ? routeParam('tvgId') || (SHARE_MODE ? '' : routeParam('liveSourceUrl')) || hlsSessionId || title
+        : routeParam('titleId') || routeParam('imdbId') || routeParam('tvdbId') || (SHARE_MODE ? '' : sourcePath || directMovieUrl) || title;
 
       playbackMeta = {
         mediaType,
@@ -1206,7 +1212,8 @@
       document.getElementById('mediaTypeLabel').textContent = playbackMeta.isLive
         ? 'Live'
         : playbackMeta.mediaType === 'episode' ? 'Episode' : 'Movie';
-      document.getElementById('details').textContent = [episode, playbackMeta.episodeName, playbackMeta.displayName || sourcePath]
+      const sourceDetail = SHARE_MODE ? '' : playbackMeta.displayName || sourcePath;
+      document.getElementById('details').textContent = [episode, playbackMeta.episodeName, sourceDetail]
         .filter(Boolean)
         .join(' - ');
       document.getElementById('topSubtitle').textContent = SHARE_MODE
