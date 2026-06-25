@@ -20,6 +20,7 @@ type User struct {
 	Color            string `json:"color,omitempty"`
 	IconURL          string `json:"iconUrl,omitempty"`          // Local path to downloaded profile icon image (set via admin UI)
 	PinHash          string `json:"pinHash,omitempty"`          // bcrypt hash of PIN — persisted to disk, stripped from API responses by MarshalJSON
+	PinLength        int    `json:"pinLength,omitempty"`        // Length of the PIN, exposed so clients can render/submit fixed-length entry
 	TraktAccountID   string `json:"traktAccountId,omitempty"`   // ID of the linked Trakt account (from config.TraktAccount)
 	PlexAccountID    string `json:"plexAccountId,omitempty"`    // ID of the linked Plex account (from config.PlexAccount)
 	MdblistAccountID string `json:"mdblistAccountId,omitempty"` // ID of the linked MDBList account (from config.MDBListAccount)
