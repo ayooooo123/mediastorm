@@ -187,6 +187,85 @@ func TestCreateTask_PlexHistorySyncValidation(t *testing.T) {
 	})
 }
 
+func TestCreateTask_PrewarmStableReresolveDays(t *testing.T) {
+	h := newTestScheduledTasksHandler(t)
+
+	tests := []struct {
+		name       string
+		config     map[string]string
+		wantStatus int
+		wantDays   string
+		wantErr    string
+	}{
+		{
+			name:       "default",
+			config:     nil,
+			wantStatus: http.StatusOK,
+			wantDays:   "7",
+		},
+		{
+			name:       "custom",
+			config:     map[string]string{"stableReresolveDays": "30"},
+			wantStatus: http.StatusOK,
+			wantDays:   "30",
+		},
+		{
+			name:       "too low",
+			config:     map[string]string{"stableReresolveDays": "0"},
+			wantStatus: http.StatusBadRequest,
+			wantErr:    "Pre-warm stable re-resolve days must be between 1 and 30",
+		},
+		{
+			name:       "not a number",
+			config:     map[string]string{"stableReresolveDays": "daily"},
+			wantStatus: http.StatusBadRequest,
+			wantErr:    "Pre-warm stable re-resolve days must be a whole number between 1 and 30",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			body := map[string]interface{}{
+				"type":    string(config.ScheduledTaskTypePrewarm),
+				"name":    "Prewarm",
+				"enabled": true,
+			}
+			if tc.config != nil {
+				body["config"] = tc.config
+			}
+
+			rec := postCreateTask(t, h, body)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("expected %d, got %d: %s", tc.wantStatus, rec.Code, rec.Body.String())
+			}
+
+			var resp map[string]interface{}
+			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+
+			if tc.wantErr != "" {
+				if resp["error"] != tc.wantErr {
+					t.Fatalf("expected error %q, got %q", tc.wantErr, resp["error"])
+				}
+				return
+			}
+
+			taskRaw, ok := resp["task"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("expected task object")
+			}
+			cfg, ok := taskRaw["config"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("expected task config")
+			}
+			if cfg["stableReresolveDays"] != tc.wantDays {
+				t.Fatalf("stableReresolveDays = %v, want %s", cfg["stableReresolveDays"], tc.wantDays)
+			}
+		})
+	}
+}
+
 func TestCreateTask_LocalMediaScanAllLibrariesValidation(t *testing.T) {
 	h := newTestScheduledTasksHandler(t)
 

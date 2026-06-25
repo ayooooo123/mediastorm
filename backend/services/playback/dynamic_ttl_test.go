@@ -69,16 +69,16 @@ func TestDynamicTTL_Tiers(t *testing.T) {
 			expectedTTL: 1 * time.Hour,
 		},
 
-		// Tier 4: >24h after → 24h
+		// Tier 4: >24h after → stable default
 		{
 			name:        "2 days after air date",
 			airDateUTC:  now.Add(-2 * 24 * time.Hour).Format(time.RFC3339),
-			expectedTTL: 24 * time.Hour,
+			expectedTTL: DefaultStableDynamicTTL,
 		},
 		{
 			name:        "5 weeks after air date",
 			airDateUTC:  now.Add(-35 * 24 * time.Hour).Format(time.RFC3339),
-			expectedTTL: 24 * time.Hour,
+			expectedTTL: DefaultStableDynamicTTL,
 		},
 
 		// Year-based fallbacks
@@ -92,7 +92,7 @@ func TestDynamicTTL_Tiers(t *testing.T) {
 			name:        "older content",
 			year:        2020,
 			mediaType:   "movie",
-			expectedTTL: 24 * time.Hour,
+			expectedTTL: DefaultStableDynamicTTL,
 		},
 
 		// No date info
@@ -116,7 +116,7 @@ func TestDynamicTTL_AirDateTimeUTCPreferredOverAirDate(t *testing.T) {
 	now := time.Now()
 
 	// airDateTimeUTC says 30min from now (should be 15min TTL — in the hot window)
-	// airDate says 5 days ago (should be 24h TTL)
+	// airDate says 5 days ago (should be stable TTL)
 	airDateUTC := now.Add(30 * time.Minute).Format(time.RFC3339)
 	airDate := now.Add(-5 * 24 * time.Hour).Format("2006-01-02")
 
@@ -129,12 +129,12 @@ func TestDynamicTTL_AirDateTimeUTCPreferredOverAirDate(t *testing.T) {
 func TestDynamicTTL_AirDateFallback(t *testing.T) {
 	now := time.Now()
 
-	// Only airDate set, 2 days ago (noon UTC assumption → ~2 days after → >24h → 24h tier)
+	// Only airDate set, 2 days ago (noon UTC assumption → ~2 days after → stable tier)
 	airDate := now.Add(-2 * 24 * time.Hour).Format("2006-01-02")
 
 	got := DynamicTTL(airDate, "", 0, "series")
-	if got != 24*time.Hour {
-		t.Errorf("expected 24h for 2 days after air date, got %v", got)
+	if got != DefaultStableDynamicTTL {
+		t.Errorf("expected stable TTL for 2 days after air date, got %v", got)
 	}
 }
 
@@ -166,8 +166,23 @@ func TestDynamicTTL_BoundaryExactly24HoursAfter(t *testing.T) {
 	// Just over 24 hours after → should be 24h tier
 	airDateUTC := now.Add(-24*time.Hour - 1*time.Second).Format(time.RFC3339)
 	got := DynamicTTL("", airDateUTC, 0, "series")
-	if got != 24*time.Hour {
-		t.Errorf("expected 24h just over 24h after, got %v", got)
+	if got != DefaultStableDynamicTTL {
+		t.Errorf("expected stable TTL just over 24h after, got %v", got)
+	}
+}
+
+func TestDynamicTTL_CustomStableTTL(t *testing.T) {
+	now := time.Now()
+	customTTL := 30 * 24 * time.Hour
+
+	got := DynamicTTLWithStableTTL("", now.Add(-5*24*time.Hour).Format(time.RFC3339), 0, "series", customTTL)
+	if got != customTTL {
+		t.Errorf("expected custom stable TTL, got %v", got)
+	}
+
+	got = DynamicTTLWithStableTTL("", "", 2020, "movie", customTTL)
+	if got != customTTL {
+		t.Errorf("expected custom stable TTL for older content, got %v", got)
 	}
 }
 
@@ -195,7 +210,7 @@ func TestPrequeueEntry_DynamicTTL_NilEpisode(t *testing.T) {
 	}
 
 	got := entry.DynamicTTL()
-	if got != 24*time.Hour {
-		t.Errorf("expected 24h for older movie, got %v", got)
+	if got != DefaultStableDynamicTTL {
+		t.Errorf("expected stable TTL for older movie, got %v", got)
 	}
 }

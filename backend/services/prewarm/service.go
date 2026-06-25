@@ -74,6 +74,9 @@ const invalidatedPrequeueRetryDelay = time.Hour
 const prewarmNoResultsReleaseRetryDelay = 15 * time.Minute
 const prewarmNoResultsUpcomingRetryDelay = 30 * time.Minute
 const prewarmNoResultsCurrentYearRetryDelay = time.Hour
+const prewarmStableReResolveDefaultDays = 7
+const prewarmStableReResolveMinDays = 1
+const prewarmStableReResolveMaxDays = 30
 
 // Service manages pre-warming of continue watching items
 type Service struct {
@@ -237,8 +240,8 @@ func (s *Service) warmContinueWatchingScope(
 			// healthy; without this guard the worker would keep the stale episode warm
 			// forever and the user would face a cold resolve on open.
 			if playback.EpisodeReferencesMatch(targetEpisode, entry.TargetEpisode) {
-				expiresAt := time.Now().Add(maxAge)
-				s.extendPrequeueExpiry(existing.PrequeueID, expiresAt)
+				expiresAt := s.prequeueExpiry(existing.LastResolve, entry, targetEpisode, state.Year, mediaType)
+				s.setPrequeueExpiry(existing.PrequeueID, expiresAt)
 				s.mu.Lock()
 				if current, ok := s.entries[key]; ok {
 					current.Error = ""
@@ -271,8 +274,8 @@ func (s *Service) warmContinueWatchingScope(
 	if pqEntry, ok := s.prequeueStore.GetByTitleUserScope(state.SeriesID, user.ID, settingsScopeKey); ok &&
 		pqEntry.Status == playback.PrequeueStatusReady && hasTrackMetadata(pqEntry) &&
 		playback.EpisodeReferencesMatch(targetEpisode, pqEntry.TargetEpisode) {
-		expiresAt := time.Now().Add(maxAge)
-		s.extendPrequeueExpiry(pqEntry.ID, expiresAt)
+		expiresAt := s.prequeueExpiry(pqEntry.CreatedAt, pqEntry, targetEpisode, state.Year, mediaType)
+		s.setPrequeueExpiry(pqEntry.ID, expiresAt)
 		s.mu.Lock()
 		s.entries[key] = &WarmEntry{
 			TitleID:          state.SeriesID,
@@ -299,8 +302,8 @@ func (s *Service) warmContinueWatchingScope(
 		if pqEntry, ok := s.prequeueStore.Get(shared.PrequeueID); ok &&
 			pqEntry.Status == playback.PrequeueStatusReady && hasTrackMetadata(pqEntry) &&
 			playback.EpisodeReferencesMatch(targetEpisode, pqEntry.TargetEpisode) {
-			expiresAt := time.Now().Add(maxAge)
-			s.extendPrequeueExpiry(pqEntry.ID, expiresAt)
+			expiresAt := s.prequeueExpiry(shared.LastResolve, pqEntry, targetEpisode, state.Year, mediaType)
+			s.setPrequeueExpiry(pqEntry.ID, expiresAt)
 			s.mu.Lock()
 			s.entries[key] = &WarmEntry{
 				TitleID:          state.SeriesID,
@@ -345,6 +348,7 @@ func (s *Service) warmContinueWatchingScope(
 	(*resolveCount)++
 
 	prequeueID, err := s.runWorker(ctx, state.SeriesID, state.SeriesTitle, imdbID, mediaType, state.Year, user.ID, clientID, settingsScopeKey, targetEpisode)
+	lastResolve := time.Now()
 
 	warmEntry := &WarmEntry{
 		TitleID:          state.SeriesID,
@@ -356,8 +360,8 @@ func (s *Service) warmContinueWatchingScope(
 		ImdbID:           imdbID,
 		TargetEpisode:    targetEpisode,
 		PrequeueID:       prequeueID,
-		LastResolve:      time.Now(),
-		ExpiresAt:        time.Now().Add(maxAge),
+		LastResolve:      lastResolve,
+		ExpiresAt:        lastResolve.Add(maxAge),
 	}
 
 	if err != nil {
@@ -370,6 +374,7 @@ func (s *Service) warmContinueWatchingScope(
 		if pqEntry, ok := s.prequeueStore.Get(prequeueID); ok {
 			warmEntry.StreamPath = pqEntry.StreamPath
 			warmEntry.LastRefresh = time.Now()
+			warmEntry.ExpiresAt = s.prequeueExpiry(lastResolve, pqEntry, targetEpisode, state.Year, mediaType)
 			s.prequeueStore.Update(prequeueID, func(e *playback.PrequeueEntry) {
 				e.ExpiresAt = warmEntry.ExpiresAt
 			})
@@ -387,14 +392,12 @@ func (s *Service) warmContinueWatchingScope(
 	return nil
 }
 
-func (s *Service) extendPrequeueExpiry(prequeueID string, expiresAt time.Time) {
+func (s *Service) setPrequeueExpiry(prequeueID string, expiresAt time.Time) {
 	if s.prequeueStore == nil || strings.TrimSpace(prequeueID) == "" || expiresAt.IsZero() {
 		return
 	}
 	s.prequeueStore.Update(prequeueID, func(e *playback.PrequeueEntry) {
-		if e.ExpiresAt.Before(expiresAt) {
-			e.ExpiresAt = expiresAt
-		}
+		e.ExpiresAt = expiresAt
 	})
 }
 
@@ -1020,6 +1023,67 @@ func (s *Service) getMaxAge() time.Duration {
 	return 12 * time.Hour
 }
 
+func (s *Service) getStableReResolveInterval() time.Duration {
+	days := prewarmStableReResolveDefaultDays
+	if s.configManager != nil {
+		settings, err := s.configManager.Load()
+		if err == nil {
+			for _, task := range settings.ScheduledTasks.Tasks {
+				if task.Type != config.ScheduledTaskTypePrewarm {
+					continue
+				}
+				if val, ok := task.Config["stableReresolveDays"]; ok {
+					if parsed, err := strconv.Atoi(val); err == nil {
+						days = parsed
+					}
+				}
+				break
+			}
+		}
+	}
+	if days < prewarmStableReResolveMinDays {
+		days = prewarmStableReResolveMinDays
+	}
+	if days > prewarmStableReResolveMaxDays {
+		days = prewarmStableReResolveMaxDays
+	}
+	return time.Duration(days) * 24 * time.Hour
+}
+
+func (s *Service) dynamicTTL(targetEpisode *models.EpisodeReference, year int, mediaType string) time.Duration {
+	var airDate, airDateTimeUTC string
+	if targetEpisode != nil {
+		airDate = targetEpisode.AirDate
+		airDateTimeUTC = targetEpisode.AirDateTimeUTC
+	}
+	return playback.DynamicTTLWithStableTTL(airDate, airDateTimeUTC, year, mediaType, s.getStableReResolveInterval())
+}
+
+func (s *Service) prequeueExpiry(lastResolve time.Time, entry *playback.PrequeueEntry, targetEpisode *models.EpisodeReference, year int, mediaType string) time.Time {
+	if entry != nil {
+		if targetEpisode == nil {
+			targetEpisode = entry.TargetEpisode
+		}
+		if year == 0 {
+			year = entry.Year
+		}
+		if strings.TrimSpace(mediaType) == "" {
+			mediaType = entry.MediaType
+		}
+		if lastResolve.IsZero() {
+			lastResolve = entry.CreatedAt
+		}
+	}
+	if lastResolve.IsZero() {
+		lastResolve = time.Now()
+	}
+	ttl := s.dynamicTTL(targetEpisode, year, mediaType)
+	if ttl <= 0 {
+		ttl = s.getStableReResolveInterval()
+	}
+	return lastResolve.Add(ttl)
+}
+
 // reResolveExpired re-resolves prequeue entries whose dynamic TTL has expired.
 // Returns the number of entries re-resolved.
 func (s *Service) reResolveExpired(ctx context.Context) int {
@@ -1054,17 +1118,25 @@ func (s *Service) reResolveExpired(ctx context.Context) int {
 			log.Printf("[prewarm] Re-resolve failed for %s (%s): %v", entry.ID, entry.TitleName, err)
 			continue
 		}
+		lastResolve := time.Now()
+		if pqEntry, ok := s.prequeueStore.Get(newPqID); ok {
+			expiresAt := s.prequeueExpiry(lastResolve, pqEntry, targetEpisode, entry.Year, entry.MediaType)
+			s.prequeueStore.Update(newPqID, func(e *playback.PrequeueEntry) {
+				e.ExpiresAt = expiresAt
+			})
+		}
 
 		// Update warm entry if we have one
 		key := entryKey(entry.TitleID, entry.UserID, entry.SettingsScopeKey)
 		s.mu.Lock()
 		if warmEntry, ok := s.entries[key]; ok {
 			warmEntry.PrequeueID = newPqID
-			warmEntry.LastResolve = time.Now()
+			warmEntry.LastResolve = lastResolve
 			warmEntry.Error = ""
 			if pqEntry, ok := s.prequeueStore.Get(newPqID); ok {
 				warmEntry.StreamPath = pqEntry.StreamPath
 				warmEntry.LastRefresh = time.Now()
+				warmEntry.ExpiresAt = s.prequeueExpiry(lastResolve, pqEntry, targetEpisode, entry.Year, entry.MediaType)
 			}
 		}
 		s.mu.Unlock()
