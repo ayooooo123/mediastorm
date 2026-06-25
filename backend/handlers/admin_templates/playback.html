@@ -679,7 +679,7 @@
         position: absolute;
         left: 5%;
         right: 5%;
-        bottom: 7%;
+        bottom: 3.5%;
         z-index: 2;
         color: white;
         font-size: clamp(1rem, 2.5vw, 2rem);
@@ -692,7 +692,7 @@
     }
 
     #videoHost.web-player-fullscreen .web-player-subtitle-overlay {
-        bottom: 14%;
+        bottom: 7%;
     }
 
     /* Native HLS subtitle cue styling (used when WEB_PLAYER_NATIVE_SUBTITLES is on) */
@@ -826,7 +826,7 @@
 
     .web-player-controls {
         display: grid;
-        grid-template-columns: 2.25rem 2.25rem 2.5rem 2.25rem 2.25rem 2.25rem 2.25rem minmax(0, 1fr) auto;
+        grid-template-columns: 2.25rem 2.25rem 2.5rem 2.25rem 2.25rem 2.25rem 2.25rem 2.25rem minmax(0, 1fr) auto;
         gap: 0.75rem;
         align-items: center;
         width: min(100%, 960px);
@@ -1069,6 +1069,19 @@
         font-size: 0.8125rem;
         font-variant-numeric: tabular-nums;
         white-space: nowrap;
+    }
+
+    @media (min-width: 821px) {
+        #videoHost:not(.web-player-fullscreen) #webPlayerSeek {
+            grid-column: 1 / -1;
+            grid-row: 2;
+        }
+
+        #videoHost:not(.web-player-fullscreen) .web-player-time {
+            grid-column: -2 / -1;
+            grid-row: 1;
+            justify-self: end;
+        }
     }
 
     .web-player-resume-modal {
