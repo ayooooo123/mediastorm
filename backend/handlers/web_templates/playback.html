@@ -169,6 +169,15 @@
     }
 
     video {
+      /* Pin the video to the frame's box. A bare width/height:100% video is a
+         grid item of .video-frame, and a grid item's percentage height doesn't
+         resolve against the frame's auto track — so the video falls back to
+         sizing from its width x intrinsic aspect ratio, overflowing the frame
+         and clipping the bottom of the picture (bottom band cut off in the
+         normal in-page view). Absolute inset:0 sizes it to the frame reliably;
+         object-fit:contain then letterboxes the picture inside it. */
+      position: absolute;
+      inset: 0;
       width: 100%;
       height: 100%;
       object-fit: contain;
