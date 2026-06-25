@@ -116,8 +116,6 @@
                     <button type="button" class="share-chip" data-ttl="1">1 day</button>
                     <button type="button" class="share-chip" data-ttl="3">3 days</button>
                     <button type="button" class="share-chip is-active" data-ttl="7">7 days</button>
-                    <input id="shareTtlCustom" class="share-chip-input" type="number" min="1" max="7" placeholder="#" aria-label="Custom days">
-                    <span class="share-chip-suffix">days</span>
                 </div>
             </div>
             <div class="share-field">
@@ -1112,18 +1110,6 @@
         transition: background 0.15s, border-color 0.15s;
     }
     .share-chip.is-active { background: rgba(122, 162, 255, 0.18); border-color: rgba(122, 162, 255, 0.7); }
-    .share-chip-input {
-        width: 3.4rem;
-        padding: 0.35rem 0.5rem;
-        border-radius: 999px;
-        border: 1px solid var(--border-color, rgba(255, 255, 255, 0.14));
-        background: var(--bg-primary, #0c0f16);
-        color: var(--text-primary, #e7eaf0);
-        font-size: 0.78rem;
-        text-align: center;
-    }
-    .share-chip-suffix { font-size: 0.78rem; opacity: 0.6; }
-
     .web-player-resume-modal.is-open {
         display: flex;
     }
@@ -3976,20 +3962,12 @@
         shareChipsBound = true;
         const ttlChips = document.getElementById('shareTtlChips');
         const usesChips = document.getElementById('shareUsesChips');
-        const custom = document.getElementById('shareTtlCustom');
         ttlChips?.querySelectorAll('.share-chip').forEach((chip) => {
             chip.addEventListener('click', () => {
-                if (custom) custom.value = '';
                 ttlChips.querySelectorAll('.share-chip').forEach((c) => c.classList.remove('is-active'));
                 chip.classList.add('is-active');
                 shareTtlDays = parseInt(chip.dataset.ttl, 10) || 1;
             });
-        });
-        custom?.addEventListener('input', () => {
-            if (custom.value) {
-                ttlChips.querySelectorAll('.share-chip').forEach((c) => c.classList.remove('is-active'));
-                shareTtlDays = Math.max(1, Math.min(7, parseInt(custom.value, 10) || 0));
-            }
         });
         usesChips?.querySelectorAll('.share-chip').forEach((chip) => {
             chip.addEventListener('click', () => {
@@ -4043,8 +4021,7 @@
         const result = document.getElementById('shareResult');
         if (!input) return;
 
-        const custom = document.getElementById('shareTtlCustom');
-        const ttlDays = custom && custom.value ? Math.max(1, Math.min(7, parseInt(custom.value, 10) || shareTtlDays)) : shareTtlDays;
+        const ttlDays = shareTtlDays;
 
         if (options) options.style.display = 'none';
         if (result) result.style.display = 'block';
