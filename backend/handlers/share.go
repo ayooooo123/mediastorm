@@ -35,6 +35,7 @@ var shareAllowedParams = map[string]bool{
 // share-link recipient. Satisfied by *sessions.Service.
 type ShareSessionService interface {
 	CreateScoped(accountID string, isMaster bool, userAgent, ipAddress string, duration time.Duration, scope string) (models.Session, error)
+	CreateScopedWithResource(accountID string, isMaster bool, userAgent, ipAddress string, duration time.Duration, scope string, scopeResource string) (models.Session, error)
 }
 
 // ShareProfileService resolves the profile a share link is created for so the
@@ -309,10 +310,10 @@ func (h *ShareHandler) Open(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session, err := h.sessions.CreateScoped(
+	session, err := h.sessions.CreateScopedWithResource(
 		rec.AccountID, rec.IsMaster,
 		r.UserAgent(), clientIPForShare(r),
-		SharePlaybackSessionTTL, models.SessionScopeStream,
+		SharePlaybackSessionTTL, models.SessionScopeStream, shareScopeResource(rec.Params),
 	)
 	if err != nil {
 		http.Error(w, "failed to open shared playback", http.StatusInternalServerError)
@@ -321,13 +322,14 @@ func (h *ShareHandler) Open(w http.ResponseWriter, r *http.Request) {
 
 	values := url.Values{}
 	for key, value := range rec.Params {
-		if !shareAllowedParams[key] {
+		if !shareAllowedParams[key] || shareRedirectSensitiveParams[key] {
 			continue
 		}
 		values.Set(key, value)
 	}
 	values.Set("token", session.Token)
 	values.Set("shareMode", "1")
+	values.Set("sharedSource", "1")
 
 	target := h.serverBasePath + "/watch/playback.html?" + values.Encode()
 	http.Redirect(w, r, target, http.StatusSeeOther)
@@ -341,6 +343,25 @@ func shareTokenFromPath(path string) string {
 		return ""
 	}
 	return strings.Trim(path[idx+len("/share/"):], "/")
+}
+
+func shareScopeResource(params map[string]string) string {
+	if params == nil {
+		return ""
+	}
+	for _, key := range []string{"sourcePath", "movie", "liveSourceUrl"} {
+		if value := strings.TrimSpace(params[key]); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+var shareRedirectSensitiveParams = map[string]bool{
+	"sourcePath":    true,
+	"movie":         true,
+	"liveSourceUrl": true,
+	"displayName":   true,
 }
 
 func clientIPForShare(r *http.Request) string {

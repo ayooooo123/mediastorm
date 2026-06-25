@@ -83,6 +83,18 @@ func envFlag(name string) bool {
 	return value == "1" || value == "true" || value == "yes" || value == "on"
 }
 
+func resolveScopedPlaybackPath(r *http.Request, path string) string {
+	path = strings.TrimSpace(path)
+	if path != models.SessionScopeResourcePlaceholder {
+		return path
+	}
+	session, ok := auth.GetSession(r)
+	if !ok || session.Scope != models.SessionScopeStream {
+		return path
+	}
+	return strings.TrimSpace(session.ScopeResource)
+}
+
 func videoTracef(format string, args ...any) {
 	if debugVideoTraceLogs {
 		log.Printf(format, args...)
@@ -1655,7 +1667,7 @@ func (h *VideoHandler) ProbeVideo(w http.ResponseWriter, r *http.Request) {
 	h.writeCommonHeaders(w)
 	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
 
-	filePath := strings.TrimSpace(r.URL.Query().Get("path"))
+	filePath := strings.TrimSpace(resolveScopedPlaybackPath(r, r.URL.Query().Get("path")))
 	if filePath == "" {
 		http.Error(w, "Missing path parameter", http.StatusBadRequest)
 		return
@@ -2952,6 +2964,7 @@ func (h *VideoHandler) StartHLSSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	path := r.URL.Query().Get("path")
+	path = resolveScopedPlaybackPath(r, path)
 	if path == "" {
 		http.Error(w, "missing path parameter", http.StatusBadRequest)
 		return
@@ -5407,7 +5420,7 @@ func (h *VideoHandler) CropDetect(w http.ResponseWriter, r *http.Request) {
 
 	h.writeCommonHeaders(w)
 
-	filePath := strings.TrimSpace(r.URL.Query().Get("path"))
+	filePath := strings.TrimSpace(resolveScopedPlaybackPath(r, r.URL.Query().Get("path")))
 	if filePath == "" {
 		http.Error(w, "Missing path parameter", http.StatusBadRequest)
 		return

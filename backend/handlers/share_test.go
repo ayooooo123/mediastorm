@@ -15,21 +15,28 @@ import (
 )
 
 type fakeShareSessions struct {
-	lastScope    string
-	lastDuration time.Duration
-	lastAccount  string
+	lastScope         string
+	lastScopeResource string
+	lastDuration      time.Duration
+	lastAccount       string
 }
 
 func (f *fakeShareSessions) CreateScoped(accountID string, isMaster bool, userAgent, ipAddress string, duration time.Duration, scope string) (models.Session, error) {
+	return f.CreateScopedWithResource(accountID, isMaster, userAgent, ipAddress, duration, scope, "")
+}
+
+func (f *fakeShareSessions) CreateScopedWithResource(accountID string, isMaster bool, userAgent, ipAddress string, duration time.Duration, scope string, scopeResource string) (models.Session, error) {
 	f.lastScope = scope
+	f.lastScopeResource = scopeResource
 	f.lastDuration = duration
 	f.lastAccount = accountID
 	return models.Session{
-		Token:     "minted-token",
-		AccountID: accountID,
-		IsMaster:  isMaster,
-		Scope:     scope,
-		ExpiresAt: time.Now().Add(duration),
+		Token:         "minted-token",
+		AccountID:     accountID,
+		IsMaster:      isMaster,
+		Scope:         scope,
+		ScopeResource: scopeResource,
+		ExpiresAt:     time.Now().Add(duration),
 	}, nil
 }
 
@@ -209,14 +216,20 @@ func TestShareOpenMintsScopedSessionAndIsSingleUse(t *testing.T) {
 	if q.Get("shareMode") != "1" {
 		t.Fatalf("shareMode = %q, want 1", q.Get("shareMode"))
 	}
-	if q.Get("sourcePath") != "/movies/a.mkv" || q.Get("preselectedAudioTrack") != "1" {
-		t.Fatalf("captured params missing from redirect: %v", q)
+	if q.Get("sharedSource") != "1" || q.Get("preselectedAudioTrack") != "1" {
+		t.Fatalf("safe captured params missing from redirect: %v", q)
+	}
+	if q.Get("sourcePath") != "" || q.Get("movie") != "" || q.Get("liveSourceUrl") != "" || q.Get("displayName") != "" {
+		t.Fatalf("share redirect should not include source-bearing params: %v", q)
 	}
 	if q.Get("startOffset") != "" || q.Get("actualStartOffset") != "" {
 		t.Fatalf("share redirect should not include resume offsets: %v", q)
 	}
 	if sessions.lastScope != models.SessionScopeStream {
 		t.Fatalf("minted scope = %q, want %q", sessions.lastScope, models.SessionScopeStream)
+	}
+	if sessions.lastScopeResource != "/movies/a.mkv" {
+		t.Fatalf("minted scope resource = %q, want /movies/a.mkv", sessions.lastScopeResource)
 	}
 	if sessions.lastDuration != SharePlaybackSessionTTL {
 		t.Fatalf("minted duration = %v, want %v", sessions.lastDuration, SharePlaybackSessionTTL)

@@ -36,6 +36,12 @@ func GetSessionScope(r *http.Request) string {
 	return ""
 }
 
+// GetSession returns the authenticated session stored by API middleware.
+func GetSession(r *http.Request) (models.Session, bool) {
+	session, ok := r.Context().Value(ContextKeySession).(models.Session)
+	return session, ok
+}
+
 // IsShareLinkRequest reports whether the request is authenticated by a share-link
 // (stream-scoped) session.
 func IsShareLinkRequest(r *http.Request) bool {
