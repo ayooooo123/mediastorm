@@ -967,6 +967,64 @@ func TestResults_SeriesYearMismatch(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("year range passes when expected year is inside range", func(t *testing.T) {
+		results := []models.NZBResult{
+			{Title: "Wacky Races (1968-1970) [S01] [1080p-REMASTERED][WEB-DL] Hanna-Barbera"},
+			{Title: "Wacky Races Complete TV Series (1968-1969) 720p"},
+			{Title: "Wacky Races (2017) Complete Season 1 S01 720p"},
+		}
+
+		opts := Options{
+			ExpectedTitle: "Wacky Races",
+			ExpectedYear:  1968,
+			IsMovie:       false,
+		}
+
+		filtered := ResultsWithDetails(results, opts)
+
+		passed := make(map[string]models.NZBResult)
+		for _, r := range filtered {
+			if r.Passed {
+				passed[r.Result.Title] = r.Result
+			}
+		}
+
+		if len(passed) != 2 {
+			t.Fatalf("expected 2 passed range results, got %d", len(passed))
+		}
+		for title, result := range passed {
+			if result.Attributes["yearMatch"] != "true" {
+				t.Fatalf("expected %q to have yearMatch=true, got %q", title, result.Attributes["yearMatch"])
+			}
+			if result.Attributes["yearPriority"] != "true" {
+				t.Fatalf("expected %q to have yearPriority=true, got %q", title, result.Attributes["yearPriority"])
+			}
+		}
+		if _, ok := passed["Wacky Races (2017) Complete Season 1 S01 720p"]; ok {
+			t.Fatal("expected 2017 reboot result to be rejected")
+		}
+	})
+
+	t.Run("matching year rejects loose title identity", func(t *testing.T) {
+		results := []models.NZBResult{
+			{Title: "Show Name New Chapter 2026 S01 1080p WEB-DL"},
+		}
+
+		opts := Options{
+			ExpectedTitle: "Show Name",
+			ExpectedYear:  2026,
+			IsMovie:       false,
+		}
+
+		filtered := ResultsWithDetails(results, opts)
+		if len(filtered) != 1 || filtered[0].Passed {
+			t.Fatalf("expected loose same-year title result to be rejected, got %+v", filtered)
+		}
+		if !strings.Contains(filtered[0].RejectReason, "title identity is loose") {
+			t.Fatalf("expected loose title rejection reason, got %q", filtered[0].RejectReason)
+		}
+	})
 }
 
 func TestResults_EpisodeAirYear(t *testing.T) {

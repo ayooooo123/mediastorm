@@ -28,35 +28,21 @@ const (
 	// which is then multiplied by its priority band weight.
 	levelMax = 100
 
-	// bandBase is the separation between adjacent priority bands. It MUST be
-	// strictly greater than levelMax+1 so that a one-level difference in a
-	// higher-priority criterion outweighs the combined maximum of every
-	// lower-priority criterion. This is what makes criterion order a TRUE
-	// priority: the #1 criterion always wins, and lower criteria only ever
-	// act as tiebreakers when higher criteria are equal.
-	bandBase = 128
+	// scoreBand is the human-facing point spacing between adjacent ranking
+	// criteria. Actual ranking uses lexicographic comparison in service.go, so
+	// this score can stay bounded and readable instead of encoding priority with
+	// huge exponential bands.
+	scoreBand = 100
 
 	// downloadMatchWeightCap bounds the combined download-term weight so the
-	// top band (bandBase^(N+1)) cannot overflow int64.
+	// display score stays readable.
 	downloadMatchWeightCap = 50
 )
 
-// ipow returns base**exp for non-negative exp as an int.
-func ipow(base, exp int) int {
-	result := 1
-	for i := 0; i < exp; i++ {
-		result *= base
-	}
-	return result
-}
-
 // ScoreResult computes an absolute score and breakdown for a single NZBResult.
 //
-// Scoring is lexicographic by criterion priority rather than a flat weighted
-// sum: enabled criteria are assigned geometrically separated band weights
-// (bandBase^exponent) so that the highest-priority criterion dominates the sum
-// of all lower-priority criteria combined. Each criterion yields a normalized
-// "level" in [-levelMax, levelMax]; lower criteria only break ties.
+// The score is a bounded, human-readable explanation value. Result ordering is
+// done lexicographically by criterion priority in service.go.
 func ScoreResult(result models.NZBResult, ctx ScoringContext) (int, []models.ScoreBreakdownItem) {
 	var breakdown []models.ScoreBreakdownItem
 	totalScore := 0
@@ -72,10 +58,7 @@ func ScoreResult(result models.NZBResult, ctx ScoringContext) (int, []models.Sco
 	n := len(enabled)
 
 	for rank, criterion := range enabled {
-		// rank 0 (highest priority) -> exponent n (largest band);
-		// rank n-1 (lowest priority) -> exponent 1. Exponent 0 is reserved
-		// for the year-match tiebreaker below.
-		band := ipow(bandBase, n-rank)
+		band := scoreBand * (n - rank)
 		var level int
 		var reason string
 
@@ -107,21 +90,24 @@ func ScoreResult(result models.NZBResult, ctx ScoringContext) (int, []models.Sco
 		totalScore += points
 	}
 
-	// Year match tiebreaker occupies the reserved bottom band (exponent 0,
-	// weight 1) so it only matters when every criterion above is equal.
-	if result.Attributes["yearMatch"] == "true" {
+	// Year priority is a sorter gate, not a normal point score. It requires
+	// both a confirmed year and a strong title identity from filtering.
+	if result.Attributes["yearPriority"] == "true" {
 		breakdown = append(breakdown, models.ScoreBreakdownItem{
 			Criterion: "Year Match",
-			Points:    1,
-			Reason:    "confirmed year match",
+			Points:    0,
+			Reason:    "priority gate: confirmed year and strong title match rank before results without a confirmed year",
 		})
-		totalScore += 1
+	} else if result.Attributes["yearMatch"] == "true" {
+		breakdown = append(breakdown, models.ScoreBreakdownItem{
+			Criterion: "Year Match",
+			Points:    0,
+			Reason:    "matched year, but title match was not strong enough for year priority",
+		})
 	}
 
 	if ctx.UseDownloadRanking {
-		// Download-preferred terms override the entire priority order: they sit
-		// one band above the highest criterion (exponent n+1).
-		points, reason := scoreDownloadPreferredTerms(result, ctx.DownloadPreferredTerms, ipow(bandBase, n+1))
+		points, reason := scoreDownloadPreferredTerms(result, ctx.DownloadPreferredTerms, scoreBand*(n+1))
 		breakdown = append(breakdown, models.ScoreBreakdownItem{
 			Criterion: "Download Preferred Terms",
 			Points:    points,
