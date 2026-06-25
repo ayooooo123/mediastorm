@@ -14,7 +14,7 @@ type pgInvitationRepo struct {
 	pool DB
 }
 
-const invCols = `id, token, created_by, expires_at, account_expires_in_hours, used_at, used_by, created_at`
+const invCols = `id, token, created_by, expires_at, account_expires_in_hours, remote_access_invite_id, connection_code, used_at, used_by, created_at`
 
 func (r *pgInvitationRepo) Get(ctx context.Context, id string) (*models.Invitation, error) {
 	row := r.pool.QueryRow(ctx, `SELECT `+invCols+` FROM invitations WHERE id = $1`, id)
@@ -37,7 +37,7 @@ func (r *pgInvitationRepo) List(ctx context.Context) ([]models.Invitation, error
 	for rows.Next() {
 		var inv models.Invitation
 		if err := rows.Scan(&inv.ID, &inv.Token, &inv.CreatedBy, &inv.ExpiresAt,
-			&inv.AccountExpiresInHours, &inv.UsedAt, &inv.UsedBy, &inv.CreatedAt); err != nil {
+			&inv.AccountExpiresInHours, &inv.RemoteAccessInviteID, &inv.ConnectionCode, &inv.UsedAt, &inv.UsedBy, &inv.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan invitation: %w", err)
 		}
 		result = append(result, inv)
@@ -48,9 +48,9 @@ func (r *pgInvitationRepo) List(ctx context.Context) ([]models.Invitation, error
 func (r *pgInvitationRepo) Create(ctx context.Context, inv *models.Invitation) error {
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO invitations (`+invCols+`)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 		inv.ID, inv.Token, inv.CreatedBy, inv.ExpiresAt,
-		inv.AccountExpiresInHours, inv.UsedAt, inv.UsedBy, inv.CreatedAt)
+		inv.AccountExpiresInHours, inv.RemoteAccessInviteID, inv.ConnectionCode, inv.UsedAt, inv.UsedBy, inv.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("create invitation: %w", err)
 	}
@@ -60,10 +60,10 @@ func (r *pgInvitationRepo) Create(ctx context.Context, inv *models.Invitation) e
 func (r *pgInvitationRepo) Update(ctx context.Context, inv *models.Invitation) error {
 	_, err := r.pool.Exec(ctx, `
 		UPDATE invitations SET token=$2, created_by=$3, expires_at=$4,
-		account_expires_in_hours=$5, used_at=$6, used_by=$7
+		account_expires_in_hours=$5, remote_access_invite_id=$6, connection_code=$7, used_at=$8, used_by=$9
 		WHERE id=$1`,
 		inv.ID, inv.Token, inv.CreatedBy, inv.ExpiresAt,
-		inv.AccountExpiresInHours, inv.UsedAt, inv.UsedBy)
+		inv.AccountExpiresInHours, inv.RemoteAccessInviteID, inv.ConnectionCode, inv.UsedAt, inv.UsedBy)
 	if err != nil {
 		return fmt.Errorf("update invitation: %w", err)
 	}
@@ -84,7 +84,7 @@ func (r *pgInvitationRepo) Count(ctx context.Context) (int64, error) {
 func scanInvitation(row pgx.Row) (*models.Invitation, error) {
 	var inv models.Invitation
 	err := row.Scan(&inv.ID, &inv.Token, &inv.CreatedBy, &inv.ExpiresAt,
-		&inv.AccountExpiresInHours, &inv.UsedAt, &inv.UsedBy, &inv.CreatedAt)
+		&inv.AccountExpiresInHours, &inv.RemoteAccessInviteID, &inv.ConnectionCode, &inv.UsedAt, &inv.UsedBy, &inv.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

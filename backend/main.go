@@ -856,6 +856,7 @@ func main() {
 	adminUIHandler.SetResolvedNZBService(nzbSystem.ImporterService())
 	adminUIHandler.SetAccountsService(accountsService)
 	adminUIHandler.SetInvitationsService(invitationsService)
+	adminUIHandler.SetRemoteAccessService(remoteAccessService)
 	adminUIHandler.SetSessionsService(sessionsService)
 	adminUIHandler.SetClientsService(clientsService)
 	adminUIHandler.SetClientSettingsService(clientSettingsService)

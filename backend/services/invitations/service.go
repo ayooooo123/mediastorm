@@ -21,11 +21,11 @@ import (
 )
 
 var (
-	ErrStorageDirRequired  = errors.New("storage directory not provided")
-	ErrInvitationNotFound  = errors.New("invitation not found")
-	ErrInvitationExpired   = errors.New("invitation has expired")
-	ErrInvitationUsed      = errors.New("invitation has already been used")
-	ErrInvalidToken        = errors.New("invalid invitation token")
+	ErrStorageDirRequired = errors.New("storage directory not provided")
+	ErrInvitationNotFound = errors.New("invitation not found")
+	ErrInvitationExpired  = errors.New("invitation has expired")
+	ErrInvitationUsed     = errors.New("invitation has already been used")
+	ErrInvalidToken       = errors.New("invalid invitation token")
 )
 
 const (
@@ -41,6 +41,12 @@ type Service struct {
 	path        string
 	store       *datastore.DataStore
 	invitations map[string]models.Invitation
+}
+
+type CreateOptions struct {
+	AccountExpiresInHours int
+	RemoteAccessInviteID  string
+	ConnectionCode        string
 }
 
 // useDB returns true when the service is backed by PostgreSQL.
@@ -83,6 +89,11 @@ func NewService(storageDir string) (*Service, error) {
 // Create generates a new invitation token.
 // accountExpiresInHours controls the lifetime of accounts created with this invitation (0 = permanent).
 func (s *Service) Create(createdBy string, expiresIn time.Duration, accountExpiresInHours int) (models.Invitation, error) {
+	return s.CreateWithOptions(createdBy, expiresIn, CreateOptions{AccountExpiresInHours: accountExpiresInHours})
+}
+
+// CreateWithOptions generates a new invitation token with optional paired connection metadata.
+func (s *Service) CreateWithOptions(createdBy string, expiresIn time.Duration, opts CreateOptions) (models.Invitation, error) {
 	if expiresIn <= 0 {
 		expiresIn = DefaultExpirationDuration
 	}
@@ -104,7 +115,9 @@ func (s *Service) Create(createdBy string, expiresIn time.Duration, accountExpir
 		Token:                 token,
 		CreatedBy:             createdBy,
 		ExpiresAt:             now.Add(expiresIn),
-		AccountExpiresInHours: accountExpiresInHours,
+		AccountExpiresInHours: opts.AccountExpiresInHours,
+		RemoteAccessInviteID:  strings.TrimSpace(opts.RemoteAccessInviteID),
+		ConnectionCode:        strings.TrimSpace(opts.ConnectionCode),
 		CreatedAt:             now,
 	}
 
@@ -116,6 +129,23 @@ func (s *Service) Create(createdBy string, expiresIn time.Duration, accountExpir
 	}
 
 	return invitation, nil
+}
+
+// Get finds an invitation by its ID.
+func (s *Service) Get(id string) (models.Invitation, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return models.Invitation{}, ErrInvitationNotFound
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	inv, ok := s.invitations[id]
+	if !ok {
+		return models.Invitation{}, ErrInvitationNotFound
+	}
+	return inv, nil
 }
 
 // GetByToken finds an invitation by its token.
