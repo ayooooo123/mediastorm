@@ -1,6 +1,7 @@
 package indexer
 
 import (
+	"strings"
 	"testing"
 
 	"novastream/config"
@@ -89,8 +90,6 @@ func TestScoreResult_Resolution(t *testing.T) {
 }
 
 func TestScoreResult_HigherPriorityCriterionDominates(t *testing.T) {
-	// Resolution (priority 0) must outrank Language (priority 1): a 2160p result
-	// with no preferred language must beat a 720p result that has it.
 	ctx := ScoringContext{
 		RankingCriteria: []config.RankingCriterion{
 			{ID: config.RankingResolution, Name: "Resolution", Enabled: true, Order: 0},
@@ -105,16 +104,16 @@ func TestScoreResult_HigherPriorityCriterionDominates(t *testing.T) {
 	}
 	r2160Unknown := models.NZBResult{Title: "Movie 2160p"}
 
-	s720, breakdown := ScoreResult(r720English, ctx)
-	s2160, _ := ScoreResult(r2160Unknown, ctx)
+	_, breakdown := ScoreResult(r720English, ctx)
 
-	if s720 >= s2160 {
-		t.Fatalf("expected 2160p without language (%d) > 720p with language (%d)", s2160, s720)
+	results := []models.NZBResult{r720English, r2160Unknown}
+	(&Service{}).sortResultsByScore(results, ctx)
+	if results[0].Title != "Movie 2160p" {
+		t.Fatalf("expected 2160p without language to rank above 720p with language, got %q", results[0].Title)
 	}
 
-	// Language sits one band below resolution: matched level (levelMax) times its
-	// band weight (bandBase^1, since it is the lowest of two enabled criteria).
-	wantLang := levelMax * ipow(bandBase, 1)
+	// Language sits one display-score band below resolution.
+	wantLang := levelMax * scoreBand
 	for _, item := range breakdown {
 		if item.Criterion == "Language" {
 			if item.Points != wantLang {
@@ -158,11 +157,10 @@ func TestScoreResult_SizeTopPriorityBeatsHigherResolution(t *testing.T) {
 	big1080 := models.NZBResult{Title: "Movie 1080p", SizeBytes: 50 * 1024 * 1024 * 1024}
 	small4k := models.NZBResult{Title: "Movie 2160p", SizeBytes: 35 * 1024 * 1024 * 1024}
 
-	sBig, _ := ScoreResult(big1080, ctx)
-	sSmall, _ := ScoreResult(small4k, ctx)
-
-	if sBig <= sSmall {
-		t.Fatalf("expected larger 1080p file (%d) > smaller 4K file (%d) when size is top priority", sBig, sSmall)
+	results := []models.NZBResult{small4k, big1080}
+	(&Service{}).sortResultsByScore(results, ctx)
+	if results[0].Title != big1080.Title {
+		t.Fatalf("expected larger 1080p file to rank above smaller 4K file when size is top priority, got %q", results[0].Title)
 	}
 }
 
@@ -207,19 +205,131 @@ func TestScoreResult_DisabledCriteria(t *testing.T) {
 	}
 }
 
-func TestScoreResult_YearMatchTiebreaker(t *testing.T) {
+func TestScoreResult_YearMatchBreakdownIsPriorityGate(t *testing.T) {
 	ctx := ScoringContext{
 		RankingCriteria: []config.RankingCriterion{},
 	}
 
-	with := models.NZBResult{Title: "Test", Attributes: map[string]string{"yearMatch": "true"}}
-	without := models.NZBResult{Title: "Test", Attributes: map[string]string{"yearMatch": "false"}}
+	with := models.NZBResult{Title: "Test", Attributes: map[string]string{"yearMatch": "true", "yearPriority": "true"}}
 
-	sWith, _ := ScoreResult(with, ctx)
-	sWithout, _ := ScoreResult(without, ctx)
+	score, breakdown := ScoreResult(with, ctx)
+	if score != 0 {
+		t.Fatalf("expected year match priority gate not to add score points, got %d", score)
+	}
+	if len(breakdown) != 1 {
+		t.Fatalf("expected one year match breakdown item, got %d", len(breakdown))
+	}
+	if breakdown[0].Criterion != "Year Match" || breakdown[0].Points != 0 {
+		t.Fatalf("unexpected year match breakdown: %+v", breakdown[0])
+	}
+	if !strings.Contains(breakdown[0].Reason, "priority gate") {
+		t.Fatalf("expected priority gate reason, got %q", breakdown[0].Reason)
+	}
+}
 
-	if sWith <= sWithout {
-		t.Fatalf("expected year match (%d) > no year match (%d)", sWith, sWithout)
+func TestScoreResult_YearMatchWithoutStrongTitleIsNotPriorityGate(t *testing.T) {
+	ctx := ScoringContext{
+		RankingCriteria: []config.RankingCriterion{},
+	}
+
+	with := models.NZBResult{Title: "Test", Attributes: map[string]string{"yearMatch": "true", "yearPriority": "false"}}
+
+	score, breakdown := ScoreResult(with, ctx)
+	if score != 0 {
+		t.Fatalf("expected year match explanation not to add score points, got %d", score)
+	}
+	if len(breakdown) != 1 {
+		t.Fatalf("expected one year match breakdown item, got %d", len(breakdown))
+	}
+	if strings.Contains(breakdown[0].Reason, "priority gate") {
+		t.Fatalf("did not expect priority gate reason, got %q", breakdown[0].Reason)
+	}
+}
+
+func TestSortResultsByScore_YearMatchSupersedesCriteria(t *testing.T) {
+	ctx := ScoringContext{
+		RankingCriteria: []config.RankingCriterion{
+			{ID: config.RankingResolution, Name: "Resolution", Enabled: true, Order: 0},
+			{ID: config.RankingSize, Name: "Size", Enabled: true, Order: 1},
+		},
+	}
+
+	confirmedYear := models.NZBResult{
+		Title:      "Wacky Races 1968 S01 DVDRip",
+		SizeBytes:  2 * 1024 * 1024 * 1024,
+		Attributes: map[string]string{"yearMatch": "true", "yearPriority": "true"},
+	}
+	noParsedYear := models.NZBResult{
+		Title:      "Wacky Races Complete TV Series 2160p REMASTERED",
+		SizeBytes:  100 * 1024 * 1024 * 1024,
+		Attributes: map[string]string{"yearMatch": "false", "yearPriority": "false"},
+	}
+
+	results := []models.NZBResult{noParsedYear, confirmedYear}
+	(&Service{}).sortResultsByScore(results, ctx)
+	if results[0].Title != confirmedYear.Title {
+		t.Fatalf("expected confirmed year result to rank first, got %q", results[0].Title)
+	}
+}
+
+func TestSortResultsByScore_YearMatchAloneDoesNotSupersedeCriteria(t *testing.T) {
+	ctx := ScoringContext{
+		RankingCriteria: []config.RankingCriterion{
+			{ID: config.RankingResolution, Name: "Resolution", Enabled: true, Order: 0},
+			{ID: config.RankingSize, Name: "Size", Enabled: true, Order: 1},
+		},
+	}
+
+	looseYearMatch := models.NZBResult{
+		Title:      "Wacky Races Forever 1968 S01 DVDRip",
+		SizeBytes:  2 * 1024 * 1024 * 1024,
+		Attributes: map[string]string{"yearMatch": "true", "yearPriority": "false"},
+	}
+	strongNoParsedYear := models.NZBResult{
+		Title:      "Wacky Races Complete TV Series 2160p REMASTERED",
+		SizeBytes:  100 * 1024 * 1024 * 1024,
+		Attributes: map[string]string{"yearMatch": "false", "yearPriority": "false"},
+	}
+
+	results := []models.NZBResult{looseYearMatch, strongNoParsedYear}
+	(&Service{}).sortResultsByScore(results, ctx)
+	if results[0].Title != strongNoParsedYear.Title {
+		t.Fatalf("expected weak title year match not to override normal ranking, got %q", results[0].Title)
+	}
+}
+
+func TestScoreResult_BoundedScore(t *testing.T) {
+	ctx := ScoringContext{
+		RankingCriteria: []config.RankingCriterion{
+			{ID: config.RankingServicePriority, Name: "Service Priority", Enabled: true, Order: 0},
+			{ID: config.RankingPreferredTerms, Name: "Preferred Terms", Enabled: true, Order: 1},
+			{ID: config.RankingResolution, Name: "Resolution", Enabled: true, Order: 2},
+			{ID: config.RankingLanguage, Name: "Language", Enabled: true, Order: 3},
+			{ID: config.RankingSize, Name: "Size", Enabled: true, Order: 4},
+			{ID: config.RankingPreferredScraper, Name: "Preferred Scraper", Enabled: true, Order: 5},
+		},
+		ServicePriority:    config.StreamingServicePriorityUsenet,
+		PreferredTerms:     filter.CompileTerms([]string{"remux=10", "dv=10", "hdr=10"}),
+		PreferredLang:      "eng",
+		PreferredScraper:   "zilean",
+		UseDownloadRanking: true,
+		DownloadPreferredTerms: filter.CompileTerms([]string{
+			"season pack=10",
+			"complete=10",
+		}),
+	}
+
+	result := models.NZBResult{
+		Title:       "Show.S01.Complete.Season.Pack.2160p.REMUX.DV.HDR",
+		SizeBytes:   120 * 1024 * 1024 * 1024,
+		ServiceType: models.ServiceTypeUsenet,
+		Indexer:     "zilean",
+		Attributes:  map[string]string{"languages": "eng", "yearMatch": "true", "yearPriority": "true"},
+	}
+
+	score, _ := ScoreResult(result, ctx)
+	if score > 1000000 {
+		t.Fatalf("expected bounded score, got %d", score)
 	}
 }
 
@@ -249,9 +359,6 @@ func TestScoreResult_BreakdownHasReasons(t *testing.T) {
 }
 
 func TestScoreResult_PriorityOrderMatters(t *testing.T) {
-	// Higher-priority criteria (lower position index) should have higher weight
-	// Position 0 = 1000pts, Position 1 = 500pts
-	// So preferred terms at position 0 should dominate resolution at position 1
 	ctx := ScoringContext{
 		RankingCriteria: []config.RankingCriterion{
 			{ID: config.RankingPreferredTerms, Name: "Preferred Terms", Enabled: true, Order: 0},
@@ -264,11 +371,10 @@ func TestScoreResult_PriorityOrderMatters(t *testing.T) {
 	remux720 := models.NZBResult{Title: "Movie Remux 720p"}
 	plain4k := models.NZBResult{Title: "Movie 2160p BluRay"}
 
-	sRemux, _ := ScoreResult(remux720, ctx)
-	sPlain, _ := ScoreResult(plain4k, ctx)
-
-	if sRemux <= sPlain {
-		t.Fatalf("expected preferred term match at position 0 (%d) > resolution at position 1 (%d)", sRemux, sPlain)
+	results := []models.NZBResult{plain4k, remux720}
+	(&Service{}).sortResultsByScore(results, ctx)
+	if results[0].Title != remux720.Title {
+		t.Fatalf("expected preferred term match at position 0 to rank first, got %q", results[0].Title)
 	}
 }
 
@@ -376,11 +482,11 @@ func TestScoreResult_DownloadPreferredTerms(t *testing.T) {
 	match := models.NZBResult{Title: "Show.S01.1080p.Season.Pack.Complete"}
 	plain := models.NZBResult{Title: "Show.S01E01.2160p"}
 
-	scoreMatch, breakdownMatch := ScoreResult(match, ctx)
-	scorePlain, _ := ScoreResult(plain, ctx)
-
-	if scoreMatch <= scorePlain {
-		t.Fatalf("expected download preferred match (%d) > plain result (%d)", scoreMatch, scorePlain)
+	_, breakdownMatch := ScoreResult(match, ctx)
+	results := []models.NZBResult{plain, match}
+	(&Service{}).sortResultsByScore(results, ctx)
+	if results[0].Title != match.Title {
+		t.Fatalf("expected download preferred match to rank above plain result, got %q", results[0].Title)
 	}
 	found := false
 	for _, item := range breakdownMatch {

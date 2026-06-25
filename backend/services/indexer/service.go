@@ -524,11 +524,12 @@ func compareLanguage(i, j models.NZBResult, preferredLang string) int {
 	return 0
 }
 
-// compareYearMatch deranks results where year couldn't be parsed (kept by leniency)
-// below results that have a confirmed year match. Only active when expected year is set.
-func compareYearMatch(i, j models.NZBResult) int {
-	iMatch := i.Attributes["yearMatch"] == "true"
-	jMatch := j.Attributes["yearMatch"] == "true"
+// compareYearPriority deranks results where year couldn't be parsed (kept by
+// leniency) below results that have both a confirmed year and a strong title
+// match. A year by itself is not enough to supersede title identity.
+func compareYearPriority(i, j models.NZBResult) int {
+	iMatch := i.Attributes["yearPriority"] == "true"
+	jMatch := j.Attributes["yearPriority"] == "true"
 	if iMatch && !jMatch {
 		return -1
 	}
@@ -560,6 +561,62 @@ func comparePreferredScraper(i, j models.NZBResult, preferredScraper string) int
 	if !iMatch && jMatch {
 		return 1
 	}
+	return 0
+}
+
+func compareDownloadPreferredTerms(i, j models.NZBResult, terms []filter.CompiledTerm) int {
+	if len(terms) == 0 {
+		return 0
+	}
+	iWeight, _ := filter.SumMatchedWeights(i.Title, terms)
+	jWeight, _ := filter.SumMatchedWeights(j.Title, terms)
+	if iWeight > jWeight {
+		return -1
+	}
+	if iWeight < jWeight {
+		return 1
+	}
+	return 0
+}
+
+func compareByRankingCriteria(i, j models.NZBResult, scoringCtx ScoringContext) int {
+	if cmp := compareYearPriority(i, j); cmp != 0 {
+		return cmp
+	}
+
+	if scoringCtx.UseDownloadRanking {
+		if cmp := compareDownloadPreferredTerms(i, j, scoringCtx.DownloadPreferredTerms); cmp != 0 {
+			return cmp
+		}
+	}
+
+	for _, criterion := range scoringCtx.RankingCriteria {
+		if !criterion.Enabled {
+			continue
+		}
+
+		var cmp int
+		switch criterion.ID {
+		case config.RankingServicePriority:
+			cmp = compareServicePriority(i, j, scoringCtx.ServicePriority)
+		case config.RankingPreferredTerms:
+			cmp = comparePreferredTerms(i, j, scoringCtx.PreferredTerms)
+		case config.RankingNonPreferredTerms:
+			cmp = compareNonPreferredTerms(i, j, scoringCtx.NonPreferredTerms)
+		case config.RankingResolution:
+			cmp = compareResolution(i, j)
+		case config.RankingLanguage:
+			cmp = compareLanguage(i, j, scoringCtx.PreferredLang)
+		case config.RankingSize:
+			cmp = compareSize(i, j)
+		case config.RankingPreferredScraper:
+			cmp = comparePreferredScraper(i, j, scoringCtx.PreferredScraper)
+		}
+		if cmp != 0 {
+			return cmp
+		}
+	}
+
 	return 0
 }
 
@@ -603,27 +660,9 @@ func (s *Service) sortResultsByScore(results []models.NZBResult, scoringCtx Scor
 		return
 	}
 
-	type scoredResult struct {
-		result models.NZBResult
-		score  int
-	}
-
-	scored := make([]scoredResult, len(results))
-	for i, result := range results {
-		score, _ := ScoreResult(result, scoringCtx)
-		scored[i] = scoredResult{
-			result: result,
-			score:  score,
-		}
-	}
-
-	sort.SliceStable(scored, func(i, j int) bool {
-		return scored[i].score > scored[j].score
+	sort.SliceStable(results, func(i, j int) bool {
+		return compareByRankingCriteria(results[i], results[j], scoringCtx) < 0
 	})
-
-	for i := range scored {
-		results[i] = scored[i].result
-	}
 }
 
 type SearchOptions struct {
@@ -935,10 +974,10 @@ func (s *Service) SearchWithScoring(ctx context.Context, opts SearchOptions) ([]
 		}
 	}
 
-	// Sort passed results by the same score used by standard ranking.
+	// Sort passed results by the same priority order used by standard ranking.
 	if len(passed) > 0 {
 		sort.SliceStable(passed, func(i, j int) bool {
-			return passed[i].TotalScore > passed[j].TotalScore
+			return compareByRankingCriteria(passed[i].NZBResult, passed[j].NZBResult, scoringCtx) < 0
 		})
 
 		// Apply per-resolution limit to passed results (same as Search path)
@@ -1037,9 +1076,9 @@ func (s *Service) SearchTest(ctx context.Context, opts SearchOptions) ([]models.
 		}
 	}
 
-	// Sort passed results by score descending
+	// Sort passed results by the same priority order used by standard ranking.
 	sort.SliceStable(passed, func(i, j int) bool {
-		return passed[i].TotalScore > passed[j].TotalScore
+		return compareByRankingCriteria(passed[i].NZBResult, passed[j].NZBResult, scoringCtx) < 0
 	})
 
 	// Combine: passed first, then filtered

@@ -515,7 +515,7 @@
                         <th>Size</th>
                         <th>Resolution</th>
                         <th>HDR</th>
-                        <th>Score</th>
+                        <th>Score / Gates</th>
                         <th>Status</th>
                     </tr>
                 </thead>
@@ -545,20 +545,31 @@
                             : 'border-left: 3px solid var(--success);';
 
                         const scoreDisplay = r.totalScore != null ? r.totalScore : '-';
+                        const yearMatch = r.attributes?.yearMatch;
+                        const yearPriority = r.attributes?.yearPriority;
+                        const yearBadge = yearPriority === 'true'
+                            ? ' <span class="status-badge online" style="font-size: 0.68rem; margin-left: 0.35rem;">Year priority</span>'
+                            : yearMatch === 'true'
+                            ? ' <span class="status-badge" style="font-size: 0.68rem; margin-left: 0.35rem;">Year match</span>'
+                            : yearMatch === 'false'
+                            ? ' <span class="status-badge warning" style="font-size: 0.68rem; margin-left: 0.35rem;">No year</span>'
+                            : '';
                         const hasBreakdown = r.scoreBreakdown && r.scoreBreakdown.length > 0;
                         const scoreCell = hasBreakdown
-                            ? `<td style="font-weight: 500; cursor: pointer; user-select: none;" onclick="toggleBreakdown(${displayIdx})" title="Click for details">${scoreDisplay} <span style="font-size: 0.7rem; color: var(--text-muted);">▶</span></td>`
-                            : `<td style="font-weight: 500;">${scoreDisplay}</td>`;
+                            ? `<td style="font-weight: 500; cursor: pointer; user-select: none;" onclick="toggleBreakdown(${displayIdx})" title="Click for details">${scoreDisplay}${yearBadge} <span style="font-size: 0.7rem; color: var(--text-muted);">▶</span></td>`
+                            : `<td style="font-weight: 500;">${scoreDisplay}${yearBadge}</td>`;
 
                         const breakdownHtml = hasBreakdown
                             ? `<tr id="breakdown-${displayIdx}" style="display: none;">
                                 <td colspan="9" style="padding: 0.5rem 1rem; background: var(--bg-tertiary);">
                                     <div style="font-size: 0.8rem;">
                                         ${r.scoreBreakdown.map(b => {
+                                            const isYearGate = b.criterion === 'Year Match' && b.reason && b.reason.includes('priority gate');
                                             const color = b.points > 0 ? 'var(--success)' : b.points < 0 ? 'var(--danger)' : 'var(--text-muted)';
                                             const sign = b.points > 0 ? '+' : '';
+                                            const pointsLabel = isYearGate ? 'PRIORITY' : `${sign}${b.points}`;
                                             return `<div style="display: flex; gap: 0.75rem; padding: 2px 0;">
-                                                <span style="min-width: 60px; text-align: right; font-weight: 500; color: ${color};">${sign}${b.points}</span>
+                                                <span style="min-width: 60px; text-align: right; font-weight: 500; color: ${isYearGate ? 'var(--success)' : color};">${pointsLabel}</span>
                                                 <span style="min-width: 140px; color: var(--text-secondary);">${b.criterion}</span>
                                                 <span style="color: var(--text-muted);">${b.reason}</span>
                                             </div>`;

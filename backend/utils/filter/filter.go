@@ -35,6 +35,7 @@ var (
 	resolution480Pattern    = regexp.MustCompile(`(?i)(^|[^a-z0-9])480[pi]?([^a-z0-9]|$)`)
 	formulaOneRoundPattern  = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])(?:f1|formula[.\s_-]*1)[^a-z0-9]+((?:19|20)\d{2})(?:x\d+)*(?:[^a-z0-9]+|x)(?:r|round)[.\s_-]*(\d{1,2})(?:[^a-z0-9]|$)`)
 	formulaOneXPattern      = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])(?:f1|formula[.\s_-]*1)[^a-z0-9]+((?:19|20)\d{2})x(\d{1,3})(?:[^a-z0-9]|$)`)
+	yearRangePattern        = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])((?:19|20)\d{2})\s*[-–]\s*((?:19|20)\d{2})(?:[^a-z0-9]|$)`)
 	episodeCodeTokenPattern = regexp.MustCompile(`(?i)^(?:s\d{1,4}e\d{1,5}|\d{1,4}x\d{1,5})$`)
 	seasonOnlyTokenPattern  = regexp.MustCompile(`(?i)^s\d{1,4}$`)
 	releaseBoundaryTokens   = map[string]struct{}{
@@ -339,6 +340,12 @@ func ResultsWithDetails(results []models.NZBResult, opts Options) []FilteredResu
 			reject(result, reason)
 			continue
 		}
+		titleIdentityStrong := isStrongTitleIdentity(parsed.Title, matchedTitle, titleSim)
+		if titleIdentityStrong {
+			result.Attributes["titleMatch"] = "strong"
+		} else {
+			result.Attributes["titleMatch"] = "loose"
+		}
 		if !opts.IsMovie && isSeriesPrefixExtensionMismatch(parsed.Title, matchedTitle) {
 			reason := fmt.Sprintf("parsed title %q extends expected title %q", parsed.Title, matchedTitle)
 			log.Printf("[filter] Rejecting %q: %s", result.Title, reason)
@@ -401,29 +408,41 @@ func ResultsWithDetails(results []models.NZBResult, opts Options) []FilteredResu
 
 		// Check year for all media types (movies and series)
 		if opts.ExpectedYear > 0 {
-			if parsed.Year > 0 {
-				yearDiff := abs(opts.ExpectedYear - parsed.Year)
+			parsedYear := parsed.Year
+			if parsedYear == 0 {
+				parsedYear = matchingYearFromRange(result.Title, opts.ExpectedYear)
+			}
+			if parsedYear > 0 {
+				yearDiff := abs(opts.ExpectedYear - parsedYear)
 				// Also accept if the parsed year matches the episode's air year (±1)
 				// This handles shows where S02 airs years after the series premiere
-				episodeYearMatch := opts.EpisodeAirYear > 0 && abs(opts.EpisodeAirYear-parsed.Year) <= MaxYearDifference
-				formulaOneSeasonYearMatch := hasFormulaOneEvent && opts.TargetSeason > 1900 && parsed.Year == opts.TargetSeason
+				episodeYearMatch := opts.EpisodeAirYear > 0 && abs(opts.EpisodeAirYear-parsedYear) <= MaxYearDifference
+				formulaOneSeasonYearMatch := hasFormulaOneEvent && opts.TargetSeason > 1900 && parsedYear == opts.TargetSeason
 				if yearDiff > MaxYearDifference && !episodeYearMatch && !formulaOneSeasonYearMatch {
-					reason := fmt.Sprintf("year difference %d > %d (expected: %d, got: %d)", yearDiff, MaxYearDifference, opts.ExpectedYear, parsed.Year)
+					reason := fmt.Sprintf("year difference %d > %d (expected: %d, got: %d)", yearDiff, MaxYearDifference, opts.ExpectedYear, parsedYear)
 					log.Printf("[filter] Rejecting %q: %s, episodeAirYear: %d",
 						result.Title, reason, opts.EpisodeAirYear)
 					reject(result, reason)
 					continue
 				}
+				if !titleIdentityStrong {
+					reason := fmt.Sprintf("matched year %d but title identity is loose (parsed: '%s', expected: '%s')", parsedYear, parsed.Title, matchedTitle)
+					log.Printf("[filter] Rejecting %q: %s", result.Title, reason)
+					reject(result, reason)
+					continue
+				}
 				result.Attributes["yearMatch"] = "true"
+				result.Attributes["yearPriority"] = "true"
 				if episodeYearMatch && yearDiff > MaxYearDifference {
 					log.Printf("[filter] Accepted %q: year %d matches episode air year %d (series year: %d)",
-						result.Title, parsed.Year, opts.EpisodeAirYear, opts.ExpectedYear)
+						result.Title, parsedYear, opts.EpisodeAirYear, opts.ExpectedYear)
 				}
 			} else {
 				// If we can't parse a year from the title, be lenient and keep it
 				// but flag it so ranking can derank it below year-matched results
 				log.Printf("[filter] Warning: could not parse year from title %q, keeping but deranked", result.Title)
 				result.Attributes["yearMatch"] = "false"
+				result.Attributes["yearPriority"] = "false"
 			}
 		}
 
@@ -626,6 +645,26 @@ func hasDolbyVision(hdrFormats []string) bool {
 		}
 	}
 	return false
+}
+
+func matchingYearFromRange(title string, expectedYear int) int {
+	for _, match := range yearRangePattern.FindAllStringSubmatch(title, -1) {
+		if len(match) < 3 {
+			continue
+		}
+		start, startErr := strconv.Atoi(match[1])
+		end, endErr := strconv.Atoi(match[2])
+		if startErr != nil || endErr != nil {
+			continue
+		}
+		if start > end {
+			start, end = end, start
+		}
+		if expectedYear >= start && expectedYear <= end {
+			return expectedYear
+		}
+	}
+	return 0
 }
 
 // dvProfile78Regex matches DV profile 7 or 8 patterns (e.g., "DV P7", "DoVi P8", "Dolby Vision P07")
@@ -1098,6 +1137,37 @@ func isSeriesPrefixExtensionMismatch(parsedTitle, matchedTitle string) bool {
 	}
 	extraWords := strings.Fields(strings.TrimSpace(parsed[endIdx:]))
 	return len(extraWords) == 1
+}
+
+func isStrongTitleIdentity(parsedTitle, matchedTitle string, titleSimilarity float64) bool {
+	parsed := normalizeForContainment(parsedTitle)
+	expected := normalizeForContainment(matchedTitle)
+	if parsed == "" || expected == "" {
+		return false
+	}
+	if parsed == expected {
+		return true
+	}
+	if stripLeadingTitleArticle(parsed) == stripLeadingTitleArticle(expected) {
+		return true
+	}
+	if formulaOneTitleIdentity(parsed) != "" && formulaOneTitleIdentity(parsed) == formulaOneTitleIdentity(expected) {
+		return true
+	}
+	return titleSimilarity >= 0.99
+}
+
+func stripLeadingTitleArticle(title string) string {
+	fields := strings.Fields(title)
+	if len(fields) <= 1 {
+		return title
+	}
+	switch fields[0] {
+	case "the", "a", "an":
+		return strings.Join(fields[1:], " ")
+	default:
+		return title
+	}
 }
 
 func containsDigit(value string) bool {
