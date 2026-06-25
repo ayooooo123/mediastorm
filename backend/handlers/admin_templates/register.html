@@ -167,6 +167,30 @@
             text-align: center;
         }
 
+        .connection-note {
+            background: rgba(99, 102, 241, 0.12);
+            border: 1px solid rgba(99, 102, 241, 0.45);
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+            margin-bottom: 1rem;
+            padding: 0.75rem;
+            border-radius: var(--radius);
+        }
+
+        .connection-code {
+            display: block;
+            width: 100%;
+            margin-top: 0.5rem;
+            padding: 0.625rem 0.875rem;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            color: var(--text-primary);
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 0.875rem;
+            overflow-wrap: anywhere;
+        }
+
         .login-link {
             text-align: center;
             margin-top: 1.5rem;
@@ -215,6 +239,12 @@
 
         <div id="errorMessage" class="form-error {{if not .Error}}hidden{{end}}">{{.Error}}</div>
         <div id="successMessage" class="form-success hidden"></div>
+        {{if .HasConnectionCode}}
+        <div id="connectionNote" class="connection-note">
+            After creating your account, open the app and choose join with invite code.
+            <span class="connection-code">{{.ConnectionCode}}</span>
+        </div>
+        {{end}}
 
         <form id="registerForm" {{if .Error}}class="hidden"{{end}}>
             <input type="hidden" name="token" value="{{.Token}}">
@@ -285,6 +315,7 @@
         const submitIcon = document.getElementById('submitIcon');
         const submitSpinner = document.getElementById('submitSpinner');
         const submitText = document.getElementById('submitText');
+        const connectionCode = '{{.ConnectionCode}}';
 
         function setLoading(loading) {
             submitBtn.disabled = loading;
@@ -299,11 +330,32 @@
             successMessage.classList.add('hidden');
         }
 
-        function showSuccess(message) {
-            successMessage.textContent = message;
+        function showSuccess(message, code) {
+            if (code) {
+                successMessage.innerHTML = `
+                    <div>${message}</div>
+                    <div style="margin-top: 0.75rem; color: var(--text-secondary);">
+                        Open the app, choose join with invite code, and enter:
+                    </div>
+                    <span class="connection-code">${escapeHtml(code)}</span>
+                    <a class="btn btn-primary btn-block" href="{{.ServerBasePath}}/admin/login" style="margin-top: 1rem;">Sign in here</a>
+                `;
+            } else {
+                successMessage.textContent = message;
+            }
             successMessage.classList.remove('hidden');
             errorMessage.classList.add('hidden');
             form.classList.add('hidden');
+        }
+
+        function escapeHtml(value) {
+            return String(value).replace(/[&<>"']/g, (ch) => ({
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#039;'
+            }[ch]));
         }
 
         form.addEventListener('submit', async (e) => {
@@ -343,10 +395,15 @@
                     throw new Error(data.error || 'Registration failed');
                 }
 
-                showSuccess('Account created successfully! Redirecting to login...');
-                setTimeout(() => {
-                    window.location.href = '{{.ServerBasePath}}/admin/login';
-                }, 2000);
+                const pairedCode = data.connectionCode || connectionCode;
+                if (pairedCode) {
+                    showSuccess('Account created successfully.', pairedCode);
+                } else {
+                    showSuccess('Account created successfully! Redirecting to login...');
+                    setTimeout(() => {
+                        window.location.href = '{{.ServerBasePath}}/admin/login';
+                    }, 2000);
+                }
             } catch (err) {
                 showError(err.message);
             } finally {

@@ -9,6 +9,8 @@ type Invitation struct {
 	CreatedBy             string     `json:"createdBy"` // Account ID of the creator
 	ExpiresAt             time.Time  `json:"expiresAt"`
 	AccountExpiresInHours int        `json:"accountExpiresInHours,omitempty"` // 0 = permanent
+	RemoteAccessInviteID  string     `json:"remoteAccessInviteId,omitempty"`
+	ConnectionCode        string     `json:"connectionCode,omitempty"`
 	UsedAt                *time.Time `json:"usedAt,omitempty"`
 	UsedBy                string     `json:"usedBy,omitempty"` // Account ID of the user who used it
 	CreatedAt             time.Time  `json:"createdAt"`

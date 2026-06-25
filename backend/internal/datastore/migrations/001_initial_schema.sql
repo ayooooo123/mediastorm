@@ -54,6 +54,8 @@ CREATE TABLE invitations (
     created_by TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     expires_at TIMESTAMPTZ NOT NULL,
     account_expires_in_hours INTEGER NOT NULL DEFAULT 0,
+    remote_access_invite_id TEXT NOT NULL DEFAULT '',
+    connection_code TEXT NOT NULL DEFAULT '',
     used_at TIMESTAMPTZ,
     used_by TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()

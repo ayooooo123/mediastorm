@@ -1140,14 +1140,21 @@ function renderInvitations() {
                             Invitation Link
                             ${getExpiryStatus(inv.expiresAt, inv.usedAt)}
                             <span class="account-badge" style="font-size: 0.65rem;">${formatAccountExpiryLabel(inv.accountExpiresInHours)}</span>
+                            ${inv.connectionCode ? '<span class="account-badge" style="font-size: 0.65rem;">App connection</span>' : ''}
                         </div>
                         <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem;">
                             Created: ${formatDate(inv.createdAt)}
                             ${isUsed ? ' | Used: ' + formatDate(inv.usedAt) : ' | Expires: ' + formatDate(inv.expiresAt)}
                         </div>
+                        ${inv.connectionCode ? `
+                            <div style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.35rem; overflow-wrap: anywhere;">
+                                App code: <code style="font-size: 0.75rem;">${escapeHtml(inv.connectionCode)}</code>
+                            </div>
+                        ` : ''}
                     </div>
                     <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
                         ${!isUsed && !isExpired ? `<button class="btn btn-secondary btn-sm" onclick="copyInvitationLink('${inv.url}')">Copy Link</button>` : ''}
+                        ${!isUsed && !isExpired && inv.connectionCode ? `<button class="btn btn-secondary btn-sm" onclick="copyInvitationLink('${inv.connectionCode}')">Copy App Code</button>` : ''}
                         <button class="btn btn-danger btn-sm" onclick="deleteInvitation('${inv.id}')">Delete</button>
                     </div>
                 </div>
@@ -1184,6 +1191,19 @@ function showCreateInvitationModal() {
                 <label class="form-label">Custom account lifetime (hours)</label>
                 <input type="number" id="invCustomHours" class="form-input" min="1" placeholder="e.g. 48">
             </div>
+            <div class="form-group" style="margin-bottom: 1rem;">
+                <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                    <input type="checkbox" id="invCreateConnection" onchange="toggleConnectionInviteFields()">
+                    <span>Create app connection invite too</span>
+                </label>
+                <p style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.35rem;">
+                    The invitee can create the account in this browser, then enter the paired app code on the app login screen.
+                </p>
+            </div>
+            <div id="connectionInviteGroup" class="form-group" style="margin-bottom: 1rem; display: none;">
+                <label class="form-label">App Device Label</label>
+                <input type="text" id="invConnectionPeerName" class="form-input" placeholder="iPhone">
+            </div>
             <div style="display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1.5rem;">
                 <button class="btn btn-secondary" onclick="hideModal()">Cancel</button>
                 <button class="btn btn-primary" onclick="createInvitation()">Create</button>
@@ -1197,9 +1217,17 @@ function toggleCustomExpiry() {
     document.getElementById('customExpiryGroup').style.display = sel.value === 'custom' ? 'block' : 'none';
 }
 
+function toggleConnectionInviteFields() {
+    const checked = document.getElementById('invCreateConnection')?.checked;
+    const group = document.getElementById('connectionInviteGroup');
+    if (group) group.style.display = checked ? 'block' : 'none';
+}
+
 async function createInvitation() {
     const expiresInHours = parseInt(document.getElementById('invLinkExpiry').value) || 168;
     const accountTypeSel = document.getElementById('invAccountType').value;
+    const createConnectionInvite = !!document.getElementById('invCreateConnection')?.checked;
+    const connectionInvitePeerName = document.getElementById('invConnectionPeerName')?.value.trim() || '';
     let accountExpiresInHours = 0;
     if (accountTypeSel === 'custom') {
         accountExpiresInHours = parseInt(document.getElementById('invCustomHours').value) || 0;
@@ -1215,7 +1243,7 @@ async function createInvitation() {
         const res = await fetch(basePath + '/api/invitations', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ expiresInHours, accountExpiresInHours })
+            body: JSON.stringify({ expiresInHours, accountExpiresInHours, createConnectionInvite, connectionInvitePeerName })
         });
         if (!res.ok) throw new Error(await res.text());
         const inv = await res.json();
@@ -1235,8 +1263,17 @@ async function createInvitation() {
                     <input type="text" id="invitationUrl" class="form-input" value="${inv.url}" readonly style="flex: 1;">
                     <button class="btn btn-primary" onclick="copyInvitationLink('${inv.url}'); hideModal();">Copy</button>
                 </div>
+                ${inv.connectionCode ? `
+                    <p style="color: var(--text-secondary); margin: 1rem 0 0.5rem;">
+                        App connection code
+                    </p>
+                    <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem;">
+                        <input type="text" class="form-input" value="${inv.connectionCode}" readonly style="flex: 1;">
+                        <button class="btn btn-primary" onclick="copyInvitationLink('${inv.connectionCode}')">Copy</button>
+                    </div>
+                ` : ''}
                 <p style="font-size: 0.8rem; color: var(--text-muted);">
-                    This link can only be used once.
+                    This link can only be used once.${inv.connectionCode ? ' The app code is also shown after account creation.' : ''}
                 </p>
                 <div style="display: flex; justify-content: flex-end; margin-top: 1.5rem;">
                     <button class="btn btn-secondary" onclick="hideModal()">Close</button>

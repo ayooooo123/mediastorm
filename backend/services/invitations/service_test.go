@@ -273,6 +273,38 @@ func TestCreate_WithAccountExpiresInHours(t *testing.T) {
 	}
 }
 
+func TestCreateWithOptions_PersistsConnectionMetadata(t *testing.T) {
+	t.Parallel()
+
+	svc := setupService(t)
+	inv, err := svc.CreateWithOptions("master", 24*time.Hour, CreateOptions{
+		AccountExpiresInHours: 168,
+		RemoteAccessInviteID:  "remote-invite-1",
+		ConnectionCode:        "mshost-123456-abcdef",
+	})
+	if err != nil {
+		t.Fatalf("CreateWithOptions failed: %v", err)
+	}
+
+	if inv.RemoteAccessInviteID != "remote-invite-1" {
+		t.Fatalf("expected RemoteAccessInviteID remote-invite-1, got %q", inv.RemoteAccessInviteID)
+	}
+	if inv.ConnectionCode != "mshost-123456-abcdef" {
+		t.Fatalf("expected ConnectionCode to persist on returned invitation, got %q", inv.ConnectionCode)
+	}
+
+	loaded, err := svc.GetByToken(inv.Token)
+	if err != nil {
+		t.Fatalf("GetByToken failed: %v", err)
+	}
+	if loaded.RemoteAccessInviteID != "remote-invite-1" {
+		t.Fatalf("expected loaded RemoteAccessInviteID remote-invite-1, got %q", loaded.RemoteAccessInviteID)
+	}
+	if loaded.ConnectionCode != "mshost-123456-abcdef" {
+		t.Fatalf("expected loaded ConnectionCode mshost-123456-abcdef, got %q", loaded.ConnectionCode)
+	}
+}
+
 func TestCreate_PermanentAccountExpiresInHours(t *testing.T) {
 	t.Parallel()
 

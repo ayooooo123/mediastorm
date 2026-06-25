@@ -7656,6 +7656,12 @@ func (h *AdminUIHandler) DeleteInvitation(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	inv, err := h.invitationsService.Get(invitationID)
+	if err != nil && err != invitations.ErrInvitationNotFound {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	if err := h.invitationsService.Delete(invitationID); err != nil {
 		status := http.StatusInternalServerError
 		if err == invitations.ErrInvitationNotFound {
@@ -7663,6 +7669,11 @@ func (h *AdminUIHandler) DeleteInvitation(w http.ResponseWriter, r *http.Request
 		}
 		http.Error(w, err.Error(), status)
 		return
+	}
+	if inv.RemoteAccessInviteID != "" && inv.UsedAt == nil && h.remoteAccessService != nil {
+		if err := h.remoteAccessService.RevokeInvite(r.Context(), inv.RemoteAccessInviteID); err != nil {
+			log.Printf("[admin] failed to revoke paired remote access invite %s for invitation %s: %v", inv.RemoteAccessInviteID, inv.ID, err)
+		}
 	}
 
 	w.WriteHeader(http.StatusNoContent)
