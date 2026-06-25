@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"novastream/internal/auth"
 	"novastream/models"
 )
 
@@ -39,6 +40,7 @@ type TrackedStream struct {
 	RangeEnd        int64
 	Method          string
 	UserAgent       string
+	ViaShareLink    bool // stream authenticated by a one-time share link
 	MediaMetadata   StreamMediaMetadata
 	ThroughputBps   int64 // instantaneous transfer rate in bits/sec (snapshot on read)
 	cancel          context.CancelFunc
@@ -228,6 +230,7 @@ func (t *StreamTracker) StartStreamWithAccount(r *http.Request, path string, con
 		RangeEnd:        rangeEnd,
 		Method:          r.Method,
 		UserAgent:       r.UserAgent(),
+		ViaShareLink:    auth.IsShareLinkRequest(r),
 		MediaMetadata:   parseStreamMediaMetadata(r),
 		bytesCounter:    bytesCounter,
 		activityCounter: activityCounter,
@@ -440,6 +443,7 @@ func (t *StreamTracker) GetStream(id string) (*TrackedStream, bool) {
 		RangeEnd:      stream.RangeEnd,
 		Method:        stream.Method,
 		UserAgent:     stream.UserAgent,
+		ViaShareLink:  stream.ViaShareLink,
 		MediaMetadata: stream.MediaMetadata,
 	}, true
 }
@@ -518,6 +522,7 @@ func (t *StreamTracker) GetActiveStreams() []*TrackedStream {
 			RangeEnd:      s.RangeEnd,
 			Method:        s.Method,
 			UserAgent:     s.UserAgent,
+			ViaShareLink:  s.ViaShareLink,
 			MediaMetadata: s.MediaMetadata,
 			ThroughputBps: sampleThroughput(bytesNow, &s.lastSampleBytes, &s.lastSampleNanos, &s.throughputBps),
 		}

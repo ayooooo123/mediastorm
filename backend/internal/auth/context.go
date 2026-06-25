@@ -1,6 +1,10 @@
 package auth
 
-import "net/http"
+import (
+	"net/http"
+
+	"novastream/models"
+)
 
 // ContextKey is the type used for context keys
 type ContextKey string
@@ -20,6 +24,22 @@ func GetAccountID(r *http.Request) string {
 		return id
 	}
 	return ""
+}
+
+// GetSessionScope returns the scope of the authenticated session, or "" when no
+// session is present or it is a normal full-access login. A "stream" scope marks
+// a request authenticated via a one-time share link (see models.SessionScopeStream).
+func GetSessionScope(r *http.Request) string {
+	if session, ok := r.Context().Value(ContextKeySession).(models.Session); ok {
+		return session.Scope
+	}
+	return ""
+}
+
+// IsShareLinkRequest reports whether the request is authenticated by a share-link
+// (stream-scoped) session.
+func IsShareLinkRequest(r *http.Request) bool {
+	return GetSessionScope(r) == models.SessionScopeStream
 }
 
 // IsMaster checks if the authenticated account is a master account.
