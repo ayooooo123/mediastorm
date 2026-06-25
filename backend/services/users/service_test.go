@@ -93,6 +93,38 @@ func TestSetAllowShareLinks(t *testing.T) {
 	}
 }
 
+func TestSetPinStoresAndClearsPinLength(t *testing.T) {
+	svc, err := users.NewService(t.TempDir())
+	if err != nil {
+		t.Fatalf("failed to create service: %v", err)
+	}
+
+	userID := svc.List()[0].ID
+	updated, err := svc.SetPin(userID, "12345")
+	if err != nil {
+		t.Fatalf("SetPin returned error: %v", err)
+	}
+	if updated.PinLength != 5 {
+		t.Fatalf("expected pin length 5, got %d", updated.PinLength)
+	}
+
+	got, ok := svc.Get(userID)
+	if !ok {
+		t.Fatalf("expected user to exist")
+	}
+	if got.PinLength != 5 {
+		t.Fatalf("expected stored pin length 5, got %d", got.PinLength)
+	}
+
+	cleared, err := svc.ClearPin(userID)
+	if err != nil {
+		t.Fatalf("ClearPin returned error: %v", err)
+	}
+	if cleared.PinLength != 0 {
+		t.Fatalf("expected cleared pin length 0, got %d", cleared.PinLength)
+	}
+}
+
 func TestDeleteLastUserFails(t *testing.T) {
 	svc, err := users.NewService(t.TempDir())
 	if err != nil {

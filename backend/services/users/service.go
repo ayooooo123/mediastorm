@@ -595,6 +595,7 @@ func (s *Service) SetPin(id, pin string) (models.User, error) {
 	}
 
 	user.PinHash = string(hash)
+	user.PinLength = len(pin)
 	user.UpdatedAt = time.Now().UTC()
 	s.users[id] = user
 
@@ -621,6 +622,7 @@ func (s *Service) ClearPin(id string) (models.User, error) {
 	}
 
 	user.PinHash = ""
+	user.PinLength = 0
 	user.UpdatedAt = time.Now().UTC()
 	s.users[id] = user
 
