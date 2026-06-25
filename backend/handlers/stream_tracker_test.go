@@ -58,6 +58,38 @@ func TestStartStreamMarksShareLinkScopedSessions(t *testing.T) {
 	}
 }
 
+func TestUpdateSharePlaybackProgressTracksLivePosition(t *testing.T) {
+	tracker := newTestTracker()
+	req := httptest.NewRequest(http.MethodGet, "/video/stream?profileId=p1&profileName=Shared&mediaType=movie&itemId=tmdb:movie:123", nil)
+	req = req.WithContext(context.WithValue(req.Context(),
+		auth.ContextKeySession, models.Session{Scope: models.SessionScopeStream}))
+	id, _, _ := tracker.StartStreamWithAccount(req, "/test/shared.mkv", 1000, 0, 999, "acct1")
+
+	matched := tracker.UpdateSharePlaybackProgress("p1", "Shared", models.PlaybackProgressUpdate{
+		MediaType: "movie",
+		ItemID:    "tmdb:movie:123",
+		Position:  125,
+		Duration:  1500,
+	})
+	if matched != 1 {
+		t.Fatalf("expected 1 matched share stream, got %d", matched)
+	}
+
+	stream, ok := tracker.GetStream(id)
+	if !ok {
+		t.Fatal("expected stream to still be active")
+	}
+	if stream.SharePosition != 125 || stream.ShareDuration != 1500 {
+		t.Fatalf("unexpected share progress: position=%v duration=%v", stream.SharePosition, stream.ShareDuration)
+	}
+	if stream.SharePercent < 8.3 || stream.SharePercent > 8.4 {
+		t.Fatalf("unexpected share percent: %v", stream.SharePercent)
+	}
+	if stream.ShareUpdatedAt.IsZero() {
+		t.Fatal("expected share updated timestamp")
+	}
+}
+
 func TestGetAccountStreamUsage(t *testing.T) {
 	tracker := newTestTracker()
 
@@ -228,6 +260,7 @@ func TestMergeDashboardStreamRowsCollapsesNativeConnections(t *testing.T) {
 			"id": "A4", "type": "direct", "profile_id": "9c234ec9", "profile_name": "Primary Profile",
 			"client_ip": "127.0.0.1", "media_type": "movie", "item_id": "tvdb:movie:358587",
 			"bytes_streamed": int64(3000), "throughput_bps": int64(800), "last_access": base.Add(25 * time.Second),
+			"via_share_link": true,
 		},
 		// Different profile, same title -> stays a separate row.
 		{
@@ -264,5 +297,8 @@ func TestMergeDashboardStreamRowsCollapsesNativeConnections(t *testing.T) {
 	}
 	if got := primary["connection_count"].(int); got != 3 {
 		t.Errorf("expected connection_count 3, got %d", got)
+	}
+	if got := primary["via_share_link"].(bool); !got {
+		t.Errorf("expected via_share_link to survive merge")
 	}
 }

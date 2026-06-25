@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"novastream/internal/auth"
+	"novastream/internal/mediaidentity"
 	"novastream/models"
 )
 
@@ -42,6 +43,12 @@ type TrackedStream struct {
 	UserAgent       string
 	ViaShareLink    bool // stream authenticated by a one-time share link
 	MediaMetadata   StreamMediaMetadata
+	SharePosition   float64
+	ShareDuration   float64
+	SharePercent    float64
+	ShareUpdatedAt  time.Time
+	SharePaused     bool
+	ShareBuffering  bool
 	ThroughputBps   int64 // instantaneous transfer rate in bits/sec (snapshot on read)
 	cancel          context.CancelFunc
 	bytesCounter    *int64
@@ -428,24 +435,109 @@ func (t *StreamTracker) GetStream(id string) (*TrackedStream, bool) {
 	}
 
 	return &TrackedStream{
-		ID:            stream.ID,
-		Path:          stream.Path,
-		Filename:      stream.Filename,
-		ClientIP:      stream.ClientIP,
-		ProfileID:     stream.ProfileID,
-		ProfileName:   stream.ProfileName,
-		AccountID:     stream.AccountID,
-		StartTime:     stream.StartTime,
-		LastActivity:  lastActivity,
-		BytesStreamed: atomic.LoadInt64(stream.bytesCounter),
-		ContentLength: stream.ContentLength,
-		RangeStart:    stream.RangeStart,
-		RangeEnd:      stream.RangeEnd,
-		Method:        stream.Method,
-		UserAgent:     stream.UserAgent,
-		ViaShareLink:  stream.ViaShareLink,
-		MediaMetadata: stream.MediaMetadata,
+		ID:             stream.ID,
+		Path:           stream.Path,
+		Filename:       stream.Filename,
+		ClientIP:       stream.ClientIP,
+		ProfileID:      stream.ProfileID,
+		ProfileName:    stream.ProfileName,
+		AccountID:      stream.AccountID,
+		StartTime:      stream.StartTime,
+		LastActivity:   lastActivity,
+		BytesStreamed:  atomic.LoadInt64(stream.bytesCounter),
+		ContentLength:  stream.ContentLength,
+		RangeStart:     stream.RangeStart,
+		RangeEnd:       stream.RangeEnd,
+		Method:         stream.Method,
+		UserAgent:      stream.UserAgent,
+		ViaShareLink:   stream.ViaShareLink,
+		MediaMetadata:  stream.MediaMetadata,
+		SharePosition:  stream.SharePosition,
+		ShareDuration:  stream.ShareDuration,
+		SharePercent:   stream.SharePercent,
+		ShareUpdatedAt: stream.ShareUpdatedAt,
+		SharePaused:    stream.SharePaused,
+		ShareBuffering: stream.ShareBuffering,
 	}, true
+}
+
+// UpdateSharePlaybackProgress records a live, in-memory playback heartbeat for
+// share-link streams. It intentionally does not persist to watch history.
+func (t *StreamTracker) UpdateSharePlaybackProgress(profileID, profileName string, update models.PlaybackProgressUpdate) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	percent := update.PercentWatched
+	if percent <= 0 && update.Duration > 0 {
+		percent = (update.Position / update.Duration) * 100
+	}
+	if percent < 0 {
+		percent = 0
+	}
+	if percent > 100 {
+		percent = 100
+	}
+	when := update.Timestamp
+	if when.IsZero() {
+		when = time.Now()
+	}
+
+	target := streamMediaIdentity(StreamMediaMetadata{
+		MediaType:     update.MediaType,
+		ItemID:        update.ItemID,
+		SeasonNumber:  update.SeasonNumber,
+		EpisodeNumber: update.EpisodeNumber,
+		SeriesID:      update.SeriesID,
+		ExternalIDs:   update.ExternalIDs,
+	})
+	if target.MediaType == "" || target.ID == "" {
+		return 0
+	}
+	targetKeys := make(map[string]struct{}, len(target.CandidateKeys)+1)
+	targetKeys[target.Key] = struct{}{}
+	for _, key := range target.CandidateKeys {
+		targetKeys[key] = struct{}{}
+	}
+
+	matches := 0
+	for _, stream := range t.streams {
+		if !stream.ViaShareLink {
+			continue
+		}
+		if profileID != "" && stream.ProfileID != "" && stream.ProfileID != profileID {
+			continue
+		}
+		if profileName != "" && stream.ProfileName != "" && !strings.EqualFold(stream.ProfileName, profileName) {
+			continue
+		}
+		if !streamMetadataMatchesIdentity(stream.MediaMetadata, target, targetKeys) {
+			continue
+		}
+		stream.SharePosition = update.Position
+		stream.ShareDuration = update.Duration
+		stream.SharePercent = percent
+		stream.ShareUpdatedAt = when
+		stream.SharePaused = update.IsPaused
+		stream.ShareBuffering = update.IsBuffering
+		matches++
+	}
+	return matches
+}
+
+func streamMetadataMatchesIdentity(meta StreamMediaMetadata, target mediaidentity.Identity, targetKeys map[string]struct{}) bool {
+	identity := streamMediaIdentity(meta)
+	if identity.MediaType != target.MediaType {
+		return false
+	}
+	if _, ok := targetKeys[identity.Key]; ok {
+		return true
+	}
+	for _, key := range identity.CandidateKeys {
+		if _, ok := targetKeys[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // UpdateBytes updates the bytes streamed for a stream
@@ -507,24 +599,30 @@ func (t *StreamTracker) GetActiveStreams() []*TrackedStream {
 		bytesNow := atomic.LoadInt64(s.bytesCounter)
 		// Create a copy with current bytes count and activity time
 		streamCopy := &TrackedStream{
-			ID:            s.ID,
-			Path:          s.Path,
-			Filename:      s.Filename,
-			ClientIP:      s.ClientIP,
-			ProfileID:     s.ProfileID,
-			ProfileName:   s.ProfileName,
-			AccountID:     s.AccountID,
-			StartTime:     s.StartTime,
-			LastActivity:  lastActivity,
-			BytesStreamed: bytesNow,
-			ContentLength: s.ContentLength,
-			RangeStart:    s.RangeStart,
-			RangeEnd:      s.RangeEnd,
-			Method:        s.Method,
-			UserAgent:     s.UserAgent,
-			ViaShareLink:  s.ViaShareLink,
-			MediaMetadata: s.MediaMetadata,
-			ThroughputBps: sampleThroughput(bytesNow, &s.lastSampleBytes, &s.lastSampleNanos, &s.throughputBps),
+			ID:             s.ID,
+			Path:           s.Path,
+			Filename:       s.Filename,
+			ClientIP:       s.ClientIP,
+			ProfileID:      s.ProfileID,
+			ProfileName:    s.ProfileName,
+			AccountID:      s.AccountID,
+			StartTime:      s.StartTime,
+			LastActivity:   lastActivity,
+			BytesStreamed:  bytesNow,
+			ContentLength:  s.ContentLength,
+			RangeStart:     s.RangeStart,
+			RangeEnd:       s.RangeEnd,
+			Method:         s.Method,
+			UserAgent:      s.UserAgent,
+			ViaShareLink:   s.ViaShareLink,
+			MediaMetadata:  s.MediaMetadata,
+			SharePosition:  s.SharePosition,
+			ShareDuration:  s.ShareDuration,
+			SharePercent:   s.SharePercent,
+			ShareUpdatedAt: s.ShareUpdatedAt,
+			SharePaused:    s.SharePaused,
+			ShareBuffering: s.ShareBuffering,
+			ThroughputBps:  sampleThroughput(bytesNow, &s.lastSampleBytes, &s.lastSampleNanos, &s.throughputBps),
 		}
 		streams = append(streams, streamCopy)
 	}

@@ -543,6 +543,55 @@ func (h *VideoHandler) resolveAccountID(r *http.Request) string {
 	return ""
 }
 
+// UpdateSharePlaybackProgress accepts live playback heartbeats from one-time
+// share-link sessions. It updates only in-memory stream tracker state for the
+// dashboard and never writes to watch history.
+func (h *VideoHandler) UpdateSharePlaybackProgress(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if !auth.IsShareLinkRequest(r) {
+		http.Error(w, "share-link session required", http.StatusForbidden)
+		return
+	}
+
+	var update models.PlaybackProgressUpdate
+	if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
+		http.Error(w, "invalid progress payload", http.StatusBadRequest)
+		return
+	}
+	if update.MediaType == "" || update.ItemID == "" {
+		http.Error(w, "mediaType and itemId are required", http.StatusBadRequest)
+		return
+	}
+	if update.Duration < 0 || update.Position < 0 {
+		http.Error(w, "position and duration must be non-negative", http.StatusBadRequest)
+		return
+	}
+
+	profileID := r.URL.Query().Get("profileId")
+	profileName := r.URL.Query().Get("profileName")
+	matched := GetStreamTracker().UpdateSharePlaybackProgress(
+		profileID,
+		profileName,
+		update,
+	)
+	if h.hlsManager != nil {
+		matched += h.hlsManager.UpdateSharePlaybackProgress(
+			r.URL.Query().Get("sessionId"),
+			profileID,
+			profileName,
+			update,
+		)
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":  "ok",
+		"matched": matched,
+	})
+}
+
 // StreamVideo serves registered streams via the local provider.
 func (h *VideoHandler) StreamVideo(w http.ResponseWriter, r *http.Request) {
 	// Handle OPTIONS requests for CORS

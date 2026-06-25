@@ -28,6 +28,7 @@ import (
 
 	"novastream/internal/dnscache"
 	"novastream/internal/netproxy"
+	"novastream/models"
 	"novastream/services/streaming"
 	"novastream/utils"
 )
@@ -362,11 +363,17 @@ type HLSSession struct {
 	ActualStartOffset   float64 // Actual start time from fMP4 tfdt box (keyframe-aligned, for subtitle sync)
 
 	// Profile tracking
-	ProfileID     string
-	ProfileName   string
-	ClientIP      string
-	ViaShareLink  bool // session authenticated by a one-time share link
-	MediaMetadata StreamMediaMetadata
+	ProfileID      string
+	ProfileName    string
+	ClientIP       string
+	ViaShareLink   bool // session authenticated by a one-time share link
+	MediaMetadata  StreamMediaMetadata
+	SharePosition  float64
+	ShareDuration  float64
+	SharePercent   float64
+	ShareUpdatedAt time.Time
+	SharePaused    bool
+	ShareBuffering bool
 
 	// Track selection (-1 means use default)
 	AudioTrackIndex    int // Selected audio stream index (ffprobe index), -1 = all/default
@@ -795,6 +802,89 @@ type HLSManager struct {
 	// Hardware-accelerated encode capabilities, detected once on first transcode.
 	hwAccelOnce sync.Once
 	hwAccel     HWAccelCaps
+}
+
+// UpdateSharePlaybackProgress records live dashboard-only progress for
+// share-link HLS sessions without persisting anything to watch history.
+func (m *HLSManager) UpdateSharePlaybackProgress(sessionID, profileID, profileName string, update models.PlaybackProgressUpdate) int {
+	if m == nil {
+		return 0
+	}
+
+	percent := update.PercentWatched
+	if percent <= 0 && update.Duration > 0 {
+		percent = (update.Position / update.Duration) * 100
+	}
+	if percent < 0 {
+		percent = 0
+	}
+	if percent > 100 {
+		percent = 100
+	}
+	when := update.Timestamp
+	if when.IsZero() {
+		when = time.Now()
+	}
+
+	target := streamMediaIdentity(StreamMediaMetadata{
+		MediaType:     update.MediaType,
+		ItemID:        update.ItemID,
+		SeasonNumber:  update.SeasonNumber,
+		EpisodeNumber: update.EpisodeNumber,
+		SeriesID:      update.SeriesID,
+		ExternalIDs:   update.ExternalIDs,
+	})
+	if target.MediaType == "" || target.ID == "" {
+		return 0
+	}
+	targetKeys := make(map[string]struct{}, len(target.CandidateKeys)+1)
+	targetKeys[target.Key] = struct{}{}
+	for _, key := range target.CandidateKeys {
+		targetKeys[key] = struct{}{}
+	}
+
+	m.mu.RLock()
+	candidates := make([]*HLSSession, 0, len(m.sessions))
+	if sessionID != "" {
+		if session := m.sessions[sessionID]; session != nil {
+			candidates = append(candidates, session)
+		}
+	} else {
+		for _, session := range m.sessions {
+			candidates = append(candidates, session)
+		}
+	}
+	m.mu.RUnlock()
+
+	matches := 0
+	for _, session := range candidates {
+		session.mu.Lock()
+		if !session.ViaShareLink {
+			session.mu.Unlock()
+			continue
+		}
+		if profileID != "" && session.ProfileID != "" && session.ProfileID != profileID {
+			session.mu.Unlock()
+			continue
+		}
+		if profileName != "" && session.ProfileName != "" && !strings.EqualFold(session.ProfileName, profileName) {
+			session.mu.Unlock()
+			continue
+		}
+		if !streamMetadataMatchesIdentity(session.MediaMetadata, target, targetKeys) {
+			session.mu.Unlock()
+			continue
+		}
+		session.SharePosition = update.Position
+		session.ShareDuration = update.Duration
+		session.SharePercent = percent
+		session.ShareUpdatedAt = when
+		session.SharePaused = update.IsPaused
+		session.ShareBuffering = update.IsBuffering
+		session.mu.Unlock()
+		matches++
+	}
+	return matches
 }
 
 // inputLooksLikeHLS reports whether a live source URL is an HLS playlist. The
