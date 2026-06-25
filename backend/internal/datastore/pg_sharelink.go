@@ -61,8 +61,14 @@ func (r *pgShareLinkRepo) ConsumeUse(ctx context.Context, token string, now time
 	row := r.pool.QueryRow(ctx, `
 		UPDATE share_links
 		SET use_count = use_count + 1, last_used_at = $2
-		WHERE token = $1 AND active AND expires_at > $2 AND (max_uses = 0 OR use_count < max_uses)
-		RETURNING `+shareCols, token, now)
+		WHERE token = $1
+			AND active
+			AND expires_at > $2
+			AND use_count < CASE
+				WHEN max_uses <= 0 OR max_uses > $3 THEN $3
+				ELSE max_uses
+			END
+		RETURNING `+shareCols, token, now, models.ShareLinkMaxUses)
 	link, err := scanShareLink(row)
 	if err != nil {
 		return nil, err

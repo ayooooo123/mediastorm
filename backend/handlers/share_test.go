@@ -115,6 +115,8 @@ func TestShareCreateStoresWhitelistedParams(t *testing.T) {
 		"preselectedAudioTrack": "2",
 		"title":                 "A Movie",
 		"profileId":             "p1",
+		"startOffset":           "123.45",
+		"startPercent":          "42",
 		"notAllowedKey":         "should-be-dropped",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/share/create", strings.NewReader(string(body)))
@@ -143,6 +145,12 @@ func TestShareCreateStoresWhitelistedParams(t *testing.T) {
 	}
 	if _, exists := stored.Params["notAllowedKey"]; exists {
 		t.Fatal("non-whitelisted param should have been dropped")
+	}
+	if _, exists := stored.Params["startOffset"]; exists {
+		t.Fatal("startOffset should not be stored in share params")
+	}
+	if _, exists := stored.Params["startPercent"]; exists {
+		t.Fatal("startPercent should not be stored in share params")
 	}
 }
 
@@ -175,6 +183,8 @@ func TestShareOpenMintsScopedSessionAndIsSingleUse(t *testing.T) {
 	rec, _ := h.store.Create(context.Background(), "acct9", false, map[string]string{
 		"sourcePath":            "/movies/a.mkv",
 		"preselectedAudioTrack": "1",
+		"startOffset":           "321",
+		"actualStartOffset":     "300",
 	}, time.Hour, 1, "")
 
 	req := httptest.NewRequest(http.MethodGet, "/share/"+rec.Token, nil)
@@ -201,6 +211,9 @@ func TestShareOpenMintsScopedSessionAndIsSingleUse(t *testing.T) {
 	}
 	if q.Get("sourcePath") != "/movies/a.mkv" || q.Get("preselectedAudioTrack") != "1" {
 		t.Fatalf("captured params missing from redirect: %v", q)
+	}
+	if q.Get("startOffset") != "" || q.Get("actualStartOffset") != "" {
+		t.Fatalf("share redirect should not include resume offsets: %v", q)
 	}
 	if sessions.lastScope != models.SessionScopeStream {
 		t.Fatalf("minted scope = %q, want %q", sessions.lastScope, models.SessionScopeStream)

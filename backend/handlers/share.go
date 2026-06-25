@@ -28,7 +28,6 @@ var shareAllowedParams = map[string]bool{
 	"headerImage": true, "posterUrl": true,
 	"dv": true, "hdr10": true, "dvProfile": true, "forceAAC": true,
 	"preselectedAudioTrack": true, "preselectedSubtitleTrack": true,
-	"startOffset": true, "startPercent": true, "actualStartOffset": true, "durationHint": true,
 	"tvgId": true, "liveSourceUrl": true,
 }
 
@@ -266,7 +265,7 @@ func (h *ShareHandler) viewOf(link *models.ShareLink) shareLinkView {
 		Token:     link.Token,
 		Label:     link.Label,
 		Title:     shareTitle(link.Params),
-		MaxUses:   link.MaxUses,
+		MaxUses:   link.EffectiveMaxUses(),
 		UseCount:  link.UseCount,
 		Active:    link.Active,
 		Expired:   link.Expired(),
@@ -322,6 +321,9 @@ func (h *ShareHandler) Open(w http.ResponseWriter, r *http.Request) {
 
 	values := url.Values{}
 	for key, value := range rec.Params {
+		if !shareAllowedParams[key] {
+			continue
+		}
 		values.Set(key, value)
 	}
 	values.Set("token", session.Token)
