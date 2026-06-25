@@ -406,6 +406,7 @@ func Register(
 	protected.HandleFunc("/video/stream/{displayName}", videoHandler.StreamVideo).Methods(http.MethodGet, http.MethodHead, http.MethodOptions)
 	protected.HandleFunc("/video/metadata", RateLimitHandlerFunc(probeLimiter, videoHandler.ProbeVideo)).Methods(http.MethodGet, http.MethodOptions)
 	protected.HandleFunc("/video/direct-url", videoHandler.GetDirectURL).Methods(http.MethodGet, http.MethodOptions)
+	protected.HandleFunc("/video/share-progress", videoHandler.UpdateSharePlaybackProgress).Methods(http.MethodPost, http.MethodOptions)
 	protected.HandleFunc("/video/cropdetect", RateLimitHandlerFunc(probeLimiter, videoHandler.CropDetect)).Methods(http.MethodGet, http.MethodOptions)
 	protected.HandleFunc("/video/thumbnails/start", RateLimitHandlerFunc(probeLimiter, videoHandler.StartThumbnails)).Methods(http.MethodPost, http.MethodOptions)
 	protected.HandleFunc("/video/thumbnails/status", videoHandler.GetThumbnailsStatus).Methods(http.MethodGet, http.MethodOptions)

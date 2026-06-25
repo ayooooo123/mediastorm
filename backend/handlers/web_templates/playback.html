@@ -2172,9 +2172,51 @@
       }
     }
 
+    function sendSharePlaybackProgress(options = {}) {
+      const video = document.getElementById('webPlayer');
+      if (!video) return Promise.resolve(null);
+      const duration = currentDuration();
+      if (!Number.isFinite(duration) || duration <= 0) return Promise.resolve(null);
+      const isEnded = Boolean(options.ended);
+      const isPaused = options.isPaused !== undefined ? Boolean(options.isPaused) : Boolean(video.paused);
+      const isBuffering = !isPaused && !isEnded && Boolean(webPlayerBuffering);
+      let position = isEnded ? duration : progressPositionForSend(options);
+      if (!Number.isFinite(position) || position < 0) return Promise.resolve(null);
+      position = Math.max(0, Math.min(position, duration));
+      if (position <= 0) return Promise.resolve(null);
+      rememberPositivePosition(position);
+
+      const now = Date.now();
+      const positionDelta = Math.abs(position - lastProgressPosition);
+      const pauseStateChanged = isPaused !== lastProgressPaused;
+      const bufferStateChanged = isBuffering !== lastProgressBuffering;
+      if (!options.force && !pauseStateChanged && !bufferStateChanged && now - lastProgressSentAt < WEB_PLAYER_PROGRESS_INTERVAL_MS && positionDelta < WEB_PLAYER_PROGRESS_MIN_DELTA_SECONDS) {
+        return Promise.resolve(null);
+      }
+
+      const payload = buildProgressPayload(position, duration, isPaused, isBuffering);
+      const params = new URLSearchParams();
+      if (activeProfileId) params.set('profileId', activeProfileId);
+      if (activeProfileName) params.set('profileName', activeProfileName);
+      if (hlsSessionId) params.set('sessionId', hlsSessionId);
+      const endpoint = '/video/share-progress' + (params.toString() ? `?${params.toString()}` : '');
+      const fetchOptions = { method: 'POST', body: JSON.stringify(payload) };
+      lastProgressSentAt = Date.now();
+      lastProgressPosition = position;
+      lastProgressPaused = isPaused;
+      lastProgressBuffering = isBuffering;
+
+      return fetch(apiUrl(endpoint), {
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        ...fetchOptions,
+        keepalive: Boolean(options.keepalive),
+      }).catch(() => null);
+    }
+
     function sendWebPlayerProgress(options = {}) {
       // Share-link viewers must not write into the sharer's watch history.
-      if (SHARE_MODE) return Promise.resolve(null);
+      if (SHARE_MODE) return sendSharePlaybackProgress(options);
       const video = document.getElementById('webPlayer');
       if (!video || progressCompleted || !activeProfileId) return Promise.resolve(null);
       const duration = currentDuration();

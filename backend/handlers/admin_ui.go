@@ -46,6 +46,7 @@ import (
 	"novastream/services/localmedia"
 	"novastream/services/metadata"
 	"novastream/services/plex"
+	"novastream/services/remoteaccess"
 	"novastream/services/sessions"
 	"novastream/services/simkl"
 	"novastream/services/trakt"
@@ -1319,6 +1320,7 @@ type AdminUIHandler struct {
 	watchlistService      *watchlist.Service
 	accountsService       *accounts.Service
 	invitationsService    *invitations.Service
+	remoteAccessService   *remoteaccess.Service
 	sessionsService       *sessions.Service
 	plexClient            *plex.Client
 	traktClient           *trakt.Client
@@ -1384,6 +1386,11 @@ func (h *AdminUIHandler) SetAccountsService(as *accounts.Service) {
 // SetInvitationsService sets the invitations service for invitation link management
 func (h *AdminUIHandler) SetInvitationsService(is *invitations.Service) {
 	h.invitationsService = is
+}
+
+// SetRemoteAccessService sets the service used for paired app connection invites.
+func (h *AdminUIHandler) SetRemoteAccessService(rs *remoteaccess.Service) {
+	h.remoteAccessService = rs
 }
 
 // SetSessionsService sets the sessions service for session management
@@ -2075,7 +2082,10 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 			}
 
 			// Match playback progress for position and media identification
-			matchedProgress := findProgressByMediaMetadata(allProgress, session.ProfileID, session.ProfileName, session.MediaMetadata, nameToUserID)
+			var matchedProgress *models.PlaybackProgress
+			if !session.ViaShareLink {
+				matchedProgress = findProgressByMediaMetadata(allProgress, session.ProfileID, session.ProfileName, session.MediaMetadata, nameToUserID)
+			}
 			duration := session.Duration
 			var position, percent float64
 			mediaType := session.MediaMetadata.MediaType
@@ -2106,6 +2116,11 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 					year = matchedProgress.Year
 				}
 			}
+			if session.ViaShareLink && !session.ShareUpdatedAt.IsZero() {
+				position = session.SharePosition
+				percent = session.SharePercent
+				duration = session.ShareDuration
+			}
 
 			hlsStreamData := map[string]interface{}{
 				"id":               session.ID,
@@ -2125,6 +2140,7 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 				"percent_watched":  percent,
 				"bytes_streamed":   session.BytesStreamed,
 				"throughput_bps":   sampleThroughput(session.BytesStreamed, &session.throughputLastBytes, &session.throughputLastNanos, &session.throughputBps),
+				"via_share_link":   session.ViaShareLink,
 				"has_dv":           session.HasDV && !session.DVDisabled,
 				"has_hdr":          session.HasHDR,
 				"dv_profile":       session.DVProfile,
@@ -2143,11 +2159,18 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 			// stops scrobbling after crossing the 90% watched threshold) fall back
 			// to raw transport activity so the dashboard keeps advancing via
 			// interpolation instead of freezing at the last reported position.
+			shareHeartbeatFresh := session.ViaShareLink && !session.ShareUpdatedAt.IsZero() && now.Sub(session.ShareUpdatedAt) <= heartbeatEndedThreshold
 			heartbeatFresh := matchedProgress != nil && now.Sub(matchedProgress.UpdatedAt) <= heartbeatEndedThreshold
 			if heartbeatFresh {
 				if matchedProgress.IsPaused {
 					hlsStreamData["is_paused"] = true
 				} else if matchedProgress.IsBuffering {
+					hlsStreamData["is_buffering"] = true
+				}
+			} else if shareHeartbeatFresh {
+				if session.SharePaused {
+					hlsStreamData["is_paused"] = true
+				} else if session.ShareBuffering {
 					hlsStreamData["is_buffering"] = true
 				}
 			} else {
@@ -2162,6 +2185,9 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 			}
 			if matchedProgress != nil {
 				hlsStreamData["last_updated"] = matchedProgress.UpdatedAt
+			}
+			if session.ViaShareLink && !session.ShareUpdatedAt.IsZero() {
+				hlsStreamData["last_updated"] = session.ShareUpdatedAt
 			}
 			streams = append(streams, hlsStreamData)
 			session.mu.RUnlock()
@@ -2179,7 +2205,10 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 
 		// Pause detection: check how long since last byte transfer
 		// Match playback progress for position and media identification
-		matchedProgress := findProgressByMediaMetadata(allProgress, stream.ProfileID, stream.ProfileName, stream.MediaMetadata, nameToUserID)
+		var matchedProgress *models.PlaybackProgress
+		if !stream.ViaShareLink {
+			matchedProgress = findProgressByMediaMetadata(allProgress, stream.ProfileID, stream.ProfileName, stream.MediaMetadata, nameToUserID)
+		}
 		var position, percent, duration float64
 		mediaType := stream.MediaMetadata.MediaType
 		title := stream.MediaMetadata.Title
@@ -2207,6 +2236,11 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 				year = matchedProgress.Year
 			}
 		}
+		if stream.ViaShareLink && !stream.ShareUpdatedAt.IsZero() {
+			position = stream.SharePosition
+			percent = stream.SharePercent
+			duration = stream.ShareDuration
+		}
 
 		streamData := map[string]interface{}{
 			"id":               stream.ID,
@@ -2227,6 +2261,7 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 			"throughput_bps":   stream.ThroughputBps,
 			"content_length":   stream.ContentLength,
 			"user_agent":       stream.UserAgent,
+			"via_share_link":   stream.ViaShareLink,
 			// Media identification
 			"media_type":     mediaType,
 			"title":          title,
@@ -2241,11 +2276,18 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 		// stops scrobbling after crossing the 90% watched threshold) fall back to
 		// raw transport activity so the dashboard keeps advancing via
 		// interpolation instead of freezing at the last reported position.
+		shareHeartbeatFresh := stream.ViaShareLink && !stream.ShareUpdatedAt.IsZero() && now.Sub(stream.ShareUpdatedAt) <= heartbeatEndedThreshold
 		heartbeatFresh := matchedProgress != nil && now.Sub(matchedProgress.UpdatedAt) <= heartbeatEndedThreshold
 		if heartbeatFresh {
 			if matchedProgress.IsPaused {
 				streamData["is_paused"] = true
 			} else if matchedProgress.IsBuffering {
+				streamData["is_buffering"] = true
+			}
+		} else if shareHeartbeatFresh {
+			if stream.SharePaused {
+				streamData["is_paused"] = true
+			} else if stream.ShareBuffering {
 				streamData["is_buffering"] = true
 			}
 		} else {
@@ -2259,6 +2301,9 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 		}
 		if matchedProgress != nil {
 			streamData["last_updated"] = matchedProgress.UpdatedAt
+		}
+		if stream.ViaShareLink && !stream.ShareUpdatedAt.IsZero() {
+			streamData["last_updated"] = stream.ShareUpdatedAt
 		}
 		streams = append(streams, streamData)
 	}
@@ -2366,9 +2411,13 @@ func mergeDashboardStreamRows(rows []map[string]interface{}) []map[string]interf
 		rep := group[0]
 		repAct := activityOf(rep)
 		var totalBytes, totalThroughput int64
+		viaShareLink := false
 		for _, member := range group {
 			totalBytes += num(member, "bytes_streamed")
 			totalThroughput += num(member, "throughput_bps")
+			if shared, ok := member["via_share_link"].(bool); ok && shared {
+				viaShareLink = true
+			}
 			if act := activityOf(member); act.After(repAct) {
 				rep = member
 				repAct = act
@@ -2378,6 +2427,9 @@ func mergeDashboardStreamRows(rows []map[string]interface{}) []map[string]interf
 		rep["bytes_streamed"] = totalBytes
 		rep["throughput_bps"] = totalThroughput
 		rep["connection_count"] = len(group)
+		if viaShareLink {
+			rep["via_share_link"] = true
+		}
 		merged = append(merged, rep)
 	}
 	return merged
@@ -3684,9 +3736,11 @@ func (h *AdminUIHandler) LoginPage(w http.ResponseWriter, r *http.Request) {
 
 // RegisterPageData holds data for the registration page
 type RegisterPageData struct {
-	Token          string
-	Error          string
-	ServerBasePath string
+	Token             string
+	Error             string
+	ConnectionCode    string
+	HasConnectionCode bool
+	ServerBasePath    string
 }
 
 // RegisterPage serves the registration page (GET)
@@ -3695,9 +3749,12 @@ func (h *AdminUIHandler) RegisterPage(w http.ResponseWriter, r *http.Request) {
 
 	// Validate the token if provided
 	var validationError string
+	var connectionCode string
 	if token != "" && h.invitationsService != nil {
 		if err := h.invitationsService.Validate(token); err != nil {
 			validationError = err.Error()
+		} else if inv, err := h.invitationsService.GetByToken(token); err == nil {
+			connectionCode = inv.ConnectionCode
 		}
 	} else if token == "" {
 		validationError = "No invitation token provided"
@@ -3709,9 +3766,11 @@ func (h *AdminUIHandler) RegisterPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.registerTemplate.ExecuteTemplate(w, "register", RegisterPageData{
-		Token:          token,
-		Error:          validationError,
-		ServerBasePath: h.serverBasePath,
+		Token:             token,
+		Error:             validationError,
+		ConnectionCode:    connectionCode,
+		HasConnectionCode: strings.TrimSpace(connectionCode) != "",
+		ServerBasePath:    h.serverBasePath,
 	}); err != nil {
 		fmt.Printf("Register template error: %v\n", err)
 		http.Error(w, "Template error", http.StatusInternalServerError)
@@ -7447,14 +7506,18 @@ type InvitationResponse struct {
 	URL                   string     `json:"url"`
 	ExpiresAt             time.Time  `json:"expiresAt"`
 	AccountExpiresInHours int        `json:"accountExpiresInHours"`
+	RemoteAccessInviteID  string     `json:"remoteAccessInviteId,omitempty"`
+	ConnectionCode        string     `json:"connectionCode,omitempty"`
 	UsedAt                *time.Time `json:"usedAt,omitempty"`
 	CreatedAt             time.Time  `json:"createdAt"`
 }
 
 // CreateInvitationRequest represents a request to create an invitation
 type CreateInvitationRequest struct {
-	ExpiresInHours        int `json:"expiresInHours"`
-	AccountExpiresInHours int `json:"accountExpiresInHours"` // 0 = permanent
+	ExpiresInHours           int    `json:"expiresInHours"`
+	AccountExpiresInHours    int    `json:"accountExpiresInHours"` // 0 = permanent
+	CreateConnectionInvite   bool   `json:"createConnectionInvite"`
+	ConnectionInvitePeerName string `json:"connectionInvitePeerName"`
 }
 
 // ListInvitations returns all invitations
@@ -7488,6 +7551,8 @@ func (h *AdminUIHandler) ListInvitations(w http.ResponseWriter, r *http.Request)
 			URL:                   fmt.Sprintf("%s/register?token=%s", baseURL, inv.Token),
 			ExpiresAt:             inv.ExpiresAt,
 			AccountExpiresInHours: inv.AccountExpiresInHours,
+			RemoteAccessInviteID:  inv.RemoteAccessInviteID,
+			ConnectionCode:        inv.ConnectionCode,
 			UsedAt:                inv.UsedAt,
 			CreatedAt:             inv.CreatedAt,
 		}
@@ -7523,7 +7588,28 @@ func (h *AdminUIHandler) CreateInvitation(w http.ResponseWriter, r *http.Request
 	}
 
 	expiresIn := time.Duration(req.ExpiresInHours) * time.Hour
-	inv, err := h.invitationsService.Create(session.AccountID, expiresIn, req.AccountExpiresInHours)
+	opts := invitations.CreateOptions{AccountExpiresInHours: req.AccountExpiresInHours}
+	if req.CreateConnectionInvite {
+		if h.remoteAccessService == nil {
+			http.Error(w, "Remote access service not available", http.StatusInternalServerError)
+			return
+		}
+		peerName := strings.TrimSpace(req.ConnectionInvitePeerName)
+		if peerName == "" {
+			peerName = "Invited account"
+		}
+		remoteInv, err := h.remoteAccessService.CreateInvite(r.Context(), session.AccountID, remoteaccess.CreateInviteRequest{
+			PeerName:  peerName,
+			ExpiresIn: expiresIn,
+		})
+		if err != nil {
+			http.Error(w, "Failed to create connection invitation: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		opts.RemoteAccessInviteID = remoteInv.ID
+		opts.ConnectionCode = remoteInv.ConnectionCode
+	}
+	inv, err := h.invitationsService.CreateWithOptions(session.AccountID, expiresIn, opts)
 	if err != nil {
 		http.Error(w, "Failed to create invitation", http.StatusInternalServerError)
 		return
@@ -7551,6 +7637,8 @@ func (h *AdminUIHandler) CreateInvitation(w http.ResponseWriter, r *http.Request
 		URL:                   fmt.Sprintf("%s/register?token=%s", baseURL, inv.Token),
 		ExpiresAt:             inv.ExpiresAt,
 		AccountExpiresInHours: inv.AccountExpiresInHours,
+		RemoteAccessInviteID:  inv.RemoteAccessInviteID,
+		ConnectionCode:        inv.ConnectionCode,
 		CreatedAt:             inv.CreatedAt,
 	})
 }
@@ -7603,7 +7691,15 @@ func (h *AdminUIHandler) ValidateInvitation(w http.ResponseWriter, r *http.Reque
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"valid": true})
+	inv, err := h.invitationsService.GetByToken(token)
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{"valid": true})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"valid":          true,
+		"connectionCode": inv.ConnectionCode,
+	})
 }
 
 // RegisterWithInvitationRequest represents a request to register using an invitation
@@ -7694,8 +7790,9 @@ func (h *AdminUIHandler) RegisterWithInvitation(w http.ResponseWriter, r *http.R
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true,
-		"message": "Account created successfully. You can now log in.",
+		"success":        true,
+		"message":        "Account created successfully. You can now log in.",
+		"connectionCode": inv.ConnectionCode,
 	})
 }
 
