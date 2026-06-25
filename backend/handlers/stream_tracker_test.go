@@ -1,11 +1,13 @@
 package handlers
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"novastream/internal/auth"
 	"novastream/models"
 )
 
@@ -19,6 +21,41 @@ func startTestStream(t *testing.T, tracker *StreamTracker, profileID, accountID 
 	path := "/test/file-" + string(rune('a'+tracker.Count())) + ".mkv"
 	id, _, _ := tracker.StartStreamWithAccount(r, path, 1000, 0, 0, accountID)
 	return id
+}
+
+func TestStartStreamMarksShareLinkScopedSessions(t *testing.T) {
+	tracker := newTestTracker()
+
+	// A request carrying a stream-scoped (share link) session is flagged.
+	shareReq := httptest.NewRequest(http.MethodGet, "/video/stream?profileId=p1", nil)
+	shareReq = shareReq.WithContext(context.WithValue(shareReq.Context(),
+		auth.ContextKeySession, models.Session{Scope: models.SessionScopeStream}))
+	shareID, _, _ := tracker.StartStreamWithAccount(shareReq, "/test/shared.mkv", 1000, 0, 0, "acct1")
+
+	// A normal full-access session request is not flagged.
+	normalReq := httptest.NewRequest(http.MethodGet, "/video/stream?profileId=p2", nil)
+	normalReq = normalReq.WithContext(context.WithValue(normalReq.Context(),
+		auth.ContextKeySession, models.Session{}))
+	normalID, _, _ := tracker.StartStreamWithAccount(normalReq, "/test/normal.mkv", 1000, 0, 0, "acct1")
+
+	shared, ok := tracker.GetStream(shareID)
+	if !ok || !shared.ViaShareLink {
+		t.Fatalf("expected share-scoped stream to be flagged ViaShareLink, got ok=%v stream=%+v", ok, shared)
+	}
+
+	normal, ok := tracker.GetStream(normalID)
+	if !ok || normal.ViaShareLink {
+		t.Fatalf("expected normal stream not to be flagged ViaShareLink, got ok=%v stream=%+v", ok, normal)
+	}
+
+	for _, s := range tracker.GetActiveStreams() {
+		if s.ID == shareID && !s.ViaShareLink {
+			t.Errorf("GetActiveStreams dropped ViaShareLink flag for shared stream")
+		}
+		if s.ID == normalID && s.ViaShareLink {
+			t.Errorf("GetActiveStreams set ViaShareLink flag for normal stream")
+		}
+	}
 }
 
 func TestGetAccountStreamUsage(t *testing.T) {

@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"novastream/config"
+	"novastream/internal/auth"
 	"novastream/internal/dnscache"
 	"novastream/internal/integration"
 	"novastream/internal/liveusage"
@@ -3044,6 +3045,7 @@ func (h *VideoHandler) StartHLSSession(w http.ResponseWriter, r *http.Request) {
 	}
 	session.mu.Lock()
 	session.MediaMetadata = mediaMetadata
+	session.ViaShareLink = auth.IsShareLinkRequest(r)
 	session.mu.Unlock()
 
 	session.mu.RLock()

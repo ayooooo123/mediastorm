@@ -197,6 +197,8 @@ type StreamInfo struct {
 	// Pause detection
 	IsPaused    bool      `json:"is_paused,omitempty"`    // True if no recent activity (likely paused)
 	PausedSince time.Time `json:"paused_since,omitempty"` // When the stream was detected as paused
+	// ViaShareLink is true when the stream was opened through a one-time share link.
+	ViaShareLink bool `json:"via_share_link,omitempty"`
 }
 
 // StreamsResponse is the response for the streams endpoint
@@ -463,6 +465,7 @@ func (h *AdminHandler) GetActiveStreams(w http.ResponseWriter, r *http.Request) 
 				EpisodeName:   session.MediaMetadata.EpisodeName,
 				PosterURL:     session.MediaMetadata.PosterURL,
 				ExternalIDs:   session.MediaMetadata.ExternalIDs,
+				ViaShareLink:  session.ViaShareLink,
 			}
 
 			session.mu.RUnlock()
@@ -506,6 +509,7 @@ func (h *AdminHandler) GetActiveStreams(w http.ResponseWriter, r *http.Request) 
 			EpisodeName:   stream.MediaMetadata.EpisodeName,
 			PosterURL:     stream.MediaMetadata.PosterURL,
 			ExternalIDs:   stream.MediaMetadata.ExternalIDs,
+			ViaShareLink:  stream.ViaShareLink,
 		}
 		rawStreams = append(rawStreams, rawStream{info: info, streamID: stream.ID})
 		directCount++
@@ -578,6 +582,8 @@ func (h *AdminHandler) GetActiveStreams(w http.ResponseWriter, r *http.Request) 
 			// Keep DV/HDR flags if either has them
 			existing.HasDV = existing.HasDV || info.HasDV
 			existing.HasHDR = existing.HasHDR || info.HasHDR
+			// A consolidated entry is share-sourced if any contributing stream is.
+			existing.ViaShareLink = existing.ViaShareLink || info.ViaShareLink
 			// Keep duration if we have it
 			if info.Duration > 0 && existing.Duration == 0 {
 				existing.Duration = info.Duration
