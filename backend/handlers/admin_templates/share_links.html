@@ -102,13 +102,14 @@ function slFormatDate(iso) {
 
 function slUsesLabel(link) {
     if (link.maxUses > 0) return `${link.useCount} / ${link.maxUses}`;
-    return `${link.useCount} / ∞`;
+    return `${link.useCount} / 5`;
 }
 
 function slStatusPill(link) {
     if (link.expired) return '<span class="sl-pill expired">Expired</span>';
     if (!link.active) return '<span class="sl-pill inactive">Inactive</span>';
-    if (link.maxUses > 0 && link.useCount >= link.maxUses) return '<span class="sl-pill inactive">Used up</span>';
+    const maxUses = link.maxUses > 0 ? link.maxUses : 5;
+    if (link.useCount >= maxUses) return '<span class="sl-pill inactive">Used up</span>';
     return '<span class="sl-pill active">Active</span>';
 }
 

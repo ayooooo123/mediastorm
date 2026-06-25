@@ -72,6 +72,26 @@ func TestShareStoreUsesAreHardCapped(t *testing.T) {
 	}
 }
 
+func TestShareStoreLegacyUnlimitedRowsAreCapped(t *testing.T) {
+	store := NewShareStore(nil)
+	ctx := context.Background()
+	rec, _ := store.Create(ctx, "acct1", false, map[string]string{"sourcePath": "/legacy.mkv"}, time.Hour, 1, "")
+
+	mem := store.repo.(*inMemoryShareRepo)
+	mem.mu.Lock()
+	mem.links[rec.Token].MaxUses = 0
+	mem.mu.Unlock()
+
+	for i := 0; i < MaxShareLinkUses; i++ {
+		if _, ok := store.Consume(ctx, rec.Token); !ok {
+			t.Fatalf("legacy use %d within hard cap should succeed", i+1)
+		}
+	}
+	if _, ok := store.Consume(ctx, rec.Token); ok {
+		t.Fatalf("legacy row should fail beyond hard cap of %d", MaxShareLinkUses)
+	}
+}
+
 func TestShareStoreConsumeExpired(t *testing.T) {
 	store := NewShareStore(nil)
 	ctx := context.Background()

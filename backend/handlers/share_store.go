@@ -24,7 +24,7 @@ const (
 	// MaxShareLinkUses is the hard cap on how many times a share link may be
 	// opened. There is no "unlimited" tier: a request for 0/unlimited, or for a
 	// count above this cap, is clamped to MaxShareLinkUses.
-	MaxShareLinkUses = 5
+	MaxShareLinkUses = models.ShareLinkMaxUses
 
 	// shareCleanupInterval is how often the janitor purges expired share links.
 	shareCleanupInterval = 30 * time.Minute
@@ -229,7 +229,7 @@ func (m *inMemoryShareRepo) ConsumeUse(_ context.Context, token string, now time
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	link, ok := m.links[token]
-	if !ok || !link.Active || now.After(link.ExpiresAt) || (link.MaxUses > 0 && link.UseCount >= link.MaxUses) {
+	if !ok || !link.Active || now.After(link.ExpiresAt) || link.Exhausted() {
 		return nil, nil
 	}
 	link.UseCount++
