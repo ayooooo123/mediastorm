@@ -150,6 +150,15 @@ func (m *TrailerPrequeueManager) GetStatus(id string) (*TrailerPrequeueItem, boo
 
 // ServeTrailer serves the downloaded trailer file with proper range request support
 func (m *TrailerPrequeueManager) ServeTrailer(id string, w http.ResponseWriter, r *http.Request) error {
+	start := time.Now()
+	log.Printf(
+		"[trailer-prequeue] serve request id=%s method=%s range=%q userAgent=%q",
+		id,
+		r.Method,
+		r.Header.Get("Range"),
+		r.UserAgent(),
+	)
+
 	m.mu.Lock()
 	item, ok := m.items[id]
 	if ok {
@@ -160,16 +169,24 @@ func (m *TrailerPrequeueManager) ServeTrailer(id string, w http.ResponseWriter, 
 	m.mu.Unlock()
 
 	if !ok {
+		log.Printf("[trailer-prequeue] serve rejected id=%s reason=not_found elapsed=%s", id, time.Since(start).Round(time.Millisecond))
 		return fmt.Errorf("trailer not found: %s", id)
 	}
 
 	if item.Status != TrailerStatusReady {
+		log.Printf(
+			"[trailer-prequeue] serve rejected id=%s reason=not_ready status=%s elapsed=%s",
+			id,
+			item.Status,
+			time.Since(start).Round(time.Millisecond),
+		)
 		return fmt.Errorf("trailer not ready (status: %s)", item.Status)
 	}
 
 	// Open the file
 	file, err := os.Open(item.FilePath)
 	if err != nil {
+		log.Printf("[trailer-prequeue] serve open failed id=%s path=%s err=%v", id, item.FilePath, err)
 		return fmt.Errorf("failed to open trailer file: %w", err)
 	}
 	defer file.Close()
@@ -177,6 +194,7 @@ func (m *TrailerPrequeueManager) ServeTrailer(id string, w http.ResponseWriter, 
 	// Get file info for Content-Length
 	stat, err := file.Stat()
 	if err != nil {
+		log.Printf("[trailer-prequeue] serve stat failed id=%s path=%s err=%v", id, item.FilePath, err)
 		return fmt.Errorf("failed to stat trailer file: %w", err)
 	}
 
@@ -184,8 +202,35 @@ func (m *TrailerPrequeueManager) ServeTrailer(id string, w http.ResponseWriter, 
 	w.Header().Set("Content-Type", "video/mp4")
 
 	// Use http.ServeContent for proper range request support
-	http.ServeContent(w, r, item.FilePath, stat.ModTime(), file)
+	tracked := &trailerServeLogWriter{ResponseWriter: w, statusCode: http.StatusOK}
+	http.ServeContent(tracked, r, item.FilePath, stat.ModTime(), file)
+	log.Printf(
+		"[trailer-prequeue] serve complete id=%s status=%d bytes=%d fileSize=%d range=%q elapsed=%s",
+		id,
+		tracked.statusCode,
+		tracked.bytesWritten,
+		stat.Size(),
+		r.Header.Get("Range"),
+		time.Since(start).Round(time.Millisecond),
+	)
 	return nil
+}
+
+type trailerServeLogWriter struct {
+	http.ResponseWriter
+	statusCode   int
+	bytesWritten int64
+}
+
+func (w *trailerServeLogWriter) WriteHeader(statusCode int) {
+	w.statusCode = statusCode
+	w.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (w *trailerServeLogWriter) Write(data []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(data)
+	w.bytesWritten += int64(n)
+	return n, err
 }
 
 // downloadTrailer performs the actual download using yt-dlp + ffmpeg
