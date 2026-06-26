@@ -2168,11 +2168,16 @@
         const subtitleSynced = response.headers.get('X-Subtitle-Synced') === 'true';
         const parsedCues = parseWebVttCues(text);
         if (subtitleSynced) {
-          // Same-pass subtitles are emitted in the recovered HLS media timeline.
-          // Keep overlay lookup video-relative; adding hlsPlaybackOffset here
-          // double-shifts cues after a reconnect/seek recovery.
-          webPlayerSubtitleStartOffset = Number(hlsPlaybackOffset);
+          const basis = inferSyncedSubtitleBasis(parsedCues);
+          webPlayerSubtitleStartOffset = basis === 'absolute' ? 0 : Number(hlsPlaybackOffset);
           recomputeSubtitleTimeOffset();
+          webPlayerDebugLog('debug', 'subtitle synced basis', {
+            basis,
+            firstCueStart: parsedCues[0]?.start ?? null,
+            playbackOffset: hlsPlaybackOffset,
+            subtitleStartOffset: webPlayerSubtitleStartOffset,
+            subtitleTimeOffset: webPlayerSubtitleTimeOffset,
+          });
         } else {
           const subtitleStartHeader = Number(response.headers.get('X-Subtitle-Start-Offset'));
           if (Number.isFinite(subtitleStartHeader)) {
@@ -2199,6 +2204,15 @@
         }
         scheduleSubtitleRefresh(video);
       }
+    }
+
+    function inferSyncedSubtitleBasis(cues) {
+      const firstCueStart = Number(cues?.[0]?.start);
+      const playbackOffset = Number(hlsPlaybackOffset);
+      if (!Number.isFinite(firstCueStart) || !Number.isFinite(playbackOffset) || playbackOffset < 30) {
+        return 'zero';
+      }
+      return firstCueStart >= Math.max(0, playbackOffset - 5) ? 'absolute' : 'zero';
     }
 
     function clearSubtitleRefresh() {
