@@ -1016,17 +1016,49 @@
       sendWebPlayerProgress({ force: true, keepalive: true, isPaused: true });
       stopHlsSession({ keepalive: true });
 
-      try {
-        const referrer = document.referrer ? new URL(document.referrer) : null;
-        if (referrer && referrer.origin === window.location.origin && window.history.length > 1) {
-          window.history.back();
-          return;
-        }
-      } catch {}
+      const returnTo = resolvePlaybackReturnUrl();
+      if (returnTo) {
+        window.location.replace(returnTo);
+        return;
+      }
 
       const watchIndex = window.location.pathname.indexOf('/watch');
       const basePath = watchIndex >= 0 ? window.location.pathname.slice(0, watchIndex) : SERVER_BASE_PATH;
-      window.location.assign(`${basePath || ''}/watch`);
+      window.location.replace(`${basePath || ''}/watch`);
+    }
+
+    function resolvePlaybackReturnUrl() {
+      const explicitReturn = normalizePlaybackReturnPath(routeParam('returnTo'));
+      if (explicitReturn) {
+        return explicitReturn;
+      }
+
+      try {
+        const referrer = document.referrer ? new URL(document.referrer) : null;
+        if (referrer && referrer.origin === window.location.origin && referrer.pathname.endsWith('/watch/details')) {
+          referrer.searchParams.delete('initialSeason');
+          referrer.searchParams.delete('initialEpisode');
+          referrer.searchParams.set('_playbackReturn', String(Date.now()));
+          return referrer.pathname + referrer.search + referrer.hash;
+        }
+      } catch {}
+
+      return '';
+    }
+
+    function normalizePlaybackReturnPath(value) {
+      const raw = String(value || '').trim();
+      if (!raw) return '';
+      try {
+        const parsed = new URL(raw, window.location.origin);
+        if (parsed.origin !== window.location.origin || !parsed.pathname.endsWith('/watch/details')) return '';
+        parsed.searchParams.delete('initialSeason');
+        parsed.searchParams.delete('initialEpisode');
+        parsed.searchParams.set('_playbackReturn', String(Date.now()));
+        return parsed.pathname + parsed.search + parsed.hash;
+      } catch {
+        return '';
+      }
     }
 
     // ---- One-time share link ----------------------------------------------
