@@ -2759,9 +2759,10 @@ func simklShowToUpdates(raw json.RawMessage, watched *bool) []models.WatchHistor
 
 func (s *Service) simklShowToUpdates(raw json.RawMessage, watched *bool) []models.WatchHistoryUpdate {
 	obj := decodeJSONObject(raw)
-	if len(obj) == 0 || !simklItemIsWatched(obj) {
+	if len(obj) == 0 {
 		return nil
 	}
+	parentWatched := simklItemIsWatched(obj)
 	show := nestedObject(obj, "show")
 	if show == nil {
 		show = nestedObject(obj, "anime")
@@ -2791,6 +2792,13 @@ func (s *Service) simklShowToUpdates(raw json.RawMessage, watched *bool) []model
 			if seasonNumber == 0 || episodeNumber == 0 {
 				continue
 			}
+			watchedAt := simklFirstTime(episodeObj, "watched_at", "last_watched_at", "completed_at", "last_watched")
+			if watchedAt.IsZero() {
+				if !parentWatched {
+					continue
+				}
+				watchedAt = simklFirstTime(obj, "watched_at", "last_watched_at", "completed_at", "last_watched")
+			}
 			episodeIDs := cloneStringMap(ids)
 			absoluteEpisode := 0
 			if episodeNumber >= 1000 {
@@ -2799,10 +2807,6 @@ func (s *Service) simklShowToUpdates(raw json.RawMessage, watched *bool) []model
 			localSeason, localEpisode, localAbsolute, episodeTitle := s.canonicalizeProviderEpisode("simkl", ids, nil, seasonNumber, episodeNumber, absoluteEpisode, stringFromAny(episodeObj["title"]))
 			if localAbsolute > 0 {
 				episodeIDs["absoluteEpisode"] = strconv.Itoa(localAbsolute)
-			}
-			watchedAt := simklFirstTime(episodeObj, "watched_at", "last_watched_at", "completed_at", "last_watched")
-			if watchedAt.IsZero() {
-				watchedAt = simklFirstTime(obj, "watched_at", "last_watched_at", "completed_at", "last_watched")
 			}
 			updates = append(updates, models.WatchHistoryUpdate{
 				MediaType:     "episode",
@@ -2824,7 +2828,7 @@ func (s *Service) simklShowToUpdates(raw json.RawMessage, watched *bool) []model
 
 func simklItemIsWatched(obj map[string]interface{}) bool {
 	status := strings.ToLower(strings.TrimSpace(stringFromAny(obj["status"])))
-	return status == "" || status == "completed" || status == "watching"
+	return status == "" || status == "completed"
 }
 
 func simklMovieItemID(ids map[string]string) string {

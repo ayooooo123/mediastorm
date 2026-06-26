@@ -148,6 +148,40 @@ func TestSimklAllItemsToWatchHistoryParsesMoviesAndEpisodes(t *testing.T) {
 	}
 }
 
+func TestSimklAllItemsToWatchHistorySkipsWatchingEpisodeWithoutEpisodeWatchedAt(t *testing.T) {
+	watched := true
+	resp := &simkl.AllItemsResponse{
+		Shows: []json.RawMessage{
+			json.RawMessage(`{"status":"watching","show":{"title":"Half Man","year":2026,"ids":{"tmdb":257994,"tvdb":446817}},"last_watched_at":"2026-06-26T03:22:48Z","seasons":[{"number":1,"episodes":[{"number":4,"title":"Episode 4"}]}]}`),
+		},
+	}
+
+	updates := simklAllItemsToWatchHistory(resp, &watched)
+	if len(updates) != 0 {
+		t.Fatalf("expected in-progress Simkl watching episode to be skipped, got %+v", updates)
+	}
+}
+
+func TestSimklAllItemsToWatchHistoryKeepsWatchingEpisodeWithEpisodeWatchedAt(t *testing.T) {
+	watched := true
+	resp := &simkl.AllItemsResponse{
+		Shows: []json.RawMessage{
+			json.RawMessage(`{"status":"watching","show":{"title":"Half Man","year":2026,"ids":{"tmdb":257994,"tvdb":446817}},"last_watched_at":"2026-06-26T03:22:48Z","seasons":[{"number":1,"episodes":[{"number":3,"title":"Episode 3","watched_at":"2026-06-25T04:38:39Z"}]}]}`),
+		},
+	}
+
+	updates := simklAllItemsToWatchHistory(resp, &watched)
+	if len(updates) != 1 {
+		t.Fatalf("updates len = %d, want 1", len(updates))
+	}
+	if updates[0].ItemID != "tvdb:series:446817:s01e03" {
+		t.Fatalf("episode itemID = %q", updates[0].ItemID)
+	}
+	if updates[0].WatchedAt.Format(time.RFC3339) != "2026-06-25T04:38:39Z" {
+		t.Fatalf("watchedAt = %s", updates[0].WatchedAt.Format(time.RFC3339))
+	}
+}
+
 func TestTraktAbsoluteEpisodeNumberUsesAbsoluteEpisode(t *testing.T) {
 	episode := traktAbsoluteEpisodeNumber(7, map[string]string{
 		"absoluteEpisode": "1162",
