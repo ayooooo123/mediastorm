@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"novastream/internal/apiusage"
 )
 
 const baseURL = "https://api.mdblist.com"
@@ -22,10 +24,8 @@ type ScrobbleClient struct {
 // NewScrobbleClient creates a new MDBList scrobble client.
 func NewScrobbleClient(apiKey string) *ScrobbleClient {
 	return &ScrobbleClient{
-		apiKey: apiKey,
-		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
-		},
+		apiKey:     apiKey,
+		httpClient: apiusage.TrackClient(&http.Client{Timeout: 10 * time.Second}, "MDBList", "Scrobble API"),
 	}
 }
 
@@ -87,14 +87,14 @@ type SyncWatchedMovieItem struct {
 
 // SyncWatchedShowItem represents a show with season/episode info in a /sync/watched request.
 type SyncWatchedShowItem struct {
-	IDs     ScrobbleIDs        `json:"ids"`
+	IDs     ScrobbleIDs         `json:"ids"`
 	Seasons []SyncWatchedSeason `json:"seasons,omitempty"`
 }
 
 // SyncWatchedSeason represents a season within a sync/watched show.
 type SyncWatchedSeason struct {
-	Number   int                   `json:"number"`
-	Episodes []SyncWatchedEpisode  `json:"episodes,omitempty"`
+	Number   int                  `json:"number"`
+	Episodes []SyncWatchedEpisode `json:"episodes,omitempty"`
 }
 
 // SyncWatchedEpisode represents an episode within a sync/watched season.

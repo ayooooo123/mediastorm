@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"novastream/internal/apiusage"
 )
 
 const (
@@ -72,7 +74,7 @@ type UserInfo struct {
 // NewClient creates a new Plex API client
 func NewClient(clientID string) *Client {
 	return &Client{
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		httpClient: apiusage.TrackClient(&http.Client{Timeout: 30 * time.Second}, "Plex", "API request"),
 		clientID:   clientID,
 	}
 }
@@ -185,10 +187,10 @@ func (c *Client) GetUserInfo(authToken string) (*UserInfo, error) {
 // WatchlistPaginatedResponse represents the Plex watchlist API response with pagination info
 type WatchlistPaginatedResponse struct {
 	MediaContainer struct {
-		Size             int             `json:"size"`
-		TotalSize        int             `json:"totalSize"`
-		Offset           int             `json:"offset"`
-		Metadata         []WatchlistItem `json:"Metadata"`
+		Size      int             `json:"size"`
+		TotalSize int             `json:"totalSize"`
+		Offset    int             `json:"offset"`
+		Metadata  []WatchlistItem `json:"Metadata"`
 	} `json:"MediaContainer"`
 }
 
@@ -343,10 +345,10 @@ func ParseGUID(guid string) map[string]string {
 
 	// Common patterns for GUIDs
 	patterns := map[string]*regexp.Regexp{
-		"imdb":  regexp.MustCompile(`imdb://?(tt\d+)`),
-		"tmdb":  regexp.MustCompile(`tmdb://(\d+)`),
-		"tvdb":  regexp.MustCompile(`tvdb://(\d+)`),
-		"plex":  regexp.MustCompile(`plex://(?:movie|show)/([a-f0-9]+)`),
+		"imdb": regexp.MustCompile(`imdb://?(tt\d+)`),
+		"tmdb": regexp.MustCompile(`tmdb://(\d+)`),
+		"tvdb": regexp.MustCompile(`tvdb://(\d+)`),
+		"plex": regexp.MustCompile(`plex://(?:movie|show)/([a-f0-9]+)`),
 	}
 
 	for service, pattern := range patterns {
@@ -740,20 +742,20 @@ func (c *Client) GetServerUsers(server PlexResource) ([]PlexHomeUser, error) {
 
 // PlexResource represents a Plex server or client resource
 type PlexResource struct {
-	Name             string               `json:"name"`
-	Product          string               `json:"product"`
-	ProductVersion   string               `json:"productVersion"`
-	Platform         string               `json:"platform"`
-	PlatformVersion  string               `json:"platformVersion"`
-	Device           string               `json:"device"`
-	ClientIdentifier string               `json:"clientIdentifier"`
-	CreatedAt        time.Time            `json:"createdAt"`
-	LastSeenAt       time.Time            `json:"lastSeenAt"`
-	Provides         string               `json:"provides"`
-	Owned            bool                 `json:"owned"`
-	AccessToken      string               `json:"accessToken"`
-	Connections      []PlexConnection     `json:"connections"`
-	Presence         bool                 `json:"presence"`
+	Name             string           `json:"name"`
+	Product          string           `json:"product"`
+	ProductVersion   string           `json:"productVersion"`
+	Platform         string           `json:"platform"`
+	PlatformVersion  string           `json:"platformVersion"`
+	Device           string           `json:"device"`
+	ClientIdentifier string           `json:"clientIdentifier"`
+	CreatedAt        time.Time        `json:"createdAt"`
+	LastSeenAt       time.Time        `json:"lastSeenAt"`
+	Provides         string           `json:"provides"`
+	Owned            bool             `json:"owned"`
+	AccessToken      string           `json:"accessToken"`
+	Connections      []PlexConnection `json:"connections"`
+	Presence         bool             `json:"presence"`
 }
 
 // PlexConnection represents a connection endpoint for a Plex resource
@@ -890,7 +892,7 @@ func (c *Client) GetServerWatchHistory(server PlexResource, limit int, accountID
 	req.Header.Set("X-Plex-Token", server.AccessToken)
 
 	// Use a client with longer timeout for server connections
-	client := &http.Client{Timeout: 60 * time.Second}
+	client := apiusage.TrackClient(&http.Client{Timeout: 60 * time.Second}, "Plex", "Server API request")
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("plex server request: %w", err)
@@ -956,7 +958,7 @@ func (c *Client) GetServerItemDetails(server PlexResource, ratingKey string) (*W
 	c.setPlexHeaders(req)
 	req.Header.Set("X-Plex-Token", server.AccessToken)
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := apiusage.TrackClient(&http.Client{Timeout: 30 * time.Second}, "Plex", "Server API request")
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("plex server request: %w", err)
@@ -970,18 +972,18 @@ func (c *Client) GetServerItemDetails(server PlexResource, ratingKey string) (*W
 	var detailsResp struct {
 		MediaContainer struct {
 			Metadata []struct {
-				RatingKey        string `json:"ratingKey"`
-				Title            string `json:"title"`
-				Type             string `json:"type"`
-				Year             int    `json:"year"`
-				GUID             string `json:"guid"`
-				GrandparentTitle string `json:"grandparentTitle,omitempty"`
-				ParentTitle      string `json:"parentTitle,omitempty"`
+				RatingKey            string `json:"ratingKey"`
+				Title                string `json:"title"`
+				Type                 string `json:"type"`
+				Year                 int    `json:"year"`
+				GUID                 string `json:"guid"`
+				GrandparentTitle     string `json:"grandparentTitle,omitempty"`
+				ParentTitle          string `json:"parentTitle,omitempty"`
 				GrandparentRatingKey string `json:"grandparentRatingKey,omitempty"`
-				Index            int    `json:"index,omitempty"`
-				ParentIndex      int    `json:"parentIndex,omitempty"`
-				Thumb            string `json:"thumb,omitempty"`
-				Guids            []struct {
+				Index                int    `json:"index,omitempty"`
+				ParentIndex          int    `json:"parentIndex,omitempty"`
+				Thumb                string `json:"thumb,omitempty"`
+				Guids                []struct {
 					ID string `json:"id"`
 				} `json:"Guid"`
 			} `json:"Metadata"`
@@ -998,18 +1000,18 @@ func (c *Client) GetServerItemDetails(server PlexResource, ratingKey string) (*W
 
 	item := detailsResp.MediaContainer.Metadata[0]
 	result := &WatchHistoryItem{
-		RatingKey:        item.RatingKey,
-		Title:            item.Title,
-		Type:             item.Type,
-		Year:             item.Year,
-		GUID:             item.GUID,
-		GrandparentTitle: item.GrandparentTitle,
-		ParentTitle:      item.ParentTitle,
+		RatingKey:            item.RatingKey,
+		Title:                item.Title,
+		Type:                 item.Type,
+		Year:                 item.Year,
+		GUID:                 item.GUID,
+		GrandparentTitle:     item.GrandparentTitle,
+		ParentTitle:          item.ParentTitle,
 		GrandparentRatingKey: item.GrandparentRatingKey,
-		Index:            item.Index,
-		ParentIndex:      item.ParentIndex,
-		Thumb:            item.Thumb,
-		ExternalIDs:      make(map[string]string),
+		Index:                item.Index,
+		ParentIndex:          item.ParentIndex,
+		Thumb:                item.Thumb,
+		ExternalIDs:          make(map[string]string),
 	}
 
 	// Parse main GUID

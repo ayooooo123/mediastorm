@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"novastream/internal/apiusage"
 )
 
 // Client handles Jellyfin API interactions.
@@ -28,7 +30,7 @@ type AuthResult struct {
 type JellyfinItem struct {
 	ID          string            `json:"Id"`
 	Name        string            `json:"Name"`
-	Type        string            `json:"Type"`            // "Movie", "Series", "Episode"
+	Type        string            `json:"Type"` // "Movie", "Series", "Episode"
 	Year        int               `json:"ProductionYear"`
 	ProviderIDs map[string]string `json:"ProviderIds"`
 	SeriesName  string            `json:"SeriesName,omitempty"`
@@ -40,7 +42,7 @@ type JellyfinItem struct {
 // NewClient creates a new Jellyfin API client.
 func NewClient() *Client {
 	return &Client{
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		httpClient: apiusage.TrackClient(&http.Client{Timeout: 30 * time.Second}, "Jellyfin", "API request"),
 	}
 }
 

@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"novastream/internal/apiusage"
 )
 
 const (
@@ -46,7 +48,7 @@ func NewRealDebridClient(apiKey string) *RealDebridClient {
 	trimmedKey := strings.TrimSpace(apiKey)
 	return &RealDebridClient{
 		apiKey:      trimmedKey,
-		httpClient:  &http.Client{Timeout: 30 * time.Second},
+		httpClient:  apiusage.TrackClient(&http.Client{Timeout: 30 * time.Second}, "Real-Debrid", "API request"),
 		baseURL:     "https://api.real-debrid.com/rest/1.0",
 		rateLimiter: realDebridRateLimiterForKey(trimmedKey),
 	}

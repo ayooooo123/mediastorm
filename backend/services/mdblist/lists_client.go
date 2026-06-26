@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"sync"
 	"time"
+
+	"novastream/internal/apiusage"
 )
 
 // ListsClient reads MDBList lists (including imported external lists such as
@@ -23,7 +25,7 @@ type ListsClient struct {
 func NewListsClient(apiKey string) *ListsClient {
 	return &ListsClient{
 		apiKey:     apiKey,
-		httpClient: &http.Client{Timeout: 15 * time.Second},
+		httpClient: apiusage.TrackClient(&http.Client{Timeout: 15 * time.Second}, "MDBList", "List API"),
 	}
 }
 

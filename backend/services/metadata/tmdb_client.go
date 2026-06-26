@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"novastream/internal/apiusage"
 	"novastream/models"
 
 	xdraw "golang.org/x/image/draw"
@@ -107,6 +108,7 @@ func newTMDBClient(apiKey, language string, httpc *http.Client, cache *fileCache
 	if httpc == nil {
 		httpc = &http.Client{Timeout: 15 * time.Second}
 	}
+	httpc = apiusage.TrackClient(httpc, "TMDB", "Metadata API")
 	return &tmdbClient{
 		apiKey:      strings.TrimSpace(apiKey),
 		language:    language,

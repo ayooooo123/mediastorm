@@ -72,6 +72,12 @@ type Tracker struct {
 	storageMu      sync.Mutex
 }
 
+type trackedRoundTripper struct {
+	base      http.RoundTripper
+	provider  string
+	operation string
+}
+
 var globalTracker = &Tracker{
 	endpoints: make(map[string]EndpointUsage),
 	outbound:  make(map[string]OutboundUsage),
@@ -83,6 +89,48 @@ func GetTracker() *Tracker {
 
 func ConfigureStorage(cacheDir string) {
 	GetTracker().ConfigureStorage(cacheDir)
+}
+
+func TrackClient(client *http.Client, provider, operation string) *http.Client {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	clone := *client
+	base := clone.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	if _, ok := base.(*trackedRoundTripper); !ok {
+		clone.Transport = &trackedRoundTripper{
+			base:      base,
+			provider:  provider,
+			operation: operation,
+		}
+	}
+	return &clone
+}
+
+func (t *trackedRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	startedAt := time.Now()
+	resp, err := base.RoundTrip(req)
+	status := 0
+	if resp != nil {
+		status = resp.StatusCode
+	}
+	rawURL := ""
+	method := ""
+	if req != nil {
+		method = req.Method
+		if req.URL != nil {
+			rawURL = req.URL.String()
+		}
+	}
+	GetTracker().RecordOutbound(t.provider, t.operation, method, rawURL, status, time.Since(startedAt))
+	return resp, err
 }
 
 func (t *Tracker) ConfigureStorage(cacheDir string) {
@@ -167,7 +215,7 @@ func (t *Tracker) recordOutboundAt(now time.Time, provider, operation, method, r
 	path := ""
 	if parsed, err := url.Parse(rawURL); err == nil {
 		host = strings.ToLower(parsed.Hostname())
-		path = parsed.EscapedPath()
+		path = sanitizePath(parsed.EscapedPath())
 	}
 	if host == "" {
 		host = "unknown"
@@ -237,6 +285,36 @@ func (t *Tracker) recordOutboundAt(now time.Time, provider, operation, method, r
 			log.Printf("[apiusage] warning: failed to persist usage event: %v", err)
 		}
 	}
+}
+
+func sanitizePath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" || path == "/" {
+		return path
+	}
+	leadingSlash := strings.HasPrefix(path, "/")
+	parts := strings.Split(path, "/")
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		lower := strings.ToLower(part)
+		if len(part) > 64 ||
+			strings.Contains(lower, "apikey") ||
+			strings.Contains(lower, "api_key") ||
+			strings.Contains(lower, "token") ||
+			strings.Contains(lower, "password") ||
+			strings.Contains(lower, "secret") ||
+			strings.Contains(lower, "authorization") ||
+			strings.Contains(lower, "bearer") {
+			parts[i] = "[redacted]"
+		}
+	}
+	sanitized := strings.Join(parts, "/")
+	if leadingSlash && !strings.HasPrefix(sanitized, "/") {
+		sanitized = "/" + sanitized
+	}
+	return sanitized
 }
 
 func (t *Tracker) Snapshot() []EndpointUsage {

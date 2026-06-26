@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"novastream/config"
+	"novastream/internal/apiusage"
 	"novastream/internal/netproxy"
 	"novastream/models"
 )
@@ -60,9 +61,9 @@ func NewService(storageDir string, cfgManager *config.Manager) *Service {
 	s := &Service{
 		cfgManager: cfgManager,
 		storageDir: storageDir,
-		client: &http.Client{
+		client: apiusage.TrackClient(&http.Client{
 			Timeout: defaultHTTPTimeout,
-		},
+		}, "Live TV", "EPG fetch"),
 		schedule: &models.EPGSchedule{
 			Channels: make(map[string]models.EPGChannel),
 			Programs: make(map[string][]models.EPGProgram),
@@ -531,7 +532,7 @@ func (s *Service) httpClient(proxyURL string) *http.Client {
 		log.Printf("[epg] invalid proxy URL %q: %v", proxyURL, err)
 		return s.client
 	}
-	return client
+	return apiusage.TrackClient(client, "Live TV", "EPG fetch")
 }
 
 // XMLTV structures for parsing

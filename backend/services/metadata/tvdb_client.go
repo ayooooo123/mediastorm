@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"novastream/internal/apiusage"
 )
 
 // Minimal TVDB v4 client (token auth, trending and search endpoints we need)
@@ -44,6 +46,7 @@ func newTVDBClient(apiKey, language string, httpc *http.Client, cacheTTLHours in
 	if httpc == nil {
 		httpc = &http.Client{Timeout: 15 * time.Second}
 	}
+	httpc = apiusage.TrackClient(httpc, "TVDB", "Metadata API")
 	if cacheTTLHours <= 0 {
 		cacheTTLHours = 24
 	}

@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"novastream/internal/apiusage"
 )
 
 // TorboxClient handles API interactions with Torbox service.
@@ -32,7 +34,7 @@ var _ Configurable = (*TorboxClient)(nil)
 func NewTorboxClient(apiKey string) *TorboxClient {
 	return &TorboxClient{
 		apiKey:     strings.TrimSpace(apiKey),
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		httpClient: apiusage.TrackClient(&http.Client{Timeout: 30 * time.Second}, "TorBox", "API request"),
 		baseURL:    "https://api.torbox.app/v1/api",
 	}
 }

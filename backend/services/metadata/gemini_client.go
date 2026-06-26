@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"novastream/internal/apiusage"
 )
 
 const geminiBaseURL = "https://generativelanguage.googleapis.com/v1beta"
@@ -53,6 +55,7 @@ func newAIClient(cfg AIConfig, httpc *http.Client, cache *fileCache) *geminiClie
 		httpc = &http.Client{Timeout: 30 * time.Second}
 	}
 	provider := normalizeMetadataAIProvider(cfg.Provider, cfg.APIKey)
+	httpc = apiusage.TrackClient(httpc, metadataAIProviderLabel(provider), "Metadata AI")
 	return &geminiClient{
 		provider:    provider,
 		apiKey:      strings.TrimSpace(cfg.APIKey),
@@ -61,6 +64,25 @@ func newAIClient(cfg AIConfig, httpc *http.Client, cache *fileCache) *geminiClie
 		httpc:       httpc,
 		cache:       cache,
 		minInterval: 100 * time.Millisecond,
+	}
+}
+
+func metadataAIProviderLabel(provider string) string {
+	switch provider {
+	case aiProviderGemini:
+		return "Gemini"
+	case aiProviderOpenAI:
+		return "OpenAI"
+	case aiProviderAnthropic:
+		return "Anthropic"
+	case aiProviderOpenRouter:
+		return "OpenRouter"
+	case aiProviderNanoGPT:
+		return "NanoGPT"
+	case aiProviderLinkAPI:
+		return "LinkAPI"
+	default:
+		return "Metadata AI"
 	}
 }
 
