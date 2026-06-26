@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"novastream/internal/apiusage"
 )
 
 // AllDebridClient handles API interactions with AllDebrid service.
@@ -31,7 +33,7 @@ var _ Provider = (*AllDebridClient)(nil)
 func NewAllDebridClient(apiKey string) *AllDebridClient {
 	return &AllDebridClient{
 		apiKey:     strings.TrimSpace(apiKey),
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		httpClient: apiusage.TrackClient(&http.Client{Timeout: 30 * time.Second}, "AllDebrid", "API request"),
 		baseURL:    "https://api.alldebrid.com/v4",
 		agent:      "mediastorm",
 	}
@@ -139,18 +141,18 @@ type allDebridInstantData struct {
 
 // AllDebrid status codes
 const (
-	allDebridStatusInQueue              = 0
-	allDebridStatusDownloading          = 1
-	allDebridStatusCompressingMoving    = 2
-	allDebridStatusUploading            = 3
-	allDebridStatusReady                = 4
-	allDebridStatusUploadFail           = 5
-	allDebridStatusInternalErrorUnpack  = 6
-	allDebridStatusNotDownloaded20Min   = 7
-	allDebridStatusFileTooBig           = 8
-	allDebridStatusInternalError        = 9
-	allDebridStatusDownloadTook72h      = 10
-	allDebridStatusDeletedOnHoster      = 11
+	allDebridStatusInQueue             = 0
+	allDebridStatusDownloading         = 1
+	allDebridStatusCompressingMoving   = 2
+	allDebridStatusUploading           = 3
+	allDebridStatusReady               = 4
+	allDebridStatusUploadFail          = 5
+	allDebridStatusInternalErrorUnpack = 6
+	allDebridStatusNotDownloaded20Min  = 7
+	allDebridStatusFileTooBig          = 8
+	allDebridStatusInternalError       = 9
+	allDebridStatusDownloadTook72h     = 10
+	allDebridStatusDeletedOnHoster     = 11
 )
 
 // doRequest performs an HTTP request with authorization.

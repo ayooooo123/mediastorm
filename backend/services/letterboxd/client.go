@@ -14,6 +14,7 @@ import (
 	"time"
 
 	xhtml "golang.org/x/net/html"
+	"novastream/internal/apiusage"
 )
 
 const (
@@ -58,7 +59,7 @@ type ListResult struct {
 // NewClient creates a public Letterboxd list client.
 func NewClient() *Client {
 	return &Client{
-		httpClient: &http.Client{Timeout: 20 * time.Second},
+		httpClient: apiusage.TrackClient(&http.Client{Timeout: 20 * time.Second}, "Letterboxd", "List scrape"),
 		cacheTTL:   30 * time.Minute,
 		cache:      make(map[string]cacheEntry),
 	}

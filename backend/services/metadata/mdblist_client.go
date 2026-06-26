@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"novastream/internal/apiusage"
 	"novastream/models"
 )
 
@@ -79,7 +80,7 @@ func newMDBListClient(apiKey string, enabledRatings []string, enabled bool, cach
 	return &mdblistClient{
 		apiKey:         apiKey,
 		enabledRatings: enabledMap,
-		httpClient:     &http.Client{Timeout: 10 * time.Second},
+		httpClient:     apiusage.TrackClient(&http.Client{Timeout: 10 * time.Second}, "MDBList", "Ratings lookup"),
 		enabled:        enabled,
 		cache:          make(map[string]*mdblistCacheEntry),
 		cacheTTL:       time.Duration(cacheTTLHours) * time.Hour,

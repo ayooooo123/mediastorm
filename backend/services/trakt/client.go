@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"novastream/config"
+	"novastream/internal/apiusage"
 )
 
 // ErrNotFound is returned when Trakt cannot find the requested item (404).
@@ -140,7 +141,7 @@ type HistoryItem struct {
 // NewClient creates a new Trakt API client
 func NewClient(clientID, clientSecret string) *Client {
 	return &Client{
-		httpClient:   &http.Client{Timeout: 30 * time.Second},
+		httpClient:   apiusage.TrackClient(&http.Client{Timeout: 30 * time.Second}, "Trakt", "API request"),
 		clientID:     clientID,
 		clientSecret: clientSecret,
 		refreshMuMap: make(map[string]*sync.Mutex),

@@ -154,6 +154,58 @@ func TestDoRecordsOutboundRequest(t *testing.T) {
 	}
 }
 
+func TestTrackerRedactsSensitivePathSegments(t *testing.T) {
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	tracker := &Tracker{endpoints: make(map[string]EndpointUsage), outbound: make(map[string]OutboundUsage)}
+
+	tracker.recordOutboundAt(now, "Comet", "Stream search", http.MethodGet, "https://comet.example/config-apiKey-secret-token-value/stream/movie/tt0133093.json", http.StatusOK, 10*time.Millisecond, false)
+
+	entries := tracker.snapshotOutboundAt(now)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 outbound entry, got %d", len(entries))
+	}
+	if entries[0].LastPath != "/[redacted]/stream/movie/tt0133093.json" {
+		t.Fatalf("last path = %q, want redacted path", entries[0].LastPath)
+	}
+}
+
+func TestTrackClientRecordsOutboundRequest(t *testing.T) {
+	original := globalTracker
+	globalTracker = &Tracker{endpoints: make(map[string]EndpointUsage), outbound: make(map[string]OutboundUsage)}
+	t.Cleanup(func() {
+		globalTracker = original
+	})
+
+	base := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusAccepted,
+			Body:       http.NoBody,
+			Request:    req,
+		}, nil
+	})}
+	client := TrackClient(base, "TMDB", "Metadata API")
+	req, err := http.NewRequest(http.MethodGet, "https://api.themoviedb.org/3/movie/550?api_key=secret", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	entries := GetTracker().SnapshotOutbound()
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 outbound entry, got %d", len(entries))
+	}
+	if entries[0].Provider != "TMDB" || entries[0].Operation != "Metadata API" {
+		t.Fatalf("provider/operation = %q/%q", entries[0].Provider, entries[0].Operation)
+	}
+	if entries[0].LastStatus != http.StatusAccepted {
+		t.Fatalf("last status = %d, want %d", entries[0].LastStatus, http.StatusAccepted)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {

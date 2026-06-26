@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"novastream/config"
+	"novastream/internal/apiusage"
 	"novastream/internal/netproxy"
 	"novastream/models"
 )
@@ -258,7 +259,7 @@ func (s *Service) xtreamHTTPClient(settings *config.Settings) *http.Client {
 		log.Printf("[epg] invalid Xtream proxy URL %q: %v", settings.Live.ProxyURL, err)
 		return s.client
 	}
-	return client
+	return apiusage.TrackClient(client, "Live TV", "Xtream API")
 }
 
 // mergePrograms merges per-channel EPG data into existing programmes.

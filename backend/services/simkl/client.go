@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"novastream/internal/apiusage"
 )
 
 var apiBaseURL = "https://api.simkl.com"
@@ -37,7 +39,7 @@ type Client struct {
 // NewClient creates a Simkl API client.
 func NewClient() *Client {
 	return &Client{
-		httpClient:         &http.Client{Timeout: 15 * time.Second},
+		httpClient:         apiusage.TrackClient(&http.Client{Timeout: 15 * time.Second}, "Simkl", "API request"),
 		lastPostByClientID: make(map[string]time.Time),
 	}
 }
