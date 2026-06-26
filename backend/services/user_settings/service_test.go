@@ -405,6 +405,18 @@ func TestIsSettingsEmpty_WithLiveTVMaxStreams(t *testing.T) {
 	}
 }
 
+func TestIsSettingsEmpty_WithExplicitLiveTVSourcesOverride(t *testing.T) {
+	override := true
+	s := models.UserSettings{
+		LiveTV: models.LiveTVSettings{
+			SourcesOverride: &override,
+		},
+	}
+	if isSettingsEmpty(s) {
+		t.Error("settings with explicit LiveTV sources override should NOT be empty")
+	}
+}
+
 func TestIsSettingsEmpty_WithDisplayAppLanguage(t *testing.T) {
 	s := models.UserSettings{
 		Display: models.DisplaySettings{
@@ -553,6 +565,39 @@ func TestUpdate_PreservesLiveTVMaxStreamsOnly(t *testing.T) {
 	}
 	if got.LiveTV.MaxStreams == nil || *got.LiveTV.MaxStreams != 4 {
 		t.Fatalf("MaxStreams = %v, want 4", got.LiveTV.MaxStreams)
+	}
+}
+
+func TestUpdate_PreservesExplicitEmptyLiveTVSourcesOverride(t *testing.T) {
+	dir := t.TempDir()
+	svc, err := NewService(dir)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	override := true
+	settings := models.UserSettings{
+		LiveTV: models.LiveTVSettings{
+			SourcesOverride: &override,
+		},
+	}
+
+	if err := svc.Update("profile-empty-live", settings); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	got, err := svc.Get("profile-empty-live")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected settings to be saved, got nil")
+	}
+	if got.LiveTV.SourcesOverride == nil || !*got.LiveTV.SourcesOverride {
+		t.Fatalf("SourcesOverride = %v, want true", got.LiveTV.SourcesOverride)
+	}
+	if len(got.LiveTV.Sources) != 0 {
+		t.Fatalf("Sources length = %d, want 0", len(got.LiveTV.Sources))
 	}
 }
 
