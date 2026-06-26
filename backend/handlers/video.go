@@ -52,6 +52,8 @@ var transmuxableExtensions = map[string]struct{}{
 	".mpeg": {},
 }
 
+var googleVideoURLPattern = regexp.MustCompile(`https?://[^\s\]\)]+googlevideo\.com/[^\s\]\)]+`)
+
 var copyableAudioCodecs = map[string]struct{}{
 	"aac":  {},
 	"ac3":  {},
@@ -3180,32 +3182,78 @@ func (h *VideoHandler) StartYouTubeHLSSession(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	streams, err := h.extractYouTubeHLSURLs(r.Context(), videoPageURL)
+	proxyURL := h.ytdlpProxyURL()
+	log.Printf("[hls-youtube] start request url=%s proxy=%v", videoPageURL, strings.TrimSpace(proxyURL) != "")
+	streams, err := h.extractYouTubeHLSURLs(r.Context(), videoPageURL, true)
 	if err != nil {
-		log.Printf("[hls-youtube] extract failed: %v", err)
+		log.Printf("[hls-youtube] extract failed url=%s: %v", videoPageURL, err)
 		http.Error(w, fmt.Sprintf("failed to extract YouTube streams: %v", err), http.StatusBadGateway)
 		return
 	}
-	captionTracks, err := h.extractYouTubeCaptionTracks(r.Context(), videoPageURL)
-	if err != nil {
-		log.Printf("[hls-youtube] caption extract failed: %v", err)
-	} else {
-		log.Printf("[hls-youtube] caption extract found %d tracks for %s", len(captionTracks), videoPageURL)
+
+	type captionResult struct {
+		tracks []youtubeCaptionTrack
+		err    error
 	}
+	captionDone := make(chan captionResult, 1)
+	go func() {
+		tracks, captionErr := h.extractYouTubeCaptionTracks(r.Context(), videoPageURL)
+		captionDone <- captionResult{tracks: tracks, err: captionErr}
+	}()
 
 	profileID := r.URL.Query().Get("profileId")
 	if profileID == "" {
 		profileID = r.URL.Query().Get("userId")
 	}
-	session, err := h.hlsManager.CreateYouTubeSession(r.Context(), streams.videoURL, streams.audioURL, videoPageURL, h.ytdlpProxyURL(), profileID, r.URL.Query().Get("profileName"), getClientIP(r))
+	profileName := r.URL.Query().Get("profileName")
+	clientIP := getClientIP(r)
+	session, err := h.hlsManager.CreateYouTubeSession(r.Context(), streams.videoURL, streams.audioURL, videoPageURL, proxyURL, profileID, profileName, clientIP)
+	if err != nil && h.ytdlpCookiesPath() != "" && strings.Contains(err.Error(), "403") {
+		log.Printf("[hls-youtube] cookie-backed session failed with 403; retrying without cookies url=%s", videoPageURL)
+		retryStreams, retryErr := h.extractYouTubeHLSURLs(r.Context(), videoPageURL, false)
+		if retryErr != nil {
+			log.Printf("[hls-youtube] no-cookie extract failed url=%s: %v", videoPageURL, retryErr)
+		} else {
+			retrySession, retryCreateErr := h.hlsManager.CreateYouTubeSession(r.Context(), retryStreams.videoURL, retryStreams.audioURL, videoPageURL, proxyURL, profileID, profileName, clientIP)
+			if retryCreateErr == nil {
+				streams = retryStreams
+				session = retrySession
+				err = nil
+				log.Printf("[hls-youtube] no-cookie session retry succeeded url=%s session=%s", videoPageURL, session.ID)
+			} else {
+				log.Printf("[hls-youtube] no-cookie session retry failed url=%s video={%s} audio={%s}: %v",
+					videoPageURL,
+					youtubeMediaURLLogSummary(retryStreams.videoURL),
+					youtubeMediaURLLogSummary(retryStreams.audioURL),
+					retryCreateErr)
+			}
+		}
+	}
 	if err != nil {
-		log.Printf("[hls-youtube] create session failed: %v", err)
+		log.Printf("[hls-youtube] create session failed url=%s video={%s} audio={%s}: %v",
+			videoPageURL,
+			youtubeMediaURLLogSummary(streams.videoURL),
+			youtubeMediaURLLogSummary(streams.audioURL),
+			err)
 		http.Error(w, fmt.Sprintf("failed to create YouTube HLS session: %v", err), http.StatusInternalServerError)
 		return
 	}
 	session.mu.Lock()
 	session.MediaMetadata = parseStreamMediaMetadata(r)
 	session.mu.Unlock()
+
+	var captionTracks []youtubeCaptionTrack
+	select {
+	case result := <-captionDone:
+		if result.err != nil {
+			log.Printf("[hls-youtube] caption extract failed: %v", result.err)
+		} else {
+			captionTracks = result.tracks
+			log.Printf("[hls-youtube] caption extract found %d tracks for %s", len(captionTracks), videoPageURL)
+		}
+	default:
+		log.Printf("[hls-youtube] caption extract still pending for %s; responding without subtitle tracks", videoPageURL)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -3247,7 +3295,58 @@ func (h *VideoHandler) ytdlpProxyURL() string {
 	return settings.Playback.YouTubeProxyURL
 }
 
-func (h *VideoHandler) extractYouTubeHLSURLs(ctx context.Context, videoPageURL string) (youtubeHLSURLs, error) {
+func youtubeMediaURLLogSummary(rawURL string) string {
+	if strings.TrimSpace(rawURL) == "" {
+		return "empty=true"
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "parse_error=true"
+	}
+	q := parsed.Query()
+	fields := []string{
+		"host=" + parsed.Hostname(),
+		"itag=" + q.Get("itag"),
+		"c=" + q.Get("c"),
+		"mime=" + q.Get("mime"),
+		"clen=" + q.Get("clen"),
+		"dur=" + q.Get("dur"),
+		"source=" + q.Get("source"),
+		"gir=" + q.Get("gir"),
+		"rqh=" + q.Get("rqh"),
+	}
+	if expireRaw := q.Get("expire"); expireRaw != "" {
+		if expireUnix, parseErr := strconv.ParseInt(expireRaw, 10, 64); parseErr == nil {
+			fields = append(fields, fmt.Sprintf("expireIn=%ds", time.Until(time.Unix(expireUnix, 0)).Round(time.Second)/time.Second))
+		} else {
+			fields = append(fields, "expire=invalid")
+		}
+	}
+	if q.Get("ip") != "" {
+		fields = append(fields, "ip_param=true")
+	}
+	if q.Get("sig") != "" || q.Get("signature") != "" || q.Get("lsig") != "" || q.Get("spc") != "" {
+		fields = append(fields, "signed=true")
+	}
+	return strings.Join(fields, " ")
+}
+
+func sanitizeYouTubeMediaURLsInText(text string) string {
+	return googleVideoURLPattern.ReplaceAllStringFunc(text, func(rawURL string) string {
+		suffix := ""
+		for len(rawURL) > 0 {
+			last := rawURL[len(rawURL)-1]
+			if last != '.' && last != ',' && last != ';' && last != ':' {
+				break
+			}
+			suffix = string(last) + suffix
+			rawURL = rawURL[:len(rawURL)-1]
+		}
+		return "googlevideo_url{" + youtubeMediaURLLogSummary(rawURL) + "}" + suffix
+	})
+}
+
+func (h *VideoHandler) extractYouTubeHLSURLs(ctx context.Context, videoPageURL string, allowCookies bool) (youtubeHLSURLs, error) {
 	ytdlpPath, err := h.ytdlpPath()
 	if err != nil {
 		return youtubeHLSURLs{}, err
@@ -3265,22 +3364,31 @@ func (h *VideoHandler) extractYouTubeHLSURLs(ctx context.Context, videoPageURL s
 		"--retries", "0",
 		"--fragment-retries", "0",
 	}
-	if cookiesPath := h.ytdlpCookiesPath(); cookiesPath != "" {
+	cookiesPath := h.ytdlpCookiesPath()
+	proxyURL := h.ytdlpProxyURL()
+	usingCookies := allowCookies && cookiesPath != ""
+	if usingCookies {
 		args = append(args, "--cookies", cookiesPath)
 	}
-	args = ytdlp.AppendProxyArgs(args, h.ytdlpProxyURL())
+	args = ytdlp.AppendProxyArgs(args, proxyURL)
 	args = append(args, videoPageURL)
 
 	cmd := exec.CommandContext(extractCtx, ytdlpPath, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	started := time.Now()
+	log.Printf("[hls-youtube] extracting media urls url=%s ytdlp=%s cookies=%v proxy=%v",
+		videoPageURL,
+		ytdlpPath,
+		usingCookies,
+		strings.TrimSpace(proxyURL) != "")
 	if err := cmd.Run(); err != nil {
 		errMsg := strings.TrimSpace(stderr.String())
 		if errMsg == "" {
 			errMsg = err.Error()
 		}
-		return youtubeHLSURLs{}, fmt.Errorf("yt-dlp failed: %s", errMsg)
+		return youtubeHLSURLs{}, fmt.Errorf("yt-dlp failed after %s: %s", time.Since(started).Round(time.Millisecond), errMsg)
 	}
 
 	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
@@ -3294,6 +3402,12 @@ func (h *VideoHandler) extractYouTubeHLSURLs(ctx context.Context, videoPageURL s
 	if len(urls) < 2 {
 		return youtubeHLSURLs{}, fmt.Errorf("expected separate video/audio URLs, got %d", len(urls))
 	}
+	log.Printf("[hls-youtube] extracted media urls url=%s count=%d elapsed=%s video={%s} audio={%s}",
+		videoPageURL,
+		len(urls),
+		time.Since(started).Round(time.Millisecond),
+		youtubeMediaURLLogSummary(urls[0]),
+		youtubeMediaURLLogSummary(urls[1]))
 	return youtubeHLSURLs{videoURL: urls[0], audioURL: urls[1]}, nil
 }
 
