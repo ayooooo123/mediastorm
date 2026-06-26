@@ -1420,6 +1420,14 @@ func (m *HLSManager) CreateYouTubeSession(ctx context.Context, videoURL, audioUR
 	m.sessions[sessionID] = session
 	m.mu.Unlock()
 
+	log.Printf("[hls-youtube] created session %s for %s proxy=%v video={%s} audio={%s}",
+		sessionID,
+		originalURL,
+		strings.TrimSpace(proxyURL) != "",
+		youtubeMediaURLLogSummary(videoURL),
+		youtubeMediaURLLogSummary(audioURL))
+
+	startupErr := make(chan error, 1)
 	go func() {
 		if err := m.startYouTubeTranscoding(bgCtx, session, videoURL, audioURL, proxyURL); err != nil {
 			if errors.Is(err, context.Canceled) {
@@ -1432,10 +1440,39 @@ func (m *HLSManager) CreateYouTubeSession(ctx context.Context, videoURL, audioUR
 			session.FatalError = err.Error()
 			session.FatalErrorTime = time.Now()
 			session.mu.Unlock()
+			select {
+			case startupErr <- err:
+			default:
+			}
 		}
 	}()
 
-	log.Printf("[hls-youtube] created session %s for %s", sessionID, originalURL)
+	// yt-dlp URLs can expire or be rejected by the CDN immediately. If FFmpeg
+	// fails during startup, surface that through /youtube/hls/start so callers
+	// can fall back before navigating to a playlist that will never exist.
+	select {
+	case err := <-startupErr:
+		log.Printf("[hls-youtube] session %s startup failed elapsed=%s video={%s} audio={%s}: %v",
+			sessionID,
+			time.Since(now).Round(time.Millisecond),
+			youtubeMediaURLLogSummary(videoURL),
+			youtubeMediaURLLogSummary(audioURL),
+			err)
+		cancel()
+		m.mu.Lock()
+		delete(m.sessions, sessionID)
+		m.mu.Unlock()
+		return nil, err
+	case <-time.After(1200 * time.Millisecond):
+		log.Printf("[hls-youtube] session %s startup window passed elapsed=%s", sessionID, time.Since(now).Round(time.Millisecond))
+	case <-ctx.Done():
+		cancel()
+		m.mu.Lock()
+		delete(m.sessions, sessionID)
+		m.mu.Unlock()
+		return nil, ctx.Err()
+	}
+
 	return session, nil
 }
 
@@ -1513,7 +1550,12 @@ func (m *HLSManager) startYouTubeTranscoding(ctx context.Context, session *HLSSe
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
-	log.Printf("[hls-youtube] session %s: starting FFmpeg high-quality HLS", session.ID)
+	started := time.Now()
+	log.Printf("[hls-youtube] session %s: starting FFmpeg high-quality HLS proxy=%v video={%s} audio={%s}",
+		session.ID,
+		strings.TrimSpace(proxyURL) != "",
+		youtubeMediaURLLogSummary(videoURL),
+		youtubeMediaURLLogSummary(audioURL))
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start ffmpeg: %w", err)
 	}
@@ -1522,6 +1564,7 @@ func (m *HLSManager) startYouTubeTranscoding(ctx context.Context, session *HLSSe
 	session.FFmpegCmd = cmd
 	session.FFmpegPID = cmd.Process.Pid
 	session.mu.Unlock()
+	log.Printf("[hls-youtube] session %s: FFmpeg pid=%d started elapsed=%s", session.ID, cmd.Process.Pid, time.Since(started).Round(time.Millisecond))
 
 	err := cmd.Wait()
 	if ctx.Err() != nil {
@@ -1565,10 +1608,10 @@ func (m *HLSManager) startYouTubeTranscoding(ctx context.Context, session *HLSSe
 	session.mu.Unlock()
 
 	if err != nil {
-		return fmt.Errorf("ffmpeg exited code=%d: %s", exitCode, strings.TrimSpace(stderr.String()))
+		return fmt.Errorf("ffmpeg exited code=%d after %s: %s", exitCode, time.Since(started).Round(time.Millisecond), sanitizeYouTubeMediaURLsInText(strings.TrimSpace(stderr.String())))
 	}
 
-	log.Printf("[hls-youtube] session %s: FFmpeg completed segments=%d", session.ID, highestSegment+1)
+	log.Printf("[hls-youtube] session %s: FFmpeg completed segments=%d elapsed=%s", session.ID, highestSegment+1, time.Since(started).Round(time.Millisecond))
 	return nil
 }
 
