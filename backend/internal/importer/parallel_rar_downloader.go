@@ -141,7 +141,7 @@ func (prd *ParallelRarDownloader) downloadSingleRarPart(ctx context.Context, rar
 	rg := usenet.GetSegmentsInRange(0, rarFile.Size-1, loader)
 
 	// Create a Usenet reader for the entire file
-	reader, err := usenet.NewUsenetReader(ctx, prd.poolManager, rg, prd.maxWorkers, prd.maxCacheSizeMB)
+	reader, err := usenet.NewUsenetReaderWithActivity(ctx, prd.poolManager, rg, prd.maxWorkers, "RAR import: "+rarFile.Filename, prd.maxCacheSizeMB)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create usenet reader: %w", err)
 	}
