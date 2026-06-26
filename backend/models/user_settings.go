@@ -163,6 +163,7 @@ type LiveTVSettings struct {
 	ProxyURL        *string              `json:"proxyUrl,omitempty"`
 	Sources         []LivePlaylistSource `json:"sources,omitempty"`
 	PlaylistSources []LivePlaylistSource `json:"playlistSources,omitempty"`
+	SourcesOverride *bool                `json:"sourcesOverride,omitempty"`
 	XtreamHost      *string              `json:"xtreamHost,omitempty"`
 	XtreamUsername  *string              `json:"xtreamUsername,omitempty"`
 	XtreamPassword  *string              `json:"xtreamPassword,omitempty"`
@@ -273,10 +274,12 @@ func ResolveLiveSource(profile *LiveTVSettings, global *ResolvedLiveSource) Reso
 	if profile.ProxyURL != nil {
 		r.ProxyURL = *profile.ProxyURL
 	}
-	if len(profile.Sources) > 0 {
+	if profile.SourcesOverride != nil && *profile.SourcesOverride {
 		r.Sources = append([]LivePlaylistSource(nil), profile.Sources...)
-	}
-	if len(profile.PlaylistSources) > 0 {
+		r.PlaylistSources = append([]LivePlaylistSource(nil), profile.PlaylistSources...)
+	} else if len(profile.Sources) > 0 {
+		r.Sources = append([]LivePlaylistSource(nil), profile.Sources...)
+	} else if len(profile.PlaylistSources) > 0 {
 		r.PlaylistSources = append([]LivePlaylistSource(nil), profile.PlaylistSources...)
 	}
 	if profile.XtreamHost != nil {

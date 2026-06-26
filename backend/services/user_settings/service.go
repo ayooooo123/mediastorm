@@ -557,6 +557,7 @@ func isSettingsEmpty(s models.UserSettings) bool {
 		s.LiveTV.PlaylistURL != nil ||
 		len(s.LiveTV.Sources) > 0 ||
 		len(s.LiveTV.PlaylistSources) > 0 ||
+		s.LiveTV.SourcesOverride != nil ||
 		s.LiveTV.XtreamHost != nil ||
 		s.LiveTV.XtreamUsername != nil ||
 		s.LiveTV.XtreamPassword != nil ||

@@ -2497,6 +2497,10 @@
         const keys = path.split('.');
         const topKey = keys[0];
 
+        if (path === 'liveTV.sources' && selectedUserId && userSettings?.liveTV?.sourcesOverride === true) {
+            return Array.isArray(userSettings.liveTV.sources) ? userSettings.liveTV.sources : [];
+        }
+
         // If client selected and this is a client-supported filtering field
         const clientKey = getClientSettingsKey(path);
         if (selectedClientId && clientSettings && clientKey) {
@@ -2588,7 +2592,38 @@
             const inheritedSources = getGlobalValue('liveTV.sources') || [];
             userSettings.liveTV.sources = JSON.parse(JSON.stringify(inheritedSources));
         }
+        userSettings.liveTV.sourcesOverride = true;
         return userSettings.liveTV.sources;
+    }
+
+    function hasProfileLiveSourceOverride() {
+        return Boolean(
+            selectedUserId &&
+            userSettings &&
+            userSettings.liveTV &&
+            (
+                userSettings.liveTV.sourcesOverride === true ||
+                Object.prototype.hasOwnProperty.call(userSettings.liveTV, 'sources')
+            )
+        );
+    }
+
+    function resetLiveSourcesToGlobal(event) {
+        if (event) event.stopPropagation();
+        if (!hasProfileLiveSourceOverride()) {
+            showToast('This profile is already inheriting global Live TV sources');
+            return;
+        }
+        if (!confirm('Re-inherit Live TV sources from global settings for this profile? This removes the profile-specific source list.')) {
+            return;
+        }
+        delete userSettings.liveTV.sources;
+        delete userSettings.liveTV.sourcesOverride;
+        if (Object.prototype.hasOwnProperty.call(userSettings.liveTV, 'playlistSources')) {
+            delete userSettings.liveTV.playlistSources;
+        }
+        renderSettings();
+        showToast('Live TV sources will inherit from global after saving');
     }
 
     // Check if a client setting is explicitly set (not inherited)
@@ -4994,7 +5029,20 @@
 
             // For each field in the user's section, only keep if different from global
             const sectionStripped = {};
+            let keepLiveSourceOverride = false;
+            if (section === 'liveTV' && userSettings.liveTV?.sourcesOverride === true) {
+                const profileSources = Array.isArray(userSettings.liveTV.sources) ? userSettings.liveTV.sources : [];
+                const globalSources = Array.isArray(globalSettings.live?.sources) ? globalSettings.live.sources : [];
+                keepLiveSourceOverride = !deepEqual(
+                    normalizeForComparisonForField(section, 'sources', profileSources),
+                    normalizeForComparisonForField(section, 'sources', globalSources)
+                );
+            }
             for (const [key, value] of Object.entries(userSettings[section])) {
+                if (section === 'liveTV' && key === 'sourcesOverride') {
+                    if (keepLiveSourceOverride) sectionStripped[key] = true;
+                    continue;
+                }
                 const globalValue = globalSection[key];
                 // Normalize before comparing - treat empty strings/arrays as "inherit from global"
                 const normValue = normalizeForComparisonForField(section, key, value);
@@ -5177,6 +5225,20 @@
             basePath = sectionKey;
         }
         const isTestable = testableSections.includes(sectionKey);
+        let profileInheritanceControls = '';
+        if (sectionKey === 'liveTV.sources' && selectedUserId && userSettings) {
+            const hasOverride = hasProfileLiveSourceOverride();
+            profileInheritanceControls =
+                '<div style="display:flex;align-items:center;justify-content:space-between;gap:0.75rem;flex-wrap:wrap;padding:0.75rem 0.875rem;margin-bottom:0.875rem;border:1px solid var(--border);border-radius:8px;background:rgba(255,255,255,0.03);">' +
+                    '<div style="min-width:220px;flex:1;">' +
+                        '<div style="font-weight:600;color:var(--text-primary);font-size:0.9rem;">' + (hasOverride ? 'Profile source override' : 'Inheriting global sources') + '</div>' +
+                        '<div style="color:var(--text-muted);font-size:0.8rem;margin-top:0.2rem;">' + (hasOverride ? 'This profile has its own Live TV source list. Re-inherit to pick up global source changes again.' : 'Editing or deleting a source here creates a profile-specific source list.') + '</div>' +
+                    '</div>' +
+                    (hasOverride
+                        ? '<button type="button" class="btn btn-sm btn-secondary" onclick="resetLiveSourcesToGlobal(event)"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg> Re-inherit from Global</button>'
+                        : '') +
+                '</div>';
+        }
         const itemsHtml = items.map((item, index) => {
             let typeBadgesHtml = '';
             if (sectionKey === 'torrentScrapers') {
@@ -5250,7 +5312,7 @@
         }).join('');
         const styles = '<style></style>';
         const addButton = '<button class="add-item-btn" onclick="addArrayItem(\''+sectionKey+'\')"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Add '+sectionDef.label.replace(/s$/, '')+'</button>';
-        return styles + '<div class="array-items">'+itemsHtml+'<div style="display:flex;gap:0.75rem;flex-wrap:wrap;">'+addButton+'</div></div>';
+        return styles + profileInheritanceControls + '<div class="array-items">'+itemsHtml+'<div style="display:flex;gap:0.75rem;flex-wrap:wrap;">'+addButton+'</div></div>';
     }
     // Render provider priority reorder UI for streaming section
     function renderProviderPriorityUI() {

@@ -107,7 +107,9 @@ func TestResolveLiveSource_OverrideManifestURL(t *testing.T) {
 
 func TestResolveLiveSource_ProfilePlaylistSourcesOverrideGlobal(t *testing.T) {
 	enabled := true
+	override := true
 	profile := &LiveTVSettings{
+		SourcesOverride: &override,
 		PlaylistSources: []LivePlaylistSource{
 			{ID: "sports", Name: "Sports", PlaylistURL: "http://profile.example/sports.m3u", Enabled: &enabled},
 		},
@@ -127,6 +129,29 @@ func TestResolveLiveSource_ProfilePlaylistSourcesOverrideGlobal(t *testing.T) {
 	}
 	if r.PlaylistURL != "http://global.m3u" {
 		t.Errorf("legacy PlaylistURL fallback = %q, want global legacy URL", r.PlaylistURL)
+	}
+}
+
+func TestResolveLiveSource_ExplicitEmptySourcesOverride(t *testing.T) {
+	enabled := true
+	override := true
+	profile := &LiveTVSettings{
+		SourcesOverride: &override,
+	}
+	g := newGlobal()
+	g.Sources = []LivePlaylistSource{
+		{ID: "global", Name: "Global", PlaylistURL: "http://global.example/live.m3u", Enabled: &enabled},
+	}
+	g.PlaylistSources = []LivePlaylistSource{
+		{ID: "legacy", Name: "Legacy", PlaylistURL: "http://global.example/legacy.m3u", Enabled: &enabled},
+	}
+
+	r := ResolveLiveSource(profile, g)
+	if len(r.Sources) != 0 {
+		t.Fatalf("Sources length = %d, want 0", len(r.Sources))
+	}
+	if len(r.PlaylistSources) != 0 {
+		t.Fatalf("PlaylistSources length = %d, want 0", len(r.PlaylistSources))
 	}
 }
 
