@@ -80,6 +80,17 @@ func NewUsenetReader(
 	maxDownloadWorkers int,
 	maxCacheSizeMB ...int, // Optional parameter for compatibility
 ) (io.ReadCloser, error) {
+	return NewUsenetReaderWithActivity(ctx, cp, rg, maxDownloadWorkers, "Usenet stream", maxCacheSizeMB...)
+}
+
+func NewUsenetReaderWithActivity(
+	ctx context.Context,
+	cp nntppool.UsenetConnectionPool,
+	rg segmentRange,
+	maxDownloadWorkers int,
+	activityLabel string,
+	maxCacheSizeMB ...int, // Optional parameter for compatibility
+) (io.ReadCloser, error) {
 	log := slog.Default()
 	readerID := atomic.AddInt64(&readerIDCounter, 1)
 
@@ -92,6 +103,14 @@ func NewUsenetReader(
 	readers := atomic.AddInt64(&activeReaders, 1)
 	segs := atomic.AddInt64(&activeSegments, int64(len(rg.segments)))
 	estMem := atomic.AddInt64(&estimatedMemory, totalSegmentSize)
+	registerActivity(ActivityUsage{
+		ID:             readerID,
+		Label:          activityLabel,
+		StartedAt:      time.Now().UTC(),
+		Segments:       len(rg.segments),
+		EstimatedBytes: totalSegmentSize,
+		MaxWorkers:     maxDownloadWorkers,
+	})
 
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
@@ -155,6 +174,7 @@ func (b *usenetReader) Close() error {
 		readers := atomic.AddInt64(&activeReaders, -1)
 		segs := atomic.AddInt64(&activeSegments, -int64(len(b.rg.segments)))
 		estMem := atomic.AddInt64(&estimatedMemory, -totalSegSize)
+		unregisterActivity(b.id)
 
 		b.mu.Lock()
 		totalBytesRead := b.totalBytesRead
@@ -289,6 +309,10 @@ func (b *usenetReader) Read(p []byte) (int, error) {
 		b.mu.Unlock()
 
 		if nn > 0 {
+			updateActivity(b.id, func(usage *ActivityUsage) {
+				usage.BytesRead = totalRead
+				usage.CurrentSegment = b.rg.current + 1
+			})
 			b.log.Debug("usenet.reader.bytes_read",
 				"reader_id", b.id,
 				"segment_id", s.Id,

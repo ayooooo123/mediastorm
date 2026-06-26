@@ -391,6 +391,44 @@
     </div>
 </div>
 
+<!-- Usenet Activity -->
+<div class="card" style="margin-bottom: 1.5rem;">
+    <div class="card-header">
+        <h2>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M4 17h16"/>
+                <path d="M6 13h12"/>
+                <path d="M8 9h8"/>
+                <path d="M12 5v16"/>
+            </svg>
+            Usenet Connections
+        </h2>
+        <span id="usenetActivitySummary" style="font-size: 0.8125rem; color: var(--text-muted);">Loading...</span>
+    </div>
+    <div class="card-body">
+        <div class="table-container">
+            <table class="live-limits-table">
+                <thead>
+                    <tr>
+                        <th>Provider</th>
+                        <th>Active</th>
+                        <th>Available</th>
+                        <th>Pool</th>
+                        <th>State</th>
+                        <th>Downloaded</th>
+                        <th>Used For</th>
+                    </tr>
+                </thead>
+                <tbody id="usenetActivityBody">
+                    <tr>
+                        <td colspan="7" style="color: var(--text-muted); text-align: center; padding: 1rem;">No active Usenet activity</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
 <!-- Live Stream Limits -->
 <div class="card live-limits-card" style="margin-bottom: 1.5rem;">
     <div class="card-header">
@@ -1962,6 +2000,7 @@
                 ? 'Based on accumulated playback time from progress updates.'
                 : 'Watch-time totals will start filling in as new playback progress is recorded.';
         }
+        renderUsenetActivity(data?.usenetActivity || {});
 
         const list = document.getElementById('recentWatchList');
         if (!list) return;
@@ -1991,6 +2030,70 @@
                         ${escapeHtml(item.profileName || 'Profile')}
                     </span>
                 </div>
+            `;
+        }).join('');
+    }
+
+    function renderUsenetActivity(activity) {
+        const body = document.getElementById('usenetActivityBody');
+        const summary = document.getElementById('usenetActivitySummary');
+        if (!body) return;
+
+        const providers = Array.isArray(activity?.providers) ? activity.providers : [];
+        const usages = Array.isArray(activity?.usages) ? activity.usages : [];
+        const activeReaders = Number(activity?.activeReaders || 0);
+        const activeSegments = Number(activity?.activeSegments || 0);
+        const memoryMB = Number(activity?.estimatedMemoryMB || 0);
+        const speedText = formatBitsPerSec(Number(activity?.recentBytesPerSec || 0) * 8);
+
+        if (summary) {
+            summary.textContent = `${activeReaders} reader${activeReaders === 1 ? '' : 's'} · ${activeSegments} segment${activeSegments === 1 ? '' : 's'} · ${memoryMB} MB · ${speedText}`;
+        }
+
+        const usageHtml = usages.length > 0
+            ? usages.slice(0, 5).map((usage) => {
+                const label = escapeHtml(usage.label || 'Usenet stream');
+                const read = Number(usage.bytesRead || 0);
+                const total = Number(usage.estimatedBytes || 0);
+                const segment = Number(usage.currentSegment || 0);
+                const segments = Number(usage.segments || 0);
+                const details = [];
+                if (read > 0) details.push(formatBytes(read));
+                if (segment > 0 && segments > 0) details.push(`${segment}/${segments} segments`);
+                if (usage.startedAt) details.push(getTimeSince(usage.startedAt));
+                return `<div title="${label}" style="max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${label}</div><div style="font-size: 0.75rem; color: var(--text-muted);">${details.join(' · ') || (total > 0 ? formatBytes(total) + ' planned' : 'Starting')}</div>`;
+            }).join('')
+            : '<span style="color: var(--text-muted);">No active readers</span>';
+
+        if (providers.length === 0) {
+            body.innerHTML = `<tr><td colspan="7" style="color: var(--text-muted); text-align: center; padding: 1rem;">${activity?.available ? 'No Usenet providers in pool' : 'No Usenet pool configured'}</td></tr>`;
+            return;
+        }
+
+        body.innerHTML = providers.map((provider) => {
+            const acquired = Number(provider.acquiredConnections || 0);
+            const available = Number(provider.availableConnections ?? Math.max(0, Number(provider.maxConnections || 0) - acquired - Number(provider.constructingConnections || 0)));
+            const total = Number(provider.totalConnections || 0);
+            const max = Number(provider.maxConnections || 0);
+            const idle = Number(provider.idleConnections || 0);
+            const constructing = Number(provider.constructingConnections || 0);
+            const providerName = provider.host || provider.providerId || 'Provider';
+            const poolText = `${total} created, ${idle} ready${constructing > 0 ? ', ' + constructing + ' starting' : ''}`;
+            return `
+                <tr>
+                    <td>
+                        <div style="font-weight: 600;">${escapeHtml(providerName)}</div>
+                    </td>
+                    <td>${max > 0 ? `${acquired}/${max}` : acquired}</td>
+                    <td>${max > 0 ? `${available}/${max}` : '∞'}</td>
+                    <td>${escapeHtml(poolText)}</td>
+                    <td>${escapeHtml(provider.state || '-')}</td>
+                    <td>
+                        <div>${formatBytes(Number(provider.downloadedBytes || 0))}</div>
+                        <div style="font-size: 0.75rem; color: var(--text-muted);">${Number(provider.articlesRetrieved || 0)} articles · ${Number(provider.successRate || 0).toFixed(1)}%</div>
+                    </td>
+                    <td>${acquired > 0 ? usageHtml : '<span style="color: var(--text-muted);">Idle</span>'}</td>
+                </tr>
             `;
         }).join('');
     }

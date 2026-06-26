@@ -48,14 +48,14 @@ type UsenetFile struct {
 	position       int64
 	closed         bool
 	// Optimization fields for RAR analysis
-	analysisMode      bool  // true during initial RAR header analysis
-	currentRangeEnd   int64 // end position of current reader's range
-	currentChunkSize  int64 // current chunk size for progressive expansion
+	analysisMode     bool  // true during initial RAR header analysis
+	currentRangeEnd  int64 // end position of current reader's range
+	currentChunkSize int64 // current chunk size for progressive expansion
 	// Read-ahead buffer for caching recently read data (reduces re-downloads)
-	bufferData     []byte // cached data
-	bufferStart    int64  // file position where buffer starts
-	bufferSize     int    // amount of valid data in buffer
-	maxBufferSize  int    // maximum buffer size (512KB for RAR headers)
+	bufferData    []byte // cached data
+	bufferStart   int64  // file position where buffer starts
+	bufferSize    int    // amount of valid data in buffer
+	maxBufferSize int    // maximum buffer size (512KB for RAR headers)
 }
 
 // UsenetFileInfo implements fs.FileInfo for RAR part files
@@ -124,11 +124,11 @@ func (ufs *UsenetFileSystem) Open(name string) (fs.File, error) {
 			size:             pf.Size,
 			position:         0,
 			closed:           false,
-			analysisMode:     true,           // Start in analysis mode for efficient RAR header reading
+			analysisMode:     true, // Start in analysis mode for efficient RAR header reading
 			currentRangeEnd:  0,
-			currentChunkSize: 256 * 1024,     // Start with 256KB chunks
+			currentChunkSize: 256 * 1024, // Start with 256KB chunks
 			bufferData:       make([]byte, maxBufSize),
-			bufferStart:      -1,             // -1 indicates empty buffer
+			bufferStart:      -1, // -1 indicates empty buffer
 			bufferSize:       0,
 			maxBufferSize:    maxBufSize,
 		}, nil
@@ -350,7 +350,7 @@ func (uf *UsenetFile) createUsenetReaderWithWorkers(ctx context.Context, start, 
 			"max_segments", maxSegments)
 	}
 
-	return usenet.NewUsenetReader(ctx, uf.cp, rg, workers, uf.maxCacheSizeMB)
+	return usenet.NewUsenetReaderWithActivity(ctx, uf.cp, rg, workers, "Importer: "+filepath.Base(uf.name), uf.maxCacheSizeMB)
 }
 
 // createUsenetReader creates a Usenet reader for the specified range with default worker count

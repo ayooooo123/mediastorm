@@ -35,6 +35,8 @@ import (
 	"novastream/internal/auth"
 	"novastream/internal/importer"
 	"novastream/internal/netproxy"
+	internalpool "novastream/internal/pool"
+	internalusenet "novastream/internal/usenet"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
@@ -1317,6 +1319,7 @@ type AdminUIHandler struct {
 	hlsManager            *HLSManager
 	usersService          *users.Service
 	userSettingsService   *user_settings.Service
+	usenetPoolManager     internalpool.Manager
 	historyService        *history.Service
 	watchlistService      *watchlist.Service
 	accountsService       *accounts.Service
@@ -1362,6 +1365,11 @@ func (h *AdminUIHandler) SetMetadataService(ms MetadataService) {
 // SetDebridSearchService sets the debrid search service for scraper hot reloads.
 func (h *AdminUIHandler) SetDebridSearchService(ds *debrid.SearchService) {
 	h.debridSearchService = ds
+}
+
+// SetUsenetPoolManager sets the live NNTP pool used for dashboard diagnostics.
+func (h *AdminUIHandler) SetUsenetPoolManager(pm internalpool.Manager) {
+	h.usenetPoolManager = pm
 }
 
 // SetHistoryService sets the history service for watch history data
@@ -2516,6 +2524,31 @@ type dashboardWatchTimeStats struct {
 	HasTracked     bool    `json:"hasTracked"`
 }
 
+type dashboardUsenetProviderActivity struct {
+	ProviderID              string  `json:"providerId"`
+	Host                    string  `json:"host"`
+	State                   string  `json:"state"`
+	AcquiredConnections     int32   `json:"acquiredConnections"`
+	AvailableConnections    int32   `json:"availableConnections"`
+	IdleConnections         int32   `json:"idleConnections"`
+	TotalConnections        int32   `json:"totalConnections"`
+	MaxConnections          int32   `json:"maxConnections"`
+	ConstructingConnections int32   `json:"constructingConnections"`
+	DownloadedBytes         int64   `json:"downloadedBytes"`
+	ArticlesRetrieved       int64   `json:"articlesRetrieved"`
+	SuccessRate             float64 `json:"successRate"`
+}
+
+type dashboardUsenetActivity struct {
+	Available         bool                              `json:"available"`
+	ActiveReaders     int64                             `json:"activeReaders"`
+	ActiveSegments    int64                             `json:"activeSegments"`
+	EstimatedMemoryMB int64                             `json:"estimatedMemoryMB"`
+	RecentBytesPerSec float64                           `json:"recentBytesPerSec"`
+	Providers         []dashboardUsenetProviderActivity `json:"providers"`
+	Usages            []internalusenet.ActivityUsage    `json:"usages"`
+}
+
 type dashboardProfileOption struct {
 	ID    string `json:"id"`
 	Name  string `json:"name"`
@@ -2536,8 +2569,9 @@ func (h *AdminUIHandler) GetDashboardStats(w http.ResponseWriter, r *http.Reques
 
 	if h.historyService == nil {
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"recent":    []dashboardRecentWatchItem{},
-			"watchTime": dashboardWatchTimeStats{},
+			"recent":         []dashboardRecentWatchItem{},
+			"watchTime":      dashboardWatchTimeStats{},
+			"usenetActivity": h.dashboardUsenetActivity(),
 		})
 		return
 	}
@@ -2653,10 +2687,63 @@ func (h *AdminUIHandler) GetDashboardStats(w http.ResponseWriter, r *http.Reques
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"recent":    recent,
-		"watchTime": watchTime,
-		"profiles":  profiles,
+		"recent":         recent,
+		"watchTime":      watchTime,
+		"profiles":       profiles,
+		"usenetActivity": h.dashboardUsenetActivity(),
 	})
+}
+
+func (h *AdminUIHandler) dashboardUsenetActivity() dashboardUsenetActivity {
+	activity := internalusenet.ActivityStats()
+	result := dashboardUsenetActivity{
+		ActiveReaders:     activity.ActiveReaders,
+		ActiveSegments:    activity.ActiveSegments,
+		EstimatedMemoryMB: activity.EstimatedMemoryMB,
+		Usages:            activity.Usages,
+	}
+
+	if h.usenetPoolManager == nil || !h.usenetPoolManager.HasPool() {
+		return result
+	}
+
+	cp, err := h.usenetPoolManager.GetPool()
+	if err != nil || cp == nil {
+		return result
+	}
+
+	snapshot := cp.GetMetricsSnapshot()
+	result.Available = true
+	result.RecentBytesPerSec = snapshot.DownloadSpeed
+	result.Providers = make([]dashboardUsenetProviderActivity, 0, len(snapshot.ProviderMetrics))
+	for _, p := range snapshot.ProviderMetrics {
+		available := p.MaxConnections - p.AcquiredConnections - p.ConstructingConnections
+		if available < 0 {
+			available = 0
+		}
+		result.Providers = append(result.Providers, dashboardUsenetProviderActivity{
+			ProviderID:              p.ProviderID,
+			Host:                    p.Host,
+			State:                   fmt.Sprint(p.State),
+			AcquiredConnections:     p.AcquiredConnections,
+			AvailableConnections:    available,
+			IdleConnections:         p.IdleConnections,
+			TotalConnections:        p.TotalConnections,
+			MaxConnections:          p.MaxConnections,
+			ConstructingConnections: p.ConstructingConnections,
+			DownloadedBytes:         p.TotalBytesDownloaded,
+			ArticlesRetrieved:       p.TotalArticlesRetrieved,
+			SuccessRate:             p.SuccessRate,
+		})
+	}
+	sort.Slice(result.Providers, func(i, j int) bool {
+		if result.Providers[i].AcquiredConnections == result.Providers[j].AcquiredConnections {
+			return result.Providers[i].Host < result.Providers[j].Host
+		}
+		return result.Providers[i].AcquiredConnections > result.Providers[j].AcquiredConnections
+	})
+
+	return result
 }
 
 func filterDashboardStatsUsers(usersList []models.User, profileID string) []models.User {

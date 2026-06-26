@@ -855,7 +855,7 @@ func (mvf *MetadataVirtualFile) createUsenetReader(ctx context.Context, start, e
 
 	loader := newMetadataSegmentLoader(mvf.fileMeta.SegmentData)
 	rg := usenet.GetSegmentsInRangeWithLimit(start, end, loader, maxSegments)
-	return usenet.NewUsenetReader(ctx, cp, rg, mvf.maxWorkers, mvf.maxCacheSizeMB)
+	return usenet.NewUsenetReaderWithActivity(ctx, cp, rg, mvf.maxWorkers, "Playback: "+mvf.Name(), mvf.maxCacheSizeMB)
 }
 
 // wrapWithEncryption wraps a usenet reader with encryption using metadata
