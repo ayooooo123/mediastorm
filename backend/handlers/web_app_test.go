@@ -139,6 +139,15 @@ func TestWebPlaybackHandlerServesStandalonePlayer(t *testing.T) {
 			t.Fatalf("expected body to contain %q", want)
 		}
 	}
+	for _, want := range []string{
+		"WEB_PLAYER_STALE_PAUSE_MS",
+		"recoverWebPlayerHlsSession('hls-network-error'",
+		"recover hls session via seek",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected playback template to contain HLS recovery hook %q", want)
+		}
+	}
 	if strings.Contains(body, `id="profileSelect"`) || strings.Contains(body, `class="profile-select"`) {
 		t.Fatalf("playback page should not render a profile selector")
 	}

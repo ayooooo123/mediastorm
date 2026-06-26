@@ -867,6 +867,7 @@
     const SHARED_SOURCE_PLACEHOLDER = '__shared_source__';
     const WEB_PLAYER_PROGRESS_INTERVAL_MS = 10000;
     const WEB_PLAYER_PROGRESS_MIN_DELTA_SECONDS = 5;
+    const WEB_PLAYER_STALE_PAUSE_MS = 45000;
 
     let activeProfileId = '';
     let activeProfileName = '';
@@ -907,6 +908,8 @@
     let lastProgressPaused = false;
     let lastProgressBuffering = false;
     let webPlayerBuffering = false;
+    let webPlayerPausedAt = 0;
+    let webPlayerSessionRecovering = false;
     let progressCompleted = false;
     let liveWatchStartedAt = null;
 
@@ -1530,7 +1533,11 @@
           if (!data?.fatal) return;
           if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
             setStatus('Reconnecting…', true);
-            hlsInstance.startLoad();
+            recoverWebPlayerHlsSession('hls-network-error', { wasPlaying: !video.paused }).then((recovered) => {
+              if (!recovered && hlsInstance) hlsInstance.startLoad();
+            }).catch(() => {
+              if (hlsInstance) hlsInstance.startLoad();
+            });
             return;
           }
           if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
@@ -1627,12 +1634,14 @@
         }
       });
       video.addEventListener('play', () => {
+        webPlayerPausedAt = 0;
         updateControls();
         renderSubtitles();
         showControls();
         sendWebPlayerProgress({ force: true, isPaused: false });
       });
       video.addEventListener('pause', () => {
+        if (!webPlayerPausedAt) webPlayerPausedAt = Date.now();
         updateControls();
         renderSubtitles();
         showControls();
@@ -1877,9 +1886,118 @@
       const video = document.getElementById('webPlayer');
       if (!video) return;
       if (playbackMeta.isLive) return;
-      if (video.paused) video.play().catch(() => {});
-      else video.pause();
+      if (video.paused) {
+        resumeWebPlayerPlayback(video).catch(() => {});
+      } else {
+        video.pause();
+      }
       updateControls();
+    }
+
+    async function resumeWebPlayerPlayback(video) {
+      if (!video) return;
+      const pausedForMs = webPlayerPausedAt ? Date.now() - webPlayerPausedAt : 0;
+      const shouldRecoverSession =
+        hlsSessionId &&
+        sourcePath &&
+        !playbackMeta.isLive &&
+        pausedForMs >= WEB_PLAYER_STALE_PAUSE_MS;
+
+      if (shouldRecoverSession) {
+        const recovered = await recoverWebPlayerHlsSession('long-pause-resume', { wasPlaying: true });
+        if (recovered) return;
+      }
+
+      const result = video.play();
+      if (result && typeof result.catch === 'function') result.catch(() => {});
+    }
+
+    async function recoverWebPlayerHlsSession(reason, options = {}) {
+      const video = document.getElementById('webPlayer');
+      if (!video || !hlsSessionId || !sourcePath || playbackMeta.isLive || webPlayerSessionRecovering) {
+        return false;
+      }
+
+      const target = clampSeekTarget(currentAbsoluteTime());
+      if (!Number.isFinite(target)) return false;
+
+      const oldSessionId = hlsSessionId;
+      const wasPlaying = options.wasPlaying !== undefined ? Boolean(options.wasPlaying) : !video.paused;
+      webPlayerSessionRecovering = true;
+      webPlayerSeekInProgress = true;
+      webPlayerDisplayedSeekTarget = target;
+      setStatus('Reconnecting…', true);
+      webPlayerDebugLog('warn', 'recover hls session', {
+        reason,
+        oldSessionId,
+        target,
+        wasPlaying,
+      });
+
+      video.autoplay = wasPlaying;
+      video.pause();
+
+      try {
+        let session;
+        try {
+          session = await apiCall(`/video/hls/${encodeURIComponent(oldSessionId)}/seek?time=${target.toFixed(2)}`, { method: 'POST' });
+          webPlayerDebugLog('info', 'recover hls session via seek', {
+            reason,
+            sessionId: oldSessionId,
+            target,
+          });
+        } catch (seekError) {
+          webPlayerDebugLog('warn', 'recover hls seek failed; creating new session', {
+            reason,
+            sessionId: oldSessionId,
+            target,
+            error: seekError?.message || String(seekError),
+          });
+          session = await createHlsSession({ startOffset: target });
+        }
+
+        if (!session?.playlistUrl || !session?.sessionId) {
+          throw new Error('session response missing playlist URL');
+        }
+
+        hlsSessionId = session.sessionId || '';
+        const requestedOffset = Number(session.startOffset ?? target);
+        const actualOffset = Number(session.actualStartOffset ?? requestedOffset);
+        syncSubtitleOffset(requestedOffset, actualOffset);
+        hlsDuration = Number(session.duration || hlsDuration || 0);
+        hlsPlaylistUrl = apiUrl(session.playlistUrl || '');
+        webPlayerSubtitleCues = [];
+
+        attachWebPlayer(video, hlsPlaylistUrl);
+        startKeepalive();
+        sendWebPlayerProgress({ force: true, isPaused: !wasPlaying, position: hlsPlaybackOffset });
+        if (oldSessionId && oldSessionId !== hlsSessionId) {
+          fetch(apiUrl(`/video/hls/${encodeURIComponent(oldSessionId)}/stop`), {
+            method: 'POST',
+            credentials: 'same-origin',
+          }).catch(() => {});
+        }
+
+        video.addEventListener('canplay', () => {
+          setStatus('');
+          if (wasPlaying) video.play().catch(() => {});
+        }, { once: true });
+        return true;
+      } catch (error) {
+        webPlayerDebugLog('error', 'recover hls session failed', {
+          reason,
+          error: error?.message || String(error),
+        });
+        setStatus(`Reconnect failed: ${error.message || String(error)}`, true);
+        return false;
+      } finally {
+        window.setTimeout(() => {
+          webPlayerSessionRecovering = false;
+          webPlayerSeekInProgress = false;
+          webPlayerDisplayedSeekTarget = null;
+          updateControls();
+        }, 500);
+      }
     }
 
     function toggleMute() {
@@ -2018,18 +2136,11 @@
         const subtitleSynced = response.headers.get('X-Subtitle-Synced') === 'true';
         const parsedCues = parseWebVttCues(text);
         if (subtitleSynced) {
-          const basis = inferSyncedSubtitleBasis(parsedCues);
-          webPlayerSubtitleStartOffset = basis === 'absolute' ? 0 : Number(hlsPlaybackOffset);
+          // Same-pass subtitles are emitted in the recovered HLS media timeline.
+          // Keep overlay lookup video-relative; adding hlsPlaybackOffset here
+          // double-shifts cues after a reconnect/seek recovery.
+          webPlayerSubtitleStartOffset = Number(hlsPlaybackOffset);
           recomputeSubtitleTimeOffset();
-          if (typeof webPlayerDebug === 'function') {
-            webPlayerDebug('subtitleOffset.syncedBasis', {
-              basis,
-              firstCueStart: parsedCues[0]?.start ?? null,
-              playbackOffset: hlsPlaybackOffset,
-              subtitleStartOffset: webPlayerSubtitleStartOffset,
-              subtitleTimeOffset: webPlayerSubtitleTimeOffset,
-            });
-          }
         } else {
           const subtitleStartHeader = Number(response.headers.get('X-Subtitle-Start-Offset'));
           if (Number.isFinite(subtitleStartHeader)) {
@@ -2056,15 +2167,6 @@
         }
         scheduleSubtitleRefresh(video);
       }
-    }
-
-    function inferSyncedSubtitleBasis(cues) {
-      const firstCueStart = Number(cues?.[0]?.start);
-      const playbackOffset = Number(hlsPlaybackOffset);
-      if (!Number.isFinite(firstCueStart) || !Number.isFinite(playbackOffset) || playbackOffset < 30) {
-        return 'zero';
-      }
-      return firstCueStart >= Math.max(0, playbackOffset - 5) ? 'absolute' : 'zero';
     }
 
     function clearSubtitleRefresh() {
