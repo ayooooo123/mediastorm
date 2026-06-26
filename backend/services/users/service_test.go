@@ -1,8 +1,11 @@
 package users_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"novastream/models"
@@ -94,7 +97,8 @@ func TestSetAllowShareLinks(t *testing.T) {
 }
 
 func TestSetPinStoresAndClearsPinLength(t *testing.T) {
-	svc, err := users.NewService(t.TempDir())
+	storageDir := t.TempDir()
+	svc, err := users.NewService(storageDir)
 	if err != nil {
 		t.Fatalf("failed to create service: %v", err)
 	}
@@ -114,6 +118,43 @@ func TestSetPinStoresAndClearsPinLength(t *testing.T) {
 	}
 	if got.PinLength != 5 {
 		t.Fatalf("expected stored pin length 5, got %d", got.PinLength)
+	}
+
+	usersPath := filepath.Join(storageDir, "users.json")
+	rawUsers, err := os.ReadFile(usersPath)
+	if err != nil {
+		t.Fatalf("read users file: %v", err)
+	}
+	var storedUsers []map[string]any
+	if err := json.Unmarshal(rawUsers, &storedUsers); err != nil {
+		t.Fatalf("decode users file: %v", err)
+	}
+	for i := range storedUsers {
+		if storedUsers[i]["id"] == userID {
+			storedUsers[i]["pinLength"] = 0
+		}
+	}
+	rawUsers, err = json.Marshal(storedUsers)
+	if err != nil {
+		t.Fatalf("encode users file: %v", err)
+	}
+	if err := os.WriteFile(usersPath, rawUsers, 0o644); err != nil {
+		t.Fatalf("write users file: %v", err)
+	}
+
+	reloaded, err := users.NewService(storageDir)
+	if err != nil {
+		t.Fatalf("failed to reload service: %v", err)
+	}
+	if err := reloaded.VerifyPin(userID, "12345"); err != nil {
+		t.Fatalf("VerifyPin returned error: %v", err)
+	}
+	repaired, ok := reloaded.Get(userID)
+	if !ok {
+		t.Fatalf("expected reloaded user to exist")
+	}
+	if repaired.PinLength != 5 {
+		t.Fatalf("expected verify to repair pin length to 5, got %d", repaired.PinLength)
 	}
 
 	cleared, err := svc.ClearPin(userID)

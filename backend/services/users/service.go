@@ -641,8 +641,8 @@ func (s *Service) VerifyPin(id, pin string) error {
 		return ErrUserNotFound
 	}
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	user, ok := s.users[id]
 	if !ok {
@@ -657,6 +657,15 @@ func (s *Service) VerifyPin(id, pin string) error {
 	// Verify the PIN against the hash
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PinHash), []byte(pin)); err != nil {
 		return ErrPinInvalid
+	}
+
+	if user.PinLength != len(pin) {
+		user.PinLength = len(pin)
+		user.UpdatedAt = time.Now().UTC()
+		s.users[id] = user
+		if err := s.saveLocked(); err != nil {
+			return err
+		}
 	}
 
 	return nil
