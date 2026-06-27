@@ -4873,6 +4873,10 @@ func (h *VideoHandler) ProbeVideoFull(ctx context.Context, path string) (*VideoF
 		return nil, errors.New("ffprobe returned no metadata")
 	}
 
+	plan := determineAudioPlanWithLanguage(meta, false, "")
+	metadataResponse := composeMetadataResponse(meta, cleanPath, plan)
+	h.setCachedMetadata(cleanPath, &metadataResponse)
+
 	result := &VideoFullResult{
 		AudioStreams:    make([]AudioStreamInfo, 0),
 		SubtitleStreams: make([]SubtitleStreamInfo, 0),
