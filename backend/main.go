@@ -39,6 +39,7 @@ import (
 	"novastream/services/customlists"
 	"novastream/services/debrid"
 	"novastream/services/epg"
+	"novastream/services/hiddenitems"
 	"novastream/services/history"
 	"novastream/services/indexer"
 	"novastream/services/invitations"
@@ -468,6 +469,17 @@ func main() {
 	}
 	contentPreferencesHandler := handlers.NewContentPreferencesHandler(contentPreferencesService, userService)
 
+	var hiddenItemsService *hiddenitems.Service
+	if store != nil {
+		hiddenItemsService, err = hiddenitems.NewServiceWithStore(store)
+	} else {
+		hiddenItemsService, err = hiddenitems.NewService(settings.Cache.Directory)
+	}
+	if err != nil {
+		log.Fatalf("failed to initialise hidden items: %v", err)
+	}
+	hiddenItemsHandler := handlers.NewHiddenItemsHandler(hiddenItemsService, userService)
+
 	// Initialize clients service for device tracking
 	var clientsService *clients.Service
 	if store != nil {
@@ -554,6 +566,7 @@ func main() {
 	customListsHandler.SetMetadataLanguageProviders(cfgManager, userSettingsService)
 	displayListHandler.SetMetadataService(metadataService)
 	displayListHandler.SetMetadataHandler(metadataHandler)
+	displayListHandler.SetHiddenItemsService(hiddenItemsService)
 	// Wire up users service to metadata handler for kids profile filtering
 	metadataHandler.SetUsersService(userService)
 	metadataHandler.SetAccountsService(accountsService)
@@ -593,6 +606,7 @@ func main() {
 	)
 	startupHandler.SetUsersProvider(userService)
 	startupHandler.SetLocalMedia(localMediaService)
+	startupHandler.SetHiddenItemsService(hiddenItemsService)
 
 	// Details bundle handler bundles details-page API calls for low-power devices
 	detailsBundleHandler := handlers.NewDetailsBundleHandler(
@@ -803,6 +817,7 @@ func main() {
 		subtitlesHandler,
 		clientsHandler,
 		contentPreferencesHandler,
+		hiddenItemsHandler,
 		imageHandler,
 		startupHandler,
 		detailsBundleHandler,
@@ -855,6 +870,7 @@ func main() {
 	adminUIHandler.SetMetadataService(metadataService)
 	adminUIHandler.SetHistoryService(historyService)
 	adminUIHandler.SetWatchlistService(watchlistService)
+	adminUIHandler.SetHiddenItemsService(hiddenItemsService)
 	adminUIHandler.SetLogsHandler(logsHandler)
 	adminUIHandler.SetResolvedNZBService(nzbSystem.ImporterService())
 	adminUIHandler.SetAccountsService(accountsService)
@@ -879,6 +895,7 @@ func main() {
 	r.HandleFunc("/admin/status", adminUIHandler.RequireAuth(adminUIHandler.StatusPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/history", adminUIHandler.RequireAuth(adminUIHandler.HistoryPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/tools", adminUIHandler.RequireAuth(adminUIHandler.ToolsPage)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/tools/hidden-items", adminUIHandler.RequireAuth(adminUIHandler.HiddenItemsPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/tools/resolved-nzbs", adminUIHandler.RequireAuth(adminUIHandler.ResolvedNZBsPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/recordings", adminUIHandler.RequireAuth(adminUIHandler.RecordingsPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/prequeue", adminUIHandler.RequireAuth(adminUIHandler.PrequeuePage)).Methods(http.MethodGet)
@@ -908,6 +925,8 @@ func main() {
 	r.HandleFunc("/admin/api/user-settings", adminUIHandler.RequireAuth(adminUIHandler.SaveUserSettings)).Methods(http.MethodPut)
 	r.HandleFunc("/admin/api/user-settings", adminUIHandler.RequireAuth(adminUIHandler.ResetUserSettings)).Methods(http.MethodDelete)
 	r.HandleFunc("/admin/api/settings/propagate", adminUIHandler.RequireAuth(adminUIHandler.PropagateSettings)).Methods(http.MethodPost)
+	r.HandleFunc("/admin/api/users/{userID}/hidden-items", adminUIHandler.RequireAuth(adminUIHandler.GetHiddenItems)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/api/users/{userID}/hidden-items/{mediaType}/{id}", adminUIHandler.RequireAuth(adminUIHandler.UnhideHiddenItem)).Methods(http.MethodDelete)
 
 	// Global settings endpoint (master only)
 	r.HandleFunc("/admin/api/settings", adminUIHandler.RequireMasterAuth(settingsHandler.GetSettings)).Methods(http.MethodGet)

@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -64,6 +65,7 @@ type StartupHandler struct {
 	calendar      startupCalendarService
 	localMedia    localLibraryLister
 	prequeueStore startupPrequeueStore
+	hiddenItems   hiddenItemsService
 }
 
 // NewStartupHandler constructs a StartupHandler.
@@ -93,6 +95,10 @@ func (h *StartupHandler) SetCalendar(cal startupCalendarService) {
 
 func (h *StartupHandler) SetPrequeueStore(store startupPrequeueStore) {
 	h.prequeueStore = store
+}
+
+func (h *StartupHandler) SetHiddenItemsService(service hiddenItemsService) {
+	h.hiddenItems = service
 }
 
 // StartupResponse is the combined payload returned by GET /api/users/{userID}/startup.
@@ -127,6 +133,7 @@ type HomeManifestResponse struct {
 	ShelvesHash              string              `json:"shelvesHash"`
 	ContinueWatchingRevision string              `json:"continueWatchingRevision,omitempty"`
 	WatchlistHash            string              `json:"watchlistHash"`
+	HiddenItemsHash          string              `json:"hiddenItemsHash,omitempty"`
 	WatchlistTotal           int                 `json:"watchlistTotal"`
 	Shelves                  []HomeShelfManifest `json:"shelves"`
 	GeneratedAt              time.Time           `json:"generatedAt"`
@@ -172,10 +179,12 @@ func (h *StartupHandler) GetHomeManifest(w http.ResponseWriter, r *http.Request)
 		if items, err := h.watchlist.List(userID); err != nil {
 			log.Printf("[home-manifest] watchlist error for %s: %v", userID, err)
 		} else {
+			items = h.filterHiddenWatchlistItems(userID, items)
 			resp.WatchlistTotal = len(items)
 			resp.WatchlistHash = watchlistManifestHash(items)
 		}
 	}
+	resp.HiddenItemsHash = h.hiddenItemsManifestHash(userID)
 
 	resp.Revision = hashForManifest(
 		resp.SettingsHash,
@@ -183,6 +192,7 @@ func (h *StartupHandler) GetHomeManifest(w http.ResponseWriter, r *http.Request)
 		resp.ContinueWatchingRevision,
 		resp.WatchlistHash,
 		resp.WatchlistTotal,
+		resp.HiddenItemsHash,
 	)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -244,6 +254,7 @@ func (h *StartupHandler) GetStartup(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[startup] watchlist error for %s: %v", userID, err)
 			return
 		}
+		items = h.filterHiddenWatchlistItems(userID, items)
 		resp.WatchlistTotal = len(items)
 		items = selectStartupWatchlistItems(items, startupShelfLimit, startupExploreCollageItemCount)
 		enrichWatchlistArtwork(items, metadataServiceForUser(h.metadata, h.cfgManager, h.userSettings, userID))
@@ -268,6 +279,7 @@ func (h *StartupHandler) GetStartup(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[startup] continue watching error for %s: %v", userID, err)
 			return
 		}
+		items = h.filterHiddenContinueWatchingItems(userID, items)
 		resp.ContinueWatchingTotal = len(items)
 		items = h.withPrequeueStatus(userID, items)
 		snapshot := loadHistorySnapshot()
@@ -323,6 +335,7 @@ func (h *StartupHandler) GetStartup(w http.ResponseWriter, r *http.Request) {
 				14,
 				startupShelfLimit,
 			)
+			resp.CalendarItems = h.filterHiddenCalendarItems(userID, resp.CalendarItems)
 		}()
 	}
 
@@ -361,6 +374,7 @@ func (h *StartupHandler) GetStartup(w http.ResponseWriter, r *http.Request) {
 						return
 					}
 					items = h.applyFilters(items, userID, hideUnreleased, hideWatched)
+					items = h.filterHiddenTrendingItems(userID, items)
 					total := len(items)
 					if len(items) > startupPayloadLimit {
 						items = items[:startupPayloadLimit]
@@ -383,6 +397,7 @@ func (h *StartupHandler) GetStartup(w http.ResponseWriter, r *http.Request) {
 						return
 					}
 					items = h.applyFilters(items, userID, hideUnreleased, hideWatched)
+					items = h.filterHiddenTrendingItems(userID, items)
 					total := len(items)
 					if len(items) > startupPayloadLimit {
 						items = items[:startupPayloadLimit]
@@ -455,6 +470,76 @@ func (h *StartupHandler) GetStartup(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+func (h *StartupHandler) hiddenItemsManifestHash(userID string) string {
+	if h.hiddenItems == nil {
+		return ""
+	}
+	items, err := h.hiddenItems.List(userID)
+	if err != nil || len(items) == 0 {
+		return ""
+	}
+	return hashForManifest(items)
+}
+
+func (h *StartupHandler) filterHiddenWatchlistItems(userID string, items []models.WatchlistItem) []models.WatchlistItem {
+	if h.hiddenItems == nil || len(items) == 0 {
+		return items
+	}
+	return h.hiddenItems.FilterHiddenWatchlistItems(userID, items)
+}
+
+func (h *StartupHandler) filterHiddenContinueWatchingItems(userID string, items []models.SeriesWatchState) []models.SeriesWatchState {
+	if h.hiddenItems == nil || len(items) == 0 {
+		return items
+	}
+	out := items[:0]
+	for _, item := range items {
+		if h.hiddenItems.IsHidden(userID, "series", item.SeriesID, item.ExternalIDs) {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func (h *StartupHandler) filterHiddenCalendarItems(userID string, items []models.CalendarItem) []models.CalendarItem {
+	if h.hiddenItems == nil || len(items) == 0 {
+		return items
+	}
+	out := items[:0]
+	for _, item := range items {
+		if h.hiddenItems.IsHidden(userID, item.MediaType, "", item.ExternalIDs) {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func (h *StartupHandler) filterHiddenTrendingItems(userID string, items []models.TrendingItem) []models.TrendingItem {
+	if h.hiddenItems == nil || len(items) == 0 {
+		return items
+	}
+	out := items[:0]
+	for _, item := range items {
+		externalIDs := make(map[string]string, 3)
+		if item.Title.TMDBID > 0 {
+			externalIDs["tmdb"] = strconv.FormatInt(item.Title.TMDBID, 10)
+		}
+		if item.Title.TVDBID > 0 {
+			externalIDs["tvdb"] = strconv.FormatInt(item.Title.TVDBID, 10)
+		}
+		if strings.TrimSpace(item.Title.IMDBID) != "" {
+			externalIDs["imdb"] = item.Title.IMDBID
+		}
+		if h.hiddenItems.IsHidden(userID, item.Title.MediaType, item.Title.ID, externalIDs) {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 func (h *StartupHandler) withPrequeueStatus(userID string, items []models.SeriesWatchState) []models.SeriesWatchState {

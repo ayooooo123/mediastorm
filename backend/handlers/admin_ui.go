@@ -1297,6 +1297,7 @@ type AdminUIHandler struct {
 	statusTemplate        *template.Template
 	historyTemplate       *template.Template
 	toolsTemplate         *template.Template
+	hiddenItemsTemplate   *template.Template
 	resolvedNZBTemplate   *template.Template
 	shareLinksTemplate    *template.Template
 	searchTemplate        *template.Template
@@ -1322,6 +1323,7 @@ type AdminUIHandler struct {
 	usenetPoolManager     internalpool.Manager
 	historyService        *history.Service
 	watchlistService      *watchlist.Service
+	hiddenItemsService    hiddenItemsService
 	accountsService       *accounts.Service
 	invitationsService    *invitations.Service
 	remoteAccessService   *remoteaccess.Service
@@ -1380,6 +1382,10 @@ func (h *AdminUIHandler) SetHistoryService(hs *history.Service) {
 // SetWatchlistService sets the watchlist service for importing items
 func (h *AdminUIHandler) SetWatchlistService(ws *watchlist.Service) {
 	h.watchlistService = ws
+}
+
+func (h *AdminUIHandler) SetHiddenItemsService(svc hiddenItemsService) {
+	h.hiddenItemsService = svc
 }
 
 // SetLocalMediaService sets the local media service for library management.
@@ -1595,6 +1601,7 @@ func NewAdminUIHandler(settingsPath, logFile string, hlsManager *HLSManager, use
 		statusTemplate:       createPageTemplate("status.html"),
 		historyTemplate:      createPageTemplate("history.html"),
 		toolsTemplate:        createPageTemplate("tools.html"),
+		hiddenItemsTemplate:  createPageTemplate("hidden_items.html"),
 		resolvedNZBTemplate:  createPageTemplate("resolved_nzbs.html"),
 		shareLinksTemplate:   createPageTemplate("share_links.html"),
 		searchTemplate:       createPageTemplate("search.html"),
@@ -1642,6 +1649,7 @@ type AdminPageData struct {
 	BuildID        string
 	NoProfiles     bool // true when non-admin user has no profiles
 	Presets        []config.Preset
+	HiddenItems    []adminHiddenItem
 }
 
 // AdminStatus holds backend status information
@@ -9709,6 +9717,178 @@ func (h *AdminUIHandler) ToolsPage(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("Tools template error: %v\n", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 	}
+}
+
+func (h *AdminUIHandler) HiddenItemsPage(w http.ResponseWriter, r *http.Request) {
+	isAdmin, accountID, basePath, username := h.getPageRoleInfo(r)
+	usersList := h.getScopedUsers(isAdmin, accountID)
+	hiddenItems, err := h.scopedHiddenItems(usersList)
+	if err != nil {
+		log.Printf("[admin-ui] hidden items page load failed: %v", err)
+	}
+
+	data := AdminPageData{
+		CurrentPath:    basePath + "/tools/hidden-items",
+		BasePath:       basePath,
+		ServerBasePath: h.serverBasePath,
+		IsAdmin:        isAdmin,
+		AccountID:      accountID,
+		Username:       username,
+		Users:          usersList,
+		Version:        GetBackendVersion(),
+		BuildID:        GetBackendBuildID(),
+		NoProfiles:     len(usersList) == 0,
+		HiddenItems:    hiddenItems,
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+	w.Header().Set("Pragma", "no-cache")
+	if h.hiddenItemsTemplate == nil {
+		http.Error(w, "Hidden items template not loaded", http.StatusInternalServerError)
+		return
+	}
+	if err := h.hiddenItemsTemplate.ExecuteTemplate(w, "base", data); err != nil {
+		fmt.Printf("Hidden items template error: %v\n", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+	}
+}
+
+type adminHiddenItem struct {
+	models.HiddenItem
+	UserID      string `json:"userId"`
+	ProfileName string `json:"profileName,omitempty"`
+}
+
+func (h *AdminUIHandler) GetHiddenItems(w http.ResponseWriter, r *http.Request) {
+	if strings.EqualFold(strings.TrimSpace(mux.Vars(r)["userID"]), "all") {
+		h.getAllHiddenItems(w, r)
+		return
+	}
+	profileID, ok := h.requireAdminProfileAccess(w, r)
+	if !ok {
+		return
+	}
+	if h.hiddenItemsService == nil {
+		jsonError(w, "hidden items service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	items, err := h.hiddenItemsService.List(profileID)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	response := make([]adminHiddenItem, 0, len(items))
+	for _, item := range items {
+		response = append(response, adminHiddenItem{
+			HiddenItem:  item,
+			UserID:      profileID,
+			ProfileName: h.profileName(profileID),
+		})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(response)
+}
+
+func (h *AdminUIHandler) getAllHiddenItems(w http.ResponseWriter, r *http.Request) {
+	session := adminSessionFromContext(r.Context())
+	if session == nil {
+		jsonError(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if h.hiddenItemsService == nil {
+		jsonError(w, "hidden items service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	isAdmin, accountID, _, _ := h.getPageRoleInfo(r)
+	usersList := h.getScopedUsers(isAdmin, accountID)
+	response, err := h.scopedHiddenItems(usersList)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(response)
+}
+
+func (h *AdminUIHandler) scopedHiddenItems(usersList []models.User) ([]adminHiddenItem, error) {
+	if h.hiddenItemsService == nil {
+		return nil, errors.New("hidden items service unavailable")
+	}
+	response := make([]adminHiddenItem, 0)
+	for _, user := range usersList {
+		items, err := h.hiddenItemsService.List(user.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range items {
+			response = append(response, adminHiddenItem{
+				HiddenItem:  item,
+				UserID:      user.ID,
+				ProfileName: user.Name,
+			})
+		}
+	}
+	sort.Slice(response, func(i, j int) bool {
+		if response[i].HiddenAt.Equal(response[j].HiddenAt) {
+			return response[i].ProfileName < response[j].ProfileName
+		}
+		return response[i].HiddenAt.After(response[j].HiddenAt)
+	})
+	return response, nil
+}
+
+func (h *AdminUIHandler) UnhideHiddenItem(w http.ResponseWriter, r *http.Request) {
+	profileID, ok := h.requireAdminProfileAccess(w, r)
+	if !ok {
+		return
+	}
+	if h.hiddenItemsService == nil {
+		jsonError(w, "hidden items service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	vars := mux.Vars(r)
+	removed, err := h.hiddenItemsService.Unhide(profileID, vars["mediaType"], vars["id"])
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !removed {
+		jsonError(w, "hidden item not found", http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *AdminUIHandler) requireAdminProfileAccess(w http.ResponseWriter, r *http.Request) (string, bool) {
+	session := adminSessionFromContext(r.Context())
+	if session == nil {
+		jsonError(w, "unauthorized", http.StatusUnauthorized)
+		return "", false
+	}
+	profileID := strings.TrimSpace(mux.Vars(r)["userID"])
+	if profileID == "" {
+		jsonError(w, "profile id is required", http.StatusBadRequest)
+		return "", false
+	}
+	isAdmin, accountID, _, _ := h.getPageRoleInfo(r)
+	if !isAdmin && !h.profileBelongsToAccount(profileID, accountID) {
+		jsonError(w, "profile not found", http.StatusNotFound)
+		return "", false
+	}
+	return profileID, true
+}
+
+func (h *AdminUIHandler) profileName(profileID string) string {
+	if h.usersService == nil {
+		return ""
+	}
+	for _, user := range h.usersService.List() {
+		if user.ID == profileID {
+			return user.Name
+		}
+	}
+	return ""
 }
 
 func (h *AdminUIHandler) ShareLinksPage(w http.ResponseWriter, r *http.Request) {

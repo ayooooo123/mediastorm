@@ -24,6 +24,7 @@ type DisplayListHandler struct {
 	HistoryHandler     *HistoryHandler
 	MetadataService    metadataService
 	MetadataHandler    *MetadataHandler
+	HiddenItemsService hiddenItemsService
 }
 
 type DisplayListResponse struct {
@@ -55,6 +56,10 @@ func (h *DisplayListHandler) SetMetadataService(service metadataService) {
 
 func (h *DisplayListHandler) SetMetadataHandler(handler *MetadataHandler) {
 	h.MetadataHandler = handler
+}
+
+func (h *DisplayListHandler) SetHiddenItemsService(service hiddenItemsService) {
+	h.HiddenItemsService = service
 }
 
 func (h *DisplayListHandler) Get(w http.ResponseWriter, r *http.Request) {
@@ -175,6 +180,9 @@ func (h *DisplayListHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.HiddenItemsService != nil {
+		items = h.HiddenItemsService.FilterHiddenWatchlistItems(userID, items)
+	}
 	h.enrich(userID, items, r)
 
 	if items == nil {
@@ -267,8 +275,45 @@ func (h *DisplayListHandler) delegateMetadata(
 	}
 
 	normalised := normaliseDisplayListPayload(source, payload)
+	if h.HiddenItemsService != nil {
+		normalised = h.filterHiddenPayload(query.Get("userId"), normalised)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(normalised)
+}
+
+func (h *DisplayListHandler) filterHiddenPayload(userID string, payload map[string]interface{}) map[string]interface{} {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return payload
+	}
+	for _, key := range []string{"items", "movies", "series"} {
+		rawItems, ok := payload[key].([]interface{})
+		if !ok {
+			continue
+		}
+		filtered := rawItems[:0]
+		for _, raw := range rawItems {
+			itemMap, ok := raw.(map[string]interface{})
+			if !ok {
+				filtered = append(filtered, raw)
+				continue
+			}
+			titleMap, ok := itemMap["title"].(map[string]interface{})
+			if !ok {
+				titleMap = itemMap
+			}
+			if h.HiddenItemsService.ShouldHideTitleMap(userID, titleMap) {
+				continue
+			}
+			filtered = append(filtered, raw)
+		}
+		payload[key] = filtered
+		if key == "items" {
+			payload["total"] = len(filtered)
+		}
+	}
+	return payload
 }
 
 func normaliseDisplayListPayload(source string, payload interface{}) map[string]interface{} {

@@ -12,6 +12,29 @@
 <div class="settings-group">
     <div class="group-title">System</div>
 
+    <div class="section" id="hiddenItemsSection">
+        <div class="section-header" onclick="toggleSection(this)">
+            <div class="section-title">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 3l18 18"/>
+                    <path d="M10.6 10.6A2 2 0 0 0 12 14a2 2 0 0 0 1.4-.6"/>
+                    <path d="M17.9 17.9A10.7 10.7 0 0 1 12 20C7 20 3.3 16.8 2 12c.5-1.7 1.4-3.2 2.5-4.4"/>
+                    <path d="M8.5 4.6A10.5 10.5 0 0 1 12 4c5 0 8.7 3.2 10 8-.3 1.1-.8 2.1-1.5 3"/>
+                </svg>
+                Hidden Items
+            </div>
+            <svg class="section-toggle" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="6 9 12 15 18 9"/>
+            </svg>
+        </div>
+        <div class="section-content">
+            <p class="text-muted" style="margin-bottom: 1rem;">
+                Review and unhide titles that profiles have hidden from shelves, watchlist, Explore More, and list pages.
+            </p>
+            <a class="btn btn-primary" href="{{.BasePath}}/tools/hidden-items">Manage Hidden Items</a>
+        </div>
+    </div>
+
     <div class="section" id="systemUpdatesSection">
         <div class="section-header" onclick="toggleSection(this)">
             <div class="section-title">
