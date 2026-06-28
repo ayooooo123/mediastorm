@@ -126,6 +126,17 @@ type WatchlistRepository interface {
 	Count(ctx context.Context) (int64, error)
 }
 
+// HiddenItemsRepository manages profile-scoped title suppression markers.
+type HiddenItemsRepository interface {
+	ListByUser(ctx context.Context, userID string) ([]models.HiddenItem, error)
+	ListAll(ctx context.Context) (map[string][]models.HiddenItem, error)
+	Upsert(ctx context.Context, userID string, item *models.HiddenItem) error
+	Delete(ctx context.Context, userID, itemKey string) error
+	DeleteByUser(ctx context.Context, userID string) error
+	BulkUpsert(ctx context.Context, userID string, items []models.HiddenItem) error
+	Count(ctx context.Context) (int64, error)
+}
+
 // CustomListRepository manages user-created lists and their items.
 type CustomListRepository interface {
 	GetList(ctx context.Context, listID string) (*models.CustomList, error)

@@ -1,0 +1,144 @@
+{{template "base" .}}
+
+{{define "title"}}Hidden Items - mediastorm Admin{{end}}
+
+{{define "content"}}
+<div class="page-header">
+    <h1>Hidden Items</h1>
+    <p>Manage titles hidden from home shelves, watchlist, Explore More, and list pages.</p>
+</div>
+
+<div class="settings-group">
+    <div class="group-title">Profile</div>
+    <div class="section open">
+        <div class="section-content" style="display:grid;gap:1rem;padding-top:1rem;">
+            {{if .NoProfiles}}
+            <p class="text-muted">No profiles are available for this account.</p>
+            {{else}}
+            <div class="form-group">
+                <label class="form-label" for="profileSelect">Profile</label>
+                <select class="form-input" id="profileSelect" onchange="loadHiddenItems()">
+                    <option value="all">All profiles</option>
+                    {{range .Users}}
+                    <option value="{{.ID}}">{{.Name}}</option>
+                    {{end}}
+                </select>
+            </div>
+            <div class="btn-group">
+                <button class="btn btn-secondary" onclick="loadHiddenItems()">Refresh</button>
+                <a class="btn btn-secondary" href="{{.BasePath}}/tools">Back to Tools</a>
+            </div>
+            {{end}}
+        </div>
+    </div>
+</div>
+
+<div class="settings-group">
+    <div class="group-title">Hidden Titles</div>
+    <div class="section open">
+        <div class="section-content">
+            <div id="hiddenItemsStatus" class="text-muted" style="margin-top:1rem;">
+                {{if .HiddenItems}}{{len .HiddenItems}} hidden item{{if ne (len .HiddenItems) 1}}s{{end}}{{else}}No hidden items for these profiles.{{end}}
+            </div>
+            <div id="hiddenItemsList" style="display:block;margin-top:1rem;">
+                {{range .HiddenItems}}
+                <div class="hidden-item-row" style="display:flex;align-items:center;gap:0.75rem;padding:0.75rem 0;border-bottom:1px solid var(--border);">
+                    {{if .PosterURL}}
+                    <img src="{{.PosterURL}}" alt="" style="width:44px;height:66px;object-fit:cover;border-radius:6px;background:var(--bg-tertiary);flex:0 0 auto;">
+                    {{else}}
+                    <div style="width:44px;height:66px;border-radius:6px;background:var(--bg-tertiary);flex:0 0 auto;"></div>
+                    {{end}}
+                    <div style="flex:1;min-width:0;">
+                        <div style="font-weight:600;line-height:1.25;">{{if .Name}}{{.Name}}{{else}}{{.ID}}{{end}}{{if .Year}} <span class="text-muted">({{.Year}})</span>{{end}}</div>
+                        <div class="text-muted" style="font-size:0.85rem;word-break:break-word;">{{.MediaType}} · {{.ID}}</div>
+                        {{if .ProfileName}}<div class="text-muted" style="font-size:0.8rem;">Profile: {{.ProfileName}}</div>{{end}}
+                    </div>
+                    <button class="btn btn-danger btn-sm" style="flex:0 0 auto;" data-user-id="{{.UserID}}" data-media-type="{{.MediaType}}" data-item-id="{{.ID}}" onclick="unhideItem(this.dataset.userId, this.dataset.mediaType, encodeURIComponent(this.dataset.itemId))">Unhide</button>
+                </div>
+                {{end}}
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+const basePath = '{{.BasePath}}';
+
+function escapeHtml(value) {
+    const div = document.createElement('div');
+    div.textContent = value == null ? '' : String(value);
+    return div.innerHTML;
+}
+
+function formatMediaType(value) {
+    if (value === 'series') return 'Series';
+    if (value === 'movie') return 'Movie';
+    return value || 'Title';
+}
+
+function jsString(value) {
+    return String(value == null ? '' : value)
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "\\'")
+        .replace(/\n/g, '\\n')
+        .replace(/\r/g, '\\r');
+}
+
+async function loadHiddenItems() {
+    const select = document.getElementById('profileSelect');
+    const status = document.getElementById('hiddenItemsStatus');
+    const list = document.getElementById('hiddenItemsList');
+    if (!select || !select.value) return;
+    status.textContent = 'Loading hidden items...';
+    try {
+        const response = await fetch(`${basePath}/api/users/${encodeURIComponent(select.value)}/hidden-items`, {
+            credentials: 'same-origin',
+        });
+        if (!response.ok) {
+            const text = await response.text();
+            throw new Error(text || 'Failed to load hidden items');
+        }
+        const items = await response.json();
+        if (!items || items.length === 0) {
+            status.textContent = 'No hidden items for this profile.';
+            list.innerHTML = '';
+            return;
+        }
+        list.innerHTML = '';
+        status.textContent = `${items.length} hidden item${items.length === 1 ? '' : 's'}`;
+        list.innerHTML = items.map(item => {
+            const poster = item.posterUrl ? `<img src="${escapeHtml(item.posterUrl)}" alt="" style="width:52px;height:78px;object-fit:cover;border-radius:6px;background:var(--bg-tertiary);">` : `<div style="width:52px;height:78px;border-radius:6px;background:var(--bg-tertiary);"></div>`;
+            const year = item.year ? ` <span class="text-muted">(${item.year})</span>` : '';
+            const profile = item.profileName ? `<div class="text-muted" style="font-size:0.8rem;">Profile: ${escapeHtml(item.profileName)}</div>` : '';
+            return `
+                <div class="hidden-item-row" style="display:flex;align-items:center;gap:0.75rem;padding:0.75rem 0;border-bottom:1px solid var(--border);">
+                        ${poster}
+                        <div style="flex:1;min-width:0;">
+                            <div style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(item.name || item.id)}${year}</div>
+                            <div class="text-muted" style="font-size:0.85rem;">${formatMediaType(item.mediaType)} · ${escapeHtml(item.id)}</div>
+                            ${profile}
+                        </div>
+                        <button class="btn btn-danger btn-sm" onclick="unhideItem('${jsString(item.userId || select.value)}', '${jsString(item.mediaType)}', '${encodeURIComponent(item.id)}')">Unhide</button>
+                </div>`;
+        }).join('');
+    } catch (error) {
+        status.textContent = error.message;
+    }
+}
+
+async function unhideItem(userId, mediaType, encodedId) {
+    if (!userId) return;
+    const response = await fetch(`${basePath}/api/users/${encodeURIComponent(userId)}/hidden-items/${encodeURIComponent(mediaType)}/${encodedId}`, {
+        method: 'DELETE',
+        credentials: 'same-origin',
+    });
+    if (!response.ok && response.status !== 404) {
+        alert(await response.text() || 'Failed to unhide item');
+        return;
+    }
+    await loadHiddenItems();
+}
+
+document.addEventListener('DOMContentLoaded', loadHiddenItems);
+</script>
+{{end}}

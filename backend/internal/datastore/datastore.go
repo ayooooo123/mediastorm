@@ -88,6 +88,7 @@ func (ds *DataStore) ClientSettings() ClientSettingsRepository {
 }
 func (ds *DataStore) UserSettings() UserSettingsRepository { return &pgUserSettingsRepo{pool: ds.pool} }
 func (ds *DataStore) Watchlist() WatchlistRepository       { return &pgWatchlistRepo{pool: ds.pool} }
+func (ds *DataStore) HiddenItems() HiddenItemsRepository   { return &pgHiddenItemsRepo{pool: ds.pool} }
 func (ds *DataStore) CustomLists() CustomListRepository    { return &pgCustomListRepo{pool: ds.pool} }
 func (ds *DataStore) WatchHistory() WatchHistoryRepository { return &pgWatchHistoryRepo{pool: ds.pool} }
 func (ds *DataStore) PlaybackProgress() PlaybackProgressRepository {
@@ -142,6 +143,7 @@ func (t *Tx) Clients() ClientRepository                { return &pgClientRepo{po
 func (t *Tx) ClientSettings() ClientSettingsRepository { return &pgClientSettingsRepo{pool: t.tx} }
 func (t *Tx) UserSettings() UserSettingsRepository     { return &pgUserSettingsRepo{pool: t.tx} }
 func (t *Tx) Watchlist() WatchlistRepository           { return &pgWatchlistRepo{pool: t.tx} }
+func (t *Tx) HiddenItems() HiddenItemsRepository       { return &pgHiddenItemsRepo{pool: t.tx} }
 func (t *Tx) CustomLists() CustomListRepository        { return &pgCustomListRepo{pool: t.tx} }
 func (t *Tx) WatchHistory() WatchHistoryRepository     { return &pgWatchHistoryRepo{pool: t.tx} }
 func (t *Tx) PlaybackProgress() PlaybackProgressRepository {

@@ -114,6 +114,7 @@ func Register(
 	subtitlesHandler *handlers.SubtitlesHandler,
 	clientsHandler *handlers.ClientsHandler,
 	contentPreferencesHandler *handlers.ContentPreferencesHandler,
+	hiddenItemsHandler *handlers.HiddenItemsHandler,
 	imageHandler *handlers.ImageHandler,
 	startupHandler *handlers.StartupHandler,
 	detailsBundleHandler *handlers.DetailsBundleHandler,
@@ -633,6 +634,13 @@ func Register(
 	profileProtected.HandleFunc("/{userID}/watchlist/{mediaType}/{id}", watchlistHandler.UpdateState).Methods(http.MethodPatch)
 	profileProtected.HandleFunc("/{userID}/watchlist/{mediaType}/{id}", watchlistHandler.Remove).Methods(http.MethodDelete)
 	profileProtected.HandleFunc("/{userID}/watchlist/{mediaType}/{id}", watchlistHandler.Options).Methods(http.MethodOptions)
+	if hiddenItemsHandler != nil {
+		profileProtected.HandleFunc("/{userID}/hidden-items", hiddenItemsHandler.List).Methods(http.MethodGet)
+		profileProtected.HandleFunc("/{userID}/hidden-items", hiddenItemsHandler.Hide).Methods(http.MethodPost)
+		profileProtected.HandleFunc("/{userID}/hidden-items", hiddenItemsHandler.Options).Methods(http.MethodOptions)
+		profileProtected.HandleFunc("/{userID}/hidden-items/{mediaType}/{id}", hiddenItemsHandler.Unhide).Methods(http.MethodDelete)
+		profileProtected.HandleFunc("/{userID}/hidden-items/{mediaType}/{id}", hiddenItemsHandler.Options).Methods(http.MethodOptions)
+	}
 	if displayListHandler != nil {
 		profileProtected.HandleFunc("/{userID}/display-list", displayListHandler.Get).Methods(http.MethodGet)
 		profileProtected.HandleFunc("/{userID}/display-list", displayListHandler.Post).Methods(http.MethodPost)
