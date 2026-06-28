@@ -1983,12 +1983,17 @@ func detectHDRFormat(colorTransfer, colorPrimaries string, sideData []map[string
 }
 
 var (
-	seasonEpisodePattern = regexp.MustCompile(`(?i)[ ._-]s(\d{1,2})e(\d{1,3})`)
-	xPattern             = regexp.MustCompile(`(?i)[ ._-](\d{1,2})x(\d{1,3})`)
+	seasonEpisodePattern = regexp.MustCompile(`(?i)[ ._-]s(\d{1,2})e(\d{1,3})(?:\D|$)`)
+	xPattern             = regexp.MustCompile(`(?i)[ ._-](\d{1,2})x(\d{1,3})(?:\D|$)`)
 	yearPattern          = regexp.MustCompile(`(?:19|20)\d{2}`)
 	cleanupTokens        = regexp.MustCompile(`(?i)\b(2160p|1080p|720p|480p|bluray|bdrip|brrip|webrip|web-dl|webdl|remux|x264|x265|h264|h265|hevc|dv|hdr|hdr10|aac|ac3|dts|truehd|atmos|yts|proper|repack|extended|uncut)\b`)
 	bracketPattern       = regexp.MustCompile(`[\[\(\{].*?[\]\)\}]`)
 	spacePattern         = regexp.MustCompile(`[._]+`)
+)
+
+const (
+	maxDetectedSeasonNumber  = 99
+	maxDetectedEpisodeNumber = 999
 )
 
 func detectTitle(libraryType models.LocalMediaLibraryType, fileName string, parsed *parsett.ParsedTitle) detectedTitle {
@@ -2001,10 +2006,10 @@ func detectTitle(libraryType models.LocalMediaLibraryType, fileName string, pars
 			tvdbID: parsed.TVDBID,
 		}
 		if len(parsed.Seasons) > 0 {
-			result.season = parsed.Seasons[0]
+			result.season = normalizeDetectedSeason(parsed.Seasons[0])
 		}
 		if len(parsed.Episodes) > 0 {
-			result.episode = parsed.Episodes[0]
+			result.episode = normalizeDetectedEpisode(parsed.Episodes[0])
 		}
 		if result.title != "" {
 			return result
@@ -2019,13 +2024,17 @@ func detectTitle(libraryType models.LocalMediaLibraryType, fileName string, pars
 	result := detectedTitle{}
 	if loc := seasonEpisodePattern.FindStringIndex(name); loc != nil {
 		matches := seasonEpisodePattern.FindStringSubmatch(name)
-		result.season, _ = strconv.Atoi(matches[1])
-		result.episode, _ = strconv.Atoi(matches[2])
+		season, _ := strconv.Atoi(matches[1])
+		episode, _ := strconv.Atoi(matches[2])
+		result.season = normalizeDetectedSeason(season)
+		result.episode = normalizeDetectedEpisode(episode)
 		name = name[:loc[0]]
 	} else if loc := xPattern.FindStringIndex(name); loc != nil {
 		matches := xPattern.FindStringSubmatch(name)
-		result.season, _ = strconv.Atoi(matches[1])
-		result.episode, _ = strconv.Atoi(matches[2])
+		season, _ := strconv.Atoi(matches[1])
+		episode, _ := strconv.Atoi(matches[2])
+		result.season = normalizeDetectedSeason(season)
+		result.episode = normalizeDetectedEpisode(episode)
 		name = name[:loc[0]]
 	}
 
@@ -2041,6 +2050,20 @@ func detectTitle(libraryType models.LocalMediaLibraryType, fileName string, pars
 	result.title = strings.TrimSpace(name)
 	result.imdbID, result.tmdbID, result.tvdbID = extractExternalIDs(fileName)
 	return result
+}
+
+func normalizeDetectedSeason(value int) int {
+	if value < 1 || value > maxDetectedSeasonNumber {
+		return 0
+	}
+	return value
+}
+
+func normalizeDetectedEpisode(value int) int {
+	if value < 1 || value > maxDetectedEpisodeNumber {
+		return 0
+	}
+	return value
 }
 
 var (
