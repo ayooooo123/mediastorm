@@ -84,6 +84,31 @@ func TestDetectTitleExtractsExternalIDsFromFilename(t *testing.T) {
 	}
 }
 
+func TestDetectTitleDoesNotTreatHashDigitsAsEpisode(t *testing.T) {
+	got := detectTitle(
+		models.LocalMediaLibraryTypeShow,
+		"b4d85002f15f79a2e435417c73366291d1f23e714663b3ca1971e48058650181.mkv",
+		nil,
+	)
+	if got.episode != 0 {
+		t.Fatalf("episode = %d, want 0", got.episode)
+	}
+}
+
+func TestDetectTitleBoundsParsedSeasonEpisode(t *testing.T) {
+	got := detectTitle(models.LocalMediaLibraryTypeShow, "ignored.mkv", &parsett.ParsedTitle{
+		Title:    "Game Changer",
+		Seasons:  []int{6},
+		Episodes: []int{48058650181},
+	})
+	if got.season != 6 {
+		t.Fatalf("season = %d, want 6", got.season)
+	}
+	if got.episode != 0 {
+		t.Fatalf("episode = %d, want 0", got.episode)
+	}
+}
+
 func TestHydrateLocalMediaItemExternalIDs(t *testing.T) {
 	item := models.LocalMediaItem{
 		Metadata: &models.Title{
