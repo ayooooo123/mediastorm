@@ -230,6 +230,7 @@ func main() {
 	settingsHandler.SetPoolManager(poolManager)                 // Enable hot reload of usenet providers
 	settingsHandler.SetMetadataService(metadataService)         // Enable hot reload of API keys
 	settingsHandler.SetDebridSearchService(debridSearchService) // Enable hot reload of scrapers
+	settingsHandler.SetSearchCacheClearer(indexerService)       // Clear cached search results on ranking/filtering changes
 
 	usenetService := usenet.NewService(cfgManager, poolManager)
 	streamRoot := filepath.Join(settings.Cache.Directory, "streams")
@@ -756,6 +757,7 @@ func main() {
 	localMediaHandler.SetMetadataLanguageProviders(metadataService, cfgManager, userSettingsService)
 	userSettingsHandler.LocalMedia = localMediaService
 	userSettingsHandler.SetPrequeueStore(prequeueHandler.GetStore())
+	userSettingsHandler.SetSearchCacheClearer(indexerService)
 
 	// Create EPG service and handler for Electronic Program Guide
 	epgService := epg.NewService(settings.Cache.Directory, cfgManager)
