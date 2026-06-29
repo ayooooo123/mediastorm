@@ -24,6 +24,14 @@ func (m *mockPrequeueClearer) DeleteAll() {
 	m.called.Add(1)
 }
 
+type mockSearchCacheClearer struct {
+	called atomic.Int32
+}
+
+func (m *mockSearchCacheClearer) ClearSearchCache() {
+	m.called.Add(1)
+}
+
 func TestSettingsHandler_GetSettings(t *testing.T) {
 	cfg := config.Settings{
 		Server: config.ServerSettings{Host: "127.0.0.1", Port: 9999},
@@ -359,7 +367,9 @@ func TestSettingsHandler_ShowParsedBadges_ClearsPrequeue(t *testing.T) {
 
 	handler := NewSettingsHandler(mgr)
 	mock := &mockPrequeueClearer{}
+	searchCache := &mockSearchCacheClearer{}
 	handler.SetPrequeueStore(mock)
+	handler.SetSearchCacheClearer(searchCache)
 
 	// Toggle ShowParsedBadges to true — should clear prequeue
 	updated := initial
@@ -376,6 +386,9 @@ func TestSettingsHandler_ShowParsedBadges_ClearsPrequeue(t *testing.T) {
 	if mock.called.Load() != 1 {
 		t.Fatalf("expected DeleteAll to be called once, got %d", mock.called.Load())
 	}
+	if searchCache.called.Load() != 1 {
+		t.Fatalf("expected ClearSearchCache to be called once, got %d", searchCache.called.Load())
+	}
 
 	// Save again with the same value — should NOT clear prequeue
 	buf, _ = json.Marshal(updated)
@@ -388,6 +401,9 @@ func TestSettingsHandler_ShowParsedBadges_ClearsPrequeue(t *testing.T) {
 	}
 	if mock.called.Load() != 1 {
 		t.Fatalf("expected DeleteAll call count to remain 1, got %d", mock.called.Load())
+	}
+	if searchCache.called.Load() != 1 {
+		t.Fatalf("expected ClearSearchCache call count to remain 1, got %d", searchCache.called.Load())
 	}
 
 	// Toggle back to false — should clear prequeue again
@@ -402,6 +418,9 @@ func TestSettingsHandler_ShowParsedBadges_ClearsPrequeue(t *testing.T) {
 	}
 	if mock.called.Load() != 2 {
 		t.Fatalf("expected DeleteAll to be called twice, got %d", mock.called.Load())
+	}
+	if searchCache.called.Load() != 2 {
+		t.Fatalf("expected ClearSearchCache to be called twice, got %d", searchCache.called.Load())
 	}
 }
 

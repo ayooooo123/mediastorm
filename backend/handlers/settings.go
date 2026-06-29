@@ -34,6 +34,11 @@ type PrequeueClearer interface {
 	DeleteAll()
 }
 
+// SearchCacheClearer can clear cached search results.
+type SearchCacheClearer interface {
+	ClearSearchCache()
+}
+
 func shouldClearPrequeueForGlobalSettingsChange(oldSettings, newSettings config.Settings) bool {
 	if oldSettings.Display.ShowParsedBadges != newSettings.Display.ShowParsedBadges {
 		return true
@@ -60,6 +65,7 @@ type SettingsHandler struct {
 	ClientsLister       user_settings.ClientsLister
 	ClientSettingsBatch user_settings.ClientSettingsBatch
 	PrequeueStore       PrequeueClearer
+	SearchCache         SearchCacheClearer
 }
 
 func NewSettingsHandler(m *config.Manager) *SettingsHandler {
@@ -118,6 +124,11 @@ func (h *SettingsHandler) SetClientSettingsBatch(cs user_settings.ClientSettings
 // SetPrequeueStore sets the prequeue store for clearing cache when display settings change
 func (h *SettingsHandler) SetPrequeueStore(ps PrequeueClearer) {
 	h.PrequeueStore = ps
+}
+
+// SetSearchCacheClearer sets the search cache invalidator for ranking/filtering changes.
+func (h *SettingsHandler) SetSearchCacheClearer(sc SearchCacheClearer) {
+	h.SearchCache = sc
 }
 
 // SettingsResponse wraps config.Settings with additional runtime information.
@@ -794,9 +805,15 @@ func (h *SettingsHandler) PutSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Clear prequeue cache when ranking/filtering-affecting settings change.
-	if h.PrequeueStore != nil && shouldClearPrequeueForGlobalSettingsChange(oldSettings, s) {
-		log.Printf("[settings] ranking/filtering-related settings changed, clearing prequeue cache")
-		h.PrequeueStore.DeleteAll()
+	if shouldClearPrequeueForGlobalSettingsChange(oldSettings, s) {
+		if h.PrequeueStore != nil {
+			log.Printf("[settings] ranking/filtering-related settings changed, clearing prequeue cache")
+			h.PrequeueStore.DeleteAll()
+		}
+		if h.SearchCache != nil {
+			log.Printf("[settings] ranking/filtering-related settings changed, clearing search results cache")
+			h.SearchCache.ClearSearchCache()
+		}
 	}
 
 	// Strip redundant per-profile and per-client overrides

@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,6 +25,16 @@ type stubDebridSearchService struct {
 
 func (s stubDebridSearchService) Search(context.Context, debrid.SearchOptions) ([]models.NZBResult, error) {
 	return append([]models.NZBResult(nil), s.results...), s.err
+}
+
+type countingDebridSearchService struct {
+	calls   atomic.Int32
+	results []models.NZBResult
+}
+
+func (s *countingDebridSearchService) Search(context.Context, debrid.SearchOptions) ([]models.NZBResult, error) {
+	s.calls.Add(1)
+	return cloneNZBResults(s.results), nil
 }
 
 func TestSearchTorznab_IndexerCategories(t *testing.T) {
@@ -297,6 +308,66 @@ func TestSearchBypassesRankingForAIOStreamsOnlyDebridMode(t *testing.T) {
 	}
 	if got := results[0].Title; got != "Movie.720p.WEB-DL" {
 		t.Fatalf("expected AIOStreams order to bypass ranking, got first title %q", got)
+	}
+}
+
+func TestSearchCachesResultsForRepeatedQuery(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "settings.json")
+	mgr := config.NewManager(cfgPath)
+
+	settings := config.DefaultSettings()
+	settings.Streaming.ServiceMode = config.StreamingServiceModeDebrid
+	settings.Display.BypassFilteringForAIOStreamsOnly = true
+	settings.TorrentScrapers = []config.TorrentScraperConfig{
+		{Name: "AIOStreams", Type: "aiostreams", URL: "https://example.test/manifest.json", Enabled: true},
+	}
+	if err := mgr.Save(settings); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	debridSvc := &countingDebridSearchService{
+		results: []models.NZBResult{
+			{
+				Title:       "Movie.2160p.WEB-DL",
+				Indexer:     "AIOStreams",
+				ServiceType: models.ServiceTypeDebrid,
+				Attributes:  map[string]string{"resolution": "2160p"},
+			},
+		},
+	}
+	svc := NewService(mgr, nil, debridSvc)
+
+	opts := SearchOptions{Query: "Movie 2024", MediaType: "movie", Year: 2024}
+	first, err := svc.Search(t.Context(), opts)
+	if err != nil {
+		t.Fatalf("first search returned error: %v", err)
+	}
+	if got := debridSvc.calls.Load(); got != 1 {
+		t.Fatalf("expected underlying search call count 1, got %d", got)
+	}
+	first[0].Title = "mutated"
+	first[0].Attributes["resolution"] = "mutated"
+
+	second, err := svc.Search(t.Context(), opts)
+	if err != nil {
+		t.Fatalf("second search returned error: %v", err)
+	}
+	if got := debridSvc.calls.Load(); got != 1 {
+		t.Fatalf("expected cached search to avoid another call, got %d calls", got)
+	}
+	if second[0].Title != "Movie.2160p.WEB-DL" {
+		t.Fatalf("expected cached result clone to preserve title, got %q", second[0].Title)
+	}
+	if got := second[0].Attributes["resolution"]; got != "2160p" {
+		t.Fatalf("expected cached result clone to preserve attributes, got %q", got)
+	}
+
+	svc.ClearSearchCache()
+	if _, err := svc.Search(t.Context(), opts); err != nil {
+		t.Fatalf("search after cache clear returned error: %v", err)
+	}
+	if got := debridSvc.calls.Load(); got != 2 {
+		t.Fatalf("expected cache clear to force another underlying call, got %d calls", got)
 	}
 }
 

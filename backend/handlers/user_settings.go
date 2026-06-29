@@ -26,6 +26,10 @@ type userPrequeueClearer interface {
 	DeleteByUser(userID string)
 }
 
+type userSearchCacheClearer interface {
+	ClearSearchCache()
+}
+
 var _ userSettingsService = (*user_settings.Service)(nil)
 
 // localLibraryLister is the minimal interface needed to fetch local media libraries.
@@ -39,6 +43,7 @@ type UserSettingsHandler struct {
 	ConfigManager *config.Manager
 	LocalMedia    localLibraryLister
 	PrequeueStore userPrequeueClearer
+	SearchCache   userSearchCacheClearer
 }
 
 func NewUserSettingsHandler(service userSettingsService, users userService, configManager *config.Manager) *UserSettingsHandler {
@@ -51,6 +56,10 @@ func NewUserSettingsHandler(service userSettingsService, users userService, conf
 
 func (h *UserSettingsHandler) SetPrequeueStore(ps userPrequeueClearer) {
 	h.PrequeueStore = ps
+}
+
+func (h *UserSettingsHandler) SetSearchCacheClearer(sc userSearchCacheClearer) {
+	h.SearchCache = sc
 }
 
 // GetSettings returns the user's settings merged with global defaults.
@@ -94,14 +103,18 @@ func (h *UserSettingsHandler) PutSettings(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if h.PrequeueStore != nil {
-		var previous models.UserSettings
-		if oldSettings != nil {
-			previous = *oldSettings
-		}
-		if !reflect.DeepEqual(previous.Filtering, settings.Filtering) || !reflect.DeepEqual(previous.Ranking, settings.Ranking) {
+	var previous models.UserSettings
+	if oldSettings != nil {
+		previous = *oldSettings
+	}
+	if !reflect.DeepEqual(previous.Filtering, settings.Filtering) || !reflect.DeepEqual(previous.Ranking, settings.Ranking) {
+		if h.PrequeueStore != nil {
 			log.Printf("[user-settings] ranking/filtering changed for user=%s, clearing prequeue cache", userID)
 			h.PrequeueStore.DeleteByUser(userID)
+		}
+		if h.SearchCache != nil {
+			log.Printf("[user-settings] ranking/filtering changed for user=%s, clearing search results cache", userID)
+			h.SearchCache.ClearSearchCache()
 		}
 	}
 
