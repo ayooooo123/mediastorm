@@ -1043,6 +1043,12 @@ func (h *VideoHandler) streamViaProvider(w http.ResponseWriter, r *http.Request,
 
 		lastLogBytes := int64(0)
 		const logInterval = 10 * 1024 * 1024 // Log every 10MB
+		const throughputLogInterval = 5 * time.Second
+		throughputLogAt := time.Now()
+		var providerWindowBytes int64
+		var providerWindowRead time.Duration
+		var clientWindowBytes int64
+		var clientWindowWrite time.Duration
 
 		videoTracef("[video] starting stream copy: path=%q range=%q streamID=%s", cleanPath, rangeHeader, streamID)
 
@@ -1055,8 +1061,11 @@ func (h *VideoHandler) streamViaProvider(w http.ResponseWriter, r *http.Request,
 			default:
 			}
 
+			readStart := time.Now()
 			n, readErr := reader.Read(buf)
+			providerWindowRead += time.Since(readStart)
 			if n > 0 {
+				providerWindowBytes += int64(n)
 				if expectedLength > 0 {
 					remaining := expectedLength - total
 					if remaining <= 0 {
@@ -1071,7 +1080,9 @@ func (h *VideoHandler) streamViaProvider(w http.ResponseWriter, r *http.Request,
 					}
 				}
 
+				writeStart := time.Now()
 				written, writeErr := w.Write(buf[:n])
+				clientWindowWrite += time.Since(writeStart)
 				if writeErr != nil {
 					if isClientGone(writeErr) || ctx.Err() == context.Canceled {
 						log.Printf("[video] SEEK ABORT: client disconnected path=%q bytes=%d total=%d range=%q", cleanPath, n, total, rangeHeader)
@@ -1082,6 +1093,7 @@ func (h *VideoHandler) streamViaProvider(w http.ResponseWriter, r *http.Request,
 				}
 
 				total += int64(written)
+				clientWindowBytes += int64(written)
 				// Update stream tracking bytes and activity counters
 				if bytesCounter != nil {
 					atomic.StoreInt64(bytesCounter, total)
@@ -1095,6 +1107,21 @@ func (h *VideoHandler) streamViaProvider(w http.ResponseWriter, r *http.Request,
 				if total-lastLogBytes >= logInterval {
 					videoTracef("[video] streaming progress: path=%q total=%d range=%q", cleanPath, total, rangeHeader)
 					lastLogBytes = total
+				}
+
+				if now := time.Now(); now.Sub(throughputLogAt) >= throughputLogInterval {
+					window := now.Sub(throughputLogAt)
+					if providerWindowBytes > 0 {
+						logStreamThroughput("provider-read", cleanPath, providerWindowBytes, providerWindowRead, window)
+					}
+					if clientWindowBytes > 0 {
+						logStreamThroughput("client-write", cleanPath, clientWindowBytes, clientWindowWrite, window)
+					}
+					throughputLogAt = now
+					providerWindowBytes = 0
+					providerWindowRead = 0
+					clientWindowBytes = 0
+					clientWindowWrite = 0
 				}
 
 				// Flush less frequently to improve performance
@@ -5271,6 +5298,16 @@ func (h *VideoHandler) proxyExternalURL(w http.ResponseWriter, r *http.Request, 
 
 	lastLogBytes := int64(0)
 	const logInterval = 10 * 1024 * 1024 // Log every 10MB
+	const throughputLogInterval = 5 * time.Second
+	throughputLogAt := time.Now()
+	var upstreamWindowBytes int64
+	var upstreamWindowRead time.Duration
+	var clientWindowBytes int64
+	var clientWindowWrite time.Duration
+	throughputPath := parsedURL.Path
+	if throughputPath == "" {
+		throughputPath = parsedURL.Host
+	}
 
 	videoTracef("[video] starting external proxy stream: host=%q streamID=%s", parsedURL.Host, streamID)
 
@@ -5283,9 +5320,14 @@ func (h *VideoHandler) proxyExternalURL(w http.ResponseWriter, r *http.Request, 
 		default:
 		}
 
+		readStart := time.Now()
 		n, readErr := resp.Body.Read(buf)
+		upstreamWindowRead += time.Since(readStart)
 		if n > 0 {
+			upstreamWindowBytes += int64(n)
+			writeStart := time.Now()
 			written, writeErr := w.Write(buf[:n])
+			clientWindowWrite += time.Since(writeStart)
 			if writeErr != nil {
 				if isClientGone(writeErr) || ctx.Err() == context.Canceled {
 					videoTracef("[video] external proxy: client disconnected host=%q total=%d", parsedURL.Host, total)
@@ -5296,6 +5338,7 @@ func (h *VideoHandler) proxyExternalURL(w http.ResponseWriter, r *http.Request, 
 			}
 
 			total += int64(written)
+			clientWindowBytes += int64(written)
 			// Update stream tracking bytes and activity counters
 			if bytesCounter != nil {
 				atomic.StoreInt64(bytesCounter, total)
@@ -5309,6 +5352,21 @@ func (h *VideoHandler) proxyExternalURL(w http.ResponseWriter, r *http.Request, 
 			if total-lastLogBytes >= logInterval {
 				videoTracef("[video] external proxy progress: host=%q total=%d", parsedURL.Host, total)
 				lastLogBytes = total
+			}
+
+			if now := time.Now(); now.Sub(throughputLogAt) >= throughputLogInterval {
+				window := now.Sub(throughputLogAt)
+				if upstreamWindowBytes > 0 {
+					logStreamThroughput("external-read", throughputPath, upstreamWindowBytes, upstreamWindowRead, window)
+				}
+				if clientWindowBytes > 0 {
+					logStreamThroughput("client-write", throughputPath, clientWindowBytes, clientWindowWrite, window)
+				}
+				throughputLogAt = now
+				upstreamWindowBytes = 0
+				upstreamWindowRead = 0
+				clientWindowBytes = 0
+				clientWindowWrite = 0
 			}
 
 			// Flush periodically
