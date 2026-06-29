@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -508,5 +510,86 @@ func TestStreamPoolServeHead(t *testing.T) {
 	}
 	if !strings.Contains(cr, "bytes 0-") {
 		t.Errorf("unexpected Content-Range: %s", cr)
+	}
+}
+
+func TestLogStreamThroughput(t *testing.T) {
+	var buf bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(old)
+
+	cases := []struct {
+		name      string
+		leg       string
+		path      string
+		bytes     int64
+		activeDur time.Duration
+		wallDur   time.Duration
+		want      []string
+	}{
+		{
+			// Client transport fast but starved waiting on a slow source:
+			// high active rate, low busy% over the window.
+			name:      "fast_but_starved",
+			leg:       "client-write",
+			path:      "/debrid/torbox/1/file/0/Good Luck.mkv",
+			bytes:     10_000_000,
+			activeDur: 1 * time.Second,
+			wallDur:   5 * time.Second,
+			want: []string{
+				"client-write throughput",
+				`file="Good Luck.mkv"`, // basename extracted from path
+				"wall=16.0Mbps (2.00MB/s)",
+				"active=80.0Mbps (10.00MB/s)",
+				"busy=20%",
+				"bytes=10000000",
+				"window=5.0s",
+			},
+		},
+		{
+			// Source genuinely slow: reader busy the whole window, low rate.
+			name:      "source_slow",
+			leg:       "CDN-read",
+			path:      "Movie.mkv",
+			bytes:     1_000_000,
+			activeDur: 5 * time.Second,
+			wallDur:   5 * time.Second,
+			want: []string{
+				"CDN-read throughput",
+				`file="Movie.mkv"`,
+				"wall=1.6Mbps (0.20MB/s)",
+				"busy=100%",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			buf.Reset()
+			logStreamThroughput(tc.leg, tc.path, tc.bytes, tc.activeDur, tc.wallDur)
+			out := buf.String()
+			for _, w := range tc.want {
+				if !strings.Contains(out, w) {
+					t.Errorf("output missing %q\ngot: %s", w, out)
+				}
+			}
+		})
+	}
+}
+
+func TestLogStreamThroughputZeroDurations(t *testing.T) {
+	var buf bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(old)
+
+	// Must not divide by zero when durations are zero.
+	logStreamThroughput("CDN-read", "x.mkv", 0, 0, 0)
+	out := buf.String()
+	for _, w := range []string{"wall=0.0Mbps", "active=0.0Mbps", "busy=0%"} {
+		if !strings.Contains(out, w) {
+			t.Errorf("output missing %q\ngot: %s", w, out)
+		}
 	}
 }

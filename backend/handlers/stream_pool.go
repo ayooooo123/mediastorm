@@ -344,6 +344,11 @@ dataReady:
 	videoTracef("[stream-pool] serving: path=%q range=%q reqStart=%d slotStart=%d buffered=%d slotTotalRead=%d readers=%d",
 		path, rangeHeader, reqStart, slot.startByte, endPos-slot.startByte, slotTotalRead, atomic.LoadInt32(&slot.readers))
 
+	const clientLogInterval = 5 * time.Second
+	clientLogAt := time.Now()
+	var clientWindowBytes int64
+	var clientWindowWrite time.Duration
+
 	for {
 		if maxWritten >= 0 && totalWritten >= maxWritten {
 			break
@@ -414,7 +419,9 @@ dataReady:
 
 		// Write directly — don't check ctx.Done() beforehand.
 		// The write itself is the fastest path to getting data to the client.
+		writeStart := time.Now()
 		written, writeErr := w.Write(chunk)
+		clientWindowWrite += time.Since(writeStart)
 		if writeErr != nil {
 			if isClientGone(writeErr) && totalWritten > 0 {
 				// Only log if we actually sent some data (reduce noise)
@@ -425,6 +432,7 @@ dataReady:
 
 		pos += int64(written)
 		totalWritten += int64(written)
+		clientWindowBytes += int64(written)
 
 		// Update minimum reader position so the background reader
 		// knows how far it can safely trim the buffer.
@@ -444,6 +452,16 @@ dataReady:
 		if flusher != nil {
 			flusher.Flush()
 		}
+
+		// Periodically log the client-write (delivery) leg throughput. Compared
+		// against the CDN-read leg, this isolates whether a stall is the source
+		// (debrid/CDN) or the client transport (e.g. a remote iroh tunnel).
+		if now := time.Now(); now.Sub(clientLogAt) >= clientLogInterval && clientWindowBytes > 0 {
+			logStreamThroughput("client-write", path, clientWindowBytes, clientWindowWrite, now.Sub(clientLogAt))
+			clientLogAt = now
+			clientWindowBytes = 0
+			clientWindowWrite = 0
+		}
 	}
 
 	elapsed := time.Since(requestStartedAt)
@@ -453,6 +471,34 @@ dataReady:
 	}
 	videoTracef("[stream-pool] stream complete: path=%q written=%d elapsed=%v avgRate=%.2fMBps", path, totalWritten, elapsed.Round(time.Millisecond), rateMBps)
 	return true, nil
+}
+
+// logStreamThroughput logs throughput for one leg of the stream-pool pipeline.
+// activeDur is the time actually spent inside the I/O call (CDN read or client
+// write); comparing it against the wall-clock window isolates each leg's true
+// rate from time spent blocked on the other leg — a CDN reader backpressured by
+// a slow client, or a client reader starved waiting on a slow CDN. Pairing the
+// "CDN-read" and "client-write" lines for a file pinpoints the bottleneck:
+//   - source slow  -> CDN-read wall rate low, high busy%; client-write starved (low busy%)
+//   - client slow  -> client-write wall rate low, high busy%; CDN-read backpressured (low busy%)
+func logStreamThroughput(leg, path string, bytes int64, activeDur, wallDur time.Duration) {
+	name := path
+	if idx := strings.LastIndexByte(name, '/'); idx >= 0 && idx+1 < len(name) {
+		name = name[idx+1:]
+	}
+	mb := float64(bytes) / 1e6
+	wallSecs := wallDur.Seconds()
+	activeSecs := activeDur.Seconds()
+	var wallRate, activeRate, busy float64
+	if wallSecs > 0 {
+		wallRate = mb / wallSecs
+		busy = 100 * activeSecs / wallSecs
+	}
+	if activeSecs > 0 {
+		activeRate = mb / activeSecs
+	}
+	log.Printf("[stream-pool] %s throughput: file=%q wall=%.1fMbps (%.2fMB/s) active=%.1fMbps (%.2fMB/s) busy=%.0f%% bytes=%d window=%.1fs",
+		leg, name, wallRate*8, wallRate, activeRate*8, activeRate, busy, bytes, wallSecs)
 }
 
 // findSlot returns an existing pool slot that can serve data at reqPos, or nil.
@@ -607,6 +653,10 @@ func (s *poolSlot) backgroundReader(resp *streaming.Response) {
 	}()
 
 	buf := make([]byte, poolSlotReadChunk)
+	const cdnLogInterval = 5 * time.Second
+	cdnLogAt := time.Now()
+	var cdnWindowBytes int64
+	var cdnWindowRead time.Duration
 	for {
 		select {
 		case <-s.ctx.Done():
@@ -655,8 +705,11 @@ func (s *poolSlot) backgroundReader(resp *streaming.Response) {
 		}
 		s.mu.Unlock()
 
+		readStart := time.Now()
 		n, err := resp.Body.Read(buf)
+		cdnWindowRead += time.Since(readStart)
 		if n > 0 {
+			cdnWindowBytes += int64(n)
 			s.mu.Lock()
 			s.data = append(s.data, buf[:n]...)
 			s.totalRead += int64(n)
@@ -675,6 +728,14 @@ func (s *poolSlot) backgroundReader(resp *streaming.Response) {
 			}
 			s.mu.Unlock()
 			s.broadcast()
+		}
+		// Periodically log the CDN-read (source) leg throughput so a slow
+		// debrid/CDN source can be told apart from a slow client at a glance.
+		if now := time.Now(); now.Sub(cdnLogAt) >= cdnLogInterval && cdnWindowBytes > 0 {
+			logStreamThroughput("CDN-read", s.path, cdnWindowBytes, cdnWindowRead, now.Sub(cdnLogAt))
+			cdnLogAt = now
+			cdnWindowBytes = 0
+			cdnWindowRead = 0
 		}
 		if err != nil {
 			if err != io.EOF {
