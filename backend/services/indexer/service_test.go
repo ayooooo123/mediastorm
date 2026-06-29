@@ -37,6 +37,33 @@ func (s *countingDebridSearchService) Search(context.Context, debrid.SearchOptio
 	return cloneNZBResults(s.results), nil
 }
 
+type mutableClientSettingsProvider struct {
+	settings atomic.Value
+}
+
+func newMutableClientSettingsProvider(settings *models.ClientFilterSettings) *mutableClientSettingsProvider {
+	p := &mutableClientSettingsProvider{}
+	p.settings.Store(settings)
+	return p
+}
+
+func (p *mutableClientSettingsProvider) Get(string) (*models.ClientFilterSettings, error) {
+	settings, _ := p.settings.Load().(*models.ClientFilterSettings)
+	return settings, nil
+}
+
+func (p *mutableClientSettingsProvider) Set(settings *models.ClientFilterSettings) {
+	p.settings.Store(settings)
+}
+
+type mapClientSettingsProvider struct {
+	settings map[string]*models.ClientFilterSettings
+}
+
+func (p mapClientSettingsProvider) Get(clientID string) (*models.ClientFilterSettings, error) {
+	return p.settings[clientID], nil
+}
+
 func TestSearchTorznab_IndexerCategories(t *testing.T) {
 	// Track the categories received by the mock server
 	var receivedCategories string
@@ -368,6 +395,339 @@ func TestSearchCachesResultsForRepeatedQuery(t *testing.T) {
 	}
 	if got := debridSvc.calls.Load(); got != 2 {
 		t.Fatalf("expected cache clear to force another underlying call, got %d calls", got)
+	}
+}
+
+func TestSearchCacheKeyIncludesClientRankingCriteria(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "settings.json")
+	mgr := config.NewManager(cfgPath)
+
+	settings := config.DefaultSettings()
+	settings.Streaming.ServiceMode = config.StreamingServiceModeDebrid
+	settings.Display.BypassFilteringForAIOStreamsOnly = false
+	settings.TorrentScrapers = []config.TorrentScraperConfig{
+		{Name: "AIOStreams", Type: "aiostreams", URL: "https://example.test/manifest.json", Enabled: true},
+	}
+	settings.Ranking.Criteria = []config.RankingCriterion{
+		{ID: config.RankingSize, Name: "File Size", Enabled: true, Order: 1},
+		{ID: config.RankingResolution, Name: "Resolution", Enabled: true, Order: 2},
+	}
+	if err := mgr.Save(settings); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	debridSvc := &countingDebridSearchService{
+		results: []models.NZBResult{
+			{Title: "Movie.720p.large", Indexer: "AIOStreams", ServiceType: models.ServiceTypeDebrid, SizeBytes: 9000, Attributes: map[string]string{"resolution": "720p"}},
+			{Title: "Movie.2160p.small", Indexer: "AIOStreams", ServiceType: models.ServiceTypeDebrid, SizeBytes: 1000, Attributes: map[string]string{"resolution": "2160p"}},
+		},
+	}
+	clientSettings := newMutableClientSettingsProvider(&models.ClientFilterSettings{
+		RankingCriteria: &[]models.ClientRankingCriterion{
+			{ID: config.RankingSize, Order: models.IntPtr(1)},
+			{ID: config.RankingResolution, Order: models.IntPtr(2)},
+		},
+	})
+	svc := NewService(mgr, nil, debridSvc)
+	svc.SetClientSettingsProvider(clientSettings)
+
+	opts := SearchOptions{Query: "Movie 2024", MediaType: "movie", Year: 2024, ClientID: "living-room"}
+	first, err := svc.Search(t.Context(), opts)
+	if err != nil {
+		t.Fatalf("first search returned error: %v", err)
+	}
+	if got := first[0].Title; got != "Movie.720p.large" {
+		t.Fatalf("expected size-first ranking to prefer large file, got %q", got)
+	}
+	if got := debridSvc.calls.Load(); got != 1 {
+		t.Fatalf("expected underlying search call count 1, got %d", got)
+	}
+
+	clientSettings.Set(&models.ClientFilterSettings{
+		RankingCriteria: &[]models.ClientRankingCriterion{
+			{ID: config.RankingSize, Order: models.IntPtr(2)},
+			{ID: config.RankingResolution, Order: models.IntPtr(1)},
+		},
+	})
+	second, err := svc.Search(t.Context(), opts)
+	if err != nil {
+		t.Fatalf("second search returned error: %v", err)
+	}
+	if got := debridSvc.calls.Load(); got != 2 {
+		t.Fatalf("expected client ranking change to miss cache and call search again, got %d calls", got)
+	}
+	if got := second[0].Title; got != "Movie.2160p.small" {
+		t.Fatalf("expected resolution-first ranking to prefer 2160p result, got %q", got)
+	}
+}
+
+func TestSearchCacheSharedAcrossClientsWithSameEffectiveSettings(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "settings.json")
+	mgr := config.NewManager(cfgPath)
+
+	settings := config.DefaultSettings()
+	settings.Streaming.ServiceMode = config.StreamingServiceModeDebrid
+	settings.Display.BypassFilteringForAIOStreamsOnly = false
+	settings.TorrentScrapers = []config.TorrentScraperConfig{
+		{Name: "AIOStreams", Type: "aiostreams", URL: "https://example.test/manifest.json", Enabled: true},
+	}
+	settings.Ranking.Criteria = []config.RankingCriterion{
+		{ID: config.RankingSize, Name: "File Size", Enabled: true, Order: 1},
+		{ID: config.RankingResolution, Name: "Resolution", Enabled: true, Order: 2},
+	}
+	if err := mgr.Save(settings); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	debridSvc := &countingDebridSearchService{
+		results: []models.NZBResult{
+			{Title: "Movie.720p.large", Indexer: "AIOStreams", ServiceType: models.ServiceTypeDebrid, SizeBytes: 9000, Attributes: map[string]string{"resolution": "720p"}},
+			{Title: "Movie.2160p.small", Indexer: "AIOStreams", ServiceType: models.ServiceTypeDebrid, SizeBytes: 1000, Attributes: map[string]string{"resolution": "2160p"}},
+		},
+	}
+	sameRanking := &models.ClientFilterSettings{
+		RankingCriteria: &[]models.ClientRankingCriterion{
+			{ID: config.RankingSize, Order: models.IntPtr(1)},
+			{ID: config.RankingResolution, Order: models.IntPtr(2)},
+		},
+	}
+	svc := NewService(mgr, nil, debridSvc)
+	svc.SetClientSettingsProvider(mapClientSettingsProvider{
+		settings: map[string]*models.ClientFilterSettings{
+			"living-room": sameRanking,
+			"phone":       sameRanking,
+		},
+	})
+
+	first, err := svc.Search(t.Context(), SearchOptions{Query: "Movie 2024", MediaType: "movie", Year: 2024, UserID: "default", ClientID: "living-room"})
+	if err != nil {
+		t.Fatalf("first search returned error: %v", err)
+	}
+	if got := first[0].Title; got != "Movie.720p.large" {
+		t.Fatalf("expected size-first ranking to prefer large file, got %q", got)
+	}
+
+	second, err := svc.Search(t.Context(), SearchOptions{Query: "Movie 2024", MediaType: "movie", Year: 2024, UserID: "default", ClientID: "phone"})
+	if err != nil {
+		t.Fatalf("second search returned error: %v", err)
+	}
+	if got := debridSvc.calls.Load(); got != 1 {
+		t.Fatalf("expected clients with identical effective settings to share cache, got %d calls", got)
+	}
+	if got := second[0].Title; got != "Movie.720p.large" {
+		t.Fatalf("expected cached size-first result order, got %q", got)
+	}
+}
+
+func TestSearchCacheIgnoresUnrelatedGlobalSettings(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "settings.json")
+	mgr := config.NewManager(cfgPath)
+
+	settings := config.DefaultSettings()
+	settings.Streaming.ServiceMode = config.StreamingServiceModeDebrid
+	settings.Display.BypassFilteringForAIOStreamsOnly = false
+	settings.TorrentScrapers = []config.TorrentScraperConfig{
+		{Name: "AIOStreams", Type: "aiostreams", URL: "https://example.test/manifest.json", Enabled: true},
+	}
+	if err := mgr.Save(settings); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	debridSvc := &countingDebridSearchService{
+		results: []models.NZBResult{
+			{Title: "Movie.2160p.WEB-DL", Indexer: "AIOStreams", ServiceType: models.ServiceTypeDebrid, Attributes: map[string]string{"resolution": "2160p"}},
+		},
+	}
+	svc := NewService(mgr, nil, debridSvc)
+
+	opts := SearchOptions{Query: "Movie 2024", MediaType: "movie", Year: 2024, UserID: "default"}
+	if _, err := svc.Search(t.Context(), opts); err != nil {
+		t.Fatalf("first search returned error: %v", err)
+	}
+
+	settings.UI.OnboardingCompleted = !settings.UI.OnboardingCompleted
+	settings.Display.NavigationTabVisibility = []string{"home", "search"}
+	if err := mgr.Save(settings); err != nil {
+		t.Fatalf("save unrelated settings change: %v", err)
+	}
+
+	if _, err := svc.Search(t.Context(), opts); err != nil {
+		t.Fatalf("second search returned error: %v", err)
+	}
+	if got := debridSvc.calls.Load(); got != 1 {
+		t.Fatalf("expected unrelated settings changes to keep cache usable, got %d calls", got)
+	}
+}
+
+func TestSearchCacheSharedWithNonSearchClientSettingsWhenAdaptiveDisabled(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "settings.json")
+	mgr := config.NewManager(cfgPath)
+
+	settings := config.DefaultSettings()
+	settings.Streaming.ServiceMode = config.StreamingServiceModeDebrid
+	settings.Filtering.AdaptivePlaybackEnabled = false
+	settings.Display.BypassFilteringForAIOStreamsOnly = false
+	settings.TorrentScrapers = []config.TorrentScraperConfig{
+		{Name: "AIOStreams", Type: "aiostreams", URL: "https://example.test/manifest.json", Enabled: true},
+	}
+	if err := mgr.Save(settings); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	measuredMbps := 426.9
+	measuredAt := time.Now().Unix()
+	displayHDR := true
+	displayDV := true
+	includeSystemTabs := true
+	debridSvc := &countingDebridSearchService{
+		results: []models.NZBResult{
+			{Title: "Movie.2160p.WEB-DL", Indexer: "AIOStreams", ServiceType: models.ServiceTypeDebrid, Attributes: map[string]string{"resolution": "2160p"}},
+		},
+	}
+	svc := NewService(mgr, nil, debridSvc)
+	svc.SetClientSettingsProvider(mapClientSettingsProvider{
+		settings: map[string]*models.ClientFilterSettings{
+			"phone": {
+				AdaptivePlayback: &models.AdaptivePlaybackSettings{
+					MeasuredMbps: &measuredMbps,
+					MeasuredAt:   &measuredAt,
+					DisplayHDR:   &displayHDR,
+					DisplayDV:    &displayDV,
+				},
+				NavigationTabVisibilityIncludesSystemTabs: &includeSystemTabs,
+			},
+		},
+	})
+
+	opts := SearchOptions{Query: "Movie 2024", MediaType: "movie", Year: 2024, UserID: "default"}
+	if _, err := svc.Search(t.Context(), opts); err != nil {
+		t.Fatalf("browser search returned error: %v", err)
+	}
+
+	phoneOpts := opts
+	phoneOpts.ClientID = "phone"
+	if _, err := svc.Search(t.Context(), phoneOpts); err != nil {
+		t.Fatalf("phone search returned error: %v", err)
+	}
+	if got := debridSvc.calls.Load(); got != 1 {
+		t.Fatalf("expected non-search client settings with adaptive disabled to share cache, got %d calls", got)
+	}
+}
+
+func TestSearchCacheSplitsAcrossClientsWithDifferentEffectiveSettings(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "settings.json")
+	mgr := config.NewManager(cfgPath)
+
+	settings := config.DefaultSettings()
+	settings.Streaming.ServiceMode = config.StreamingServiceModeDebrid
+	settings.Display.BypassFilteringForAIOStreamsOnly = false
+	settings.TorrentScrapers = []config.TorrentScraperConfig{
+		{Name: "AIOStreams", Type: "aiostreams", URL: "https://example.test/manifest.json", Enabled: true},
+	}
+	settings.Ranking.Criteria = []config.RankingCriterion{
+		{ID: config.RankingSize, Name: "File Size", Enabled: true, Order: 1},
+		{ID: config.RankingResolution, Name: "Resolution", Enabled: true, Order: 2},
+	}
+	if err := mgr.Save(settings); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	debridSvc := &countingDebridSearchService{
+		results: []models.NZBResult{
+			{Title: "Movie.720p.large", Indexer: "AIOStreams", ServiceType: models.ServiceTypeDebrid, SizeBytes: 9000, Attributes: map[string]string{"resolution": "720p"}},
+			{Title: "Movie.2160p.small", Indexer: "AIOStreams", ServiceType: models.ServiceTypeDebrid, SizeBytes: 1000, Attributes: map[string]string{"resolution": "2160p"}},
+		},
+	}
+	svc := NewService(mgr, nil, debridSvc)
+	svc.SetClientSettingsProvider(mapClientSettingsProvider{
+		settings: map[string]*models.ClientFilterSettings{
+			"living-room": {
+				RankingCriteria: &[]models.ClientRankingCriterion{
+					{ID: config.RankingSize, Order: models.IntPtr(1)},
+					{ID: config.RankingResolution, Order: models.IntPtr(2)},
+				},
+			},
+			"phone": {
+				RankingCriteria: &[]models.ClientRankingCriterion{
+					{ID: config.RankingSize, Order: models.IntPtr(2)},
+					{ID: config.RankingResolution, Order: models.IntPtr(1)},
+				},
+			},
+		},
+	})
+
+	first, err := svc.Search(t.Context(), SearchOptions{Query: "Movie 2024", MediaType: "movie", Year: 2024, UserID: "default", ClientID: "living-room"})
+	if err != nil {
+		t.Fatalf("first search returned error: %v", err)
+	}
+	if got := first[0].Title; got != "Movie.720p.large" {
+		t.Fatalf("expected size-first ranking to prefer large file, got %q", got)
+	}
+
+	second, err := svc.Search(t.Context(), SearchOptions{Query: "Movie 2024", MediaType: "movie", Year: 2024, UserID: "default", ClientID: "phone"})
+	if err != nil {
+		t.Fatalf("second search returned error: %v", err)
+	}
+	if got := debridSvc.calls.Load(); got != 2 {
+		t.Fatalf("expected different effective client settings to miss cache, got %d calls", got)
+	}
+	if got := second[0].Title; got != "Movie.2160p.small" {
+		t.Fatalf("expected resolution-first ranking to prefer 2160p result, got %q", got)
+	}
+}
+
+func TestSearchWithScoringCachesRawResultsForIncludeFiltered(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "settings.json")
+	mgr := config.NewManager(cfgPath)
+
+	settings := config.DefaultSettings()
+	settings.Streaming.ServiceMode = config.StreamingServiceModeDebrid
+	settings.Display.BypassFilteringForAIOStreamsOnly = true
+	settings.TorrentScrapers = []config.TorrentScraperConfig{
+		{Name: "AIOStreams", Type: "aiostreams", URL: "https://example.test/manifest.json", Enabled: true},
+	}
+	if err := mgr.Save(settings); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	debridSvc := &countingDebridSearchService{
+		results: []models.NZBResult{
+			{
+				Title:       "Movie.2160p.WEB-DL",
+				Indexer:     "AIOStreams",
+				ServiceType: models.ServiceTypeDebrid,
+				Attributes:  map[string]string{"resolution": "2160p"},
+			},
+		},
+	}
+	svc := NewService(mgr, nil, debridSvc)
+
+	opts := SearchOptions{
+		Query:           "Movie 2024",
+		MediaType:       "movie",
+		Year:            2024,
+		IncludeFiltered: true,
+	}
+	first, err := svc.SearchWithScoring(t.Context(), opts)
+	if err != nil {
+		t.Fatalf("first search with scoring returned error: %v", err)
+	}
+	if len(first) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(first))
+	}
+	if got := debridSvc.calls.Load(); got != 1 {
+		t.Fatalf("expected underlying search call count 1, got %d", got)
+	}
+
+	second, err := svc.SearchWithScoring(t.Context(), opts)
+	if err != nil {
+		t.Fatalf("second search with scoring returned error: %v", err)
+	}
+	if len(second) != 1 {
+		t.Fatalf("expected cached result count 1, got %d", len(second))
+	}
+	if got := debridSvc.calls.Load(); got != 1 {
+		t.Fatalf("expected raw cache hit to avoid another underlying call, got %d calls", got)
 	}
 }
 
