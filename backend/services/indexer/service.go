@@ -64,7 +64,10 @@ var sportsEventSideContentFilterTerms = []string{
 	`/\bcountdown\b/`,
 }
 
-const searchResultsCacheTTL = 15 * time.Minute
+const (
+	searchResultsCacheTTL        = 15 * time.Minute
+	searchResultsCacheMaxEntries = 256
+)
 
 // sanitizeXMLAmpersands escapes unescaped ampersands in XML that aren't part of valid entity references.
 // This fixes malformed XML from indexers that don't properly escape titles like "Tom & Jerry".
@@ -713,12 +716,43 @@ type SearchOptions struct {
 }
 
 type searchCacheKeyPayload struct {
-	Options         searchCacheOptions `json:"options"`
-	AlternateTitles []string           `json:"alternateTitles,omitempty"`
-	Settings        config.Settings    `json:"settings"`
+	Mode            string                 `json:"mode"`
+	Options         searchCacheOptions     `json:"options"`
+	AlternateTitles []string               `json:"alternateTitles,omitempty"`
+	Settings        searchRelevantSettings `json:"settings"`
 	FilterSettings  models.FilterSettings
 	AnimeSettings   models.AnimeFilteringSettings
 	FilterOverrides effectiveOverrides
+	RankingSettings searchRankingSettings
+	RankingCriteria []config.RankingCriterion
+}
+
+type searchRelevantSettings struct {
+	Indexers        []config.IndexerConfig
+	TorrentScrapers []config.TorrentScraperConfig
+	Streaming       searchStreamingSettings
+	Metadata        searchMetadataSettings
+	Usenet          []config.UsenetSettings
+	DebridProviders []config.DebridProviderSettings
+}
+
+type searchStreamingSettings struct {
+	ServiceMode               config.StreamingServiceMode
+	SearchMode                config.SearchMode
+	MultiProviderMode         config.MultiProviderMode
+	IndexerTimeoutSec         float64
+	MaxAlternateTitleSearches int
+}
+
+type searchMetadataSettings struct {
+	Language         []string
+	PrimaryLanguage  string
+	AllowAdultSearch bool
+}
+
+type searchRankingSettings struct {
+	PreferredScraper string
+	ServicePriority  config.StreamingServicePriority
 }
 
 type searchCacheOptions struct {
@@ -729,7 +763,6 @@ type searchCacheOptions struct {
 	MediaType             string
 	Year                  int
 	UserID                string
-	ClientID              string
 	TotalSeriesEpisodes   int
 	HasEpisodeResolver    bool
 	AbsoluteEpisodeNumber int
@@ -751,7 +784,6 @@ func buildSearchCacheOptions(opts SearchOptions) searchCacheOptions {
 		MediaType:             opts.MediaType,
 		Year:                  opts.Year,
 		UserID:                opts.UserID,
-		ClientID:              opts.ClientID,
 		TotalSeriesEpisodes:   opts.TotalSeriesEpisodes,
 		HasEpisodeResolver:    opts.EpisodeResolver != nil,
 		AbsoluteEpisodeNumber: opts.AbsoluteEpisodeNumber,
@@ -765,14 +797,45 @@ func buildSearchCacheOptions(opts SearchOptions) searchCacheOptions {
 	}
 }
 
-func (s *Service) searchCacheKey(opts SearchOptions, settings config.Settings, alternateTitles []string, filterSettings models.FilterSettings, animeSettings models.AnimeFilteringSettings, filterOverrides effectiveOverrides) string {
+func buildSearchRelevantSettings(settings config.Settings) searchRelevantSettings {
+	return searchRelevantSettings{
+		Indexers:        append([]config.IndexerConfig(nil), settings.Indexers...),
+		TorrentScrapers: append([]config.TorrentScraperConfig(nil), settings.TorrentScrapers...),
+		Streaming: searchStreamingSettings{
+			ServiceMode:               settings.Streaming.ServiceMode,
+			SearchMode:                settings.Streaming.SearchMode,
+			MultiProviderMode:         settings.Streaming.MultiProviderMode,
+			IndexerTimeoutSec:         settings.Streaming.IndexerTimeoutSec,
+			MaxAlternateTitleSearches: settings.Streaming.MaxAlternateTitleSearches,
+		},
+		Metadata: searchMetadataSettings{
+			Language:         append([]string(nil), settings.Metadata.Language...),
+			PrimaryLanguage:  settings.Metadata.PrimaryLanguage,
+			AllowAdultSearch: settings.Metadata.AllowAdultSearch,
+		},
+		Usenet:          append([]config.UsenetSettings(nil), settings.Usenet...),
+		DebridProviders: append([]config.DebridProviderSettings(nil), settings.Streaming.DebridProviders...),
+	}
+}
+
+func buildSearchRankingSettings(settings config.Settings) searchRankingSettings {
+	return searchRankingSettings{
+		PreferredScraper: settings.Filtering.PreferredScraper,
+		ServicePriority:  settings.Filtering.ServicePriority,
+	}
+}
+
+func (s *Service) searchCacheKey(mode string, opts SearchOptions, settings config.Settings, alternateTitles []string, filterSettings models.FilterSettings, animeSettings models.AnimeFilteringSettings, filterOverrides effectiveOverrides, rankingCriteria []config.RankingCriterion) string {
 	payload := searchCacheKeyPayload{
+		Mode:            mode,
 		Options:         buildSearchCacheOptions(opts),
 		AlternateTitles: append([]string(nil), alternateTitles...),
-		Settings:        settings,
+		Settings:        buildSearchRelevantSettings(settings),
 		FilterSettings:  filterSettings,
 		AnimeSettings:   animeSettings,
 		FilterOverrides: filterOverrides,
+		RankingSettings: buildSearchRankingSettings(settings),
+		RankingCriteria: append([]config.RankingCriterion(nil), rankingCriteria...),
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -812,9 +875,35 @@ func (s *Service) setCachedSearchResults(key string, results []models.NZBResult,
 	if s.searchCache == nil {
 		s.searchCache = make(map[string]searchCacheEntry)
 	}
+	s.pruneExpiredSearchCacheLocked(now)
+	if len(s.searchCache) >= searchResultsCacheMaxEntries {
+		s.pruneOldestSearchCacheEntryLocked()
+	}
 	s.searchCache[key] = searchCacheEntry{
 		results:   cloneNZBResults(results),
 		expiresAt: now.Add(searchResultsCacheTTL),
+	}
+}
+
+func (s *Service) pruneExpiredSearchCacheLocked(now time.Time) {
+	for key, entry := range s.searchCache {
+		if !now.Before(entry.expiresAt) {
+			delete(s.searchCache, key)
+		}
+	}
+}
+
+func (s *Service) pruneOldestSearchCacheEntryLocked() {
+	var oldestKey string
+	var oldestExpiresAt time.Time
+	for key, entry := range s.searchCache {
+		if oldestKey == "" || entry.expiresAt.Before(oldestExpiresAt) {
+			oldestKey = key
+			oldestExpiresAt = entry.expiresAt
+		}
+	}
+	if oldestKey != "" {
+		delete(s.searchCache, oldestKey)
 	}
 }
 
@@ -884,7 +973,8 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBR
 
 	parsedQuery := debrid.ParseQuery(opts.Query)
 	searchQueries := buildSearchQueries(opts, parsedQuery, alternateTitles)
-	cacheKey := s.searchCacheKey(opts, settings, alternateTitles, filterSettings, animeSettings, filterOverrides)
+	rankingCriteria := s.getEffectiveRankingCriteria(opts.UserID, opts.ClientID, settings)
+	cacheKey := s.searchCacheKey("ranked", opts, settings, alternateTitles, filterSettings, animeSettings, filterOverrides, rankingCriteria)
 	if cached, ok := s.getCachedSearchResults(cacheKey, searchStart); ok {
 		log.Printf("[indexer] search cache hit for query=%q mediaType=%q user=%q client=%q results=%d", opts.Query, opts.MediaType, opts.UserID, opts.ClientID, len(cached))
 		log.Printf("[search-stats] Search #%d cache hit: %d results in %v (totals: search=%d, splitSearch=%d, usenetAPICalls=%d)",
@@ -1252,6 +1342,7 @@ func (s *Service) SearchTest(ctx context.Context, opts SearchOptions) ([]models.
 
 // searchRawResults collects unfiltered results from all search sources.
 func (s *Service) searchRawResults(ctx context.Context, opts SearchOptions) ([]models.NZBResult, error) {
+	searchStart := time.Now()
 	if s.cfg == nil {
 		return nil, errors.New("config manager not configured")
 	}
@@ -1292,6 +1383,13 @@ func (s *Service) searchRawResults(ctx context.Context, opts SearchOptions) ([]m
 	alternateTitles := s.resolveAlternateTitles(ctx, opts, s.getEffectiveMetadataLanguage(opts.UserID, settings), settings.Streaming.MaxAlternateTitleSearches)
 	parsedQuery := debrid.ParseQuery(opts.Query)
 	searchQueries := buildSearchQueries(opts, parsedQuery, alternateTitles)
+	filterSettings, animeSettings, filterOverrides := s.getEffectiveFilterSettings(opts.UserID, opts.ClientID, settings)
+	rankingCriteria := s.getEffectiveRankingCriteria(opts.UserID, opts.ClientID, settings)
+	cacheKey := s.searchCacheKey("raw", opts, settings, alternateTitles, filterSettings, animeSettings, filterOverrides, rankingCriteria)
+	if cached, ok := s.getCachedSearchResults(cacheKey, searchStart); ok {
+		log.Printf("[indexer] raw search cache hit for query=%q mediaType=%q user=%q client=%q results=%d", opts.Query, opts.MediaType, opts.UserID, opts.ClientID, len(cached))
+		return cached, nil
+	}
 
 	type searchResult struct {
 		results []models.NZBResult
@@ -1320,7 +1418,6 @@ func (s *Service) searchRawResults(ctx context.Context, opts SearchOptions) ([]m
 				}
 				resultsChan <- searchResult{results: usenetResults, source: "usenet"}
 			} else {
-				filterSettings, _, _ := s.getEffectiveFilterSettings(opts.UserID, opts.ClientID, settings)
 				usenetResults, err := s.searchUsenetWithFilter(ctx, settings, opts, parsedQuery, alternateTitles, searchQueries, filterSettings)
 				if err != nil {
 					resultsChan <- searchResult{err: err, source: "usenet"}
@@ -1405,6 +1502,7 @@ func (s *Service) searchRawResults(ctx context.Context, opts SearchOptions) ([]m
 		return nil, fmt.Errorf("all search sources failed")
 	}
 
+	s.setCachedSearchResults(cacheKey, aggregated, time.Now())
 	return aggregated, nil
 }
 
