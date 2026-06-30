@@ -608,6 +608,30 @@ func compareDownloadPreferredTerms(i, j models.NZBResult, terms []filter.Compile
 	return 0
 }
 
+func compareDeterministicTieBreaker(i, j models.NZBResult) int {
+	valuesI := []string{
+		strings.ToLower(strings.TrimSpace(i.Title)),
+		strings.ToLower(strings.TrimSpace(string(i.ServiceType))),
+		strings.ToLower(strings.TrimSpace(i.Indexer)),
+		strings.ToLower(strings.TrimSpace(i.GUID)),
+	}
+	valuesJ := []string{
+		strings.ToLower(strings.TrimSpace(j.Title)),
+		strings.ToLower(strings.TrimSpace(string(j.ServiceType))),
+		strings.ToLower(strings.TrimSpace(j.Indexer)),
+		strings.ToLower(strings.TrimSpace(j.GUID)),
+	}
+	for idx := range valuesI {
+		if valuesI[idx] < valuesJ[idx] {
+			return -1
+		}
+		if valuesI[idx] > valuesJ[idx] {
+			return 1
+		}
+	}
+	return 0
+}
+
 func compareByRankingCriteria(i, j models.NZBResult, scoringCtx ScoringContext) int {
 	if cmp := compareYearPriority(i, j); cmp != 0 {
 		return cmp
@@ -646,7 +670,7 @@ func compareByRankingCriteria(i, j models.NZBResult, scoringCtx ScoringContext) 
 		}
 	}
 
-	return 0
+	return compareDeterministicTieBreaker(i, j)
 }
 
 func (s *Service) buildScoringContext(opts SearchOptions, settings config.Settings, filterSettings models.FilterSettings, animeSettings models.AnimeFilteringSettings) ScoringContext {
@@ -1177,6 +1201,10 @@ func (s *Service) SearchWithScoring(ctx context.Context, opts SearchOptions) ([]
 	rawOpts := opts
 	rawOpts.SkipFilter = true
 	rawOpts.IncludeFiltered = false
+	// MaxResults is a final presentation/resolution cap. Passing it into raw
+	// source fetches can truncate one source before cross-source ranking runs,
+	// which makes Details/admin/prequeue disagree on the top candidates.
+	rawOpts.MaxResults = 0
 	rawResults, err := s.searchRawResults(ctx, rawOpts)
 	if err != nil {
 		return nil, err
@@ -1200,6 +1228,19 @@ func (s *Service) SearchWithScoring(ctx context.Context, opts SearchOptions) ([]
 			}
 		}
 		return scored, nil
+	}
+	if opts.IsAnime && models.BoolVal(animeSettings.AnimeLanguageEnabled, false) {
+		langCode := ""
+		if animeSettings.AnimePreferredLanguage != nil {
+			langCode = *animeSettings.AnimePreferredLanguage
+		}
+		if langCode == "" {
+			langCode = "eng"
+		}
+		_, _, animeFilterOut := filter.GetAnimeLanguageTerms(langCode)
+		if len(animeFilterOut) > 0 {
+			filterSettings.FilterOutTerms = append(filterSettings.FilterOutTerms, animeFilterOut...)
+		}
 	}
 	filterOpts := s.buildFilterOptions(rawOpts, filterSettings)
 
@@ -1258,85 +1299,24 @@ func (s *Service) SearchTest(ctx context.Context, opts SearchOptions) ([]models.
 	searchStart := time.Now()
 	log.Printf("[indexer] SearchTest started for query=%q mediaType=%q", opts.Query, opts.MediaType)
 
-	// Collect all raw results (no filtering)
-	rawOpts := opts
-	rawOpts.SkipFilter = true
-	rawResults, err := s.searchRawResults(ctx, rawOpts)
+	searchOpts := opts
+	searchOpts.IncludeFiltered = true
+	result, err := s.SearchWithScoring(ctx, searchOpts)
 	if err != nil {
 		return nil, err
 	}
 
-	settings, err := s.cfg.Load()
-	if err != nil {
-		return nil, fmt.Errorf("load settings: %w", err)
-	}
-	settings = config.FilterSettingsForProfile(settings, opts.UserID)
-
-	filterSettings, animeSettings, filterOverrides := s.getEffectiveFilterSettings(opts.UserID, opts.ClientID, settings)
-	if shouldBypassAIOStreamsRanking(settings, filterOverrides, shouldUseUsenet(settings.Streaming.ServiceMode)) {
-		log.Printf("[indexer] Bypassing mediastorm filtering/ranking - AIOStreams is the only enabled scraper and bypass setting is enabled")
-		scored := make([]models.ScoredNZBResult, len(rawResults))
-		for i, r := range rawResults {
-			scored[i] = models.ScoredNZBResult{
-				NZBResult:    markRankingBypassed(r),
-				FilterStatus: "passed",
-			}
-		}
-		log.Printf("[indexer] SearchTest complete: %d total (%d passed, %d filtered) in %v",
-			len(scored), len(scored), 0, time.Since(searchStart))
-		return scored, nil
-	}
-
-	// Inject anime language filter-out terms
-	if opts.IsAnime && models.BoolVal(animeSettings.AnimeLanguageEnabled, false) {
-		langCode := ""
-		if animeSettings.AnimePreferredLanguage != nil {
-			langCode = *animeSettings.AnimePreferredLanguage
-		}
-		if langCode == "" {
-			langCode = "eng"
-		}
-		_, _, animeFilterOut := filter.GetAnimeLanguageTerms(langCode)
-		if len(animeFilterOut) > 0 {
-			filterSettings.FilterOutTerms = append(filterSettings.FilterOutTerms, animeFilterOut...)
-		}
-	}
-
-	// Run filter with details
-	filterOpts := s.buildFilterOptions(opts, filterSettings)
-	detailed := filter.ResultsWithDetails(rawResults, filterOpts)
-
-	scoringCtx := s.buildScoringContext(opts, settings, filterSettings, animeSettings)
-
-	// Score all results and separate passed/filtered
-	var passed, filtered []models.ScoredNZBResult
-	for _, fr := range detailed {
-		score, breakdown := ScoreResult(fr.Result, scoringCtx)
-		sr := models.ScoredNZBResult{
-			NZBResult:      fr.Result,
-			TotalScore:     score,
-			ScoreBreakdown: breakdown,
-		}
-		if fr.Passed {
-			sr.FilterStatus = "passed"
-			passed = append(passed, sr)
+	passedCount := 0
+	filteredCount := 0
+	for _, scored := range result {
+		if scored.FilterStatus == "filtered" {
+			filteredCount++
 		} else {
-			sr.FilterStatus = "filtered"
-			sr.FilterReason = fr.RejectReason
-			filtered = append(filtered, sr)
+			passedCount++
 		}
 	}
-
-	// Sort passed results by the same priority order used by standard ranking.
-	sort.SliceStable(passed, func(i, j int) bool {
-		return compareByRankingCriteria(passed[i].NZBResult, passed[j].NZBResult, scoringCtx) < 0
-	})
-
-	// Combine: passed first, then filtered
-	result := append(passed, filtered...)
-
 	log.Printf("[indexer] SearchTest complete: %d total (%d passed, %d filtered) in %v",
-		len(result), len(passed), len(filtered), time.Since(searchStart))
+		len(result), passedCount, filteredCount, time.Since(searchStart))
 	return result, nil
 }
 

@@ -158,18 +158,7 @@ func (h *IndexerHandler) Search(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if h.BadStreams != nil {
-			for i := range scored {
-				if h.BadStreams.IsBad(scored[i].NZBResult) {
-					scored[i].FilterStatus = "filtered"
-					if scored[i].FilterReason == "" {
-						scored[i].FilterReason = "marked bad stream"
-					} else if !strings.Contains(strings.ToLower(scored[i].FilterReason), "marked bad stream") {
-						scored[i].FilterReason += "; marked bad stream"
-					}
-				}
-			}
-		}
+		markBadScoredResults(scored, h.BadStreams)
 		if h.DemoMode {
 			maskedTitle := buildMaskedTitle(query, year, mediaType)
 			for i := range scored {
@@ -293,7 +282,7 @@ func (h *IndexerHandler) SearchTest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Detect anime for movies
+	// Detect anime for movies via the same helper used by manual search and prequeue.
 	if mediaType == "movie" && h.MovieMetadataSvc != nil {
 		movieQuery := models.MovieDetailsQuery{
 			Name:   strings.TrimSpace(query),
@@ -301,12 +290,10 @@ func (h *IndexerHandler) SearchTest(w http.ResponseWriter, r *http.Request) {
 			IMDBID: imdbID,
 		}
 		if movieTitle, err := h.MovieMetadataSvc.MovieInfo(r.Context(), movieQuery); err == nil && movieTitle != nil {
-			for _, genre := range movieTitle.Genres {
-				genreLower := strings.ToLower(genre)
-				if genreLower == "animation" || genreLower == "anime" {
-					isAnime = true
-					break
-				}
+			if isAnimeTitle(movieTitle) {
+				isAnime = true
+				log.Printf("[indexer] Movie %q is anime (genres=%v originalName=%q language=%q) - applying anime language preferences",
+					query, movieTitle.Genres, movieTitle.OriginalName, movieTitle.Language)
 			}
 		}
 	}
@@ -338,6 +325,8 @@ func (h *IndexerHandler) SearchTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	markBadScoredResults(results, h.BadStreams)
+
 	// Ensure we return [] instead of null for empty results
 	if results == nil {
 		results = []models.ScoredNZBResult{}
@@ -345,6 +334,23 @@ func (h *IndexerHandler) SearchTest(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(results)
+}
+
+func markBadScoredResults(results []models.ScoredNZBResult, badStreams *badstreams.Service) {
+	if badStreams == nil {
+		return
+	}
+	for i := range results {
+		if !badStreams.IsBad(results[i].NZBResult) {
+			continue
+		}
+		results[i].FilterStatus = "filtered"
+		if results[i].FilterReason == "" {
+			results[i].FilterReason = "marked bad stream"
+		} else if !strings.Contains(strings.ToLower(results[i].FilterReason), "marked bad stream") {
+			results[i].FilterReason += "; marked bad stream"
+		}
+	}
 }
 
 // buildMaskedTitle creates a display name from search parameters

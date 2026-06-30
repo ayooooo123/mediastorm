@@ -37,6 +37,18 @@ func (s *countingDebridSearchService) Search(context.Context, debrid.SearchOptio
 	return cloneNZBResults(s.results), nil
 }
 
+type maxAwareDebridSearchService struct {
+	results []models.NZBResult
+}
+
+func (s maxAwareDebridSearchService) Search(_ context.Context, opts debrid.SearchOptions) ([]models.NZBResult, error) {
+	results := cloneNZBResults(s.results)
+	if opts.MaxResults > 0 && len(results) > opts.MaxResults {
+		results = results[:opts.MaxResults]
+	}
+	return results, nil
+}
+
 type mutableClientSettingsProvider struct {
 	settings atomic.Value
 }
@@ -728,6 +740,69 @@ func TestSearchWithScoringCachesRawResultsForIncludeFiltered(t *testing.T) {
 	}
 	if got := debridSvc.calls.Load(); got != 1 {
 		t.Fatalf("expected raw cache hit to avoid another underlying call, got %d calls", got)
+	}
+}
+
+func TestSearchWithScoringDoesNotCapRawDebridBeforeRanking(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "settings.json")
+	mgr := config.NewManager(cfgPath)
+
+	settings := config.DefaultSettings()
+	settings.Streaming.ServiceMode = config.StreamingServiceModeDebrid
+	settings.Ranking.Criteria = []config.RankingCriterion{
+		{ID: config.RankingSize, Name: "File Size", Enabled: true, Order: 0},
+		{ID: config.RankingResolution, Name: "Resolution", Enabled: true, Order: 1},
+	}
+	if err := mgr.Save(settings); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	svc := NewService(mgr, nil, maxAwareDebridSearchService{
+		results: []models.NZBResult{
+			{
+				Title:       "Movie.2024.2160p.small",
+				Indexer:     "FirstSource",
+				ServiceType: models.ServiceTypeDebrid,
+				SizeBytes:   10,
+				Attributes:  map[string]string{"resolution": "2160p"},
+			},
+			{
+				Title:       "Movie.2024.2160p.large",
+				Indexer:     "SecondSource",
+				ServiceType: models.ServiceTypeDebrid,
+				SizeBytes:   100,
+				Attributes:  map[string]string{"resolution": "2160p"},
+			},
+		},
+	})
+
+	opts := SearchOptions{
+		Query:           "Movie 2024",
+		MediaType:       "movie",
+		Year:            2024,
+		MaxResults:      1,
+		IncludeFiltered: true,
+	}
+	scored, err := svc.SearchWithScoring(t.Context(), opts)
+	if err != nil {
+		t.Fatalf("SearchWithScoring returned error: %v", err)
+	}
+	if len(scored) < 2 {
+		t.Fatalf("expected raw source cap to be ignored before ranking, got %d result(s)", len(scored))
+	}
+	if got := scored[0].Title; got != "Movie.2024.2160p.large" {
+		t.Fatalf("expected full raw set to be ranked before limiting, got first title %q", got)
+	}
+
+	testResults, err := svc.SearchTest(t.Context(), opts)
+	if err != nil {
+		t.Fatalf("SearchTest returned error: %v", err)
+	}
+	if len(testResults) < 2 {
+		t.Fatalf("expected search test raw source cap to be ignored before ranking, got %d result(s)", len(testResults))
+	}
+	if got := testResults[0].Title; got != "Movie.2024.2160p.large" {
+		t.Fatalf("expected search test to rank full raw set before limiting, got first title %q", got)
 	}
 }
 
