@@ -1397,7 +1397,7 @@ func (h *LiveHandler) fetchXtreamChannels(ctx context.Context, host, username, p
 	categoriesURL := fmt.Sprintf("%s/player_api.php?username=%s&password=%s&action=get_live_categories",
 		host, url.QueryEscape(username), url.QueryEscape(password))
 
-	log.Printf("[live] fetching Xtream categories from: %s", categoriesURL)
+	log.Printf("[live] fetching Xtream categories host=%q", host)
 
 	client := h.liveHTTPClient(proxyURL)
 
@@ -1426,7 +1426,7 @@ func (h *LiveHandler) fetchXtreamChannels(ctx context.Context, host, username, p
 	streamsURL := fmt.Sprintf("%s/player_api.php?username=%s&password=%s&action=get_live_streams",
 		host, url.QueryEscape(username), url.QueryEscape(password))
 
-	log.Printf("[live] fetching Xtream streams from: %s", streamsURL)
+	log.Printf("[live] fetching Xtream streams host=%q", host)
 
 	streamReq, err := http.NewRequestWithContext(ctx, http.MethodGet, streamsURL, nil)
 	if err != nil {

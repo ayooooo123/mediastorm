@@ -87,7 +87,19 @@ func (s *Service) supplementWithXtreamPerChannel(ctx context.Context, settings *
 		return nil
 	}
 
-	log.Printf("[epg] supplementing %d channels with per-channel EPG data", len(channelStreams))
+	now := time.Now().UTC()
+	targetStreams := make([]streamInfo, 0, len(channelStreams))
+	for _, info := range channelStreams {
+		if needsXtreamPerChannelSupplement(schedule, info.epgChannelID, now) {
+			targetStreams = append(targetStreams, info)
+		}
+	}
+	if len(targetStreams) == 0 {
+		log.Printf("[epg] skipping per-channel supplement: %d channels already have current/future EPG data", len(channelStreams))
+		return nil
+	}
+
+	log.Printf("[epg] supplementing %d/%d channels with missing or stale per-channel EPG data", len(targetStreams), len(channelStreams))
 
 	// Semaphore for concurrency control
 	sem := make(chan struct{}, xtreamPerChannelConcurrency)
@@ -98,7 +110,7 @@ func (s *Service) supplementWithXtreamPerChannel(ctx context.Context, settings *
 	failed := 0
 	programsAdded := 0
 
-	for _, info := range channelStreams {
+	for _, info := range targetStreams {
 		wg.Add(1)
 		go func(si streamInfo) {
 			defer wg.Done()
@@ -135,6 +147,23 @@ func (s *Service) supplementWithXtreamPerChannel(ctx context.Context, settings *
 		succeeded, succeeded+failed, programsAdded)
 
 	return nil
+}
+
+func needsXtreamPerChannelSupplement(schedule *models.EPGSchedule, epgChannelID string, now time.Time) bool {
+	epgChannelID = strings.ToLower(strings.TrimSpace(epgChannelID))
+	if schedule == nil || epgChannelID == "" {
+		return false
+	}
+	programs := schedule.Programs[epgChannelID]
+	if len(programs) == 0 {
+		return true
+	}
+	for _, program := range programs {
+		if program.Stop.After(now) {
+			return false
+		}
+	}
+	return true
 }
 
 // fetchXtreamStreams fetches the live stream list from Xtream's player API.

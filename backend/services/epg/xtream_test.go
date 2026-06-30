@@ -85,10 +85,10 @@ func TestMergePrograms(t *testing.T) {
 
 	t.Run("overlapping range replaces existing", func(t *testing.T) {
 		existing := []models.EPGProgram{
-			makeProgram("Old Morning", -2*time.Hour, -1*time.Hour),  // before per-channel range
-			makeProgram("Old Stale", 0, 1*time.Hour),                // overlaps with per-channel
-			makeProgram("Old Stale 2", 1*time.Hour, 2*time.Hour),    // overlaps with per-channel
-			makeProgram("Old Evening", 5*time.Hour, 6*time.Hour),    // after per-channel range
+			makeProgram("Old Morning", -2*time.Hour, -1*time.Hour), // before per-channel range
+			makeProgram("Old Stale", 0, 1*time.Hour),               // overlaps with per-channel
+			makeProgram("Old Stale 2", 1*time.Hour, 2*time.Hour),   // overlaps with per-channel
+			makeProgram("Old Evening", 5*time.Hour, 6*time.Hour),   // after per-channel range
 		}
 		perChannel := []models.EPGProgram{
 			makeProgram("Fresh Show 1", 0, 1*time.Hour),
@@ -157,6 +157,45 @@ func TestMergePrograms(t *testing.T) {
 				t.Errorf("programs not sorted: %q at %v before %q at %v",
 					result[i-1].Title, result[i-1].Start, result[i].Title, result[i].Start)
 			}
+		}
+	})
+}
+
+func TestNeedsXtreamPerChannelSupplement(t *testing.T) {
+	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+
+	t.Run("missing schedule does not supplement", func(t *testing.T) {
+		if needsXtreamPerChannelSupplement(nil, "channel.one", now) {
+			t.Fatal("nil schedule should not supplement")
+		}
+	})
+
+	t.Run("missing channel programs supplements", func(t *testing.T) {
+		schedule := &models.EPGSchedule{Programs: map[string][]models.EPGProgram{}}
+		if !needsXtreamPerChannelSupplement(schedule, "channel.one", now) {
+			t.Fatal("missing channel programs should supplement")
+		}
+	})
+
+	t.Run("future programs skip supplement", func(t *testing.T) {
+		schedule := &models.EPGSchedule{Programs: map[string][]models.EPGProgram{
+			"channel.one": {
+				{Title: "Now", Start: now.Add(-30 * time.Minute), Stop: now.Add(30 * time.Minute)},
+			},
+		}}
+		if needsXtreamPerChannelSupplement(schedule, "CHANNEL.ONE", now) {
+			t.Fatal("current/future programs should skip supplement")
+		}
+	})
+
+	t.Run("stale programs supplement", func(t *testing.T) {
+		schedule := &models.EPGSchedule{Programs: map[string][]models.EPGProgram{
+			"channel.one": {
+				{Title: "Old", Start: now.Add(-2 * time.Hour), Stop: now.Add(-1 * time.Hour)},
+			},
+		}}
+		if !needsXtreamPerChannelSupplement(schedule, "channel.one", now) {
+			t.Fatal("stale programs should supplement")
 		}
 	})
 }
