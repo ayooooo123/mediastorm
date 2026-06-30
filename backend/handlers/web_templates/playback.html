@@ -894,6 +894,7 @@
     let webPlayerSubtitleCues = [];
     let webPlayerSubtitleLoadToken = 0;
     let webPlayerSubtitleRefreshTimer = null;
+    let webPlayerSubtitleRenderFrame = null;
     let webPlayerControlsHideTimer = null;
     let webPlayerMediaRecoverAttempts = 0;
     let webPlayerVolume = 1;
@@ -1494,6 +1495,7 @@
 
     function attachWebPlayer(video, playlistUrl) {
       if (!video || !playlistUrl) return;
+      stopSubtitleRenderLoop();
       webPlayerDebugLog('info', 'attach player', {
         hlsSessionId,
         isLive: Boolean(playbackMeta.isLive),
@@ -1669,17 +1671,20 @@
         webPlayerPausedAt = 0;
         updateControls();
         renderSubtitles();
+        startSubtitleRenderLoop(video);
         showControls();
         sendWebPlayerProgress({ force: true, isPaused: false });
       });
       video.addEventListener('pause', () => {
         if (!webPlayerPausedAt) webPlayerPausedAt = Date.now();
+        stopSubtitleRenderLoop();
         updateControls();
         renderSubtitles();
         showControls();
         sendWebPlayerProgress({ force: true, isPaused: true });
       });
       video.addEventListener('ended', () => {
+        stopSubtitleRenderLoop();
         updateControls();
         renderSubtitles();
         sendWebPlayerProgress({ force: true, isPaused: true, ended: true });
@@ -1751,7 +1756,14 @@
       video.pause();
 
       try {
-        const response = await apiCall(`/video/hls/${encodeURIComponent(hlsSessionId)}/seek?time=${absoluteTarget.toFixed(2)}`, { method: 'POST' });
+        const seekParams = new URLSearchParams({
+          time: absoluteTarget.toFixed(2),
+          target: 'web',
+        });
+        if (Number(webPlayerSelectedSubtitleTrack) >= 0) {
+          seekParams.set('subtitleTrack', String(webPlayerSelectedSubtitleTrack));
+        }
+        const response = await apiCall(`/video/hls/${encodeURIComponent(hlsSessionId)}/seek?${seekParams.toString()}`, { method: 'POST' });
         if (!response?.playlistUrl) throw new Error('seek response missing playlist URL');
         const requestedOffset = Number(response.startOffset ?? absoluteTarget);
         const actualOffset = Number(response.actualStartOffset ?? requestedOffset);
@@ -1759,6 +1771,7 @@
         hlsDuration = Number(response.duration || hlsDuration || 0);
         rememberPositivePosition(hlsPlaybackOffset);
         webPlayerSubtitleCues = [];
+        renderSubtitles();
         attachWebPlayer(video, apiUrl(response.playlistUrl));
         sendWebPlayerProgress({ force: true, isPaused: !wasPlaying, position: hlsPlaybackOffset });
         video.addEventListener('canplay', () => {
@@ -2218,6 +2231,26 @@
     function clearSubtitleRefresh() {
       if (webPlayerSubtitleRefreshTimer) clearTimeout(webPlayerSubtitleRefreshTimer);
       webPlayerSubtitleRefreshTimer = null;
+    }
+
+    function startSubtitleRenderLoop(video) {
+      stopSubtitleRenderLoop();
+      const tick = () => {
+        renderSubtitles();
+        if (video && !video.paused && !video.ended) {
+          webPlayerSubtitleRenderFrame = window.requestAnimationFrame(tick);
+        } else {
+          webPlayerSubtitleRenderFrame = null;
+        }
+      };
+      webPlayerSubtitleRenderFrame = window.requestAnimationFrame(tick);
+    }
+
+    function stopSubtitleRenderLoop() {
+      if (webPlayerSubtitleRenderFrame !== null) {
+        window.cancelAnimationFrame(webPlayerSubtitleRenderFrame);
+        webPlayerSubtitleRenderFrame = null;
+      }
     }
 
     function scheduleSubtitleRefresh(video, delayMs) {
