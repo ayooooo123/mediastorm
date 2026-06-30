@@ -3583,7 +3583,7 @@ func (s *Service) SeriesDetails(ctx context.Context, req models.SeriesDetailsQue
 					wg.Add(1)
 					go func(seasonID int64) {
 						defer wg.Done()
-						translation, err := s.client.seasonTranslations(seasonID, s.client.language)
+						translation, err := s.cachedSeasonTranslations(seasonID, s.client.language)
 						if err != nil || translation == nil {
 							return
 						}
@@ -3781,7 +3781,7 @@ func (s *Service) SeriesDetails(ctx context.Context, req models.SeriesDetailsQue
 			wg.Add(1)
 			go func(seasonID int64) {
 				defer wg.Done()
-				if translation, err := s.client.seasonTranslations(seasonID, s.client.language); err == nil && translation != nil {
+				if translation, err := s.cachedSeasonTranslations(seasonID, s.client.language); err == nil && translation != nil {
 					mu.Lock()
 					seasonTrans[seasonID] = translationResult{
 						name:     strings.TrimSpace(translation.Name),
@@ -7584,6 +7584,54 @@ func (s *Service) cachedSeriesTranslations(tvdbID int64, lang string) (*tvdbSeri
 		if result != nil {
 			_ = s.cache.set(cacheID, *result)
 		}
+		return result, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	result, _ := value.(*tvdbSeriesTranslation)
+	return result, nil
+}
+
+type cachedTVDBTranslationResult struct {
+	Found       bool                  `json:"found"`
+	Translation tvdbSeriesTranslation `json:"translation,omitempty"`
+}
+
+// cachedSeasonTranslations fetches TVDB season translations with file caching.
+// TVDB often returns 404 for season translation resources, so empty/not-found
+// results are cached too to avoid repeating misses on every series details load.
+func (s *Service) cachedSeasonTranslations(seasonID int64, lang string) (*tvdbSeriesTranslation, error) {
+	cacheID := cacheKey("tvdb", "season", "translations", "v1", fmt.Sprintf("%d", seasonID), lang)
+	var cached cachedTVDBTranslationResult
+	if ok, _ := s.cache.get(cacheID, &cached); ok {
+		if !cached.Found {
+			return nil, nil
+		}
+		return &cached.Translation, nil
+	}
+	value, err := s.singleflightCachedFetch(context.Background(), cacheID, func() (any, error) {
+		var cached cachedTVDBTranslationResult
+		if ok, _ := s.cache.get(cacheID, &cached); ok {
+			if !cached.Found {
+				return (*tvdbSeriesTranslation)(nil), nil
+			}
+			result := cached.Translation
+			return &result, nil
+		}
+		result, err := s.client.seasonTranslations(seasonID, lang)
+		if err != nil {
+			if strings.Contains(err.Error(), "404 Not Found") {
+				_ = s.cache.set(cacheID, cachedTVDBTranslationResult{Found: false})
+				return (*tvdbSeriesTranslation)(nil), nil
+			}
+			return nil, err
+		}
+		if result == nil || (strings.TrimSpace(result.Name) == "" && strings.TrimSpace(result.Overview) == "") {
+			_ = s.cache.set(cacheID, cachedTVDBTranslationResult{Found: false})
+			return (*tvdbSeriesTranslation)(nil), nil
+		}
+		_ = s.cache.set(cacheID, cachedTVDBTranslationResult{Found: true, Translation: *result})
 		return result, nil
 	})
 	if err != nil {
