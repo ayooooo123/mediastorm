@@ -635,14 +635,15 @@ var SettingsSchema = map[string]interface{}{
 			"rewindOnResumeFromPause": map[string]interface{}{"type": "number", "label": "Rewind on Unpause", "description": "Seconds to rewind when resuming from pause (default 0)", "step": 1, "min": 0, "max": 30},
 			"rewindOnPlaybackStart":   map[string]interface{}{"type": "number", "label": "Rewind on Resume", "description": "Seconds to rewind when resuming from saved progress (default 0)", "step": 1, "min": 0, "max": 60},
 			"disablePrequeue":         map[string]interface{}{"type": "boolean", "label": "Disable Prequeue", "description": "Disable automatic stream pre-loading when opening a details page. Streams will only be resolved when you press Play. Useful to reduce unnecessary backend load or API calls.", "order": 101},
-			"creditsDetectionEnabled": map[string]interface{}{"type": "boolean", "label": "Credits Detection", "description": "Run on-device OCR near the end of eligible episodes to detect credits and show next-episode actions. Off by default — on low-powered devices such as original Android Fire Sticks this can cause crashes around 90% playback.", "order": 102},
-			"creditsAutoSkip":         map[string]interface{}{"type": "boolean", "label": "Auto-Skip Credits", "description": "Automatically start the next episode after on-device credits detection fires.", "order": 103},
-			"matchFrameRate":          map[string]interface{}{"type": "boolean", "label": "Match Frame Rate", "description": "On supported TV devices, request a display refresh rate that matches the video's frame rate during native playback.", "order": 104},
-			"maxResultsPerResolution": map[string]interface{}{"type": "number", "label": "Max Results Per Resolution", "description": "Maximum number of results per resolution tier (0 = no limit)", "order": 105},
-			"thumbnails.enabled":      map[string]interface{}{"type": "boolean", "label": "Seek Preview Thumbnails", "description": "Generate seek-preview thumbnails during playback. Off by default to avoid extra provider and CPU load.", "order": 106, "group": "seekPreviewThumbnails", "groupLabel": "Seek Preview Thumbnails", "groupDescription": "Server-side thumbnail generation used by the playback scrubber.", "globalOnly": true},
-			"thumbnails.workers":      map[string]interface{}{"type": "number", "label": "Thumbnail Workers", "description": "Concurrent ffmpeg thumbnail workers per generation pass. Default 1.", "step": 1, "min": 1, "max": 8, "order": 107, "group": "seekPreviewThumbnails", "groupLabel": "Seek Preview Thumbnails", "groupDescription": "Server-side thumbnail generation used by the playback scrubber.", "globalOnly": true},
-			"youtubeProxyUrl":         map[string]interface{}{"type": "password", "label": "Proxy URL", "description": "Optional HTTP proxy for YouTube extraction and HLS playback. For Gluetun, use http://gluetun:8888.", "placeholder": "http://gluetun:8888", "order": 108, "group": "youtubeYTDLP", "groupLabel": "YouTube / yt-dlp", "groupDescription": "Server-side YouTube extraction settings used for trailers, YouTube video search, and HLS playback.", "globalOnly": true},
-			"ytdlpCookies":            map[string]interface{}{"type": "file_upload", "label": "Cookies", "description": "Upload a Netscape-format cookies.txt file to help yt-dlp bypass YouTube restrictions on VPS/cloud servers. Export cookies from a browser where you are logged into YouTube using a browser extension like 'Get cookies.txt LOCALLY'.", "order": 109, "endpoint": "/admin/api/ytdlp-cookies", "accept": ".txt", "globalOnly": true, "group": "youtubeYTDLP", "groupLabel": "YouTube / yt-dlp", "groupDescription": "Server-side YouTube extraction settings used for trailers, YouTube video search, and HLS playback."},
+			"streamMigrationEnabled":  map[string]interface{}{"type": "boolean", "label": "Stream Migration", "description": "When native playback repeatedly buffers or errors, prepare the next ranked stream in the background and switch to it.", "order": 102},
+			"creditsDetectionEnabled": map[string]interface{}{"type": "boolean", "label": "Credits Detection", "description": "Run on-device OCR near the end of eligible episodes to detect credits and show next-episode actions. Off by default — on low-powered devices such as original Android Fire Sticks this can cause crashes around 90% playback.", "order": 103},
+			"creditsAutoSkip":         map[string]interface{}{"type": "boolean", "label": "Auto-Skip Credits", "description": "Automatically start the next episode after on-device credits detection fires.", "order": 104},
+			"matchFrameRate":          map[string]interface{}{"type": "boolean", "label": "Match Frame Rate", "description": "On supported TV devices, request a display refresh rate that matches the video's frame rate during native playback.", "order": 105},
+			"maxResultsPerResolution": map[string]interface{}{"type": "number", "label": "Max Results Per Resolution", "description": "Maximum number of results per resolution tier (0 = no limit)", "order": 106},
+			"thumbnails.enabled":      map[string]interface{}{"type": "boolean", "label": "Seek Preview Thumbnails", "description": "Generate seek-preview thumbnails during playback. Off by default to avoid extra provider and CPU load.", "order": 107, "group": "seekPreviewThumbnails", "groupLabel": "Seek Preview Thumbnails", "groupDescription": "Server-side thumbnail generation used by the playback scrubber.", "globalOnly": true},
+			"thumbnails.workers":      map[string]interface{}{"type": "number", "label": "Thumbnail Workers", "description": "Concurrent ffmpeg thumbnail workers per generation pass. Default 1.", "step": 1, "min": 1, "max": 8, "order": 108, "group": "seekPreviewThumbnails", "groupLabel": "Seek Preview Thumbnails", "groupDescription": "Server-side thumbnail generation used by the playback scrubber.", "globalOnly": true},
+			"youtubeProxyUrl":         map[string]interface{}{"type": "password", "label": "Proxy URL", "description": "Optional HTTP proxy for YouTube extraction and HLS playback. For Gluetun, use http://gluetun:8888.", "placeholder": "http://gluetun:8888", "order": 109, "group": "youtubeYTDLP", "groupLabel": "YouTube / yt-dlp", "groupDescription": "Server-side YouTube extraction settings used for trailers, YouTube video search, and HLS playback.", "globalOnly": true},
+			"ytdlpCookies":            map[string]interface{}{"type": "file_upload", "label": "Cookies", "description": "Upload a Netscape-format cookies.txt file to help yt-dlp bypass YouTube restrictions on VPS/cloud servers. Export cookies from a browser where you are logged into YouTube using a browser extension like 'Get cookies.txt LOCALLY'.", "order": 110, "endpoint": "/admin/api/ytdlp-cookies", "accept": ".txt", "globalOnly": true, "group": "youtubeYTDLP", "groupLabel": "YouTube / yt-dlp", "groupDescription": "Server-side YouTube extraction settings used for trailers, YouTube video search, and HLS playback."},
 		},
 	},
 	"homeShelves": map[string]interface{}{
@@ -1299,6 +1300,7 @@ type AdminUIHandler struct {
 	toolsTemplate         *template.Template
 	hiddenItemsTemplate   *template.Template
 	resolvedNZBTemplate   *template.Template
+	badStreamsTemplate    *template.Template
 	shareLinksTemplate    *template.Template
 	searchTemplate        *template.Template
 	playbackTemplate      *template.Template
@@ -1603,6 +1605,7 @@ func NewAdminUIHandler(settingsPath, logFile string, hlsManager *HLSManager, use
 		toolsTemplate:        createPageTemplate("tools.html"),
 		hiddenItemsTemplate:  createPageTemplate("hidden_items.html"),
 		resolvedNZBTemplate:  createPageTemplate("resolved_nzbs.html"),
+		badStreamsTemplate:   createPageTemplate("bad_streams.html"),
 		shareLinksTemplate:   createPageTemplate("share_links.html"),
 		searchTemplate:       createPageTemplate("search.html"),
 		playbackTemplate:     createPageTemplate("playback.html"),
@@ -3338,6 +3341,7 @@ func (h *AdminUIHandler) GetUserSettings(w http.ResponseWriter, r *http.Request)
 			RewindOnResumeFromPause:    globalSettings.Playback.RewindOnResumeFromPause,
 			RewindOnPlaybackStart:      globalSettings.Playback.RewindOnPlaybackStart,
 			DisablePrequeue:            globalSettings.Playback.DisablePrequeue,
+			StreamMigrationEnabled:     models.BoolPtr(globalSettings.Playback.StreamMigrationEnabled),
 			IgnoreDVCompatibilityCheck: models.BoolPtr(globalSettings.Playback.IgnoreDVCompatibilityCheck),
 			CreditsDetectionEnabled:    models.BoolPtr(globalSettings.Playback.CreditsDetectionEnabled),
 			CreditsAutoSkip:            globalSettings.Playback.CreditsAutoSkip || globalSettings.Playback.CreditsDetection,
@@ -3538,6 +3542,7 @@ func (h *AdminUIHandler) PropagateSettings(w http.ResponseWriter, r *http.Reques
 						RewindOnResumeFromPause:    globalSettings.Playback.RewindOnResumeFromPause,
 						RewindOnPlaybackStart:      globalSettings.Playback.RewindOnPlaybackStart,
 						DisablePrequeue:            globalSettings.Playback.DisablePrequeue,
+						StreamMigrationEnabled:     models.BoolPtr(globalSettings.Playback.StreamMigrationEnabled),
 						IgnoreDVCompatibilityCheck: models.BoolPtr(globalSettings.Playback.IgnoreDVCompatibilityCheck),
 						CreditsDetectionEnabled:    models.BoolPtr(globalSettings.Playback.CreditsDetectionEnabled),
 						CreditsAutoSkip:            globalSettings.Playback.CreditsAutoSkip || globalSettings.Playback.CreditsDetection,
@@ -9941,6 +9946,33 @@ func (h *AdminUIHandler) ResolvedNZBsPage(w http.ResponseWriter, r *http.Request
 	}
 	if err := h.resolvedNZBTemplate.ExecuteTemplate(w, "base", data); err != nil {
 		fmt.Printf("Resolved NZBs template error: %v\n", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+	}
+}
+
+func (h *AdminUIHandler) BadStreamsPage(w http.ResponseWriter, r *http.Request) {
+	isAdmin, accountID, basePath, username := h.getPageRoleInfo(r)
+	usersList := h.getScopedUsers(isAdmin, accountID)
+
+	data := AdminPageData{
+		CurrentPath:    basePath + "/tools",
+		BasePath:       basePath,
+		ServerBasePath: h.serverBasePath,
+		IsAdmin:        isAdmin,
+		AccountID:      accountID,
+		Username:       username,
+		Users:          usersList,
+		Version:        GetBackendVersion(),
+		BuildID:        GetBackendBuildID(),
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if h.badStreamsTemplate == nil {
+		http.Error(w, "Bad Streams template not loaded", http.StatusInternalServerError)
+		return
+	}
+	if err := h.badStreamsTemplate.ExecuteTemplate(w, "base", data); err != nil {
+		fmt.Printf("Bad Streams template error: %v\n", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 	}
 }

@@ -144,6 +144,7 @@ func globalToUserSettings(g config.Settings) models.UserSettings {
 			RewindOnResumeFromPause:       g.Playback.RewindOnResumeFromPause,
 			RewindOnPlaybackStart:         g.Playback.RewindOnPlaybackStart,
 			DisablePrequeue:               g.Playback.DisablePrequeue,
+			StreamMigrationEnabled:        models.BoolPtr(g.Playback.StreamMigrationEnabled),
 			IgnoreDVCompatibilityCheck:    models.BoolPtr(g.Playback.IgnoreDVCompatibilityCheck),
 			CreditsDetectionEnabled:       models.BoolPtr(g.Playback.CreditsDetectionEnabled),
 			CreditsAutoSkip:               g.Playback.CreditsAutoSkip || g.Playback.CreditsDetection,
@@ -380,6 +381,9 @@ func mergeWithGlobal(us models.UserSettings, g config.Settings) models.UserSetti
 	}
 	if !eff.Playback.DisablePrequeue {
 		eff.Playback.DisablePrequeue = g.Playback.DisablePrequeue
+	}
+	if eff.Playback.StreamMigrationEnabled == nil {
+		eff.Playback.StreamMigrationEnabled = models.BoolPtr(g.Playback.StreamMigrationEnabled)
 	}
 	if eff.Playback.IgnoreDVCompatibilityCheck == nil {
 		eff.Playback.IgnoreDVCompatibilityCheck = models.BoolPtr(g.Playback.IgnoreDVCompatibilityCheck)
@@ -673,6 +677,10 @@ func stripPlayback(p *models.PlaybackSettings, g config.PlaybackSettings) bool {
 	}
 	if p.CreditsDetectionEnabled != nil && *p.CreditsDetectionEnabled == g.CreditsDetectionEnabled {
 		p.CreditsDetectionEnabled = nil
+		changed = true
+	}
+	if p.StreamMigrationEnabled != nil && *p.StreamMigrationEnabled == g.StreamMigrationEnabled {
+		p.StreamMigrationEnabled = nil
 		changed = true
 	}
 	if p.MatchFrameRate != nil && *p.MatchFrameRate == g.MatchFrameRate {
@@ -1017,6 +1025,10 @@ func stripClientSettings(cs *models.ClientFilterSettings, eff models.UserSetting
 	}
 	if cs.CreditsAutoSkip != nil && *cs.CreditsAutoSkip == eff.Playback.CreditsAutoSkip {
 		cs.CreditsAutoSkip = nil
+		changed = true
+	}
+	if cs.StreamMigrationEnabled != nil && eff.Playback.StreamMigrationEnabled != nil && *cs.StreamMigrationEnabled == *eff.Playback.StreamMigrationEnabled {
+		cs.StreamMigrationEnabled = nil
 		changed = true
 	}
 	if cs.MatchFrameRate != nil && eff.Playback.MatchFrameRate != nil && *cs.MatchFrameRate == *eff.Playback.MatchFrameRate {

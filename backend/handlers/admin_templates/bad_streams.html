@@ -1,0 +1,259 @@
+{{template "base" .}}
+
+{{define "title"}}Bad Streams - mediastorm Admin{{end}}
+
+{{define "content"}}
+<style>
+    .bad-streams-table {
+        width: 100%;
+        min-width: 980px;
+        table-layout: fixed;
+        border-collapse: collapse;
+    }
+
+    .bad-streams-table th,
+    .bad-streams-table td {
+        padding: 0.75rem;
+        vertical-align: middle;
+    }
+
+    .bad-release-cell,
+    .bad-path-cell,
+    .bad-reason-cell {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .bad-release-cell {
+        width: 28%;
+    }
+
+    .bad-provider-cell {
+        width: 12%;
+        white-space: nowrap;
+    }
+
+    .bad-service-cell {
+        width: 10%;
+        white-space: nowrap;
+    }
+
+    .bad-path-cell {
+        width: 24%;
+        color: var(--text-secondary);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 0.82rem;
+    }
+
+    .bad-reason-cell {
+        width: 12%;
+        color: var(--text-secondary);
+    }
+
+    .bad-time-cell {
+        width: 12%;
+        color: var(--text-secondary);
+        white-space: nowrap;
+    }
+
+    .bad-hits-cell {
+        width: 6%;
+    }
+
+    .bad-actions-cell {
+        width: 112px;
+        text-align: right;
+        white-space: nowrap;
+    }
+
+    .bad-delete-button {
+        min-width: 82px;
+        justify-content: center;
+        white-space: nowrap;
+    }
+
+    @media (max-width: 640px) {
+        .bad-streams-table {
+            min-width: 960px;
+        }
+
+        .bad-streams-table th,
+        .bad-streams-table td {
+            padding: 0.6rem;
+        }
+
+        .bad-path-cell {
+            font-size: 0.78rem;
+        }
+    }
+</style>
+
+<div class="page-header">
+    <h1>Bad Streams</h1>
+    <p>Streams skipped during playback migration and prequeue resolution</p>
+</div>
+
+<div class="settings-group">
+    <div class="section expanded">
+        <div class="section-header">
+            <div class="section-title">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M10.3 3.3L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.3a2 2 0 0 0-3.4 0z"/>
+                    <line x1="12" y1="9" x2="12" y2="13"/>
+                    <line x1="12" y1="17" x2="12.01" y2="17"/>
+                </svg>
+                Marked Streams
+            </div>
+        </div>
+        <div class="section-content" style="display:block;">
+            <div style="display:flex; gap:0.75rem; flex-wrap:wrap; align-items:center; margin-bottom:1rem;">
+                <input id="badStreamsFilter" class="form-input" style="max-width:420px;" type="search" placeholder="Filter by release, provider, service, path, reason">
+                <select id="badStreamsPerPage" class="form-input" style="max-width:120px;">
+                    <option value="25">25</option>
+                    <option value="50">50</option>
+                    <option value="100">100</option>
+                </select>
+                <button class="btn btn-primary" onclick="loadBadStreams(1)">Filter</button>
+                <button class="btn btn-danger" id="badStreamsPurge" onclick="purgeBadStreams()">Purge All</button>
+                <a class="btn btn-secondary" href="{{.BasePath}}/tools">Back to Tools</a>
+            </div>
+            <div id="badStreamsStatus" class="text-muted" style="margin-bottom:0.75rem;">Loading...</div>
+            <div style="overflow-x:auto; -webkit-overflow-scrolling:touch;">
+                <table class="bad-streams-table">
+                    <thead>
+                        <tr style="border-bottom:1px solid var(--border); color:var(--text-secondary); text-align:left;">
+                            <th class="bad-release-cell">Release</th>
+                            <th class="bad-provider-cell">Provider</th>
+                            <th class="bad-service-cell">Service</th>
+                            <th class="bad-path-cell">Source Path</th>
+                            <th class="bad-reason-cell">Reason</th>
+                            <th class="bad-time-cell">Last Seen</th>
+                            <th class="bad-hits-cell">Hits</th>
+                            <th class="bad-actions-cell"></th>
+                        </tr>
+                    </thead>
+                    <tbody id="badStreamsRows"></tbody>
+                </table>
+            </div>
+            <div style="display:flex; gap:0.75rem; align-items:center; justify-content:flex-end; margin-top:1rem;">
+                <button class="btn btn-secondary" id="badStreamsPrev" onclick="changeBadStreamsPage(-1)">Previous</button>
+                <span id="badStreamsPageLabel" class="text-muted"></span>
+                <button class="btn btn-secondary" id="badStreamsNext" onclick="changeBadStreamsPage(1)">Next</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+let badStreamsPage = 1;
+let badStreamsTotalPages = 0;
+
+function badStreamsApiPath(path) {
+    return '{{.BasePath}}/api' + path;
+}
+
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, function(char) {
+        return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[char];
+    });
+}
+
+function formatTime(value) {
+    if (!value) return '';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '';
+    return date.toLocaleString();
+}
+
+async function loadBadStreams(page) {
+    badStreamsPage = page || badStreamsPage || 1;
+    const q = document.getElementById('badStreamsFilter').value.trim();
+    const perPage = document.getElementById('badStreamsPerPage').value;
+    const params = new URLSearchParams({ page: String(badStreamsPage), perPage });
+    if (q) params.set('q', q);
+    document.getElementById('badStreamsStatus').textContent = 'Loading...';
+    const response = await fetch(badStreamsApiPath('/bad-streams?' + params.toString()));
+    if (!response.ok) {
+        document.getElementById('badStreamsStatus').textContent = 'Failed to load bad streams';
+        return;
+    }
+    const data = await response.json();
+    badStreamsPage = data.page || 1;
+    badStreamsTotalPages = data.totalPages || 0;
+    renderBadStreamsRows(data.items || data.streams || []);
+    document.getElementById('badStreamsStatus').textContent = `${data.total || 0} bad stream${data.total === 1 ? '' : 's'}`;
+    document.getElementById('badStreamsPageLabel').textContent = badStreamsTotalPages ? `Page ${badStreamsPage} of ${badStreamsTotalPages}` : 'Page 1 of 1';
+    document.getElementById('badStreamsPrev').disabled = badStreamsPage <= 1;
+    document.getElementById('badStreamsNext').disabled = badStreamsTotalPages === 0 || badStreamsPage >= badStreamsTotalPages;
+}
+
+function renderBadStreamsRows(items) {
+    const rows = document.getElementById('badStreamsRows');
+    if (!items.length) {
+        rows.innerHTML = '<tr><td colspan="8" class="text-muted" style="padding:1rem; text-align:center;">No bad streams found</td></tr>';
+        return;
+    }
+    rows.innerHTML = items.map(item => {
+        const release = item.releaseName || item.normalizedReleaseName || 'Unknown release';
+        const provider = item.provider || 'Any';
+        const service = item.serviceType || 'Any';
+        return `
+            <tr style="border-bottom:1px solid var(--border);">
+                <td class="bad-release-cell" title="${escapeHtml(release)}">${escapeHtml(release)}</td>
+                <td class="bad-provider-cell">${escapeHtml(provider)}</td>
+                <td class="bad-service-cell">${escapeHtml(service)}</td>
+                <td class="bad-path-cell" title="${escapeHtml(item.sourcePath || '')}">${escapeHtml(item.sourcePath || '')}</td>
+                <td class="bad-reason-cell" title="${escapeHtml(item.reason || '')}">${escapeHtml(item.reason || '')}</td>
+                <td class="bad-time-cell">${escapeHtml(formatTime(item.lastSeenAt || item.markedAt))}</td>
+                <td class="bad-hits-cell">${Number(item.hitCount || 0)}</td>
+                <td class="bad-actions-cell">
+                    <button class="btn btn-danger bad-delete-button" onclick="deleteBadStream('${escapeHtml(item.id)}')">Delete</button>
+                </td>
+            </tr>
+        `;
+    }).join('');
+}
+
+function changeBadStreamsPage(delta) {
+    const next = badStreamsPage + delta;
+    if (next < 1 || (badStreamsTotalPages && next > badStreamsTotalPages)) return;
+    loadBadStreams(next);
+}
+
+async function deleteBadStream(id) {
+    if (!id) return;
+    if (!confirm('Remove this bad-stream mark? Future playback may use this release again.')) return;
+    const response = await fetch(badStreamsApiPath('/bad-streams/' + encodeURIComponent(id)), { method: 'DELETE' });
+    if (!response.ok) {
+        alert('Failed to delete bad stream');
+        return;
+    }
+    loadBadStreams(badStreamsPage);
+}
+
+async function purgeBadStreams() {
+    if (!confirm('Purge all bad-stream marks? Future playback may reuse these releases.')) return;
+    const button = document.getElementById('badStreamsPurge');
+    const originalText = button.textContent;
+    button.disabled = true;
+    button.textContent = 'Purging...';
+    try {
+        const response = await fetch(badStreamsApiPath('/bad-streams'), { method: 'DELETE' });
+        if (!response.ok) throw new Error('Failed to purge bad streams');
+        loadBadStreams(1);
+    } catch (error) {
+        alert(error.message || 'Failed to purge bad streams');
+    } finally {
+        button.disabled = false;
+        button.textContent = originalText;
+    }
+}
+
+document.getElementById('badStreamsFilter').addEventListener('keydown', event => {
+    if (event.key === 'Enter') loadBadStreams(1);
+});
+document.getElementById('badStreamsPerPage').addEventListener('change', () => loadBadStreams(1));
+loadBadStreams(1);
+</script>
+{{end}}

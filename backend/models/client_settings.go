@@ -60,6 +60,7 @@ type ClientFilterSettings struct {
 	RewindOnResumeFromPause       *int     `json:"rewindOnResumeFromPause,omitempty"`
 	RewindOnPlaybackStart         *int     `json:"rewindOnPlaybackStart,omitempty"`
 	DisablePrequeue               *bool    `json:"disablePrequeue,omitempty"`
+	StreamMigrationEnabled        *bool    `json:"streamMigrationEnabled,omitempty"`
 	IgnoreDVCompatibilityCheck    *bool    `json:"ignoreDolbyVisionCompatibilityCheck,omitempty"`
 	CreditsDetectionEnabled       *bool    `json:"creditsDetectionEnabled,omitempty"`
 	CreditsAutoSkip               *bool    `json:"creditsAutoSkip,omitempty"`
@@ -122,6 +123,7 @@ func (c *ClientFilterSettings) IsEmpty() bool {
 		c.RewindOnResumeFromPause == nil &&
 		c.RewindOnPlaybackStart == nil &&
 		c.DisablePrequeue == nil &&
+		c.StreamMigrationEnabled == nil &&
 		c.IgnoreDVCompatibilityCheck == nil &&
 		c.CreditsDetectionEnabled == nil &&
 		c.CreditsAutoSkip == nil &&

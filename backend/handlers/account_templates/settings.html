@@ -434,6 +434,18 @@ function renderSettings() {
                 </div>
                 <div class="setting-row">
                     <div class="setting-label">
+                        <h4>Stream Migration</h4>
+                        <p>When native playback repeatedly buffers or errors, prepare the next ranked stream in the background and switch to it</p>
+                    </div>
+                    <div class="setting-control">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="streamMigrationEnabled" ${s.playback.streamMigrationEnabled !== false ? 'checked' : ''} onchange="markChanged()">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                </div>
+                <div class="setting-row">
+                    <div class="setting-label">
                         <h4>Credits Detection</h4>
                         <p>Use on-device OCR near the end of episodes to detect credits and show next-episode actions</p>
                     </div>
@@ -742,6 +754,7 @@ function collectSettings() {
             pauseWhenAppInactive: document.getElementById('pauseWhenAppInactive').checked,
             ignoreDolbyVisionCompatibilityCheck: document.getElementById('ignoreDolbyVisionCompatibilityCheck').checked,
             matchFrameRate: document.getElementById('matchFrameRate').checked,
+            streamMigrationEnabled: document.getElementById('streamMigrationEnabled').checked,
             creditsDetectionEnabled: document.getElementById('creditsDetectionEnabled').checked,
             useLoadingScreen: document.getElementById('useLoadingScreen').checked,
         },

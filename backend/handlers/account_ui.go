@@ -432,6 +432,7 @@ func (h *AccountUIHandler) GetUserSettings(w http.ResponseWriter, r *http.Reques
 				defaults.Playback.SubtitleBackgroundColor = globalSettings.Playback.SubtitleBackgroundColor
 			}
 			defaults.Playback.SubtitleBackgroundOpacity = models.FloatPtr(globalSettings.Playback.SubtitleBackgroundOpacity)
+			defaults.Playback.StreamMigrationEnabled = models.BoolPtr(globalSettings.Playback.StreamMigrationEnabled)
 			defaults.Playback.CreditsDetectionEnabled = models.BoolPtr(globalSettings.Playback.CreditsDetectionEnabled)
 			defaults.Playback.MatchFrameRate = models.BoolPtr(globalSettings.Playback.MatchFrameRate)
 			maxStreams := globalSettings.Live.MaxStreams

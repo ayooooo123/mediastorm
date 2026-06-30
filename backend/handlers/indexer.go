@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"novastream/models"
+	"novastream/services/badstreams"
 	"novastream/services/debrid"
 	"novastream/services/indexer"
 	"novastream/utils/filter"
@@ -30,6 +31,7 @@ type IndexerHandler struct {
 	MetadataSvc      SeriesDetailsProvider
 	MovieMetadataSvc MovieDetailsProvider
 	DemoMode         bool
+	BadStreams       *badstreams.Service
 }
 
 func NewIndexerHandler(s indexerService, demoMode bool) *IndexerHandler {
@@ -44,6 +46,10 @@ func (h *IndexerHandler) SetMetadataService(svc SeriesDetailsProvider) {
 // SetMovieMetadataService sets the movie metadata service for anime detection
 func (h *IndexerHandler) SetMovieMetadataService(svc MovieDetailsProvider) {
 	h.MovieMetadataSvc = svc
+}
+
+func (h *IndexerHandler) SetBadStreamsService(svc *badstreams.Service) {
+	h.BadStreams = svc
 }
 
 func (h *IndexerHandler) Search(w http.ResponseWriter, r *http.Request) {
@@ -152,6 +158,18 @@ func (h *IndexerHandler) Search(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		if h.BadStreams != nil {
+			for i := range scored {
+				if h.BadStreams.IsBad(scored[i].NZBResult) {
+					scored[i].FilterStatus = "filtered"
+					if scored[i].FilterReason == "" {
+						scored[i].FilterReason = "marked bad stream"
+					} else if !strings.Contains(strings.ToLower(scored[i].FilterReason), "marked bad stream") {
+						scored[i].FilterReason += "; marked bad stream"
+					}
+				}
+			}
+		}
 		if h.DemoMode {
 			maskedTitle := buildMaskedTitle(query, year, mediaType)
 			for i := range scored {
@@ -183,6 +201,9 @@ func (h *IndexerHandler) Search(w http.ResponseWriter, r *http.Request) {
 	// Ensure we return [] instead of null for empty results
 	if results == nil {
 		results = []models.NZBResult{}
+	}
+	if h.BadStreams != nil {
+		results = h.BadStreams.FilterResults(results)
 	}
 
 	// In demo mode, mask actual filenames with the search query info

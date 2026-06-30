@@ -38,6 +38,14 @@ func TestDefaultSettingsDisablesMatchFrameRate(t *testing.T) {
 	}
 }
 
+func TestDefaultSettingsEnablesStreamMigration(t *testing.T) {
+	settings := DefaultSettings()
+
+	if !settings.Playback.StreamMigrationEnabled {
+		t.Fatal("expected stream migration to default to enabled")
+	}
+}
+
 func TestDefaultSettingsDisablesThumbnailGeneration(t *testing.T) {
 	settings := DefaultSettings()
 
@@ -239,6 +247,23 @@ func TestLoadDefaultsMissingMatchFrameRateToDisabled(t *testing.T) {
 
 	if settings.Playback.MatchFrameRate {
 		t.Fatal("expected missing matchFrameRate to default to disabled")
+	}
+}
+
+func TestLoadDefaultsMissingStreamMigrationToEnabled(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	raw := []byte(`{"playback":{"preferredPlayer":"native"}}`)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+
+	settings, err := NewManager(path).Load()
+	if err != nil {
+		t.Fatalf("load settings: %v", err)
+	}
+
+	if !settings.Playback.StreamMigrationEnabled {
+		t.Fatal("expected missing streamMigrationEnabled to default to enabled")
 	}
 }
 

@@ -364,6 +364,7 @@ type PlaybackSettings struct {
 	RewindOnResumeFromPause       int      `json:"rewindOnResumeFromPause,omitempty"`             // Seconds to rewind when unpausing (default 0)
 	RewindOnPlaybackStart         int      `json:"rewindOnPlaybackStart,omitempty"`               // Seconds to rewind when resuming from saved progress (default 0)
 	DisablePrequeue               bool     `json:"disablePrequeue,omitempty"`                     // Disable automatic stream pre-loading
+	StreamMigrationEnabled        *bool    `json:"streamMigrationEnabled,omitempty"`              // Switch to the next ranked stream when native playback cannot sustain the current stream
 	IgnoreDVCompatibilityCheck    *bool    `json:"ignoreDolbyVisionCompatibilityCheck,omitempty"` // Skip Android display DV capability check before playback
 	CreditsDetectionEnabled       *bool    `json:"creditsDetectionEnabled,omitempty"`             // Enable on-device credits detection/OCR during playback
 	CreditsAutoSkip               bool     `json:"creditsAutoSkip,omitempty"`                     // Automatically play the next episode after credits are detected
@@ -694,6 +695,7 @@ func DefaultUserSettings() UserSettings {
 			SubtitleBackgroundOpacity:     FloatPtr(0.6),
 			SeekForwardSeconds:            30,
 			SeekBackwardSeconds:           10,
+			StreamMigrationEnabled:        BoolPtr(true),
 			IgnoreDVCompatibilityCheck:    BoolPtr(false),
 			CreditsDetectionEnabled:       BoolPtr(true),
 			MatchFrameRate:                BoolPtr(false),

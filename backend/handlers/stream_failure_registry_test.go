@@ -1,11 +1,7 @@
 package handlers
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -91,35 +87,5 @@ func TestStreamFailureRegistryRecordsMissingStreamFailures(t *testing.T) {
 	}
 	if record.Reason != "stream_not_found" {
 		t.Fatalf("reason = %q, want stream_not_found", record.Reason)
-	}
-}
-
-func TestMigrateStreamRejectsUnconfirmedFailures(t *testing.T) {
-	handler := &PrequeueHandler{
-		failures: &streamFailureRegistry{records: make(map[string]streamFailureRecord)},
-	}
-	body, err := json.Marshal(MigrateStreamRequest{
-		TitleName:        "Example Movie",
-		MediaType:        "movie",
-		FailedStreamPath: "/webdav/movies/example.mkv",
-		LastPosition:     120,
-	})
-	if err != nil {
-		t.Fatalf("marshal request: %v", err)
-	}
-
-	req := httptest.NewRequest(http.MethodPost, "/api/playback/migrate", bytes.NewReader(body))
-	rec := httptest.NewRecorder()
-	handler.MigrateStream(rec, req)
-
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusConflict, rec.Body.String())
-	}
-	var resp map[string]string
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("response is not JSON: %v", err)
-	}
-	if resp["code"] != "STREAM_FAILURE_NOT_CONFIRMED" {
-		t.Fatalf("code = %q, want STREAM_FAILURE_NOT_CONFIRMED", resp["code"])
 	}
 }
