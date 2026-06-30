@@ -3797,10 +3797,20 @@ func (m *HLSManager) Seek(w http.ResponseWriter, r *http.Request, sessionID stri
 	session.mu.RLock()
 	duration := session.Duration
 	playbackTarget := session.PlaybackTarget
+	subtitleTrackIndex := session.SubtitleTrackIndex
 	youtubeVideoURL := session.YouTubeVideoURL
 	youtubeAudioURL := session.YouTubeAudioURL
 	youtubeProxyURL := session.YouTubeProxyURL
 	session.mu.RUnlock()
+
+	if requestedTarget := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("target"))); requestedTarget != "" {
+		playbackTarget = requestedTarget
+	}
+	if requestedSubtitleTrack := strings.TrimSpace(r.URL.Query().Get("subtitleTrack")); requestedSubtitleTrack != "" {
+		if parsed, err := strconv.Atoi(requestedSubtitleTrack); err == nil && parsed >= -1 {
+			subtitleTrackIndex = parsed
+		}
+	}
 
 	// Clamp target time to valid range
 	if duration > 0 && targetTime >= duration {
@@ -3851,6 +3861,8 @@ func (m *HLSManager) Seek(w http.ResponseWriter, r *http.Request, sessionID stri
 	session.MaxSegmentRequested = -1
 	session.LastPlaybackSegment = 0
 	session.EarliestBufferedSegment = 0
+	session.PlaybackTarget = playbackTarget
+	session.SubtitleTrackIndex = subtitleTrackIndex
 	session.RecoveryAttempts = 0   // Reset recovery attempts for new seek position
 	session.SeekInProgress = false // Clear seek flag now that we're starting fresh
 	cachedForceAAC := session.forceAAC
