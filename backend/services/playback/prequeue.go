@@ -134,7 +134,10 @@ type PrequeueStatusResponse struct {
 	PassthroughDescription string `json:"passthroughDescription,omitempty"` // Raw description from AIOStreams
 
 	// Parsed metadata attributes from the selected result (for badge display)
-	ResultAttributes map[string]string `json:"resultAttributes,omitempty"`
+	ResultAttributes    map[string]string  `json:"resultAttributes,omitempty"`
+	SelectedResult      *models.NZBResult  `json:"selectedResult,omitempty"`
+	SelectedResultIndex int                `json:"selectedResultIndex,omitempty"`
+	MigrationCandidates []models.NZBResult `json:"migrationCandidates,omitempty"`
 
 	// On failure:
 	Error string `json:"error,omitempty"`
@@ -188,7 +191,11 @@ type PrequeueEntry struct {
 	PassthroughDescription string `json:"passthroughDescription,omitempty"`
 
 	// Parsed metadata attributes from selected result
-	ResultAttributes map[string]string `json:"resultAttributes,omitempty"`
+	ResultAttributes    map[string]string  `json:"resultAttributes,omitempty"`
+	SelectedResult      *models.NZBResult  `json:"selectedResult,omitempty"`
+	SelectedResultIndex int                `json:"selectedResultIndex,omitempty"`
+	MigrationCandidates []models.NZBResult `json:"migrationCandidates,omitempty"`
+	MigrationAdopted    bool               `json:"migrationAdopted,omitempty"`
 
 	Error     string    `json:"error,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
@@ -1054,6 +1061,9 @@ func (e *PrequeueEntry) ToResponse() *PrequeueStatusResponse {
 		PassthroughName:        e.PassthroughName,
 		PassthroughDescription: e.PassthroughDescription,
 		ResultAttributes:       e.ResultAttributes,
+		SelectedResult:         e.SelectedResult,
+		SelectedResultIndex:    e.SelectedResultIndex,
+		MigrationCandidates:    e.MigrationCandidates,
 		Error:                  e.Error,
 	}
 }

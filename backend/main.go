@@ -31,6 +31,7 @@ import (
 	"novastream/internal/webdav"
 	"novastream/services/accounts"
 	"novastream/services/backup"
+	"novastream/services/badstreams"
 	"novastream/services/calendar"
 	client_settings "novastream/services/client_settings"
 	"novastream/services/clients"
@@ -341,8 +342,13 @@ func main() {
 		fmt.Printf("🔐 Homepage API key: %s\n", settings.Server.HomepageAPIKey)
 	}
 
+	badStreamsService := badstreams.New(filepath.Join(settings.Cache.Directory, "bad_streams.json"))
+	badStreamsHandler := handlers.NewBadStreamsHandler(badStreamsService)
+	indexerHandler.SetBadStreamsService(badStreamsService)
+
 	playbackService := playback.NewService(cfgManager, usenetService, nzbSystem, nzbSystem.MetadataReader())
 	playbackHandler := handlers.NewPlaybackHandler(playbackService)
+	playbackHandler.SetBadStreamsService(badStreamsService)
 	// Prequeue handler will be created later after historyService is available
 	var prequeueHandler *handlers.PrequeueHandler
 	usenetHandler := handlers.NewUsenetHandler(usenetService)
@@ -625,6 +631,7 @@ func main() {
 	// Create prequeue handler now that history service is available
 	// Video prober and HLS creator are optional - we'll set them after videoHandler is created
 	prequeueHandler = handlers.NewPrequeueHandler(indexerService, playbackService, historyService, nil, nil, *demoMode)
+	prequeueHandler.SetBadStreamsService(badStreamsService)
 	if store != nil {
 		prequeueHandler.GetStore().SetDataStore(store)
 	}
@@ -800,6 +807,7 @@ func main() {
 		metadataHandler,
 		indexerHandler,
 		playbackHandler,
+		badStreamsHandler,
 		prequeueHandler,
 		usenetHandler,
 		debridHandler,
@@ -899,6 +907,7 @@ func main() {
 	r.HandleFunc("/admin/tools", adminUIHandler.RequireAuth(adminUIHandler.ToolsPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/tools/hidden-items", adminUIHandler.RequireAuth(adminUIHandler.HiddenItemsPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/tools/resolved-nzbs", adminUIHandler.RequireAuth(adminUIHandler.ResolvedNZBsPage)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/tools/bad-streams", adminUIHandler.RequireMasterAuth(adminUIHandler.BadStreamsPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/recordings", adminUIHandler.RequireAuth(adminUIHandler.RecordingsPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/prequeue", adminUIHandler.RequireAuth(adminUIHandler.PrequeuePage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/search", adminUIHandler.RequireAuth(adminUIHandler.SearchPage)).Methods(http.MethodGet)
@@ -948,6 +957,10 @@ func main() {
 	r.HandleFunc("/admin/api/indexers/search", adminUIHandler.RequireAuth(indexerHandler.Search)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/indexers/search-test", adminUIHandler.RequireAuth(indexerHandler.SearchTest)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/playback/resolve", adminUIHandler.RequireAuth(playbackHandler.Resolve)).Methods(http.MethodPost)
+	r.HandleFunc("/admin/api/bad-streams", adminUIHandler.RequireMasterAuth(badStreamsHandler.List)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/api/bad-streams", adminUIHandler.RequireMasterAuth(badStreamsHandler.Mark)).Methods(http.MethodPost)
+	r.HandleFunc("/admin/api/bad-streams", adminUIHandler.RequireMasterAuth(badStreamsHandler.Clear)).Methods(http.MethodDelete)
+	r.HandleFunc("/admin/api/bad-streams/{id}", adminUIHandler.RequireMasterAuth(badStreamsHandler.Delete)).Methods(http.MethodDelete)
 	r.HandleFunc("/admin/api/playback/strm", adminUIHandler.RequireAuth(adminUIHandler.DownloadSTRM)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/share/create", adminUIHandler.RequireAuth(shareHandler.Create)).Methods(http.MethodPost)
 	r.HandleFunc("/admin/api/share/links", adminUIHandler.RequireAuth(shareHandler.List)).Methods(http.MethodGet)

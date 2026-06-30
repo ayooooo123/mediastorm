@@ -11,6 +11,7 @@ import (
 
 	"github.com/gorilla/mux"
 	"novastream/models"
+	"novastream/services/badstreams"
 	playbacksvc "novastream/services/playback"
 )
 
@@ -25,6 +26,7 @@ type PlaybackHandler struct {
 	Service           playbackService
 	SubtitleExtractor SubtitlePreExtractor // For pre-extracting subtitles
 	VideoProber       VideoFullProber      // For probing subtitle streams
+	BadStreams        *badstreams.Service
 }
 
 var _ playbackService = (*playbacksvc.Service)(nil)
@@ -41,6 +43,10 @@ func (h *PlaybackHandler) SetSubtitleExtractor(extractor SubtitlePreExtractor) {
 // SetVideoProber sets the video prober for probing subtitle streams
 func (h *PlaybackHandler) SetVideoProber(prober VideoFullProber) {
 	h.VideoProber = prober
+}
+
+func (h *PlaybackHandler) SetBadStreamsService(service *badstreams.Service) {
+	h.BadStreams = service
 }
 
 // Resolve accepts an NZB indexer result and responds with a validated playback source.
@@ -67,6 +73,13 @@ func (h *PlaybackHandler) Resolve(w http.ResponseWriter, r *http.Request) {
 			request.Result.Attributes = map[string]string{}
 		}
 		request.Result.Attributes["profileId"] = request.ProfileID
+	}
+	if h.BadStreams != nil {
+		if match := h.BadStreams.Match(request.Result); match != nil {
+			log.Printf("[playback-handler] refusing marked bad stream service=%q provider=%q release=%q", request.Result.ServiceType, request.Result.Attributes["provider"], request.Result.Title)
+			http.Error(w, "stream is marked bad", http.StatusConflict)
+			return
+		}
 	}
 
 	resolution, err := h.Service.Resolve(r.Context(), request.Result)

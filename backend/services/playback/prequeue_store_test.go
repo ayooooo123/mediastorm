@@ -6,6 +6,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"novastream/models"
 )
 
 func TestPrequeueStoreValidatesReadyEntryOnLookup(t *testing.T) {
@@ -100,6 +102,36 @@ func TestPrequeueEntryToResponseIncludesServiceType(t *testing.T) {
 	resp := entry.ToResponse()
 	if resp.ServiceType != "debrid" {
 		t.Fatalf("ServiceType = %q, want debrid", resp.ServiceType)
+	}
+}
+
+func TestPrequeueEntryToResponseIncludesMigrationCandidates(t *testing.T) {
+	entry := &PrequeueEntry{
+		ID:                  "pq_test",
+		Status:              PrequeueStatusReady,
+		StreamPath:          "/downloads/usenet/file.mkv",
+		SelectedResultIndex: 1,
+		SelectedResult: &models.NZBResult{
+			Title:   "Selected Release",
+			Indexer: "indexer-b",
+			GUID:    "guid-b",
+		},
+		MigrationCandidates: []models.NZBResult{
+			{Title: "First Release", Indexer: "indexer-a", GUID: "guid-a"},
+			{Title: "Selected Release", Indexer: "indexer-b", GUID: "guid-b"},
+			{Title: "Next Release", Indexer: "indexer-c", GUID: "guid-c"},
+		},
+	}
+
+	resp := entry.ToResponse()
+	if resp.SelectedResult == nil || resp.SelectedResult.GUID != "guid-b" {
+		t.Fatalf("SelectedResult = %#v, want guid-b", resp.SelectedResult)
+	}
+	if resp.SelectedResultIndex != 1 {
+		t.Fatalf("SelectedResultIndex = %d, want 1", resp.SelectedResultIndex)
+	}
+	if len(resp.MigrationCandidates) != 3 {
+		t.Fatalf("MigrationCandidates length = %d, want 3", len(resp.MigrationCandidates))
 	}
 }
 

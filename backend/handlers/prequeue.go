@@ -17,6 +17,7 @@ import (
 	"novastream/internal/mediaidentity"
 	"novastream/internal/mediaresolve"
 	"novastream/models"
+	"novastream/services/badstreams"
 	content_preferences "novastream/services/content_preferences"
 	"novastream/services/debrid"
 	"novastream/services/history"
@@ -66,15 +67,16 @@ type PrequeueHandler struct {
 	subtitleExtractor     SubtitlePreExtractor  // For pre-extracting subtitles
 	prewarmSvc            PrewarmService        // For checking pre-warmed entries
 	failures              *streamFailureRegistry
+	badStreamsSvc         *badstreams.Service
 	externalURLValidator  func(context.Context, string) error
 	demoMode              bool
 }
 
-func hasTrackMetadata(entry *playback.PrequeueEntry) bool {
+func hasReusablePreparation(entry *playback.PrequeueEntry) bool {
 	if entry == nil {
 		return false
 	}
-	return len(entry.AudioTracks) > 0 || len(entry.SubtitleTracks) > 0
+	return entry.MigrationAdopted || len(entry.AudioTracks) > 0 || len(entry.SubtitleTracks) > 0
 }
 
 func prequeueEpisodeMatches(requested, existing *models.EpisodeReference) bool {
@@ -622,6 +624,10 @@ func (h *PrequeueHandler) SetPrewarmService(svc PrewarmService) {
 	h.prewarmSvc = svc
 }
 
+func (h *PrequeueHandler) SetBadStreamsService(svc *badstreams.Service) {
+	h.badStreamsSvc = svc
+}
+
 // GetStore returns the prequeue store for external access (e.g., prewarm service, admin viewer)
 func (h *PrequeueHandler) GetStore() *playback.PrequeueStore {
 	return h.store
@@ -781,7 +787,7 @@ func (h *PrequeueHandler) Prequeue(w http.ResponseWriter, r *http.Request) {
 	// Check for pre-warmed entry before creating a new one
 	if h.prewarmSvc != nil {
 		if warm := h.prewarmSvc.GetWarmScoped(req.TitleID, req.UserID, settingsScopeKey); warm != nil && warm.PrequeueID != "" {
-			if warmEntry, ok := h.store.Get(warm.PrequeueID); ok && warmEntry.Status == playback.PrequeueStatusReady && hasTrackMetadata(warmEntry) {
+			if warmEntry, ok := h.store.Get(warm.PrequeueID); ok && warmEntry.Status == playback.PrequeueStatusReady && hasReusablePreparation(warmEntry) {
 				if err := h.validateReadyEntryForReuse(r.Context(), warmEntry); err != nil {
 					log.Printf("[prequeue] Ignoring pre-warmed entry %s: stale external stream (%v), resolving fresh",
 						warm.PrequeueID, err)
@@ -806,7 +812,7 @@ func (h *PrequeueHandler) Prequeue(w http.ResponseWriter, r *http.Request) {
 					log.Printf("[prequeue] Ignoring pre-warmed entry %s: no longer in store (replaced by newer prequeue), resolving fresh",
 						warm.PrequeueID)
 				} else {
-					log.Printf("[prequeue] Ignoring pre-warmed entry %s: not ready or missing track metadata, resolving fresh",
+					log.Printf("[prequeue] Ignoring pre-warmed entry %s: not ready or missing reusable preparation metadata, resolving fresh",
 						warm.PrequeueID)
 				}
 			}
@@ -820,7 +826,7 @@ func (h *PrequeueHandler) Prequeue(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[prequeue] Existing entry %s episode mismatch (cached=%v, requested=%v), resolving fresh",
 				existing.ID, existing.TargetEpisode, targetEpisode)
 		} else if existing.Status == playback.PrequeueStatusReady {
-			if existing.StreamPath != "" && hasTrackMetadata(existing) {
+			if existing.StreamPath != "" && hasReusablePreparation(existing) {
 				if err := h.validateReadyEntryForReuse(r.Context(), existing); err != nil {
 					log.Printf("[prequeue] Discarding ready entry %s: stale external stream (%v), resolving fresh",
 						existing.ID, err)
@@ -837,7 +843,7 @@ func (h *PrequeueHandler) Prequeue(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			} else {
-				log.Printf("[prequeue] Existing ready entry %s missing stream path or track metadata, resolving fresh", existing.ID)
+				log.Printf("[prequeue] Existing ready entry %s missing stream path or reusable preparation metadata, resolving fresh", existing.ID)
 			}
 		} else if isPrequeueInProgress(existing.Status) {
 			log.Printf("[prequeue] Reusing existing in-progress entry %s status=%s for title=%s user=%s scope=%s",
@@ -906,6 +912,337 @@ func (h *PrequeueHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+type adoptMigrationRequest struct {
+	StreamPath          string             `json:"streamPath"`
+	Result              models.NZBResult   `json:"result"`
+	SelectedResultIndex int                `json:"selectedResultIndex"`
+	FileSize            int64              `json:"fileSize,omitempty"`
+	HealthStatus        string             `json:"healthStatus,omitempty"`
+	MigrationCandidates []models.NZBResult `json:"migrationCandidates,omitempty"`
+	PassthroughName     string             `json:"passthroughName,omitempty"`
+	PassthroughDesc     string             `json:"passthroughDescription,omitempty"`
+	ResultAttributes    map[string]string  `json:"resultAttributes,omitempty"`
+}
+
+// AdoptMigration replaces a ready prequeue's stream payload after native playback
+// migrates to another candidate. This keeps details-page reuse aligned with the
+// stream the player actually handed over to.
+func (h *PrequeueHandler) AdoptMigration(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	prequeueID := strings.TrimSpace(vars["prequeueID"])
+	if prequeueID == "" {
+		http.Error(w, "prequeueID is required", http.StatusBadRequest)
+		return
+	}
+
+	var req adoptMigrationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	req.StreamPath = strings.TrimSpace(req.StreamPath)
+	if req.StreamPath == "" {
+		http.Error(w, "streamPath is required", http.StatusBadRequest)
+		return
+	}
+
+	updated := h.store.Update(prequeueID, func(e *playback.PrequeueEntry) {
+		e.Status = playback.PrequeueStatusReady
+		e.StreamPath = req.StreamPath
+		e.HLSSessionID = ""
+		e.HLSPlaylistURL = ""
+		e.HasDolbyVision = false
+		e.HasHDR10 = false
+		e.DolbyVisionProfile = ""
+		e.NeedsAudioTranscode = false
+		e.SelectedAudioTrack = -1
+		e.SelectedSubtitleTrack = -1
+		e.AudioTracks = nil
+		e.SubtitleTracks = nil
+		e.SubtitleSessions = nil
+		e.Error = ""
+		e.MigrationAdopted = true
+
+		if req.Result.Title != "" || req.Result.GUID != "" {
+			resultCopy := req.Result
+			e.SelectedResult = &resultCopy
+			e.SelectedResultIndex = req.SelectedResultIndex
+			e.ServiceType = string(req.Result.ServiceType)
+			e.ResultAttributes = req.Result.Attributes
+			if len(req.ResultAttributes) > 0 {
+				e.ResultAttributes = req.ResultAttributes
+			}
+			if req.Result.SizeBytes > 0 {
+				e.FileSize = req.Result.SizeBytes
+			}
+		}
+		if e.ServiceType == "" {
+			lowerPath := strings.ToLower(req.StreamPath)
+			if strings.HasPrefix(lowerPath, "/debrid/") || strings.Contains(lowerPath, "/debrid/") {
+				e.ServiceType = "debrid"
+			} else {
+				e.ServiceType = "usenet"
+			}
+		}
+		if req.FileSize > 0 {
+			e.FileSize = req.FileSize
+		}
+		if req.HealthStatus != "" {
+			e.HealthStatus = req.HealthStatus
+		} else if e.HealthStatus == "" {
+			e.HealthStatus = "migrated"
+		}
+		if len(req.MigrationCandidates) > 0 {
+			e.MigrationCandidates = append([]models.NZBResult(nil), req.MigrationCandidates...)
+		}
+		attrs := e.ResultAttributes
+		if attrs != nil && attrs["passthrough_format"] == "true" {
+			e.PassthroughName = attrs["raw_name"]
+			e.PassthroughDescription = attrs["raw_description"]
+		} else {
+			e.PassthroughName = strings.TrimSpace(req.PassthroughName)
+			e.PassthroughDescription = strings.TrimSpace(req.PassthroughDesc)
+		}
+	})
+	if !updated {
+		http.Error(w, "prequeue not found or expired", http.StatusNotFound)
+		return
+	}
+	h.refreshAdoptedMigrationMetadata(prequeueID, req.StreamPath)
+	if h.prewarmSvc != nil {
+		h.prewarmSvc.UpdateFromPrequeue(prequeueID)
+	}
+
+	entry, exists := h.store.Get(prequeueID)
+	if !exists {
+		http.Error(w, "prequeue not found or expired", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(entry.ToResponse())
+}
+
+type adoptedMigrationMetadata struct {
+	audioStreams       []AudioStreamInfo
+	subtitleStreams    []SubtitleStreamInfo
+	hasDolbyVision     bool
+	hasHDR10           bool
+	dolbyVisionProfile string
+	hasTrueHD          bool
+	duration           float64
+}
+
+func (h *PrequeueHandler) refreshAdoptedMigrationMetadata(prequeueID, streamPath string) {
+	if h == nil || h.store == nil {
+		return
+	}
+	streamPath = strings.TrimSpace(streamPath)
+	if streamPath == "" {
+		return
+	}
+	if h.fullProber == nil && h.metadataProber == nil && h.videoProber == nil {
+		return
+	}
+
+	entry, ok := h.store.Get(prequeueID)
+	if !ok || strings.TrimSpace(entry.StreamPath) != streamPath {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	metadata, err := h.probeAdoptedMigrationMetadata(ctx, streamPath)
+	if err != nil {
+		log.Printf("[prequeue] adopted migration metadata probe failed for %s: %v", prequeueID, err)
+		return
+	}
+
+	playbackSettings := h.playbackSettingsForPrequeueEntry(entry)
+	selectedAudioTrack, selectedSubtitleTrack := h.selectPrequeueTracks(metadata.audioStreams, metadata.subtitleStreams, playbackSettings)
+	audioTracks := playbackAudioTracksFromStreams(metadata.audioStreams)
+	subtitleTracks := playbackSubtitleTracksFromStreams(metadata.subtitleStreams)
+
+	h.store.Update(prequeueID, func(e *playback.PrequeueEntry) {
+		if strings.TrimSpace(e.StreamPath) != streamPath {
+			return
+		}
+		if metadata.duration > 0 {
+			e.Duration = metadata.duration
+		}
+		e.HasDolbyVision = metadata.hasDolbyVision
+		e.HasHDR10 = metadata.hasHDR10
+		e.DolbyVisionProfile = metadata.dolbyVisionProfile
+		e.NeedsAudioTranscode = metadata.hasTrueHD
+		e.SelectedAudioTrack = selectedAudioTrack
+		e.SelectedSubtitleTrack = selectedSubtitleTrack
+		e.AudioTracks = audioTracks
+		e.SubtitleTracks = subtitleTracks
+		e.SubtitleSessions = nil
+		e.Error = ""
+		e.MigrationAdopted = true
+	})
+	log.Printf("[prequeue] refreshed adopted migration metadata prequeue=%s audioTracks=%d subtitleTracks=%d selectedAudio=%d selectedSubtitle=%d duration=%.2fs",
+		prequeueID, len(audioTracks), len(subtitleTracks), selectedAudioTrack, selectedSubtitleTrack, metadata.duration)
+}
+
+func (h *PrequeueHandler) probeAdoptedMigrationMetadata(ctx context.Context, streamPath string) (adoptedMigrationMetadata, error) {
+	var metadata adoptedMigrationMetadata
+	if h.fullProber != nil {
+		fullResult, err := h.fullProber.ProbeVideoFull(ctx, streamPath)
+		if err != nil {
+			return metadata, err
+		}
+		if fullResult != nil {
+			metadata.audioStreams = fullResult.AudioStreams
+			metadata.subtitleStreams = fullResult.SubtitleStreams
+			metadata.hasDolbyVision = fullResult.HasDolbyVision
+			metadata.hasHDR10 = fullResult.HasHDR10
+			metadata.dolbyVisionProfile = fullResult.DolbyVisionProfile
+			metadata.hasTrueHD = fullResult.HasTrueHD
+			metadata.duration = fullResult.Duration
+		}
+		return metadata, nil
+	}
+
+	var lastErr error
+	if h.metadataProber != nil {
+		result, err := h.metadataProber.ProbeVideoMetadata(ctx, streamPath)
+		if err != nil {
+			lastErr = err
+		} else if result != nil {
+			metadata.audioStreams = result.AudioStreams
+			metadata.subtitleStreams = result.SubtitleStreams
+		}
+	}
+	if h.videoProber != nil {
+		result, err := h.videoProber.ProbeVideoPath(ctx, streamPath)
+		if err != nil {
+			lastErr = err
+		} else if result != nil {
+			metadata.hasDolbyVision = result.HasDolbyVision
+			metadata.hasHDR10 = result.HasHDR10
+			metadata.dolbyVisionProfile = result.DolbyVisionProfile
+		}
+	}
+	if len(metadata.audioStreams) == 0 && len(metadata.subtitleStreams) == 0 && !metadata.hasDolbyVision && !metadata.hasHDR10 && lastErr != nil {
+		return metadata, lastErr
+	}
+	return metadata, nil
+}
+
+func (h *PrequeueHandler) playbackSettingsForPrequeueEntry(entry *playback.PrequeueEntry) models.PlaybackSettings {
+	defaults := models.DefaultUserSettings()
+	if h != nil && h.configManager != nil {
+		if globalSettings, err := h.configManager.Load(); err == nil {
+			defaults.Playback = configPlaybackToUserPlayback(globalSettings.Playback)
+		} else {
+			log.Printf("[prequeue] failed to load global settings for adopted migration metadata: %v", err)
+		}
+	}
+
+	userSettings := defaults
+	if h != nil && h.userSettingsSvc != nil && entry != nil {
+		if settings, err := h.userSettingsSvc.GetWithDefaults(entry.UserID, defaults); err == nil {
+			userSettings = settings
+		} else {
+			log.Printf("[prequeue] failed to load user settings for adopted migration metadata: %v", err)
+		}
+	}
+
+	if h != nil && h.contentPreferencesSvc != nil && entry != nil && entry.UserID != "" && entry.TitleID != "" {
+		if contentPref, err := h.contentPreferencesSvc.Get(entry.UserID, entry.TitleID); err == nil && contentPref != nil {
+			contentPref.AudioLanguage = sanitizeLanguageCode(contentPref.AudioLanguage)
+			contentPref.SubtitleLanguage = sanitizeLanguageCode(contentPref.SubtitleLanguage)
+			contentPref.SubtitleMode = strings.TrimSpace(strings.Trim(contentPref.SubtitleMode, "'\""))
+			if contentPref.AudioLanguage != "" {
+				userSettings.Playback.PreferredAudioLanguage = contentPref.AudioLanguage
+			}
+			if contentPref.SubtitleLanguage != "" {
+				userSettings.Playback.PreferredSubtitleLanguage = contentPref.SubtitleLanguage
+			}
+			if contentPref.SubtitleMode != "" {
+				userSettings.Playback.PreferredSubtitleMode = contentPref.SubtitleMode
+			}
+		} else if err != nil {
+			log.Printf("[prequeue] failed to load content preference for adopted migration metadata: %v", err)
+		}
+	}
+
+	return userSettings.Playback
+}
+
+func (h *PrequeueHandler) selectPrequeueTracks(audioStreams []AudioStreamInfo, subtitleStreams []SubtitleStreamInfo, playbackSettings models.PlaybackSettings) (int, int) {
+	selectedAudioTrack := -1
+	selectedSubtitleTrack := -1
+	preferredAudio := sanitizeLanguageCode(playbackSettings.PreferredAudioLanguage)
+	if preferredAudio != "" {
+		selectedAudioTrack = h.findAudioTrackByLanguage(audioStreams, preferredAudio)
+	}
+
+	subMode := normalizeSubtitleMode(strings.TrimSpace(strings.Trim(playbackSettings.PreferredSubtitleMode, "'\"")))
+	if subMode != "off" {
+		actualAudioLang := preferredAudio
+		if selectedAudioTrack >= 0 {
+			for _, stream := range audioStreams {
+				if stream.Index == selectedAudioTrack {
+					actualAudioLang = stream.Language
+					break
+				}
+			}
+		}
+		selectedSubtitleTrack = h.findSubtitleTrackByPreference(
+			subtitleStreams,
+			sanitizeLanguageCode(playbackSettings.PreferredSubtitleLanguage),
+			subMode,
+			actualAudioLang,
+		)
+	}
+	return selectedAudioTrack, selectedSubtitleTrack
+}
+
+func playbackAudioTracksFromStreams(streams []AudioStreamInfo) []playback.AudioTrackInfo {
+	if len(streams) == 0 {
+		return nil
+	}
+	tracks := make([]playback.AudioTrackInfo, len(streams))
+	for i, stream := range streams {
+		tracks[i] = playback.AudioTrackInfo{
+			Index:    stream.Index,
+			Language: stream.Language,
+			Codec:    stream.Codec,
+			Title:    stream.Title,
+		}
+	}
+	return tracks
+}
+
+func playbackSubtitleTracksFromStreams(streams []SubtitleStreamInfo) []playback.SubtitleTrackInfo {
+	if len(streams) == 0 {
+		return nil
+	}
+	bitmapCodecs := map[string]bool{
+		"hdmv_pgs_subtitle": true,
+		"dvd_subtitle":      true,
+		"dvdsub":            true,
+		"pgssub":            true,
+	}
+	tracks := make([]playback.SubtitleTrackInfo, len(streams))
+	for i, stream := range streams {
+		codec := strings.ToLower(stream.Codec)
+		tracks[i] = playback.SubtitleTrackInfo{
+			Index:         stream.Index,
+			AbsoluteIndex: stream.Index,
+			Language:      stream.Language,
+			Title:         stream.Title,
+			Codec:         stream.Codec,
+			Forced:        stream.IsForced,
+			IsBitmap:      bitmapCodecs[codec],
+		}
+	}
+	return tracks
 }
 
 // buildDisplayName creates a display name from title, year, and episode info
@@ -1039,6 +1376,17 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 		return
 	}
 	log.Printf("[prequeue] TIMING: search complete, %d combined results (elapsed: %v)", len(allResults), time.Since(workerStart))
+	if h.badStreamsSvc != nil {
+		before := len(allResults)
+		allResults = h.badStreamsSvc.FilterResults(allResults)
+		if len(allResults) == 0 {
+			h.failPrequeue(prequeueID, "all results are marked bad")
+			return
+		}
+		if before != len(allResults) {
+			log.Printf("[prequeue] filtered %d marked bad stream(s), %d candidate(s) remain", before-len(allResults), len(allResults))
+		}
+	}
 
 	// Update status to resolving
 	h.store.Update(prequeueID, func(e *playback.PrequeueEntry) {
@@ -1096,8 +1444,10 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 	var resolution *models.PlaybackResolution
 	var lastErr error
 	var selectedResult *models.NZBResult
+	selectedResultIndex := -1
 	var fallbackResolution *models.PlaybackResolution
 	var fallbackSelectedResult *models.NZBResult
+	fallbackSelectedResultIndex := -1
 	var fallbackProbeResult *VideoFullResult
 	var fallbackMetadataResult *VideoMetadataResult
 
@@ -1207,6 +1557,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 						resultCopy := result
 						fallbackResolution = resolution
 						fallbackSelectedResult = &resultCopy
+						fallbackSelectedResultIndex = i
 						fallbackProbeResult = probeResult
 						fallbackMetadataResult = metadataResult
 					}
@@ -1217,6 +1568,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 		}
 
 		selectedResult = &result
+		selectedResultIndex = i
 		cachedProbeResult = probeResult
 		cachedMetadataResult = metadataResult
 		log.Printf("[prequeue] TIMING: resolved (took: %v, total elapsed: %v)",
@@ -1227,6 +1579,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 	if resolution == nil && fallbackResolution != nil {
 		resolution = fallbackResolution
 		selectedResult = fallbackSelectedResult
+		selectedResultIndex = fallbackSelectedResultIndex
 		cachedProbeResult = fallbackProbeResult
 		cachedMetadataResult = fallbackMetadataResult
 		if selectedResult != nil {
@@ -1269,6 +1622,14 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 		// Copy parsed metadata attributes for badge display
 		if selectedResult != nil && len(selectedResult.Attributes) > 0 {
 			e.ResultAttributes = selectedResult.Attributes
+		}
+		if selectedResult != nil {
+			resultCopy := *selectedResult
+			e.SelectedResult = &resultCopy
+			e.SelectedResultIndex = selectedResultIndex
+		}
+		if len(allResults) > 0 {
+			e.MigrationCandidates = append([]models.NZBResult(nil), allResults...)
 		}
 	})
 
@@ -1645,215 +2006,6 @@ func (h *PrequeueHandler) failPrequeue(prequeueID, errMsg string) {
 		e.Status = playback.PrequeueStatusFailed
 		e.Error = errMsg
 	})
-}
-
-// MigrateStreamRequest is the request body for stream migration.
-// Self-contained: performs its own search and resolves the next-best alternative.
-type MigrateStreamRequest struct {
-	TitleID          string  `json:"titleId"`
-	TitleName        string  `json:"titleName"`
-	MediaType        string  `json:"mediaType"` // "movie" or "series"
-	UserID           string  `json:"userId"`
-	FailedStreamPath string  `json:"failedStreamPath"` // Path of the stream that failed (to skip it)
-	LastPosition     float64 `json:"lastPosition"`     // Playback position at time of failure
-	SeasonNumber     int     `json:"seasonNumber,omitempty"`
-	EpisodeNumber    int     `json:"episodeNumber,omitempty"`
-	IMDBID           string  `json:"imdbId,omitempty"`
-	Year             int     `json:"year,omitempty"`
-}
-
-// MigrateStreamResponse is the response with the new stream info.
-type MigrateStreamResponse struct {
-	StreamPath string  `json:"streamPath"`
-	FileSize   int64   `json:"fileSize,omitempty"`
-	Duration   float64 `json:"duration,omitempty"`
-}
-
-// MigrateStream searches for an alternative stream when the current one fails mid-playback.
-// It performs a fresh search, skips the failed result, and resolves the next viable one.
-func (h *PrequeueHandler) MigrateStream(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-
-	var req MigrateStreamRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	if req.TitleName == "" {
-		http.Error(w, "titleName is required", http.StatusBadRequest)
-		return
-	}
-
-	log.Printf("[stream-migration] Starting migration (title=%q, mediaType=%q, S%02dE%02d, failed=%q, position=%.1fs)",
-		req.TitleName, req.MediaType, req.SeasonNumber, req.EpisodeNumber, req.FailedStreamPath, req.LastPosition)
-
-	failedPath := strings.TrimSpace(req.FailedStreamPath)
-	if failedPath == "" {
-		http.Error(w, "failedStreamPath is required", http.StatusBadRequest)
-		return
-	}
-
-	failures := h.failures
-	if failures == nil {
-		failures = defaultStreamFailureRegistry
-	}
-	failure, confirmed := failures.confirmedRecent(failedPath, streamFailureConfirmationTTL)
-	if !confirmed {
-		log.Printf("[stream-migration] Refusing migration without recent recoverable stream failure confirmation (failed=%q, position=%.1fs)",
-			failedPath, req.LastPosition)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusConflict)
-		_ = json.NewEncoder(w).Encode(map[string]string{
-			"code":  "STREAM_FAILURE_NOT_CONFIRMED",
-			"error": "stream failure was not confirmed by the server",
-		})
-		return
-	}
-	log.Printf("[stream-migration] Confirmed recent recoverable stream failure for %q: reason=%s age=%s",
-		failedPath, failure.Reason, time.Since(failure.RecordedAt).Round(time.Millisecond))
-
-	ctx := r.Context()
-
-	// Build target episode for series (mediaType may be "series" or "episode")
-	var targetEpisode *models.EpisodeReference
-	if req.SeasonNumber >= 0 && req.EpisodeNumber > 0 {
-		targetEpisode = &models.EpisodeReference{
-			SeasonNumber:  req.SeasonNumber,
-			EpisodeNumber: req.EpisodeNumber,
-		}
-	}
-	mediaType := strings.ToLower(strings.TrimSpace(req.MediaType))
-	if mediaType == "" {
-		mediaType = "movie"
-	}
-	if mediaType == "episode" || targetEpisode != nil {
-		mediaType = "series"
-	}
-
-	var episodeResolver *filter.SeriesEpisodeResolver
-	var isDaily bool
-	var isAnime bool
-	var targetAirDate string
-	var episodeAirYear int
-	var absoluteEpisodeNumber int
-	if mediaType == "series" && targetEpisode != nil {
-		seriesMeta := h.createEpisodeResolverAndLookupAbsoluteEp(ctx, req.TitleID, req.TitleName, req.Year, req.IMDBID, targetEpisode)
-		if seriesMeta != nil {
-			episodeResolver = seriesMeta.EpisodeResolver
-			targetEpisode = seriesMeta.TargetEpisode
-			isDaily = seriesMeta.IsDaily
-			isAnime = seriesMeta.IsAnime
-			targetAirDate = seriesMeta.TargetAirDate
-			episodeAirYear = seriesMeta.EpisodeAirYear
-			if req.Year == 0 && seriesMeta.Year > 0 {
-				req.Year = seriesMeta.Year
-			}
-			if targetEpisode != nil {
-				absoluteEpisodeNumber = targetEpisode.AbsoluteEpisodeNumber
-			}
-		}
-	}
-
-	// Build search query (same logic as prequeue worker)
-	query := h.buildSearchQuery(req.TitleName, mediaType, targetEpisode)
-	if query == "" {
-		http.Error(w, "failed to build search query", http.StatusBadRequest)
-		return
-	}
-
-	log.Printf("[stream-migration] Searching with query: %q", query)
-
-	// Search for results
-	searchOpts := indexer.SearchOptions{
-		Query:                 query,
-		MaxResults:            50,
-		MediaType:             mediaType,
-		IMDBID:                req.IMDBID,
-		Year:                  req.Year,
-		UserID:                req.UserID,
-		EpisodeResolver:       episodeResolver,
-		IsDaily:               isDaily,
-		IsAnime:               isAnime,
-		TargetAirDate:         targetAirDate,
-		EpisodeAirYear:        episodeAirYear,
-		AbsoluteEpisodeNumber: absoluteEpisodeNumber,
-	}
-
-	allResults, searchErr := h.indexerSvc.Search(ctx, searchOpts)
-	if searchErr != nil || len(allResults) == 0 {
-		log.Printf("[stream-migration] Search returned no results: %v", searchErr)
-		http.Error(w, "no alternative streams found", http.StatusNotFound)
-		return
-	}
-
-	log.Printf("[stream-migration] Found %d results, resolving alternatives (skipping failed path)", len(allResults))
-
-	// Iterate through results, skip the one matching the failed path
-	var resolution *models.PlaybackResolution
-	var selectedResult *models.NZBResult
-	var duration float64
-
-	for i, result := range allResults {
-		annotateResultProfile(&result, req.UserID)
-		resolution, _ = h.playbackSvc.Resolve(ctx, result)
-		if resolution == nil || resolution.WebDAVPath == "" {
-			continue
-		}
-
-		// Skip if this resolves to the same path that failed
-		if normalizeStreamFailurePath(resolution.WebDAVPath) == normalizeStreamFailurePath(req.FailedStreamPath) {
-			log.Printf("[stream-migration] Skipping result [%d] — same as failed path: %s", i, result.Title)
-			resolution = nil
-			continue
-		}
-
-		if h.fullProber != nil {
-			fullResult, err := h.fullProber.ProbeVideoFull(ctx, resolution.WebDAVPath)
-			if err != nil {
-				log.Printf("[stream-migration] Skipping result [%d] — probe failed: %s -> %v", i, result.Title, err)
-				if failures.recordIfMissingArticles(resolution.WebDAVPath, err) {
-					log.Printf("[stream-migration] recorded failed alternative path=%q err=%v", resolution.WebDAVPath, err)
-				}
-				resolution = nil
-				continue
-			}
-			if fullResult != nil {
-				duration = fullResult.Duration
-			}
-		}
-
-		log.Printf("[stream-migration] Resolved alternative [%d]: %s -> %s", i, result.Title, resolution.WebDAVPath)
-		selectedResult = &result
-		break
-	}
-
-	if resolution == nil || selectedResult == nil {
-		log.Printf("[stream-migration] No viable alternatives found")
-		http.Error(w, "no alternative streams found", http.StatusNotFound)
-		return
-	}
-
-	resp := MigrateStreamResponse{
-		StreamPath: resolution.WebDAVPath,
-		FileSize:   resolution.FileSize,
-		Duration:   duration,
-	}
-
-	log.Printf("[stream-migration] Migration successful: %s (%.0fs duration)", resp.StreamPath, resp.Duration)
-	for _, removed := range h.store.DeleteByStreamPath(failedPath) {
-		log.Printf("[stream-migration] Removed failed prequeue %s for title=%s user=%s path=%q",
-			removed.ID, removed.TitleID, removed.UserID, removed.StreamPath)
-		if h.prewarmSvc != nil {
-			h.prewarmSvc.InvalidatePrequeue(removed.ID)
-		}
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
 }
 
 func annotateResultProfile(result *models.NZBResult, userID string) {

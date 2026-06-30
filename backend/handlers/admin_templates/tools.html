@@ -35,6 +35,30 @@
         </div>
     </div>
 
+    {{if .IsAdmin}}
+    <div class="section" id="badStreamsSection">
+        <div class="section-header" onclick="toggleSection(this)">
+            <div class="section-title">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M10.3 3.3L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.3a2 2 0 0 0-3.4 0z"/>
+                    <line x1="12" y1="9" x2="12" y2="13"/>
+                    <line x1="12" y1="17" x2="12.01" y2="17"/>
+                </svg>
+                Bad Streams
+            </div>
+            <svg class="section-toggle" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="6 9 12 15 18 9"/>
+            </svg>
+        </div>
+        <div class="section-content">
+            <p class="text-muted" style="margin-bottom: 1rem;">
+                Streams marked during migration are skipped by future playback and prequeue resolution for the same release, service, and debrid provider.
+            </p>
+            <a class="btn btn-primary" href="{{.BasePath}}/tools/bad-streams">Manage Bad Streams</a>
+        </div>
+    </div>
+    {{end}}
+
     <div class="section" id="systemUpdatesSection">
         <div class="section-header" onclick="toggleSection(this)">
             <div class="section-title">

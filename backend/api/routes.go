@@ -95,6 +95,7 @@ func Register(
 	metadataHandler *handlers.MetadataHandler,
 	indexerHandler *handlers.IndexerHandler,
 	playbackHandler *handlers.PlaybackHandler,
+	badStreamsHandler *handlers.BadStreamsHandler,
 	prequeueHandler *handlers.PrequeueHandler,
 	usenetHandler *handlers.UsenetHandler,
 	debridHandler *handlers.DebridHandler,
@@ -315,6 +316,14 @@ func Register(
 	protected.HandleFunc("/playback/resolve-batch", handleOptions).Methods(http.MethodOptions)
 	protected.HandleFunc("/playback/queue/{queueID}", playbackHandler.QueueStatus).Methods(http.MethodGet)
 	protected.HandleFunc("/playback/queue/{queueID}", handleOptions).Methods(http.MethodOptions)
+	if badStreamsHandler != nil {
+		protected.HandleFunc("/playback/bad-streams", badStreamsHandler.List).Methods(http.MethodGet)
+		protected.HandleFunc("/playback/bad-streams", badStreamsHandler.Mark).Methods(http.MethodPost)
+		protected.HandleFunc("/playback/bad-streams", badStreamsHandler.Clear).Methods(http.MethodDelete)
+		protected.HandleFunc("/playback/bad-streams", badStreamsHandler.Options).Methods(http.MethodOptions)
+		protected.HandleFunc("/playback/bad-streams/{id}", badStreamsHandler.Delete).Methods(http.MethodDelete)
+		protected.HandleFunc("/playback/bad-streams/{id}", badStreamsHandler.Options).Methods(http.MethodOptions)
+	}
 
 	// Prequeue endpoints for pre-loading playback streams
 	if prequeueHandler != nil {
@@ -322,9 +331,8 @@ func Register(
 		protected.HandleFunc("/playback/prequeue", prequeueHandler.Options).Methods(http.MethodOptions)
 		protected.HandleFunc("/playback/prequeue/{prequeueID}", prequeueHandler.GetStatus).Methods(http.MethodGet)
 		protected.HandleFunc("/playback/prequeue/{prequeueID}", prequeueHandler.Options).Methods(http.MethodOptions)
-		// Stream migration - search for alternative stream when current one fails mid-playback
-		protected.HandleFunc("/playback/migrate", prequeueHandler.MigrateStream).Methods(http.MethodPost)
-		protected.HandleFunc("/playback/migrate", prequeueHandler.Options).Methods(http.MethodOptions)
+		protected.HandleFunc("/playback/prequeue/{prequeueID}/adopt-migration", prequeueHandler.AdoptMigration).Methods(http.MethodPost)
+		protected.HandleFunc("/playback/prequeue/{prequeueID}/adopt-migration", prequeueHandler.Options).Methods(http.MethodOptions)
 		// Lazy subtitle extraction - called when user plays with known offset
 		protected.HandleFunc("/playback/prequeue/{prequeueID}/start-subtitles", prequeueHandler.StartSubtitles).Methods(http.MethodPost)
 		protected.HandleFunc("/playback/prequeue/{prequeueID}/start-subtitles", prequeueHandler.Options).Methods(http.MethodOptions)

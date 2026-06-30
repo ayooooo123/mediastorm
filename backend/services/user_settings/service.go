@@ -229,6 +229,9 @@ func (s *Service) GetWithDefaults(userID string, defaults models.UserSettings) (
 		if !settings.Playback.DisablePrequeue {
 			settings.Playback.DisablePrequeue = defaults.Playback.DisablePrequeue
 		}
+		if settings.Playback.StreamMigrationEnabled == nil {
+			settings.Playback.StreamMigrationEnabled = defaults.Playback.StreamMigrationEnabled
+		}
 		if settings.Playback.CreditsDetectionEnabled == nil {
 			settings.Playback.CreditsDetectionEnabled = defaults.Playback.CreditsDetectionEnabled
 		}
@@ -516,6 +519,7 @@ func isSettingsEmpty(s models.UserSettings) bool {
 		s.Playback.SeekBackwardSeconds != 0 ||
 		s.Playback.ForceAACTranscoding ||
 		s.Playback.AutoPlayTrailersTV ||
+		s.Playback.StreamMigrationEnabled != nil ||
 		s.Playback.MatchFrameRate != nil ||
 		s.Playback.DisablePrequeue {
 		return false

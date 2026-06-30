@@ -388,6 +388,7 @@ type PlaybackSettings struct {
 	RewindOnResumeFromPause       int                       `json:"rewindOnResumeFromPause"`             // Seconds to rewind when unpausing (default 0)
 	RewindOnPlaybackStart         int                       `json:"rewindOnPlaybackStart"`               // Seconds to rewind when resuming from saved progress (default 0)
 	DisablePrequeue               bool                      `json:"disablePrequeue"`                     // Disable automatic prequeue on page load (streams only resolve when Play is pressed)
+	StreamMigrationEnabled        bool                      `json:"streamMigrationEnabled"`              // Switch to the next ranked stream when native playback cannot sustain the current stream
 	IgnoreDVCompatibilityCheck    bool                      `json:"ignoreDolbyVisionCompatibilityCheck"` // Skip Android display DV capability check before playback
 	CreditsDetectionEnabled       bool                      `json:"creditsDetectionEnabled"`             // Enable on-device credits detection/OCR during playback
 	CreditsAutoSkip               bool                      `json:"creditsAutoSkip"`                     // Automatically play the next episode after credits are detected
@@ -1363,7 +1364,7 @@ func DefaultSettings() Settings {
 		SABnzbd:   SABnzbdSettings{Enabled: &sabnzbdEnabled, FallbackHost: "", FallbackAPIKey: ""},
 		AltMount:  nil,
 		Transmux:  TransmuxSettings{Enabled: true, FFmpegPath: "ffmpeg", FFprobePath: "ffprobe", HLSTempDirectory: "/tmp/novastream-hls"},
-		Playback:  PlaybackSettings{PreferredPlayer: "native", PreferredAudioLanguage: "eng", PauseWhenAppInactive: false, UseLoadingScreen: false, SubtitleSize: 1.0, SubtitleUseCropDetectPosition: true, SubtitleColor: "#FFFFFF", SubtitleOpacity: 1.0, SubtitleBold: false, SubtitleOutlineEnabled: false, SubtitleOutlineColor: "#000000", SubtitleOutlineWeight: 0.35, SubtitleBackgroundEnabled: true, SubtitleBackgroundColor: "#000000", SubtitleBackgroundOpacity: 0.6, SeekForwardSeconds: 30, SeekBackwardSeconds: 10, CreditsDetectionEnabled: false, MatchFrameRate: false, Thumbnails: PlaybackThumbnailSettings{Enabled: false, Workers: 1}},
+		Playback:  PlaybackSettings{PreferredPlayer: "native", PreferredAudioLanguage: "eng", PauseWhenAppInactive: false, UseLoadingScreen: false, SubtitleSize: 1.0, SubtitleUseCropDetectPosition: true, SubtitleColor: "#FFFFFF", SubtitleOpacity: 1.0, SubtitleBold: false, SubtitleOutlineEnabled: false, SubtitleOutlineColor: "#000000", SubtitleOutlineWeight: 0.35, SubtitleBackgroundEnabled: true, SubtitleBackgroundColor: "#000000", SubtitleBackgroundOpacity: 0.6, SeekForwardSeconds: 30, SeekBackwardSeconds: 10, StreamMigrationEnabled: true, CreditsDetectionEnabled: false, MatchFrameRate: false, Thumbnails: PlaybackThumbnailSettings{Enabled: false, Workers: 1}},
 		Live:      LiveSettings{Mode: "m3u", PlaylistURL: "", MaxStreams: 0, PlaylistCacheTTLHours: 24},
 		HomeShelves: HomeShelvesSettings{
 			Shelves:        DefaultHomeShelfConfigs(),
@@ -1755,6 +1756,9 @@ func (m *Manager) Load() (Settings, error) {
 		}
 		if _, exists := playbackRaw["matchFrameRate"]; !exists {
 			playbackRaw["matchFrameRate"] = false
+		}
+		if _, exists := playbackRaw["streamMigrationEnabled"]; !exists {
+			playbackRaw["streamMigrationEnabled"] = true
 		}
 		if _, exists := playbackRaw["subtitleColor"]; !exists {
 			playbackRaw["subtitleColor"] = "#FFFFFF"

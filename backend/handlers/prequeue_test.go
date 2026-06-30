@@ -1,11 +1,17 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/gorilla/mux"
 
 	"novastream/models"
 	"novastream/services/playback"
@@ -15,6 +21,49 @@ type prequeueRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f prequeueRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+type adoptMigrationPrewarmMock struct {
+	updated []string
+}
+
+func (m *adoptMigrationPrewarmMock) GetWarm(titleID, userID string) *playback.WarmRef {
+	return nil
+}
+
+func (m *adoptMigrationPrewarmMock) GetWarmScoped(titleID, userID, settingsScopeKey string) *playback.WarmRef {
+	return nil
+}
+
+func (m *adoptMigrationPrewarmMock) AdoptEntry(prequeueID string) {}
+
+func (m *adoptMigrationPrewarmMock) UpdateFromPrequeue(prequeueID string) {
+	m.updated = append(m.updated, prequeueID)
+}
+
+func (m *adoptMigrationPrewarmMock) InvalidatePrequeue(prequeueID string) {}
+
+type adoptMigrationFullProber struct {
+	path string
+}
+
+func (m *adoptMigrationFullProber) ProbeVideoFull(_ context.Context, path string) (*VideoFullResult, error) {
+	m.path = path
+	return &VideoFullResult{
+		HasDolbyVision:     true,
+		HasHDR10:           true,
+		DolbyVisionProfile: "8",
+		HasTrueHD:          true,
+		HasCompatibleAudio: true,
+		Duration:           123.5,
+		AudioStreams: []AudioStreamInfo{
+			{Index: 1, Codec: "eac3", Language: "eng", Title: "English"},
+			{Index: 2, Codec: "aac", Language: "spa", Title: "Spanish"},
+		},
+		SubtitleStreams: []SubtitleStreamInfo{
+			{Index: 3, Codec: "hdmv_pgs_subtitle", Language: "eng", Title: "English PGS"},
+		},
+	}, nil
 }
 
 // mockMovieDetailsProvider implements MovieDetailsProvider for testing
@@ -512,6 +561,175 @@ func TestPrequeueEpisodeHelpers_AllowSpecials(t *testing.T) {
 
 	if got, want := handler.buildSearchQuery("The Bear", "series", episode), "The Bear S00E01"; got != want {
 		t.Fatalf("buildSearchQuery = %q, want %q", got, want)
+	}
+}
+
+func TestAdoptMigrationReplacesPrequeueStream(t *testing.T) {
+	store := playback.NewPrequeueStore(time.Hour)
+	entry, created := store.Create("movie:1", "Example", "user1", "movie", 2024, nil, "details")
+	if !created {
+		t.Fatal("Create returned created=false")
+	}
+	oldResult := models.NZBResult{
+		Title:       "Old.Release.2024.2160p",
+		Indexer:     "old-indexer",
+		GUID:        "guid-old",
+		ServiceType: models.ServiceTypeUsenet,
+	}
+	store.Update(entry.ID, func(e *playback.PrequeueEntry) {
+		e.Status = playback.PrequeueStatusReady
+		e.StreamPath = "/downloads/old/title.mkv"
+		e.HLSSessionID = "old-hls"
+		e.HLSPlaylistURL = "/video/hls/old/stream.m3u8"
+		e.HasDolbyVision = true
+		e.HasHDR10 = true
+		e.DolbyVisionProfile = "8"
+		e.NeedsAudioTranscode = true
+		e.SelectedAudioTrack = 2
+		e.SelectedSubtitleTrack = 3
+		e.AudioTracks = []playback.AudioTrackInfo{{Index: 2, Language: "eng"}}
+		e.SubtitleTracks = []playback.SubtitleTrackInfo{{Index: 3, Language: "eng"}}
+		e.SubtitleSessions = map[int]*models.SubtitleSessionInfo{3: &models.SubtitleSessionInfo{SessionID: "old-sub"}}
+		e.Error = "old error"
+		e.SelectedResult = &oldResult
+		e.SelectedResultIndex = 0
+		e.MigrationCandidates = []models.NZBResult{oldResult}
+	})
+
+	newResult := models.NZBResult{
+		Title:       "Better.Release.2024.2160p",
+		Indexer:     "new-indexer",
+		GUID:        "guid-new",
+		SizeBytes:   222,
+		ServiceType: models.ServiceTypeDebrid,
+		Attributes: map[string]string{
+			"passthrough_format": "true",
+			"raw_name":           "RD Better",
+			"raw_description":    "RD description",
+			"provider":           "realdebrid",
+		},
+	}
+	reqBody, err := json.Marshal(adoptMigrationRequest{
+		StreamPath:          "/debrid/realdebrid/better.mkv",
+		Result:              newResult,
+		SelectedResultIndex: 1,
+		FileSize:            333,
+		HealthStatus:        "healthy",
+		MigrationCandidates: []models.NZBResult{oldResult, newResult},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	prewarm := &adoptMigrationPrewarmMock{}
+	fullProber := &adoptMigrationFullProber{}
+	handler := &PrequeueHandler{store: store, prewarmSvc: prewarm, fullProber: fullProber}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/playback/prequeue/"+entry.ID+"/adopt-migration", bytes.NewReader(reqBody))
+	req = mux.SetURLVars(req, map[string]string{"prequeueID": entry.ID})
+
+	handler.AdoptMigration(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var resp playback.PrequeueStatusResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.StreamPath != "/debrid/realdebrid/better.mkv" {
+		t.Fatalf("StreamPath = %q", resp.StreamPath)
+	}
+	if fullProber.path != "/debrid/realdebrid/better.mkv" {
+		t.Fatalf("ProbeVideoFull path = %q", fullProber.path)
+	}
+	if resp.HLSSessionID != "" || resp.HLSPlaylistURL != "" {
+		t.Fatalf("stale HLS state not cleared: %#v", resp)
+	}
+	if !resp.HasDolbyVision || !resp.HasHDR10 || resp.DolbyVisionProfile != "8" || !resp.NeedsAudioTranscode || resp.Duration != 123.5 {
+		t.Fatalf("probe metadata not stored: %#v", resp)
+	}
+	if resp.SelectedAudioTrack != 1 || resp.SelectedSubtitleTrack != -1 {
+		t.Fatalf("selected tracks = audio %d subtitle %d, want 1/-1", resp.SelectedAudioTrack, resp.SelectedSubtitleTrack)
+	}
+	if len(resp.AudioTracks) != 2 || len(resp.SubtitleTracks) != 1 || len(resp.SubtitleSessions) != 0 {
+		t.Fatalf("track/subtitle state = audio=%d subtitle=%d sessions=%d, want 2/1/0", len(resp.AudioTracks), len(resp.SubtitleTracks), len(resp.SubtitleSessions))
+	}
+	if resp.AudioTracks[0].Index != 1 || resp.AudioTracks[0].Language != "eng" {
+		t.Fatalf("audio track metadata = %#v", resp.AudioTracks[0])
+	}
+	if resp.SubtitleTracks[0].Index != 3 || !resp.SubtitleTracks[0].IsBitmap {
+		t.Fatalf("subtitle track metadata = %#v", resp.SubtitleTracks[0])
+	}
+	if resp.ServiceType != "debrid" || resp.FileSize != 333 || resp.HealthStatus != "healthy" {
+		t.Fatalf("metadata = service %q size %d health %q", resp.ServiceType, resp.FileSize, resp.HealthStatus)
+	}
+	if resp.SelectedResult == nil || resp.SelectedResult.GUID != "guid-new" || resp.SelectedResultIndex != 1 {
+		t.Fatalf("selected result = %#v index=%d", resp.SelectedResult, resp.SelectedResultIndex)
+	}
+	if len(resp.MigrationCandidates) != 2 {
+		t.Fatalf("MigrationCandidates length = %d, want 2", len(resp.MigrationCandidates))
+	}
+	if resp.PassthroughName != "RD Better" || resp.PassthroughDescription != "RD description" {
+		t.Fatalf("passthrough = %q / %q", resp.PassthroughName, resp.PassthroughDescription)
+	}
+	if adopted, ok := store.Get(entry.ID); !ok || !adopted.MigrationAdopted {
+		t.Fatalf("MigrationAdopted = %v, exists=%v; want true", adopted != nil && adopted.MigrationAdopted, ok)
+	}
+	if len(prewarm.updated) != 1 || prewarm.updated[0] != entry.ID {
+		t.Fatalf("prewarm updates = %#v, want [%s]", prewarm.updated, entry.ID)
+	}
+}
+
+func TestPrequeueReusesAdoptedMigrationWithoutTrackMetadata(t *testing.T) {
+	store := playback.NewPrequeueStore(time.Hour)
+	entry, created := store.Create("movie:1", "Example", "user1", "movie", 2024, nil, "details")
+	if !created {
+		t.Fatal("Create returned created=false")
+	}
+	store.Update(entry.ID, func(e *playback.PrequeueEntry) {
+		e.Status = playback.PrequeueStatusReady
+		e.StreamPath = "/debrid/realdebrid/final-good.mkv"
+		e.ServiceType = "debrid"
+		e.SelectedAudioTrack = -1
+		e.SelectedSubtitleTrack = -1
+		e.MigrationAdopted = true
+	})
+
+	body, err := json.Marshal(playback.PrequeueRequest{
+		TitleID:   "movie:1",
+		TitleName: "Example",
+		MediaType: "movie",
+		UserID:    "user1",
+		Year:      2024,
+		Reason:    "details",
+		SkipHLS:   true,
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	handler := &PrequeueHandler{store: store}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/playback/prequeue", bytes.NewReader(body))
+
+	handler.Prequeue(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var resp playback.PrequeueResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.PrequeueID != entry.ID {
+		t.Fatalf("PrequeueID = %q, want reused %q", resp.PrequeueID, entry.ID)
+	}
+	if resp.Status != playback.PrequeueStatusReady {
+		t.Fatalf("Status = %q, want ready", resp.Status)
+	}
+	if len(store.ListAll()) != 1 {
+		t.Fatalf("store entries = %d, want 1 reused entry", len(store.ListAll()))
 	}
 }
 
