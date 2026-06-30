@@ -1366,27 +1366,65 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 		searchOpts.AbsoluteEpisodeNumber = targetEpisode.AbsoluteEpisodeNumber
 	}
 
-	allResults, searchErr := h.indexerSvc.Search(ctx, searchOpts)
-	if searchErr != nil || len(allResults) == 0 {
+	scoredResults, searchErr := h.indexerSvc.SearchWithScoring(ctx, indexer.SearchOptions{
+		Query:                 searchOpts.Query,
+		Categories:            searchOpts.Categories,
+		IMDBID:                searchOpts.IMDBID,
+		MediaType:             searchOpts.MediaType,
+		Year:                  searchOpts.Year,
+		UserID:                searchOpts.UserID,
+		ClientID:              searchOpts.ClientID,
+		EpisodeResolver:       searchOpts.EpisodeResolver,
+		TotalSeriesEpisodes:   searchOpts.TotalSeriesEpisodes,
+		AbsoluteEpisodeNumber: searchOpts.AbsoluteEpisodeNumber,
+		IsAnime:               searchOpts.IsAnime,
+		IsDaily:               searchOpts.IsDaily,
+		TargetAirDate:         searchOpts.TargetAirDate,
+		EpisodeAirYear:        searchOpts.EpisodeAirYear,
+		IncludeFiltered:       true,
+	})
+	if searchErr != nil {
+		h.failPrequeue(prequeueID, searchErr.Error())
+		return
+	}
+
+	badStreamCount := 0
+	if h.badStreamsSvc != nil {
+		for i := range scoredResults {
+			if !h.badStreamsSvc.IsBad(scoredResults[i].NZBResult) {
+				continue
+			}
+			badStreamCount++
+			scoredResults[i].FilterStatus = "filtered"
+			if scoredResults[i].FilterReason == "" {
+				scoredResults[i].FilterReason = "marked bad stream"
+			} else if !strings.Contains(strings.ToLower(scoredResults[i].FilterReason), "marked bad stream") {
+				scoredResults[i].FilterReason += "; marked bad stream"
+			}
+		}
+	}
+
+	logPrequeueCandidateList(scoredResults)
+
+	var allResults []models.NZBResult
+	for _, scored := range scoredResults {
+		if scored.FilterStatus == "filtered" {
+			continue
+		}
+		allResults = append(allResults, scored.NZBResult)
+	}
+	if len(allResults) > searchOpts.MaxResults {
+		allResults = allResults[:searchOpts.MaxResults]
+	}
+	if len(allResults) == 0 {
 		errMsg := "no results found"
-		if searchErr != nil {
-			errMsg = searchErr.Error()
+		if badStreamCount > 0 {
+			errMsg = "all results are filtered or marked bad"
 		}
 		h.failPrequeue(prequeueID, errMsg)
 		return
 	}
-	log.Printf("[prequeue] TIMING: search complete, %d combined results (elapsed: %v)", len(allResults), time.Since(workerStart))
-	if h.badStreamsSvc != nil {
-		before := len(allResults)
-		allResults = h.badStreamsSvc.FilterResults(allResults)
-		if len(allResults) == 0 {
-			h.failPrequeue(prequeueID, "all results are marked bad")
-			return
-		}
-		if before != len(allResults) {
-			log.Printf("[prequeue] filtered %d marked bad stream(s), %d candidate(s) remain", before-len(allResults), len(allResults))
-		}
-	}
+	log.Printf("[prequeue] TIMING: scored search complete, %d passed candidate(s) selected from %d total result(s), badStreams=%d (elapsed: %v)", len(allResults), len(scoredResults), badStreamCount, time.Since(workerStart))
 
 	// Update status to resolving
 	h.store.Update(prequeueID, func(e *playback.PrequeueEntry) {
@@ -1958,6 +1996,28 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 	}
 
 	log.Printf("[prequeue] TIMING: Prequeue %s is ready (TOTAL: %v)", prequeueID, time.Since(workerStart))
+}
+
+func logPrequeueCandidateList(scoredResults []models.ScoredNZBResult) {
+	limit := 10
+	if len(scoredResults) < limit {
+		limit = len(scoredResults)
+	}
+	log.Printf("[prequeue] candidate decision list: showing %d of %d result(s)", limit, len(scoredResults))
+	for i := 0; i < limit; i++ {
+		result := scoredResults[i]
+		badStream := strings.Contains(strings.ToLower(result.FilterReason), "marked bad stream")
+		log.Printf("[prequeue] candidate #%d title=%q provider=%q service=%q status=%q badStream=%v score=%d reason=%q",
+			i+1,
+			result.Title,
+			result.Indexer,
+			result.ServiceType,
+			result.FilterStatus,
+			badStream,
+			result.TotalScore,
+			result.FilterReason,
+		)
+	}
 }
 
 func (h *PrequeueHandler) waitForPlaybackQueue(ctx context.Context, prequeueID string, queueID int64, title string) (*models.PlaybackResolution, error) {
