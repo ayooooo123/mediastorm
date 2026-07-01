@@ -1181,6 +1181,47 @@ func TestResults_TitleContainment(t *testing.T) {
 }
 
 func TestResults_RawTitlePrefixFallback(t *testing.T) {
+	t.Run("keeps sanitized apostrophe movie title before release year", func(t *testing.T) {
+		results := []models.NZBResult{
+			{Title: "Driver's Ed (2026) 2160p 4K HDR10 DV WEB-DL Dual Audio"},
+			{Title: "Drivers Ed 2026 1080p AMZN WEB-DL DDP5 1 H 264-SCOPE"},
+			{Title: "Teen.Titans.Go.S01E03.Drivers.Ed.1080p.WEBRip.x265"},
+		}
+
+		opts := Options{
+			ExpectedTitle: "Driver's Ed",
+			ExpectedYear:  2026,
+			IsMovie:       true,
+		}
+
+		filtered := ResultsWithDetails(results, opts)
+		passed := make(map[string]models.NZBResult)
+		for _, result := range filtered {
+			if result.Passed {
+				passed[result.Result.Title] = result.Result
+			}
+		}
+
+		if len(passed) != 2 {
+			t.Fatalf("expected 2 Driver's Ed releases to pass, got %d: %+v", len(passed), filtered)
+		}
+		for _, title := range []string{
+			"Driver's Ed (2026) 2160p 4K HDR10 DV WEB-DL Dual Audio",
+			"Drivers Ed 2026 1080p AMZN WEB-DL DDP5 1 H 264-SCOPE",
+		} {
+			result, ok := passed[title]
+			if !ok {
+				t.Fatalf("expected %q to pass, got %+v", title, filtered)
+			}
+			if result.Attributes["titleMatch"] != "strong" {
+				t.Fatalf("expected %q to have strong titleMatch, got %q", title, result.Attributes["titleMatch"])
+			}
+		}
+		if _, ok := passed["Teen.Titans.Go.S01E03.Drivers.Ed.1080p.WEBRip.x265"]; ok {
+			t.Fatal("expected unrelated episode title to be rejected")
+		}
+	})
+
 	t.Run("keeps Dateline NBC when parser drops network suffix", func(t *testing.T) {
 		results := []models.NZBResult{
 			{Title: "Dateline.NBC.S34E26.2026.06.05.A.Killing.in.Midtown.1080p.PCOK.WEB-DL.AAC2.0.H.264-RAWR"},
