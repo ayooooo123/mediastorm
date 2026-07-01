@@ -104,11 +104,18 @@ type Service struct {
 	cancel context.CancelFunc
 }
 
-func hasTrackMetadata(entry *playback.PrequeueEntry) bool {
+func hasReusablePreparation(entry *playback.PrequeueEntry) bool {
 	if entry == nil {
 		return false
 	}
-	return len(entry.AudioTracks) > 0 || len(entry.SubtitleTracks) > 0
+	return entry.MigrationAdopted || len(entry.AudioTracks) > 0 || len(entry.SubtitleTracks) > 0
+}
+
+func prequeueReadyForWarmReuse(entry *playback.PrequeueEntry) bool {
+	return entry != nil &&
+		entry.Status == playback.PrequeueStatusReady &&
+		strings.TrimSpace(entry.StreamPath) != "" &&
+		hasReusablePreparation(entry)
 }
 
 func continueWatchingActivityAt(state models.SeriesWatchState) time.Time {
@@ -233,7 +240,7 @@ func (s *Service) warmContinueWatchingScope(
 	s.mu.RUnlock()
 
 	if hasExisting && existing.PrequeueID != "" {
-		if entry, ok := s.prequeueStore.Get(existing.PrequeueID); ok && entry.Status == playback.PrequeueStatusReady && hasTrackMetadata(entry) {
+		if entry, ok := s.prequeueStore.Get(existing.PrequeueID); ok && prequeueReadyForWarmReuse(entry) {
 			// Only reuse the warmed stream if it still targets the current next-up
 			// episode. For actively-airing series (e.g. anime with absolute numbering
 			// like One Piece) the next-up episode advances while the old stream stays
@@ -272,7 +279,7 @@ func (s *Service) warmContinueWatchingScope(
 	}
 
 	if pqEntry, ok := s.prequeueStore.GetByTitleUserScope(state.SeriesID, user.ID, settingsScopeKey); ok &&
-		pqEntry.Status == playback.PrequeueStatusReady && hasTrackMetadata(pqEntry) &&
+		prequeueReadyForWarmReuse(pqEntry) &&
 		playback.EpisodeReferencesMatch(targetEpisode, pqEntry.TargetEpisode) {
 		expiresAt := s.prequeueExpiry(pqEntry.CreatedAt, pqEntry, targetEpisode, state.Year, mediaType)
 		s.setPrequeueExpiry(pqEntry.ID, expiresAt)
@@ -300,7 +307,7 @@ func (s *Service) warmContinueWatchingScope(
 
 	if shared := s.findReusableWarmEntry(state.SeriesID, user.ID, settingsScopeKey, targetEpisode); shared != nil {
 		if pqEntry, ok := s.prequeueStore.Get(shared.PrequeueID); ok &&
-			pqEntry.Status == playback.PrequeueStatusReady && hasTrackMetadata(pqEntry) &&
+			prequeueReadyForWarmReuse(pqEntry) &&
 			playback.EpisodeReferencesMatch(targetEpisode, pqEntry.TargetEpisode) {
 			expiresAt := s.prequeueExpiry(shared.LastResolve, pqEntry, targetEpisode, state.Year, mediaType)
 			s.setPrequeueExpiry(pqEntry.ID, expiresAt)
@@ -371,16 +378,24 @@ func (s *Service) warmContinueWatchingScope(
 		log.Printf("[prewarm] Failed to warm %q for user %s client=%s scope=%s (retry after %v): %v",
 			state.SeriesTitle, user.Name, clientID, settingsScopeKey, time.Until(warmEntry.ExpiresAt).Round(time.Minute), err)
 	} else {
-		if pqEntry, ok := s.prequeueStore.Get(prequeueID); ok {
+		if pqEntry, ok := s.prequeueStore.Get(prequeueID); !ok || !prequeueReadyForWarmReuse(pqEntry) {
+			warmEntry.Error = "prequeue resolved without reusable preparation metadata"
+			warmEntry.PrequeueID = ""
+			warmEntry.StreamPath = ""
+			warmEntry.ExpiresAt = time.Now().Add(prewarmNoResultsReleaseRetryDelay)
+			result.Failed++
+			log.Printf("[prewarm] Failed to warm %q for user %s client=%s scope=%s (retry after %v): resolved prequeue %s is not reusable",
+				state.SeriesTitle, user.Name, clientID, settingsScopeKey, time.Until(warmEntry.ExpiresAt).Round(time.Minute), prequeueID)
+		} else {
 			warmEntry.StreamPath = pqEntry.StreamPath
 			warmEntry.LastRefresh = time.Now()
 			warmEntry.ExpiresAt = s.prequeueExpiry(lastResolve, pqEntry, targetEpisode, state.Year, mediaType)
 			s.prequeueStore.Update(prequeueID, func(e *playback.PrequeueEntry) {
 				e.ExpiresAt = warmEntry.ExpiresAt
 			})
+			result.Warmed++
+			log.Printf("[prewarm] Warmed: %q for user %s client=%s scope=%s (prequeueID=%s)", state.SeriesTitle, user.Name, clientID, settingsScopeKey, prequeueID)
 		}
-		result.Warmed++
-		log.Printf("[prewarm] Warmed: %q for user %s client=%s scope=%s (prequeueID=%s)", state.SeriesTitle, user.Name, clientID, settingsScopeKey, prequeueID)
 	}
 
 	s.mu.Lock()
@@ -418,7 +433,7 @@ func (s *Service) UpdateFromPrequeue(prequeueID string) {
 	}
 
 	pqEntry, ok := s.prequeueStore.Get(prequeueID)
-	if !ok || pqEntry.Status != playback.PrequeueStatusReady {
+	if !ok || !prequeueReadyForWarmReuse(pqEntry) {
 		return
 	}
 
@@ -543,7 +558,7 @@ func (s *Service) RestorePrequeueEntries() {
 
 		// Check if the prequeue store already has a valid entry for this title+user
 		// (loaded from prequeue.json which contains full track data)
-		if existing, ok := s.prequeueStore.GetByTitleUserScope(entry.TitleID, entry.UserID, entry.SettingsScopeKey); ok && existing.Status == playback.PrequeueStatusReady {
+		if existing, ok := s.prequeueStore.GetByTitleUserScope(entry.TitleID, entry.UserID, entry.SettingsScopeKey); ok && prequeueReadyForWarmReuse(existing) {
 			entry.PrequeueID = existing.ID
 			restored++
 			log.Printf("[prewarm] Reused existing prequeue entry %s for %s (from prequeue.json)", existing.ID, entry.TitleName)
