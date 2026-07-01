@@ -72,6 +72,7 @@ func TestRunOnce_WarmsItems(t *testing.T) {
 		store.Update(entry.ID, func(e *playback.PrequeueEntry) {
 			e.Status = playback.PrequeueStatusReady
 			e.StreamPath = "/debrid/rd/123/456"
+			e.AudioTracks = []playback.AudioTrackInfo{{Index: 0, Language: "eng", Codec: "aac"}}
 		})
 		return entry.ID, nil
 	}
@@ -168,6 +169,7 @@ func TestRunOnce_SkipsAlreadyWarmed(t *testing.T) {
 	entry, _ := store.Create("title1", "Breaking Bad", "user1", "series", 0, &models.EpisodeReference{SeasonNumber: 2, EpisodeNumber: 3}, "prewarm")
 	store.Update(entry.ID, func(e *playback.PrequeueEntry) {
 		e.Status = playback.PrequeueStatusReady
+		e.StreamPath = "/debrid/rd/123/456"
 		e.AudioTracks = []playback.AudioTrackInfo{
 			{Index: 0, Language: "eng", Codec: "aac", Title: "English"},
 		}
@@ -507,6 +509,66 @@ func TestRunOnce_HandlesWorkerFailure(t *testing.T) {
 
 	if result.Failed != 1 {
 		t.Errorf("expected 1 failed, got %d", result.Failed)
+	}
+}
+
+func TestRunOnce_RejectsResolvedPrequeueWithoutReusablePreparation(t *testing.T) {
+	store := playback.NewPrequeueStore(30 * time.Minute)
+
+	users := []models.User{{ID: "user1", Name: "Alice"}}
+	continueWatching := map[string][]models.SeriesWatchState{
+		"user1": {
+			{
+				SeriesID:    "title1",
+				SeriesTitle: "Breaking Bad",
+				UpdatedAt:   time.Now().UTC(),
+				NextEpisode: &models.EpisodeReference{SeasonNumber: 1, EpisodeNumber: 1},
+			},
+		},
+	}
+
+	workerCalls := 0
+	workerFn := func(ctx context.Context, titleID, titleName, imdbID, mediaType string, year int, userID string, targetEpisode *models.EpisodeReference) (string, error) {
+		workerCalls++
+		entry, _ := store.Create(titleID, titleName, userID, mediaType, year, targetEpisode, "prewarm")
+		store.Update(entry.ID, func(e *playback.PrequeueEntry) {
+			e.Status = playback.PrequeueStatusReady
+			e.StreamPath = "/webdav/not-ready-yet.mkv"
+		})
+		return entry.ID, nil
+	}
+
+	svc := NewService(nil, "")
+	svc.SetHistoryService(&mockHistoryProvider{continueWatching: continueWatching})
+	svc.SetUsersService(&mockUsersProvider{users: users})
+	svc.SetPrequeueStore(store)
+	svc.SetWorkerFunc(workerFn)
+
+	result, err := svc.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnce failed: %v", err)
+	}
+	if workerCalls != 1 {
+		t.Fatalf("worker calls = %d, want 1", workerCalls)
+	}
+	if result.Warmed != 0 || result.Failed != 1 {
+		t.Fatalf("result = %+v, want warmed=0 failed=1", result)
+	}
+
+	warm := svc.GetWarmScoped("title1", "user1", playback.DefaultPrequeueSettingsScopeKey)
+	if warm != nil {
+		t.Fatalf("expected no reusable warm ref, got %#v", warm)
+	}
+
+	entry := svc.entries[entryKey("title1", "user1")]
+	if entry == nil {
+		t.Fatal("expected failed warm entry to be retained for retry backoff")
+	}
+	if entry.Error == "" {
+		t.Fatal("expected failed warm entry error")
+	}
+	if entry.PrequeueID != "" {
+		t.Fatalf("PrequeueID = %q, want empty", entry.PrequeueID)
 	}
 }
 
@@ -884,6 +946,8 @@ func TestRunOnce_MultipleUsersMultipleItems(t *testing.T) {
 		entry, _ := store.Create(titleID, titleName, userID, mediaType, year, targetEpisode, "prewarm")
 		store.Update(entry.ID, func(e *playback.PrequeueEntry) {
 			e.Status = playback.PrequeueStatusReady
+			e.StreamPath = "/debrid/rd/123/456"
+			e.AudioTracks = []playback.AudioTrackInfo{{Index: 0, Language: "eng", Codec: "aac"}}
 		})
 		return entry.ID, nil
 	}
@@ -1010,6 +1074,7 @@ func TestReResolveExpired(t *testing.T) {
 	store.Update(entry.ID, func(e *playback.PrequeueEntry) {
 		e.Status = playback.PrequeueStatusReady
 		e.StreamPath = "/debrid/rd/123/456"
+		e.AudioTracks = []playback.AudioTrackInfo{{Index: 0, Language: "eng", Codec: "aac"}}
 	})
 	// Force expiry bypassing TTL auto-extension
 	store.ForceExpiry(entry.ID, time.Now().Add(-1*time.Minute))
@@ -1021,6 +1086,7 @@ func TestReResolveExpired(t *testing.T) {
 		store.Update(newEntry.ID, func(e *playback.PrequeueEntry) {
 			e.Status = playback.PrequeueStatusReady
 			e.StreamPath = "/debrid/rd/789/012"
+			e.AudioTracks = []playback.AudioTrackInfo{{Index: 0, Language: "eng", Codec: "aac"}}
 		})
 		return newEntry.ID, nil
 	}
@@ -1204,6 +1270,7 @@ func TestUpdateFromPrequeueRefreshesExistingWarmEntry(t *testing.T) {
 	store.Update(entry.ID, func(e *playback.PrequeueEntry) {
 		e.Status = playback.PrequeueStatusReady
 		e.StreamPath = "/new/path.mkv"
+		e.AudioTracks = []playback.AudioTrackInfo{{Index: 0, Language: "eng", Codec: "aac"}}
 	})
 
 	svc.UpdateFromPrequeue(entry.ID)
@@ -1358,6 +1425,7 @@ func TestRunOnce_DeduplicatesSameTitleUser(t *testing.T) {
 		store.Update(entry.ID, func(e *playback.PrequeueEntry) {
 			e.Status = playback.PrequeueStatusReady
 			e.StreamPath = "/debrid/rd/123/456"
+			e.AudioTracks = []playback.AudioTrackInfo{{Index: 0, Language: "eng", Codec: "aac"}}
 		})
 		return entry.ID, nil
 	}
