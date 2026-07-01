@@ -26,6 +26,7 @@ import (
 	"novastream/internal/apiusage"
 	"novastream/internal/dnscache"
 	"novastream/internal/httpheaders"
+	"novastream/internal/mediaresolve"
 	"novastream/models"
 	"novastream/services/debrid"
 	"novastream/utils/filter"
@@ -51,6 +52,7 @@ var (
 	resolution720Pattern  = regexp.MustCompile(`(?i)(^|[^a-z0-9])720[pi]?([^a-z0-9]|$)`)
 	resolution576Pattern  = regexp.MustCompile(`(?i)(^|[^a-z0-9])576[pi]?([^a-z0-9]|$)`)
 	resolution480Pattern  = regexp.MustCompile(`(?i)(^|[^a-z0-9])480[pi]?([^a-z0-9]|$)`)
+	releaseDedupTokenSep  = regexp.MustCompile(`[^a-z0-9]+`)
 )
 
 var sportsEventSideContentFilterTerms = []string{
@@ -1544,13 +1546,7 @@ func (s *Service) fetchUsenetResultsAllQueries(ctx context.Context, settings con
 	seen := make(map[string]struct{}, len(allResults))
 	deduped := make([]models.NZBResult, 0, len(allResults))
 	for _, r := range allResults {
-		key := r.GUID
-		if key == "" {
-			key = r.DownloadURL
-		}
-		if key == "" {
-			key = r.Link
-		}
+		key := usenetResultDedupKey(r)
 		if key == "" {
 			deduped = append(deduped, r)
 			continue
@@ -2221,9 +2217,13 @@ func (s *Service) searchUsenetWithFilter(ctx context.Context, settings config.Se
 }
 
 // usenetResultDedupKey returns a stable identity for an NZB result so the same
-// release returned by multiple alternate queries is counted once. Prefers the
-// indexer GUID, then the download URL/link, falling back to title+size.
+// release returned by multiple alternate queries or indexers is counted once.
+// Indexer GUIDs and NZB URLs are often source-specific, so release title is the
+// primary identity when present.
 func usenetResultDedupKey(r models.NZBResult) string {
+	if title := normalizedUsenetReleaseTitle(r.Title); title != "" {
+		return "title:" + title
+	}
 	if g := strings.TrimSpace(r.GUID); g != "" {
 		return "guid:" + g
 	}
@@ -2233,7 +2233,18 @@ func usenetResultDedupKey(r models.NZBResult) string {
 	if l := strings.TrimSpace(r.Link); l != "" {
 		return "link:" + l
 	}
-	return fmt.Sprintf("title:%s|size:%d", strings.ToLower(strings.TrimSpace(r.Title)), r.SizeBytes)
+	if r.SizeBytes > 0 {
+		return fmt.Sprintf("size:%d", r.SizeBytes)
+	}
+	return ""
+}
+
+func normalizedUsenetReleaseTitle(title string) string {
+	title = mediaresolve.NormalizeReleasePart(title)
+	title = normalizeToASCII(title)
+	title = strings.ToLower(title)
+	title = releaseDedupTokenSep.ReplaceAllString(title, " ")
+	return strings.Join(strings.Fields(title), " ")
 }
 
 func (s *Service) searchUsenet(ctx context.Context, settings config.Settings, opts SearchOptions, baseParsed debrid.ParsedQuery, alternateTitles []string, searchQueries []string) ([]models.NZBResult, error) {

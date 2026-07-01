@@ -1622,36 +1622,43 @@ func TestExtractResolutionFromResultIgnoresEmbedded4KInReleaseGroup(t *testing.T
 }
 
 func TestUsenetResultDedupKey(t *testing.T) {
-	// GUID takes precedence
-	a := models.NZBResult{GUID: "g1", DownloadURL: "u1", Title: "Coco", SizeBytes: 100}
-	b := models.NZBResult{GUID: "g1", DownloadURL: "u2", Title: "Coco different", SizeBytes: 200}
+	// Release title takes precedence because GUIDs/URLs are indexer-specific.
+	a := models.NZBResult{GUID: "g1", DownloadURL: "u1", Title: "[TRC].Sugar.Apple.Fairy.Tale-S01E11.[English.Dub]", SizeBytes: 312277641}
+	b := models.NZBResult{GUID: "g2", DownloadURL: "u2", Title: "[TRC] Sugar Apple Fairy Tale - S01E11 [English Dub]", SizeBytes: 309909000}
 	if usenetResultDedupKey(a) != usenetResultDedupKey(b) {
-		t.Fatal("same GUID should produce same dedup key")
+		t.Fatal("same normalized release title should produce same dedup key across indexers")
+	}
+
+	// Falls back to GUID when title empty
+	guidA := models.NZBResult{GUID: "g1", DownloadURL: "u1", SizeBytes: 100}
+	guidB := models.NZBResult{GUID: "g1", DownloadURL: "u2", SizeBytes: 200}
+	if usenetResultDedupKey(guidA) != usenetResultDedupKey(guidB) {
+		t.Fatal("same GUID should produce same dedup key when title empty")
 	}
 
 	// Falls back to download URL when GUID empty
-	c := models.NZBResult{DownloadURL: "u1", Title: "X"}
-	d := models.NZBResult{DownloadURL: "u1", Title: "Y"}
+	c := models.NZBResult{DownloadURL: "u1"}
+	d := models.NZBResult{DownloadURL: "u1"}
 	if usenetResultDedupKey(c) != usenetResultDedupKey(d) {
-		t.Fatal("same DownloadURL should produce same dedup key when GUID empty")
+		t.Fatal("same DownloadURL should produce same dedup key when title+GUID empty")
 	}
 
 	// Falls back to link when GUID+URL empty
-	e := models.NZBResult{Link: "l1", Title: "X"}
-	f := models.NZBResult{Link: "l1", Title: "Y"}
+	e := models.NZBResult{Link: "l1"}
+	f := models.NZBResult{Link: "l1"}
 	if usenetResultDedupKey(e) != usenetResultDedupKey(f) {
 		t.Fatal("same Link should produce same dedup key when GUID+URL empty")
 	}
 
-	// Falls back to title+size; case-insensitive title
+	// Title matching is case-insensitive and ignores file extensions.
 	g := models.NZBResult{Title: "Coco 2017", SizeBytes: 123}
-	h := models.NZBResult{Title: "coco 2017", SizeBytes: 123}
+	h := models.NZBResult{Title: "coco.2017.mkv", SizeBytes: 456}
 	if usenetResultDedupKey(g) != usenetResultDedupKey(h) {
-		t.Fatal("title+size fallback should be case-insensitive on title")
+		t.Fatal("release title key should normalize separators, extension, and case")
 	}
 
 	// Distinct releases produce distinct keys
-	if usenetResultDedupKey(a) == usenetResultDedupKey(models.NZBResult{GUID: "g2"}) {
-		t.Fatal("different GUIDs should produce different dedup keys")
+	if usenetResultDedupKey(a) == usenetResultDedupKey(models.NZBResult{Title: "Coco 2017"}) {
+		t.Fatal("different release titles should produce different dedup keys")
 	}
 }
