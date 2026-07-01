@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 
 	"novastream/models"
+	"novastream/services/badstreams"
 )
 
 // mockPlaybackService implements the playbackService interface for testing.
@@ -49,6 +51,79 @@ func (m *mockPlaybackService) QueueStatus(ctx context.Context, queueID int64) (*
 		return m.queueStatusFunc(ctx, queueID)
 	}
 	return &models.PlaybackResolution{QueueID: queueID}, nil
+}
+
+func TestResolve_RejectsMarkedBadStreamByDefault(t *testing.T) {
+	badStreamSvc := badstreams.New(filepath.Join(t.TempDir(), "bad_streams.json"))
+	result := models.NZBResult{
+		Title:       "Sample Release",
+		ServiceType: models.ServiceTypeUsenet,
+	}
+	if _, err := badStreamSvc.Mark(badstreams.MarkRequest{
+		ReleaseName: "Sample Release",
+		ServiceType: string(models.ServiceTypeUsenet),
+	}); err != nil {
+		t.Fatalf("mark bad stream: %v", err)
+	}
+
+	resolveCalled := false
+	h := NewPlaybackHandler(&mockPlaybackService{
+		resolveFunc: func(ctx context.Context, candidate models.NZBResult) (*models.PlaybackResolution, error) {
+			resolveCalled = true
+			return &models.PlaybackResolution{WebDAVPath: "/test"}, nil
+		},
+	})
+	h.SetBadStreamsService(badStreamSvc)
+
+	body, _ := json.Marshal(map[string]interface{}{"result": result})
+	req := httptest.NewRequest(http.MethodPost, "/api/playback/resolve", bytes.NewBuffer(body))
+	rec := httptest.NewRecorder()
+	h.Resolve(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusConflict, rec.Code, rec.Body.String())
+	}
+	if resolveCalled {
+		t.Fatal("expected marked bad stream to be rejected before resolve")
+	}
+}
+
+func TestResolve_AllowsMarkedBadStreamWithManualOverride(t *testing.T) {
+	badStreamSvc := badstreams.New(filepath.Join(t.TempDir(), "bad_streams.json"))
+	result := models.NZBResult{
+		Title:       "Sample Release",
+		ServiceType: models.ServiceTypeUsenet,
+	}
+	if _, err := badStreamSvc.Mark(badstreams.MarkRequest{
+		ReleaseName: "Sample Release",
+		ServiceType: string(models.ServiceTypeUsenet),
+	}); err != nil {
+		t.Fatalf("mark bad stream: %v", err)
+	}
+
+	resolveCalled := false
+	h := NewPlaybackHandler(&mockPlaybackService{
+		resolveFunc: func(ctx context.Context, candidate models.NZBResult) (*models.PlaybackResolution, error) {
+			resolveCalled = true
+			return &models.PlaybackResolution{WebDAVPath: "/test"}, nil
+		},
+	})
+	h.SetBadStreamsService(badStreamSvc)
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"result":         result,
+		"allowMarkedBad": true,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/playback/resolve", bytes.NewBuffer(body))
+	rec := httptest.NewRecorder()
+	h.Resolve(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	if !resolveCalled {
+		t.Fatal("expected marked bad stream override to continue to resolve")
+	}
 }
 
 func TestResolveBatch_MalformedJSON(t *testing.T) {

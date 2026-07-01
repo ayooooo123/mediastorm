@@ -52,9 +52,10 @@ func (h *PlaybackHandler) SetBadStreamsService(service *badstreams.Service) {
 // Resolve accepts an NZB indexer result and responds with a validated playback source.
 func (h *PlaybackHandler) Resolve(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		Result      models.NZBResult `json:"result"`
-		StartOffset float64          `json:"startOffset,omitempty"` // Seek position in seconds for subtitle extraction
-		ProfileID   string           `json:"profileId,omitempty"`
+		Result         models.NZBResult `json:"result"`
+		StartOffset    float64          `json:"startOffset,omitempty"` // Seek position in seconds for subtitle extraction
+		ProfileID      string           `json:"profileId,omitempty"`
+		AllowMarkedBad bool             `json:"allowMarkedBad,omitempty"`
 	}
 
 	dec := json.NewDecoder(r.Body)
@@ -76,9 +77,13 @@ func (h *PlaybackHandler) Resolve(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.BadStreams != nil {
 		if match := h.BadStreams.Match(request.Result); match != nil {
-			log.Printf("[playback-handler] refusing marked bad stream service=%q provider=%q release=%q", request.Result.ServiceType, request.Result.Attributes["provider"], request.Result.Title)
-			http.Error(w, "stream is marked bad", http.StatusConflict)
-			return
+			if request.AllowMarkedBad {
+				log.Printf("[playback-handler] manual override for marked bad stream service=%q provider=%q release=%q badStreamID=%q", request.Result.ServiceType, request.Result.Attributes["provider"], request.Result.Title, match.ID)
+			} else {
+				log.Printf("[playback-handler] refusing marked bad stream service=%q provider=%q release=%q", request.Result.ServiceType, request.Result.Attributes["provider"], request.Result.Title)
+				http.Error(w, "stream is marked bad", http.StatusConflict)
+				return
+			}
 		}
 	}
 
