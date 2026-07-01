@@ -33,6 +33,7 @@ var (
 	resolution720Pattern    = regexp.MustCompile(`(?i)(^|[^a-z0-9])720[pi]?([^a-z0-9]|$)`)
 	resolution576Pattern    = regexp.MustCompile(`(?i)(^|[^a-z0-9])576[pi]?([^a-z0-9]|$)`)
 	resolution480Pattern    = regexp.MustCompile(`(?i)(^|[^a-z0-9])480[pi]?([^a-z0-9]|$)`)
+	yearTokenPattern        = regexp.MustCompile(`^(?:19|20)\d{2}$`)
 	formulaOneRoundPattern  = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])(?:f1|formula[.\s_-]*1)[^a-z0-9]+((?:19|20)\d{2})(?:x\d+)*(?:[^a-z0-9]+|x)(?:r|round)[.\s_-]*(\d{1,2})(?:[^a-z0-9]|$)`)
 	formulaOneXPattern      = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])(?:f1|formula[.\s_-]*1)[^a-z0-9]+((?:19|20)\d{2})x(\d{1,3})(?:[^a-z0-9]|$)`)
 	yearRangePattern        = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])((?:19|20)\d{2})\s*[-–]\s*((?:19|20)\d{2})(?:[^a-z0-9]|$)`)
@@ -341,6 +342,9 @@ func ResultsWithDetails(results []models.NZBResult, opts Options) []FilteredResu
 			continue
 		}
 		titleIdentityStrong := isStrongTitleIdentity(parsed.Title, matchedTitle, titleSim)
+		if !titleIdentityStrong && rawTitleHasStrongIdentity(result.Title, matchedTitle) {
+			titleIdentityStrong = true
+		}
 		if titleIdentityStrong {
 			result.Attributes["titleMatch"] = "strong"
 		} else {
@@ -861,6 +865,9 @@ func isReleaseBoundaryToken(fields []string, idx int) bool {
 	if episodeCodeTokenPattern.MatchString(token) || seasonOnlyTokenPattern.MatchString(token) {
 		return true
 	}
+	if idx > 0 && yearTokenPattern.MatchString(token) {
+		return true
+	}
 	if isReleaseDateTokenSequence(fields, idx) {
 		return true
 	}
@@ -1047,11 +1054,24 @@ func formulaOneEventTermsMatch(title string, expectedTerms []string) bool {
 func normalizeForContainment(s string) string {
 	s = html.UnescapeString(s)
 	s = strings.ToLower(s)
+	s = strings.NewReplacer(
+		"'", "",
+		"`", "",
+		"’", "",
+		"‘", "",
+		"ʼ", "",
+	).Replace(s)
 	// Replace common separators with spaces
 	s = strings.ReplaceAll(s, ".", " ")
 	s = strings.ReplaceAll(s, "-", " ")
 	s = strings.ReplaceAll(s, "_", " ")
 	s = strings.ReplaceAll(s, ":", " ")
+	s = strings.ReplaceAll(s, "(", " ")
+	s = strings.ReplaceAll(s, ")", " ")
+	s = strings.ReplaceAll(s, "[", " ")
+	s = strings.ReplaceAll(s, "]", " ")
+	s = strings.ReplaceAll(s, "{", " ")
+	s = strings.ReplaceAll(s, "}", " ")
 	// Strip diacritical marks (é→e, ü→u, etc.)
 	s = stripDiacritics(s)
 	// Collapse multiple spaces and trim
@@ -1155,6 +1175,15 @@ func isStrongTitleIdentity(parsedTitle, matchedTitle string, titleSimilarity flo
 		return true
 	}
 	return titleSimilarity >= 0.99
+}
+
+func rawTitleHasStrongIdentity(rawTitle, matchedTitle string) bool {
+	for _, variant := range rawTitlePrefixVariants(rawTitle) {
+		if isStrongTitleIdentity(variant, matchedTitle, similarity.Similarity(matchedTitle, variant)) {
+			return true
+		}
+	}
+	return false
 }
 
 func stripLeadingTitleArticle(title string) string {
