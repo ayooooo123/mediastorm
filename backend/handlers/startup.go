@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -33,6 +35,7 @@ const startupExploreCollageItemCount = 4
 // The startup bundle gates several frontend providers, so keep this short and
 // fail open with partial data instead of stalling the whole home screen.
 const startupTrendingTimeout = 1500 * time.Millisecond
+const startupHomeBundleTimeout = 3500 * time.Millisecond
 
 // startupCalendarService is the subset of the calendar service used by the
 // startup handler. It reads only from the pre-built cache (non-blocking).
@@ -66,6 +69,7 @@ type StartupHandler struct {
 	localMedia    localLibraryLister
 	prequeueStore startupPrequeueStore
 	hiddenItems   hiddenItemsService
+	displayList   *DisplayListHandler
 }
 
 // NewStartupHandler constructs a StartupHandler.
@@ -101,6 +105,10 @@ func (h *StartupHandler) SetHiddenItemsService(service hiddenItemsService) {
 	h.hiddenItems = service
 }
 
+func (h *StartupHandler) SetDisplayListHandler(handler *DisplayListHandler) {
+	h.displayList = handler
+}
+
 // StartupResponse is the combined payload returned by GET /api/users/{userID}/startup.
 type StartupResponse struct {
 	UserSettings             *models.UserSettings      `json:"userSettings"`
@@ -114,7 +122,17 @@ type StartupResponse struct {
 	TrendingSeries           *DiscoverNewResponse      `json:"trendingSeries"`
 	// CalendarItems contains the home-shelf calendar window (yesterday + next 2 days).
 	// Populated from the pre-built calendar cache; empty if the cache is not ready yet.
-	CalendarItems []models.CalendarItem `json:"calendarItems,omitempty"`
+	CalendarItems    []models.CalendarItem               `json:"calendarItems,omitempty"`
+	HomeShelves      map[string]StartupHomeShelfResponse `json:"homeShelves,omitempty"`
+	HomeBundleErrors map[string]string                   `json:"homeBundleErrors,omitempty"`
+}
+
+type StartupHomeShelfResponse struct {
+	Source          string                `json:"source"`
+	ListID          string                `json:"listId,omitempty"`
+	Items           []models.TrendingItem `json:"items"`
+	Total           int                   `json:"total"`
+	UnfilteredTotal int                   `json:"unfilteredTotal,omitempty"`
 }
 
 type HomeShelfManifest struct {
@@ -468,6 +486,18 @@ func (h *StartupHandler) GetStartup(w http.ResponseWriter, r *http.Request) {
 		enrichTrendingItems(resp.TrendingSeries.Items, idx)
 	}
 
+	if resp.UserSettings != nil && h.displayList != nil {
+		homeCtx, cancel := context.WithTimeout(r.Context(), startupHomeBundleTimeout)
+		homeShelves, homeErrors := h.buildStartupHomeShelves(homeCtx, r, userID, resp.UserSettings.HomeShelves.Shelves, startupShelfLimit, hideWatched)
+		cancel()
+		if len(homeShelves) > 0 {
+			resp.HomeShelves = homeShelves
+		}
+		if len(homeErrors) > 0 {
+			resp.HomeBundleErrors = homeErrors
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 }
@@ -817,6 +847,184 @@ func (h *StartupHandler) SetLocalMedia(lm localLibraryLister) {
 // Options handles CORS preflight for the startup endpoint.
 func (h *StartupHandler) Options(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
+}
+
+func (h *StartupHandler) buildStartupHomeShelves(ctx context.Context, sourceReq *http.Request, userID string, shelves []models.ShelfConfig, homeShelfLimit int, hideWatched bool) (map[string]StartupHomeShelfResponse, map[string]string) {
+	out := make(map[string]StartupHomeShelfResponse)
+	errs := make(map[string]string)
+	if h.displayList == nil || len(shelves) == 0 {
+		return out, errs
+	}
+
+	for _, shelf := range shelves {
+		if !shelf.Enabled || !isStartupFetchableCustomShelf(shelf) {
+			continue
+		}
+		query, ok := startupDisplayListQueryForShelf(shelf, homeShelfLimit, hideWatched)
+		if !ok {
+			continue
+		}
+		req := sourceReq.Clone(ctx)
+		req.Method = http.MethodGet
+		req.URL = &url.URL{
+			Path:     "/api/users/" + url.PathEscape(userID) + "/display-list",
+			RawQuery: query.Encode(),
+		}
+		req = mux.SetURLVars(req, map[string]string{"userID": userID})
+		rec := httptest.NewRecorder()
+		h.displayList.Get(rec, req)
+		if rec.Code >= http.StatusBadRequest {
+			message := strings.TrimSpace(rec.Body.String())
+			if message == "" {
+				message = http.StatusText(rec.Code)
+			}
+			errs[shelf.ID] = message
+			continue
+		}
+		var response StartupHomeShelfResponse
+		if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+			errs[shelf.ID] = err.Error()
+			continue
+		}
+		if response.Items == nil {
+			response.Items = []models.TrendingItem{}
+		}
+		if response.Total == 0 && len(response.Items) > 0 {
+			response.Total = len(response.Items)
+		}
+		out[shelf.ID] = response
+	}
+
+	return out, errs
+}
+
+func isStartupFetchableCustomShelf(shelf models.ShelfConfig) bool {
+	switch strings.ToLower(strings.TrimSpace(shelf.Type)) {
+	case "mdblist":
+		return strings.TrimSpace(shelf.ListURL) != ""
+	case "trakt":
+		return strings.TrimSpace(shelf.TraktAccountID) != "" && strings.TrimSpace(shelf.TraktListType) != ""
+	case "simkl":
+		return strings.TrimSpace(shelf.SimklAccountID) != "" && strings.TrimSpace(shelf.SimklMediaType) != ""
+	case "letterboxd":
+		return strings.TrimSpace(shelf.LetterboxdListID) != "" || strings.TrimSpace(shelf.LetterboxdListURL) != ""
+	case "genre":
+		_, _, ok := parseStartupGenreShelfID(shelf.ID)
+		return ok
+	case "decade":
+		_, _, ok := parseStartupDecadeShelfID(shelf.ID)
+		return ok
+	default:
+		return false
+	}
+}
+
+func startupDisplayListQueryForShelf(shelf models.ShelfConfig, homeShelfLimit int, hideWatched bool) (url.Values, bool) {
+	limit := startupCustomShelfFetchLimit(shelf, homeShelfLimit)
+	query := url.Values{}
+	if limit > 0 {
+		query.Set("limit", strconv.Itoa(limit))
+	}
+	if shelf.HideUnreleased {
+		query.Set("hideUnreleased", "true")
+	}
+	if hideWatched {
+		query.Set("hideWatched", "true")
+	}
+	if strings.TrimSpace(shelf.Name) != "" {
+		query.Set("name", shelf.Name)
+	}
+
+	switch strings.ToLower(strings.TrimSpace(shelf.Type)) {
+	case "mdblist":
+		query.Set("source", "mdblist")
+		query.Set("url", strings.TrimSpace(shelf.ListURL))
+	case "trakt":
+		query.Set("source", "trakt-list")
+		query.Set("accountId", strings.TrimSpace(shelf.TraktAccountID))
+		query.Set("listType", strings.TrimSpace(shelf.TraktListType))
+		if strings.TrimSpace(shelf.TraktListID) != "" {
+			query.Set("listId", strings.TrimSpace(shelf.TraktListID))
+		}
+	case "simkl":
+		query.Set("source", "simkl-list")
+		query.Set("accountId", strings.TrimSpace(shelf.SimklAccountID))
+		query.Set("mediaType", strings.TrimSpace(shelf.SimklMediaType))
+		if strings.TrimSpace(shelf.SimklListType) != "" {
+			query.Set("listType", strings.TrimSpace(shelf.SimklListType))
+		}
+	case "letterboxd":
+		query.Set("source", "letterboxd-list")
+		if strings.TrimSpace(shelf.LetterboxdListID) != "" {
+			query.Set("listId", strings.TrimSpace(shelf.LetterboxdListID))
+		}
+		if strings.TrimSpace(shelf.LetterboxdListURL) != "" {
+			query.Set("listUrl", strings.TrimSpace(shelf.LetterboxdListURL))
+		}
+	case "genre":
+		genreID, mediaType, ok := parseStartupGenreShelfID(shelf.ID)
+		if !ok {
+			return nil, false
+		}
+		query.Set("source", "genre")
+		query.Set("genreId", strconv.FormatInt(genreID, 10))
+		query.Set("mediaType", mediaType)
+		query.Set("lite", "true")
+	case "decade":
+		decade, mediaType, ok := parseStartupDecadeShelfID(shelf.ID)
+		if !ok {
+			return nil, false
+		}
+		query.Set("source", "decade")
+		query.Set("decade", strconv.Itoa(decade))
+		query.Set("mediaType", mediaType)
+		query.Set("lite", "true")
+	default:
+		return nil, false
+	}
+	return query, true
+}
+
+func startupCustomShelfFetchLimit(shelf models.ShelfConfig, homeShelfLimit int) int {
+	if homeShelfLimit <= 0 {
+		homeShelfLimit = defaultStartupShelfLimit
+	}
+	if shelf.Limit > 0 {
+		if shelf.Limit >= homeShelfLimit {
+			return maxInt(shelf.Limit, homeShelfLimit+startupExploreCollageItemCount)
+		}
+		return shelf.Limit
+	}
+	switch strings.ToLower(strings.TrimSpace(shelf.Type)) {
+	case "genre", "decade":
+		return maxInt(homeShelfLimit, 50)
+	default:
+		return homeShelfLimit + startupExploreCollageItemCount
+	}
+}
+
+func parseStartupGenreShelfID(id string) (int64, string, bool) {
+	parts := strings.Split(strings.TrimSpace(id), "-")
+	if len(parts) != 3 || parts[0] != "genre" {
+		return 0, "", false
+	}
+	genreID, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || genreID <= 0 || (parts[2] != "movie" && parts[2] != "tv") {
+		return 0, "", false
+	}
+	return genreID, parts[2], true
+}
+
+func parseStartupDecadeShelfID(id string) (int, string, bool) {
+	parts := strings.Split(strings.TrimSpace(id), "-")
+	if len(parts) != 3 || parts[0] != "decade" {
+		return 0, "", false
+	}
+	decade, err := strconv.Atoi(parts[1])
+	if err != nil || decade < 1800 || (parts[2] != "movie" && parts[2] != "tv") {
+		return 0, "", false
+	}
+	return decade, parts[2], true
 }
 
 func buildHomeShelfManifest(shelves []models.ShelfConfig) []HomeShelfManifest {
