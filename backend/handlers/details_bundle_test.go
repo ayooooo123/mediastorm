@@ -193,6 +193,9 @@ func (m *mockHistoryServiceDetailsBundle) ListContinueWatching(_ string) ([]mode
 func (m *mockHistoryServiceDetailsBundle) GetContinueWatchingRevision(_ string) (string, error) {
 	return "", nil
 }
+func (m *mockHistoryServiceDetailsBundle) GetWatchHistoryRevision(_ string) (string, error) {
+	return "", nil
+}
 func (m *mockHistoryServiceDetailsBundle) ListSeriesStates(_ string) ([]models.SeriesWatchState, error) {
 	return nil, nil
 }

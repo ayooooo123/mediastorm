@@ -28,6 +28,7 @@ type historyService interface {
 	SetSeriesOrdering(userID string, seriesTVDBID int64, seasonType string) error
 
 	// Watch History methods
+	GetWatchHistoryRevision(userID string) (string, error)
 	ListWatchHistory(userID string) ([]models.WatchHistoryItem, error)
 	GetWatchHistoryItem(userID, mediaType, itemID string) (*models.WatchHistoryItem, error)
 	ToggleWatched(userID string, update models.WatchHistoryUpdate) (models.WatchHistoryItem, error)
@@ -62,6 +63,10 @@ type hideContinueWatchingRequest struct {
 }
 
 type continueWatchingRevisionResponse struct {
+	Revision string `json:"revision"`
+}
+
+type watchHistoryRevisionResponse struct {
 	Revision string `json:"revision"`
 }
 
@@ -341,6 +346,26 @@ func (h *HistoryHandler) ListWatchHistory(w http.ResponseWriter, r *http.Request
 		return
 	}
 	json.NewEncoder(w).Encode(items)
+}
+
+func (h *HistoryHandler) GetWatchHistoryRevision(w http.ResponseWriter, r *http.Request) {
+	userID, ok := h.requireUser(w, r)
+	if !ok {
+		return
+	}
+
+	revision, err := h.Service.GetWatchHistoryRevision(userID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, history.ErrUserIDRequired) {
+			status = http.StatusBadRequest
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(watchHistoryRevisionResponse{Revision: revision})
 }
 
 // GetWatchHistoryItem returns a specific watch history item

@@ -271,6 +271,24 @@ type BatchSeriesDetailsResponse struct {
 	Results []BatchSeriesDetailsItem `json:"results"`
 }
 
+// BatchMovieTitleFieldsRequest represents a batch request for compact movie title fields.
+type BatchMovieTitleFieldsRequest struct {
+	Queries []MovieDetailsQuery `json:"queries"`
+	Fields  []string            `json:"fields,omitempty"`
+}
+
+// BatchMovieTitleFieldsItem represents a single compact movie title result.
+type BatchMovieTitleFieldsItem struct {
+	Query MovieDetailsQuery `json:"query"`
+	Title *Title            `json:"title,omitempty"`
+	Error string            `json:"error,omitempty"`
+}
+
+// BatchMovieTitleFieldsResponse represents the response for compact movie title fields.
+type BatchMovieTitleFieldsResponse struct {
+	Results []BatchMovieTitleFieldsItem `json:"results"`
+}
+
 // BatchMovieReleasesQuery represents a query for movie release data
 type BatchMovieReleasesQuery struct {
 	TitleID string `json:"titleId,omitempty"`

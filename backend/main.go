@@ -614,6 +614,7 @@ func main() {
 	startupHandler.SetUsersProvider(userService)
 	startupHandler.SetLocalMedia(localMediaService)
 	startupHandler.SetHiddenItemsService(hiddenItemsService)
+	startupHandler.SetDisplayListHandler(displayListHandler)
 
 	// Details bundle handler bundles details-page API calls for low-power devices
 	detailsBundleHandler := handlers.NewDetailsBundleHandler(

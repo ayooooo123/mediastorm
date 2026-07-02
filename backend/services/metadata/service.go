@@ -4965,6 +4965,153 @@ func (s *Service) BatchSeriesTitleFields(ctx context.Context, queries []models.S
 	return results
 }
 
+// BatchMovieTitleFields returns only requested fields for each movie query. It
+// prefers cached title data so home-screen hero enrichment does not have to pay
+// the full details-page cost for every focused card.
+func (s *Service) BatchMovieTitleFields(ctx context.Context, queries []models.MovieDetailsQuery, fields []string) []models.BatchMovieTitleFieldsItem {
+	if len(queries) == 0 {
+		return []models.BatchMovieTitleFieldsItem{}
+	}
+
+	results := make([]models.BatchMovieTitleFieldsItem, len(queries))
+
+	type fetchTask struct {
+		index int
+		query models.MovieDetailsQuery
+	}
+	var tasksToFetch []fetchTask
+
+	for i, query := range queries {
+		results[i].Query = query
+		if title, ok := s.cachedMovieTitleFields(query, fields); ok {
+			results[i].Title = title
+			continue
+		}
+		tasksToFetch = append(tasksToFetch, fetchTask{index: i, query: query})
+	}
+
+	if len(tasksToFetch) == 0 {
+		metadataTracef("[metadata] batch movie fields all cached count=%d fields=%v", len(queries), fields)
+		return results
+	}
+
+	log.Printf("[metadata] batch movie fields fetching cached=%d uncached=%d fields=%v",
+		len(queries)-len(tasksToFetch), len(tasksToFetch), fields)
+
+	const maxConcurrent = 5
+	sem := make(chan struct{}, maxConcurrent)
+	var wg sync.WaitGroup
+
+	for _, task := range tasksToFetch {
+		wg.Add(1)
+		go func(idx int, q models.MovieDetailsQuery) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				results[idx].Error = ctx.Err().Error()
+				return
+			}
+
+			title, err := s.MovieInfo(ctx, q)
+			if err != nil {
+				results[idx].Error = err.Error()
+				return
+			}
+			if title == nil {
+				results[idx].Error = "movie title not found"
+				return
+			}
+			s.attachCachedMovieRatings(title, fields, q)
+			extracted := extractTitleFields(title, fields)
+			results[idx].Title = &extracted
+		}(task.index, task.query)
+	}
+
+	wg.Wait()
+	log.Printf("[metadata] batch movie fields complete total=%d", len(queries))
+	return results
+}
+
+func (s *Service) cachedMovieTitleFields(query models.MovieDetailsQuery, fields []string) (*models.Title, bool) {
+	if s.cache == nil {
+		return nil, false
+	}
+
+	language := ""
+	if s.client != nil {
+		language = s.client.language
+	}
+
+	tvdbID := query.TVDBID
+	if tvdbID <= 0 {
+		tvdbID = parseTVDBIDFromTitleID(query.TitleID)
+	}
+	if tvdbID <= 0 && query.TMDBID > 0 {
+		resolveKey := cacheKey("tvdb", "resolve", "movie", "tmdb", fmt.Sprintf("%d", query.TMDBID))
+		var resolved int64
+		if ok, _ := s.cache.get(resolveKey, &resolved); ok && resolved > 0 {
+			tvdbID = resolved
+		}
+	}
+
+	if tvdbID > 0 {
+		cacheID := cacheKey("tvdb", "movie", "details", "v5", language, strconv.FormatInt(tvdbID, 10))
+		var cached models.Title
+		if ok, _ := s.cache.get(cacheID, &cached); ok && cached.ID != "" {
+			s.attachCachedMovieRatings(&cached, fields, query)
+			extracted := extractTitleFields(&cached, fields)
+			return &extracted, true
+		}
+	}
+
+	if query.TMDBID > 0 {
+		cacheID := cacheKey("tmdb", "movie", "details", "v3", language, strconv.FormatInt(query.TMDBID, 10))
+		var cached models.Title
+		if ok, _ := s.cache.get(cacheID, &cached); ok && cached.ID != "" {
+			s.attachCachedMovieRatings(&cached, fields, query)
+			extracted := extractTitleFields(&cached, fields)
+			return &extracted, true
+		}
+	}
+
+	return nil, false
+}
+
+func (s *Service) attachCachedMovieRatings(title *models.Title, fields []string, query models.MovieDetailsQuery) {
+	if title == nil || !titleFieldsInclude(fields, "ratings") || len(title.Ratings) > 0 {
+		return
+	}
+
+	imdbID := strings.TrimSpace(title.IMDBID)
+	if imdbID == "" {
+		imdbID = strings.TrimSpace(query.IMDBID)
+	}
+	if imdbID == "" {
+		return
+	}
+
+	ratings := s.GetMDBListAllRatingsCached(imdbID, "movie")
+	if len(ratings) == 0 {
+		return
+	}
+	if s.mdblist != nil && s.mdblist.IsEnabled() {
+		ratings = s.mdblist.FilterEnabledRatings(ratings)
+	}
+	title.Ratings = ratings
+}
+
+func titleFieldsInclude(fields []string, target string) bool {
+	target = strings.ToLower(strings.TrimSpace(target))
+	for _, field := range fields {
+		if strings.ToLower(strings.TrimSpace(field)) == target {
+			return true
+		}
+	}
+	return false
+}
+
 // BatchMovieReleases fetches release data for multiple movies efficiently.
 // It checks the cache first for all queries and fetches uncached items concurrently.
 func (s *Service) BatchMovieReleases(ctx context.Context, queries []models.BatchMovieReleasesQuery) []models.BatchMovieReleasesItem {

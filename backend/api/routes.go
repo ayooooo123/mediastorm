@@ -282,6 +282,8 @@ func Register(
 	protected.HandleFunc("/metadata/series/batch", handleOptions).Methods(http.MethodOptions)
 	protected.HandleFunc("/metadata/movies/details", metadataHandler.MovieDetails).Methods(http.MethodGet)
 	protected.HandleFunc("/metadata/movies/details", handleOptions).Methods(http.MethodOptions)
+	protected.HandleFunc("/metadata/movies/batch", metadataHandler.BatchMovieTitleFields).Methods(http.MethodPost)
+	protected.HandleFunc("/metadata/movies/batch", handleOptions).Methods(http.MethodOptions)
 	protected.HandleFunc("/metadata/movies/releases", metadataHandler.BatchMovieReleases).Methods(http.MethodPost)
 	protected.HandleFunc("/metadata/movies/releases", handleOptions).Methods(http.MethodOptions)
 	protected.HandleFunc("/metadata/collection", metadataHandler.CollectionDetails).Methods(http.MethodGet)
@@ -688,6 +690,8 @@ func Register(
 	profileProtected.HandleFunc("/{userID}/history/watched", historyHandler.ListWatchHistory).Methods(http.MethodGet)
 	profileProtected.HandleFunc("/{userID}/history/watched", historyHandler.UpdateWatchHistory).Methods(http.MethodPost)
 	profileProtected.HandleFunc("/{userID}/history/watched", historyHandler.Options).Methods(http.MethodOptions)
+	profileProtected.HandleFunc("/{userID}/history/watched/revision", historyHandler.GetWatchHistoryRevision).Methods(http.MethodGet)
+	profileProtected.HandleFunc("/{userID}/history/watched/revision", historyHandler.Options).Methods(http.MethodOptions)
 	profileProtected.HandleFunc("/{userID}/history/watched/bulk", historyHandler.BulkUpdateWatchHistory).Methods(http.MethodPost)
 	profileProtected.HandleFunc("/{userID}/history/watched/bulk", historyHandler.Options).Methods(http.MethodOptions)
 	// Body-based delete: legacy rows keyed by URLs/file paths cannot be addressed

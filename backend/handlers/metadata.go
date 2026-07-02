@@ -81,6 +81,10 @@ type discoverByDecadeOptionsService interface {
 	DiscoverByDecadeWithOptions(context.Context, string, int, int, int, metadatapkg.ShelfLoadOptions) ([]models.TrendingItem, int, error)
 }
 
+type movieTitleFieldsService interface {
+	BatchMovieTitleFields(context.Context, []models.MovieDetailsQuery, []string) []models.BatchMovieTitleFieldsItem
+}
+
 func (h *MetadataHandler) SearchYouTubeVideos(w http.ResponseWriter, r *http.Request) {
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	if query == "" {
@@ -544,6 +548,33 @@ func (h *MetadataHandler) BatchMovieReleases(w http.ResponseWriter, r *http.Requ
 
 	response := models.BatchMovieReleasesResponse{
 		Results: results,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func (h *MetadataHandler) BatchMovieTitleFields(w http.ResponseWriter, r *http.Request) {
+	userID := strings.TrimSpace(r.URL.Query().Get("userId"))
+	service := h.serviceForUser(userID)
+	fieldService, ok := service.(movieTitleFieldsService)
+	if !ok {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotImplemented)
+		json.NewEncoder(w).Encode(map[string]string{"error": "movie title fields are not supported"})
+		return
+	}
+
+	var req models.BatchMovieTitleFieldsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "invalid request body"})
+		return
+	}
+
+	response := models.BatchMovieTitleFieldsResponse{
+		Results: fieldService.BatchMovieTitleFields(r.Context(), req.Queries, req.Fields),
 	}
 
 	w.Header().Set("Content-Type", "application/json")

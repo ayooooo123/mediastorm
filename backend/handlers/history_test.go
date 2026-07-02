@@ -40,6 +40,10 @@ func (f *fakeHistoryService) GetContinueWatchingRevision(userID string) (string,
 	return f.revision, f.err
 }
 
+func (f *fakeHistoryService) GetWatchHistoryRevision(userID string) (string, error) {
+	return f.revision, f.err
+}
+
 func (f *fakeHistoryService) ListSeriesStates(userID string) ([]models.SeriesWatchState, error) {
 	return f.items, f.err
 }

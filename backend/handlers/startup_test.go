@@ -85,6 +85,9 @@ func (m *mockHistoryService) ListContinueWatching(userID string) ([]models.Serie
 func (m *mockHistoryService) GetContinueWatchingRevision(userID string) (string, error) {
 	return m.revision, nil
 }
+func (m *mockHistoryService) GetWatchHistoryRevision(userID string) (string, error) {
+	return m.revision, nil
+}
 func (m *mockHistoryService) ListSeriesStates(userID string) ([]models.SeriesWatchState, error) {
 	return m.continueWatching, m.cwErr
 }

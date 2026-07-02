@@ -735,6 +735,29 @@ func (s *Service) GetContinueWatchingRevision(userID string) (string, error) {
 	), nil
 }
 
+func (s *Service) GetWatchHistoryRevision(userID string) (string, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return "", ErrUserIDRequired
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	count := 0
+	var newest time.Time
+	if perUser := s.watchHistory[userID]; perUser != nil {
+		count = len(perUser)
+		for _, item := range perUser {
+			if item.UpdatedAt.After(newest) {
+				newest = item.UpdatedAt
+			}
+		}
+	}
+
+	return fmt.Sprintf("wh:%d:%d", count, newest.UTC().UnixNano()), nil
+}
+
 // ListSeriesStates returns the watch state for ALL series the user has watched,
 // including those with no next episode (fully watched).
 func (s *Service) ListSeriesStates(userID string) ([]models.SeriesWatchState, error) {
