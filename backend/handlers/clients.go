@@ -42,13 +42,13 @@ type pendingPing struct {
 }
 
 type pendingClientMessage struct {
-	ID           string
-	Message      string
-	TargetAll    bool
-	ProfileIDs   map[string]struct{}
-	CreatedAt    time.Time
-	DeliveredTo  map[string]struct{}
-	DeliveredMax int
+	ID                  string
+	Message             string
+	TargetAll           bool
+	ProfileIDs          map[string]struct{}
+	TargetProfileCount  int
+	CreatedAt           time.Time
+	DeliveredProfileIDs map[string]struct{}
 }
 
 type ClientsHandler struct {
@@ -462,13 +462,13 @@ func (h *ClientsHandler) SendMessage(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now().UTC()
 	msg := pendingClientMessage{
-		ID:           now.Format("20060102150405.000000000"),
-		Message:      message,
-		TargetAll:    req.TargetAll,
-		ProfileIDs:   profileIDs,
-		CreatedAt:    now,
-		DeliveredTo:  make(map[string]struct{}),
-		DeliveredMax: max(1, len(h.clients.List())),
+		ID:                  now.Format("20060102150405.000000000"),
+		Message:             message,
+		TargetAll:           req.TargetAll,
+		ProfileIDs:          profileIDs,
+		TargetProfileCount:  targetProfileCount(req.TargetAll, profileIDs),
+		CreatedAt:           now,
+		DeliveredProfileIDs: make(map[string]struct{}),
 	}
 
 	h.messageMu.Lock()
@@ -509,7 +509,7 @@ func (h *ClientsHandler) CheckMessages(w http.ResponseWriter, r *http.Request) {
 	h.pruneExpiredMessagesLocked(now)
 	for i := range h.pendingMessages {
 		msg := &h.pendingMessages[i]
-		if _, delivered := msg.DeliveredTo[clientID]; delivered {
+		if _, delivered := msg.DeliveredProfileIDs[profileID]; delivered {
 			continue
 		}
 		if !msg.TargetAll {
@@ -517,7 +517,7 @@ func (h *ClientsHandler) CheckMessages(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 		}
-		msg.DeliveredTo[clientID] = struct{}{}
+		msg.DeliveredProfileIDs[profileID] = struct{}{}
 		messages = append(messages, ClientMessageResponse{
 			ID:        msg.ID,
 			Message:   msg.Message,
@@ -552,12 +552,19 @@ func (h *ClientsHandler) pruneDeliveredMessagesLocked() {
 	}
 	next := h.pendingMessages[:0]
 	for _, msg := range h.pendingMessages {
-		if msg.DeliveredMax > 0 && len(msg.DeliveredTo) >= msg.DeliveredMax {
+		if msg.TargetProfileCount > 0 && len(msg.DeliveredProfileIDs) >= msg.TargetProfileCount {
 			continue
 		}
 		next = append(next, msg)
 	}
 	h.pendingMessages = next
+}
+
+func targetProfileCount(targetAll bool, profileIDs map[string]struct{}) int {
+	if targetAll {
+		return 0
+	}
+	return len(profileIDs)
 }
 
 // ReassignRequest is the request body for reassigning a client to a different profile

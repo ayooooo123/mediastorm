@@ -2580,9 +2580,15 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ message, targetAll, profileIds })
             });
-            const data = await response.json().catch(() => ({}));
+            const responseText = await response.text();
+            let data = {};
+            try {
+                data = responseText ? JSON.parse(responseText) : {};
+            } catch (parseErr) {
+                data = { error: responseText };
+            }
             if (!response.ok) {
-                throw new Error(data.error || 'Failed to send message');
+                throw new Error(data.error || data.message || `Failed to send message (${response.status})`);
             }
             messageEl.value = '';
             showToast(targetAll ? 'Message sent to all profiles' : 'Message sent to selected profiles', 'success');
