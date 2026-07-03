@@ -252,6 +252,18 @@ func (s *Service) GetWithDefaults(userID string, defaults models.UserSettings) (
 		if settings.Display.WatchStateIconStyle == "" {
 			settings.Display.WatchStateIconStyle = defaults.Display.WatchStateIconStyle
 		}
+		if settings.Display.IncludeUnreleasedMoviesInLists == nil {
+			settings.Display.IncludeUnreleasedMoviesInLists = defaults.Display.IncludeUnreleasedMoviesInLists
+		}
+		if settings.Display.IncludeUnreleasedShowsInLists == nil {
+			settings.Display.IncludeUnreleasedShowsInLists = defaults.Display.IncludeUnreleasedShowsInLists
+		}
+		if settings.Display.IncludeUnreleasedMoviesInSearch == nil {
+			settings.Display.IncludeUnreleasedMoviesInSearch = defaults.Display.IncludeUnreleasedMoviesInSearch
+		}
+		if settings.Display.IncludeUnreleasedShowsInSearch == nil {
+			settings.Display.IncludeUnreleasedShowsInSearch = defaults.Display.IncludeUnreleasedShowsInSearch
+		}
 		if settings.Display.BypassFilteringForAIOStreamsOnly == nil {
 			settings.Display.BypassFilteringForAIOStreamsOnly = defaults.Display.BypassFilteringForAIOStreamsOnly
 		}
@@ -579,6 +591,10 @@ func isSettingsEmpty(s models.UserSettings) bool {
 	if len(s.Display.BadgeVisibility) > 0 ||
 		len(s.Display.NavigationTabVisibility) > 0 ||
 		s.Display.WatchStateIconStyle != "" ||
+		s.Display.IncludeUnreleasedMoviesInLists != nil ||
+		s.Display.IncludeUnreleasedShowsInLists != nil ||
+		s.Display.IncludeUnreleasedMoviesInSearch != nil ||
+		s.Display.IncludeUnreleasedShowsInSearch != nil ||
 		s.Display.BypassFilteringForAIOStreamsOnly != nil ||
 		s.Display.DisableMobileTopCarousel != nil ||
 		s.Display.AppLanguage != "" ||

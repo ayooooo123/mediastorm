@@ -1156,17 +1156,18 @@ func (c *tmdbClient) seriesDetails(ctx context.Context, tmdbID int64) (*models.T
 	}
 
 	title := &models.Title{
-		ID:           fmt.Sprintf("tmdb:tv:%d", tmdbID),
-		Name:         strings.TrimSpace(payload.Name),
-		OriginalName: strings.TrimSpace(payload.OriginalName),
-		Overview:     strings.TrimSpace(payload.Overview),
-		Language:     strings.TrimSpace(payload.OriginalLanguage),
-		MediaType:    "series",
-		TMDBID:       tmdbID,
-		IMDBID:       strings.TrimSpace(payload.ExternalIDs.IMDBID),
-		TVDBID:       payload.ExternalIDs.TVDBID,
-		Status:       strings.TrimSpace(payload.Status),
-		Popularity:   scoreFallback(payload.Popularity, payload.VoteAverage),
+		ID:              fmt.Sprintf("tmdb:tv:%d", tmdbID),
+		Name:            strings.TrimSpace(payload.Name),
+		OriginalName:    strings.TrimSpace(payload.OriginalName),
+		Overview:        strings.TrimSpace(payload.Overview),
+		Language:        strings.TrimSpace(payload.OriginalLanguage),
+		MediaType:       "series",
+		TMDBID:          tmdbID,
+		IMDBID:          strings.TrimSpace(payload.ExternalIDs.IMDBID),
+		TVDBID:          payload.ExternalIDs.TVDBID,
+		Status:          models.SeriesReleaseStatusFromDate(payload.FirstAirDate),
+		LifecycleStatus: strings.TrimSpace(payload.Status),
+		Popularity:      scoreFallback(payload.Popularity, payload.VoteAverage),
 	}
 	if title.Name == "" {
 		title.Name = title.OriginalName
@@ -1223,6 +1224,7 @@ func (c *tmdbClient) seriesDetailsWithSeasons(ctx context.Context, tmdbID int64)
 		return seasons[i].Number < seasons[j].Number
 	})
 
+	title.Status = models.SeriesReleaseStatusFromSeasons(seasons)
 	return &models.SeriesDetails{
 		Title:   *title,
 		Seasons: seasons,
@@ -1469,6 +1471,11 @@ func (c *tmdbClient) searchTitles(ctx context.Context, query, mediaType string, 
 		}
 		if year := parseTMDBYear(r.ReleaseDate, r.FirstAirDate); year != 0 {
 			title.Year = year
+		}
+		if resultMediaType == "movie" {
+			title.Status = models.MovieReleaseStatusFromReleaseDate(r.ReleaseDate)
+		} else if resultMediaType == "series" {
+			title.Status = models.SeriesReleaseStatusFromDate(r.FirstAirDate)
 		}
 		if poster := buildTMDBImage(r.PosterPath, tmdbPosterSize, "poster"); poster != nil {
 			title.Poster = poster
@@ -1931,6 +1938,7 @@ func (c *tmdbClient) movieDetailsFetch(ctx context.Context, tmdbID int64) (*mode
 	if year := parseTMDBYear(movie.ReleaseDate, ""); year != 0 {
 		title.Year = year
 	}
+	title.Status = models.MovieReleaseStatusFromReleaseDate(movie.ReleaseDate)
 	if poster := buildTMDBImage(movie.PosterPath, tmdbPosterSize, "poster"); poster != nil {
 		title.Poster = poster
 	}
@@ -2041,6 +2049,7 @@ func (c *tmdbClient) fetchCollectionDetails(ctx context.Context, collectionID in
 		if year := parseTMDBYear(part.ReleaseDate, ""); year != 0 {
 			title.Year = year
 		}
+		title.Status = models.MovieReleaseStatusFromReleaseDate(part.ReleaseDate)
 		if poster := buildTMDBImage(part.PosterPath, tmdbPosterSize, "poster"); poster != nil {
 			title.Poster = poster
 		}
@@ -2898,6 +2907,11 @@ func (c *tmdbClient) fetchPersonCombinedCredits(ctx context.Context, personID in
 		if year := parseTMDBYear(credit.ReleaseDate, credit.FirstAirDate); year != 0 {
 			title.Year = year
 		}
+		if mediaType == "movie" {
+			title.Status = models.MovieReleaseStatusFromReleaseDate(credit.ReleaseDate)
+		} else if mediaType == "series" {
+			title.Status = models.SeriesReleaseStatusFromDate(credit.FirstAirDate)
+		}
 		if poster := buildTMDBImage(credit.PosterPath, tmdbPosterSize, "poster"); poster != nil {
 			title.Poster = poster
 		}
@@ -3150,6 +3164,11 @@ func (c *tmdbClient) discoverSimilar(ctx context.Context, mediaType string, genr
 		if year := parseTMDBYear(r.ReleaseDate, r.FirstAirDate); year != 0 {
 			title.Year = year
 		}
+		if resultMediaType == "movie" {
+			title.Status = models.MovieReleaseStatusFromReleaseDate(r.ReleaseDate)
+		} else if resultMediaType == "series" {
+			title.Status = models.SeriesReleaseStatusFromDate(r.FirstAirDate)
+		}
 		if poster := buildTMDBImage(r.PosterPath, tmdbPosterSize, "poster"); poster != nil {
 			title.Poster = poster
 		}
@@ -3219,6 +3238,11 @@ func (c *tmdbClient) fetchSimilar(ctx context.Context, mediaType string, tmdbID 
 		}
 		if year := parseTMDBYear(r.ReleaseDate, r.FirstAirDate); year != 0 {
 			title.Year = year
+		}
+		if resultMediaType == "movie" {
+			title.Status = models.MovieReleaseStatusFromReleaseDate(r.ReleaseDate)
+		} else if resultMediaType == "series" {
+			title.Status = models.SeriesReleaseStatusFromDate(r.FirstAirDate)
 		}
 		if poster := buildTMDBImage(r.PosterPath, tmdbPosterSize, "poster"); poster != nil {
 			title.Poster = poster

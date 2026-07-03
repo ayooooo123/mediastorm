@@ -171,6 +171,10 @@ func globalToUserSettings(g config.Settings) models.UserSettings {
 			BadgeVisibility:                  g.Display.BadgeVisibility,
 			NavigationTabVisibility:          g.Display.NavigationTabVisibility,
 			WatchStateIconStyle:              g.Display.WatchStateIconStyle,
+			IncludeUnreleasedMoviesInLists:   models.BoolPtr(g.Display.IncludeUnreleasedMoviesInLists),
+			IncludeUnreleasedShowsInLists:    models.BoolPtr(g.Display.IncludeUnreleasedShowsInLists),
+			IncludeUnreleasedMoviesInSearch:  models.BoolPtr(g.Display.IncludeUnreleasedMoviesInSearch),
+			IncludeUnreleasedShowsInSearch:   models.BoolPtr(g.Display.IncludeUnreleasedShowsInSearch),
 			BypassFilteringForAIOStreamsOnly: models.BoolPtr(g.Display.BypassFilteringForAIOStreamsOnly),
 			DisableMobileTopCarousel:         models.BoolPtr(g.Display.DisableMobileTopCarousel),
 			AppLanguage:                      g.Display.AppLanguage,
@@ -453,6 +457,18 @@ func mergeWithGlobal(us models.UserSettings, g config.Settings) models.UserSetti
 	}
 	if eff.Display.WatchStateIconStyle == "" {
 		eff.Display.WatchStateIconStyle = g.Display.WatchStateIconStyle
+	}
+	if eff.Display.IncludeUnreleasedMoviesInLists == nil {
+		eff.Display.IncludeUnreleasedMoviesInLists = models.BoolPtr(g.Display.IncludeUnreleasedMoviesInLists)
+	}
+	if eff.Display.IncludeUnreleasedShowsInLists == nil {
+		eff.Display.IncludeUnreleasedShowsInLists = models.BoolPtr(g.Display.IncludeUnreleasedShowsInLists)
+	}
+	if eff.Display.IncludeUnreleasedMoviesInSearch == nil {
+		eff.Display.IncludeUnreleasedMoviesInSearch = models.BoolPtr(g.Display.IncludeUnreleasedMoviesInSearch)
+	}
+	if eff.Display.IncludeUnreleasedShowsInSearch == nil {
+		eff.Display.IncludeUnreleasedShowsInSearch = models.BoolPtr(g.Display.IncludeUnreleasedShowsInSearch)
 	}
 	if eff.Display.AppLanguage == "" {
 		eff.Display.AppLanguage = g.Display.AppLanguage
@@ -815,6 +831,22 @@ func stripDisplay(d *models.DisplaySettings, g config.DisplaySettings) bool {
 		d.WatchStateIconStyle = ""
 		changed = true
 	}
+	if d.IncludeUnreleasedMoviesInLists != nil && *d.IncludeUnreleasedMoviesInLists == g.IncludeUnreleasedMoviesInLists {
+		d.IncludeUnreleasedMoviesInLists = nil
+		changed = true
+	}
+	if d.IncludeUnreleasedShowsInLists != nil && *d.IncludeUnreleasedShowsInLists == g.IncludeUnreleasedShowsInLists {
+		d.IncludeUnreleasedShowsInLists = nil
+		changed = true
+	}
+	if d.IncludeUnreleasedMoviesInSearch != nil && *d.IncludeUnreleasedMoviesInSearch == g.IncludeUnreleasedMoviesInSearch {
+		d.IncludeUnreleasedMoviesInSearch = nil
+		changed = true
+	}
+	if d.IncludeUnreleasedShowsInSearch != nil && *d.IncludeUnreleasedShowsInSearch == g.IncludeUnreleasedShowsInSearch {
+		d.IncludeUnreleasedShowsInSearch = nil
+		changed = true
+	}
 	if d.BypassFilteringForAIOStreamsOnly != nil && *d.BypassFilteringForAIOStreamsOnly == g.BypassFilteringForAIOStreamsOnly {
 		d.BypassFilteringForAIOStreamsOnly = nil
 		changed = true
@@ -1087,6 +1119,22 @@ func stripClientSettings(cs *models.ClientFilterSettings, eff models.UserSetting
 	}
 	if cs.BypassFilteringForAIOStreamsOnly != nil && eff.Display.BypassFilteringForAIOStreamsOnly != nil && *cs.BypassFilteringForAIOStreamsOnly == *eff.Display.BypassFilteringForAIOStreamsOnly {
 		cs.BypassFilteringForAIOStreamsOnly = nil
+		changed = true
+	}
+	if cs.IncludeUnreleasedMoviesInLists != nil && eff.Display.IncludeUnreleasedMoviesInLists != nil && *cs.IncludeUnreleasedMoviesInLists == *eff.Display.IncludeUnreleasedMoviesInLists {
+		cs.IncludeUnreleasedMoviesInLists = nil
+		changed = true
+	}
+	if cs.IncludeUnreleasedShowsInLists != nil && eff.Display.IncludeUnreleasedShowsInLists != nil && *cs.IncludeUnreleasedShowsInLists == *eff.Display.IncludeUnreleasedShowsInLists {
+		cs.IncludeUnreleasedShowsInLists = nil
+		changed = true
+	}
+	if cs.IncludeUnreleasedMoviesInSearch != nil && eff.Display.IncludeUnreleasedMoviesInSearch != nil && *cs.IncludeUnreleasedMoviesInSearch == *eff.Display.IncludeUnreleasedMoviesInSearch {
+		cs.IncludeUnreleasedMoviesInSearch = nil
+		changed = true
+	}
+	if cs.IncludeUnreleasedShowsInSearch != nil && eff.Display.IncludeUnreleasedShowsInSearch != nil && *cs.IncludeUnreleasedShowsInSearch == *eff.Display.IncludeUnreleasedShowsInSearch {
+		cs.IncludeUnreleasedShowsInSearch = nil
 		changed = true
 	}
 	if cs.DisableMobileTopCarousel != nil && eff.Display.DisableMobileTopCarousel != nil && *cs.DisableMobileTopCarousel == *eff.Display.DisableMobileTopCarousel {

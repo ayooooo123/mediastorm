@@ -95,6 +95,14 @@ type DisplaySettings struct {
 	// WatchStateIconStyle controls the color of watch state icons.
 	// "colored" (default) = green/yellow circles, "white" = all white circles
 	WatchStateIconStyle string `json:"watchStateIconStyle,omitempty"`
+	// IncludeUnreleasedMoviesInLists keeps unreleased/upcoming movies in list-style shelves and list APIs.
+	IncludeUnreleasedMoviesInLists *bool `json:"includeUnreleasedMoviesInLists,omitempty"`
+	// IncludeUnreleasedShowsInLists keeps unreleased/upcoming shows in list-style shelves and list APIs.
+	IncludeUnreleasedShowsInLists *bool `json:"includeUnreleasedShowsInLists,omitempty"`
+	// IncludeUnreleasedMoviesInSearch keeps unreleased/upcoming movies in metadata search results.
+	IncludeUnreleasedMoviesInSearch *bool `json:"includeUnreleasedMoviesInSearch,omitempty"`
+	// IncludeUnreleasedShowsInSearch keeps unreleased/upcoming shows in metadata search results.
+	IncludeUnreleasedShowsInSearch *bool `json:"includeUnreleasedShowsInSearch,omitempty"`
 	// BypassFilteringForAIOStreamsOnly skips mediastorm filtering/ranking when AIOStreams is the only enabled scraper.
 	BypassFilteringForAIOStreamsOnly *bool `json:"bypassFilteringForAioStreamsOnly,omitempty"`
 	// DisableMobileTopCarousel hides the top hero carousel on mobile home.
@@ -724,6 +732,10 @@ func DefaultUserSettings() UserSettings {
 			NavigationTabVisibility:                   []string{"home", "search", "lists", "live", "profiles", "downloads", "settings", "admin"},
 			NavigationTabVisibilityIncludesSystemTabs: true,
 			WatchStateIconStyle:                       "colored",
+			IncludeUnreleasedMoviesInLists:            BoolPtr(true),
+			IncludeUnreleasedShowsInLists:             BoolPtr(true),
+			IncludeUnreleasedMoviesInSearch:           BoolPtr(true),
+			IncludeUnreleasedShowsInSearch:            BoolPtr(true),
 			DisableMobileTopCarousel:                  BoolPtr(false),
 			Appearance: AppearanceSettings{
 				FontScale:    FloatPtr(1.0),

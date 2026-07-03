@@ -18,11 +18,13 @@ type WatchlistItem struct {
 	ExternalIDs     map[string]string `json:"externalIds,omitempty"`
 	Genres          []string          `json:"genres,omitempty"`
 	RuntimeMinutes  int               `json:"runtimeMinutes,omitempty"`
-	SyncSource      string            `json:"syncSource,omitempty"`     // e.g., "plex:<accountId>:<taskId>" for synced items
-	SyncedAt        *time.Time        `json:"syncedAt,omitempty"`       // when last synced from external source
-	WatchState      string            `json:"watchState,omitempty"`     // "none" | "partial" | "complete"
-	UnwatchedCount  *int              `json:"unwatchedCount,omitempty"` // series only: total - watched
-	Ratings         []Rating          `json:"ratings,omitempty"`        // hydrated at response time from MDBList
+	SyncSource      string            `json:"syncSource,omitempty"`      // e.g., "plex:<accountId>:<taskId>" for synced items
+	SyncedAt        *time.Time        `json:"syncedAt,omitempty"`        // when last synced from external source
+	WatchState      string            `json:"watchState,omitempty"`      // "none" | "partial" | "complete"
+	UnwatchedCount  *int              `json:"unwatchedCount,omitempty"`  // series only: total - watched
+	Ratings         []Rating          `json:"ratings,omitempty"`         // hydrated at response time from MDBList
+	Status          string            `json:"status,omitempty"`          // release availability
+	LifecycleStatus string            `json:"lifecycleStatus,omitempty"` // series lifecycle
 	Theatrical      *Release          `json:"theatricalRelease,omitempty"`
 	HomeRelease     *Release          `json:"homeRelease,omitempty"`
 }
@@ -40,19 +42,21 @@ type WatchlistTombstone struct {
 
 // WatchlistUpsert captures data required to insert or update a watchlist item.
 type WatchlistUpsert struct {
-	ID             string            `json:"id"`
-	MediaType      string            `json:"mediaType"`
-	Name           string            `json:"name"`
-	Overview       string            `json:"overview,omitempty"`
-	Year           int               `json:"year,omitempty"`
-	PosterURL      string            `json:"posterUrl,omitempty"`
-	TextPosterURL  string            `json:"textPosterUrl,omitempty"` // Poster with title text
-	BackdropURL    string            `json:"backdropUrl,omitempty"`
-	ExternalIDs    map[string]string `json:"externalIds,omitempty"`
-	Genres         []string          `json:"genres,omitempty"`
-	RuntimeMinutes int               `json:"runtimeMinutes,omitempty"`
-	SyncSource     string            `json:"syncSource,omitempty"` // sync source identifier for tracking origin
-	SyncedAt       *time.Time        `json:"syncedAt,omitempty"`   // sync timestamp
+	ID              string            `json:"id"`
+	MediaType       string            `json:"mediaType"`
+	Name            string            `json:"name"`
+	Overview        string            `json:"overview,omitempty"`
+	Year            int               `json:"year,omitempty"`
+	PosterURL       string            `json:"posterUrl,omitempty"`
+	TextPosterURL   string            `json:"textPosterUrl,omitempty"` // Poster with title text
+	BackdropURL     string            `json:"backdropUrl,omitempty"`
+	ExternalIDs     map[string]string `json:"externalIds,omitempty"`
+	Genres          []string          `json:"genres,omitempty"`
+	RuntimeMinutes  int               `json:"runtimeMinutes,omitempty"`
+	Status          string            `json:"status,omitempty"`
+	LifecycleStatus string            `json:"lifecycleStatus,omitempty"`
+	SyncSource      string            `json:"syncSource,omitempty"` // sync source identifier for tracking origin
+	SyncedAt        *time.Time        `json:"syncedAt,omitempty"`   // sync timestamp
 }
 
 // Key returns a stable identifier for the watchlist item combining media type and ID.

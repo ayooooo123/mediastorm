@@ -1,5 +1,10 @@
 package models
 
+import (
+	"strings"
+	"time"
+)
+
 // Basic metadata structures for titles and images.
 
 // LanguageAlias is a language-tagged alternate title (e.g. from TVDB aliases).
@@ -65,11 +70,12 @@ type Title struct {
 	Popularity      float64     `json:"popularity,omitempty"`
 	VoteCount       int         `json:"voteCount,omitempty"`
 	Network         string      `json:"network,omitempty"`
-	AirsTime        string      `json:"airsTime,omitempty"`      // e.g. "21:00" — local air time from TVDB
-	AirsTimezone    string      `json:"airsTimezone,omitempty"`  // IANA timezone inferred from network/country
-	Status          string      `json:"status,omitempty"`        // For series: Continuing, Ended, Upcoming, etc.
-	IsDaily         bool        `json:"isDaily,omitempty"`       // True for daily shows (talk shows, news, etc.) that use date-based episode naming
-	Certification   string      `json:"certification,omitempty"` // MPAA/TV content rating (G, PG, PG-13, R, TV-Y, TV-G, TV-PG, TV-14, TV-MA)
+	AirsTime        string      `json:"airsTime,omitempty"`        // e.g. "21:00" — local air time from TVDB
+	AirsTimezone    string      `json:"airsTimezone,omitempty"`    // IANA timezone inferred from network/country
+	Status          string      `json:"status,omitempty"`          // Release availability: movies released/theatrical/upcoming/unknown; series released/unreleased.
+	LifecycleStatus string      `json:"lifecycleStatus,omitempty"` // Series lifecycle from provider (Continuing, Ended, Upcoming, etc.).
+	IsDaily         bool        `json:"isDaily,omitempty"`         // True for daily shows (talk shows, news, etc.) that use date-based episode naming
+	Certification   string      `json:"certification,omitempty"`   // MPAA/TV content rating (G, PG, PG-13, R, TV-Y, TV-G, TV-PG, TV-14, TV-MA)
 	PrimaryTrailer  *Trailer    `json:"primaryTrailer,omitempty"`
 	Trailers        []Trailer   `json:"trailers,omitempty"`
 	Releases        []Release   `json:"releases,omitempty"`
@@ -202,6 +208,143 @@ type Release struct {
 	Released bool   `json:"released,omitempty"` // true when date <= today
 }
 
+const (
+	MovieReleaseStatusReleased    = "released"
+	MovieReleaseStatusTheatrical  = "theatrical"
+	MovieReleaseStatusUpcoming    = "upcoming"
+	MovieReleaseStatusUnknown     = "unknown"
+	SeriesReleaseStatusReleased   = "released"
+	SeriesReleaseStatusUnreleased = "unreleased"
+)
+
+// MovieReleaseStatus normalizes movie availability into a stable status string.
+// Home releases mean available. Older theatrical releases are also treated as
+// available even when TMDB has no digital/physical date.
+func MovieReleaseStatus(title Title) string {
+	if !strings.EqualFold(strings.TrimSpace(title.MediaType), "movie") {
+		return strings.TrimSpace(title.Status)
+	}
+	status := MovieReleaseStatusFromWindows(title.Theatrical, title.HomeRelease)
+	if status != MovieReleaseStatusUnknown {
+		return status
+	}
+	if title.Year > 0 && title.Year < time.Now().Year() {
+		return MovieReleaseStatusReleased
+	}
+	if title.Year >= time.Now().Year() {
+		return MovieReleaseStatusUpcoming
+	}
+	return status
+}
+
+func MovieReleaseStatusFromWindows(theatrical, home *Release) string {
+	if releaseIsReleased(home) {
+		return MovieReleaseStatusReleased
+	}
+	if releaseIsReleased(theatrical) {
+		if releaseIsOlderThan(theatrical, 12, time.Now()) {
+			return MovieReleaseStatusReleased
+		}
+		return MovieReleaseStatusTheatrical
+	}
+	if releaseHasDate(theatrical) || releaseHasDate(home) {
+		return MovieReleaseStatusUpcoming
+	}
+	return MovieReleaseStatusUnknown
+}
+
+func MovieReleaseStatusFromReleaseDate(releaseDate string) string {
+	release := &Release{Type: "theatrical", Date: releaseDate}
+	if !releaseHasDate(release) {
+		return MovieReleaseStatusUnknown
+	}
+	if releaseIsReleased(release) {
+		if releaseIsOlderThan(release, 12, time.Now()) {
+			return MovieReleaseStatusReleased
+		}
+		return MovieReleaseStatusTheatrical
+	}
+	return MovieReleaseStatusUpcoming
+}
+
+func SeriesReleaseStatusFromSeasons(seasons []SeriesSeason) string {
+	now := time.Now()
+	for _, season := range seasons {
+		for _, episode := range season.Episodes {
+			if SeriesEpisodeHasAired(episode, now) {
+				return SeriesReleaseStatusReleased
+			}
+		}
+	}
+	return SeriesReleaseStatusUnreleased
+}
+
+func SeriesReleaseStatusFromDate(airDate string) string {
+	ts, ok := parseReleaseDate(airDate)
+	if !ok {
+		return SeriesReleaseStatusUnreleased
+	}
+	if ts.After(time.Now()) {
+		return SeriesReleaseStatusUnreleased
+	}
+	return SeriesReleaseStatusReleased
+}
+
+func SeriesEpisodeHasAired(episode SeriesEpisode, now time.Time) bool {
+	if ts, ok := parseReleaseDate(episode.AiredDateTimeUTC); ok {
+		return !ts.After(now)
+	}
+	if ts, ok := parseReleaseDate(episode.AiredDate); ok {
+		return !ts.After(now)
+	}
+	return false
+}
+
+func releaseIsReleased(release *Release) bool {
+	if release == nil {
+		return false
+	}
+	if release.Released {
+		return true
+	}
+	if ts, ok := parseReleaseDate(release.Date); ok {
+		return !ts.After(time.Now())
+	}
+	return false
+}
+
+func releaseHasDate(release *Release) bool {
+	if release == nil {
+		return false
+	}
+	_, ok := parseReleaseDate(release.Date)
+	return ok
+}
+
+func releaseIsOlderThan(release *Release, months int, now time.Time) bool {
+	if release == nil {
+		return false
+	}
+	ts, ok := parseReleaseDate(release.Date)
+	return ok && !ts.After(now.AddDate(0, -months, 0))
+}
+
+func parseReleaseDate(value string) (time.Time, bool) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return time.Time{}, false
+	}
+	if ts, err := time.Parse(time.RFC3339, trimmed); err == nil {
+		return ts, true
+	}
+	if len(trimmed) >= len("2006-01-02") {
+		if ts, err := time.Parse("2006-01-02", trimmed[:len("2006-01-02")]); err == nil {
+			return ts, true
+		}
+	}
+	return time.Time{}, false
+}
+
 // CastMember represents an actor in a movie or series
 type CastMember struct {
 	ID          int64  `json:"id"`
@@ -304,6 +447,7 @@ type BatchMovieReleasesRequest struct {
 // BatchMovieReleasesItem represents a single result in a batch response
 type BatchMovieReleasesItem struct {
 	Query       BatchMovieReleasesQuery `json:"query"`
+	Status      string                  `json:"status,omitempty"`
 	Theatrical  *Release                `json:"theatricalRelease,omitempty"`
 	HomeRelease *Release                `json:"homeRelease,omitempty"`
 	Error       string                  `json:"error,omitempty"`

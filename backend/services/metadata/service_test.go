@@ -99,8 +99,11 @@ func TestEnrichLiteCustomListItemKeepsGenres(t *testing.T) {
 	if got := strings.Join(series.Title.Genres, ","); got != "Comedy,Mystery" {
 		t.Fatalf("series genres = %q, want Comedy,Mystery", got)
 	}
-	if series.Title.Status != "Continuing" {
-		t.Fatalf("series status = %q, want Continuing", series.Title.Status)
+	if series.Title.Status != models.SeriesReleaseStatusUnreleased {
+		t.Fatalf("series status = %q, want unreleased", series.Title.Status)
+	}
+	if series.Title.LifecycleStatus != "Continuing" {
+		t.Fatalf("series lifecycle status = %q, want Continuing", series.Title.LifecycleStatus)
 	}
 }
 
@@ -829,6 +832,9 @@ func TestSearchWithoutMediaTypeIncludesMoviesAndSeries(t *testing.T) {
 	seen := map[string]bool{}
 	for _, result := range results {
 		seen[result.Title.MediaType] = true
+		if result.Title.MediaType == "movie" && result.Title.Status != models.MovieReleaseStatusReleased {
+			t.Fatalf("old movie search status = %q, want %q", result.Title.Status, models.MovieReleaseStatusReleased)
+		}
 	}
 	if !seen["movie"] || !seen["series"] {
 		t.Fatalf("expected both movie and series results, got %+v", results)
@@ -1641,27 +1647,28 @@ func TestSimilarUsesMetadataOriginalLanguage(t *testing.T) {
 // TestExtractTitleFields verifies that extractTitleFields copies only requested fields.
 func TestExtractTitleFields(t *testing.T) {
 	full := &models.Title{
-		ID:            "tvdb:series:123",
-		Name:          "Test Show",
-		Overview:      "A great show",
-		Year:          2020,
-		Language:      "eng",
-		MediaType:     "series",
-		TVDBID:        123,
-		IMDBID:        "tt0000123",
-		TMDBID:        456,
-		Genres:        []string{"Drama", "Action"},
-		Status:        "Continuing",
-		Network:       "HBO",
-		Certification: "TV-MA",
-		Popularity:    85.5,
-		Poster:        &models.Image{URL: "https://example.com/poster.jpg", Type: "poster"},
-		TextPoster:    &models.Image{URL: "https://example.com/text-poster.jpg", Type: "poster"},
-		Backdrop:      &models.Image{URL: "https://example.com/backdrop.jpg", Type: "backdrop"},
-		TextBackdrop:  &models.Image{URL: "https://example.com/text-backdrop.jpg", Type: "backdrop"},
-		Backdrops:     []models.Image{{URL: "https://example.com/alt-backdrop.jpg", Type: "backdrop"}},
-		Logo:          &models.Image{URL: "https://example.com/logo.png", Type: "logo"},
-		Ratings:       []models.Rating{{Source: "imdb", Value: 8.5, Max: 10}},
+		ID:              "tvdb:series:123",
+		Name:            "Test Show",
+		Overview:        "A great show",
+		Year:            2020,
+		Language:        "eng",
+		MediaType:       "series",
+		TVDBID:          123,
+		IMDBID:          "tt0000123",
+		TMDBID:          456,
+		Genres:          []string{"Drama", "Action"},
+		Status:          models.SeriesReleaseStatusReleased,
+		LifecycleStatus: "Continuing",
+		Network:         "HBO",
+		Certification:   "TV-MA",
+		Popularity:      85.5,
+		Poster:          &models.Image{URL: "https://example.com/poster.jpg", Type: "poster"},
+		TextPoster:      &models.Image{URL: "https://example.com/text-poster.jpg", Type: "poster"},
+		Backdrop:        &models.Image{URL: "https://example.com/backdrop.jpg", Type: "backdrop"},
+		TextBackdrop:    &models.Image{URL: "https://example.com/text-backdrop.jpg", Type: "backdrop"},
+		Backdrops:       []models.Image{{URL: "https://example.com/alt-backdrop.jpg", Type: "backdrop"}},
+		Logo:            &models.Image{URL: "https://example.com/logo.png", Type: "logo"},
+		Ratings:         []models.Rating{{Source: "imdb", Value: 8.5, Max: 10}},
 	}
 
 	tests := []struct {
@@ -1740,7 +1747,7 @@ func TestExtractTitleFields(t *testing.T) {
 		},
 		{
 			name:   "all fields",
-			fields: []string{"overview", "year", "genres", "status", "network", "certification", "language", "popularity", "ratings"},
+			fields: []string{"overview", "year", "genres", "status", "lifecycleStatus", "network", "certification", "language", "popularity", "ratings"},
 			check: func(t *testing.T, out models.Title) {
 				if out.Overview != "A great show" {
 					t.Errorf("expected overview, got %q", out.Overview)
@@ -1748,8 +1755,11 @@ func TestExtractTitleFields(t *testing.T) {
 				if out.Year != 2020 {
 					t.Errorf("expected year 2020, got %d", out.Year)
 				}
-				if out.Status != "Continuing" {
-					t.Errorf("expected status Continuing, got %q", out.Status)
+				if out.Status != models.SeriesReleaseStatusReleased {
+					t.Errorf("expected status released, got %q", out.Status)
+				}
+				if out.LifecycleStatus != "Continuing" {
+					t.Errorf("expected lifecycle status Continuing, got %q", out.LifecycleStatus)
 				}
 				if len(out.Ratings) != 1 {
 					t.Errorf("expected 1 rating, got %d", len(out.Ratings))
@@ -1942,9 +1952,10 @@ func TestTopTenTVEpisodeRecencyMultiplier_RecentEpisodeWins(t *testing.T) {
 	now := time.Now()
 	details := models.SeriesDetails{
 		Title: models.Title{
-			Name:      "Weekly Hit",
-			MediaType: "series",
-			Status:    "Continuing",
+			Name:            "Weekly Hit",
+			MediaType:       "series",
+			Status:          models.SeriesReleaseStatusReleased,
+			LifecycleStatus: "Continuing",
 		},
 		Seasons: []models.SeriesSeason{
 			{
@@ -1967,9 +1978,10 @@ func TestTopTenTVEpisodeRecencyMultiplier_StaleShowBarelyMoves(t *testing.T) {
 	now := time.Now()
 	details := models.SeriesDetails{
 		Title: models.Title{
-			Name:      "Archive Show",
-			MediaType: "series",
-			Status:    "Ended",
+			Name:            "Archive Show",
+			MediaType:       "series",
+			Status:          models.SeriesReleaseStatusReleased,
+			LifecycleStatus: "Ended",
 		},
 		Seasons: []models.SeriesSeason{
 			{

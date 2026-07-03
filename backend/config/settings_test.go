@@ -85,6 +85,54 @@ func TestDefaultSettingsEnablesCleanPosters(t *testing.T) {
 	}
 }
 
+func TestSavePreservesDisabledUnreleasedVisibility(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	manager := NewManager(path)
+
+	settings := DefaultSettings()
+	settings.Display.IncludeUnreleasedMoviesInLists = false
+	settings.Display.IncludeUnreleasedShowsInLists = false
+	settings.Display.IncludeUnreleasedMoviesInSearch = false
+	settings.Display.IncludeUnreleasedShowsInSearch = false
+	if err := manager.Save(settings); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	loaded, err := manager.Load()
+	if err != nil {
+		t.Fatalf("load settings: %v", err)
+	}
+	if loaded.Display.IncludeUnreleasedMoviesInLists ||
+		loaded.Display.IncludeUnreleasedShowsInLists ||
+		loaded.Display.IncludeUnreleasedMoviesInSearch ||
+		loaded.Display.IncludeUnreleasedShowsInSearch {
+		t.Fatalf("disabled unreleased visibility was not preserved: %+v", loaded.Display)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	var persisted map[string]interface{}
+	if err := json.Unmarshal(raw, &persisted); err != nil {
+		t.Fatalf("decode persisted settings: %v", err)
+	}
+	display, ok := persisted["display"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("persisted display has type %T, want object", persisted["display"])
+	}
+	for _, key := range []string{
+		"includeUnreleasedMoviesInLists",
+		"includeUnreleasedShowsInLists",
+		"includeUnreleasedMoviesInSearch",
+		"includeUnreleasedShowsInSearch",
+	} {
+		if value, ok := display[key]; !ok || value != false {
+			t.Fatalf("persisted display[%s] = %#v, want false", key, value)
+		}
+	}
+}
+
 func TestDefaultSettingsIncludesDisabledUsenetEnginePresets(t *testing.T) {
 	settings := DefaultSettings()
 
