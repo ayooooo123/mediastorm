@@ -6003,7 +6003,8 @@ func (s *Service) movieDetailsInternal(ctx context.Context, req models.MovieDeta
 
 		// Try search if we have a name
 		if tvdbID <= 0 && strings.TrimSpace(req.Name) != "" {
-			results, err := s.searchTVDBMovie(req.Name, req.Year, "")
+			remoteID := strings.TrimSpace(req.IMDBID)
+			results, err := s.searchTVDBMovie(req.Name, req.Year, remoteID)
 			if err != nil {
 				log.Printf("[metadata] movie tvdb search error name=%q year=%d err=%v", req.Name, req.Year, err)
 			} else if len(results) == 0 {
@@ -6011,7 +6012,7 @@ func (s *Service) movieDetailsInternal(ctx context.Context, req models.MovieDeta
 				// Fallback: retry without year constraint
 				if req.Year > 0 {
 					metadataTracef("[metadata] movie tvdb search retrying without year name=%q", req.Name)
-					results, err = s.searchTVDBMovie(req.Name, 0, "")
+					results, err = s.searchTVDBMovie(req.Name, 0, remoteID)
 					if err != nil {
 						log.Printf("[metadata] movie tvdb search (no year) error name=%q err=%v", req.Name, err)
 					} else if len(results) > 0 {
@@ -6021,10 +6022,13 @@ func (s *Service) movieDetailsInternal(ctx context.Context, req models.MovieDeta
 			}
 			// Process results if we have any
 			if err == nil && len(results) > 0 {
-				if results[0].TVDBID == "" {
-					log.Printf("[metadata] movie tvdb search result has no tvdb_id name=%q year=%d firstResultName=%q", req.Name, req.Year, results[0].Name)
-				} else if id, err := strconv.ParseInt(results[0].TVDBID, 10, 64); err != nil {
-					log.Printf("[metadata] movie tvdb search result has invalid tvdb_id name=%q year=%d tvdbId=%q err=%v", req.Name, req.Year, results[0].TVDBID, err)
+				result, ok := selectMovieDetailsTVDBSearchResult(req, results)
+				if !ok {
+					log.Printf("[metadata] movie tvdb search rejected nonmatching results name=%q year=%d imdbId=%q firstResultName=%q", req.Name, req.Year, req.IMDBID, results[0].Name)
+				} else if result.TVDBID == "" {
+					log.Printf("[metadata] movie tvdb search result has no tvdb_id name=%q year=%d firstResultName=%q", req.Name, req.Year, result.Name)
+				} else if id, err := strconv.ParseInt(result.TVDBID, 10, 64); err != nil {
+					log.Printf("[metadata] movie tvdb search result has invalid tvdb_id name=%q year=%d tvdbId=%q err=%v", req.Name, req.Year, result.TVDBID, err)
 				} else {
 					tvdbID = id
 					metadataTracef("[metadata] movie search found tvdbId=%d name=%q year=%d", tvdbID, req.Name, req.Year)
@@ -6046,6 +6050,13 @@ func (s *Service) movieDetailsInternal(ctx context.Context, req models.MovieDeta
 		if req.TMDBID > 0 && s.tmdb != nil && s.tmdb.isConfigured() {
 			metadataTracef("[metadata] attempting to use TMDB directly for movie details tmdbId=%d", req.TMDBID)
 			return s.getMovieDetailsFromTMDB(ctx, req)
+		}
+		if strings.TrimSpace(req.Name) != "" && s.tmdb != nil && s.tmdb.isConfigured() {
+			if tmdbID := s.resolveTMDBMovieByTitleYear(ctx, req.Name, req.Year); tmdbID > 0 {
+				req.TMDBID = tmdbID
+				metadataTracef("[metadata] resolved movie details via TMDB title/year fallback tmdbId=%d name=%q year=%d", tmdbID, req.Name, req.Year)
+				return s.getMovieDetailsFromTMDB(ctx, req)
+			}
 		}
 
 		return nil, fmt.Errorf("unable to resolve tvdb id for movie and no tmdb fallback available")
@@ -7828,7 +7839,7 @@ func mdblistItemMediaType(item mdblistItem) string {
 func buildLiteCustomListItem(item mdblistItem) models.TrendingItem {
 	mediaType := mdblistItemMediaType(item)
 	title := models.Title{
-		ID:         fmt.Sprintf("mdblist:%s:%d", mediaType, item.ID),
+		ID:         customListItemTitleID(item, mediaType),
 		Name:       item.Title,
 		Year:       item.ReleaseYear,
 		MediaType:  mediaType,
@@ -7854,6 +7865,25 @@ func buildLiteCustomListItem(item mdblistItem) models.TrendingItem {
 		}
 	}
 	return models.TrendingItem{Rank: item.Rank, Title: title}
+}
+
+func customListItemTitleID(item mdblistItem, mediaType string) string {
+	switch {
+	case item.IMDBID != "":
+		return "imdb:" + strings.TrimSpace(item.IMDBID)
+	case mediaType == "movie" && item.TMDBID != nil && *item.TMDBID > 0:
+		return fmt.Sprintf("tmdb:movie:%d", *item.TMDBID)
+	case mediaType == "series" && item.TMDBID != nil && *item.TMDBID > 0:
+		return fmt.Sprintf("tmdb:tv:%d", *item.TMDBID)
+	case mediaType == "series" && item.TVDBID != nil && *item.TVDBID > 0:
+		return fmt.Sprintf("tvdb:series:%d", *item.TVDBID)
+	case mediaType == "movie" && item.TVDBID != nil && *item.TVDBID > 0:
+		return fmt.Sprintf("tvdb:movie:%d", *item.TVDBID)
+	case item.ID > 0:
+		return fmt.Sprintf("mdblist:%s:%d", mediaType, item.ID)
+	default:
+		return fmt.Sprintf("title:%s:%s", mediaType, cacheKey("custom-list-title", mediaType, strings.ToLower(strings.TrimSpace(item.Title)), fmt.Sprintf("%d", item.ReleaseYear)))
+	}
 }
 
 func (s *Service) enrichLiteCustomListItem(ctx context.Context, item mdblistItem) models.TrendingItem {
@@ -8168,7 +8198,7 @@ func (s *Service) enrichCustomListItem(ctx context.Context, item mdblistItem, li
 	mediaType := mdblistItemMediaType(item)
 
 	title := models.Title{
-		ID:         fmt.Sprintf("mdblist:%s:%d", mediaType, item.ID),
+		ID:         customListItemTitleID(item, mediaType),
 		Name:       item.Title,
 		Year:       item.ReleaseYear,
 		Language:   s.client.language,
@@ -8283,8 +8313,10 @@ func (s *Service) enrichCustomListItem(ctx context.Context, item mdblistItem, li
 				}
 			}
 			if err == nil && len(searchResults) > 0 {
-				result := searchResults[0]
-				if result.TVDBID == "" {
+				result, ok := selectCustomListTVDBSearchResult(item, searchResults)
+				if !ok {
+					log.Printf("[metadata] custom list movie tvdb search rejected nonmatching results title=%q year=%d imdbId=%q firstResultName=%q", item.Title, item.ReleaseYear, item.IMDBID, searchResults[0].Name)
+				} else if result.TVDBID == "" {
 					log.Printf("[metadata] custom list movie tvdb search result has no tvdb_id title=%q year=%d imdbId=%q firstResultName=%q", item.Title, item.ReleaseYear, item.IMDBID, result.Name)
 				} else if tvdbID, err := strconv.ParseInt(result.TVDBID, 10, 64); err != nil {
 					log.Printf("[metadata] custom list movie tvdb search result has invalid tvdb_id title=%q year=%d tvdbId=%q err=%v", item.Title, item.ReleaseYear, result.TVDBID, err)
@@ -8342,8 +8374,10 @@ func (s *Service) enrichCustomListItem(ctx context.Context, item mdblistItem, li
 				}
 			}
 			if err == nil && len(searchResults) > 0 {
-				result := searchResults[0]
-				if result.TVDBID == "" {
+				result, ok := selectCustomListTVDBSearchResult(item, searchResults)
+				if !ok {
+					log.Printf("[metadata] custom list series tvdb search rejected nonmatching results title=%q year=%d imdbId=%q firstResultName=%q", item.Title, item.ReleaseYear, item.IMDBID, searchResults[0].Name)
+				} else if result.TVDBID == "" {
 					log.Printf("[metadata] custom list series tvdb search result has no tvdb_id title=%q year=%d imdbId=%q firstResultName=%q", item.Title, item.ReleaseYear, item.IMDBID, result.Name)
 				} else if tvdbID, err := strconv.ParseInt(result.TVDBID, 10, 64); err != nil {
 					log.Printf("[metadata] custom list series tvdb search result has invalid tvdb_id title=%q year=%d tvdbId=%q err=%v", item.Title, item.ReleaseYear, result.TVDBID, err)
@@ -8491,6 +8525,133 @@ func (s *Service) enrichCustomListItem(ctx context.Context, item mdblistItem, li
 		Rank:  item.Rank,
 		Title: title,
 	}
+}
+
+func selectCustomListTVDBSearchResult(item mdblistItem, results []tvdbSearchResult) (tvdbSearchResult, bool) {
+	for _, result := range results {
+		if customListTVDBSearchResultMatches(item, result) {
+			return result, true
+		}
+	}
+	return tvdbSearchResult{}, false
+}
+
+func selectMovieDetailsTVDBSearchResult(req models.MovieDetailsQuery, results []tvdbSearchResult) (tvdbSearchResult, bool) {
+	item := mdblistItem{
+		Title:       req.Name,
+		ReleaseYear: req.Year,
+		IMDBID:      req.IMDBID,
+		MediaType:   "movie",
+	}
+	return selectCustomListTVDBSearchResult(item, results)
+}
+
+func (s *Service) resolveTMDBMovieByTitleYear(ctx context.Context, title string, year int) int64 {
+	if s == nil || s.tmdb == nil || !s.tmdb.isConfigured() {
+		return 0
+	}
+	results, err := s.tmdb.searchTitles(ctx, title, "movie", 5, false)
+	if err != nil {
+		log.Printf("[metadata] tmdb movie title/year fallback search error title=%q year=%d err=%v", title, year, err)
+		return 0
+	}
+	selected, ok := selectTMDBMovieSearchResult(title, year, results)
+	if !ok {
+		log.Printf("[metadata] tmdb movie title/year fallback found no exact match title=%q year=%d results=%d", title, year, len(results))
+		return 0
+	}
+	return selected.Title.TMDBID
+}
+
+func selectTMDBMovieSearchResult(title string, year int, results []models.SearchResult) (models.SearchResult, bool) {
+	for _, result := range results {
+		if !strings.EqualFold(strings.TrimSpace(result.Title.MediaType), "movie") {
+			continue
+		}
+		if result.Title.TMDBID <= 0 {
+			continue
+		}
+		if !normalizedListTitleEqual(title, result.Title.Name) && !normalizedListTitleEqual(title, result.Title.OriginalName) {
+			continue
+		}
+		if year > 0 && result.Title.Year > 0 && result.Title.Year != year {
+			continue
+		}
+		return result, true
+	}
+	return models.SearchResult{}, false
+}
+
+func customListTVDBSearchResultMatches(item mdblistItem, result tvdbSearchResult) bool {
+	if imdbID := strings.ToLower(strings.TrimSpace(item.IMDBID)); imdbID != "" && len(result.RemoteIDs) > 0 {
+		for _, remote := range result.RemoteIDs {
+			if strings.EqualFold(strings.TrimSpace(remote.ID), imdbID) {
+				return true
+			}
+		}
+		return false
+	}
+	if !normalizedListTitleEqual(item.Title, result.Name) {
+		return false
+	}
+	if item.ReleaseYear <= 0 {
+		return true
+	}
+	resultYear, ok := parseTVDBSearchYear(result.Year)
+	if !ok {
+		return true
+	}
+	return resultYear == item.ReleaseYear
+}
+
+func normalizedListTitleEqual(left, right string) bool {
+	leftNorm := normalizeListTitleForMatch(left)
+	rightNorm := normalizeListTitleForMatch(right)
+	if leftNorm == "" || rightNorm == "" {
+		return false
+	}
+	return leftNorm == rightNorm || stripLeadingListTitleArticle(leftNorm) == stripLeadingListTitleArticle(rightNorm)
+}
+
+func normalizeListTitleForMatch(title string) string {
+	title = strings.ToLower(strings.TrimSpace(title))
+	var b strings.Builder
+	lastWasSpace := true
+	for _, r := range title {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastWasSpace = false
+		case !lastWasSpace:
+			b.WriteByte(' ')
+			lastWasSpace = true
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func stripLeadingListTitleArticle(title string) string {
+	for _, article := range []string{"the ", "a ", "an "} {
+		if strings.HasPrefix(title, article) {
+			return strings.TrimSpace(strings.TrimPrefix(title, article))
+		}
+	}
+	return title
+}
+
+func parseTVDBSearchYear(year string) (int, bool) {
+	year = strings.TrimSpace(year)
+	if len(year) >= 4 {
+		year = year[:4]
+	}
+	if year == "" {
+		return 0, false
+	}
+	parsed, err := strconv.Atoi(year)
+	if err != nil || parsed <= 0 {
+		return 0, false
+	}
+	return parsed, true
 }
 
 // GetCustomList fetches items from a custom MDBList URL and returns them as TrendingItems.
@@ -8675,13 +8836,17 @@ func (s *Service) GetCuratedList(ctx context.Context, items []CuratedItem, label
 	identities := make([]string, len(items))
 	for i, ci := range items {
 		mediaType := curatedItemMediaType(ci.MediaType)
+		tmdbID := ci.TMDBID
+		if tmdbID <= 0 && mediaType == "movie" && strings.TrimSpace(ci.Title) != "" {
+			tmdbID = s.resolveTMDBMovieByTitleYear(ctx, ci.Title, ci.Year)
+		}
 		imdbID := ci.IMDBID
-		if imdbID == "" && ci.TMDBID > 0 {
+		if imdbID == "" && tmdbID > 0 {
 			tmdbMediaType := "movie"
 			if mediaType == "series" {
 				tmdbMediaType = "tv"
 			}
-			imdbID = s.getIMDBIDForTMDB(ctx, tmdbMediaType, ci.TMDBID)
+			imdbID = s.getIMDBIDForTMDB(ctx, tmdbMediaType, tmdbID)
 		}
 
 		item := mdblistItem{
@@ -8691,9 +8856,8 @@ func (s *Service) GetCuratedList(ctx context.Context, items []CuratedItem, label
 			ReleaseYear: ci.Year,
 			MediaType:   ci.MediaType,
 		}
-		if ci.TMDBID > 0 {
-			tmdb := ci.TMDBID
-			item.TMDBID = &tmdb
+		if tmdbID > 0 {
+			item.TMDBID = &tmdbID
 		}
 		if ci.TVDBID > 0 {
 			tvdb := ci.TVDBID
@@ -8706,8 +8870,8 @@ func (s *Service) GetCuratedList(ctx context.Context, items []CuratedItem, label
 		switch {
 		case imdbID != "":
 			identities[i] = "imdb:" + imdbID
-		case ci.TMDBID > 0:
-			identities[i] = fmt.Sprintf("tmdb:%s:%d", mediaType, ci.TMDBID)
+		case tmdbID > 0:
+			identities[i] = fmt.Sprintf("tmdb:%s:%d", mediaType, tmdbID)
 		case ci.TVDBID > 0:
 			identities[i] = fmt.Sprintf("tvdb:%s:%d", mediaType, ci.TVDBID)
 		default:
@@ -8718,7 +8882,7 @@ func (s *Service) GetCuratedList(ctx context.Context, items []CuratedItem, label
 	// Build a deterministic cache key from sorted item identities + language
 	sort.Strings(identities)
 	sortedIdentities := strings.Join(identities, ",")
-	cacheID := cacheKey("curated", "v6", sortedIdentities, s.client.language)
+	cacheID := cacheKey("curated", "v8", sortedIdentities, s.client.language)
 
 	var cached []models.TrendingItem
 	if ok, _ := s.cache.get(cacheID, &cached); ok && len(cached) > 0 {
