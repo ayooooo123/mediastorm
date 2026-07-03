@@ -620,6 +620,11 @@ func Register(
 		protected.HandleFunc("/clients/register", clientsHandler.Register).Methods(http.MethodPost)
 		protected.HandleFunc("/clients/register", clientsHandler.Options).Methods(http.MethodOptions)
 
+		clientMessageRouter := protected.PathPrefix("/clients").Subrouter()
+		clientMessageRouter.Use(MasterOnlyMiddleware())
+		clientMessageRouter.HandleFunc("/messages", clientsHandler.SendMessage).Methods(http.MethodPost)
+		clientMessageRouter.HandleFunc("/messages", clientsHandler.Options).Methods(http.MethodOptions)
+
 		// Client management (master only for list all, otherwise filtered by user)
 		protected.HandleFunc("/clients", clientsHandler.List).Methods(http.MethodGet)
 		protected.HandleFunc("/clients", clientsHandler.Options).Methods(http.MethodOptions)
@@ -636,6 +641,9 @@ func Register(
 		// Client ping check (for device identification)
 		protected.HandleFunc("/clients/{clientID}/ping", clientsHandler.CheckPing).Methods(http.MethodGet)
 		protected.HandleFunc("/clients/{clientID}/ping", clientsHandler.Options).Methods(http.MethodOptions)
+
+		protected.HandleFunc("/clients/{clientID}/messages", clientsHandler.CheckMessages).Methods(http.MethodGet)
+		protected.HandleFunc("/clients/{clientID}/messages", clientsHandler.Options).Methods(http.MethodOptions)
 	}
 
 	profileProtected.HandleFunc("/{userID}/watchlist", watchlistHandler.List).Methods(http.MethodGet)
