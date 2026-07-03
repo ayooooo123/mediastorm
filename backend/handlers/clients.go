@@ -41,20 +41,35 @@ type pendingPing struct {
 	timestamp time.Time
 }
 
+type pendingClientMessage struct {
+	ID           string
+	Message      string
+	TargetAll    bool
+	ProfileIDs   map[string]struct{}
+	CreatedAt    time.Time
+	DeliveredTo  map[string]struct{}
+	DeliveredMax int
+}
+
 type ClientsHandler struct {
-	clients      clientsService
-	settings     clientSettingsService
-	pendingPings map[string]pendingPing
-	pingMu       sync.RWMutex
+	clients         clientsService
+	settings        clientSettingsService
+	pendingPings    map[string]pendingPing
+	pendingMessages []pendingClientMessage
+	pingMu          sync.RWMutex
+	messageMu       sync.Mutex
 }
 
 const pingExpiry = 30 * time.Second // Pings expire after 30 seconds
+const clientMessageExpiry = 24 * time.Hour
+const clientMessageMaxLength = 1000
 
 func NewClientsHandler(clientsSvc clientsService, settingsSvc clientSettingsService) *ClientsHandler {
 	return &ClientsHandler{
-		clients:      clientsSvc,
-		settings:     settingsSvc,
-		pendingPings: make(map[string]pendingPing),
+		clients:         clientsSvc,
+		settings:        settingsSvc,
+		pendingPings:    make(map[string]pendingPing),
+		pendingMessages: make([]pendingClientMessage, 0),
 	}
 }
 
@@ -399,6 +414,150 @@ func (h *ClientsHandler) CheckPing(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"ping": hasPing,
 	})
+}
+
+type SendClientMessageRequest struct {
+	Message    string   `json:"message"`
+	TargetAll  bool     `json:"targetAll"`
+	ProfileIDs []string `json:"profileIds"`
+}
+
+type ClientMessageResponse struct {
+	ID        string    `json:"id"`
+	Message   string    `json:"message"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+// SendMessage handles POST /api/clients/messages.
+// It queues a short-lived popup message for all profiles or selected profiles.
+func (h *ClientsHandler) SendMessage(w http.ResponseWriter, r *http.Request) {
+	var req SendClientMessageRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	message := strings.TrimSpace(req.Message)
+	if message == "" {
+		writeJSONError(w, "message is required", http.StatusBadRequest)
+		return
+	}
+	if len(message) > clientMessageMaxLength {
+		writeJSONError(w, "message is too long", http.StatusBadRequest)
+		return
+	}
+
+	profileIDs := make(map[string]struct{})
+	for _, id := range req.ProfileIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		profileIDs[id] = struct{}{}
+	}
+	if !req.TargetAll && len(profileIDs) == 0 {
+		writeJSONError(w, "select at least one profile or send to all profiles", http.StatusBadRequest)
+		return
+	}
+
+	now := time.Now().UTC()
+	msg := pendingClientMessage{
+		ID:           now.Format("20060102150405.000000000"),
+		Message:      message,
+		TargetAll:    req.TargetAll,
+		ProfileIDs:   profileIDs,
+		CreatedAt:    now,
+		DeliveredTo:  make(map[string]struct{}),
+		DeliveredMax: max(1, len(h.clients.List())),
+	}
+
+	h.messageMu.Lock()
+	h.pruneExpiredMessagesLocked(now)
+	h.pendingMessages = append(h.pendingMessages, msg)
+	h.messageMu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": ClientMessageResponse{
+			ID:        msg.ID,
+			Message:   msg.Message,
+			CreatedAt: msg.CreatedAt,
+		},
+	})
+}
+
+// CheckMessages handles GET /api/clients/{clientID}/messages?profileId=...
+// It returns and clears messages that match this client/profile pair.
+func (h *ClientsHandler) CheckMessages(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	clientID := strings.TrimSpace(vars["clientID"])
+	profileID := strings.TrimSpace(r.URL.Query().Get("profileId"))
+	if clientID == "" {
+		writeJSONError(w, "client id is required", http.StatusBadRequest)
+		return
+	}
+	if profileID == "" {
+		writeJSONError(w, "profileId is required", http.StatusBadRequest)
+		return
+	}
+
+	now := time.Now().UTC()
+	messages := make([]ClientMessageResponse, 0)
+
+	h.messageMu.Lock()
+	h.pruneExpiredMessagesLocked(now)
+	for i := range h.pendingMessages {
+		msg := &h.pendingMessages[i]
+		if _, delivered := msg.DeliveredTo[clientID]; delivered {
+			continue
+		}
+		if !msg.TargetAll {
+			if _, ok := msg.ProfileIDs[profileID]; !ok {
+				continue
+			}
+		}
+		msg.DeliveredTo[clientID] = struct{}{}
+		messages = append(messages, ClientMessageResponse{
+			ID:        msg.ID,
+			Message:   msg.Message,
+			CreatedAt: msg.CreatedAt,
+		})
+	}
+	h.pruneDeliveredMessagesLocked()
+	h.messageMu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"messages": messages,
+	})
+}
+
+func (h *ClientsHandler) pruneExpiredMessagesLocked(now time.Time) {
+	if len(h.pendingMessages) == 0 {
+		return
+	}
+	next := h.pendingMessages[:0]
+	for _, msg := range h.pendingMessages {
+		if now.Sub(msg.CreatedAt) <= clientMessageExpiry {
+			next = append(next, msg)
+		}
+	}
+	h.pendingMessages = next
+}
+
+func (h *ClientsHandler) pruneDeliveredMessagesLocked() {
+	if len(h.pendingMessages) == 0 {
+		return
+	}
+	next := h.pendingMessages[:0]
+	for _, msg := range h.pendingMessages {
+		if msg.DeliveredMax > 0 && len(msg.DeliveredTo) >= msg.DeliveredMax {
+			continue
+		}
+		next = append(next, msg)
+	}
+	h.pendingMessages = next
 }
 
 // ReassignRequest is the request body for reassigning a client to a different profile

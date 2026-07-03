@@ -92,6 +92,51 @@
         </div>
     </div>
 
+    {{if .IsAdmin}}
+    <div class="section" id="profileMessageSection">
+        <div class="section-header" onclick="toggleSection(this)">
+            <div class="section-title">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15a4 4 0 0 1-4 4H7l-4 4V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/>
+                </svg>
+                Profile Messages
+            </div>
+            <svg class="section-toggle" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="6 9 12 15 18 9"/>
+            </svg>
+        </div>
+        <div class="section-content">
+            <p class="text-muted" style="margin-bottom: 1rem;">
+                Send a popup message to active app clients. Messages are delivered once per device while the selected profile is active.
+            </p>
+            <div class="form-group">
+                <label class="form-label" for="profileMessageText">Message</label>
+                <textarea id="profileMessageText" class="form-input" rows="4" maxlength="1000" placeholder="Example: Server maintenance starts in 10 minutes."></textarea>
+            </div>
+            <label class="toggle-option" style="margin-bottom: 1rem;">
+                <span class="toggle-label">
+                    <span class="toggle-title">Send to all profiles</span>
+                    <span class="toggle-description text-muted">Turn this off to choose specific profiles.</span>
+                </span>
+                <span class="toggle-switch">
+                    <input id="profileMessageAllToggle" type="checkbox" checked onchange="updateProfileMessageTargets()">
+                    <span class="toggle-slider"></span>
+                </span>
+            </label>
+            <div id="profileMessageTargets" class="profile-message-targets" style="display: none;"></div>
+            <div class="btn-group" style="margin-top: 1rem;">
+                <button class="btn btn-primary" onclick="sendProfileMessage()" id="sendProfileMessageBtn">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 0.5rem;">
+                        <line x1="22" y1="2" x2="11" y2="13"/>
+                        <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+                    </svg>
+                    Send Message
+                </button>
+            </div>
+        </div>
+    </div>
+    {{end}}
+
 </div>
 
 <!-- INTEGRATIONS CATEGORY -->
@@ -1615,6 +1660,31 @@
         background: rgba(245, 158, 11, 0.16);
         color: var(--warning);
     }
+    .profile-message-targets {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+        gap: 0.5rem;
+        padding: 0.75rem;
+        background: var(--bg-surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+    }
+    .profile-message-target {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        min-width: 0;
+        padding: 0.45rem 0.5rem;
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        cursor: pointer;
+    }
+    .profile-message-target span {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
     /* Toggle switch styling */
     .toggle-option {
         display: flex;
@@ -2450,9 +2520,77 @@
             if (response.ok) {
                 userProfiles = await response.json();
                 renderProfileTraktLinking();
+                renderProfileMessageTargets();
             }
         } catch (err) {
             console.error('Failed to load user profiles:', err);
+        }
+    }
+
+    function renderProfileMessageTargets() {
+        const container = document.getElementById('profileMessageTargets');
+        if (!container) return;
+        if (!Array.isArray(userProfiles) || userProfiles.length === 0) {
+            container.innerHTML = '<div class="text-muted">No profiles available.</div>';
+            return;
+        }
+        container.innerHTML = userProfiles.map(profile => `
+            <label class="profile-message-target" title="${escapeHtml(profile.name || profile.id)}">
+                <input type="checkbox" value="${escapeHtml(profile.id)}" class="profile-message-profile-checkbox">
+                <span>${escapeHtml(profile.name || profile.id)}</span>
+            </label>
+        `).join('');
+    }
+
+    function updateProfileMessageTargets() {
+        const allToggle = document.getElementById('profileMessageAllToggle');
+        const targets = document.getElementById('profileMessageTargets');
+        if (!allToggle || !targets) return;
+        targets.style.display = allToggle.checked ? 'none' : 'grid';
+    }
+
+    async function sendProfileMessage() {
+        const messageEl = document.getElementById('profileMessageText');
+        const allToggle = document.getElementById('profileMessageAllToggle');
+        const btn = document.getElementById('sendProfileMessageBtn');
+        if (!messageEl || !allToggle || !btn) return;
+
+        const message = messageEl.value.trim();
+        const targetAll = allToggle.checked;
+        const profileIds = targetAll
+            ? []
+            : Array.from(document.querySelectorAll('.profile-message-profile-checkbox:checked')).map(input => input.value);
+
+        if (!message) {
+            showToast('Enter a message to send', 'error');
+            return;
+        }
+        if (!targetAll && profileIds.length === 0) {
+            showToast('Select at least one profile', 'error');
+            return;
+        }
+
+        const originalHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-small"></span> Sending...';
+        try {
+            const response = await fetch(basePath + '/api/clients/messages', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message, targetAll, profileIds })
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(data.error || 'Failed to send message');
+            }
+            messageEl.value = '';
+            showToast(targetAll ? 'Message sent to all profiles' : 'Message sent to selected profiles', 'success');
+        } catch (err) {
+            showToast(err.message || 'Failed to send message', 'error');
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
         }
     }
 
