@@ -186,6 +186,138 @@ func TestEnrichLiteCustomListItemFallsBackToTMDBGenres(t *testing.T) {
 	}
 }
 
+func TestBuildLiteCustomListItemUsesStableTitleFallbackID(t *testing.T) {
+	first := buildLiteCustomListItem(mdblistItem{
+		Title:       "Patriot",
+		ReleaseYear: 2026,
+		MediaType:   "movie",
+	})
+	second := buildLiteCustomListItem(mdblistItem{
+		Title:       "Patriot",
+		ReleaseYear: 2026,
+		MediaType:   "movie",
+	})
+	other := buildLiteCustomListItem(mdblistItem{
+		Title:       "Patriot",
+		ReleaseYear: 2000,
+		MediaType:   "movie",
+	})
+
+	if first.Title.ID == "mdblist:movie:0" {
+		t.Fatal("title-only custom list item used colliding mdblist:movie:0 id")
+	}
+	if !strings.HasPrefix(first.Title.ID, "title:movie:") {
+		t.Fatalf("fallback id = %q, want title:movie prefix", first.Title.ID)
+	}
+	if second.Title.ID != first.Title.ID {
+		t.Fatalf("fallback id is not deterministic: %q vs %q", first.Title.ID, second.Title.ID)
+	}
+	if other.Title.ID == first.Title.ID {
+		t.Fatalf("fallback id should include year, got %q for both movies", first.Title.ID)
+	}
+}
+
+func TestBuildLiteCustomListItemPrefersExternalID(t *testing.T) {
+	tmdbID := int64(123)
+	item := buildLiteCustomListItem(mdblistItem{
+		ID:          99,
+		Title:       "Patriot",
+		ReleaseYear: 2026,
+		MediaType:   "movie",
+		TMDBID:      &tmdbID,
+	})
+	if item.Title.ID != "tmdb:movie:123" {
+		t.Fatalf("title id = %q, want tmdb:movie:123", item.Title.ID)
+	}
+}
+
+func TestSelectCustomListTVDBSearchResultRejectsPawPatrolForPatriot(t *testing.T) {
+	item := mdblistItem{
+		Title:       "Patriot",
+		ReleaseYear: 2023,
+		MediaType:   "movie",
+	}
+
+	_, ok := selectCustomListTVDBSearchResult(item, []tvdbSearchResult{
+		{Name: "PAW Patrol: The Mighty Movie", Year: "2023", TVDBID: "123"},
+	})
+	if ok {
+		t.Fatal("expected Paw Patrol result to be rejected for Patriot")
+	}
+}
+
+func TestSelectMovieDetailsTVDBSearchResultRejectsPawPatrolForPatriot(t *testing.T) {
+	_, ok := selectMovieDetailsTVDBSearchResult(models.MovieDetailsQuery{
+		Name: "Patriot",
+		Year: 2026,
+	}, []tvdbSearchResult{
+		{Name: "Paw Patrol: The Dino Movie", Year: "2026", TVDBID: "123"},
+	})
+	if ok {
+		t.Fatal("expected Paw Patrol result to be rejected for Patriot movie details")
+	}
+}
+
+func TestSelectCustomListTVDBSearchResultRejectsRemoteIDMismatch(t *testing.T) {
+	item := mdblistItem{
+		Title:       "Patriot",
+		ReleaseYear: 2026,
+		IMDBID:      "tt33412884",
+		MediaType:   "movie",
+	}
+
+	_, ok := selectCustomListTVDBSearchResult(item, []tvdbSearchResult{
+		{
+			Name:   "Patriot",
+			Year:   "2026",
+			TVDBID: "123",
+			RemoteIDs: []struct {
+				ID         string `json:"id"`
+				Type       int    `json:"type"`
+				SourceName string `json:"sourceName"`
+			}{
+				{ID: "tt0000000", SourceName: "IMDB"},
+			},
+		},
+	})
+	if ok {
+		t.Fatal("expected mismatched remote imdb id to be rejected")
+	}
+}
+
+func TestSelectCustomListTVDBSearchResultAcceptsArticleVariant(t *testing.T) {
+	item := mdblistItem{
+		Title:       "Patriot",
+		ReleaseYear: 2000,
+		MediaType:   "movie",
+	}
+
+	result, ok := selectCustomListTVDBSearchResult(item, []tvdbSearchResult{
+		{Name: "The Patriot", Year: "2000", TVDBID: "456"},
+	})
+	if !ok {
+		t.Fatal("expected article-only title variant to be accepted")
+	}
+	if result.TVDBID != "456" {
+		t.Fatalf("selected tvdb id = %q, want 456", result.TVDBID)
+	}
+}
+
+func TestSelectCustomListTVDBSearchResultRejectsYearMismatch(t *testing.T) {
+	item := mdblistItem{
+		Title:       "The Patriot",
+		ReleaseYear: 2000,
+		MediaType:   "movie",
+	}
+
+	_, ok := selectCustomListTVDBSearchResult(item, []tvdbSearchResult{
+		{Name: "The Patriot", Year: "1998", TVDBID: "789"},
+	})
+	if ok {
+		t.Fatal("expected matching title with mismatched year to be rejected")
+	}
+}
+
 func TestGetCachedArtworkURLsResolvesSeriesTMDBToTVDBCache(t *testing.T) {
 	cache := newFileCache(t.TempDir(), 24)
 	svc := &Service{
