@@ -1905,6 +1905,44 @@ func TestMetadataHandler_TopTen(t *testing.T) {
 	}
 }
 
+func TestMetadataHandler_TopTenFiltersUnreleasedByListPolicy(t *testing.T) {
+	cfg := config.NewManager(filepath.Join(t.TempDir(), "settings.json"))
+	settings := config.DefaultSettings()
+	settings.Display.IncludeUnreleasedMoviesInLists = false
+	settings.Display.IncludeUnreleasedShowsInLists = false
+	if err := cfg.Save(settings); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+	items := []models.TrendingItem{
+		{Rank: 1, Title: models.Title{Name: "Toy Story 2", MediaType: "movie", Year: 1999}},
+		{Rank: 2, Title: models.Title{Name: "Toy Story 5", MediaType: "movie", Year: time.Now().Year() + 1}},
+		{Rank: 3, Title: models.Title{Name: "Released Show", MediaType: "series", Status: models.SeriesReleaseStatusReleased}},
+		{Rank: 4, Title: models.Title{Name: "Unreleased Show", MediaType: "series", Status: models.SeriesReleaseStatusUnreleased}},
+	}
+	fake := &fakeMetadataService{trendingResp: items}
+	handler := NewMetadataHandler(fake, cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/discover/top-ten?type=all", nil)
+	rec := httptest.NewRecorder()
+
+	handler.TopTen(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var resp TopTenResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if len(resp.Items) != 2 {
+		t.Fatalf("expected 2 released items, got %d: %+v", len(resp.Items), resp.Items)
+	}
+	if resp.Items[0].Title.Name != "Toy Story 2" || resp.Items[1].Title.Name != "Released Show" {
+		t.Fatalf("unexpected top-ten items: %+v", resp.Items)
+	}
+}
+
 func TestMetadataHandler_TopTen_EmptyResult(t *testing.T) {
 	fake := &fakeMetadataService{trendingResp: nil}
 	handler := NewMetadataHandler(fake, testConfigManager(t))

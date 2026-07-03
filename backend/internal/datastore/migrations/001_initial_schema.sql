@@ -104,6 +104,8 @@ CREATE TABLE watchlist (
     external_ids JSONB NOT NULL DEFAULT '{}',
     genres JSONB NOT NULL DEFAULT '[]',
     runtime_minutes INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT '',
+    lifecycle_status TEXT NOT NULL DEFAULT '',
     sync_source TEXT NOT NULL DEFAULT '',
     synced_at TIMESTAMPTZ,
     PRIMARY KEY (user_id, item_key)
@@ -134,6 +136,8 @@ CREATE TABLE custom_list_items (
     external_ids JSONB NOT NULL DEFAULT '{}',
     genres JSONB NOT NULL DEFAULT '[]',
     runtime_minutes INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT '',
+    lifecycle_status TEXT NOT NULL DEFAULT '',
     sync_source TEXT NOT NULL DEFAULT '',
     synced_at TIMESTAMPTZ,
     PRIMARY KEY (list_id, item_key)

@@ -184,6 +184,17 @@ func (h *DisplayListHandler) Get(w http.ResponseWriter, r *http.Request) {
 		items = h.HiddenItemsService.FilterHiddenWatchlistItems(userID, items)
 	}
 	h.enrich(userID, items, r)
+	if h.MetadataHandler != nil {
+		policy := resolveUnreleasedVisibilityPolicy(
+			h.MetadataHandler.CfgManager,
+			h.MetadataHandler.UserSettings,
+			h.MetadataHandler.ClientSettings,
+			userID,
+			requestClientID(r),
+			unreleasedVisibilityLists,
+		)
+		items = filterWatchlistItemsByUnreleasedVisibility(items, policy)
+	}
 
 	if items == nil {
 		items = []models.WatchlistItem{}
@@ -412,7 +423,11 @@ func enrichDisplayListReleases(r *http.Request, items []models.WatchlistItem, me
 			break
 		}
 		idx := indexes[i]
+		items[idx].Status = result.Status
 		items[idx].Theatrical = result.Theatrical
 		items[idx].HomeRelease = result.HomeRelease
+		if items[idx].Status == "" {
+			items[idx].Status = models.MovieReleaseStatusFromWindows(items[idx].Theatrical, items[idx].HomeRelease)
+		}
 	}
 }

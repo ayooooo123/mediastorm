@@ -893,6 +893,14 @@ type DisplaySettings struct {
 	WatchStateIconStyle string `json:"watchStateIconStyle"`
 	// HideWatched filters out fully watched content from trending shelves and custom lists.
 	HideWatched bool `json:"hideWatched,omitempty"`
+	// IncludeUnreleasedMoviesInLists keeps unreleased/upcoming movies in list-style shelves and list APIs.
+	IncludeUnreleasedMoviesInLists bool `json:"includeUnreleasedMoviesInLists"`
+	// IncludeUnreleasedShowsInLists keeps unreleased/upcoming shows in list-style shelves and list APIs.
+	IncludeUnreleasedShowsInLists bool `json:"includeUnreleasedShowsInLists"`
+	// IncludeUnreleasedMoviesInSearch keeps unreleased/upcoming movies in metadata search results.
+	IncludeUnreleasedMoviesInSearch bool `json:"includeUnreleasedMoviesInSearch"`
+	// IncludeUnreleasedShowsInSearch keeps unreleased/upcoming shows in metadata search results.
+	IncludeUnreleasedShowsInSearch bool `json:"includeUnreleasedShowsInSearch"`
 	// AlwaysShowProfileSelector forces the profile picker on every app open / un-background.
 	AlwaysShowProfileSelector bool `json:"alwaysShowProfileSelector"`
 	// BypassFilteringForAIOStreamsOnly skips mediastorm filtering/ranking when AIOStreams is the only enabled scraper (debrid-only mode).
@@ -1387,11 +1395,15 @@ func DefaultSettings() Settings {
 			NavigationTabVisibilityIncludesSystemTabs: true,
 		},
 		Display: DisplaySettings{
-			BadgeVisibility:           []string{"watchProgress"},
-			NavigationTabVisibility:   []string{"home", "search", "lists", "live", "profiles", "downloads", "settings", "admin"},
-			WatchStateIconStyle:       "colored",
-			CleanPosters:              true,
-			AlwaysShowProfileSelector: true,
+			BadgeVisibility:                 []string{"watchProgress"},
+			NavigationTabVisibility:         []string{"home", "search", "lists", "live", "profiles", "downloads", "settings", "admin"},
+			WatchStateIconStyle:             "colored",
+			IncludeUnreleasedMoviesInLists:  true,
+			IncludeUnreleasedShowsInLists:   true,
+			IncludeUnreleasedMoviesInSearch: true,
+			IncludeUnreleasedShowsInSearch:  true,
+			CleanPosters:                    true,
+			AlwaysShowProfileSelector:       true,
 			Appearance: AppearanceSettings{
 				FontScale:    floatPtr(1.0),
 				ButtonStyle:  "soft",
@@ -1712,10 +1724,30 @@ func (m *Manager) Load() (Settings, error) {
 		}
 	}
 
-	// Backfill AlwaysShowProfileSelector default (true) for existing configs
+	// Backfill Display defaults that are true for existing configs.
 	if displayMap, ok := raw["display"].(map[string]interface{}); ok {
 		if _, exists := displayMap["alwaysShowProfileSelector"]; !exists {
 			displayMap["alwaysShowProfileSelector"] = true
+		}
+		if _, exists := displayMap["includeUnreleasedMoviesInLists"]; !exists {
+			displayMap["includeUnreleasedMoviesInLists"] = true
+		}
+		if _, exists := displayMap["includeUnreleasedShowsInLists"]; !exists {
+			displayMap["includeUnreleasedShowsInLists"] = true
+		}
+		if _, exists := displayMap["includeUnreleasedMoviesInSearch"]; !exists {
+			displayMap["includeUnreleasedMoviesInSearch"] = true
+		}
+		if _, exists := displayMap["includeUnreleasedShowsInSearch"]; !exists {
+			displayMap["includeUnreleasedShowsInSearch"] = true
+		}
+	} else {
+		raw["display"] = map[string]interface{}{
+			"alwaysShowProfileSelector":       true,
+			"includeUnreleasedMoviesInLists":  true,
+			"includeUnreleasedShowsInLists":   true,
+			"includeUnreleasedMoviesInSearch": true,
+			"includeUnreleasedShowsInSearch":  true,
 		}
 	}
 

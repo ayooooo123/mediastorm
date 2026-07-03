@@ -58,18 +58,19 @@ type startupHistorySnapshot struct {
 // HTTP round-trips required when the frontend initialises.  All seven data
 // fetches are performed concurrently.
 type StartupHandler struct {
-	userSettings  userSettingsService
-	watchlist     watchlistService
-	history       historyService
-	metadata      metadataService
-	cfgManager    *config.Manager
-	users         userService
-	usersProvider usersServiceInterface // for kids profile filtering
-	calendar      startupCalendarService
-	localMedia    localLibraryLister
-	prequeueStore startupPrequeueStore
-	hiddenItems   hiddenItemsService
-	displayList   *DisplayListHandler
+	userSettings   userSettingsService
+	watchlist      watchlistService
+	history        historyService
+	metadata       metadataService
+	cfgManager     *config.Manager
+	users          userService
+	usersProvider  usersServiceInterface // for kids profile filtering
+	calendar       startupCalendarService
+	localMedia     localLibraryLister
+	prequeueStore  startupPrequeueStore
+	hiddenItems    hiddenItemsService
+	displayList    *DisplayListHandler
+	clientSettings clientSettingsService
 }
 
 // NewStartupHandler constructs a StartupHandler.
@@ -107,6 +108,10 @@ func (h *StartupHandler) SetHiddenItemsService(service hiddenItemsService) {
 
 func (h *StartupHandler) SetDisplayListHandler(handler *DisplayListHandler) {
 	h.displayList = handler
+}
+
+func (h *StartupHandler) SetClientSettingsProvider(provider clientSettingsService) {
+	h.clientSettings = provider
 }
 
 // StartupResponse is the combined payload returned by GET /api/users/{userID}/startup.
@@ -233,6 +238,7 @@ func (h *StartupHandler) GetStartup(w http.ResponseWriter, r *http.Request) {
 
 	hideUnreleased := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("hideUnreleased"))) == "true"
 	hideWatched := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("hideWatched"))) == "true"
+	clientID := requestClientID(r)
 	includeTrendingMovies := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("includeTrendingMovies"))) != "false"
 	includeTrendingSeries := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("includeTrendingSeries"))) != "false"
 
@@ -253,6 +259,11 @@ func (h *StartupHandler) GetStartup(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[startup] user settings error for %s: %v", userID, err)
 	} else {
 		resp.UserSettings = &settings
+	}
+	listPolicy := resolveUnreleasedVisibilityPolicy(h.cfgManager, h.userSettings, h.clientSettings, userID, clientID, unreleasedVisibilityLists)
+	if hideUnreleased {
+		listPolicy.IncludeMovies = false
+		listPolicy.IncludeShows = false
 	}
 
 	startupShelfLimit := defaultStartupShelfLimit
@@ -391,7 +402,7 @@ func (h *StartupHandler) GetStartup(w http.ResponseWriter, r *http.Request) {
 						log.Printf("[startup] trending movies error: %v", err)
 						return
 					}
-					items = h.applyFilters(items, userID, hideUnreleased, hideWatched)
+					items = h.applyFilters(items, userID, listPolicy, hideWatched)
 					items = h.filterHiddenTrendingItems(userID, items)
 					total := len(items)
 					if len(items) > startupPayloadLimit {
@@ -414,7 +425,7 @@ func (h *StartupHandler) GetStartup(w http.ResponseWriter, r *http.Request) {
 						log.Printf("[startup] trending series error: %v", err)
 						return
 					}
-					items = h.applyFilters(items, userID, hideUnreleased, hideWatched)
+					items = h.applyFilters(items, userID, listPolicy, hideWatched)
 					items = h.filterHiddenTrendingItems(userID, items)
 					total := len(items)
 					if len(items) > startupPayloadLimit {
@@ -479,6 +490,7 @@ func (h *StartupHandler) GetStartup(w http.ResponseWriter, r *http.Request) {
 	// Match display-list watchlist enrichment so the initial home shelf does not
 	// need to repair missing movie release metadata after first paint.
 	enrichDisplayListReleases(r, resp.Watchlist, h.metadata)
+	resp.Watchlist = filterWatchlistItemsByUnreleasedVisibility(resp.Watchlist, listPolicy)
 	if resp.TrendingMovies != nil {
 		enrichTrendingItems(resp.TrendingMovies.Items, idx)
 	}
@@ -488,7 +500,7 @@ func (h *StartupHandler) GetStartup(w http.ResponseWriter, r *http.Request) {
 
 	if resp.UserSettings != nil && h.displayList != nil {
 		homeCtx, cancel := context.WithTimeout(r.Context(), startupHomeBundleTimeout)
-		homeShelves, homeErrors := h.buildStartupHomeShelves(homeCtx, r, userID, resp.UserSettings.HomeShelves.Shelves, startupShelfLimit, hideWatched)
+		homeShelves, homeErrors := h.buildStartupHomeShelves(homeCtx, r, userID, resp.UserSettings.HomeShelves.Shelves, startupShelfLimit, hideWatched, clientID)
 		cancel()
 		if len(homeShelves) > 0 {
 			resp.HomeShelves = homeShelves
@@ -849,7 +861,7 @@ func (h *StartupHandler) Options(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func (h *StartupHandler) buildStartupHomeShelves(ctx context.Context, sourceReq *http.Request, userID string, shelves []models.ShelfConfig, homeShelfLimit int, hideWatched bool) (map[string]StartupHomeShelfResponse, map[string]string) {
+func (h *StartupHandler) buildStartupHomeShelves(ctx context.Context, sourceReq *http.Request, userID string, shelves []models.ShelfConfig, homeShelfLimit int, hideWatched bool, clientID string) (map[string]StartupHomeShelfResponse, map[string]string) {
 	out := make(map[string]StartupHomeShelfResponse)
 	errs := make(map[string]string)
 	if h.displayList == nil || len(shelves) == 0 {
@@ -860,7 +872,7 @@ func (h *StartupHandler) buildStartupHomeShelves(ctx context.Context, sourceReq 
 		if !shelf.Enabled || !isStartupFetchableCustomShelf(shelf) {
 			continue
 		}
-		query, ok := startupDisplayListQueryForShelf(shelf, homeShelfLimit, hideWatched)
+		query, ok := startupDisplayListQueryForShelf(shelf, homeShelfLimit, hideWatched, clientID)
 		if !ok {
 			continue
 		}
@@ -919,7 +931,7 @@ func isStartupFetchableCustomShelf(shelf models.ShelfConfig) bool {
 	}
 }
 
-func startupDisplayListQueryForShelf(shelf models.ShelfConfig, homeShelfLimit int, hideWatched bool) (url.Values, bool) {
+func startupDisplayListQueryForShelf(shelf models.ShelfConfig, homeShelfLimit int, hideWatched bool, clientID string) (url.Values, bool) {
 	limit := startupCustomShelfFetchLimit(shelf, homeShelfLimit)
 	query := url.Values{}
 	if limit > 0 {
@@ -930,6 +942,9 @@ func startupDisplayListQueryForShelf(shelf models.ShelfConfig, homeShelfLimit in
 	}
 	if hideWatched {
 		query.Set("hideWatched", "true")
+	}
+	if strings.TrimSpace(clientID) != "" {
+		query.Set("clientId", strings.TrimSpace(clientID))
 	}
 	if strings.TrimSpace(shelf.Name) != "" {
 		query.Set("name", shelf.Name)
@@ -1088,11 +1103,9 @@ func hashForManifest(values ...interface{}) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// applyFilters applies hideUnreleased, hideWatched, and kids rating filters to trending items.
-func (h *StartupHandler) applyFilters(items []models.TrendingItem, userID string, hideUnreleased, hideWatched bool) []models.TrendingItem {
-	if hideUnreleased {
-		items = filterUnreleasedItems(items)
-	}
+// applyFilters applies release visibility, hideWatched, and kids rating filters to trending items.
+func (h *StartupHandler) applyFilters(items []models.TrendingItem, userID string, policy unreleasedVisibilityPolicy, hideWatched bool) []models.TrendingItem {
+	items = filterTrendingItemsByUnreleasedVisibility(items, policy)
 	if hideWatched && userID != "" && h.history != nil {
 		items = filterWatchedItems(items, userID, h.history)
 	}
@@ -1249,25 +1262,27 @@ func slimTrendingItems(items []models.TrendingItem) []models.TrendingItem {
 		slim[i] = models.TrendingItem{
 			Rank: item.Rank,
 			Title: models.Title{
-				ID:            item.Title.ID,
-				Name:          item.Title.Name,
-				OriginalName:  item.Title.OriginalName,
-				Overview:      item.Title.Overview,
-				Year:          item.Title.Year,
-				Language:      item.Title.Language,
-				Poster:        item.Title.Poster,
-				TextPoster:    item.Title.TextPoster,
-				Backdrop:      item.Title.Backdrop,
-				TextBackdrop:  item.Title.TextBackdrop,
-				Backdrops:     item.Title.Backdrops,
-				MediaType:     item.Title.MediaType,
-				TVDBID:        item.Title.TVDBID,
-				IMDBID:        item.Title.IMDBID,
-				TMDBID:        item.Title.TMDBID,
-				Theatrical:    item.Title.Theatrical,
-				HomeRelease:   item.Title.HomeRelease,
-				Certification: item.Title.Certification,
-				Genres:        item.Title.Genres,
+				ID:              item.Title.ID,
+				Name:            item.Title.Name,
+				OriginalName:    item.Title.OriginalName,
+				Overview:        item.Title.Overview,
+				Year:            item.Title.Year,
+				Language:        item.Title.Language,
+				Poster:          item.Title.Poster,
+				TextPoster:      item.Title.TextPoster,
+				Backdrop:        item.Title.Backdrop,
+				TextBackdrop:    item.Title.TextBackdrop,
+				Backdrops:       item.Title.Backdrops,
+				MediaType:       item.Title.MediaType,
+				TVDBID:          item.Title.TVDBID,
+				IMDBID:          item.Title.IMDBID,
+				TMDBID:          item.Title.TMDBID,
+				Status:          item.Title.Status,
+				LifecycleStatus: item.Title.LifecycleStatus,
+				Theatrical:      item.Title.Theatrical,
+				HomeRelease:     item.Title.HomeRelease,
+				Certification:   item.Title.Certification,
+				Genres:          item.Title.Genres,
 			},
 		}
 	}
@@ -1351,6 +1366,10 @@ func (h *StartupHandler) getDefaultsFromGlobal() models.UserSettings {
 			BadgeVisibility:                  globalSettings.Display.BadgeVisibility,
 			NavigationTabVisibility:          globalSettings.Display.NavigationTabVisibility,
 			WatchStateIconStyle:              globalSettings.Display.WatchStateIconStyle,
+			IncludeUnreleasedMoviesInLists:   models.BoolPtr(globalSettings.Display.IncludeUnreleasedMoviesInLists),
+			IncludeUnreleasedShowsInLists:    models.BoolPtr(globalSettings.Display.IncludeUnreleasedShowsInLists),
+			IncludeUnreleasedMoviesInSearch:  models.BoolPtr(globalSettings.Display.IncludeUnreleasedMoviesInSearch),
+			IncludeUnreleasedShowsInSearch:   models.BoolPtr(globalSettings.Display.IncludeUnreleasedShowsInSearch),
 			BypassFilteringForAIOStreamsOnly: models.BoolPtr(globalSettings.Display.BypassFilteringForAIOStreamsOnly),
 			DisableMobileTopCarousel:         models.BoolPtr(globalSettings.Display.DisableMobileTopCarousel),
 			AppLanguage:                      globalSettings.Display.AppLanguage,

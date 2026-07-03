@@ -170,6 +170,7 @@ type MetadataHandler struct {
 	Service            metadataService
 	CfgManager         *config.Manager
 	UserSettings       userSettingsProvider
+	ClientSettings     clientSettingsService
 	HistoryService     historyServiceInterface
 	UsersService       usersServiceInterface
 	AccountsService    accountsServiceInterface
@@ -187,6 +188,10 @@ func NewMetadataHandler(s metadataService, cfgManager *config.Manager) *Metadata
 // SetUserSettingsProvider sets the user settings provider for per-user settings.
 func (h *MetadataHandler) SetUserSettingsProvider(provider userSettingsProvider) {
 	h.UserSettings = provider
+}
+
+func (h *MetadataHandler) SetClientSettingsProvider(provider clientSettingsService) {
+	h.ClientSettings = provider
 }
 
 // SetHistoryService sets the history service for filtering watched content.
@@ -342,10 +347,12 @@ func (h *MetadataHandler) DiscoverNew(w http.ResponseWriter, r *http.Request) {
 	// Track pre-filter total for explore card logic
 	unfilteredTotal := len(items)
 
-	// Apply unreleased filter if requested
+	policy := resolveUnreleasedVisibilityPolicy(h.CfgManager, h.UserSettings, h.ClientSettings, userID, requestClientID(r), unreleasedVisibilityLists)
 	if hideUnreleased {
-		items = filterUnreleasedItems(items)
+		policy.IncludeMovies = false
+		policy.IncludeShows = false
 	}
+	items = filterTrendingItemsByUnreleasedVisibility(items, policy)
 
 	// Apply watched filter if requested (requires userID and history service)
 	if hideWatched && userID != "" && h.HistoryService != nil {
@@ -430,6 +437,15 @@ func (h *MetadataHandler) Search(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
+	policy := resolveUnreleasedVisibilityPolicy(
+		h.CfgManager,
+		h.UserSettings,
+		h.ClientSettings,
+		userID,
+		requestClientID(r),
+		unreleasedVisibilitySearch,
+	)
+	results = filterSearchResultsByUnreleasedVisibility(results, policy)
 
 	// Apply kids rating filter if user is a kids profile with rating mode
 	if userID != "" && h.UsersService != nil {
@@ -651,7 +667,8 @@ func (h *MetadataHandler) CollectionDetails(w http.ResponseWriter, r *http.Reque
 
 	log.Printf("[metadata] fetching collection details collectionId=%d", collectionID)
 
-	service := h.serviceForUser(query.Get("userId"))
+	userID := strings.TrimSpace(query.Get("userId"))
+	service := h.serviceForUser(userID)
 	details, err := service.CollectionDetails(r.Context(), collectionID)
 	if err != nil {
 		log.Printf("[metadata] collection details error collectionId=%d err=%v", collectionID, err)
@@ -662,7 +679,9 @@ func (h *MetadataHandler) CollectionDetails(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Apply kids rating filter to collection members for kids profiles.
-	details.Movies = h.filterTitlesByKids(r.Context(), strings.TrimSpace(query.Get("userId")), service, details.Movies)
+	policy := resolveUnreleasedVisibilityPolicy(h.CfgManager, h.UserSettings, h.ClientSettings, userID, requestClientID(r), unreleasedVisibilityLists)
+	details.Movies = filterTitlesByUnreleasedVisibility(details.Movies, policy)
+	details.Movies = h.filterTitlesByKids(r.Context(), userID, service, details.Movies)
 
 	log.Printf("[metadata] collection details success collectionId=%d name=%q movieCount=%d", collectionID, details.Name, len(details.Movies))
 	for i, movie := range details.Movies {
@@ -694,7 +713,8 @@ func (h *MetadataHandler) Similar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	service := h.serviceForUser(query.Get("userId"))
+	userID := strings.TrimSpace(query.Get("userId"))
+	service := h.serviceForUser(userID)
 	titles, err := service.Similar(r.Context(), mediaType, tmdbID)
 	if err != nil {
 		log.Printf("[metadata] similar error type=%s tmdbId=%d err=%v", mediaType, tmdbID, err)
@@ -704,7 +724,9 @@ func (h *MetadataHandler) Similar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	titles = h.filterTitlesByKids(r.Context(), strings.TrimSpace(query.Get("userId")), service, titles)
+	policy := resolveUnreleasedVisibilityPolicy(h.CfgManager, h.UserSettings, h.ClientSettings, userID, requestClientID(r), unreleasedVisibilityLists)
+	titles = filterTitlesByUnreleasedVisibility(titles, policy)
+	titles = h.filterTitlesByKids(r.Context(), userID, service, titles)
 
 	// Return empty array instead of null if no results
 	if titles == nil {
@@ -734,13 +756,20 @@ func (h *MetadataHandler) PersonDetails(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	details, err := h.serviceForUser(query.Get("userId")).PersonDetails(r.Context(), personID)
+	userID := strings.TrimSpace(query.Get("userId"))
+	service := h.serviceForUser(userID)
+	details, err := service.PersonDetails(r.Context(), personID)
 	if err != nil {
 		log.Printf("[metadata] person details error personId=%d err=%v", personID, err)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadGateway)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
+	}
+	if details != nil {
+		policy := resolveUnreleasedVisibilityPolicy(h.CfgManager, h.UserSettings, h.ClientSettings, userID, requestClientID(r), unreleasedVisibilityLists)
+		details.Filmography = filterTitlesByUnreleasedVisibility(details.Filmography, policy)
+		details.Filmography = h.filterTitlesByKids(r.Context(), userID, service, details.Filmography)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -982,29 +1011,24 @@ type CustomListResponse struct {
 	UnfilteredTotal int                   `json:"unfilteredTotal,omitempty"` // Pre-filter total (only set when hideUnreleased is used)
 }
 
-// filterUnreleasedItems removes items that haven't been released for home viewing.
-// For movies: filters out items where HomeRelease is nil or HomeRelease.Released is false.
-// For series: filters out items where Status is "upcoming" or "in production" (case-insensitive).
+// filterUnreleasedItems removes items that haven't been released yet.
 func filterUnreleasedItems(items []models.TrendingItem) []models.TrendingItem {
 	result := make([]models.TrendingItem, 0, len(items))
 	filteredCount := 0
 	for _, item := range items {
 		if item.Title.MediaType == "movie" {
-			// Movies: keep only if home release exists and is released
-			if item.Title.HomeRelease != nil && item.Title.HomeRelease.Released {
+			// Movies: keep only when available outside the theatrical window.
+			status := models.MovieReleaseStatus(item.Title)
+			if status == models.MovieReleaseStatusReleased {
 				result = append(result, item)
 			} else {
 				filteredCount++
 				if filteredCount <= 3 {
-					hasRelease := item.Title.HomeRelease != nil
-					released := hasRelease && item.Title.HomeRelease.Released
-					log.Printf("[hideUnreleased] filtered movie: %s (hasHomeRelease=%v, released=%v)", item.Title.Name, hasRelease, released)
+					log.Printf("[hideUnreleased] filtered movie: %s (status=%s)", item.Title.Name, status)
 				}
 			}
 		} else if item.Title.MediaType == "series" {
-			// Series: filter out "upcoming" or "in production" statuses
-			status := strings.ToLower(item.Title.Status)
-			if status != "upcoming" && status != "in production" {
+			if item.Title.Status == models.SeriesReleaseStatusReleased {
 				result = append(result, item)
 			} else {
 				filteredCount++
@@ -1162,6 +1186,21 @@ func (h *MetadataHandler) CustomList(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
+	policy := resolveUnreleasedVisibilityPolicy(h.CfgManager, h.UserSettings, h.ClientSettings, userID, requestClientID(r), unreleasedVisibilityLists)
+	if hideUnreleased {
+		policy.IncludeMovies = false
+		policy.IncludeShows = false
+	}
+	visibilityFiltered := false
+	if !policy.IncludeMovies || !policy.IncludeShows {
+		before := len(items)
+		items = filterTrendingItemsByUnreleasedVisibility(items, policy)
+		filteredTotal = len(items)
+		visibilityFiltered = len(items) != before
+		if unfilteredTotal == 0 || unfilteredTotal < before {
+			unfilteredTotal = before
+		}
+	}
 
 	// Apply kids rating filter for kids profiles.
 	if filtered := h.filterTrendingByKids(r.Context(), userID, service, items); len(filtered) != len(items) {
@@ -1174,7 +1213,7 @@ func (h *MetadataHandler) CustomList(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	resp := CustomListResponse{Items: items, Total: filteredTotal}
-	if hideUnreleased || hideWatched {
+	if hideUnreleased || hideWatched || visibilityFiltered {
 		resp.UnfilteredTotal = unfilteredTotal
 	}
 	json.NewEncoder(w).Encode(resp)
@@ -1331,9 +1370,12 @@ func (h *MetadataHandler) TraktList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	unfilteredTotal := len(items)
+	policy := resolveUnreleasedVisibilityPolicy(h.CfgManager, h.UserSettings, h.ClientSettings, userID, requestClientID(r), unreleasedVisibilityLists)
 	if hideUnreleased {
-		items = filterUnreleasedItems(items)
+		policy.IncludeMovies = false
+		policy.IncludeShows = false
 	}
+	items = filterTrendingItemsByUnreleasedVisibility(items, policy)
 	if hideWatched && h.HistoryService != nil {
 		items = filterWatchedItems(items, userID, h.HistoryService)
 	}
@@ -1772,9 +1814,12 @@ func (h *MetadataHandler) buildShelfFromCurated(w http.ResponseWriter, r *http.R
 	}
 
 	unfilteredTotal := len(items)
+	policy := resolveUnreleasedVisibilityPolicy(h.CfgManager, h.UserSettings, h.ClientSettings, userID, requestClientID(r), unreleasedVisibilityLists)
 	if hideUnreleased {
-		items = filterUnreleasedItems(items)
+		policy.IncludeMovies = false
+		policy.IncludeShows = false
 	}
+	items = filterTrendingItemsByUnreleasedVisibility(items, policy)
 	if hideWatched && userID != "" && h.HistoryService != nil {
 		items = filterWatchedItems(items, userID, h.HistoryService)
 	}
@@ -1856,6 +1901,8 @@ func (h *MetadataHandler) CuratedList(w http.ResponseWriter, r *http.Request) {
 			enrichTrendingItems(items, idx)
 		}
 	}
+	policy := resolveUnreleasedVisibilityPolicy(h.CfgManager, h.UserSettings, h.ClientSettings, userID, requestClientID(r), unreleasedVisibilityLists)
+	items = filterTrendingItemsByUnreleasedVisibility(items, policy)
 
 	// Enrich with MDBList ratings for sort-by-rating support
 	enrichTrendingRatings(items, service)
@@ -1918,9 +1965,14 @@ func (h *MetadataHandler) DiscoverByGenre(w http.ResponseWriter, r *http.Request
 	if items == nil {
 		items = []models.TrendingItem{}
 	}
+	userID := strings.TrimSpace(r.URL.Query().Get("userId"))
+	policy := resolveUnreleasedVisibilityPolicy(h.CfgManager, h.UserSettings, h.ClientSettings, userID, requestClientID(r), unreleasedVisibilityLists)
+	beforeVisibility := len(items)
+	items = filterTrendingItemsByUnreleasedVisibility(items, policy)
+	total -= beforeVisibility - len(items)
 
 	// Apply kids rating filter for kids profiles.
-	if filtered := h.filterTrendingByKids(r.Context(), strings.TrimSpace(r.URL.Query().Get("userId")), service, items); len(filtered) != len(items) {
+	if filtered := h.filterTrendingByKids(r.Context(), userID, service, items); len(filtered) != len(items) {
 		total -= len(items) - len(filtered)
 		items = filtered
 	}
@@ -1996,9 +2048,14 @@ func (h *MetadataHandler) DiscoverByDecade(w http.ResponseWriter, r *http.Reques
 	if items == nil {
 		items = []models.TrendingItem{}
 	}
+	userID := strings.TrimSpace(r.URL.Query().Get("userId"))
+	policy := resolveUnreleasedVisibilityPolicy(h.CfgManager, h.UserSettings, h.ClientSettings, userID, requestClientID(r), unreleasedVisibilityLists)
+	beforeVisibility := len(items)
+	items = filterTrendingItemsByUnreleasedVisibility(items, policy)
+	total -= beforeVisibility - len(items)
 
 	// Apply kids rating filter for kids profiles.
-	if filtered := h.filterTrendingByKids(r.Context(), strings.TrimSpace(r.URL.Query().Get("userId")), service, items); len(filtered) != len(items) {
+	if filtered := h.filterTrendingByKids(r.Context(), userID, service, items); len(filtered) != len(items) {
 		total -= len(items) - len(filtered)
 		items = filtered
 	}
@@ -2111,7 +2168,8 @@ func (h *MetadataHandler) GetAIRecommendations(w http.ResponseWriter, r *http.Re
 func (h *MetadataHandler) GetAISimilar(w http.ResponseWriter, r *http.Request) {
 	seedTitle := strings.TrimSpace(r.URL.Query().Get("title"))
 	mediaType := strings.TrimSpace(r.URL.Query().Get("type"))
-	service := h.serviceForUser(r.URL.Query().Get("userId"))
+	userID := strings.TrimSpace(r.URL.Query().Get("userId"))
+	service := h.serviceForUser(userID)
 	if seedTitle == "" {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
@@ -2140,7 +2198,9 @@ func (h *MetadataHandler) GetAISimilar(w http.ResponseWriter, r *http.Request) {
 	if items == nil {
 		items = []models.TrendingItem{}
 	}
-	items = h.filterTrendingByKids(r.Context(), strings.TrimSpace(r.URL.Query().Get("userId")), service, items)
+	policy := resolveUnreleasedVisibilityPolicy(h.CfgManager, h.UserSettings, h.ClientSettings, userID, requestClientID(r), unreleasedVisibilityLists)
+	items = filterTrendingItemsByUnreleasedVisibility(items, policy)
+	items = h.filterTrendingByKids(r.Context(), userID, service, items)
 	enrichTrendingRatings(items, service)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -2241,7 +2301,10 @@ func (h *MetadataHandler) TopTen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items = h.filterTrendingByKids(r.Context(), strings.TrimSpace(r.URL.Query().Get("userId")), service, items)
+	userID := strings.TrimSpace(r.URL.Query().Get("userId"))
+	policy := resolveUnreleasedVisibilityPolicy(h.CfgManager, h.UserSettings, h.ClientSettings, userID, requestClientID(r), unreleasedVisibilityLists)
+	items = filterTrendingItemsByUnreleasedVisibility(items, policy)
+	items = h.filterTrendingByKids(r.Context(), userID, service, items)
 
 	enrichTrendingRatings(items, service)
 

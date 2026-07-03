@@ -46,8 +46,10 @@ type SeriesWatchState struct {
 	PrequeueID     string `json:"prequeueId,omitempty"`
 	PrequeueStatus string `json:"prequeueStatus,omitempty"`
 
-	Theatrical  *Release `json:"theatricalRelease,omitempty"`
-	HomeRelease *Release `json:"homeRelease,omitempty"`
+	Status          string   `json:"status,omitempty"`
+	LifecycleStatus string   `json:"lifecycleStatus,omitempty"`
+	Theatrical      *Release `json:"theatricalRelease,omitempty"`
+	HomeRelease     *Release `json:"homeRelease,omitempty"`
 }
 
 // EpisodeWatchPayload represents a request to record that a user started an episode.

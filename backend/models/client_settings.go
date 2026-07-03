@@ -25,6 +25,10 @@ type ClientFilterSettings struct {
 
 	// Display overrides
 	BypassFilteringForAIOStreamsOnly             *bool               `json:"bypassFilteringForAioStreamsOnly,omitempty"`
+	IncludeUnreleasedMoviesInLists               *bool               `json:"includeUnreleasedMoviesInLists,omitempty"`
+	IncludeUnreleasedShowsInLists                *bool               `json:"includeUnreleasedShowsInLists,omitempty"`
+	IncludeUnreleasedMoviesInSearch              *bool               `json:"includeUnreleasedMoviesInSearch,omitempty"`
+	IncludeUnreleasedShowsInSearch               *bool               `json:"includeUnreleasedShowsInSearch,omitempty"`
 	DisableMobileTopCarousel                     *bool               `json:"disableMobileTopCarousel,omitempty"`
 	BlurUnwatchedEpisodeThumbnails               *bool               `json:"blurUnwatchedEpisodeThumbnails,omitempty"`
 	BlurUnwatchedEpisodeThumbnailsIncludeCurrent *bool               `json:"blurUnwatchedEpisodeThumbnailsIncludeCurrent,omitempty"`
@@ -91,6 +95,10 @@ func (c *ClientFilterSettings) IsEmpty() bool {
 		c.AnimeLanguageEnabled == nil &&
 		c.AnimePreferredLanguage == nil &&
 		c.BypassFilteringForAIOStreamsOnly == nil &&
+		c.IncludeUnreleasedMoviesInLists == nil &&
+		c.IncludeUnreleasedShowsInLists == nil &&
+		c.IncludeUnreleasedMoviesInSearch == nil &&
+		c.IncludeUnreleasedShowsInSearch == nil &&
 		c.DisableMobileTopCarousel == nil &&
 		c.BlurUnwatchedEpisodeThumbnails == nil &&
 		c.BlurUnwatchedEpisodeThumbnailsIncludeCurrent == nil &&

@@ -202,6 +202,12 @@ func (s *Service) AddOrUpdate(userID string, input models.WatchlistUpsert) (mode
 	if input.RuntimeMinutes != 0 {
 		item.RuntimeMinutes = input.RuntimeMinutes
 	}
+	if strings.TrimSpace(input.Status) != "" {
+		item.Status = input.Status
+	}
+	if strings.TrimSpace(input.LifecycleStatus) != "" {
+		item.LifecycleStatus = input.LifecycleStatus
+	}
 
 	// Update sync tracking fields if provided
 	if strings.TrimSpace(input.SyncSource) != "" {
@@ -859,6 +865,12 @@ func mergeWatchlistItems(base, incoming models.WatchlistItem) models.WatchlistIt
 	}
 	if base.RuntimeMinutes == 0 {
 		base.RuntimeMinutes = incoming.RuntimeMinutes
+	}
+	if strings.TrimSpace(base.Status) == "" {
+		base.Status = incoming.Status
+	}
+	if strings.TrimSpace(base.LifecycleStatus) == "" {
+		base.LifecycleStatus = incoming.LifecycleStatus
 	}
 	if base.AddedAt.IsZero() || (!incoming.AddedAt.IsZero() && incoming.AddedAt.Before(base.AddedAt)) {
 		base.AddedAt = incoming.AddedAt

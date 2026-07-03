@@ -518,6 +518,7 @@ func main() {
 	// Wire up client settings to services for per-client settings cascade
 	debridSearchService.SetClientSettingsProvider(clientSettingsService)
 	indexerService.SetClientSettingsProvider(clientSettingsService)
+	metadataHandler.SetClientSettingsProvider(clientSettingsService)
 
 	var historyService *history.Service
 	if store != nil {
@@ -615,6 +616,7 @@ func main() {
 	startupHandler.SetLocalMedia(localMediaService)
 	startupHandler.SetHiddenItemsService(hiddenItemsService)
 	startupHandler.SetDisplayListHandler(displayListHandler)
+	startupHandler.SetClientSettingsProvider(clientSettingsService)
 
 	// Details bundle handler bundles details-page API calls for low-power devices
 	detailsBundleHandler := handlers.NewDetailsBundleHandler(

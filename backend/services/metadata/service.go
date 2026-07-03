@@ -1460,6 +1460,7 @@ func (s *Service) TrendingWithOptions(ctx context.Context, mediaType string, opt
 		} else if opts.ArtworkLimit > 0 {
 			s.enrichShelfArtwork(ctx, cached, artworkLimit)
 		}
+		ensureTrendingMovieReleaseStatuses(cached)
 		return cached, nil
 	}
 
@@ -1492,8 +1493,10 @@ func (s *Service) TrendingWithOptions(ctx context.Context, mediaType string, opt
 		s.enrichShelfArtwork(enrichCtx, items, artworkLimit)
 	}
 	if len(items) > 0 {
+		ensureTrendingMovieReleaseStatuses(items)
 		_ = s.cache.set(key, items)
 	}
+	ensureTrendingMovieReleaseStatuses(items)
 	return items, nil
 }
 
@@ -2374,7 +2377,8 @@ func (s *Service) enrichSeriesTVDB(title *models.Title, tvShow mdblistTVShow) {
 			title.TVDBID = tvdbID
 			title.ID = fmt.Sprintf("tvdb:series:%d", tvdbID)
 			title.Overview = ext.Overview
-			title.Status = ext.Status.Name
+			title.LifecycleStatus = strings.TrimSpace(ext.Status.Name)
+			title.Status = seriesReleaseStatusFromTVDBEpisodes(ext.Episodes)
 			found = true
 			applyTVDBArtworks(title, ext.Artworks)
 			if genres := tvdbGenreNames(ext.Genres); len(genres) > 0 {
@@ -2494,6 +2498,7 @@ func (s *Service) Search(ctx context.Context, query string, mediaType string) ([
 		movieResults, movieErr := s.Search(ctx, q, "movie")
 		seriesResults, seriesErr := s.Search(ctx, q, "series")
 		results := mergeSearchResults(append(movieResults, seriesResults...))
+		ensureSearchMovieReleaseStatuses(results)
 		if len(results) > 0 || movieErr == nil || seriesErr == nil {
 			return results, nil
 		}
@@ -2519,6 +2524,7 @@ func (s *Service) Search(ctx context.Context, query string, mediaType string) ([
 			}
 		}
 		if valid {
+			ensureSearchMovieReleaseStatuses(cached)
 			return cached, nil
 		}
 	}
@@ -2627,6 +2633,11 @@ func (s *Service) Search(ctx context.Context, query string, mediaType string) ([
 				Network:   strings.TrimSpace(d.Network),
 				Adult:     isAdultMetadataValue(d.Adult),
 			}
+			if entryMediaType == "movie" {
+				title.Status = models.MovieReleaseStatusUnknown
+			} else if entryMediaType == "series" {
+				title.Status = models.SeriesReleaseStatusFromDate(d.FirstAirTime)
+			}
 			if tmdbIDStr := strings.TrimSpace(d.TMDBID); tmdbIDStr != "" {
 				if tmdbID, err := strconv.ParseInt(tmdbIDStr, 10, 64); err == nil {
 					title.TMDBID = tmdbID
@@ -2732,6 +2743,7 @@ func (s *Service) Search(ctx context.Context, query string, mediaType string) ([
 		return nil, tvdbErr
 	}
 	s.enrichSearchResults(ctx, results)
+	ensureSearchMovieReleaseStatuses(results)
 	_ = s.cache.set(key, results)
 	return results, nil
 }
@@ -2761,6 +2773,74 @@ func (s *Service) enrichSearchResults(ctx context.Context, results []models.Sear
 		}(i)
 	}
 	wg.Wait()
+}
+
+func ensureSearchMovieReleaseStatuses(results []models.SearchResult) {
+	for i := range results {
+		ensureTitleReleaseStatus(&results[i].Title)
+	}
+}
+
+func ensureTrendingMovieReleaseStatuses(items []models.TrendingItem) {
+	for i := range items {
+		ensureTitleReleaseStatus(&items[i].Title)
+	}
+}
+
+func ensureTitleMovieReleaseStatus(title *models.Title) {
+	ensureTitleReleaseStatus(title)
+}
+
+func ensureTitleReleaseStatus(title *models.Title) {
+	if title == nil {
+		return
+	}
+	switch strings.ToLower(strings.TrimSpace(title.MediaType)) {
+	case "movie":
+		status := strings.TrimSpace(title.Status)
+		if status != "" && status != models.MovieReleaseStatusUnknown {
+			return
+		}
+		title.Status = models.MovieReleaseStatus(*title)
+	case "series":
+		normalizeSeriesTitleReleaseStatus(title, nil)
+	}
+}
+
+func normalizeSeriesDetailsReleaseStatus(details *models.SeriesDetails) {
+	if details == nil {
+		return
+	}
+	normalizeSeriesTitleReleaseStatus(&details.Title, details.Seasons)
+}
+
+func normalizeSeriesTitleReleaseStatus(title *models.Title, seasons []models.SeriesSeason) {
+	if title == nil || !strings.EqualFold(strings.TrimSpace(title.MediaType), "series") {
+		return
+	}
+	status := strings.TrimSpace(title.Status)
+	lower := strings.ToLower(status)
+	if status != "" && lower != models.SeriesReleaseStatusReleased && lower != models.SeriesReleaseStatusUnreleased {
+		if strings.TrimSpace(title.LifecycleStatus) == "" {
+			title.LifecycleStatus = status
+		}
+		title.Status = ""
+	}
+	if strings.TrimSpace(title.Status) != "" {
+		return
+	}
+	if len(seasons) > 0 {
+		title.Status = models.SeriesReleaseStatusFromSeasons(seasons)
+		return
+	}
+	title.Status = models.SeriesReleaseStatusFromDate(seriesTitleAirDateFallback(*title))
+}
+
+func seriesTitleAirDateFallback(title models.Title) string {
+	if title.Year > 0 && title.Year < time.Now().Year() {
+		return fmt.Sprintf("%04d-01-01", title.Year)
+	}
+	return ""
 }
 
 // applyTMDBTranslation localizes a search result's name/overview using TMDB,
@@ -3392,6 +3472,7 @@ func (s *Service) tmdbSeriesDetailsFallback(ctx context.Context, req models.Seri
 	cacheID := cacheKey("tmdb", "series", "details-fallback", "v1", s.client.language, strconv.FormatInt(req.TMDBID, 10))
 	var cached models.SeriesDetails
 	if ok, _ := s.cache.get(cacheID, &cached); ok && strings.TrimSpace(cached.Title.Name) != "" {
+		normalizeSeriesDetailsReleaseStatus(&cached)
 		return &cached, nil
 	}
 
@@ -3462,6 +3543,7 @@ func (s *Service) SeriesDetails(ctx context.Context, req models.SeriesDetailsQue
 	cacheID := seriesDetailsCacheKey(s.client.language, tvdbID, req.SeasonType)
 	var cached models.SeriesDetails
 	if ok, _ := s.cache.get(cacheID, &cached); ok && len(cached.Seasons) > 0 {
+		normalizeSeriesDetailsReleaseStatus(&cached)
 		metadataTracef("[metadata] series details cache hit tvdbId=%d lang=%s seasons=%d hasPoster=%v hasBackdrop=%v",
 			tvdbID, s.client.language, len(cached.Seasons), cached.Title.Poster != nil, cached.Title.Backdrop != nil)
 
@@ -3870,9 +3952,9 @@ func (s *Service) SeriesDetails(ctx context.Context, req models.SeriesDetailsQue
 	}
 	applyAirTimeFromTVDB(&seriesTitle, extended.AirsTime, extended.OriginalNetwork.Name, extended.OriginalNetwork.Country)
 
-	// Set series status (Continuing, Ended, Upcoming, etc.)
+	// Preserve provider lifecycle separately from release availability.
 	if extended.Status.Name != "" {
-		seriesTitle.Status = extended.Status.Name
+		seriesTitle.LifecycleStatus = extended.Status.Name
 	}
 
 	// Detect daily shows (talk shows, news, game shows) that use date-based episode naming
@@ -4064,6 +4146,8 @@ func (s *Service) SeriesDetails(ctx context.Context, req models.SeriesDetailsQue
 		AvailableOrderings: availableOrderings,
 		ActiveOrdering:     activeSeasonType,
 	}
+	seriesTitle.Status = models.SeriesReleaseStatusFromSeasons(details.Seasons)
+	details.Title = seriesTitle
 
 	// In demo mode, clamp to season 1 only (skip season 0/specials if present)
 	if s.demo && len(details.Seasons) > 0 {
@@ -4189,6 +4273,8 @@ func (s *Service) SeriesDetails(ctx context.Context, req models.SeriesDetailsQue
 	}
 
 	populateAiredDateTimeUTC(&details)
+	seriesTitle.Status = models.SeriesReleaseStatusFromSeasons(details.Seasons)
+	details.Title = seriesTitle
 
 	// If we fell back to a parent series (e.g. "Company Retreat" → "Jury Duty"),
 	// find which season matches the original name and set it as preferred.
@@ -4368,6 +4454,7 @@ func (s *Service) SeriesDetailsLite(ctx context.Context, req models.SeriesDetail
 	cacheID := cacheKey("tvdb", "series", "details", "v12-lite", s.client.language, strconv.FormatInt(tvdbID, 10), liteSeasonType)
 	var cached models.SeriesDetails
 	if ok, _ := s.cache.get(cacheID, &cached); ok && len(cached.Seasons) > 0 {
+		normalizeSeriesDetailsReleaseStatus(&cached)
 		log.Printf("[metadata] series details lite cache hit tvdbId=%d seasons=%d", tvdbID, len(cached.Seasons))
 		return &cached, nil
 	}
@@ -4503,7 +4590,7 @@ func (s *Service) SeriesDetailsLite(ctx context.Context, req models.SeriesDetail
 	}
 	applyAirTimeFromTVDB(&seriesTitle, extended.AirsTime, extended.OriginalNetwork.Name, extended.OriginalNetwork.Country)
 	if extended.Status.Name != "" {
-		seriesTitle.Status = extended.Status.Name
+		seriesTitle.LifecycleStatus = extended.Status.Name
 	}
 
 	// Artwork: poster + backdrop
@@ -4647,6 +4734,8 @@ func (s *Service) SeriesDetailsLite(ctx context.Context, req models.SeriesDetail
 		AvailableOrderings: availableOrderings,
 		ActiveOrdering:     activeSeasonType,
 	}
+	seriesTitle.Status = models.SeriesReleaseStatusFromSeasons(details.Seasons)
+	details.Title = seriesTitle
 
 	// In demo mode, clamp to season 1 only
 	if s.demo && len(details.Seasons) > 0 {
@@ -4706,6 +4795,8 @@ func (s *Service) SeriesDetailsLite(ctx context.Context, req models.SeriesDetail
 	}
 
 	populateAiredDateTimeUTC(&details)
+	seriesTitle.Status = models.SeriesReleaseStatusFromSeasons(details.Seasons)
+	details.Title = seriesTitle
 
 	_ = s.cache.set(cacheID, details)
 
@@ -4816,6 +4907,8 @@ func extractTitleFields(full *models.Title, fields []string) models.Title {
 			out.Genres = full.Genres
 		case "status":
 			out.Status = full.Status
+		case "lifecyclestatus", "lifecycle_status":
+			out.LifecycleStatus = full.LifecycleStatus
 		case "network":
 			out.Network = full.Network
 			out.AirsTime = full.AirsTime
@@ -5151,6 +5244,7 @@ func (s *Service) BatchMovieReleases(ctx context.Context, queries []models.Batch
 		}
 
 		if tmdbID <= 0 {
+			results[i].Status = models.MovieReleaseStatusUnknown
 			results[i].Error = "tmdb id required for release data (could not resolve from imdb)"
 			continue
 		}
@@ -5161,10 +5255,12 @@ func (s *Service) BatchMovieReleases(ctx context.Context, queries []models.Batch
 		if ok, _ := s.cache.get(cacheID, &cached); ok && len(cached.Releases) > 0 {
 			// Build a temporary title to use ensureMovieReleasePointers
 			tempTitle := &models.Title{
+				MediaType:     "movie",
 				Releases:      append([]models.Release(nil), cached.Releases...),
 				Certification: cached.Certification,
 			}
 			s.ensureMovieReleasePointers(tempTitle)
+			results[i].Status = tempTitle.Status
 			results[i].Theatrical = tempTitle.Theatrical
 			results[i].HomeRelease = tempTitle.HomeRelease
 			continue
@@ -5193,14 +5289,16 @@ func (s *Service) BatchMovieReleases(ctx context.Context, queries []models.Batch
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			tempTitle := &models.Title{TMDBID: t.tmdbID}
+			tempTitle := &models.Title{MediaType: "movie", TMDBID: t.tmdbID}
 			if s.enrichMovieReleases(ctx, tempTitle, t.tmdbID) {
 				mu.Lock()
+				results[t.index].Status = tempTitle.Status
 				results[t.index].Theatrical = tempTitle.Theatrical
 				results[t.index].HomeRelease = tempTitle.HomeRelease
 				mu.Unlock()
 			} else {
 				mu.Lock()
+				results[t.index].Status = tempTitle.Status
 				results[t.index].Error = "failed to fetch release data"
 				mu.Unlock()
 			}
@@ -5238,6 +5336,7 @@ func (s *Service) SeriesInfo(ctx context.Context, req models.SeriesDetailsQuery)
 	cacheID := cacheKey("tvdb", "series", "info", "v1", s.client.language, strconv.FormatInt(tvdbID, 10))
 	var cached models.Title
 	if ok, _ := s.cache.get(cacheID, &cached); ok {
+		normalizeSeriesTitleReleaseStatus(&cached, nil)
 		log.Printf("[metadata] series info cache hit tvdbId=%d lang=%s hasPoster=%v hasBackdrop=%v",
 			tvdbID, s.client.language, cached.Poster != nil, cached.Backdrop != nil)
 		return &cached, nil
@@ -5325,10 +5424,11 @@ func (s *Service) SeriesInfo(ctx context.Context, req models.SeriesDetailsQuery)
 	}
 	applyAirTimeFromTVDB(&seriesTitle, extended.AirsTime, extended.OriginalNetwork.Name, extended.OriginalNetwork.Country)
 
-	// Set series status (Continuing, Ended, Upcoming, etc.)
+	// Preserve provider lifecycle separately from release availability.
 	if extended.Status.Name != "" {
-		seriesTitle.Status = extended.Status.Name
+		seriesTitle.LifecycleStatus = extended.Status.Name
 	}
+	seriesTitle.Status = seriesReleaseStatusFromTVDBEpisodes(extended.Episodes)
 
 	// Apply artworks (poster and backdrop)
 	if img := newTVDBImage(extended.Poster, "poster", 0, 0); img != nil {
@@ -5627,6 +5727,7 @@ func (s *Service) discoverShelfWithOptions(ctx context.Context, mediaType string
 		total,
 		time.Since(start).Round(time.Millisecond),
 	)
+	ensureTrendingMovieReleaseStatuses(items)
 	return items, total, nil
 }
 
@@ -6458,6 +6559,9 @@ func (s *Service) enrichMovieReleases(ctx context.Context, title *models.Title, 
 	if ok, _ := s.cache.get(cacheID, &cached); ok {
 		// Negative cache hit: TMDB had no release data for this movie; don't retry.
 		if len(cached.Releases) == 0 {
+			if strings.EqualFold(title.MediaType, "movie") && strings.TrimSpace(title.Status) == "" {
+				title.Status = models.MovieReleaseStatusUnknown
+			}
 			return false
 		}
 		title.Releases = append([]models.Release(nil), cached.Releases...)
@@ -6473,6 +6577,9 @@ func (s *Service) enrichMovieReleases(ctx context.Context, title *models.Title, 
 		} else {
 			// No release data on TMDB; negatively cache so we don't retry on every enrichment cycle.
 			_ = s.cache.set(cacheID, cachedReleasesWithCert{})
+		}
+		if strings.EqualFold(title.MediaType, "movie") && strings.TrimSpace(title.Status) == "" {
+			title.Status = models.MovieReleaseStatusUnknown
 		}
 		return false
 	}
@@ -6631,6 +6738,9 @@ func (s *Service) ensureMovieReleasePointers(title *models.Title) {
 	if len(title.Releases) == 0 {
 		title.Theatrical = nil
 		title.HomeRelease = nil
+		if strings.EqualFold(title.MediaType, "movie") && strings.TrimSpace(title.Status) == "" {
+			title.Status = models.MovieReleaseStatusUnknown
+		}
 		return
 	}
 
@@ -6681,6 +6791,9 @@ func (s *Service) ensureMovieReleasePointers(title *models.Title) {
 	if bestHomeIdx >= 0 {
 		title.Releases[bestHomeIdx].Primary = true
 		title.HomeRelease = &title.Releases[bestHomeIdx]
+	}
+	if strings.EqualFold(title.MediaType, "movie") {
+		title.Status = models.MovieReleaseStatus(*title)
 	}
 }
 
@@ -7845,6 +7958,11 @@ func buildLiteCustomListItem(item mdblistItem) models.TrendingItem {
 		MediaType:  mediaType,
 		Popularity: float64(100 - item.Rank),
 	}
+	if mediaType == "movie" {
+		title.Status = models.MovieReleaseStatusUnknown
+	} else if mediaType == "series" {
+		title.Status = models.SeriesReleaseStatusFromDate(seriesTitleAirDateFallback(title))
+	}
 	if item.IMDBID != "" {
 		title.IMDBID = item.IMDBID
 	}
@@ -7925,8 +8043,9 @@ func (s *Service) enrichLiteCustomListItem(ctx context.Context, item mdblistItem
 		title.Overview = ext.Overview
 	}
 	if ext.Status.Name != "" {
-		title.Status = ext.Status.Name
+		title.LifecycleStatus = ext.Status.Name
 	}
+	title.Status = seriesReleaseStatusFromTVDBEpisodes(ext.Episodes)
 	applyTVDBArtworks(title, ext.Artworks)
 	applyTVDBRemoteIDs(title, ext.RemoteIDs)
 	if genres := tvdbGenreNames(ext.Genres); len(genres) > 0 {
@@ -8112,7 +8231,7 @@ func filterWatchedMDBListItems(items []mdblistItem, userID string, historySvc Hi
 
 // preFilterUnreleased does a lightweight concurrent pass to remove unreleased items
 // before full enrichment. For movies it checks TMDB release data; for series it checks
-// TVDB status.
+// whether any known episode has aired.
 func (s *Service) preFilterUnreleased(ctx context.Context, items []mdblistItem) []mdblistItem {
 	const maxConcurrent = 10
 	sem := make(chan struct{}, maxConcurrent)
@@ -8142,10 +8261,9 @@ func (s *Service) preFilterUnreleased(ctx context.Context, items []mdblistItem) 
 				if tmdbID <= 0 {
 					return // can't determine, keep
 				}
-				var title models.Title
-				title.TMDBID = tmdbID
+				title := models.Title{MediaType: "movie", TMDBID: tmdbID}
 				if s.enrichMovieReleases(ctx, &title, tmdbID) {
-					if title.HomeRelease == nil || !title.HomeRelease.Released {
+					if title.Status != models.MovieReleaseStatusReleased {
 						keep[idx] = false
 					}
 				}
@@ -8154,8 +8272,8 @@ func (s *Service) preFilterUnreleased(ctx context.Context, items []mdblistItem) 
 				if it.TVDBID != nil && *it.TVDBID > 0 {
 					ext, err := s.cachedSeriesExtended(*it.TVDBID, nil)
 					if err == nil {
-						status := strings.ToLower(ext.Status.Name)
-						if status == "upcoming" || status == "in production" {
+						status := seriesReleaseStatusFromTVDBEpisodes(ext.Episodes)
+						if status != models.SeriesReleaseStatusReleased {
 							keep[idx] = false
 						}
 					}
@@ -8183,6 +8301,19 @@ func (s *Service) preFilterUnreleased(ctx context.Context, items []mdblistItem) 
 	return result
 }
 
+func seriesReleaseStatusFromTVDBEpisodes(episodes []tvdbEpisode) string {
+	now := time.Now()
+	for _, episode := range episodes {
+		modelEpisode := models.SeriesEpisode{
+			AiredDate: strings.TrimSpace(episode.Aired),
+		}
+		if models.SeriesEpisodeHasAired(modelEpisode, now) {
+			return models.SeriesReleaseStatusReleased
+		}
+	}
+	return models.SeriesReleaseStatusUnreleased
+}
+
 func applyTVDBMovieExtendedMetadata(title *models.Title, ext tvdbMovieExtendedData) {
 	applyTVDBArtworks(title, ext.Artworks)
 	if len(title.Genres) == 0 {
@@ -8204,6 +8335,11 @@ func (s *Service) enrichCustomListItem(ctx context.Context, item mdblistItem, li
 		Language:   s.client.language,
 		MediaType:  mediaType,
 		Popularity: float64(100 - item.Rank),
+	}
+	if mediaType == "movie" {
+		title.Status = models.MovieReleaseStatusUnknown
+	} else if mediaType == "series" {
+		title.Status = models.SeriesReleaseStatusFromDate(seriesTitleAirDateFallback(title))
 	}
 
 	if item.IMDBID != "" {
@@ -8277,7 +8413,8 @@ func (s *Service) enrichCustomListItem(ctx context.Context, item mdblistItem, li
 				title.TVDBID = tvdbID
 				title.ID = fmt.Sprintf("tvdb:series:%d", tvdbID)
 				title.Overview = ext.Overview
-				title.Status = ext.Status.Name
+				title.LifecycleStatus = strings.TrimSpace(ext.Status.Name)
+				title.Status = seriesReleaseStatusFromTVDBEpisodes(ext.Episodes)
 				found = true
 				applyTVDBArtworks(&title, ext.Artworks)
 
@@ -8390,9 +8527,10 @@ func (s *Service) enrichCustomListItem(ctx context.Context, item mdblistItem, li
 					if ext, err := s.cachedSeriesExtended(tvdbID, []string{"artworks"}); err == nil {
 						applyTVDBArtworks(&title, ext.Artworks)
 						applyTVDBRemoteIDs(&title, ext.RemoteIDs)
-						if title.Status == "" {
-							title.Status = ext.Status.Name
+						if strings.TrimSpace(title.LifecycleStatus) == "" {
+							title.LifecycleStatus = strings.TrimSpace(ext.Status.Name)
 						}
+						title.Status = seriesReleaseStatusFromTVDBEpisodes(ext.Episodes)
 					}
 					if result.Overview != "" {
 						title.Overview = result.Overview
@@ -8480,6 +8618,7 @@ func (s *Service) enrichCustomListItem(ctx context.Context, item mdblistItem, li
 			if relOK {
 				title.Releases = relTitle.Releases
 				title.Certification = relTitle.Certification
+				title.Status = relTitle.Status
 				title.HomeRelease = relTitle.HomeRelease
 				title.Theatrical = relTitle.Theatrical
 			}
@@ -8692,6 +8831,7 @@ func (s *Service) GetCustomList(ctx context.Context, listURL string, opts Custom
 		if opts.Lite && (genresUpdated || (opts.Offset == 0 && artworkLimit > customListLiteArtworkLimit)) {
 			_ = s.cache.set(cacheID, cached)
 		}
+		ensureTrendingMovieReleaseStatuses(result)
 		return result, total, total, nil
 	}
 
@@ -8800,6 +8940,7 @@ func (s *Service) GetCustomList(ctx context.Context, listURL string, opts Custom
 		log.Printf("[metadata] cached %d enriched items for custom list: %s", len(results), listURL)
 	}
 
+	ensureTrendingMovieReleaseStatuses(results)
 	return results, filteredTotal, unfilteredTotal, nil
 }
 
@@ -8888,6 +9029,7 @@ func (s *Service) GetCuratedList(ctx context.Context, items []CuratedItem, label
 	if ok, _ := s.cache.get(cacheID, &cached); ok && len(cached) > 0 {
 		log.Printf("[metadata] curated list cache hit for %q (%d items)", label, len(cached))
 		s.enrichShelfArtwork(ctx, cached, customListShelfArtworkLimit)
+		ensureTrendingMovieReleaseStatuses(cached)
 		return cached, nil
 	}
 
@@ -8912,6 +9054,7 @@ func (s *Service) GetCuratedList(ctx context.Context, items []CuratedItem, label
 	}
 	wg.Wait()
 	s.enrichShelfArtwork(ctx, results, customListShelfArtworkLimit)
+	ensureTrendingMovieReleaseStatuses(results)
 
 	// Cache results
 	if len(results) > 0 {
@@ -9807,7 +9950,7 @@ func topTenTVEpisodeRecencyMultiplier(details models.SeriesDetails, now time.Tim
 		}
 	}
 
-	if multiplier == 1.0 && strings.EqualFold(strings.TrimSpace(details.Title.Status), "Continuing") {
+	if multiplier == 1.0 && strings.EqualFold(strings.TrimSpace(details.Title.LifecycleStatus), "Continuing") {
 		multiplier = 1.03
 	}
 

@@ -466,6 +466,7 @@ func (s *Service) RecordEpisode(userID string, payload models.EpisodeWatchPayloa
 		BackdropURL: payload.BackdropURL,
 		Year:        payload.Year,
 		ExternalIDs: payload.ExternalIDs,
+		Status:      models.SeriesReleaseStatusReleased,
 		LastWatched: episode,
 		NextEpisode: payload.NextEpisode,
 		UpdatedAt:   time.Now().UTC(),
@@ -1292,6 +1293,8 @@ func (s *Service) buildSeriesStatesFromHistory(ctx context.Context, userID strin
 
 					// Calculate episode counts for series completion tracking
 					state.TotalEpisodeCount = countTotalEpisodes(seriesDetails)
+					state.Status = seriesDetails.Title.Status
+					state.LifecycleStatus = seriesDetails.Title.LifecycleStatus
 					// For in-progress, count watched episodes from history (dedup by season/episode)
 					watchedSet := make(map[string]bool)
 					for _, ep := range t.episodes {
@@ -1387,11 +1390,16 @@ func (s *Service) buildSeriesStatesFromHistory(ctx context.Context, userID strin
 
 					// Calculate episode counts for series completion tracking
 					state.TotalEpisodeCount = countTotalEpisodes(seriesDetails)
+					state.Status = seriesDetails.Title.Status
+					state.LifecycleStatus = seriesDetails.Title.LifecycleStatus
 					state.WatchedEpisodeCount = countWatchedEpisodesExcluding(state.WatchedEpisodes, t.promoted)
 				}
 			} else {
 				// No episodes and no in-progress (shouldn't happen)
 				return
+			}
+			if state.Status == "" {
+				state.Status = models.SeriesReleaseStatusReleased
 			}
 
 			// Add to results
@@ -1445,6 +1453,8 @@ func (s *Service) buildSeriesStatesFromHistory(ctx context.Context, userID strin
 					movieState.Overview = movieDetails.Overview
 					movieState.LastWatched.Overview = movieDetails.Overview
 				}
+				movieState.Status = movieDetails.Status
+				movieState.LifecycleStatus = movieDetails.LifecycleStatus
 				movieState.Theatrical = movieDetails.Theatrical
 				movieState.HomeRelease = movieDetails.HomeRelease
 

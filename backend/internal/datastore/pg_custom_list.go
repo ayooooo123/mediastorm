@@ -81,7 +81,7 @@ func (r *pgCustomListRepo) DeleteList(ctx context.Context, listID string) error 
 func (r *pgCustomListRepo) GetItems(ctx context.Context, listID string) ([]models.WatchlistItem, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT item_key, media_type, item_id, name, overview, year, poster_url, text_poster_url, backdrop_url,
-		added_at, external_ids, genres, runtime_minutes, sync_source, synced_at
+		added_at, external_ids, genres, runtime_minutes, status, lifecycle_status, sync_source, synced_at
 		FROM custom_list_items WHERE list_id = $1 ORDER BY added_at`, listID)
 	if err != nil {
 		return nil, fmt.Errorf("get custom list items: %w", err)
@@ -96,14 +96,14 @@ func (r *pgCustomListRepo) UpsertItem(ctx context.Context, listID string, item *
 	itemKey := item.Key()
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO custom_list_items (list_id, item_key, media_type, item_id, name, overview, year,
-		poster_url, text_poster_url, backdrop_url, added_at, external_ids, genres, runtime_minutes, sync_source, synced_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+		poster_url, text_poster_url, backdrop_url, added_at, external_ids, genres, runtime_minutes, status, lifecycle_status, sync_source, synced_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
 		ON CONFLICT (list_id, item_key) DO UPDATE SET
 		name=$5, overview=$6, year=$7, poster_url=$8, text_poster_url=$9, backdrop_url=$10,
-		external_ids=$12, genres=$13, runtime_minutes=$14, sync_source=$15, synced_at=$16`,
+		external_ids=$12, genres=$13, runtime_minutes=$14, status=$15, lifecycle_status=$16, sync_source=$17, synced_at=$18`,
 		listID, itemKey, item.MediaType, item.ID, item.Name, item.Overview, item.Year,
 		item.PosterURL, item.TextPosterURL, item.BackdropURL, item.AddedAt, idsJSON, genresJSON,
-		item.RuntimeMinutes, item.SyncSource, item.SyncedAt)
+		item.RuntimeMinutes, item.Status, item.LifecycleStatus, item.SyncSource, item.SyncedAt)
 	if err != nil {
 		return fmt.Errorf("upsert custom list item: %w", err)
 	}
