@@ -564,6 +564,30 @@ func TestPrequeueEpisodeHelpers_AllowSpecials(t *testing.T) {
 	}
 }
 
+func TestIsM2TSStreamPath(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{name: "plain m2ts", path: "/debrid/realdebrid/BDMV/STREAM/00001.m2ts", want: true},
+		{name: "uppercase m2ts", path: "/debrid/realdebrid/BDMV/STREAM/00001.M2TS", want: true},
+		{name: "m2ts url with query", path: "https://example.com/BDMV/STREAM/00001.m2ts?token=abc", want: true},
+		{name: "m2ts url with fragment", path: "https://example.com/BDMV/STREAM/00001.m2ts#stream", want: true},
+		{name: "mkv", path: "/debrid/realdebrid/movie.mkv", want: false},
+		{name: "m2ts in directory only", path: "/debrid/m2ts/movie.mkv", want: false},
+		{name: "empty", path: "", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isM2TSStreamPath(tt.path); got != tt.want {
+				t.Fatalf("isM2TSStreamPath(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestAdoptMigrationReplacesPrequeueStream(t *testing.T) {
 	store := playback.NewPrequeueStore(time.Hour)
 	entry, created := store.Create("movie:1", "Example", "user1", "movie", 2024, nil, "details")
