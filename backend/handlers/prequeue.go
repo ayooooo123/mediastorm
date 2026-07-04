@@ -137,6 +137,20 @@ func unknownTrackPolicyNeedsProbe(policy string) bool {
 	return normalizeUnknownTrackPolicy(policy) != "none"
 }
 
+func isM2TSStreamPath(streamPath string) bool {
+	trimmed := strings.TrimSpace(streamPath)
+	if trimmed == "" {
+		return false
+	}
+	if value, _, ok := strings.Cut(trimmed, "?"); ok {
+		trimmed = value
+	}
+	if value, _, ok := strings.Cut(trimmed, "#"); ok {
+		trimmed = value
+	}
+	return strings.HasSuffix(strings.ToLower(strings.TrimRight(trimmed, "/")), ".m2ts")
+}
+
 func trackTextKnown(language, title string) bool {
 	return strings.TrimSpace(language) != "" || strings.TrimSpace(title) != ""
 }
@@ -1537,6 +1551,12 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 		}
 
 		log.Printf("[prequeue] Resolved result [%d] (%s): %s -> %s", i, result.ServiceType, result.Title, resolution.WebDAVPath)
+		if isM2TSStreamPath(resolution.WebDAVPath) {
+			lastErr = fmt.Errorf("prequeue excludes .m2ts streams: %s", resolution.WebDAVPath)
+			log.Printf("[prequeue] Skipping result [%d] (%s) %s: %v", i, result.ServiceType, result.Title, lastErr)
+			resolution = nil
+			continue
+		}
 
 		var probeResult *VideoFullResult
 		var metadataResult *VideoMetadataResult
