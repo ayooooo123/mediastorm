@@ -47,6 +47,17 @@ func IsTrueHDCodec(codec string) bool {
 	return c == "truehd" || c == "mlp"
 }
 
+func IsUnsupportedNativeSubtitleCodec(codec string) bool {
+	c := strings.ToLower(strings.TrimSpace(codec))
+	return c == "dvd_subtitle" ||
+		c == "dvdsub" ||
+		c == "vobsub" ||
+		c == "application/vobsub" ||
+		strings.Contains(c, "dvd_subtitle") ||
+		strings.Contains(c, "dvd subtitle") ||
+		strings.Contains(c, "vobsub")
+}
+
 // IsIncompatibleVideoCodec returns true for video codecs that iOS/tvOS cannot play natively.
 // iOS only supports H.264 (AVC) and HEVC (H.265). Legacy codecs like MPEG-4 Part 2 (XviD/DivX),
 // MPEG-2, VC-1, VP8/VP9, etc. require transcoding to H.264.
@@ -233,12 +244,22 @@ func FindSubtitleTrackByPreference(streams []SubtitleStreamInfo, preferredLangua
 		return -1
 	}
 
+	selectableStreams := make([]SubtitleStreamInfo, 0, len(streams))
+	for _, stream := range streams {
+		if !IsUnsupportedNativeSubtitleCodec(stream.Codec) {
+			selectableStreams = append(selectableStreams, stream)
+		}
+	}
+	if len(selectableStreams) == 0 {
+		return -1
+	}
+
 	normalizedPref := strings.ToLower(strings.TrimSpace(preferredLanguage))
 
 	// For forced-only mode, only consider forced tracks
 	if mode == "forced-only" {
 		var forcedStreams []SubtitleStreamInfo
-		for _, s := range streams {
+		for _, s := range selectableStreams {
 			if isForcedTrack(s) {
 				forcedStreams = append(forcedStreams, s)
 			}
@@ -260,7 +281,7 @@ func FindSubtitleTrackByPreference(streams []SubtitleStreamInfo, preferredLangua
 	if normalizedPref != "" {
 		// Collect non-forced streams matching the preferred language
 		var nonForcedMatches []SubtitleStreamInfo
-		for _, stream := range streams {
+		for _, stream := range selectableStreams {
 			if !isForcedTrack(stream) && matchesLanguage(stream.Language, stream.Title, normalizedPref) {
 				nonForcedMatches = append(nonForcedMatches, stream)
 			}
@@ -330,7 +351,7 @@ func FindSubtitleTrackByPreference(streams []SubtitleStreamInfo, preferredLangua
 		}
 
 		// Fallback: forced tracks matching language
-		for _, stream := range streams {
+		for _, stream := range selectableStreams {
 			if isForcedTrack(stream) && matchesLanguage(stream.Language, stream.Title, normalizedPref) {
 				log.Printf("[track] Selected forced subtitle track %d for language %q (only option)", stream.Index, preferredLanguage)
 				return stream.Index
