@@ -5915,7 +5915,7 @@ func (s *Service) consolidateEpisodeProgressLocked(userID string, perUser map[st
 			progress.EpisodeNumber != episodeNumber {
 			continue
 		}
-		if !hasMatchingExternalID(progress.ExternalIDs, incomingExternalIDs) {
+		if !hasMatchingEpisodeIdentityForProgressDedupe(progress, incomingSeriesID, incomingExternalIDs) {
 			continue
 		}
 		matchedKeys = append(matchedKeys, key)
@@ -5984,6 +5984,28 @@ func (s *Service) preserveSeriesHiddenMarkerLocked(perUser map[string]models.Pla
 // common key+value pair (excluding non-standard keys like "titleId").
 func hasMatchingExternalID(a, b map[string]string) bool {
 	return mediaidentity.HasMatchingExternalID(a, b)
+}
+
+func hasMatchingEpisodeIdentityForProgressDedupe(existing models.PlaybackProgress, incomingSeriesID string, incomingExternalIDs map[string]string) bool {
+	if progressSeriesMatchesIdentity(existing, mediaidentity.Resolve(mediaidentity.Input{
+		MediaType:   "series",
+		ID:          incomingSeriesID,
+		ExternalIDs: canonicalSeriesExternalIDs(incomingSeriesID, "", incomingExternalIDs),
+	})) {
+		return true
+	}
+	return hasMatchingConcreteEpisodeExternalID(existing.ExternalIDs, incomingExternalIDs)
+}
+
+func hasMatchingConcreteEpisodeExternalID(a, b map[string]string) bool {
+	a = mediaidentity.NormalizeExternalIDs(a)
+	b = mediaidentity.NormalizeExternalIDs(b)
+	for _, key := range []string{"episodeTvdb", "episodeTmdb", "episodeImdb", "episodeTrakt"} {
+		if value := strings.TrimSpace(a[key]); value != "" && value == strings.TrimSpace(b[key]) {
+			return true
+		}
+	}
+	return false
 }
 
 func isSeriesLevelPlaybackMarker(progress models.PlaybackProgress) bool {
