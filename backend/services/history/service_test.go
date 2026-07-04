@@ -2472,6 +2472,65 @@ func TestUpdatePlaybackProgress_DedupesCrossProviderEpisodeProgress(t *testing.T
 	}
 }
 
+func TestUpdatePlaybackProgress_DoesNotDedupeDifferentSeriesWithSameAbsoluteEpisode(t *testing.T) {
+	dir := t.TempDir()
+	svc, err := NewService(dir)
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	userID := "user-progress-absolute-collision"
+	if _, err := svc.UpdatePlaybackProgress(userID, models.PlaybackProgressUpdate{
+		MediaType:     "episode",
+		ItemID:        "tmdb:tv:125988:s02e01",
+		Position:      300,
+		Duration:      3600,
+		SeriesID:      "tmdb:tv:125988",
+		SeriesName:    "Silo",
+		SeasonNumber:  2,
+		EpisodeNumber: 1,
+		EpisodeName:   "The Engineer",
+		ExternalIDs: map[string]string{
+			"imdb":            "tt14688458",
+			"tmdb":            "125988",
+			"tvdb":            "403245",
+			"episodeTvdb":     "10232256",
+			"absoluteEpisode": "11",
+		},
+	}); err != nil {
+		t.Fatalf("Silo UpdatePlaybackProgress() error = %v", err)
+	}
+
+	if _, err := svc.UpdatePlaybackProgress(userID, models.PlaybackProgressUpdate{
+		MediaType:     "episode",
+		ItemID:        "tmdb:tv:138502:s02e01",
+		Position:      600,
+		Duration:      1800,
+		SeriesID:      "tmdb:tv:138502",
+		SeriesName:    "X-Men '97",
+		SeasonNumber:  2,
+		EpisodeNumber: 1,
+		EpisodeName:   "Days of Past Future",
+		ExternalIDs: map[string]string{
+			"imdb":            "tt16026746",
+			"tmdb":            "138502",
+			"tvdb":            "412432",
+			"episodeTvdb":     "11755858",
+			"absoluteEpisode": "11",
+		},
+	}); err != nil {
+		t.Fatalf("X-Men UpdatePlaybackProgress() error = %v", err)
+	}
+
+	progressItems, err := svc.ListPlaybackProgress(userID)
+	if err != nil {
+		t.Fatalf("ListPlaybackProgress() error = %v", err)
+	}
+	if len(progressItems) != 2 {
+		t.Fatalf("expected unrelated series to remain separate, got %d: %+v", len(progressItems), progressItems)
+	}
+}
+
 func TestUpdatePlaybackProgress_DedupesCrossProviderMovieProgress(t *testing.T) {
 	dir := t.TempDir()
 	svc, err := NewService(dir)
