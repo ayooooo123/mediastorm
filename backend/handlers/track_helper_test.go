@@ -25,3 +25,15 @@ func TestFindSubtitleTrackByPreferenceForcedOnlySkipsUnlabeledTracks(t *testing.
 		t.Fatalf("expected English forced subtitle track 1, got %d", got)
 	}
 }
+
+func TestFindSubtitleTrackByPreferenceSkipsDVDSubtitles(t *testing.T) {
+	streams := []SubtitleStreamInfo{
+		{Index: 0, Codec: "dvd_subtitle", Language: "eng", Title: "English DVD", IsForced: false},
+		{Index: 1, Codec: "hdmv_pgs_subtitle", Language: "eng", Title: "English PGS", IsForced: false},
+	}
+
+	got := FindSubtitleTrackByPreference(streams, "eng", "on", "eng")
+	if got != 1 {
+		t.Fatalf("expected PGS subtitle track 1, got %d", got)
+	}
+}
