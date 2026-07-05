@@ -2249,6 +2249,47 @@ func TestSeriesDetailsCacheHitHydratesRatingsFromRatingsCache(t *testing.T) {
 	}
 }
 
+func TestSeriesDetailsParsesTMDBTitleIDBeforeResolvingTVDB(t *testing.T) {
+	tempDir := t.TempDir()
+	svc := &Service{
+		client:           &tvdbClient{language: "eng"},
+		cache:            newFileCache(tempDir+"/metadata", 24),
+		inflightRequests: make(map[string]*inflightRequest),
+	}
+
+	if err := svc.cache.set(cacheKey("tvdb", "resolve", "tmdb", "82728"), int64(353546)); err != nil {
+		t.Fatalf("set tmdb resolve cache: %v", err)
+	}
+	if err := svc.cache.set(seriesDetailsCacheKey("eng", 353546, ""), models.SeriesDetails{
+		Title: models.Title{
+			ID:        "tvdb:series:353546",
+			Name:      "Bluey",
+			MediaType: "series",
+			TVDBID:    353546,
+			TMDBID:    82728,
+			IMDBID:    "tt7678620",
+			Year:      2018,
+			Poster:    &models.Image{URL: "https://example.com/bluey-poster.jpg"},
+			Backdrop:  &models.Image{URL: "https://example.com/bluey-backdrop.jpg"},
+		},
+		Seasons: []models.SeriesSeason{{Number: 1, Episodes: []models.SeriesEpisode{{SeasonNumber: 1, EpisodeNumber: 19}}}},
+	}); err != nil {
+		t.Fatalf("set series cache: %v", err)
+	}
+
+	details, err := svc.SeriesDetails(context.Background(), models.SeriesDetailsQuery{
+		TitleID: "tmdb:tv:82728",
+		Name:    "Bluey",
+	})
+	if err != nil {
+		t.Fatalf("SeriesDetails: %v", err)
+	}
+	if details.Title.TVDBID != 353546 || details.Title.TMDBID != 82728 || details.Title.Year != 2018 {
+		t.Fatalf("expected TMDB title ID to resolve to modern Bluey, got tvdb=%d tmdb=%d year=%d",
+			details.Title.TVDBID, details.Title.TMDBID, details.Title.Year)
+	}
+}
+
 func TestGetCacheManagerStatusCountsV5CustomListCache(t *testing.T) {
 	tempDir := t.TempDir()
 	svc := &Service{
