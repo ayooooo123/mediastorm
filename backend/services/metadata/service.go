@@ -3116,6 +3116,8 @@ func (s *Service) fetchTVDBAliases(mediaType string, tvdbID int64) []string {
 }
 
 func (s *Service) resolveSeriesTVDBID(ctx context.Context, req models.SeriesDetailsQuery) (int64, error) {
+	req = normalizeSeriesDetailsQueryIDs(req)
+
 	// Fast path: if we already have the TVDB ID, return it
 	if req.TVDBID > 0 {
 		return req.TVDBID, nil
@@ -3345,6 +3347,16 @@ func (s *Service) resolveSeriesTVDBIDActual(ctx context.Context, req models.Seri
 	return 0, fmt.Errorf("no tvdb match found for %q", name)
 }
 
+func normalizeSeriesDetailsQueryIDs(req models.SeriesDetailsQuery) models.SeriesDetailsQuery {
+	if req.TMDBID == 0 {
+		req.TMDBID = parseTMDBIDFromTitleID(req.TitleID)
+	}
+	if req.TVDBID == 0 {
+		req.TVDBID = parseTVDBIDFromTitleID(req.TitleID)
+	}
+	return req
+}
+
 func parseTVDBIDFromTitleID(titleID string) int64 {
 	trimmed := strings.TrimSpace(titleID)
 	if trimmed == "" {
@@ -3507,6 +3519,7 @@ func (s *Service) SeriesDetails(ctx context.Context, req models.SeriesDetailsQue
 	if s.client == nil {
 		return nil, fmt.Errorf("tvdb client not configured")
 	}
+	req = normalizeSeriesDetailsQueryIDs(req)
 
 	metadataTracef("[metadata] series details request titleId=%q name=%q year=%d tvdbId=%d",
 
@@ -4428,6 +4441,7 @@ func (s *Service) SeriesDetailsLite(ctx context.Context, req models.SeriesDetail
 	if s.client == nil {
 		return nil, fmt.Errorf("tvdb client not configured")
 	}
+	req = normalizeSeriesDetailsQueryIDs(req)
 
 	metadataTracef("[metadata] series details lite request titleId=%q name=%q year=%d tvdbId=%d",
 		strings.TrimSpace(req.TitleID), strings.TrimSpace(req.Name), req.Year, req.TVDBID)
@@ -5316,6 +5330,7 @@ func (s *Service) SeriesInfo(ctx context.Context, req models.SeriesDetailsQuery)
 	if s.client == nil {
 		return nil, fmt.Errorf("tvdb client not configured")
 	}
+	req = normalizeSeriesDetailsQueryIDs(req)
 
 	log.Printf("[metadata] series info request (lightweight) titleId=%q name=%q year=%d tvdbId=%d",
 		strings.TrimSpace(req.TitleID), strings.TrimSpace(req.Name), req.Year, req.TVDBID)
