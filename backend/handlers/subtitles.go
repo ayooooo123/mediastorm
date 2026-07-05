@@ -14,6 +14,8 @@ import (
 	"strings"
 
 	"novastream/config"
+	"novastream/models"
+	resultfilter "novastream/utils/filter"
 	langutil "novastream/utils/language"
 
 	xtextlanguage "golang.org/x/text/language"
@@ -70,6 +72,7 @@ func getSubtitleScriptPaths(scriptName string) (scriptPath, pythonPath string, e
 type SubtitleSearchParams struct {
 	ImdbID                string `json:"imdb_id"`
 	Title                 string `json:"title"`
+	ReleaseName           string `json:"release_name,omitempty"`
 	Year                  *int   `json:"year,omitempty"`
 	Season                *int   `json:"season,omitempty"`
 	Episode               *int   `json:"episode,omitempty"`
@@ -98,15 +101,17 @@ func (h *SubtitlesHandler) Search(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	imdbID := q.Get("imdbId")
 	title := q.Get("title")
+	releaseName := q.Get("releaseName")
 	language := q.Get("language")
 	if language == "" {
 		language = "en"
 	}
 
 	params := SubtitleSearchParams{
-		ImdbID:   imdbID,
-		Title:    title,
-		Language: language,
+		ImdbID:      imdbID,
+		Title:       title,
+		ReleaseName: releaseName,
+		Language:    language,
 	}
 
 	// Load OpenSubtitles credentials from config if available
@@ -168,8 +173,72 @@ func (h *SubtitlesHandler) Search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Output is already JSON, write it directly
-	w.Write(output)
+	var results []SubtitleResult
+	if err := json.Unmarshal(output, &results); err != nil {
+		// Preserve provider/script error payloads as-is.
+		w.Write(output)
+		return
+	}
+
+	results = filterSubtitleResults(results, params)
+	if err := json.NewEncoder(w).Encode(results); err != nil {
+		log.Printf("[subtitles] Search response encode error: %v", err)
+	}
+}
+
+func filterSubtitleResults(results []SubtitleResult, params SubtitleSearchParams) []SubtitleResult {
+	expectedTitle := strings.TrimSpace(params.Title)
+	if expectedTitle == "" || len(results) == 0 {
+		return results
+	}
+
+	nzbResults := make([]models.NZBResult, 0, len(results))
+	for i, result := range results {
+		release := strings.TrimSpace(result.Release)
+		if release == "" {
+			release = expectedTitle
+		}
+		nzbResults = append(nzbResults, models.NZBResult{
+			Title: release,
+			GUID:  fmt.Sprintf("%d", i),
+		})
+	}
+
+	expectedYear := 0
+	if params.Year != nil {
+		expectedYear = *params.Year
+	}
+	targetSeason := 0
+	if params.Season != nil {
+		targetSeason = *params.Season
+	}
+	targetEpisode := 0
+	if params.Episode != nil {
+		targetEpisode = *params.Episode
+	}
+
+	detailed := resultfilter.ResultsWithDetails(nzbResults, resultfilter.Options{
+		ExpectedTitle: expectedTitle,
+		ExpectedYear:  expectedYear,
+		IsMovie:       params.Season == nil && params.Episode == nil,
+		TargetSeason:  targetSeason,
+		TargetEpisode: targetEpisode,
+	})
+
+	filtered := make([]SubtitleResult, 0, len(results))
+	for _, detail := range detailed {
+		if !detail.Passed {
+			log.Printf("[subtitles] Filtering subtitle release %q: %s", detail.Result.Title, detail.RejectReason)
+			continue
+		}
+		var idx int
+		if _, err := fmt.Sscanf(detail.Result.GUID, "%d", &idx); err != nil || idx < 0 || idx >= len(results) {
+			continue
+		}
+		filtered = append(filtered, results[idx])
+	}
+
+	return filtered
 }
 
 // SubtitleDownloadParams represents the download parameters

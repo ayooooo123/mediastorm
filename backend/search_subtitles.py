@@ -81,7 +81,7 @@ def episode_match_score(release, season, episode):
 
 
 def sort_results(results, params):
-    target = build_release_info(params) or params.get("title", "")
+    target = (params.get("release_name") or "").strip() or build_release_info(params) or params.get("title", "")
 
     def key(result):
         release = result.get("release") or ""
