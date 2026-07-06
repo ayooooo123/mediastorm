@@ -116,7 +116,8 @@ type PrequeueStatusResponse struct {
 	// For HLS (HDR content or audio transcoding):
 	HLSSessionID   string  `json:"hlsSessionId,omitempty"`
 	HLSPlaylistURL string  `json:"hlsPlaylistUrl,omitempty"`
-	Duration       float64 `json:"duration,omitempty"` // Total duration in seconds (from HLS session probe)
+	Duration       float64 `json:"duration,omitempty"`  // Total duration in seconds (from HLS session probe)
+	FrameRate      string  `json:"frameRate,omitempty"` // Primary video avg_frame_rate from ffprobe
 
 	// Selected tracks (based on user preferences)
 	SelectedAudioTrack    int `json:"selectedAudioTrack"`    // -1 = default/all
@@ -174,6 +175,7 @@ type PrequeueEntry struct {
 	HLSSessionID   string  `json:"hlsSessionId,omitempty"`
 	HLSPlaylistURL string  `json:"hlsPlaylistUrl,omitempty"`
 	Duration       float64 `json:"duration,omitempty"`
+	FrameRate      string  `json:"frameRate,omitempty"`
 
 	// Selected tracks (based on user preferences)
 	SelectedAudioTrack    int `json:"selectedAudioTrack"`
@@ -1053,6 +1055,7 @@ func (e *PrequeueEntry) ToResponse() *PrequeueStatusResponse {
 		HLSSessionID:           e.HLSSessionID,
 		HLSPlaylistURL:         e.HLSPlaylistURL,
 		Duration:               e.Duration,
+		FrameRate:              e.FrameRate,
 		SelectedAudioTrack:     e.SelectedAudioTrack,
 		SelectedSubtitleTrack:  e.SelectedSubtitleTrack,
 		AudioTracks:            e.AudioTracks,

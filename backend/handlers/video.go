@@ -4923,6 +4923,7 @@ func (h *VideoHandler) ProbeVideoFull(ctx context.Context, path string) (*VideoF
 		result.VideoCodec = strings.ToLower(strings.TrimSpace(stream.CodecName))
 		result.VideoPixFmt = strings.ToLower(strings.TrimSpace(stream.PixFmt))
 		result.VideoProfile = strings.ToLower(strings.TrimSpace(stream.Profile))
+		result.AvgFrameRate = strings.TrimSpace(stream.AvgFrameRate)
 
 		// Detect Dolby Vision
 		hasDV, dvProfile, _ := detectDolbyVision(stream)
@@ -5024,6 +5025,7 @@ func (h *VideoHandler) unifiedProbeToVideoFull(cached *UnifiedProbeResult) *Vide
 		VideoCodec:         cached.VideoCodec,
 		VideoPixFmt:        cached.VideoPixFmt,
 		VideoProfile:       cached.VideoProfile,
+		AvgFrameRate:       cached.AvgFrameRate,
 		HasDolbyVision:     cached.HasDolbyVision,
 		HasHDR10:           cached.HasHDR10,
 		DolbyVisionProfile: cached.DolbyVisionProfile,
@@ -5065,6 +5067,7 @@ func (h *VideoHandler) videoFullToUnifiedProbe(result *VideoFullResult) *Unified
 		VideoCodec:         result.VideoCodec,
 		VideoPixFmt:        result.VideoPixFmt,
 		VideoProfile:       result.VideoProfile,
+		AvgFrameRate:       result.AvgFrameRate,
 		HasDolbyVision:     result.HasDolbyVision,
 		HasHDR10:           result.HasHDR10,
 		DolbyVisionProfile: result.DolbyVisionProfile,
