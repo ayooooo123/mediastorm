@@ -257,6 +257,26 @@ func enrichWatchlistArtwork(items []models.WatchlistItem, meta metadataService) 
 			}
 
 			textPosterURL, textBackdropURL, backdropURLs := meta.GetCachedArtworkURLs(items[i].MediaType, tmdbID, tvdbID)
+			name := strings.ToLower(strings.TrimSpace(items[i].Name))
+			isTarget := strings.Contains(name, "bang my box") || strings.Contains(name, "robyn bird") || strings.Contains(name, "robin byrd")
+			if isTarget || (items[i].PosterURL == "" && items[i].TextPosterURL == "" && textPosterURL == "") {
+				log.Printf(
+					"[watchlist][artwork-cache] id=%s mediaType=%s name=%q year=%d target=%t tmdbID=%d tvdbID=%d persistedPoster=%t persistedTextPoster=%t cachedTextPoster=%t cachedTextBackdrop=%t cachedBackdropCount=%d externalIds=%v",
+					items[i].ID,
+					items[i].MediaType,
+					items[i].Name,
+					items[i].Year,
+					isTarget,
+					tmdbID,
+					tvdbID,
+					items[i].PosterURL != "",
+					items[i].TextPosterURL != "",
+					textPosterURL != "",
+					textBackdropURL != "",
+					len(backdropURLs),
+					items[i].ExternalIDs,
+				)
+			}
 			if textPosterURL != "" {
 				items[i].TextPosterURL = textPosterURL
 			}

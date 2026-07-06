@@ -1453,11 +1453,13 @@ func (s *Service) TrendingWithOptions(ctx context.Context, mediaType string, opt
 		}
 		if opts.Lite {
 			genresUpdated := s.enrichLiteMissingGenres(ctx, cached)
+			artworkCacheUpdated := s.enrichShelfArtworkFromCache(cached)
 			s.enrichShelfArtwork(ctx, cached, artworkLimit)
-			if genresUpdated || artworkLimit > customListLiteArtworkLimit {
+			if genresUpdated || artworkCacheUpdated || artworkLimit > customListLiteArtworkLimit {
 				_ = s.cache.set(key, cached)
 			}
 		} else if opts.ArtworkLimit > 0 {
+			s.enrichShelfArtworkFromCache(cached)
 			s.enrichShelfArtwork(ctx, cached, artworkLimit)
 		}
 		ensureTrendingMovieReleaseStatuses(cached)
@@ -1483,6 +1485,7 @@ func (s *Service) TrendingWithOptions(ctx context.Context, mediaType string, opt
 		return nil, err
 	}
 	if opts.Lite {
+		s.enrichShelfArtworkFromCache(items)
 		s.enrichShelfArtwork(ctx, items, artworkLimit)
 	} else if normalized == "movie" {
 		// Enrich movies with release data (theatrical/home release)
@@ -7645,15 +7648,24 @@ func (s *Service) cachedFetchImages(ctx context.Context, mediaType string, tmdbI
 	return result, nil
 }
 
-func (s *Service) applyCachedTMDBImages(ctx context.Context, title *models.Title, mediaType string, tmdbID int64) bool {
-	if title == nil || tmdbID <= 0 || s.tmdb == nil || !s.tmdb.isConfigured() {
-		return false
+func (s *Service) cachedTMDBImagesOnly(mediaType string, tmdbID int64) (*tmdbImagesResult, bool) {
+	if s == nil || s.cache == nil || tmdbID <= 0 {
+		return nil, false
 	}
-	images, err := s.cachedFetchImages(ctx, mediaType, tmdbID)
-	if err != nil || images == nil {
-		if err != nil {
-			log.Printf("[metadata] failed to fetch images for %s tmdbId=%d: %v", mediaType, tmdbID, err)
-		}
+	language := ""
+	if s.client != nil {
+		language = s.client.language
+	}
+	key := cacheKey("tmdb", "images", "v6", language, mediaType, fmt.Sprintf("%d", tmdbID))
+	var cached tmdbImagesResult
+	if ok, _ := s.cache.get(key, &cached); ok {
+		return &cached, true
+	}
+	return nil, false
+}
+
+func applyTMDBImagesToTitle(title *models.Title, images *tmdbImagesResult) bool {
+	if title == nil || images == nil {
 		return false
 	}
 
@@ -7688,6 +7700,44 @@ func (s *Service) applyCachedTMDBImages(ctx context.Context, title *models.Title
 	if len(merged) > 0 {
 		title.Backdrops = merged
 		updated = true
+	}
+	return updated
+}
+
+func (s *Service) applyCachedTMDBImages(ctx context.Context, title *models.Title, mediaType string, tmdbID int64) bool {
+	if title == nil || tmdbID <= 0 || s.tmdb == nil || !s.tmdb.isConfigured() {
+		return false
+	}
+	images, err := s.cachedFetchImages(ctx, mediaType, tmdbID)
+	if err != nil || images == nil {
+		if err != nil {
+			log.Printf("[metadata] failed to fetch images for %s tmdbId=%d: %v", mediaType, tmdbID, err)
+		}
+		return false
+	}
+
+	return applyTMDBImagesToTitle(title, images)
+}
+
+func (s *Service) enrichShelfArtworkFromCache(items []models.TrendingItem) bool {
+	if len(items) == 0 {
+		return false
+	}
+	updated := false
+	for i := range items {
+		title := &items[i].Title
+		tmdbID := title.TMDBID
+		if tmdbID <= 0 {
+			continue
+		}
+		mediaType := shelfArtworkMediaType(title.MediaType)
+		images, ok := s.cachedTMDBImagesOnly(mediaType, tmdbID)
+		if !ok {
+			continue
+		}
+		if applyTMDBImagesToTitle(title, images) {
+			updated = true
+		}
 	}
 	return updated
 }
@@ -8842,8 +8892,9 @@ func (s *Service) GetCustomList(ctx context.Context, listURL string, opts Custom
 		if opts.Lite {
 			genresUpdated = s.enrichLiteMissingGenres(ctx, result)
 		}
+		artworkCacheUpdated := s.enrichShelfArtworkFromCache(result)
 		s.enrichShelfArtwork(ctx, result, artworkLimit)
-		if opts.Lite && (genresUpdated || (opts.Offset == 0 && artworkLimit > customListLiteArtworkLimit)) {
+		if opts.Lite && (genresUpdated || artworkCacheUpdated || (opts.Offset == 0 && artworkLimit > customListLiteArtworkLimit)) {
 			_ = s.cache.set(cacheID, cached)
 		}
 		ensureTrendingMovieReleaseStatuses(result)
@@ -8946,6 +8997,7 @@ func (s *Service) GetCustomList(ctx context.Context, listURL string, opts Custom
 		}(i, item)
 	}
 	wg.Wait()
+	s.enrichShelfArtworkFromCache(results)
 	s.enrichShelfArtwork(ctx, results, customListArtworkLimit(opts))
 
 	// Only cache full-list results when no filtering was applied
