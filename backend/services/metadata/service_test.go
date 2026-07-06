@@ -380,6 +380,36 @@ func TestGetCachedArtworkURLsUsesMetadataLanguageForTMDBImages(t *testing.T) {
 	}
 }
 
+func TestEnrichShelfArtworkFromCacheAppliesArtworkPastFetchLimit(t *testing.T) {
+	cache := newFileCache(t.TempDir(), 24)
+	svc := &Service{
+		client: &tvdbClient{language: "eng"},
+		cache:  cache,
+	}
+
+	if err := cache.set(cacheKey("tmdb", "images", "v6", "eng", "movie", "1674087"), tmdbImagesResult{
+		TextlessPoster: &models.Image{URL: "https://image.example/poster.jpg", Type: "poster"},
+		TextPoster:     &models.Image{URL: "https://image.example/text-poster.jpg", Type: "poster"},
+	}); err != nil {
+		t.Fatalf("set images cache: %v", err)
+	}
+
+	items := []models.TrendingItem{
+		{Title: models.Title{ID: "tmdb:movie:1", Name: "First", MediaType: "movie", TMDBID: 1}},
+		{Title: models.Title{ID: "tvdb:movie:376107", Name: "Bang My Box: The Robin Byrd Story", MediaType: "movie", TMDBID: 1674087}},
+	}
+
+	if !svc.enrichShelfArtworkFromCache(items) {
+		t.Fatal("expected cached artwork merge to update an item")
+	}
+	if items[1].Title.Poster == nil || items[1].Title.Poster.URL != "https://image.example/poster.jpg" {
+		t.Fatalf("poster = %#v, want cached poster", items[1].Title.Poster)
+	}
+	if items[1].Title.TextPoster == nil || items[1].Title.TextPoster.URL != "https://image.example/text-poster.jpg" {
+		t.Fatalf("textPoster = %#v, want cached text poster", items[1].Title.TextPoster)
+	}
+}
+
 func TestGetCachedArtworkURLsResolvesMovieTMDBToTVDBCache(t *testing.T) {
 	cache := newFileCache(t.TempDir(), 24)
 	svc := &Service{

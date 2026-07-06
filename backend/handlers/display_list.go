@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -199,6 +200,7 @@ func (h *DisplayListHandler) Get(w http.ResponseWriter, r *http.Request) {
 	if items == nil {
 		items = []models.WatchlistItem{}
 	}
+	logDisplayListWatchlistArtworkTrace(userID, source, items)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(DisplayListResponse{
 		Source: source,
@@ -289,6 +291,7 @@ func (h *DisplayListHandler) delegateMetadata(
 	if h.HiddenItemsService != nil {
 		normalised = h.filterHiddenPayload(query.Get("userId"), normalised)
 	}
+	logDisplayListPayloadArtworkTrace(query.Get("userId"), source, normalised)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(normalised)
 }
@@ -430,4 +433,96 @@ func enrichDisplayListReleases(r *http.Request, items []models.WatchlistItem, me
 			items[idx].Status = models.MovieReleaseStatusFromWindows(items[idx].Theatrical, items[idx].HomeRelease)
 		}
 	}
+}
+
+func logDisplayListWatchlistArtworkTrace(userID, source string, items []models.WatchlistItem) {
+	if source != "watchlist" && source != "custom-list" {
+		return
+	}
+	for _, item := range items {
+		name := strings.ToLower(strings.TrimSpace(item.Name))
+		isTarget := strings.Contains(name, "bang my box") || strings.Contains(name, "robyn bird") || strings.Contains(name, "robin byrd")
+		hasAnyArtwork := item.PosterURL != "" || item.TextPosterURL != "" || item.BackdropURL != "" ||
+			item.TextBackdropURL != "" || len(item.BackdropURLs) > 0
+		if !isTarget && hasAnyArtwork {
+			continue
+		}
+		log.Printf(
+			"[display-list][artwork] user=%s id=%s mediaType=%s name=%q year=%d target=%t poster=%t textPoster=%t backdrop=%t textBackdrop=%t backdropCount=%d externalIds=%v",
+			userID,
+			item.ID,
+			item.MediaType,
+			item.Name,
+			item.Year,
+			isTarget,
+			item.PosterURL != "",
+			item.TextPosterURL != "",
+			item.BackdropURL != "",
+			item.TextBackdropURL != "",
+			len(item.BackdropURLs),
+			item.ExternalIDs,
+		)
+	}
+}
+
+func logDisplayListPayloadArtworkTrace(userID, source string, payload map[string]interface{}) {
+	rawItems, ok := payload["items"].([]interface{})
+	if !ok {
+		return
+	}
+	for _, raw := range rawItems {
+		itemMap, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		titleMap, ok := itemMap["title"].(map[string]interface{})
+		if !ok {
+			titleMap = itemMap
+		}
+		name := displayListString(titleMap["name"])
+		if name == "" {
+			name = displayListString(titleMap["title"])
+		}
+		normalizedName := strings.ToLower(strings.TrimSpace(name))
+		isTarget := strings.Contains(normalizedName, "bang my box") || strings.Contains(normalizedName, "robyn bird") || strings.Contains(normalizedName, "robin byrd")
+		if !isTarget {
+			continue
+		}
+		posterURL := displayListNestedURL(titleMap["poster"])
+		textPosterURL := displayListNestedURL(titleMap["textPoster"])
+		backdropURL := displayListNestedURL(titleMap["backdrop"])
+		textBackdropURL := displayListNestedURL(titleMap["textBackdrop"])
+		log.Printf(
+			"[display-list][artwork] user=%s source=%s id=%s mediaType=%s name=%q year=%v target=%t poster=%t textPoster=%t backdrop=%t textBackdrop=%t tmdbId=%v tvdbId=%v imdbId=%v",
+			userID,
+			source,
+			displayListString(titleMap["id"]),
+			displayListString(titleMap["mediaType"]),
+			name,
+			titleMap["year"],
+			isTarget,
+			posterURL != "",
+			textPosterURL != "",
+			backdropURL != "",
+			textBackdropURL != "",
+			titleMap["tmdbId"],
+			titleMap["tvdbId"],
+			titleMap["imdbId"],
+		)
+	}
+}
+
+func displayListString(value interface{}) string {
+	if s, ok := value.(string); ok {
+		return s
+	}
+	return ""
+}
+
+func displayListNestedURL(value interface{}) string {
+	m, ok := value.(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	return displayListString(m["url"])
 }
