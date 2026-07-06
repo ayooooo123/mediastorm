@@ -65,6 +65,7 @@ type UnifiedProbeResult struct {
 	VideoCodec         string // e.g., "h264", "hevc", "mpeg4" - used to detect incompatible codecs
 	VideoPixFmt        string // e.g., "yuv420p", "yuv420p10le" - used for browser copy compatibility
 	VideoProfile       string // e.g., "High", "High 10" - used for browser copy compatibility
+	AvgFrameRate       string // e.g., "24000/1001" from primary video stream
 	AudioStreams       []audioStreamInfo
 	SubtitleStreams    []subtitleStreamInfo
 	HasTrueHD          bool
@@ -283,6 +284,7 @@ func (m *HLSManager) parseUnifiedProbeOutput(output []byte) (*UnifiedProbeResult
 			CodecName     string            `json:"codec_name"`
 			PixFmt        string            `json:"pix_fmt"`
 			Profile       string            `json:"profile"`
+			AvgFrameRate  string            `json:"avg_frame_rate"`
 			ColorTransfer string            `json:"color_transfer"`
 			Tags          map[string]string `json:"tags"`
 			Disposition   map[string]int    `json:"disposition"`
@@ -341,6 +343,7 @@ func (m *HLSManager) parseUnifiedProbeOutput(output []byte) (*UnifiedProbeResult
 				result.VideoCodec = codec
 				result.VideoPixFmt = strings.ToLower(strings.TrimSpace(stream.PixFmt))
 				result.VideoProfile = strings.ToLower(strings.TrimSpace(stream.Profile))
+				result.AvgFrameRate = strings.TrimSpace(stream.AvgFrameRate)
 			}
 			if result.ColorTransfer == "" {
 				result.ColorTransfer = stream.ColorTransfer

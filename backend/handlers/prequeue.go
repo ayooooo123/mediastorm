@@ -501,6 +501,7 @@ type VideoFullResult struct {
 	VideoCodec   string // e.g., "h264", "hevc", "mpeg4" - used to detect incompatible codecs
 	VideoPixFmt  string // e.g., "yuv420p", "yuv420p10le" - used for browser compatibility
 	VideoProfile string // e.g., "High", "High 10" - used for browser compatibility
+	AvgFrameRate string // e.g., "24000/1001" from primary video stream
 	// Audio codec detection
 	HasTrueHD          bool // Audio requires transcoding (TrueHD, DTS-HD, etc.)
 	HasCompatibleAudio bool // Audio can be copied without transcoding
@@ -1046,6 +1047,7 @@ type adoptedMigrationMetadata struct {
 	dolbyVisionProfile string
 	hasTrueHD          bool
 	duration           float64
+	avgFrameRate       string
 }
 
 func (h *PrequeueHandler) refreshAdoptedMigrationMetadata(prequeueID, streamPath string) {
@@ -1086,6 +1088,7 @@ func (h *PrequeueHandler) refreshAdoptedMigrationMetadata(prequeueID, streamPath
 		if metadata.duration > 0 {
 			e.Duration = metadata.duration
 		}
+		e.FrameRate = metadata.avgFrameRate
 		e.HasDolbyVision = metadata.hasDolbyVision
 		e.HasHDR10 = metadata.hasHDR10
 		e.DolbyVisionProfile = metadata.dolbyVisionProfile
@@ -1117,6 +1120,7 @@ func (h *PrequeueHandler) probeAdoptedMigrationMetadata(ctx context.Context, str
 			metadata.dolbyVisionProfile = fullResult.DolbyVisionProfile
 			metadata.hasTrueHD = fullResult.HasTrueHD
 			metadata.duration = fullResult.Duration
+			metadata.avgFrameRate = fullResult.AvgFrameRate
 		}
 		return metadata, nil
 	}
@@ -1786,6 +1790,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 		var hasDV, hasHDR10 bool
 		var hasTrueHD, hasCompatibleAudio bool
 		var dvProfile string
+		var avgFrameRate string
 
 		// Reuse cached probe result if we already probed during DV check
 		var duration float64
@@ -1798,6 +1803,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 			hasTrueHD = cachedProbeResult.HasTrueHD
 			hasCompatibleAudio = cachedProbeResult.HasCompatibleAudio
 			duration = cachedProbeResult.Duration
+			avgFrameRate = cachedProbeResult.AvgFrameRate
 			log.Printf("[prequeue] Using cached probe result: DV=%v HDR10=%v TrueHD=%v compatAudio=%v audioStreams=%d subStreams=%d duration=%.2fs",
 				hasDV, hasHDR10, hasTrueHD, hasCompatibleAudio, len(audioStreams), len(subtitleStreams), duration)
 		} else if cachedMetadataResult != nil {
@@ -1818,6 +1824,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 				hasTrueHD = fullResult.HasTrueHD
 				hasCompatibleAudio = fullResult.HasCompatibleAudio
 				duration = fullResult.Duration
+				avgFrameRate = fullResult.AvgFrameRate
 				log.Printf("[prequeue] Unified probe: DV=%v HDR10=%v TrueHD=%v compatAudio=%v audioStreams=%d subStreams=%d duration=%.2fs",
 					hasDV, hasHDR10, hasTrueHD, hasCompatibleAudio, len(audioStreams), len(subtitleStreams), duration)
 			}
@@ -1893,6 +1900,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 			if duration > 0 {
 				e.Duration = duration
 			}
+			e.FrameRate = avgFrameRate
 		})
 
 		// Store audio/subtitle track info for UI display
