@@ -645,65 +645,132 @@ func (c *TorboxClient) clearDownloadingTorrents(ctx context.Context) (int, error
 
 // CheckInstantAvailability checks if a torrent hash is cached on Torbox.
 func (c *TorboxClient) CheckInstantAvailability(ctx context.Context, infoHash string) (bool, error) {
+	results, err := c.CheckInstantAvailabilityBulk(ctx, []string{infoHash})
+	if err != nil {
+		return false, err
+	}
+	return results[strings.ToLower(strings.TrimSpace(infoHash))], nil
+}
+
+// CheckInstantAvailabilityBulk checks if torrent hashes are cached on Torbox.
+func (c *TorboxClient) CheckInstantAvailabilityBulk(ctx context.Context, infoHashes []string) (map[string]bool, error) {
 	if c.apiKey == "" {
-		return false, fmt.Errorf("torbox API key not configured")
+		return nil, fmt.Errorf("torbox API key not configured")
 	}
 
-	normalizedHash := strings.ToLower(strings.TrimSpace(infoHash))
-	if normalizedHash == "" {
-		return false, fmt.Errorf("info hash is required")
+	normalizedHashes := make([]string, 0, len(infoHashes))
+	seen := make(map[string]bool, len(infoHashes))
+	for _, infoHash := range infoHashes {
+		normalizedHash := strings.ToLower(strings.TrimSpace(infoHash))
+		if normalizedHash == "" || seen[normalizedHash] {
+			continue
+		}
+		seen[normalizedHash] = true
+		normalizedHashes = append(normalizedHashes, normalizedHash)
+	}
+	if len(normalizedHashes) == 0 {
+		return map[string]bool{}, fmt.Errorf("info hash is required")
 	}
 
-	endpoint := fmt.Sprintf("%s/torrents/checkcached?hash=%s&list_files=true", c.baseURL, normalizedHash)
+	values := url.Values{}
+	values.Set("hash", strings.Join(normalizedHashes, ","))
+	values.Set("list_files", "true")
+	endpoint := fmt.Sprintf("%s/torrents/checkcached?%s", c.baseURL, values.Encode())
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return false, fmt.Errorf("build check cached request: %w", err)
+		return nil, fmt.Errorf("build check cached request: %w", err)
 	}
 
 	resp, err := c.doRequest(req)
 	if err != nil {
-		return false, fmt.Errorf("check cached request failed: %w", err)
+		return nil, fmt.Errorf("check cached request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return false, fmt.Errorf("torbox authentication failed: invalid API key")
+		return nil, fmt.Errorf("torbox authentication failed: invalid API key")
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return false, fmt.Errorf("read response body: %w", err)
+		return nil, fmt.Errorf("read response body: %w", err)
 	}
 
-	// checkcached returns an array of cached items
-	var result torboxResponse[[]torboxCachedItem]
-	if err := json.Unmarshal(body, &result); err != nil {
-		// Try parsing as empty object (returned when not cached)
-		var emptyResult torboxResponse[interface{}]
-		if err2 := json.Unmarshal(body, &emptyResult); err2 == nil {
-			if emptyResult.Success {
-				log.Printf("[torbox] instant availability: hash %s not cached (empty response)", normalizedHash)
-				return false, nil
-			}
+	cachedHashes, detail, err := parseTorboxCheckCachedResponse(body)
+	if err != nil {
+		return nil, err
+	}
+
+	if detail != "" {
+		// Not an error, just not cached
+		log.Printf("[torbox] instant availability check failed: %s", detail)
+		return map[string]bool{}, nil
+	}
+
+	results := make(map[string]bool, len(normalizedHashes))
+	for _, normalizedHash := range normalizedHashes {
+		if cachedHashes[normalizedHash] {
+			log.Printf("[torbox] instant availability: hash %s is CACHED", normalizedHash)
+			results[normalizedHash] = true
+		} else {
+			log.Printf("[torbox] instant availability: hash %s not cached", normalizedHash)
+			results[normalizedHash] = false
 		}
-		return false, fmt.Errorf("decode check cached response: %w (body: %s)", err, string(body))
+	}
+	return results, nil
+}
+
+func parseTorboxCheckCachedResponse(body []byte) (map[string]bool, string, error) {
+	var result torboxResponse[json.RawMessage]
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, "", fmt.Errorf("decode check cached response: %w (body: %s)", err, string(body))
 	}
 
 	if !result.Success {
-		// Not an error, just not cached
-		log.Printf("[torbox] instant availability: hash %s check failed: %s", normalizedHash, result.Detail)
-		return false, nil
+		return map[string]bool{}, result.Detail, nil
 	}
 
-	// Check if any items match our hash
-	for _, item := range result.Data {
-		if strings.EqualFold(item.Hash, normalizedHash) {
-			log.Printf("[torbox] instant availability: hash %s is CACHED", normalizedHash)
-			return true, nil
+	cachedHashes := make(map[string]bool)
+	if len(result.Data) == 0 || string(result.Data) == "null" {
+		return cachedHashes, "", nil
+	}
+
+	var keyed map[string]torboxCachedItem
+	if err := json.Unmarshal(result.Data, &keyed); err == nil {
+		for key, item := range keyed {
+			hash := strings.ToLower(strings.TrimSpace(item.Hash))
+			if hash == "" {
+				hash = strings.ToLower(strings.TrimSpace(key))
+			}
+			if hash != "" {
+				cachedHashes[hash] = true
+			}
 		}
+		return cachedHashes, "", nil
 	}
 
-	log.Printf("[torbox] instant availability: hash %s not cached", normalizedHash)
-	return false, nil
+	var listed []torboxCachedItem
+	if err := json.Unmarshal(result.Data, &listed); err == nil {
+		for _, item := range listed {
+			hash := strings.ToLower(strings.TrimSpace(item.Hash))
+			if hash != "" {
+				cachedHashes[hash] = true
+			}
+		}
+		return cachedHashes, "", nil
+	}
+
+	var generic map[string]interface{}
+	if err := json.Unmarshal(result.Data, &generic); err == nil {
+		for key := range generic {
+			hash := strings.ToLower(strings.TrimSpace(key))
+			if hash != "" {
+				cachedHashes[hash] = true
+			}
+		}
+		return cachedHashes, "", nil
+	}
+
+	return nil, "", fmt.Errorf("decode check cached data: unsupported response shape (body: %s)", string(body))
 }

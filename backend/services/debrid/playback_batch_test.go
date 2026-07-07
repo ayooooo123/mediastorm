@@ -12,16 +12,19 @@ import (
 
 // mockProvider is a minimal Provider implementation that counts API calls.
 type mockProvider struct {
-	name            string
-	addMagnetCalls  int64
-	getInfoCalls    int64
-	selectCalls     int64
-	deleteCalls     int64
-	files           []File   // files returned by GetTorrentInfo
-	links           []string // links returned after selection
-	status          string   // torrent status (e.g. "downloaded")
-	torrentFilename string
-	unrestrictErr   error
+	name             string
+	addMagnetCalls   int64
+	instantCalls     int64
+	instantCached    bool
+	instantCachedSet bool
+	getInfoCalls     int64
+	selectCalls      int64
+	deleteCalls      int64
+	files            []File   // files returned by GetTorrentInfo
+	links            []string // links returned after selection
+	status           string   // torrent status (e.g. "downloaded")
+	torrentFilename  string
+	unrestrictErr    error
 }
 
 func (m *mockProvider) Name() string { return m.name }
@@ -57,7 +60,11 @@ func (m *mockProvider) UnrestrictLink(_ context.Context, link string) (*Unrestri
 	return &UnrestrictResult{DownloadURL: link}, nil
 }
 func (m *mockProvider) CheckInstantAvailability(_ context.Context, _ string) (bool, error) {
-	return true, nil
+	atomic.AddInt64(&m.instantCalls, 1)
+	if !m.instantCachedSet {
+		return true, nil
+	}
+	return m.instantCached, nil
 }
 
 func newTestPlaybackService(t *testing.T, mock *mockProvider) *PlaybackService {
@@ -77,6 +84,120 @@ func newTestPlaybackService(t *testing.T, mock *mockProvider) *PlaybackService {
 	// Register the mock provider so GetProvider finds it
 	RegisterProvider(mock.name, func(apiKey string) Provider { return mock })
 	return NewPlaybackService(mgr, nil)
+}
+
+func newTestPlaybackServiceWithProviders(t *testing.T, providers []config.DebridProviderSettings) *PlaybackService {
+	t.Helper()
+	tmpDir := t.TempDir()
+	mgr := config.NewManager(tmpDir + "/settings.json")
+	err := mgr.Save(config.Settings{
+		Streaming: config.StreamingSettings{
+			DebridProviders: providers,
+		},
+	})
+	if err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	return NewPlaybackService(mgr, nil)
+}
+
+func TestResolveSingleTorboxQuickUncachedSkipsAdd(t *testing.T) {
+	mock := &mockProvider{
+		name:             "torbox",
+		instantCached:    false,
+		instantCachedSet: true,
+	}
+	RegisterProvider("torbox", func(apiKey string) Provider { return mock })
+	svc := newTestPlaybackServiceWithProviders(t, []config.DebridProviderSettings{
+		{Provider: "torbox", APIKey: "test-key", Enabled: true},
+	})
+
+	_, err := svc.Resolve(context.Background(), models.NZBResult{
+		Title:       "Uncached.Movie.2025.1080p",
+		Link:        "magnet:?xt=urn:btih:abcdef1234567890",
+		ServiceType: models.ServiceTypeDebrid,
+	})
+	if err == nil {
+		t.Fatal("expected uncached error")
+	}
+	if got := atomic.LoadInt64(&mock.instantCalls); got != 1 {
+		t.Fatalf("instant calls = %d, want 1", got)
+	}
+	if got := atomic.LoadInt64(&mock.addMagnetCalls); got != 0 {
+		t.Fatalf("add magnet calls = %d, want 0", got)
+	}
+}
+
+func TestResolveSingleTorboxQuickCachedContinuesToResolve(t *testing.T) {
+	mock := &mockProvider{
+		name:             "torbox",
+		instantCached:    true,
+		instantCachedSet: true,
+		status:           "downloaded",
+		torrentFilename:  "Cached.Movie.2025.1080p",
+		files: []File{
+			{ID: 1, Path: "Cached.Movie.2025.1080p.mkv", Bytes: 1_000_000, Selected: 1},
+		},
+		links: []string{"1:1"},
+	}
+	RegisterProvider("torbox", func(apiKey string) Provider { return mock })
+	svc := newTestPlaybackServiceWithProviders(t, []config.DebridProviderSettings{
+		{Provider: "torbox", APIKey: "test-key", Enabled: true},
+	})
+
+	res, err := svc.Resolve(context.Background(), models.NZBResult{
+		Title:       "Cached.Movie.2025.1080p",
+		Link:        "magnet:?xt=urn:btih:abcdef1234567890",
+		ServiceType: models.ServiceTypeDebrid,
+	})
+	if err != nil {
+		t.Fatalf("Resolve error: %v", err)
+	}
+	if res == nil || res.WebDAVPath == "" {
+		t.Fatalf("expected resolution with WebDAV path, got %+v", res)
+	}
+	if got := atomic.LoadInt64(&mock.instantCalls); got != 1 {
+		t.Fatalf("instant calls = %d, want 1", got)
+	}
+	if got := atomic.LoadInt64(&mock.addMagnetCalls); got != 1 {
+		t.Fatalf("add magnet calls = %d, want 1", got)
+	}
+}
+
+func TestResolveMultipleProvidersDoesNotUseTorboxQuickShortcut(t *testing.T) {
+	torboxMock := &mockProvider{
+		name:             "torbox",
+		instantCached:    false,
+		instantCachedSet: true,
+	}
+	otherMock := &mockProvider{
+		name:            "testprovider_multi_quick",
+		instantCached:   true,
+		status:          "downloaded",
+		torrentFilename: "Cached.Movie.2025.1080p",
+		files: []File{
+			{ID: 1, Path: "Cached.Movie.2025.1080p.mkv", Bytes: 1_000_000, Selected: 1},
+		},
+		links: []string{"https://download.example.com/file.mkv"},
+	}
+	RegisterProvider("torbox", func(apiKey string) Provider { return torboxMock })
+	RegisterProvider(otherMock.name, func(apiKey string) Provider { return otherMock })
+	svc := newTestPlaybackServiceWithProviders(t, []config.DebridProviderSettings{
+		{Provider: "torbox", APIKey: "torbox-key", Enabled: true},
+		{Provider: otherMock.name, APIKey: "other-key", Enabled: true},
+	})
+
+	_, err := svc.Resolve(context.Background(), models.NZBResult{
+		Title:       "Cached.Movie.2025.1080p",
+		Link:        "magnet:?xt=urn:btih:abcdef1234567890",
+		ServiceType: models.ServiceTypeDebrid,
+	})
+	if err != nil {
+		t.Fatalf("Resolve error: %v", err)
+	}
+	if got := atomic.LoadInt64(&torboxMock.instantCalls); got != 0 {
+		t.Fatalf("torbox instant calls = %d, want 0", got)
+	}
 }
 
 func TestResolveBatch_AddMagnetCalledOnce(t *testing.T) {

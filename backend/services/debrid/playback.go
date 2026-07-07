@@ -433,6 +433,17 @@ func (s *PlaybackService) resolveSingleProvider(
 		return nil, fmt.Errorf("provider %q not registered", providerConfig.Provider)
 	}
 
+	if shouldUseQuickTorboxCacheCheck(settings.Streaming.DebridProviders, providerConfig, explicitProvider, infoHash) {
+		cached, err := client.CheckInstantAvailability(ctx, infoHash)
+		if err != nil {
+			return nil, fmt.Errorf("torbox quick cache check: %w", err)
+		}
+		log.Printf("[debrid-playback] torbox quick cache check hash=%s cached=%t", infoHash, cached)
+		if !cached {
+			return nil, fmt.Errorf("torrent not cached on torbox")
+		}
+	}
+
 	return s.resolveWithProvider(ctx, client, candidate, infoHash, torrentURL)
 }
 
@@ -657,6 +668,22 @@ func logSelectedFileDetails(files []File, selection *mediaFileSelection) {
 func (s *PlaybackService) CheckHealthQuick(ctx context.Context, candidate models.NZBResult) (*DebridHealthCheck, error) {
 	// Quick check - don't verify by adding
 	return s.healthService.CheckHealth(ctx, candidate, false)
+}
+
+// CheckHealthFull verifies cache status by allowing provider add/check probing.
+func (s *PlaybackService) CheckHealthFull(ctx context.Context, candidate models.NZBResult) (*DebridHealthCheck, error) {
+	return s.healthService.CheckHealth(ctx, candidate, true)
+}
+
+// CheckQuickCacheOnly performs only provider-native instant cache checks.
+// It never adds/removes torrents and returns status=skipped when unavailable.
+func (s *PlaybackService) CheckQuickCacheOnly(ctx context.Context, candidate models.NZBResult) (*DebridHealthCheck, error) {
+	return s.healthService.CheckQuickCacheOnly(ctx, candidate)
+}
+
+// CheckQuickCacheOnlyBulk performs safe quick cache checks for multiple candidates.
+func (s *PlaybackService) CheckQuickCacheOnlyBulk(ctx context.Context, candidates []models.NZBResult) ([]*DebridHealthCheck, error) {
+	return s.healthService.CheckQuickCacheOnlyBulk(ctx, candidates)
 }
 
 // FilterCachedResults filters a list of results to only include cached debrid items.

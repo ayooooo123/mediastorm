@@ -347,6 +347,8 @@ func Register(
 	protected.HandleFunc("/debrid/proxy", debridHandler.Options).Methods(http.MethodOptions)
 	protected.HandleFunc("/debrid/cached", debridHandler.CheckCached).Methods(http.MethodPost)
 	protected.HandleFunc("/debrid/cached", debridHandler.Options).Methods(http.MethodOptions)
+	protected.HandleFunc("/debrid/cached/bulk", debridHandler.CheckCachedBulk).Methods(http.MethodPost)
+	protected.HandleFunc("/debrid/cached/bulk", debridHandler.Options).Methods(http.MethodOptions)
 
 	protected.HandleFunc("/live/playlist", liveHandler.FetchPlaylist).Methods(http.MethodGet)
 	protected.HandleFunc("/live/playlist", handleOptions).Methods(http.MethodOptions)
