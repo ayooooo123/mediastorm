@@ -38,6 +38,12 @@ type Provider interface {
 	CheckInstantAvailability(ctx context.Context, infoHash string) (bool, error)
 }
 
+// InstantAvailabilityBulkProvider is implemented by providers that can check
+// multiple info hashes in a single provider API request.
+type InstantAvailabilityBulkProvider interface {
+	CheckInstantAvailabilityBulk(ctx context.Context, infoHashes []string) (map[string]bool, error)
+}
+
 // Configurable is an optional interface for providers that support runtime configuration.
 type Configurable interface {
 	// Configure sets provider-specific options from a config map.

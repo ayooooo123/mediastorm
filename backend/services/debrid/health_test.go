@@ -58,6 +58,124 @@ func TestExtractInfoHashFromMagnet(t *testing.T) {
 	}
 }
 
+func TestShouldUseQuickTorboxCacheCheck(t *testing.T) {
+	torbox := config.DebridProviderSettings{
+		Name:     "Torbox",
+		Provider: "torbox",
+		APIKey:   "tb-key",
+		Enabled:  true,
+	}
+	realDebrid := config.DebridProviderSettings{
+		Name:     "Real-Debrid",
+		Provider: "realdebrid",
+		APIKey:   "rd-key",
+		Enabled:  true,
+	}
+
+	tests := []struct {
+		name              string
+		providers         []config.DebridProviderSettings
+		selected          *config.DebridProviderSettings
+		requestedProvider string
+		infoHash          string
+		want              bool
+	}{
+		{
+			name:      "single enabled torbox provider with hash",
+			providers: []config.DebridProviderSettings{torbox},
+			selected:  &torbox,
+			infoHash:  "abcdef1234567890",
+			want:      true,
+		},
+		{
+			name:      "missing hash cannot use quick check",
+			providers: []config.DebridProviderSettings{torbox},
+			selected:  &torbox,
+			want:      false,
+		},
+		{
+			name:      "multiple enabled providers use full verification",
+			providers: []config.DebridProviderSettings{torbox, realDebrid},
+			selected:  &torbox,
+			infoHash:  "abcdef1234567890",
+			want:      false,
+		},
+		{
+			name:              "explicit non torbox provider uses full verification",
+			providers:         []config.DebridProviderSettings{torbox},
+			selected:          &torbox,
+			requestedProvider: "realdebrid",
+			infoHash:          "abcdef1234567890",
+			want:              false,
+		},
+		{
+			name:      "selected non torbox provider uses full verification",
+			providers: []config.DebridProviderSettings{realDebrid},
+			selected:  &realDebrid,
+			infoHash:  "abcdef1234567890",
+			want:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shouldUseQuickTorboxCacheCheck(tt.providers, tt.selected, tt.requestedProvider, tt.infoHash)
+			if got != tt.want {
+				t.Fatalf("shouldUseQuickTorboxCacheCheck() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCheckQuickCacheOnlySkipsWhenNoSafeInstantPath(t *testing.T) {
+	cfg := config.NewManager(t.TempDir() + "/settings.json")
+	settings := config.DefaultSettings()
+	settings.Streaming.DebridProviders = []config.DebridProviderSettings{
+		{
+			Name:     "Real-Debrid",
+			Provider: "realdebrid",
+			APIKey:   "rd-key",
+			Enabled:  true,
+		},
+	}
+	if err := cfg.Save(settings); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	hs := NewHealthService(cfg)
+	health, err := hs.CheckQuickCacheOnly(context.Background(), models.NZBResult{
+		Title:       "Example",
+		Link:        "magnet:?xt=urn:btih:abcdef1234567890",
+		ServiceType: models.ServiceTypeDebrid,
+		Attributes: map[string]string{
+			"infoHash": "abcdef1234567890",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CheckQuickCacheOnly returned error: %v", err)
+	}
+	if health.Status != "skipped" || health.Cached || health.Healthy {
+		t.Fatalf("expected skipped quick-only health, got %#v", health)
+	}
+}
+
+func TestQuickCacheDedupKeyUsesProviderAndInfoHash(t *testing.T) {
+	result := models.NZBResult{
+		Link: "magnet:?xt=urn:btih:ABCDEF1234567890&dn=Example",
+		Attributes: map[string]string{
+			"provider": "TorBox",
+		},
+	}
+	if got, want := quickCacheDedupKey(result), "torbox:abcdef1234567890"; got != want {
+		t.Fatalf("quickCacheDedupKey() = %q, want %q", got, want)
+	}
+
+	result.Attributes["infoHash"] = "FEDCBA0987654321"
+	if got, want := quickCacheDedupKey(result), "torbox:fedcba0987654321"; got != want {
+		t.Fatalf("quickCacheDedupKey() with attribute hash = %q, want %q", got, want)
+	}
+}
+
 func TestActiveTorrentTracking(t *testing.T) {
 	hs := NewHealthService(nil)
 

@@ -214,6 +214,211 @@ type SubtitleTrackInfo struct {
 // For Real-Debrid, this checks instant availability.
 // For uncached items, we optionally add+check+remove to verify.
 func (s *HealthService) CheckHealth(ctx context.Context, result models.NZBResult, verifyUncached bool) (*DebridHealthCheck, error) {
+	return s.checkHealth(ctx, result, verifyUncached, false)
+}
+
+// CheckQuickCacheOnly checks cache state only when it can be done without adding
+// or removing torrents. It returns status=skipped when no safe quick path exists.
+func (s *HealthService) CheckQuickCacheOnly(ctx context.Context, result models.NZBResult) (*DebridHealthCheck, error) {
+	return s.checkHealth(ctx, result, false, true)
+}
+
+// CheckQuickCacheOnlyBulk checks cache state for multiple results without adding
+// or removing torrents. Duplicate info hashes are checked once.
+func (s *HealthService) CheckQuickCacheOnlyBulk(ctx context.Context, results []models.NZBResult) ([]*DebridHealthCheck, error) {
+	out := make([]*DebridHealthCheck, len(results))
+	if len(results) == 0 {
+		return out, nil
+	}
+	if s.cfg == nil {
+		return nil, fmt.Errorf("health service not configured")
+	}
+
+	settings, err := s.cfg.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load settings: %w", err)
+	}
+	if out, ok := s.checkQuickTorboxCacheOnlyBulk(ctx, settings, results); ok {
+		return out, nil
+	}
+
+	type workItem struct {
+		index int
+		key   string
+	}
+
+	byKey := make(map[string][]int)
+	var ordered []workItem
+	for i, result := range results {
+		key := quickCacheDedupKey(result)
+		if key == "" {
+			ordered = append(ordered, workItem{index: i})
+			continue
+		}
+		if _, ok := byKey[key]; !ok {
+			ordered = append(ordered, workItem{index: i, key: key})
+		}
+		byKey[key] = append(byKey[key], i)
+	}
+
+	var mu sync.Mutex
+	queue := make(chan workItem)
+	workerCount := 4
+	if len(ordered) < workerCount {
+		workerCount = len(ordered)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for item := range queue {
+				health, err := s.CheckQuickCacheOnly(ctx, results[item.index])
+				if err != nil {
+					health = &DebridHealthCheck{
+						Healthy:      false,
+						Status:       "error",
+						Cached:       false,
+						ErrorMessage: err.Error(),
+					}
+				}
+				mu.Lock()
+				if item.key != "" {
+					for _, idx := range byKey[item.key] {
+						copied := cloneDebridHealthCheck(*health)
+						out[idx] = &copied
+					}
+				} else {
+					out[item.index] = health
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+
+	for _, item := range ordered {
+		select {
+		case <-ctx.Done():
+			close(queue)
+			wg.Wait()
+			return out, ctx.Err()
+		case queue <- item:
+		}
+	}
+	close(queue)
+	wg.Wait()
+
+	for i := range out {
+		if out[i] == nil {
+			out[i] = &DebridHealthCheck{
+				Healthy:      false,
+				Status:       "skipped",
+				Cached:       false,
+				ErrorMessage: "quick cache check did not run",
+			}
+		}
+	}
+	return out, nil
+}
+
+func (s *HealthService) checkQuickTorboxCacheOnlyBulk(ctx context.Context, settings config.Settings, results []models.NZBResult) ([]*DebridHealthCheck, bool) {
+	var providerConfig *config.DebridProviderSettings
+	for i := range settings.Streaming.DebridProviders {
+		p := &settings.Streaming.DebridProviders[i]
+		if p.Enabled && strings.TrimSpace(p.APIKey) != "" && strings.EqualFold(p.Provider, "torbox") {
+			providerConfig = p
+			break
+		}
+	}
+	if !shouldUseQuickTorboxCacheCheck(settings.Streaming.DebridProviders, providerConfig, "", "bulk") {
+		return nil, false
+	}
+
+	client, ok := GetProvider("torbox", providerConfig.APIKey)
+	if !ok {
+		return nil, false
+	}
+	bulkClient, ok := client.(InstantAvailabilityBulkProvider)
+	if !ok {
+		return nil, false
+	}
+
+	out := make([]*DebridHealthCheck, len(results))
+	hashIndexes := make(map[string][]int)
+	hashes := make([]string, 0, len(results))
+	for i, result := range results {
+		provider := strings.TrimSpace(result.Attributes["provider"])
+		infoHash := quickCacheInfoHash(result)
+		if result.Attributes["preresolved"] == "true" {
+			out[i] = &DebridHealthCheck{
+				Healthy:      false,
+				Status:       "skipped",
+				Cached:       false,
+				Provider:     result.Attributes["tracker"],
+				ErrorMessage: "quick cache check unavailable for pre-resolved streams",
+			}
+			continue
+		}
+		if !shouldUseQuickTorboxCacheCheck(settings.Streaming.DebridProviders, providerConfig, provider, infoHash) {
+			out[i] = &DebridHealthCheck{
+				Healthy:      false,
+				Status:       "skipped",
+				Cached:       false,
+				Provider:     client.Name(),
+				InfoHash:     infoHash,
+				ErrorMessage: "quick cache check unavailable for current debrid provider settings",
+			}
+			continue
+		}
+		if _, ok := hashIndexes[infoHash]; !ok {
+			hashes = append(hashes, infoHash)
+		}
+		hashIndexes[infoHash] = append(hashIndexes[infoHash], i)
+	}
+
+	if len(hashes) == 0 {
+		return out, true
+	}
+
+	cachedByHash, err := bulkClient.CheckInstantAvailabilityBulk(ctx, hashes)
+	if err != nil {
+		for _, indexes := range hashIndexes {
+			for _, index := range indexes {
+				out[index] = &DebridHealthCheck{
+					Healthy:      false,
+					Status:       "error",
+					Cached:       false,
+					Provider:     client.Name(),
+					InfoHash:     quickCacheInfoHash(results[index]),
+					ErrorMessage: fmt.Sprintf("quick cache check failed: %v", err),
+				}
+			}
+		}
+		return out, true
+	}
+
+	for _, hash := range hashes {
+		cached := cachedByHash[strings.ToLower(hash)]
+		status := "not_cached"
+		if cached {
+			status = "cached"
+		}
+		log.Printf("[debrid-health] %s bulk quick cache check hash=%s cached=%t", client.Name(), hash, cached)
+		for _, index := range hashIndexes[hash] {
+			out[index] = &DebridHealthCheck{
+				Healthy:  cached,
+				Status:   status,
+				Cached:   cached,
+				Provider: client.Name(),
+				InfoHash: hash,
+			}
+		}
+	}
+
+	return out, true
+}
+
+func (s *HealthService) checkHealth(ctx context.Context, result models.NZBResult, verifyUncached, quickOnly bool) (*DebridHealthCheck, error) {
 	if s.cfg == nil {
 		return nil, fmt.Errorf("health service not configured")
 	}
@@ -222,6 +427,16 @@ func (s *HealthService) CheckHealth(ctx context.Context, result models.NZBResult
 		return nil, fmt.Errorf("load settings: %w", err)
 	}
 	healthCheckTimeout := debridHealthCheckTimeout(settings)
+
+	if quickOnly && result.Attributes["preresolved"] == "true" {
+		return &DebridHealthCheck{
+			Healthy:      false,
+			Status:       "skipped",
+			Cached:       false,
+			Provider:     result.Attributes["tracker"],
+			ErrorMessage: "quick cache check unavailable for pre-resolved streams",
+		}, nil
+	}
 
 	// Check if this is a pre-resolved stream (e.g., from AIOStreams)
 	// Pre-resolved streams need to be probed to check if they're actually cached
@@ -431,9 +646,13 @@ func (s *HealthService) CheckHealth(ctx context.Context, result models.NZBResult
 	// We need either infohash/magnet or torrent URL
 	hasMagnet := strings.HasPrefix(strings.ToLower(result.Link), "magnet:")
 	if infoHash == "" && !hasMagnet && torrentURL == "" {
+		status := "error"
+		if quickOnly {
+			status = "skipped"
+		}
 		return &DebridHealthCheck{
 			Healthy:      false,
-			Status:       "error",
+			Status:       status,
 			Cached:       false,
 			ErrorMessage: "missing info hash and no torrent URL available",
 		}, nil
@@ -485,7 +704,82 @@ func (s *HealthService) CheckHealth(ctx context.Context, result models.NZBResult
 		}, nil
 	}
 
+	if !verifyUncached && shouldUseQuickTorboxCacheCheck(settings.Streaming.DebridProviders, providerConfig, provider, infoHash) {
+		cached, err := client.CheckInstantAvailability(ctx, infoHash)
+		if err != nil {
+			return &DebridHealthCheck{
+				Healthy:      false,
+				Status:       "error",
+				Cached:       false,
+				Provider:     client.Name(),
+				InfoHash:     infoHash,
+				ErrorMessage: fmt.Sprintf("quick cache check failed: %v", err),
+			}, nil
+		}
+
+		status := "not_cached"
+		if cached {
+			status = "cached"
+		}
+		log.Printf("[debrid-health] %s quick cache check hash=%s cached=%t", client.Name(), infoHash, cached)
+		return &DebridHealthCheck{
+			Healthy:  cached,
+			Status:   status,
+			Cached:   cached,
+			Provider: client.Name(),
+			InfoHash: infoHash,
+		}, nil
+	}
+
+	if quickOnly {
+		return &DebridHealthCheck{
+			Healthy:      false,
+			Status:       "skipped",
+			Cached:       false,
+			Provider:     client.Name(),
+			InfoHash:     infoHash,
+			ErrorMessage: "quick cache check unavailable for current debrid provider settings",
+		}, nil
+	}
+
 	return s.checkProviderHealth(ctx, client, result, infoHash, torrentURL, verifyUncached)
+}
+
+func shouldUseQuickTorboxCacheCheck(providers []config.DebridProviderSettings, selected *config.DebridProviderSettings, requestedProvider, infoHash string) bool {
+	if selected == nil || strings.TrimSpace(infoHash) == "" {
+		return false
+	}
+	if requestedProvider != "" && !strings.EqualFold(requestedProvider, "torbox") {
+		return false
+	}
+	if !strings.EqualFold(selected.Provider, "torbox") {
+		return false
+	}
+
+	enabledWithKeys := 0
+	for _, p := range providers {
+		if p.Enabled && strings.TrimSpace(p.APIKey) != "" {
+			enabledWithKeys++
+		}
+	}
+	return enabledWithKeys == 1
+}
+
+func quickCacheDedupKey(result models.NZBResult) string {
+	provider := strings.ToLower(strings.TrimSpace(result.Attributes["provider"]))
+	infoHash := quickCacheInfoHash(result)
+	if infoHash == "" {
+		return ""
+	}
+	return provider + ":" + infoHash
+}
+
+func quickCacheInfoHash(result models.NZBResult) string {
+	infoHash := strings.ToLower(strings.TrimSpace(result.Attributes["infoHash"]))
+	if infoHash == "" && strings.HasPrefix(strings.ToLower(result.Link), "magnet:") {
+		infoHash = extractInfoHashFromMagnet(result.Link)
+	}
+	return infoHash
 }
 
 func debridHealthCheckTimeout(settings config.Settings) time.Duration {

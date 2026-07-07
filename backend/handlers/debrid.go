@@ -21,6 +21,9 @@ type debridProxyService interface {
 
 type debridHealthService interface {
 	CheckHealthQuick(ctx context.Context, candidate models.NZBResult) (*debrid.DebridHealthCheck, error)
+	CheckHealthFull(ctx context.Context, candidate models.NZBResult) (*debrid.DebridHealthCheck, error)
+	CheckQuickCacheOnly(ctx context.Context, candidate models.NZBResult) (*debrid.DebridHealthCheck, error)
+	CheckQuickCacheOnlyBulk(ctx context.Context, candidates []models.NZBResult) ([]*debrid.DebridHealthCheck, error)
 }
 
 // DebridHandler proxies content from configured debrid providers to the frontend.
@@ -134,7 +137,9 @@ func (h *DebridHandler) CheckCached(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var request struct {
-		Result models.NZBResult `json:"result"`
+		Result         models.NZBResult `json:"result"`
+		QuickOnly      bool             `json:"quickOnly"`
+		VerifyUncached bool             `json:"verifyUncached"`
 	}
 
 	dec := json.NewDecoder(r.Body)
@@ -143,7 +148,44 @@ func (h *DebridHandler) CheckCached(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := h.healthService.CheckHealthQuick(r.Context(), request.Result)
+	var (
+		res *debrid.DebridHealthCheck
+		err error
+	)
+	if request.QuickOnly {
+		res, err = h.healthService.CheckQuickCacheOnly(r.Context(), request.Result)
+	} else if request.VerifyUncached {
+		res, err = h.healthService.CheckHealthFull(r.Context(), request.Result)
+	} else {
+		res, err = h.healthService.CheckHealthQuick(r.Context(), request.Result)
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(res)
+}
+
+// CheckCachedBulk accepts debrid results and returns safe quick cache status for each item.
+func (h *DebridHandler) CheckCachedBulk(w http.ResponseWriter, r *http.Request) {
+	if h.healthService == nil {
+		http.Error(w, "debrid health service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	var request struct {
+		Results []models.NZBResult `json:"results"`
+	}
+
+	dec := json.NewDecoder(r.Body)
+	if err := dec.Decode(&request); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	res, err := h.healthService.CheckQuickCacheOnlyBulk(r.Context(), request.Results)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
