@@ -205,3 +205,81 @@ func TestUsenetHandlerProbeForTracksNoProber(t *testing.T) {
 		t.Fatalf("expected trackProbeError to be set when prober is not configured")
 	}
 }
+
+type fakeUsenetProbeMetadata struct {
+	files   map[string][]string
+	subdirs map[string][]string
+}
+
+func (f fakeUsenetProbeMetadata) ListDirectory(virtualPath string) ([]string, error) {
+	return append([]string(nil), f.files[virtualPath]...), nil
+}
+
+func (f fakeUsenetProbeMetadata) ListSubdirectories(virtualPath string) ([]string, error) {
+	return append([]string(nil), f.subdirs[virtualPath]...), nil
+}
+
+func TestUsenetTrackProberResolvesDirectoryToTargetEpisode(t *testing.T) {
+	prober := &usenetTrackProber{
+		metadata: fakeUsenetProbeMetadata{
+			files: map[string][]string{
+				"/virtual/Show.S01": {
+					"Show.S01E01.mkv",
+					"Show.S01E02.mkv",
+					"Show.S01E02.sample.mkv",
+				},
+			},
+			subdirs: map[string][]string{},
+		},
+	}
+
+	path, err := prober.resolveProbeMediaPath(models.NZBResult{
+		Title: "Show S01",
+		GUID:  "show-season-pack",
+		Attributes: map[string]string{
+			"targetSeason":  "1",
+			"targetEpisode": "2",
+		},
+	}, "/virtual/Show.S01")
+	if err != nil {
+		t.Fatalf("resolveProbeMediaPath returned error: %v", err)
+	}
+	if path != "/virtual/Show.S01/Show.S01E02.mkv" {
+		t.Fatalf("selected path = %q, want target episode", path)
+	}
+}
+
+func TestUsenetTrackProberSkipsSampleDirectories(t *testing.T) {
+	prober := &usenetTrackProber{
+		metadata: fakeUsenetProbeMetadata{
+			files: map[string][]string{
+				"/virtual/Release":        {"Movie.2024.mkv"},
+				"/virtual/Release/Sample": {"Movie.2024.sample.mkv"},
+			},
+			subdirs: map[string][]string{
+				"/virtual/Release": {"Sample"},
+			},
+		},
+	}
+
+	path, err := prober.resolveProbeMediaPath(models.NZBResult{Title: "Movie 2024"}, "/virtual/Release")
+	if err != nil {
+		t.Fatalf("resolveProbeMediaPath returned error: %v", err)
+	}
+	if path != "/virtual/Release/Movie.2024.mkv" {
+		t.Fatalf("selected path = %q, want main file", path)
+	}
+}
+
+func TestUsenetTrackProberBuildProbeURLEscapesPath(t *testing.T) {
+	prober := &usenetTrackProber{
+		webdavBase:   "http://user:pass@127.0.0.1:7777",
+		webdavPrefix: "/webdav",
+	}
+
+	got := prober.buildProbeURL("/Rick and Morty S09E07 DD+ 5.1 [TAoE].mkv")
+	want := "http://user:pass@127.0.0.1:7777/webdav/Rick%20and%20Morty%20S09E07%20DD+%205.1%20%5BTAoE%5D.mkv"
+	if got != want {
+		t.Fatalf("buildProbeURL = %q, want %q", got, want)
+	}
+}

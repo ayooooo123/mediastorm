@@ -718,6 +718,8 @@ func main() {
 	if settings.WebDAV.Enabled && strings.TrimSpace(settings.Transmux.FFprobePath) != "" {
 		usenetHandler.ConfigureTrackProbing(
 			nzbSystem.ImporterService(),
+			nzbSystem.MetadataReader(),
+			playbackService,
 			settings.Transmux.FFprobePath,
 			localBaseURL,
 			settings.WebDAV.Prefix,

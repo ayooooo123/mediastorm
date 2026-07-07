@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
@@ -775,6 +776,127 @@ func (s *Service) resolveExternalUsenet(ctx context.Context, settings config.Set
 		FileSize:      fileSize,
 		SourceNZBPath: sourceNZBPath,
 	}, nil
+}
+
+// ResolveExternalUsenetForProbe resolves an external-engine Usenet candidate to
+// the same WebDAV stream URL used for playback, without creating a playback
+// queue item. The returned authHeader is suitable for ffprobe's -headers flag.
+func (s *Service) ResolveExternalUsenetForProbe(ctx context.Context, candidate models.NZBResult, nzbBytes []byte, fileName string) (streamURL string, authHeader string, handled bool, err error) {
+	settings, err := s.cfg.Load()
+	if err != nil {
+		return "", "", false, fmt.Errorf("load settings: %w", err)
+	}
+	profileID := strings.TrimSpace(candidate.Attributes["profileId"])
+	engines := usenetengine.EnabledEngines(settings, profileID)
+	if len(engines) == 0 {
+		return "", "", false, nil
+	}
+
+	engineSettings := engines[0]
+	engine, err := usenetengine.NewFromSettings(engineSettings, s.httpClient)
+	if err != nil {
+		return "", "", true, fmt.Errorf("configure usenet engine %q: %w", engineSettings.Name, err)
+	}
+
+	category := strings.TrimSpace(engineSettings.Category)
+	if candidateCategory := strings.TrimSpace(candidate.Attributes["category"]); candidateCategory != "" {
+		category = candidateCategory
+	}
+	priority := strings.TrimSpace(engineSettings.Priority)
+
+	submitNZB := nzbBytes
+	submitFileName := fileName
+	if strings.EqualFold(strings.TrimSpace(engineSettings.Type), "altmount") {
+		submitNZB, submitFileName = prepareAltMountNZBSubmission(candidate, nzbBytes, fileName)
+	}
+	sourceNZBPath := strings.TrimSpace(submitFileName)
+
+	if existingURL, ok := s.findExistingExternalUsenetResolution(ctx, engineSettings, candidate, sourceNZBPath); ok {
+		log.Printf("[playback] external usenet probe existing resolution found engine=%q type=%q fileName=%q streamURL=%q", engineSettings.Name, engineSettings.Type, submitFileName, safeURLForLog(existingURL))
+		return existingURL, externalWebDAVAuthHeader(engineSettings), true, nil
+	}
+
+	log.Printf("[playback] external usenet probe submitting NZB engine=%q type=%q profileID=%q title=%q fileName=%q nzbHash=%q category=%q", engineSettings.Name, engineSettings.Type, profileID, strings.TrimSpace(candidate.Title), submitFileName, shortSHA256Bytes(submitNZB), category)
+	submit, err := engine.SubmitNZB(ctx, usenetengine.SubmitRequest{
+		FileName: submitFileName,
+		NZB:      submitNZB,
+		Category: category,
+		Priority: priority,
+	})
+	if err != nil {
+		return "", "", true, fmt.Errorf("submit NZB to external usenet engine: %w", err)
+	}
+
+	timeout := 300 * time.Second
+	if engineSettings.TimeoutSeconds > 0 {
+		timeout = time.Duration(engineSettings.TimeoutSeconds) * time.Second
+	}
+	pollInterval := 2 * time.Second
+	if engineSettings.PollIntervalSeconds > 0 {
+		pollInterval = time.Duration(engineSettings.PollIntervalSeconds) * time.Second
+	}
+
+	pollCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	for {
+		status, statusErr := engine.Status(pollCtx, submit.JobID)
+		if statusErr != nil {
+			return "", "", true, fmt.Errorf("poll external usenet engine: %w", statusErr)
+		}
+		if status == nil {
+			status = &usenetengine.JobStatus{JobID: submit.JobID, Status: usenetengine.StatusUnknown}
+		}
+
+		statusFileName := strings.TrimSpace(status.FileName)
+		statusFileNameMatchesSubmission := statusFileName == "" || externalReleaseNameMatchesSubmitted(statusFileName, strings.TrimSpace(candidate.Title), sourceNZBPath)
+		log.Printf("[playback] external usenet probe status engineJobID=%q engine=%q type=%q status=%q rawStatus=%q title=%q sourceNZB=%q statusFileName=%q output=%q", submit.JobID, engineSettings.Name, engineSettings.Type, status.Status, status.RawStatus, strings.TrimSpace(candidate.Title), sourceNZBPath, statusFileName, status.OutputPath)
+
+		switch status.Status {
+		case usenetengine.StatusFailed:
+			errMsg := strings.TrimSpace(status.Error)
+			if errMsg == "" {
+				errMsg = strings.TrimSpace(status.RawStatus)
+			}
+			if errMsg == "" {
+				errMsg = "external usenet engine reported failure"
+			}
+			return "", "", true, fmt.Errorf("%w: %s", ErrQueueItemFailed, errMsg)
+		case usenetengine.StatusCompleted:
+			if statusFileNameMatchesSubmission && externalOutputPathMatchesSubmitted(status.OutputPath, strings.TrimSpace(candidate.Title), sourceNZBPath) {
+				resolvedURL, resolveErr := s.resolveExternalWebDAVStream(pollCtx, engineSettings, status.OutputPath)
+				if resolveErr != nil {
+					return "", "", true, resolveErr
+				}
+				if resolvedURL != "" {
+					return resolvedURL, externalWebDAVAuthHeader(engineSettings), true, nil
+				}
+			}
+			fallbackURL, ok, fallbackErr := s.resolveExternalWebDAVFallback(pollCtx, engineSettings, strings.TrimSpace(candidate.Title), sourceNZBPath)
+			if fallbackErr != nil {
+				return "", "", true, fallbackErr
+			}
+			if ok {
+				return fallbackURL, externalWebDAVAuthHeader(engineSettings), true, nil
+			}
+		default:
+			fallbackURL, ok, fallbackErr := s.resolveExternalWebDAVFallback(pollCtx, engineSettings, strings.TrimSpace(candidate.Title), sourceNZBPath)
+			if fallbackErr != nil {
+				return "", "", true, fallbackErr
+			}
+			if ok {
+				return fallbackURL, externalWebDAVAuthHeader(engineSettings), true, nil
+			}
+		}
+
+		select {
+		case <-pollCtx.Done():
+			return "", "", true, fmt.Errorf("external usenet probe timed out waiting for completion: %w", pollCtx.Err())
+		case <-ticker.C:
+		}
+	}
 }
 
 func (s *Service) externalQueueStatus(ctx context.Context, queueID int64) (*models.PlaybackResolution, bool, error) {
@@ -1556,6 +1678,14 @@ func applyExternalWebDAVAuth(req *http.Request, engine config.UsenetEngineSettin
 	if engine.WebDAVUsername != "" || engine.WebDAVPassword != "" {
 		req.SetBasicAuth(engine.WebDAVUsername, engine.WebDAVPassword)
 	}
+}
+
+func externalWebDAVAuthHeader(engine config.UsenetEngineSettings) string {
+	if engine.WebDAVUsername == "" && engine.WebDAVPassword == "" {
+		return ""
+	}
+	token := base64.StdEncoding.EncodeToString([]byte(engine.WebDAVUsername + ":" + engine.WebDAVPassword))
+	return "Authorization: Basic " + token + "\r\n"
 }
 
 func sameURLPath(a string, b string) bool {
