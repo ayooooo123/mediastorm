@@ -218,6 +218,113 @@ type effectiveOverrides struct {
 	MaxResultsPerResolution          *int
 }
 
+type effectiveFilterBundle struct {
+	Default models.FilterSettings
+	Debrid  models.FilterSettings
+	Usenet  models.FilterSettings
+}
+
+type effectiveRankingBundle struct {
+	Default []config.RankingCriterion
+	Debrid  []config.RankingCriterion
+	Usenet  []config.RankingCriterion
+}
+
+func filterSettingsFromConfig(in config.FilterSettings) models.FilterSettings {
+	return models.FilterSettings{
+		MaxSizeMovieGB:         models.FloatPtr(in.MaxSizeMovieGB),
+		MaxSizeEpisodeGB:       models.FloatPtr(in.MaxSizeEpisodeGB),
+		MaxResolution:          in.MaxResolution,
+		HDRDVPolicy:            models.HDRDVPolicy(in.HDRDVPolicy),
+		RequiredTerms:          append([]string(nil), in.RequiredTerms...),
+		FilterOutTerms:         append([]string(nil), in.FilterOutTerms...),
+		PreferredTerms:         append([]string(nil), in.PreferredTerms...),
+		NonPreferredTerms:      append([]string(nil), in.NonPreferredTerms...),
+		DownloadPreferredTerms: append([]string(nil), in.DownloadPreferredTerms...),
+		UnknownTrackPolicy:     string(in.UnknownTrackPolicy),
+	}
+}
+
+func applyUserFilterOverrides(dst *models.FilterSettings, src models.FilterSettings) {
+	if src.MaxSizeMovieGB != nil {
+		dst.MaxSizeMovieGB = src.MaxSizeMovieGB
+	}
+	if src.MaxSizeEpisodeGB != nil {
+		dst.MaxSizeEpisodeGB = src.MaxSizeEpisodeGB
+	}
+	if src.MaxResolution != "" {
+		dst.MaxResolution = src.MaxResolution
+	}
+	if src.HDRDVPolicy != "" {
+		dst.HDRDVPolicy = src.HDRDVPolicy
+	}
+	if src.RequiredTerms != nil {
+		dst.RequiredTerms = src.RequiredTerms
+	}
+	if src.FilterOutTerms != nil {
+		dst.FilterOutTerms = src.FilterOutTerms
+	}
+	if src.PreferredTerms != nil {
+		dst.PreferredTerms = src.PreferredTerms
+	}
+	if src.NonPreferredTerms != nil {
+		dst.NonPreferredTerms = src.NonPreferredTerms
+	}
+	if src.DownloadPreferredTerms != nil {
+		dst.DownloadPreferredTerms = src.DownloadPreferredTerms
+	}
+	if src.UnknownTrackPolicy != "" {
+		dst.UnknownTrackPolicy = src.UnknownTrackPolicy
+	}
+}
+
+func applyClientFilterOverrides(dst *models.FilterSettings, src *models.ClientFilterSettings) {
+	if src == nil {
+		return
+	}
+	if src.MaxSizeMovieGB != nil {
+		dst.MaxSizeMovieGB = src.MaxSizeMovieGB
+	}
+	if src.MaxSizeEpisodeGB != nil {
+		dst.MaxSizeEpisodeGB = src.MaxSizeEpisodeGB
+	}
+	if src.MaxResolution != nil {
+		dst.MaxResolution = *src.MaxResolution
+	}
+	if src.HDRDVPolicy != nil {
+		dst.HDRDVPolicy = *src.HDRDVPolicy
+	}
+	if src.RequiredTerms != nil {
+		dst.RequiredTerms = *src.RequiredTerms
+	}
+	if src.FilterOutTerms != nil {
+		dst.FilterOutTerms = *src.FilterOutTerms
+	}
+	if src.PreferredTerms != nil {
+		dst.PreferredTerms = *src.PreferredTerms
+	}
+	if src.NonPreferredTerms != nil {
+		dst.NonPreferredTerms = *src.NonPreferredTerms
+	}
+	if src.DownloadPreferredTerms != nil {
+		dst.DownloadPreferredTerms = *src.DownloadPreferredTerms
+	}
+	if src.UnknownTrackPolicy != nil {
+		dst.UnknownTrackPolicy = *src.UnknownTrackPolicy
+	}
+}
+
+func filterBundleForService(bundle effectiveFilterBundle, serviceType models.ContentServiceType) models.FilterSettings {
+	switch serviceType {
+	case models.ServiceTypeDebrid:
+		return bundle.Debrid
+	case models.ServiceTypeUsenet:
+		return bundle.Usenet
+	default:
+		return bundle.Default
+	}
+}
+
 // getEffectiveFilterSettings returns the filtering settings to use for a search.
 // Settings cascade: Global -> Profile -> Client (client settings win)
 func (s *Service) getEffectiveFilterSettings(userID, clientID string, globalSettings config.Settings) (models.FilterSettings, models.AnimeFilteringSettings, effectiveOverrides) {
@@ -363,6 +470,76 @@ func (s *Service) getEffectiveFilterSettings(userID, clientID string, globalSett
 	return filterSettings, animeSettings, overrides
 }
 
+func (s *Service) getEffectiveFilterBundle(userID, clientID string, globalSettings config.Settings) (effectiveFilterBundle, models.AnimeFilteringSettings, effectiveOverrides) {
+	base, animeSettings, overrides := s.getEffectiveFilterSettings(userID, clientID, globalSettings)
+	bundle := effectiveFilterBundle{Default: base, Debrid: base, Usenet: base}
+	var adaptivePlayback *models.AdaptivePlaybackSettings
+
+	splitByService := globalSettings.Filtering.SplitByService
+	if splitByService {
+		if globalSettings.Filtering.Debrid != nil {
+			debridFilter := filterSettingsFromConfig(*globalSettings.Filtering.Debrid)
+			applyUserFilterOverrides(&bundle.Debrid, debridFilter)
+		}
+		if globalSettings.Filtering.Usenet != nil {
+			usenetFilter := filterSettingsFromConfig(*globalSettings.Filtering.Usenet)
+			applyUserFilterOverrides(&bundle.Usenet, usenetFilter)
+		}
+	}
+
+	if userID != "" && s.userSettings != nil {
+		userSettings, err := s.userSettings.Get(userID)
+		if err != nil {
+			log.Printf("[indexer] failed to get user split filtering settings for %s: %v", userID, err)
+		} else if userSettings != nil {
+			if userSettings.Filtering.SplitByService != nil {
+				splitByService = *userSettings.Filtering.SplitByService
+			}
+			if splitByService {
+				if userSettings.Filtering.Debrid != nil {
+					applyUserFilterOverrides(&bundle.Debrid, *userSettings.Filtering.Debrid)
+				}
+				if userSettings.Filtering.Usenet != nil {
+					applyUserFilterOverrides(&bundle.Usenet, *userSettings.Filtering.Usenet)
+				}
+			}
+		}
+	}
+
+	if clientID != "" && s.clientSettings != nil {
+		clientSettings, err := s.clientSettings.Get(clientID)
+		if err != nil {
+			log.Printf("[indexer] failed to get client split filtering settings for %s: %v", clientID, err)
+		} else if clientSettings != nil {
+			if clientSettings.SplitByService != nil {
+				splitByService = *clientSettings.SplitByService
+			}
+			adaptivePlayback = clientSettings.AdaptivePlayback
+			if splitByService {
+				applyClientFilterOverrides(&bundle.Debrid, clientSettings.Debrid)
+				applyClientFilterOverrides(&bundle.Usenet, clientSettings.Usenet)
+			}
+		}
+	}
+
+	if !splitByService {
+		bundle.Debrid = bundle.Default
+		bundle.Usenet = bundle.Default
+	}
+
+	caps := models.ComputeAdaptiveCaps(
+		globalSettings.Filtering.AdaptivePlaybackEnabled,
+		globalSettings.Filtering.AdaptiveTargetBufferFactor,
+		adaptivePlayback,
+		time.Now(),
+	)
+	caps.ApplyTo(&bundle.Default)
+	caps.ApplyTo(&bundle.Debrid)
+	caps.ApplyTo(&bundle.Usenet)
+
+	return bundle, animeSettings, overrides
+}
+
 // getEffectiveRankingCriteria returns the ranking criteria to use for sorting search results.
 // Settings cascade: Global -> Profile -> Client (most specific wins)
 func (s *Service) getEffectiveRankingCriteria(userID, clientID string, globalSettings config.Settings) []config.RankingCriterion {
@@ -403,6 +580,99 @@ func (s *Service) getEffectiveRankingCriteria(userID, clientID string, globalSet
 	})
 
 	return criteria
+}
+
+func sortedRankingCriteria(criteria []config.RankingCriterion) []config.RankingCriterion {
+	out := append([]config.RankingCriterion(nil), criteria...)
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].Order < out[j].Order
+	})
+	return out
+}
+
+func rankingCriteriaFromConfig(settings config.RankingSettings, fallback []config.RankingCriterion) []config.RankingCriterion {
+	if len(settings.Criteria) == 0 {
+		return append([]config.RankingCriterion(nil), fallback...)
+	}
+	return sortedRankingCriteria(settings.Criteria)
+}
+
+func (s *Service) getEffectiveRankingBundle(userID, clientID string, globalSettings config.Settings) effectiveRankingBundle {
+	base := s.getEffectiveRankingCriteria(userID, clientID, globalSettings)
+	bundle := effectiveRankingBundle{Default: base, Debrid: base, Usenet: base}
+
+	splitByService := globalSettings.Ranking.SplitByService
+	if splitByService {
+		if globalSettings.Ranking.Debrid != nil {
+			bundle.Debrid = rankingCriteriaFromConfig(*globalSettings.Ranking.Debrid, base)
+		}
+		if globalSettings.Ranking.Usenet != nil {
+			bundle.Usenet = rankingCriteriaFromConfig(*globalSettings.Ranking.Usenet, base)
+		}
+	}
+
+	if userID != "" && s.userSettings != nil {
+		userSettings, err := s.userSettings.Get(userID)
+		if err != nil {
+			log.Printf("[indexer] failed to get user split ranking settings for %s: %v", userID, err)
+		} else if userSettings != nil && userSettings.Ranking != nil {
+			if userSettings.Ranking.SplitByService != nil {
+				splitByService = *userSettings.Ranking.SplitByService
+			}
+			if splitByService {
+				if userSettings.Ranking.Debrid != nil && len(userSettings.Ranking.Debrid.Criteria) > 0 {
+					bundle.Debrid = applyUserRankingOverrides(bundle.Debrid, userSettings.Ranking.Debrid.Criteria)
+					bundle.Debrid = sortedRankingCriteria(bundle.Debrid)
+				}
+				if userSettings.Ranking.Usenet != nil && len(userSettings.Ranking.Usenet.Criteria) > 0 {
+					bundle.Usenet = applyUserRankingOverrides(bundle.Usenet, userSettings.Ranking.Usenet.Criteria)
+					bundle.Usenet = sortedRankingCriteria(bundle.Usenet)
+				}
+			}
+		}
+	}
+
+	if clientID != "" && s.clientSettings != nil {
+		clientSettings, err := s.clientSettings.Get(clientID)
+		if err != nil {
+			log.Printf("[indexer] failed to get client split ranking settings for %s: %v", clientID, err)
+		} else if clientSettings != nil {
+			if clientSettings.RankingSplitByService != nil {
+				splitByService = *clientSettings.RankingSplitByService
+			}
+			if splitByService {
+				if clientSettings.DebridRankingCriteria != nil && len(*clientSettings.DebridRankingCriteria) > 0 {
+					bundle.Debrid = applyClientRankingOverrides(bundle.Debrid, *clientSettings.DebridRankingCriteria)
+					bundle.Debrid = sortedRankingCriteria(bundle.Debrid)
+				}
+				if clientSettings.UsenetRankingCriteria != nil && len(*clientSettings.UsenetRankingCriteria) > 0 {
+					bundle.Usenet = applyClientRankingOverrides(bundle.Usenet, *clientSettings.UsenetRankingCriteria)
+					bundle.Usenet = sortedRankingCriteria(bundle.Usenet)
+				}
+			}
+		}
+	}
+
+	if !splitByService {
+		bundle.Debrid = bundle.Default
+		bundle.Usenet = bundle.Default
+	}
+
+	return bundle
+}
+
+func rankingBundleForComparison(bundle effectiveRankingBundle, i, j models.NZBResult) []config.RankingCriterion {
+	if i.ServiceType != j.ServiceType {
+		return bundle.Default
+	}
+	switch i.ServiceType {
+	case models.ServiceTypeDebrid:
+		return bundle.Debrid
+	case models.ServiceTypeUsenet:
+		return bundle.Usenet
+	default:
+		return bundle.Default
+	}
 }
 
 func (s *Service) getEffectiveMetadataLanguage(userID string, globalSettings config.Settings) string {
@@ -675,8 +945,18 @@ func compareByRankingCriteria(i, j models.NZBResult, scoringCtx ScoringContext) 
 	return compareDeterministicTieBreaker(i, j)
 }
 
+func compareByRankingBundle(i, j models.NZBResult, baseCtx ScoringContext, rankings effectiveRankingBundle) int {
+	ctx := baseCtx
+	ctx.RankingCriteria = rankingBundleForComparison(rankings, i, j)
+	return compareByRankingCriteria(i, j, ctx)
+}
+
 func (s *Service) buildScoringContext(opts SearchOptions, settings config.Settings, filterSettings models.FilterSettings, animeSettings models.AnimeFilteringSettings) ScoringContext {
 	rankingCriteria := s.getEffectiveRankingCriteria(opts.UserID, opts.ClientID, settings)
+	return s.buildScoringContextWithCriteria(opts, settings, filterSettings, animeSettings, rankingCriteria)
+}
+
+func (s *Service) buildScoringContextWithCriteria(opts SearchOptions, settings config.Settings, filterSettings models.FilterSettings, animeSettings models.AnimeFilteringSettings, rankingCriteria []config.RankingCriterion) ScoringContext {
 	preferredTerms := filter.CompileTerms(filterSettings.PreferredTerms)
 	nonPreferredTerms := filter.CompileTerms(filterSettings.NonPreferredTerms)
 
@@ -707,6 +987,21 @@ func (s *Service) buildScoringContext(opts SearchOptions, settings config.Settin
 		UseDownloadRanking:     opts.UseDownloadRanking,
 		PreferredLang:          s.getEffectiveMetadataLanguage(opts.UserID, settings),
 		PreferredScraper:       settings.Filtering.PreferredScraper,
+	}
+}
+
+func (s *Service) buildScoringContextForResult(opts SearchOptions, settings config.Settings, filters effectiveFilterBundle, rankings effectiveRankingBundle, animeSettings models.AnimeFilteringSettings, result models.NZBResult) ScoringContext {
+	return s.buildScoringContextWithCriteria(opts, settings, filterBundleForService(filters, result.ServiceType), animeSettings, rankingBundleForService(rankings, result.ServiceType))
+}
+
+func rankingBundleForService(bundle effectiveRankingBundle, serviceType models.ContentServiceType) []config.RankingCriterion {
+	switch serviceType {
+	case models.ServiceTypeDebrid:
+		return bundle.Debrid
+	case models.ServiceTypeUsenet:
+		return bundle.Usenet
+	default:
+		return bundle.Default
 	}
 }
 
@@ -747,10 +1042,12 @@ type searchCacheKeyPayload struct {
 	AlternateTitles []string               `json:"alternateTitles,omitempty"`
 	Settings        searchRelevantSettings `json:"settings"`
 	FilterSettings  models.FilterSettings
+	FilterBundle    effectiveFilterBundle
 	AnimeSettings   models.AnimeFilteringSettings
 	FilterOverrides effectiveOverrides
 	RankingSettings searchRankingSettings
 	RankingCriteria []config.RankingCriterion
+	RankingBundle   effectiveRankingBundle
 }
 
 type searchRelevantSettings struct {
@@ -851,17 +1148,19 @@ func buildSearchRankingSettings(settings config.Settings) searchRankingSettings 
 	}
 }
 
-func (s *Service) searchCacheKey(mode string, opts SearchOptions, settings config.Settings, alternateTitles []string, filterSettings models.FilterSettings, animeSettings models.AnimeFilteringSettings, filterOverrides effectiveOverrides, rankingCriteria []config.RankingCriterion) string {
+func (s *Service) searchCacheKey(mode string, opts SearchOptions, settings config.Settings, alternateTitles []string, filterSettings models.FilterSettings, filterBundle effectiveFilterBundle, animeSettings models.AnimeFilteringSettings, filterOverrides effectiveOverrides, rankingCriteria []config.RankingCriterion, rankingBundle effectiveRankingBundle) string {
 	payload := searchCacheKeyPayload{
 		Mode:            mode,
 		Options:         buildSearchCacheOptions(opts),
 		AlternateTitles: append([]string(nil), alternateTitles...),
 		Settings:        buildSearchRelevantSettings(settings),
 		FilterSettings:  filterSettings,
+		FilterBundle:    filterBundle,
 		AnimeSettings:   animeSettings,
 		FilterOverrides: filterOverrides,
 		RankingSettings: buildSearchRankingSettings(settings),
 		RankingCriteria: append([]config.RankingCriterion(nil), rankingCriteria...),
+		RankingBundle:   rankingBundle,
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -971,7 +1270,8 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBR
 	settings = config.FilterSettingsForProfile(settings, opts.UserID)
 
 	// Get effective filtering settings (cascade: global -> profile -> client)
-	filterSettings, animeSettings, filterOverrides := s.getEffectiveFilterSettings(opts.UserID, opts.ClientID, settings)
+	filterBundle, animeSettings, filterOverrides := s.getEffectiveFilterBundle(opts.UserID, opts.ClientID, settings)
+	filterSettings := filterBundle.Default
 
 	// Inject anime language filter-out terms early (before search/filter calls)
 	if opts.IsAnime && models.BoolVal(animeSettings.AnimeLanguageEnabled, false) {
@@ -985,6 +1285,9 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBR
 		_, _, animeFilterOut := filter.GetAnimeLanguageTerms(langCode)
 		if len(animeFilterOut) > 0 {
 			filterSettings.FilterOutTerms = append(filterSettings.FilterOutTerms, animeFilterOut...)
+			filterBundle.Default.FilterOutTerms = append(filterBundle.Default.FilterOutTerms, animeFilterOut...)
+			filterBundle.Debrid.FilterOutTerms = append(filterBundle.Debrid.FilterOutTerms, animeFilterOut...)
+			filterBundle.Usenet.FilterOutTerms = append(filterBundle.Usenet.FilterOutTerms, animeFilterOut...)
 			log.Printf("[indexer] Anime language filter-out: injected %d terms for lang=%s", len(animeFilterOut), langCode)
 		}
 	}
@@ -999,8 +1302,9 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBR
 
 	parsedQuery := debrid.ParseQuery(opts.Query)
 	searchQueries := buildSearchQueries(opts, parsedQuery, alternateTitles)
-	rankingCriteria := s.getEffectiveRankingCriteria(opts.UserID, opts.ClientID, settings)
-	cacheKey := s.searchCacheKey("ranked", opts, settings, alternateTitles, filterSettings, animeSettings, filterOverrides, rankingCriteria)
+	rankingBundle := s.getEffectiveRankingBundle(opts.UserID, opts.ClientID, settings)
+	rankingCriteria := rankingBundle.Default
+	cacheKey := s.searchCacheKey("ranked", opts, settings, alternateTitles, filterSettings, filterBundle, animeSettings, filterOverrides, rankingCriteria, rankingBundle)
 	if cached, ok := s.getCachedSearchResults(cacheKey, searchStart); ok {
 		log.Printf("[indexer] search cache hit for query=%q mediaType=%q user=%q client=%q results=%d", opts.Query, opts.MediaType, opts.UserID, opts.ClientID, len(cached))
 		log.Printf("[search-stats] Search #%d cache hit: %d results in %v (totals: search=%d, splitSearch=%d, usenetAPICalls=%d)",
@@ -1025,7 +1329,7 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBR
 		go func() {
 			defer wg.Done()
 			usenetStart := time.Now()
-			usenetResults, err := s.searchUsenetWithFilter(ctx, settings, opts, parsedQuery, alternateTitles, searchQueries, filterSettings)
+			usenetResults, err := s.searchUsenetWithFilter(ctx, settings, opts, parsedQuery, alternateTitles, searchQueries, filterBundle.Usenet)
 			log.Printf("[indexer] TIMING: usenet search complete (took: %v, results: %d)", time.Since(usenetStart), len(usenetResults))
 			if err != nil {
 				resultsChan <- searchResult{err: err, source: "usenet"}
@@ -1119,17 +1423,20 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBR
 	if bypassRanking {
 		log.Printf("[indexer] Bypassing mediastorm ranking - AIOStreams is the only enabled scraper and bypass setting is enabled")
 	} else {
-		ctx := s.buildScoringContext(opts, settings, filterSettings, animeSettings)
+		ctx := s.buildScoringContextWithCriteria(opts, settings, filterSettings, animeSettings, rankingBundle.Default)
 		scoringCtx = &ctx
 		log.Printf("[indexer] Sorting %d results with %d ranking criteria, ServicePriority=%q, downloadRanking=%v", len(aggregated), len(scoringCtx.RankingCriteria), settings.Filtering.ServicePriority, opts.UseDownloadRanking)
-		s.sortResultsByScore(aggregated, *scoringCtx)
+		sort.SliceStable(aggregated, func(i, j int) bool {
+			return compareByRankingBundle(aggregated[i], aggregated[j], *scoringCtx, rankingBundle) < 0
+		})
 	}
 
 	// Debug: log all results after sorting
 	for idx := 0; idx < len(aggregated); idx++ {
 		res := extractResolutionFromResult(aggregated[idx])
 		if scoringCtx != nil {
-			score, _ := ScoreResult(aggregated[idx], *scoringCtx)
+			ctx := s.buildScoringContextForResult(opts, settings, filterBundle, rankingBundle, animeSettings, aggregated[idx])
+			score, _ := ScoreResult(aggregated[idx], ctx)
 			log.Printf("[indexer] Result #%d: Score=%d ServiceType=%q Resolution=%d Size=%d Title=%q", idx, score, aggregated[idx].ServiceType, res, aggregated[idx].SizeBytes, aggregated[idx].Title)
 		} else {
 			log.Printf("[indexer] Result #%d: Score=n/a ServiceType=%q Resolution=%d Size=%d Title=%q", idx, aggregated[idx].ServiceType, res, aggregated[idx].SizeBytes, aggregated[idx].Title)
@@ -1219,7 +1526,8 @@ func (s *Service) SearchWithScoring(ctx context.Context, opts SearchOptions) ([]
 	}
 	settings = config.FilterSettingsForProfile(settings, opts.UserID)
 
-	filterSettings, animeSettings, filterOverrides := s.getEffectiveFilterSettings(opts.UserID, opts.ClientID, settings)
+	filterBundle, animeSettings, filterOverrides := s.getEffectiveFilterBundle(opts.UserID, opts.ClientID, settings)
+	filterSettings := filterBundle.Default
 	if shouldBypassAIOStreamsRanking(settings, filterOverrides, shouldUseUsenet(settings.Streaming.ServiceMode)) {
 		log.Printf("[indexer] Bypassing mediastorm filtering/ranking - AIOStreams is the only enabled scraper and bypass setting is enabled")
 		scored := make([]models.ScoredNZBResult, len(rawResults))
@@ -1242,17 +1550,35 @@ func (s *Service) SearchWithScoring(ctx context.Context, opts SearchOptions) ([]
 		_, _, animeFilterOut := filter.GetAnimeLanguageTerms(langCode)
 		if len(animeFilterOut) > 0 {
 			filterSettings.FilterOutTerms = append(filterSettings.FilterOutTerms, animeFilterOut...)
+			filterBundle.Default.FilterOutTerms = append(filterBundle.Default.FilterOutTerms, animeFilterOut...)
+			filterBundle.Debrid.FilterOutTerms = append(filterBundle.Debrid.FilterOutTerms, animeFilterOut...)
+			filterBundle.Usenet.FilterOutTerms = append(filterBundle.Usenet.FilterOutTerms, animeFilterOut...)
 		}
 	}
-	filterOpts := s.buildFilterOptions(rawOpts, filterSettings)
-
-	detailed := filter.ResultsWithDetails(rawResults, filterOpts)
-	scoringCtx := s.buildScoringContext(opts, settings, filterSettings, animeSettings)
+	filterOptsByService := map[models.ContentServiceType]filter.Options{
+		models.ServiceTypeDebrid:  s.buildFilterOptions(rawOpts, filterBundle.Debrid),
+		models.ServiceTypeUsenet:  s.buildFilterOptions(rawOpts, filterBundle.Usenet),
+		models.ServiceTypeUnknown: s.buildFilterOptions(rawOpts, filterBundle.Default),
+	}
+	detailed := make([]filter.FilteredResult, 0, len(rawResults))
+	for _, raw := range rawResults {
+		filterOpts, ok := filterOptsByService[raw.ServiceType]
+		if !ok {
+			filterOpts = filterOptsByService[models.ServiceTypeUnknown]
+		}
+		resultDetails := filter.ResultsWithDetails([]models.NZBResult{raw}, filterOpts)
+		if len(resultDetails) > 0 {
+			detailed = append(detailed, resultDetails[0])
+		}
+	}
+	rankingBundle := s.getEffectiveRankingBundle(opts.UserID, opts.ClientID, settings)
+	scoringCtx := s.buildScoringContextWithCriteria(opts, settings, filterSettings, animeSettings, rankingBundle.Default)
 
 	// Separate passed and filtered
 	var passed, filtered []models.ScoredNZBResult
 	for _, fr := range detailed {
-		score, breakdown := ScoreResult(fr.Result, scoringCtx)
+		resultCtx := s.buildScoringContextForResult(opts, settings, filterBundle, rankingBundle, animeSettings, fr.Result)
+		score, breakdown := ScoreResult(fr.Result, resultCtx)
 		sr := models.ScoredNZBResult{
 			NZBResult:      fr.Result,
 			TotalScore:     score,
@@ -1271,7 +1597,7 @@ func (s *Service) SearchWithScoring(ctx context.Context, opts SearchOptions) ([]
 	// Sort passed results by the same priority order used by standard ranking.
 	if len(passed) > 0 {
 		sort.SliceStable(passed, func(i, j int) bool {
-			return compareByRankingCriteria(passed[i].NZBResult, passed[j].NZBResult, scoringCtx) < 0
+			return compareByRankingBundle(passed[i].NZBResult, passed[j].NZBResult, scoringCtx, rankingBundle) < 0
 		})
 
 		// Apply per-resolution limit to passed results (same as Search path)
@@ -1365,9 +1691,11 @@ func (s *Service) searchRawResults(ctx context.Context, opts SearchOptions) ([]m
 	alternateTitles := s.resolveAlternateTitles(ctx, opts, s.getEffectiveMetadataLanguage(opts.UserID, settings), settings.Streaming.MaxAlternateTitleSearches)
 	parsedQuery := debrid.ParseQuery(opts.Query)
 	searchQueries := buildSearchQueries(opts, parsedQuery, alternateTitles)
-	filterSettings, animeSettings, filterOverrides := s.getEffectiveFilterSettings(opts.UserID, opts.ClientID, settings)
-	rankingCriteria := s.getEffectiveRankingCriteria(opts.UserID, opts.ClientID, settings)
-	cacheKey := s.searchCacheKey("raw", opts, settings, alternateTitles, filterSettings, animeSettings, filterOverrides, rankingCriteria)
+	filterBundle, animeSettings, filterOverrides := s.getEffectiveFilterBundle(opts.UserID, opts.ClientID, settings)
+	filterSettings := filterBundle.Default
+	rankingBundle := s.getEffectiveRankingBundle(opts.UserID, opts.ClientID, settings)
+	rankingCriteria := rankingBundle.Default
+	cacheKey := s.searchCacheKey("raw", opts, settings, alternateTitles, filterSettings, filterBundle, animeSettings, filterOverrides, rankingCriteria, rankingBundle)
 	if cached, ok := s.getCachedSearchResults(cacheKey, searchStart); ok {
 		log.Printf("[indexer] raw search cache hit for query=%q mediaType=%q user=%q client=%q results=%d", opts.Query, opts.MediaType, opts.UserID, opts.ClientID, len(cached))
 		return cached, nil
@@ -1400,7 +1728,7 @@ func (s *Service) searchRawResults(ctx context.Context, opts SearchOptions) ([]m
 				}
 				resultsChan <- searchResult{results: usenetResults, source: "usenet"}
 			} else {
-				usenetResults, err := s.searchUsenetWithFilter(ctx, settings, opts, parsedQuery, alternateTitles, searchQueries, filterSettings)
+				usenetResults, err := s.searchUsenetWithFilter(ctx, settings, opts, parsedQuery, alternateTitles, searchQueries, filterBundle.Usenet)
 				if err != nil {
 					resultsChan <- searchResult{err: err, source: "usenet"}
 					return
@@ -1635,7 +1963,8 @@ func (s *Service) SearchSplit(ctx context.Context, opts SearchOptions) (debridCh
 	}
 	settings = config.FilterSettingsForProfile(settings, opts.UserID)
 
-	filterSettings, animeSettings2, filterOverrides := s.getEffectiveFilterSettings(opts.UserID, opts.ClientID, settings)
+	filterBundle, animeSettings2, filterOverrides := s.getEffectiveFilterBundle(opts.UserID, opts.ClientID, settings)
+	filterSettings := filterBundle.Default
 
 	// Inject anime language filter-out terms early (before search/filter calls)
 	if opts.IsAnime && models.BoolVal(animeSettings2.AnimeLanguageEnabled, false) {
@@ -1649,6 +1978,9 @@ func (s *Service) SearchSplit(ctx context.Context, opts SearchOptions) (debridCh
 		_, _, animeFilterOut := filter.GetAnimeLanguageTerms(langCode)
 		if len(animeFilterOut) > 0 {
 			filterSettings.FilterOutTerms = append(filterSettings.FilterOutTerms, animeFilterOut...)
+			filterBundle.Default.FilterOutTerms = append(filterBundle.Default.FilterOutTerms, animeFilterOut...)
+			filterBundle.Debrid.FilterOutTerms = append(filterBundle.Debrid.FilterOutTerms, animeFilterOut...)
+			filterBundle.Usenet.FilterOutTerms = append(filterBundle.Usenet.FilterOutTerms, animeFilterOut...)
 			log.Printf("[indexer] Anime language filter-out: injected %d terms for lang=%s", len(animeFilterOut), langCode)
 		}
 	}
@@ -1661,7 +1993,8 @@ func (s *Service) SearchSplit(ctx context.Context, opts SearchOptions) (debridCh
 	includeDebrid := shouldUseDebrid(settings.Streaming.ServiceMode)
 	bypassAIOStreamsRanking := shouldBypassAIOStreamsRanking(settings, filterOverrides, includeUsenet)
 
-	scoringCtx := s.buildScoringContext(opts, settings, filterSettings, animeSettings2)
+	rankingBundle := s.getEffectiveRankingBundle(opts.UserID, opts.ClientID, settings)
+	scoringCtx := s.buildScoringContextWithCriteria(opts, settings, filterSettings, animeSettings2, rankingBundle.Default)
 
 	// Helper to inject daily show attributes into results (same as Search path)
 	injectDailyAttrs := func(results []models.NZBResult) {
@@ -1690,7 +2023,9 @@ func (s *Service) SearchSplit(ctx context.Context, opts SearchOptions) (debridCh
 			log.Printf("[indexer] Bypassing mediastorm ranking - AIOStreams is the only enabled scraper and bypass setting is enabled")
 			return
 		}
-		s.sortResultsByScore(results, scoringCtx)
+		sort.SliceStable(results, func(i, j int) bool {
+			return compareByRankingBundle(results[i], results[j], scoringCtx, rankingBundle) < 0
+		})
 	}
 
 	// Launch debrid search
@@ -1755,7 +2090,7 @@ func (s *Service) SearchSplit(ctx context.Context, opts SearchOptions) (debridCh
 		usenetStart := time.Now()
 		log.Printf("[indexer] TIMING: split usenet search starting (query=%q)", opts.Query)
 
-		usenetResults, err := s.searchUsenetWithFilter(ctx, settings, opts, parsedQuery, alternateTitles, searchQueries, filterSettings)
+		usenetResults, err := s.searchUsenetWithFilter(ctx, settings, opts, parsedQuery, alternateTitles, searchQueries, filterBundle.Usenet)
 		if err != nil {
 			log.Printf("[indexer] TIMING: split usenet search failed after %v: %v", time.Since(usenetStart), err)
 			usenetOut <- SplitSearchResult{Err: err, Source: "usenet"}

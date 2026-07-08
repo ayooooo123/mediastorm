@@ -561,7 +561,10 @@ func isSettingsEmpty(s models.UserSettings) bool {
 		s.Filtering.PreferredTerms != nil ||
 		s.Filtering.NonPreferredTerms != nil ||
 		s.Filtering.DownloadPreferredTerms != nil ||
-		s.Filtering.UnknownTrackPolicy != "" {
+		s.Filtering.UnknownTrackPolicy != "" ||
+		s.Filtering.SplitByService != nil ||
+		s.Filtering.Debrid != nil ||
+		s.Filtering.Usenet != nil {
 		return false
 	}
 
@@ -635,7 +638,10 @@ func isSettingsEmpty(s models.UserSettings) bool {
 	}
 
 	// Check Ranking
-	if s.Ranking != nil && len(s.Ranking.Criteria) > 0 {
+	if s.Ranking != nil && (len(s.Ranking.Criteria) > 0 ||
+		s.Ranking.SplitByService != nil ||
+		s.Ranking.Debrid != nil ||
+		s.Ranking.Usenet != nil) {
 		return false
 	}
 

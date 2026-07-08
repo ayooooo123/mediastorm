@@ -204,6 +204,75 @@ func (s *SearchService) SetIMDBResolver(resolver imdbResolver) {
 	s.imdbResolver = resolver
 }
 
+func applyUserFilterOverrides(dst *models.FilterSettings, src models.FilterSettings) {
+	if src.MaxSizeMovieGB != nil {
+		dst.MaxSizeMovieGB = src.MaxSizeMovieGB
+	}
+	if src.MaxSizeEpisodeGB != nil {
+		dst.MaxSizeEpisodeGB = src.MaxSizeEpisodeGB
+	}
+	if src.MaxResolution != "" {
+		dst.MaxResolution = src.MaxResolution
+	}
+	if src.HDRDVPolicy != "" {
+		dst.HDRDVPolicy = src.HDRDVPolicy
+	}
+	if src.RequiredTerms != nil {
+		dst.RequiredTerms = src.RequiredTerms
+	}
+	if src.FilterOutTerms != nil {
+		dst.FilterOutTerms = src.FilterOutTerms
+	}
+	if src.PreferredTerms != nil {
+		dst.PreferredTerms = src.PreferredTerms
+	}
+	if src.NonPreferredTerms != nil {
+		dst.NonPreferredTerms = src.NonPreferredTerms
+	}
+	if src.DownloadPreferredTerms != nil {
+		dst.DownloadPreferredTerms = src.DownloadPreferredTerms
+	}
+	if src.UnknownTrackPolicy != "" {
+		dst.UnknownTrackPolicy = src.UnknownTrackPolicy
+	}
+}
+
+func applyClientFilterOverrides(dst *models.FilterSettings, src *models.ClientFilterSettings) {
+	if src == nil {
+		return
+	}
+	if src.MaxSizeMovieGB != nil {
+		dst.MaxSizeMovieGB = src.MaxSizeMovieGB
+	}
+	if src.MaxSizeEpisodeGB != nil {
+		dst.MaxSizeEpisodeGB = src.MaxSizeEpisodeGB
+	}
+	if src.MaxResolution != nil {
+		dst.MaxResolution = *src.MaxResolution
+	}
+	if src.HDRDVPolicy != nil {
+		dst.HDRDVPolicy = *src.HDRDVPolicy
+	}
+	if src.RequiredTerms != nil {
+		dst.RequiredTerms = *src.RequiredTerms
+	}
+	if src.FilterOutTerms != nil {
+		dst.FilterOutTerms = *src.FilterOutTerms
+	}
+	if src.PreferredTerms != nil {
+		dst.PreferredTerms = *src.PreferredTerms
+	}
+	if src.NonPreferredTerms != nil {
+		dst.NonPreferredTerms = *src.NonPreferredTerms
+	}
+	if src.DownloadPreferredTerms != nil {
+		dst.DownloadPreferredTerms = *src.DownloadPreferredTerms
+	}
+	if src.UnknownTrackPolicy != nil {
+		dst.UnknownTrackPolicy = *src.UnknownTrackPolicy
+	}
+}
+
 // ReloadScrapers rebuilds the scraper list from current config.
 // This allows hot reloading when torrent scraper settings change.
 func (s *SearchService) ReloadScrapers() {
@@ -250,6 +319,10 @@ func (s *SearchService) getEffectiveFilterSettings(userID, clientID string, glob
 		PreferredTerms:    globalSettings.Filtering.PreferredTerms,
 		NonPreferredTerms: globalSettings.Filtering.NonPreferredTerms,
 	}
+	splitByService := globalSettings.Filtering.SplitByService
+	var profileDebridFilter *models.FilterSettings
+	var clientDebridFilter *models.ClientFilterSettings
+	var adaptivePlayback *models.AdaptivePlaybackSettings
 
 	// Layer 2: Profile settings override global (field-by-field, only if set)
 	if userID != "" && s.userSettings != nil {
@@ -286,6 +359,10 @@ func (s *SearchService) getEffectiveFilterSettings(userID, clientID string, glob
 			if userSettings.Display.BypassFilteringForAIOStreamsOnly != nil {
 				bypassForAIO = *userSettings.Display.BypassFilteringForAIOStreamsOnly
 			}
+			if profileFiltering.SplitByService != nil {
+				splitByService = *profileFiltering.SplitByService
+			}
+			profileDebridFilter = profileFiltering.Debrid
 		}
 	}
 
@@ -323,17 +400,43 @@ func (s *SearchService) getEffectiveFilterSettings(userID, clientID string, glob
 			if clientSettings.BypassFilteringForAIOStreamsOnly != nil {
 				bypassForAIO = *clientSettings.BypassFilteringForAIOStreamsOnly
 			}
-
-			// Layer 4: Adaptive playback overlays transient size/HDR caps derived
-			// from this device's reported throughput + display capability.
-			models.ComputeAdaptiveCaps(
-				globalSettings.Filtering.AdaptivePlaybackEnabled,
-				globalSettings.Filtering.AdaptiveTargetBufferFactor,
-				clientSettings.AdaptivePlayback,
-				time.Now(),
-			).ApplyTo(&filterSettings)
+			if clientSettings.SplitByService != nil {
+				splitByService = *clientSettings.SplitByService
+			}
+			clientDebridFilter = clientSettings.Debrid
+			adaptivePlayback = clientSettings.AdaptivePlayback
 		}
 	}
+
+	if splitByService {
+		if globalSettings.Filtering.Debrid != nil {
+			applyUserFilterOverrides(&filterSettings, models.FilterSettings{
+				MaxSizeMovieGB:         models.FloatPtr(globalSettings.Filtering.Debrid.MaxSizeMovieGB),
+				MaxSizeEpisodeGB:       models.FloatPtr(globalSettings.Filtering.Debrid.MaxSizeEpisodeGB),
+				MaxResolution:          globalSettings.Filtering.Debrid.MaxResolution,
+				HDRDVPolicy:            models.HDRDVPolicy(globalSettings.Filtering.Debrid.HDRDVPolicy),
+				RequiredTerms:          globalSettings.Filtering.Debrid.RequiredTerms,
+				FilterOutTerms:         globalSettings.Filtering.Debrid.FilterOutTerms,
+				PreferredTerms:         globalSettings.Filtering.Debrid.PreferredTerms,
+				NonPreferredTerms:      globalSettings.Filtering.Debrid.NonPreferredTerms,
+				DownloadPreferredTerms: globalSettings.Filtering.Debrid.DownloadPreferredTerms,
+				UnknownTrackPolicy:     string(globalSettings.Filtering.Debrid.UnknownTrackPolicy),
+			})
+		}
+		if profileDebridFilter != nil {
+			applyUserFilterOverrides(&filterSettings, *profileDebridFilter)
+		}
+		applyClientFilterOverrides(&filterSettings, clientDebridFilter)
+	}
+
+	// Adaptive playback overlays transient size/HDR caps derived from this
+	// device's reported throughput + display capability.
+	models.ComputeAdaptiveCaps(
+		globalSettings.Filtering.AdaptivePlaybackEnabled,
+		globalSettings.Filtering.AdaptiveTargetBufferFactor,
+		adaptivePlayback,
+		time.Now(),
+	).ApplyTo(&filterSettings)
 
 	return filterSettings, bypassForAIO
 }

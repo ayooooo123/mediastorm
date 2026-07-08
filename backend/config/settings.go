@@ -860,6 +860,10 @@ type FilterSettings struct {
 	// AdaptiveTargetBufferFactor is the fraction of measured throughput a file's average
 	// bitrate may consume and still be considered comfortably streamable (0-1, default 0.7).
 	AdaptiveTargetBufferFactor float64 `json:"adaptiveTargetBufferFactor,omitempty"`
+	// SplitByService enables Debrid/Usenet overrides for ranking/filtering fields.
+	SplitByService bool            `json:"splitByService,omitempty"`
+	Debrid         *FilterSettings `json:"debrid,omitempty"`
+	Usenet         *FilterSettings `json:"usenet,omitempty"`
 }
 
 // AnimeFilteringSettings controls anime-specific language preferences.
@@ -1336,7 +1340,10 @@ type RankingCriterion struct {
 
 // RankingSettings holds the ordered list of ranking criteria.
 type RankingSettings struct {
-	Criteria []RankingCriterion `json:"criteria"`
+	Criteria       []RankingCriterion `json:"criteria"`
+	SplitByService bool               `json:"splitByService,omitempty"`
+	Debrid         *RankingSettings   `json:"debrid,omitempty"`
+	Usenet         *RankingSettings   `json:"usenet,omitempty"`
 }
 
 // DefaultRankingCriteria returns the default ranking criteria in their default order.
