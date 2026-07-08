@@ -2529,14 +2529,29 @@ type dashboardRecentWatchItem struct {
 }
 
 type dashboardWatchTimeStats struct {
-	WeekSeconds    float64 `json:"weekSeconds"`
-	MonthSeconds   float64 `json:"monthSeconds"`
-	EverSeconds    float64 `json:"everSeconds"`
+	WeekSeconds    float64                      `json:"weekSeconds"`
+	MonthSeconds   float64                      `json:"monthSeconds"`
+	EverSeconds    float64                      `json:"everSeconds"`
+	MovieSeconds   float64                      `json:"movieSeconds"`
+	EpisodeSeconds float64                      `json:"episodeSeconds"`
+	LiveSeconds    float64                      `json:"liveSeconds"`
+	OtherSeconds   float64                      `json:"otherSeconds"`
+	ByRange        dashboardWatchTimeRangeStats `json:"byRange"`
+	HasTracked     bool                         `json:"hasTracked"`
+}
+
+type dashboardWatchTimeRangeStats struct {
+	Week  dashboardWatchTimeTypeStats `json:"week"`
+	Month dashboardWatchTimeTypeStats `json:"month"`
+	Ever  dashboardWatchTimeTypeStats `json:"ever"`
+}
+
+type dashboardWatchTimeTypeStats struct {
+	TotalSeconds   float64 `json:"totalSeconds"`
 	MovieSeconds   float64 `json:"movieSeconds"`
 	EpisodeSeconds float64 `json:"episodeSeconds"`
 	LiveSeconds    float64 `json:"liveSeconds"`
 	OtherSeconds   float64 `json:"otherSeconds"`
-	HasTracked     bool    `json:"hasTracked"`
 }
 
 type dashboardUsenetProviderActivity struct {
@@ -2799,6 +2814,26 @@ func addDashboardWatchSeconds(stats *dashboardWatchTimeStats, mediaType string, 
 	}
 	stats.HasTracked = true
 	stats.EverSeconds += seconds
+	addDashboardWatchTypeSeconds(&stats.ByRange.Ever, mediaType, seconds)
+	stats.MovieSeconds = stats.ByRange.Ever.MovieSeconds
+	stats.EpisodeSeconds = stats.ByRange.Ever.EpisodeSeconds
+	stats.LiveSeconds = stats.ByRange.Ever.LiveSeconds
+	stats.OtherSeconds = stats.ByRange.Ever.OtherSeconds
+	if !at.IsZero() {
+		t := at.UTC()
+		if !t.Before(weekCutoff) {
+			stats.WeekSeconds += seconds
+			addDashboardWatchTypeSeconds(&stats.ByRange.Week, mediaType, seconds)
+		}
+		if !t.Before(monthCutoff) {
+			stats.MonthSeconds += seconds
+			addDashboardWatchTypeSeconds(&stats.ByRange.Month, mediaType, seconds)
+		}
+	}
+}
+
+func addDashboardWatchTypeSeconds(stats *dashboardWatchTimeTypeStats, mediaType string, seconds float64) {
+	stats.TotalSeconds += seconds
 	switch normalizeDashboardWatchMediaType(mediaType) {
 	case "movie":
 		stats.MovieSeconds += seconds
@@ -2808,15 +2843,6 @@ func addDashboardWatchSeconds(stats *dashboardWatchTimeStats, mediaType string, 
 		stats.LiveSeconds += seconds
 	default:
 		stats.OtherSeconds += seconds
-	}
-	if !at.IsZero() {
-		t := at.UTC()
-		if !t.Before(weekCutoff) {
-			stats.WeekSeconds += seconds
-		}
-		if !t.Before(monthCutoff) {
-			stats.MonthSeconds += seconds
-		}
 	}
 }
 
