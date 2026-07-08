@@ -174,6 +174,12 @@ const PROFILE_COLORS = [
     '#EF4444', '#F97316', '#EAB308', '#22C55E',
     '#14B8A6', '#3B82F6', '#8B5CF6', '#EC4899'
 ];
+const DEFAULT_PROFILE_COLOR = PROFILE_COLORS[0];
+
+function getSelectedProfileColor(form, fallbackColor) {
+    const selected = form?.querySelector('input[name="color"]:checked');
+    return selected?.value || fallbackColor || DEFAULT_PROFILE_COLOR;
+}
 
 async function saveGlobalMaxStreams() {
     const val = parseInt(document.getElementById('globalMaxStreams').value) || 0;
@@ -477,7 +483,7 @@ async function createProfile(e) {
     const data = {
         name: form.name.value,
         accountId: isAdmin ? form.accountId.value : accountId, // Non-admin: auto-assign to their account
-        color: form.querySelector('input[name="color"]:checked').value,
+        color: getSelectedProfileColor(form),
         isKidsProfile: form.isKids.checked
     };
     try {
@@ -520,8 +526,9 @@ function showEditProfileModal(profileId) {
     if (!p) return;
 
     const hasIcon = p.hasIcon || p.iconUrl;
+    const currentColor = PROFILE_COLORS.includes(p.color) ? p.color : DEFAULT_PROFILE_COLOR;
     const colorOptions = PROFILE_COLORS.map(c =>
-        `<label style="cursor: pointer;${hasIcon ? ' opacity: 0.5; pointer-events: none;' : ''}"><input type="radio" name="color" value="${c}" ${c === p.color ? 'checked' : ''} style="display: none;"><div style="width: 32px; height: 32px; border-radius: 50%; background: ${c}; border: 3px solid ${c === p.color ? 'white' : 'transparent'};" class="color-opt"></div></label>`
+        `<label style="cursor: pointer;${hasIcon ? ' opacity: 0.5; pointer-events: none;' : ''}"><input type="radio" name="color" value="${c}" ${c === currentColor ? 'checked' : ''} style="display: none;"><div style="width: 32px; height: 32px; border-radius: 50%; background: ${c}; border: 3px solid ${c === currentColor ? 'white' : 'transparent'};" class="color-opt"></div></label>`
     ).join('');
 
     const iconSection = `
@@ -602,21 +609,23 @@ function showEditProfileModal(profileId) {
 async function updateProfile(e, profileId) {
     e.preventDefault();
     const form = e.target;
+    const profile = profiles.find(x => x.id === profileId);
+    const fallbackColor = PROFILE_COLORS.includes(profile?.color) ? profile.color : DEFAULT_PROFILE_COLOR;
     try {
         // Update name
-        await fetch(basePath + '/api/profiles?profileId=' + profileId, {
+        await fetch(basePath + '/api/profiles?profileId=' + encodeURIComponent(profileId), {
             method: 'PUT',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({ name: form.name.value })
         });
         // Update color
-        await fetch(basePath + '/api/profiles/color?profileId=' + profileId, {
+        await fetch(basePath + '/api/profiles/color?profileId=' + encodeURIComponent(profileId), {
             method: 'PUT',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ color: form.querySelector('input[name="color"]:checked').value })
+            body: JSON.stringify({ color: getSelectedProfileColor(form, fallbackColor) })
         });
         // Update kids mode
-        await fetch(basePath + '/api/profiles/kids?profileId=' + profileId, {
+        await fetch(basePath + '/api/profiles/kids?profileId=' + encodeURIComponent(profileId), {
             method: 'PUT',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({ isKidsProfile: form.isKids.checked })
