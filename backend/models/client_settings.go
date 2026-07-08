@@ -5,18 +5,21 @@ package models
 // and explicit values (including zero/false).
 type ClientFilterSettings struct {
 	// Filtering overrides
-	MaxSizeMovieGB         *float64     `json:"maxSizeMovieGb,omitempty"`
-	MaxSizeEpisodeGB       *float64     `json:"maxSizeEpisodeGb,omitempty"`
-	MaxResolution          *string      `json:"maxResolution,omitempty"`
-	HDRDVPolicy            *HDRDVPolicy `json:"hdrDvPolicy,omitempty"`
-	RequiredTerms          *[]string    `json:"requiredTerms,omitempty"`
-	FilterOutTerms         *[]string    `json:"filterOutTerms,omitempty"`
-	PreferredTerms         *[]string    `json:"preferredTerms,omitempty"`
-	NonPreferredTerms      *[]string    `json:"nonPreferredTerms,omitempty"`
-	DownloadPreferredTerms *[]string    `json:"downloadPreferredTerms,omitempty"`
-	UnknownTrackPolicy     *string      `json:"unknownTrackPolicy,omitempty"`
-	AnimeLanguageEnabled   *bool        `json:"animeLanguageEnabled,omitempty"`
-	AnimePreferredLanguage *string      `json:"animePreferredLanguage,omitempty"`
+	MaxSizeMovieGB         *float64              `json:"maxSizeMovieGb,omitempty"`
+	MaxSizeEpisodeGB       *float64              `json:"maxSizeEpisodeGb,omitempty"`
+	MaxResolution          *string               `json:"maxResolution,omitempty"`
+	HDRDVPolicy            *HDRDVPolicy          `json:"hdrDvPolicy,omitempty"`
+	RequiredTerms          *[]string             `json:"requiredTerms,omitempty"`
+	FilterOutTerms         *[]string             `json:"filterOutTerms,omitempty"`
+	PreferredTerms         *[]string             `json:"preferredTerms,omitempty"`
+	NonPreferredTerms      *[]string             `json:"nonPreferredTerms,omitempty"`
+	DownloadPreferredTerms *[]string             `json:"downloadPreferredTerms,omitempty"`
+	UnknownTrackPolicy     *string               `json:"unknownTrackPolicy,omitempty"`
+	SplitByService         *bool                 `json:"splitByService,omitempty"`
+	Debrid                 *ClientFilterSettings `json:"debrid,omitempty"`
+	Usenet                 *ClientFilterSettings `json:"usenet,omitempty"`
+	AnimeLanguageEnabled   *bool                 `json:"animeLanguageEnabled,omitempty"`
+	AnimePreferredLanguage *string               `json:"animePreferredLanguage,omitempty"`
 
 	// Network settings for URL switching based on WiFi
 	HomeWifiSSID     *string `json:"homeWifiSSID,omitempty"`
@@ -72,7 +75,10 @@ type ClientFilterSettings struct {
 	MaxResultsPerResolution       *int     `json:"maxResultsPerResolution,omitempty"`
 
 	// Ranking criteria overrides
-	RankingCriteria *[]ClientRankingCriterion `json:"rankingCriteria,omitempty"`
+	RankingCriteria       *[]ClientRankingCriterion `json:"rankingCriteria,omitempty"`
+	RankingSplitByService *bool                     `json:"rankingSplitByService,omitempty"`
+	DebridRankingCriteria *[]ClientRankingCriterion `json:"debridRankingCriteria,omitempty"`
+	UsenetRankingCriteria *[]ClientRankingCriterion `json:"usenetRankingCriteria,omitempty"`
 
 	// Adaptive playback measurements (device display + throughput) used to derive
 	// transient filter caps at search time. Never written back into the flat
@@ -92,6 +98,9 @@ func (c *ClientFilterSettings) IsEmpty() bool {
 		c.NonPreferredTerms == nil &&
 		c.DownloadPreferredTerms == nil &&
 		c.UnknownTrackPolicy == nil &&
+		c.SplitByService == nil &&
+		c.Debrid == nil &&
+		c.Usenet == nil &&
 		c.AnimeLanguageEnabled == nil &&
 		c.AnimePreferredLanguage == nil &&
 		c.BypassFilteringForAIOStreamsOnly == nil &&
@@ -141,5 +150,8 @@ func (c *ClientFilterSettings) IsEmpty() bool {
 		c.HomeBackendUrl == nil &&
 		c.RemoteBackendUrl == nil &&
 		c.RankingCriteria == nil &&
+		c.RankingSplitByService == nil &&
+		c.DebridRankingCriteria == nil &&
+		c.UsenetRankingCriteria == nil &&
 		c.AdaptivePlayback == nil
 }
