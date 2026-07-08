@@ -1247,7 +1247,6 @@ func main() {
 	if videoHandler != nil {
 		videoHandler.SetPrewarmService(prewarmService)
 	}
-	prewarmService.RestorePrequeueEntries()
 
 	// Admin prequeue viewer endpoint
 	prequeueAdminHandler := handlers.NewAdminHandler(videoHandler.GetHLSManager())
@@ -1490,22 +1489,6 @@ func main() {
 	shutdownChan := make(chan os.Signal, 1)
 	signal.Notify(shutdownChan, os.Interrupt, syscall.SIGTERM)
 
-	// Start scheduler service for background tasks
-	if err := schedulerService.Start(context.Background()); err != nil {
-		log.Printf("Warning: failed to start scheduler service: %v", err)
-	}
-	if recordingsService != nil {
-		if err := recordingsService.Start(context.Background()); err != nil {
-			log.Printf("Warning: failed to start recordings service: %v", err)
-		}
-	}
-
-	// Start prewarm background URL refresh
-	prewarmService.Start(context.Background())
-
-	// Note: initial prewarm cycle is handled by the scheduler's immediate
-	// checkAndRunTasks() call on startup — no separate goroutine needed.
-
 	// Start background cache manager to warm trending data and custom lists
 	// on startup and refresh periodically (every 2 hours)
 	metadataService.SetCustomListInfoProvider(func() []metadata.CustomListInfo {
@@ -1583,9 +1566,6 @@ func main() {
 
 		return items
 	})
-	metadataService.StartBackgroundCacheManager(2 * time.Hour)
-	metadataService.StartBackgroundTopTenWorker(12 * time.Hour)
-	calendarService.StartBackgroundRefresh(4 * time.Hour)
 
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("STRMR_RUNTIME_LOGS")), "1") ||
 		strings.EqualFold(strings.TrimSpace(os.Getenv("STRMR_RUNTIME_LOGS")), "true") {
@@ -1637,6 +1617,30 @@ func main() {
 			log.Fatalf("Server error: %v", err)
 		}
 	}()
+	log.Printf("Server listening on %s", addr)
+
+	// Start expensive restore/sync/warmup work after the socket is accepting
+	// connections so restart health checks are not blocked by external probes.
+	go func() {
+		prewarmService.RestorePrequeueEntries()
+
+		// Start scheduler service for background tasks. Its immediate task check
+		// may trigger Trakt/Plex/etc. syncs, so keep it behind the listener.
+		if err := schedulerService.Start(context.Background()); err != nil {
+			log.Printf("Warning: failed to start scheduler service: %v", err)
+		}
+		if recordingsService != nil {
+			if err := recordingsService.Start(context.Background()); err != nil {
+				log.Printf("Warning: failed to start recordings service: %v", err)
+			}
+		}
+
+		// Start prewarm URL refresh and cache warmers after initial restore.
+		prewarmService.Start(context.Background())
+		metadataService.StartBackgroundCacheManager(2 * time.Hour)
+		metadataService.StartBackgroundTopTenWorker(12 * time.Hour)
+		calendarService.StartBackgroundRefresh(4 * time.Hour)
+	}()
 
 	// Wait for shutdown signal
 	<-shutdownChan
@@ -1649,6 +1653,7 @@ func main() {
 	// Stop background cache manager
 	metadataService.StopBackgroundCacheManager()
 	metadataService.StopBackgroundTopTenWorker()
+	prewarmService.Stop()
 
 	// Stop scheduler service
 	log.Println("🧹 Stopping scheduler service...")
