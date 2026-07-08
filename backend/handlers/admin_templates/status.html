@@ -2605,7 +2605,9 @@
                 const provider = providers[rowIndex];
                 const infoEl = row.querySelector('.debrid-expiry-info');
                 if (infoEl && provider) {
-                    if (provider.error) {
+                    if (!provider.enabled) {
+                        infoEl.innerHTML = '<div style="font-size: 0.75rem; color: var(--text-muted);">Disabled</div>';
+                    } else if (provider.error) {
                         const errorText = provider.error.replace(/^torbox /i, 'TorBox ');
                         infoEl.innerHTML = '<div style="font-size: 0.75rem; color: #ef4444; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="'+escapeHtml(errorText)+'">'+escapeHtml(errorText)+'</div>';
                     } else if (!provider.has_api_key) {

@@ -761,10 +761,10 @@ var SettingsSchema = map[string]interface{}{
 				"description": "Show the profile selector when the app is opened or returns from background",
 				"order":       4,
 			},
-			"includeUnreleasedMoviesInLists":  map[string]interface{}{"type": "boolean", "label": "Include Unreleased Movies in Lists", "description": "Show upcoming and unreleased movies in shelves, watchlist/list responses, and discovery list results.", "order": 5},
-			"includeUnreleasedShowsInLists":   map[string]interface{}{"type": "boolean", "label": "Include Unreleased Shows in Lists", "description": "Show shows with no aired episodes in shelves, watchlist/list responses, and discovery list results.", "order": 6},
-			"includeUnreleasedMoviesInSearch": map[string]interface{}{"type": "boolean", "label": "Include Unreleased Movies in Search", "description": "Show upcoming and unreleased movies in metadata search results.", "order": 7},
-			"includeUnreleasedShowsInSearch":  map[string]interface{}{"type": "boolean", "label": "Include Unreleased Shows in Search", "description": "Show shows with no aired episodes in metadata search results.", "order": 8},
+			"includeUnreleasedMoviesInLists":               map[string]interface{}{"type": "boolean", "label": "Include Unreleased Movies in Lists", "description": "Show upcoming and unreleased movies in shelves, watchlist/list responses, and discovery list results.", "order": 5},
+			"includeUnreleasedShowsInLists":                map[string]interface{}{"type": "boolean", "label": "Include Unreleased Shows in Lists", "description": "Show shows with no aired episodes in shelves, watchlist/list responses, and discovery list results.", "order": 6},
+			"includeUnreleasedMoviesInSearch":              map[string]interface{}{"type": "boolean", "label": "Include Unreleased Movies in Search", "description": "Show upcoming and unreleased movies in metadata search results.", "order": 7},
+			"includeUnreleasedShowsInSearch":               map[string]interface{}{"type": "boolean", "label": "Include Unreleased Shows in Search", "description": "Show shows with no aired episodes in metadata search results.", "order": 8},
 			"bypassFilteringForAioStreamsOnly":             map[string]interface{}{"type": "boolean", "label": "Bypass Filtering for AIOStreams Only", "description": "Skip mediastorm filtering/ranking when AIOStreams is the only enabled scraper in debrid-only mode (use AIOStreams' own ranking). Does not apply in hybrid mode with usenet.", "order": 9},
 			"showParsedBadges":                             map[string]interface{}{"type": "boolean", "label": "Show Parsed Metadata Badges", "description": "Show parsed quality badges (resolution, codec, HDR, audio) instead of raw release titles in manual source selection", "order": 10},
 			"blurUnwatchedEpisodeThumbnails":               map[string]interface{}{"type": "boolean", "label": "Blur Unwatched Episode Thumbnails", "description": "Blur episode thumbnails on the Details page until the episode has been watched.", "order": 19},
@@ -3240,8 +3240,13 @@ func (h *AdminUIHandler) GetDebridStatus(w http.ResponseWriter, r *http.Request)
 			HasAPIKey: p.APIKey != "",
 		}
 
+		if !p.Enabled {
+			providers = append(providers, status)
+			continue
+		}
+
 		if p.APIKey != "" {
-			// Fetch account info from each provider (even if disabled, to show premium status)
+			// Fetch account info only for enabled providers.
 			switch p.Provider {
 			case "realdebrid":
 				client := debrid.NewRealDebridClient(p.APIKey)
