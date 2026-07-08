@@ -1942,6 +1942,50 @@ func TestAdminUIHandler_DeleteUsenetEngineTestArtifact(t *testing.T) {
 	}
 }
 
+func TestAdminUIHandler_DeleteUsenetEngineTestArtifactTreatsDecypharrUnsupportedDeleteAsExpected(t *testing.T) {
+	handler, _ := setupAdminUIHandler(t)
+
+	var sawDelete bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodDelete && r.URL.Path == "/webdav/nzbs/test":
+			sawDelete = true
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"name":          "Decypharr",
+		"type":          "decypharr",
+		"webdavBaseUrl": server.URL + "/webdav",
+		"artifactUrl":   server.URL + "/webdav/nzbs/test",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/test/usenet-engine/delete-artifact", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.DeleteUsenetEngineTestArtifact(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !sawDelete {
+		t.Fatal("expected WebDAV artifact delete")
+	}
+	var result map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode JSON response: %v", err)
+	}
+	if result["success"] != true {
+		t.Fatalf("unexpected response: %#v", result)
+	}
+	message := fmt.Sprint(result["message"])
+	if strings.Contains(message, "failed") || !strings.Contains(message, "Decypharr does not support WebDAV delete") {
+		t.Fatalf("message = %q", message)
+	}
+}
+
 func TestAdminUIHandler_DeleteUsenetEngineTestArtifactRejectsOutsideWebDAVRoot(t *testing.T) {
 	handler, _ := setupAdminUIHandler(t)
 

@@ -5599,6 +5599,13 @@ func (h *AdminUIHandler) DeleteUsenetEngineTestArtifact(w http.ResponseWriter, r
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 	if err := deleteUsenetEngineMappedWebDAVURL(ctx, engineSettings, artifactURL); err != nil {
+		if isDecypharrWebDAVDeleteUnsupported(engineSettings, err) {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": true,
+				"message": "Decypharr does not support WebDAV delete for this test artifact; leaving it in place is expected.",
+			})
+			return
+		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": false,
 			"error":   fmt.Sprintf("WebDAV delete failed: %v", err),
@@ -5609,6 +5616,16 @@ func (h *AdminUIHandler) DeleteUsenetEngineTestArtifact(w http.ResponseWriter, r
 		"success": true,
 		"message": "Test artifact deleted from WebDAV",
 	})
+}
+
+func isDecypharrWebDAVDeleteUnsupported(engine config.UsenetEngineSettings, err error) bool {
+	if err == nil || !strings.EqualFold(strings.TrimSpace(engine.Type), "decypharr") {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "WebDAV delete returned HTTP 500") ||
+		strings.Contains(message, "WebDAV delete returned HTTP 405") ||
+		strings.Contains(message, "WebDAV delete returned HTTP 501")
 }
 
 func decypharrAuthHint(engine config.UsenetEngineSettings, err error) string {
