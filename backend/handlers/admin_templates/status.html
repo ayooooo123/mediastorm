@@ -200,6 +200,12 @@
     height: 16px;
 }
 
+.dashboard-uptime {
+    margin-top: 0.35rem;
+    color: var(--text-muted);
+    font-size: 0.8125rem;
+}
+
 @media (max-width: 760px) {
     .donation-banner {
         grid-template-columns: 1fr;
@@ -275,6 +281,7 @@
     <div>
         <h1>Dashboard</h1>
         <p>Real-time monitoring and overview of your mediastorm server</p>
+        <div id="backendUptime" class="dashboard-uptime" aria-live="polite">Backend uptime loading...</div>
     </div>
     <button class="btn btn-secondary" onclick="refreshStatus()">
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
@@ -1683,6 +1690,8 @@
     let dashboardStatsTimer = null;
     let dashboardStatsInFlight = false;
     let lastWatchTimeStats = null;
+    let backendStartedAtMs = null;
+    let backendUptimeTimer = null;
 
     function setStreamView(view) {
         currentStreamView = view;
@@ -1726,6 +1735,60 @@
             testEndpoint(basePath + '/api/status', 'status'),
             testEndpoint(basePath + '/api/profiles', 'profiles')
         ]);
+    }
+
+    function formatBackendUptime(totalSeconds) {
+        const seconds = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+        const hours = Math.floor(seconds / 3600);
+        const minutes = Math.floor((seconds % 3600) / 60);
+        const remainingSeconds = seconds % 60;
+        return `${hours}:${String(minutes).padStart(2, '0')}:${String(remainingSeconds).padStart(2, '0')}`;
+    }
+
+    function formatBackendStartedAt(value) {
+        const startedAt = new Date(value);
+        if (Number.isNaN(startedAt.getTime())) return 'unknown';
+        return startedAt.toLocaleString(undefined, {
+            year: 'numeric',
+            month: 'short',
+            day: 'numeric',
+            hour: 'numeric',
+            minute: '2-digit',
+            second: '2-digit',
+        });
+    }
+
+    function renderBackendUptime() {
+        const uptimeEl = document.getElementById('backendUptime');
+        if (!uptimeEl || !backendStartedAtMs) return;
+        const elapsedSeconds = Math.max(0, (Date.now() - backendStartedAtMs) / 1000);
+        uptimeEl.textContent = `Backend up for ${formatBackendUptime(elapsedSeconds)} (since ${formatBackendStartedAt(backendStartedAtMs)})`;
+    }
+
+    function startBackendUptimeTimer() {
+        if (backendUptimeTimer) clearInterval(backendUptimeTimer);
+        backendUptimeTimer = setInterval(renderBackendUptime, 1000);
+    }
+
+    async function loadBackendUptime() {
+        const uptimeEl = document.getElementById('backendUptime');
+        if (!uptimeEl) return;
+        try {
+            const response = await fetch(basePath + '/api/status', { credentials: 'same-origin' });
+            if (!response.ok) throw new Error(`Status ${response.status}`);
+            const status = await response.json();
+            const startedAt = new Date(status.started_at).getTime();
+            if (!Number.isNaN(startedAt)) {
+                backendStartedAtMs = startedAt;
+                renderBackendUptime();
+                startBackendUptimeTimer();
+            } else {
+                uptimeEl.textContent = `Backend up for ${formatBackendUptime(status.uptime_seconds)} (since unknown)`;
+            }
+        } catch (error) {
+            console.warn('Failed to load backend uptime:', error);
+            uptimeEl.textContent = 'Backend uptime unavailable';
+        }
     }
 
     function formatBytes(bytes) {
@@ -2572,6 +2635,7 @@
             }
             // Reconnect SSE to get fresh stream data
             connectSSE();
+            loadBackendUptime();
             loadDashboardStats();
             showToast('Status refreshed');
         } catch (e) {
@@ -2883,6 +2947,7 @@
         setStreamView(currentStreamView);
         connectSSE();
         startInterpolation();
+        loadBackendUptime();
         loadDashboardStats();
         startDashboardStatsAutoRefresh();
         loadDashboardUpdateNotification();
@@ -2901,6 +2966,7 @@
     window.addEventListener('beforeunload', () => {
         if (eventSource) eventSource.close();
         if (interpolationTimer) clearInterval(interpolationTimer);
+        if (backendUptimeTimer) clearInterval(backendUptimeTimer);
         if (dashboardStatsTimer) clearInterval(dashboardStatsTimer);
         if (fallbackPollTimer) clearInterval(fallbackPollTimer);
         if (sseRetryTimer) clearTimeout(sseRetryTimer);
