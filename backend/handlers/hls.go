@@ -500,6 +500,11 @@ const (
 	// and the 30-minute cleanup handles abandoned sessions
 	hlsStartupTimeout = 30 * time.Second
 
+	// YouTube trailer startup should wait for actual media readiness, not a fixed
+	// wall-clock window. The timeout keeps expired CDN URLs from blocking fallback.
+	youtubeStartupReadyTimeout      = 4 * time.Second
+	youtubeStartupReadyPollInterval = 25 * time.Millisecond
+
 	// Timeout for details page prequeue - user opened details but might not play
 	// Kill after 2 minutes if they don't start watching
 	hlsDetailsPrequeueTimeout = 2 * time.Minute
@@ -1449,31 +1454,93 @@ func (m *HLSManager) CreateYouTubeSession(ctx context.Context, videoURL, audioUR
 
 	// yt-dlp URLs can expire or be rejected by the CDN immediately. If FFmpeg
 	// fails during startup, surface that through /youtube/hls/start so callers
-	// can fall back before navigating to a playlist that will never exist.
-	select {
-	case err := <-startupErr:
-		log.Printf("[hls-youtube] session %s startup failed elapsed=%s video={%s} audio={%s}: %v",
-			sessionID,
-			time.Since(now).Round(time.Millisecond),
-			youtubeMediaURLLogSummary(videoURL),
-			youtubeMediaURLLogSummary(audioURL),
-			err)
+	// can fall back before navigating to a playlist that will never exist. When
+	// FFmpeg is healthy, wait until the playlist references real media and the
+	// first two segments exist so TV players do not mount into an immediate
+	// segment-boundary rebuffer.
+	cleanupStartupFailure := func() {
 		cancel()
 		m.mu.Lock()
 		delete(m.sessions, sessionID)
 		m.mu.Unlock()
-		return nil, err
-	case <-time.After(1200 * time.Millisecond):
-		log.Printf("[hls-youtube] session %s startup window passed elapsed=%s", sessionID, time.Since(now).Round(time.Millisecond))
-	case <-ctx.Done():
-		cancel()
-		m.mu.Lock()
-		delete(m.sessions, sessionID)
-		m.mu.Unlock()
-		return nil, ctx.Err()
+	}
+	readyTimer := time.NewTimer(youtubeStartupReadyTimeout)
+	defer readyTimer.Stop()
+	readyTicker := time.NewTicker(youtubeStartupReadyPollInterval)
+	defer readyTicker.Stop()
+	lastPlaylistBytes := 0
+	var lastSegment0Bytes int64
+	var lastSegment1Bytes int64
+
+	for {
+		playlistBytes, segment0Bytes, segment1Bytes, ready := youtubeStartupMediaReady(session)
+		lastPlaylistBytes = playlistBytes
+		lastSegment0Bytes = segment0Bytes
+		lastSegment1Bytes = segment1Bytes
+		if ready {
+			log.Printf("[hls-youtube] session %s startup media ready elapsed=%s playlistBytes=%d segment0Bytes=%d segment1Bytes=%d",
+				sessionID,
+				time.Since(now).Round(time.Millisecond),
+				playlistBytes,
+				segment0Bytes,
+				segment1Bytes)
+			break
+		}
+
+		select {
+		case err := <-startupErr:
+			log.Printf("[hls-youtube] session %s startup failed elapsed=%s playlistBytes=%d segment0Bytes=%d segment1Bytes=%d video={%s} audio={%s}: %v",
+				sessionID,
+				time.Since(now).Round(time.Millisecond),
+				lastPlaylistBytes,
+				lastSegment0Bytes,
+				lastSegment1Bytes,
+				youtubeMediaURLLogSummary(videoURL),
+				youtubeMediaURLLogSummary(audioURL),
+				err)
+			cleanupStartupFailure()
+			return nil, err
+		case <-readyTicker.C:
+			continue
+		case <-readyTimer.C:
+			log.Printf("[hls-youtube] session %s startup readiness timeout elapsed=%s playlistBytes=%d segment0Bytes=%d segment1Bytes=%d returning session without two ready segments",
+				sessionID,
+				time.Since(now).Round(time.Millisecond),
+				lastPlaylistBytes,
+				lastSegment0Bytes,
+				lastSegment1Bytes)
+			return session, nil
+		case <-ctx.Done():
+			cleanupStartupFailure()
+			return nil, ctx.Err()
+		}
 	}
 
 	return session, nil
+}
+
+func youtubeStartupMediaReady(session *HLSSession) (int, int64, int64, bool) {
+	if session == nil {
+		return 0, 0, 0, false
+	}
+
+	playlistPath := filepath.Join(session.OutputDir, "stream.m3u8")
+	content, err := os.ReadFile(playlistPath)
+	if err != nil || !playlistHasMediaSegment(content) {
+		return len(content), 0, 0, false
+	}
+
+	segment0Info, err := os.Stat(filepath.Join(session.OutputDir, "segment0.ts"))
+	if err != nil || segment0Info.Size() <= 0 {
+		return len(content), 0, 0, false
+	}
+
+	segment1Info, err := os.Stat(filepath.Join(session.OutputDir, "segment1.ts"))
+	if err != nil || segment1Info.Size() <= 0 {
+		return len(content), segment0Info.Size(), 0, false
+	}
+
+	return len(content), segment0Info.Size(), segment1Info.Size(), true
 }
 
 func ffmpegHTTPProxyArgs(proxyURL string) []string {
