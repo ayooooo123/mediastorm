@@ -1663,6 +1663,8 @@ type AdminPageData struct {
 type AdminStatus struct {
 	BackendReachable bool      `json:"backend_reachable"`
 	Timestamp        time.Time `json:"timestamp"`
+	StartedAt        time.Time `json:"started_at"`
+	UptimeSeconds    float64   `json:"uptime_seconds"`
 	UsenetTotal      int       `json:"usenet_total"`
 	DebridStatus     string    `json:"debrid_status"`
 }
@@ -3177,6 +3179,8 @@ func (h *AdminUIHandler) getStatus(settings config.Settings) AdminStatus {
 	status := AdminStatus{
 		BackendReachable: true, // We're in the same process
 		Timestamp:        time.Now(),
+		StartedAt:        processStartTime.UTC(),
+		UptimeSeconds:    time.Since(processStartTime).Seconds(),
 	}
 
 	// Calculate usenet total connections

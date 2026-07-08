@@ -694,6 +694,17 @@ func TestAdminUIHandler_GetStatus(t *testing.T) {
 		if contentType != "application/json" {
 			t.Errorf("Content-Type = %q, want %q", contentType, "application/json")
 		}
+
+		var status handlers.AdminStatus
+		if err := json.NewDecoder(rec.Body).Decode(&status); err != nil {
+			t.Fatalf("failed to decode status response: %v", err)
+		}
+		if status.StartedAt.IsZero() {
+			t.Error("expected started_at to be set")
+		}
+		if status.UptimeSeconds < 0 {
+			t.Errorf("expected uptime_seconds >= 0, got %f", status.UptimeSeconds)
+		}
 	}
 }
 
