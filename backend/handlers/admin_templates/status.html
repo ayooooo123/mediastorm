@@ -360,7 +360,14 @@
             </div>
             <div class="watch-time-chart" aria-label="Watch time distribution">
                 <div class="watch-time-chart-header">
-                    <span>By type</span>
+                    <div class="watch-time-chart-title">
+                        <span>By type</span>
+                        <select id="watchTimeChartRangeSelect" class="form-select watch-time-chart-range" onchange="renderWatchTimeChart(lastWatchTimeStats)">
+                            <option value="ever">Ever</option>
+                            <option value="month">Last Month</option>
+                            <option value="week">Last 7 Days</option>
+                        </select>
+                    </div>
                     <span id="watchTimeChartTotal">-</span>
                 </div>
                 <div class="watch-time-chart-bar" id="watchTimeChartBar">
@@ -958,12 +965,29 @@
 
     .watch-time-chart-header {
         display: flex;
+        align-items: center;
         justify-content: space-between;
         gap: 0.75rem;
         color: var(--text-secondary);
         font-size: 0.75rem;
         font-weight: 600;
         margin-bottom: 0.625rem;
+    }
+
+    .watch-time-chart-title {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        min-width: 0;
+    }
+
+    .watch-time-chart-range {
+        width: auto;
+        min-width: 8.25rem;
+        max-width: 9.5rem;
+        padding: 0.3rem 1.75rem 0.3rem 0.55rem;
+        font-size: 0.72rem;
+        font-weight: 500;
     }
 
     .watch-time-chart-header span:last-child {
@@ -1658,6 +1682,7 @@
     const DASHBOARD_STATS_REFRESH_MS = 30000;
     let dashboardStatsTimer = null;
     let dashboardStatsInFlight = false;
+    let lastWatchTimeStats = null;
 
     function setStreamView(view) {
         currentStreamView = view;
@@ -1994,6 +2019,7 @@
         if (weekEl) weekEl.textContent = formatWatchTime(watchTime.weekSeconds);
         if (monthEl) monthEl.textContent = formatWatchTime(watchTime.monthSeconds);
         if (everEl) everEl.textContent = formatWatchTime(watchTime.everSeconds);
+        lastWatchTimeStats = watchTime;
         renderWatchTimeChart(watchTime);
         if (noteEl) {
             noteEl.textContent = watchTime.hasTracked
@@ -2104,36 +2130,39 @@
         const totalEl = document.getElementById('watchTimeChartTotal');
         if (!bar || !legend || !totalEl) return;
 
-        const everSeconds = Math.max(0, Number(watchTime?.everSeconds || 0));
+        const rangeSelect = document.getElementById('watchTimeChartRangeSelect');
+        const selectedRange = rangeSelect?.value || 'ever';
+        const rangeStats = getWatchTimeRangeStats(watchTime, selectedRange);
+        const totalSeconds = Math.max(0, Number(rangeStats.totalSeconds || 0));
         const buckets = [
             {
                 key: 'movie',
                 label: 'Movies',
                 color: 'var(--accent)',
-                seconds: Math.max(0, Number(watchTime?.movieSeconds || 0)),
+                seconds: Math.max(0, Number(rangeStats.movieSeconds || 0)),
             },
             {
                 key: 'episode',
                 label: 'Episodes',
                 color: 'var(--accent-hover)',
-                seconds: Math.max(0, Number(watchTime?.episodeSeconds || 0)),
+                seconds: Math.max(0, Number(rangeStats.episodeSeconds || 0)),
             },
             {
                 key: 'live',
                 label: 'Live TV',
                 color: 'var(--success)',
-                seconds: Math.max(0, Number(watchTime?.liveSeconds || 0)),
+                seconds: Math.max(0, Number(rangeStats.liveSeconds || 0)),
             },
             {
                 key: 'other',
                 label: 'Other',
                 color: 'var(--text-muted)',
-                seconds: Math.max(0, Number(watchTime?.otherSeconds || 0)),
+                seconds: Math.max(0, Number(rangeStats.otherSeconds || 0)),
             },
         ].filter((bucket) => bucket.seconds > 0 || bucket.key !== 'other');
 
-        totalEl.textContent = formatWatchTime(everSeconds);
-        if (everSeconds <= 0) {
+        totalEl.textContent = formatWatchTime(totalSeconds);
+        if (totalSeconds <= 0) {
             bar.innerHTML = '<span class="watch-time-chart-empty">No tracked time yet</span>';
             legend.innerHTML = buckets.map((bucket) => watchTimeLegendItem(bucket)).join('');
             return;
@@ -2142,11 +2171,30 @@
         bar.innerHTML = buckets
             .filter((bucket) => bucket.seconds > 0)
             .map((bucket) => {
-                const width = Math.max(1, (bucket.seconds / everSeconds) * 100);
+                const width = Math.max(1, (bucket.seconds / totalSeconds) * 100);
                 return `<span class="watch-time-chart-segment ${bucket.key}" style="width: ${width.toFixed(3)}%; background: ${bucket.color};" title="${escapeHtml(bucket.label)}: ${escapeHtml(formatWatchTime(bucket.seconds))}"></span>`;
             })
             .join('');
         legend.innerHTML = buckets.map((bucket) => watchTimeLegendItem(bucket)).join('');
+    }
+
+    function getWatchTimeRangeStats(watchTime, range) {
+        const byRange = watchTime?.byRange || {};
+        const rangeStats = byRange[range];
+        if (rangeStats) return rangeStats;
+        if (range === 'week') {
+            return { totalSeconds: watchTime?.weekSeconds || 0 };
+        }
+        if (range === 'month') {
+            return { totalSeconds: watchTime?.monthSeconds || 0 };
+        }
+        return {
+            totalSeconds: watchTime?.everSeconds || 0,
+            movieSeconds: watchTime?.movieSeconds || 0,
+            episodeSeconds: watchTime?.episodeSeconds || 0,
+            liveSeconds: watchTime?.liveSeconds || 0,
+            otherSeconds: watchTime?.otherSeconds || 0,
+        };
     }
 
     function watchTimeLegendItem(bucket) {

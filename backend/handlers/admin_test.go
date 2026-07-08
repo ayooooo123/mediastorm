@@ -21,6 +21,39 @@ func (m *mockProgressService) ListAllPlaybackProgress() map[string][]models.Play
 	return m.all
 }
 
+func TestAddDashboardWatchSecondsTracksTypeBucketsByRange(t *testing.T) {
+	now := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
+	weekCutoff := now.AddDate(0, 0, -7)
+	monthCutoff := now.AddDate(0, -1, 0)
+	stats := dashboardWatchTimeStats{}
+
+	addDashboardWatchSeconds(&stats, "movie", 3600, now.AddDate(0, 0, -1), weekCutoff, monthCutoff)
+	addDashboardWatchSeconds(&stats, "episode", 1800, now.AddDate(0, 0, -10), weekCutoff, monthCutoff)
+	addDashboardWatchSeconds(&stats, "live", 900, now.AddDate(0, -2, 0), weekCutoff, monthCutoff)
+
+	if stats.EverSeconds != 6300 {
+		t.Fatalf("expected ever total 6300, got %.0f", stats.EverSeconds)
+	}
+	if stats.ByRange.Ever.TotalSeconds != 6300 || stats.ByRange.Ever.MovieSeconds != 3600 || stats.ByRange.Ever.EpisodeSeconds != 1800 || stats.ByRange.Ever.LiveSeconds != 900 {
+		t.Fatalf("unexpected ever buckets: %+v", stats.ByRange.Ever)
+	}
+	if stats.MonthSeconds != 5400 {
+		t.Fatalf("expected month total 5400, got %.0f", stats.MonthSeconds)
+	}
+	if stats.ByRange.Month.TotalSeconds != 5400 || stats.ByRange.Month.MovieSeconds != 3600 || stats.ByRange.Month.EpisodeSeconds != 1800 || stats.ByRange.Month.LiveSeconds != 0 {
+		t.Fatalf("unexpected month buckets: %+v", stats.ByRange.Month)
+	}
+	if stats.WeekSeconds != 3600 {
+		t.Fatalf("expected week total 3600, got %.0f", stats.WeekSeconds)
+	}
+	if stats.ByRange.Week.TotalSeconds != 3600 || stats.ByRange.Week.MovieSeconds != 3600 || stats.ByRange.Week.EpisodeSeconds != 0 || stats.ByRange.Week.LiveSeconds != 0 {
+		t.Fatalf("unexpected week buckets: %+v", stats.ByRange.Week)
+	}
+	if stats.MovieSeconds != stats.ByRange.Ever.MovieSeconds || stats.EpisodeSeconds != stats.ByRange.Ever.EpisodeSeconds || stats.LiveSeconds != stats.ByRange.Ever.LiveSeconds {
+		t.Fatalf("legacy type totals should mirror ever buckets: stats=%+v ever=%+v", stats, stats.ByRange.Ever)
+	}
+}
+
 func TestGetActiveStreams_PauseDetection(t *testing.T) {
 	tmpDir := t.TempDir()
 	hlsMgr := NewHLSManager(tmpDir, "", "", nil)
