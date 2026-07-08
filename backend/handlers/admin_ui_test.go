@@ -743,6 +743,62 @@ func TestAdminUIHandler_StatusPageIncludesDonationBanner(t *testing.T) {
 	}
 }
 
+func TestAdminUIHandler_GetDebridStatusSkipsDisabledProviders(t *testing.T) {
+	handler, tmpDir := setupAdminUIHandler(t)
+
+	mgr := config.NewManager(filepath.Join(tmpDir, "settings.yaml"))
+	settings, err := mgr.Load()
+	if err != nil {
+		t.Fatalf("load settings: %v", err)
+	}
+	settings.Streaming.DebridProviders = []config.DebridProviderSettings{
+		{
+			Name:     "Disabled Real Debrid",
+			Provider: "realdebrid",
+			Enabled:  false,
+			APIKey:   "disabled-provider-key",
+		},
+	}
+	if err := mgr.Save(settings); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/debrid-status", nil)
+	rec := httptest.NewRecorder()
+
+	handler.GetDebridStatus(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GetDebridStatus status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var body struct {
+		Providers []struct {
+			Name      string `json:"name"`
+			Provider  string `json:"provider"`
+			Enabled   bool   `json:"enabled"`
+			HasAPIKey bool   `json:"has_api_key"`
+			Error     string `json:"error"`
+		} `json:"providers"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.Providers) != 1 {
+		t.Fatalf("providers len = %d, want 1; body=%s", len(body.Providers), rec.Body.String())
+	}
+	provider := body.Providers[0]
+	if provider.Enabled {
+		t.Fatalf("provider enabled = true, want false")
+	}
+	if !provider.HasAPIKey {
+		t.Fatalf("provider has_api_key = false, want true")
+	}
+	if provider.Error != "" {
+		t.Fatalf("disabled provider should not be tested, got error %q", provider.Error)
+	}
+}
+
 func TestAdminUIHandler_GetStreams(t *testing.T) {
 	handler, tmpDir := setupAdminUIHandler(t)
 
