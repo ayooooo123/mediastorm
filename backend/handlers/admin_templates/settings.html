@@ -5863,53 +5863,55 @@
 
     function ensureBuiltInHomeShelfConfig(shelves) {
         if (!Array.isArray(shelves)) return shelves;
+        const insertBuiltInShelf = (config, anchorId, fallbackOrder) => {
+            if (shelves.some((s) => s.id === config.id)) return;
+            const anchorShelf = anchorId ? shelves.find((s) => s.id === anchorId) : null;
+            const maxOrder = shelves.reduce((max, s) => Math.max(max, s.order || 0), -1);
+            const insertOrder = anchorShelf ? (anchorShelf.order || 0) + 1 : (fallbackOrder ?? maxOrder + 1);
+            shelves.forEach((s) => {
+                if ((s.order || 0) >= insertOrder) s.order = (s.order || 0) + 1;
+            });
+            shelves.push({
+                ...config,
+                order: insertOrder,
+                type: config.type || 'builtin',
+            });
+        };
+
         const myUpcomingShelf = shelves.find((s) => s.id === 'my-upcoming');
         if (myUpcomingShelf) {
             if (!myUpcomingShelf.sort) myUpcomingShelf.sort = defaultMyUpcomingSort();
         } else {
-            const continueShelf = shelves.find((s) => s.id === 'continue-watching');
-            const insertOrder = continueShelf ? (continueShelf.order || 0) + 1 : 2;
-            shelves.forEach((s) => {
-                if ((s.order || 0) >= insertOrder) s.order = (s.order || 0) + 1;
-            });
-            shelves.push({
+            insertBuiltInShelf({
                 id: 'my-upcoming',
                 name: 'My Upcoming',
                 enabled: true,
-                order: insertOrder,
-                type: 'builtin',
                 sort: defaultMyUpcomingSort(),
-            });
+            }, 'continue-watching', 2);
         }
         if (!shelves.some((s) => s.id === 'my-recommended') && !shelves.some((s) => s.id === 'gemini-recs')) {
-            const continueShelf = shelves.find((s) => s.id === 'continue-watching');
-            const insertOrder = continueShelf ? (continueShelf.order || 0) + 1 : 2;
-            shelves.forEach((s) => {
-                if ((s.order || 0) >= insertOrder) s.order = (s.order || 0) + 1;
-            });
-            shelves.push({
+            insertBuiltInShelf({
                 id: 'my-recommended',
                 name: 'My Recommended',
                 enabled: true,
-                order: insertOrder,
-                type: 'builtin',
-            });
+            }, 'continue-watching', 2);
         }
-        if (shelves.some((s) => s.id === 'my-recently-aired')) return shelves;
-
-        const calendarShelf = shelves.find((s) => s.id === 'calendar');
-        const insertOrder = calendarShelf ? (calendarShelf.order || 0) + 1 : 3;
-        shelves.forEach((s) => {
-            if ((s.order || 0) >= insertOrder) s.order = (s.order || 0) + 1;
-        });
-        shelves.push({
+        insertBuiltInShelf({
             id: 'my-recently-aired',
             name: 'My Recently Aired',
             enabled: true,
-            order: insertOrder,
-            type: 'builtin',
             calendarSources: defaultRecentlyAiredSources(),
-        });
+        }, 'calendar', 5);
+        insertBuiltInShelf({
+            id: 'streaming-services',
+            name: 'Streaming Services',
+            enabled: true,
+        }, 'trending-tv');
+        insertBuiltInShelf({
+            id: 'live-favorites',
+            name: 'Favorite Channels',
+            enabled: false,
+        }, 'streaming-services');
         return shelves;
     }
 

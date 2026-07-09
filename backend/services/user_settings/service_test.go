@@ -625,8 +625,8 @@ func TestGetWithDefaults_BackfillsCalendarShelf(t *testing.T) {
 		t.Fatalf("GetWithDefaults: %v", err)
 	}
 
-	if len(got.HomeShelves.Shelves) != 10 {
-		t.Fatalf("expected 10 shelves after backfill, got %d", len(got.HomeShelves.Shelves))
+	if len(got.HomeShelves.Shelves) != 11 {
+		t.Fatalf("expected 11 shelves after backfill, got %d", len(got.HomeShelves.Shelves))
 	}
 
 	var topTen *models.ShelfConfig
@@ -634,6 +634,8 @@ func TestGetWithDefaults_BackfillsCalendarShelf(t *testing.T) {
 	var myUpcoming *models.ShelfConfig
 	var calendar *models.ShelfConfig
 	var recentlyAired *models.ShelfConfig
+	var streamingServices *models.ShelfConfig
+	var liveFavorites *models.ShelfConfig
 	for i := range got.HomeShelves.Shelves {
 		if got.HomeShelves.Shelves[i].ID == "top-ten" {
 			topTen = &got.HomeShelves.Shelves[i]
@@ -649,6 +651,12 @@ func TestGetWithDefaults_BackfillsCalendarShelf(t *testing.T) {
 		}
 		if got.HomeShelves.Shelves[i].ID == "my-recently-aired" {
 			recentlyAired = &got.HomeShelves.Shelves[i]
+		}
+		if got.HomeShelves.Shelves[i].ID == "streaming-services" {
+			streamingServices = &got.HomeShelves.Shelves[i]
+		}
+		if got.HomeShelves.Shelves[i].ID == "live-favorites" {
+			liveFavorites = &got.HomeShelves.Shelves[i]
 		}
 	}
 	if topTen == nil {
@@ -698,6 +706,18 @@ func TestGetWithDefaults_BackfillsCalendarShelf(t *testing.T) {
 		models.BoolVal(recentlyAired.CalendarSources.TopTrending, false) ||
 		models.BoolVal(recentlyAired.CalendarSources.MDBLists, false) {
 		t.Fatal("expected my recently aired shelf to default to watchlist only")
+	}
+	if streamingServices == nil {
+		t.Fatal("expected streaming services shelf to be backfilled")
+	}
+	if liveFavorites == nil {
+		t.Fatal("expected live favorites shelf to be backfilled")
+	}
+	if liveFavorites.Enabled {
+		t.Fatal("expected live favorites shelf to default disabled")
+	}
+	if liveFavorites.Order != streamingServices.Order+1 {
+		t.Fatalf("expected live favorites shelf after streaming services, got %d after %d", liveFavorites.Order, streamingServices.Order)
 	}
 }
 
@@ -834,8 +854,8 @@ func TestLoad_MigratesMissingCalendarShelf(t *testing.T) {
 	if got == nil {
 		t.Fatal("expected migrated settings")
 	}
-	if len(got.HomeShelves.Shelves) != 10 {
-		t.Fatalf("expected 10 shelves after migration, got %d", len(got.HomeShelves.Shelves))
+	if len(got.HomeShelves.Shelves) != 11 {
+		t.Fatalf("expected 11 shelves after migration, got %d", len(got.HomeShelves.Shelves))
 	}
 
 	var topTen *models.ShelfConfig
@@ -843,6 +863,8 @@ func TestLoad_MigratesMissingCalendarShelf(t *testing.T) {
 	var myUpcoming *models.ShelfConfig
 	var calendar *models.ShelfConfig
 	var recentlyAired *models.ShelfConfig
+	var streamingServices *models.ShelfConfig
+	var liveFavorites *models.ShelfConfig
 	for i := range got.HomeShelves.Shelves {
 		if got.HomeShelves.Shelves[i].ID == "top-ten" {
 			topTen = &got.HomeShelves.Shelves[i]
@@ -858,6 +880,12 @@ func TestLoad_MigratesMissingCalendarShelf(t *testing.T) {
 		}
 		if got.HomeShelves.Shelves[i].ID == "my-recently-aired" {
 			recentlyAired = &got.HomeShelves.Shelves[i]
+		}
+		if got.HomeShelves.Shelves[i].ID == "streaming-services" {
+			streamingServices = &got.HomeShelves.Shelves[i]
+		}
+		if got.HomeShelves.Shelves[i].ID == "live-favorites" {
+			liveFavorites = &got.HomeShelves.Shelves[i]
 		}
 	}
 	if topTen == nil {
@@ -889,6 +917,18 @@ func TestLoad_MigratesMissingCalendarShelf(t *testing.T) {
 	}
 	if recentlyAired.Order != 5 {
 		t.Fatalf("expected my recently aired shelf order 5, got %d", recentlyAired.Order)
+	}
+	if streamingServices == nil {
+		t.Fatal("expected streaming services shelf to be migrated in")
+	}
+	if liveFavorites == nil {
+		t.Fatal("expected live favorites shelf to be migrated in")
+	}
+	if liveFavorites.Enabled {
+		t.Fatal("expected live favorites shelf to default disabled")
+	}
+	if liveFavorites.Order != streamingServices.Order+1 {
+		t.Fatalf("expected live favorites shelf after streaming services, got %d after %d", liveFavorites.Order, streamingServices.Order)
 	}
 
 	var watchlist *models.ShelfConfig

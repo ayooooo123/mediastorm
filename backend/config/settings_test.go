@@ -561,7 +561,7 @@ func TestLoadPreservesHomeTopShelfSettings(t *testing.T) {
 	}
 }
 
-func TestLoadBackfillsStreamingServicesHomeShelf(t *testing.T) {
+func TestLoadBackfillsStreamingServicesAndLiveFavoritesHomeShelves(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
 	raw := []byte(`{"homeShelves":{"shelves":[
 		{"id":"continue-watching","name":"Continue Watching","enabled":true,"order":1},
@@ -576,24 +576,37 @@ func TestLoadBackfillsStreamingServicesHomeShelf(t *testing.T) {
 		t.Fatalf("load settings: %v", err)
 	}
 
-	var shelf *ShelfConfig
+	var streamingShelf *ShelfConfig
+	var liveFavoritesShelf *ShelfConfig
 	trendingTVOrder := -1
 	for i := range settings.HomeShelves.Shelves {
 		if settings.HomeShelves.Shelves[i].ID == "streaming-services" {
-			shelf = &settings.HomeShelves.Shelves[i]
+			streamingShelf = &settings.HomeShelves.Shelves[i]
+		}
+		if settings.HomeShelves.Shelves[i].ID == "live-favorites" {
+			liveFavoritesShelf = &settings.HomeShelves.Shelves[i]
 		}
 		if settings.HomeShelves.Shelves[i].ID == "trending-tv" {
 			trendingTVOrder = settings.HomeShelves.Shelves[i].Order
 		}
 	}
-	if shelf == nil {
+	if streamingShelf == nil {
 		t.Fatal("expected streaming-services shelf to be backfilled")
 	}
-	if !shelf.Enabled {
+	if !streamingShelf.Enabled {
 		t.Fatal("expected streaming-services shelf to default enabled")
 	}
-	if shelf.Order != trendingTVOrder+1 {
-		t.Fatalf("streaming-services order = %d, want after trending-tv order %d", shelf.Order, trendingTVOrder)
+	if streamingShelf.Order != trendingTVOrder+1 {
+		t.Fatalf("streaming-services order = %d, want after trending-tv order %d", streamingShelf.Order, trendingTVOrder)
+	}
+	if liveFavoritesShelf == nil {
+		t.Fatal("expected live-favorites shelf to be backfilled")
+	}
+	if liveFavoritesShelf.Enabled {
+		t.Fatal("expected live-favorites shelf to default disabled")
+	}
+	if liveFavoritesShelf.Order != streamingShelf.Order+1 {
+		t.Fatalf("live-favorites order = %d, want after streaming-services order %d", liveFavoritesShelf.Order, streamingShelf.Order)
 	}
 }
 
