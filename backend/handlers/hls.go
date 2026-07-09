@@ -2388,6 +2388,11 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 	// will be transcoded and whether a same-pass subtitle is being muxed, because both change the
 	// seek strategy needed to keep the subtitle aligned with the video.
 	videoWillTranscode := hlsWebVideoWillTranscode(session.PlaybackTarget, session.ProbeData)
+	if session.CastMode && session.ProbeData != nil && IsCastIncompatibleVideoCodec(session.ProbeData.VideoCodec) {
+		// Chromecast receivers can only decode H.264; HEVC sources that iOS plays
+		// natively must be transcoded for cast.
+		videoWillTranscode = true
+	}
 	_, subtitleRenditionWanted := selectedTextSubtitleStream(subtitleStreams, session.SubtitleTrackIndex)
 	subtitleRenditionWanted = session.PlaybackTarget == "web" && subtitleRenditionWanted
 	forceVideoTranscodeForWebSubtitleSeek := shouldForceWebSubtitleVideoTranscode(session.PlaybackTarget, subtitleStreams, session.SubtitleTrackIndex, session.TranscodingOffset)
@@ -2395,13 +2400,14 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 		videoWillTranscode = true
 	}
 
-	// Build the web video encode plan up-front so any hardware-device
+	// Build the video encode plan up-front so any hardware-device
 	// initialization (-vaapi_device / -init_hw_device) can be injected as a
 	// global option BEFORE -i. The plan picks a GPU H.264 encoder when one is
-	// detected and working, and tone maps HDR/DV down to SDR for the browser.
-	// Only the web player path is affected; native/live transcodes are untouched.
+	// detected and working, and tone maps HDR/DV down to SDR. Used for the web
+	// player and cast targets (both need H.264 SDR); native/live transcodes are
+	// untouched.
 	var webEncodePlan videoEncodePlan
-	useWebEncodePlan := videoWillTranscode && session.PlaybackTarget == "web"
+	useWebEncodePlan := videoWillTranscode && (session.PlaybackTarget == "web" || session.CastMode)
 	if useWebEncodePlan {
 		caps := m.hwAccelCaps()
 		tonemapNeeded := session.HasDV || session.HasHDR
@@ -2585,6 +2591,10 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 	if session.ProbeData != nil {
 		videoCodec = session.ProbeData.VideoCodec
 		needsVideoTranscode = IsIncompatibleVideoCodec(videoCodec)
+		if session.CastMode && IsCastIncompatibleVideoCodec(videoCodec) {
+			needsVideoTranscode = true
+			log.Printf("[hls] session %s: cast receiver cannot play codec %q; transcoding to H.264", session.ID, videoCodec)
+		}
 	}
 	if session.PlaybackTarget == "web" && !isBrowserCopyCompatibleVideo(session.ProbeData) {
 		needsVideoTranscode = true
@@ -2658,7 +2668,15 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 	// - HDR10: iOS AVPlayer can't properly decode HEVC in MPEG-TS segments
 	var segmentExt string
 	needsFmp4 := session.HasDV || session.HasHDR
-	if session.HasDV && !session.DVDisabled {
+	if session.CastMode {
+		// Chromecast: always MPEG-TS. fMP4 with output seeking + copy mode can
+		// produce non-monotonic DTS that Chromecast rejects, and the DV/HDR fMP4
+		// branches below tag HEVC boxes that no longer apply once cast sessions
+		// transcode to H.264. This must win over the DV/HDR branches.
+		needsFmp4 = false
+		segmentExt = ".ts"
+		log.Printf("[hls] session %s: using MPEG-TS segments for cast session (Chromecast compatibility)", session.ID)
+	} else if session.HasDV && !session.DVDisabled {
 		segmentExt = ".m4s"
 		if needsVideoTranscode {
 			log.Printf("[hls] session %s: using fMP4 H.264 output for web-compatible Dolby Vision/HDR source; skipping HEVC DV tag and hevc_metadata filter", session.ID)
