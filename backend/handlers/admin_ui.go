@@ -386,7 +386,7 @@ var SettingsSchema = map[string]interface{}{
 			"maxSizeMovieGb":   map[string]interface{}{"type": "number", "label": "Max Movie Size (GB)", "description": "Maximum movie file size (0 = no limit)"},
 			"maxSizeEpisodeGb": map[string]interface{}{"type": "number", "label": "Max Episode Size (GB)", "description": "Maximum episode file size (0 = no limit)"},
 			"maxResolution":    map[string]interface{}{"type": "select", "label": "Max Resolution", "options": []string{"", "480p", "720p", "1080p", "2160p"}, "description": "Maximum resolution (empty = no limit)"},
-			"splitByService":   map[string]interface{}{"type": "boolean", "label": "Split Debrid/Usenet Settings", "description": "Use separate ranking/filtering values for Debrid and Usenet results. When disabled, the shared settings below apply to all results.", "order": 0},
+			"splitByService":   map[string]interface{}{"type": "boolean", "label": "Split Debrid/Usenet Settings", "description": "Use separate ranking/filtering values for Debrid and Usenet results. When disabled, the shared settings above apply to all results.", "order": 99},
 			"hdrDvPolicy": map[string]interface{}{
 				"type":  "select",
 				"label": "HDR/DV Policy",
@@ -447,6 +447,10 @@ var SettingsSchema = map[string]interface{}{
 		"icon":   "filter",
 		"parent": "filtering",
 		"key":    "debrid",
+		"showWhen": map[string]interface{}{
+			"field": "filtering.splitByService",
+			"value": true,
+		},
 		"fields": map[string]interface{}{
 			"maxSizeMovieGb":         map[string]interface{}{"type": "number", "label": "Max Movie Size (GB)", "description": "Debrid-only maximum movie file size (0 = no limit)"},
 			"maxSizeEpisodeGb":       map[string]interface{}{"type": "number", "label": "Max Episode Size (GB)", "description": "Debrid-only maximum episode file size (0 = no limit)"},
@@ -465,6 +469,10 @@ var SettingsSchema = map[string]interface{}{
 		"icon":   "filter",
 		"parent": "filtering",
 		"key":    "usenet",
+		"showWhen": map[string]interface{}{
+			"field": "filtering.splitByService",
+			"value": true,
+		},
 		"fields": map[string]interface{}{
 			"maxSizeMovieGb":         map[string]interface{}{"type": "number", "label": "Max Movie Size (GB)", "description": "Usenet-only maximum movie file size (0 = no limit)"},
 			"maxSizeEpisodeGb":       map[string]interface{}{"type": "number", "label": "Max Episode Size (GB)", "description": "Usenet-only maximum episode file size (0 = no limit)"},

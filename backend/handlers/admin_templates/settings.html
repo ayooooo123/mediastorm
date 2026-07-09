@@ -45,8 +45,46 @@
     gap: 1rem;
 }
 
+.nested-settings-panel {
+    margin-top: 1rem;
+    padding: 1rem;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.035);
+}
+
+.nested-settings-panel-header {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    margin-bottom: 0.85rem;
+    padding-bottom: 0.7rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.nested-settings-panel-icon {
+    width: 18px;
+    height: 18px;
+    color: var(--text-secondary);
+    flex: 0 0 18px;
+}
+
+.nested-settings-panel-title {
+    margin: 0;
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.nested-settings-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1rem;
+}
+
 @media (max-width: 900px) {
-    .field-subgroup-fields {
+    .field-subgroup-fields,
+    .nested-settings-grid {
         grid-template-columns: 1fr;
     }
 }
@@ -2402,7 +2440,7 @@
     }
 
     // Map filtering field paths to client settings keys
-    const clientFilterFields = ['maxSizeMovieGb', 'maxSizeEpisodeGb', 'maxResolution', 'hdrDvPolicy', 'requiredTerms', 'filterOutTerms', 'preferredTerms', 'nonPreferredTerms', 'unknownTrackPolicy'];
+    const clientFilterFields = ['maxSizeMovieGb', 'maxSizeEpisodeGb', 'maxResolution', 'hdrDvPolicy', 'requiredTerms', 'filterOutTerms', 'preferredTerms', 'nonPreferredTerms', 'downloadPreferredTerms', 'unknownTrackPolicy', 'splitByService'];
     const clientDisplayFields = ['bypassFilteringForAioStreamsOnly', 'navigationTabVisibility', 'includeUnreleasedMoviesInLists', 'includeUnreleasedShowsInLists', 'includeUnreleasedMoviesInSearch', 'includeUnreleasedShowsInSearch', 'blurUnwatchedEpisodeThumbnails', 'blurUnwatchedEpisodeThumbnailsIncludeCurrent', 'blurUnwatchedEpisodeOverviews', 'blurUnwatchedEpisodeOverviewsIncludeCurrent', 'appearance.fontScale', 'appearance.accentColor', 'appearance.textColor', 'appearance.secondaryTextColor', 'appearance.backgroundColor', 'appearance.modalBackgroundColor', 'appearance.buttonStyle', 'appearance.buttonRadius', 'appearance.highContrast', 'appearance.reduceOverlays'];
     const clientPlaybackFields = [
         'preferredPlayer',
@@ -2448,6 +2486,12 @@
         // network.homeWifiSSID -> homeWifiSSID
         const keys = path.split('.');
         if (keys.length >= 2) {
+            if (keys[0] === 'filtering' && (keys[1] === 'debrid' || keys[1] === 'usenet')) {
+                const nestedKey = keys.slice(1).join('.');
+                if (keys.length >= 3 && clientFilterFields.includes(keys[2])) {
+                    return nestedKey;
+                }
+            }
             if (keys[0] === 'filtering' && clientFilterFields.includes(keys[1])) {
                 return keys[1];
             }
@@ -8275,6 +8319,44 @@
         return (sectionKey === 'display' ? customHtml + fieldsHtml : fieldsHtml + customHtml) + testHtml;
     }
 
+    function sectionShowWhenMatches(sectionDef) {
+        const showWhen = sectionDef.showWhen;
+        if (!showWhen) return true;
+        const read = (field) => getValue(field);
+        if (typeof showWhen === 'string' && showWhen.includes('=')) {
+            const [field, rawValue] = showWhen.split('=');
+            let expected = rawValue;
+            if (rawValue === 'true') expected = true;
+            if (rawValue === 'false') expected = false;
+            return read(field) === expected;
+        }
+        if (showWhen.operator === 'or' && Array.isArray(showWhen.conditions)) {
+            return showWhen.conditions.some(cond => read(cond.field) === cond.value);
+        }
+        if (showWhen.field) {
+            return read(showWhen.field) === showWhen.value;
+        }
+        return true;
+    }
+
+    function renderNestedSectionPanel(nestedKey, nestedDef) {
+        const nestedContent = nestedKey === 'homeShelves.shelves'
+            ? renderShelvesOrderUI()
+            : (nestedKey === 'ranking.criteria'
+                ? renderRankingCriteriaUI()
+                : (nestedDef.is_array
+                    ? renderArraySection(nestedKey, nestedDef)
+                    : '<div class="nested-settings-grid">'+renderObjectSection(nestedKey, nestedDef)+'</div>'));
+
+        return '<div class="nested-settings-panel">' +
+            '<div class="nested-settings-panel-header">' +
+                '<span class="nested-settings-panel-icon">'+getIcon(nestedDef.icon || 'filter')+'</span>' +
+                '<h3 class="nested-settings-panel-title">'+nestedDef.label+'</h3>' +
+            '</div>' +
+            nestedContent +
+        '</div>';
+    }
+
     // Test object section (non-array sections like subtitles)
     async function testObjectSection(sectionKey) {
         const btn = document.getElementById('test-btn-'+sectionKey);
@@ -8415,9 +8497,8 @@
             // Only render as nested if parent matches AND section doesn't have its own group
             if (nestedDef.parent === sectionKey && !nestedDef.group) {
                 if (selectedUserId && !perUserSections.includes(nestedKey)) continue;
-                // Use custom shelves UI for home shelves configuration
-                const nestedContent = nestedKey === 'homeShelves.shelves' ? renderShelvesOrderUI() : (nestedKey === 'ranking.criteria' ? renderRankingCriteriaUI() : renderArraySection(nestedKey, nestedDef));
-                nestedHtml += '<div style="margin-top: 1.5rem;"><h3 style="font-size: 0.875rem; font-weight: 600; margin-bottom: 0.75rem;">'+nestedDef.label+'</h3>'+nestedContent+'</div>';
+                if (!sectionShowWhenMatches(nestedDef)) continue;
+                nestedHtml += renderNestedSectionPanel(nestedKey, nestedDef);
             }
         }
         return '<div class="section '+(isOpen ? 'open' : '')+(hasChanges ? ' has-changes' : '')+disabledClass+'" id="section-'+sectionKey+'"><div class="section-header" onclick="toggleSection(this)"><div class="section-title">'+getIcon(sectionDef.icon)+sectionDef.label+warningBadge+'</div><div class="section-header-actions">'+saveBtn+'<svg class="section-toggle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg></div></div><div class="section-content">'+comingSoonHtml+messagesHtml+descriptionHtml+contentHtml+nestedHtml+'</div></div>';
