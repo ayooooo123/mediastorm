@@ -2983,6 +2983,7 @@
                     const shelves = ensureBuiltInHomeShelfConfig(getValue('homeShelves.shelves') || []);
                     shelves
                         .slice()
+                        .filter(isAdminVisibleHomeShelf)
                         .sort((a, b) => (a.order || 0) - (b.order || 0))
                         .forEach(shelf => {
                             if (!shelf || !shelf.id) return;
@@ -5408,6 +5409,10 @@
             '</div>';
     }
 
+    function isAdminVisibleHomeShelf(shelf) {
+        return shelf && shelf.id !== 'tonight';
+    }
+
     // Render home shelves order UI with drag-and-drop
     function renderShelvesOrderUI() {
         const isPerUserSection = perUserSections.includes('homeShelves.shelves');
@@ -5458,7 +5463,9 @@
         }
 
         // Sort by order for display
-        const sortedShelves = [...shelves].sort((a, b) => (a.order || 0) - (b.order || 0));
+        const sortedShelves = shelves
+            .filter(isAdminVisibleHomeShelf)
+            .sort((a, b) => (a.order || 0) - (b.order || 0));
 
         const rows = sortedShelves.map((s, i) => {
             const enabledClass = s.enabled ? '' : ' disabled';
@@ -8183,8 +8190,10 @@
             shelves = currentSettings.homeShelves?.shelves || [];
         }
 
-        // Sort shelves by current order to get display order
-        const sortedShelves = [...shelves].sort((a, b) => (a.order || 0) - (b.order || 0));
+        // Only visible shelf rows participate in drag ordering. Hidden
+        // experimental shelves keep their slot in the complete sequence.
+        const sortedAllShelves = [...shelves].sort((a, b) => (a.order || 0) - (b.order || 0));
+        const sortedShelves = sortedAllShelves.filter(isAdminVisibleHomeShelf);
 
         // Get the shelf being moved based on display position
         const movedShelf = sortedShelves[fromIndex];
@@ -8194,12 +8203,13 @@
         sortedShelves.splice(fromIndex, 1);
         sortedShelves.splice(toIndex, 0, movedShelf);
 
-        // Update order values based on new positions
-        sortedShelves.forEach((shelf, i) => {
-            const originalShelf = shelves.find(s => s.id === shelf.id);
-            if (originalShelf) {
-                originalShelf.order = i;
-            }
+        // Put visible shelves back into their visible slots, then normalize the
+        // full sequence without exposing or moving hidden shelves.
+        let visibleIndex = 0;
+        sortedAllShelves.forEach((shelf, i) => {
+            const orderedShelf = isAdminVisibleHomeShelf(shelf) ? sortedShelves[visibleIndex++] : shelf;
+            const originalShelf = shelves.find(s => s.id === orderedShelf.id);
+            if (originalShelf) originalShelf.order = i;
         });
     }
 

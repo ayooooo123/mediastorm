@@ -561,6 +561,32 @@ func TestLoadPreservesHomeTopShelfSettings(t *testing.T) {
 	}
 }
 
+func TestLoadDisablesExperimentalTonightShelf(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	raw := []byte(`{"homeShelves":{"shelves":[
+		{"id":"continue-watching","name":"Continue Watching","enabled":true,"order":1},
+		{"id":"tonight","name":"Tonight","enabled":true,"order":2}
+	]}}`)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+
+	settings, err := NewManager(path).Load()
+	if err != nil {
+		t.Fatalf("load settings: %v", err)
+	}
+
+	for _, shelf := range settings.HomeShelves.Shelves {
+		if shelf.ID == "tonight" {
+			if shelf.Enabled {
+				t.Fatal("expected startup migration to disable tonight shelf")
+			}
+			return
+		}
+	}
+	t.Fatal("expected tonight shelf to remain present after migration")
+}
+
 func TestLoadBackfillsStreamingServicesAndLiveFavoritesHomeShelves(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
 	raw := []byte(`{"homeShelves":{"shelves":[
