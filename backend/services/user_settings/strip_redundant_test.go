@@ -1054,6 +1054,66 @@ func TestStripProfileRankingDiffers(t *testing.T) {
 	}
 }
 
+func TestStripProfileRankingPreservesServiceOverrides(t *testing.T) {
+	svc := tempService(t)
+	g := globalDefaults()
+
+	split := true
+	us := models.UserSettings{
+		Ranking: &models.UserRankingSettings{
+			Criteria: []models.UserRankingCriterion{
+				{ID: config.RankingResolution, Enabled: models.BoolPtr(true), Order: intPtr(0)},
+				{ID: config.RankingSize, Enabled: models.BoolPtr(true), Order: intPtr(1)},
+			},
+			SplitByService: &split,
+			Debrid: &models.UserRankingSettings{Criteria: []models.UserRankingCriterion{
+				{ID: config.RankingSize, Enabled: models.BoolPtr(true), Order: intPtr(0)},
+				{ID: config.RankingResolution, Enabled: models.BoolPtr(true), Order: intPtr(1)},
+			}},
+		},
+	}
+	svc.settings["user1"] = us
+	svc.StripRedundantOverrides(g, nil, nil)
+
+	got := svc.settings["user1"].Ranking
+	if got == nil {
+		t.Fatal("expected split ranking override to be preserved")
+	}
+	if len(got.Criteria) != 0 {
+		t.Errorf("expected redundant shared criteria to be stripped, got %d", len(got.Criteria))
+	}
+	if got.SplitByService == nil || !*got.SplitByService {
+		t.Error("expected splitByService=true override to be preserved")
+	}
+	if got.Debrid == nil || len(got.Debrid.Criteria) != 2 {
+		t.Error("expected Debrid-specific criteria to be preserved")
+	}
+}
+
+func TestStripProfileRankingRemovesInheritedSplitCriteria(t *testing.T) {
+	svc := tempService(t)
+	g := globalDefaults()
+	g.Ranking.SplitByService = true
+	g.Ranking.Debrid = &config.RankingSettings{Criteria: []config.RankingCriterion{
+		{ID: config.RankingSize, Name: "Size", Enabled: true, Order: 0},
+		{ID: config.RankingResolution, Name: "Resolution", Enabled: true, Order: 1},
+	}}
+
+	split := true
+	svc.settings["user1"] = models.UserSettings{Ranking: &models.UserRankingSettings{
+		SplitByService: &split,
+		Debrid: &models.UserRankingSettings{Criteria: []models.UserRankingCriterion{
+			{ID: config.RankingSize, Enabled: models.BoolPtr(true), Order: intPtr(0)},
+			{ID: config.RankingResolution, Enabled: models.BoolPtr(true), Order: intPtr(1)},
+		}},
+	}}
+	svc.StripRedundantOverrides(g, nil, nil)
+
+	if _, ok := svc.settings["user1"]; ok {
+		t.Error("expected inherited split ranking values to be removed")
+	}
+}
+
 func intPtr(v int) *int { return &v }
 
 func findShelf(shelves []models.ShelfConfig, id string) *models.ShelfConfig {
