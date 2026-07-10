@@ -631,7 +631,7 @@
 
     // Sections that are per-user (when a user is selected, only show these)
     // Per-user sections: liveTV IPTV source overrides are configured here; channel preferences use a custom manager.
-    const perUserSections = ['playback', 'metadata', 'homeShelves', 'homeShelves.shelves', 'filtering', 'filtering.debrid', 'filtering.usenet', 'animeFiltering', 'liveTV', 'liveTV.sources', 'liveTV.playlistSources', 'display', 'network', 'ranking', 'ranking.criteria'];
+    const perUserSections = ['playback', 'metadata', 'homeShelves', 'homeShelves.shelves', 'filtering', 'filtering.debrid', 'filtering.usenet', 'animeFiltering', 'liveTV', 'liveTV.sources', 'liveTV.playlistSources', 'display', 'network', 'ranking', 'ranking.criteria', 'ranking.debrid.criteria', 'ranking.usenet.criteria'];
 
     // Validation state - stores errors by section and field
     let validationErrors = {};
@@ -7898,25 +7898,52 @@
         }
     });
 
-    // Render ranking criteria UI with drag-and-drop (similar to shelves)
-    function renderRankingCriteriaUI() {
-        let criteria;
-        let isInherited = false;
-
-        if (selectedUserId && userSettings) {
-            const profileCriteria = userSettings.ranking?.criteria;
-            const globalCriteria = currentSettings.ranking?.criteria || [];
-
-            if (profileCriteria && profileCriteria.length > 0) {
-                criteria = profileCriteria;
-                isInherited = false;
-            } else {
-                criteria = globalCriteria;
-                isInherited = true;
+    function mergeRankingCriteriaForUI(baseCriteria, overrides) {
+        const overrideById = new Map((overrides || []).map(c => [c.id, c]));
+        const merged = (baseCriteria || []).map(base => ({
+            ...base,
+            ...(overrideById.get(base.id) || {}),
+            name: base.name || overrideById.get(base.id)?.name || base.id,
+        }));
+        for (const override of overrides || []) {
+            if (!merged.some(c => c.id === override.id)) {
+                merged.push({...override, name: override.name || override.id});
             }
-        } else {
-            criteria = currentSettings.ranking?.criteria || [];
         }
+        return merged;
+    }
+
+    function effectiveRankingCriteriaForUI(criteriaPath) {
+        const sharedGlobal = currentSettings.ranking?.criteria || [];
+        if (!selectedUserId || !userSettings) {
+            const direct = getAtPath(currentSettings, criteriaPath);
+            return Array.isArray(direct) && direct.length > 0 ? direct : sharedGlobal;
+        }
+
+        const sharedProfile = userSettings.ranking?.criteria || [];
+        const effectiveShared = mergeRankingCriteriaForUI(sharedGlobal, sharedProfile);
+        if (criteriaPath === 'ranking.criteria') return effectiveShared;
+
+        const service = criteriaPath.split('.')[1];
+        const globalServiceCriteria = currentSettings.ranking?.[service]?.criteria;
+        const base = currentSettings.ranking?.splitByService && Array.isArray(globalServiceCriteria) && globalServiceCriteria.length > 0
+            ? globalServiceCriteria
+            : effectiveShared;
+        const profileServiceCriteria = userSettings.ranking?.[service]?.criteria || [];
+        return mergeRankingCriteriaForUI(base, profileServiceCriteria);
+    }
+
+    function rankingCriteriaIsInherited(criteriaPath) {
+        if (!selectedUserId || !userSettings) return false;
+        const direct = getAtPath(userSettings, criteriaPath);
+        return !Array.isArray(direct) || direct.length === 0;
+    }
+
+    // Render ranking criteria UI with drag-and-drop (similar to shelves).
+    // Service-specific panels fall back to shared criteria until first edited.
+    function renderRankingCriteriaUI(criteriaPath = 'ranking.criteria') {
+        const criteria = effectiveRankingCriteriaForUI(criteriaPath);
+        const isInherited = rankingCriteriaIsInherited(criteriaPath);
 
         if (!criteria.length) return '<p class="form-hint">No ranking criteria configured.</p>';
 
@@ -7924,10 +7951,10 @@
         let inheritanceBadgeHtml = '';
         if (selectedUserId) {
             if (isInherited) {
-                inheritanceBadgeHtml = '<span class="inheritance-badge inherited" title="Using global default" style="margin-left:8px;font-size:11px;padding:2px 8px;background:rgba(100,100,100,0.3);border-radius:4px;color:#aaa;">From Global</span>';
+                inheritanceBadgeHtml = '<span class="inheritance-badge inherited" title="Using inherited ranking criteria" style="margin-left:8px;font-size:11px;padding:2px 8px;background:rgba(100,100,100,0.3);border-radius:4px;color:#aaa;">Inherited</span>';
             } else {
                 inheritanceBadgeHtml = '<span class="inheritance-badge overridden" title="Profile has custom configuration" style="margin-left:8px;font-size:11px;padding:2px 8px;background:rgba(138,43,226,0.3);border-radius:4px;color:#c9a0dc;">Profile</span>' +
-                    '<button type="button" class="inheritance-reset" onclick="resetRankingToGlobal()" title="Reset to global defaults" style="margin-left:4px;background:none;border:none;color:#888;cursor:pointer;font-size:14px;">↩</button>';
+                    '<button type="button" class="inheritance-reset" onclick="resetRankingToInherited(\''+criteriaPath+'\')" title="Reset to inherited defaults" style="margin-left:4px;background:none;border:none;color:#888;cursor:pointer;font-size:14px;">↩</button>';
             }
         }
 
@@ -7941,7 +7968,7 @@
             return '<div class="ranking-row'+enabledClass+'" data-index="'+i+'" data-id="'+c.id+'">'+
                 '<span class="ranking-handle">☰</span>'+
                 '<span class="ranking-name">'+c.name+'</span>'+
-                '<label class="ranking-toggle"><input type="checkbox" '+toggleChecked+' onchange="toggleRankingCriterionEnabled(\''+c.id+'\', this.checked)"><span class="toggle-slider"></span></label>'+
+                '<label class="ranking-toggle"><input type="checkbox" '+toggleChecked+' onchange="toggleRankingCriterionEnabled(\''+c.id+'\', this.checked, \''+criteriaPath+'\')"><span class="toggle-slider"></span></label>'+
             '</div>';
         }).join('');
 
@@ -7968,18 +7995,16 @@
             '</style>';
 
         const containerClass = isInherited && selectedUserId ? 'ranking-container ranking-inherited' : 'ranking-container';
-        return styles + '<div class="'+containerClass+'" id="rankingContainer">'+rows+'</div>' + inheritanceBadgeHtml;
+        const configuredCriteria = getAtPath(currentSettings, criteriaPath);
+        const fallbackBadge = !selectedUserId && criteriaPath !== 'ranking.criteria' && (!Array.isArray(configuredCriteria) || configuredCriteria.length === 0)
+            ? '<span class="inheritance-badge inherited" style="margin-left:8px;font-size:11px;padding:2px 8px;background:rgba(100,100,100,0.3);border-radius:4px;color:#aaa;">Using shared criteria</span>'
+            : '';
+        return styles + '<div class="'+containerClass+'" data-ranking-path="'+criteriaPath+'">'+rows+'</div>' + inheritanceBadgeHtml + fallbackBadge;
     }
 
     // Toggle ranking criterion enabled state
-    function toggleRankingCriterionEnabled(criterionId, enabled) {
-        let criteria;
-        if (selectedUserId && userSettings) {
-            ensureProfileRanking();
-            criteria = userSettings.ranking?.criteria || [];
-        } else {
-            criteria = currentSettings.ranking?.criteria || [];
-        }
+    function toggleRankingCriterionEnabled(criterionId, enabled, criteriaPath = 'ranking.criteria') {
+        const criteria = ensureEditableRankingCriteria(criteriaPath);
 
         const criterion = criteria.find(c => c.id === criterionId);
         if (criterion) {
@@ -7988,37 +8013,34 @@
         renderSettings();
     }
 
-    // Ensure profile has its own ranking criteria (copy from global if needed)
-    function ensureProfileRanking() {
-        if (!selectedUserId || !userSettings) return;
-
-        if (!userSettings.ranking) {
-            userSettings.ranking = {};
+    function ensureEditableRankingCriteria(criteriaPath = 'ranking.criteria') {
+        const target = selectedUserId && userSettings ? userSettings : currentSettings;
+        let criteria = getAtPath(target, criteriaPath);
+        if (!Array.isArray(criteria) || criteria.length === 0) {
+            criteria = JSON.parse(JSON.stringify(effectiveRankingCriteriaForUI(criteriaPath)));
+            setAtPath(target, criteriaPath, criteria);
         }
-        if (!userSettings.ranking.criteria || userSettings.ranking.criteria.length === 0) {
-            const globalCriteria = currentSettings.ranking?.criteria || [];
-            userSettings.ranking.criteria = JSON.parse(JSON.stringify(globalCriteria));
-        }
+        return criteria;
     }
 
-    // Reset ranking to global defaults
-    function resetRankingToGlobal() {
+    // Retained for existing callers that edit the shared profile ranking.
+    function ensureProfileRanking() {
+        if (selectedUserId && userSettings) ensureEditableRankingCriteria('ranking.criteria');
+    }
+
+    function resetRankingToInherited(criteriaPath = 'ranking.criteria') {
         if (!selectedUserId || !userSettings) return;
-        if (userSettings.ranking) {
-            delete userSettings.ranking.criteria;
-        }
+        deleteAtPath(userSettings, criteriaPath);
         renderSettings();
     }
 
+    function resetRankingToGlobal() {
+        resetRankingToInherited('ranking.criteria');
+    }
+
     // Reorder ranking criteria
-    function reorderRankingCriteria(fromIndex, toIndex) {
-        let criteria;
-        if (selectedUserId && userSettings) {
-            ensureProfileRanking();
-            criteria = userSettings.ranking?.criteria || [];
-        } else {
-            criteria = currentSettings.ranking?.criteria || [];
-        }
+    function reorderRankingCriteria(fromIndex, toIndex, criteriaPath = 'ranking.criteria') {
+        const criteria = ensureEditableRankingCriteria(criteriaPath);
 
         // Sort criteria by current order to get display order
         const sortedCriteria = [...criteria].sort((a, b) => (a.order || 0) - (b.order || 0));
@@ -8071,13 +8093,12 @@
     }
 
     function initRankingDragDrop() {
-        const container = document.getElementById('rankingContainer');
-        if (!container) return;
-
-        container.addEventListener('touchstart', (e) => handleDragStart(e, 'ranking'), {passive: false});
-        container.addEventListener('touchmove', handleDragMove, {passive: false});
-        container.addEventListener('touchend', handleDragEnd);
-        container.addEventListener('mousedown', (e) => handleDragStart(e, 'ranking'));
+        document.querySelectorAll('.ranking-container').forEach(container => {
+            container.addEventListener('touchstart', (e) => handleDragStart(e, 'ranking'), {passive: false});
+            container.addEventListener('touchmove', handleDragMove, {passive: false});
+            container.addEventListener('touchend', handleDragEnd);
+            container.addEventListener('mousedown', (e) => handleDragStart(e, 'ranking'));
+        });
     }
 
     // Shared mouse event listeners (added once)
@@ -8112,7 +8133,9 @@
             index: parseInt(row.dataset.index),
             startY: touch.clientY,
             offsetY: touch.clientY - rect.top,
-            rowHeight: rect.height + 6 // include margin
+            rowHeight: rect.height + 6, // include margin
+            container: type === 'ranking' ? row.closest('.ranking-container') : null,
+            rankingPath: type === 'ranking' ? row.closest('.ranking-container')?.dataset.rankingPath : null,
         };
         dragType = type;
 
@@ -8123,11 +8146,11 @@
         if (!dragState) return;
         e.preventDefault();
 
-        const containerId = dragType === 'priority' ? 'priorityContainer' : (dragType === 'ranking' ? 'rankingContainer' : 'shelvesContainer');
+        const containerId = dragType === 'priority' ? 'priorityContainer' : 'shelvesContainer';
         const rowClass = dragType === 'priority' ? '.priority-row' : (dragType === 'ranking' ? '.ranking-row' : '.shelf-row');
 
         const touch = e.touches ? e.touches[0] : e;
-        const container = document.getElementById(containerId);
+        const container = dragType === 'ranking' ? dragState.container : document.getElementById(containerId);
         if (!container) return;
 
         const rows = container.querySelectorAll(rowClass);
@@ -8152,10 +8175,10 @@
     function handleDragEnd(e) {
         if (!dragState) return;
 
-        const containerId = dragType === 'priority' ? 'priorityContainer' : (dragType === 'ranking' ? 'rankingContainer' : 'shelvesContainer');
+        const containerId = dragType === 'priority' ? 'priorityContainer' : 'shelvesContainer';
         const rowClass = dragType === 'priority' ? '.priority-row' : (dragType === 'ranking' ? '.ranking-row' : '.shelf-row');
 
-        const container = document.getElementById(containerId);
+        const container = dragType === 'ranking' ? dragState.container : document.getElementById(containerId);
         if (container) {
             const rows = container.querySelectorAll(rowClass);
             rows.forEach(r => r.classList.remove('dragging', 'drag-over'));
@@ -8170,7 +8193,7 @@
             } else if (dragType === 'shelves') {
                 reorderShelves(dragState.index, dragState.newIndex);
             } else if (dragType === 'ranking') {
-                reorderRankingCriteria(dragState.index, dragState.newIndex);
+                reorderRankingCriteria(dragState.index, dragState.newIndex, dragState.rankingPath || 'ranking.criteria');
             }
             renderSettings();
         }
@@ -8354,8 +8377,8 @@
     function renderNestedSectionPanel(nestedKey, nestedDef) {
         const nestedContent = nestedKey === 'homeShelves.shelves'
             ? renderShelvesOrderUI()
-            : (nestedKey === 'ranking.criteria'
-                ? renderRankingCriteriaUI()
+            : ((nestedKey.startsWith('ranking.') && nestedKey.endsWith('.criteria')) || nestedKey === 'ranking.criteria'
+                ? renderRankingCriteriaUI(nestedKey)
                 : (nestedDef.is_array
                     ? renderArraySection(nestedKey, nestedDef)
                     : '<div class="nested-settings-grid">'+renderObjectSection(nestedKey, nestedDef)+'</div>'));

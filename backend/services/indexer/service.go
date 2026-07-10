@@ -661,20 +661,6 @@ func (s *Service) getEffectiveRankingBundle(userID, clientID string, globalSetti
 	return bundle
 }
 
-func rankingBundleForComparison(bundle effectiveRankingBundle, i, j models.NZBResult) []config.RankingCriterion {
-	if i.ServiceType != j.ServiceType {
-		return bundle.Default
-	}
-	switch i.ServiceType {
-	case models.ServiceTypeDebrid:
-		return bundle.Debrid
-	case models.ServiceTypeUsenet:
-		return bundle.Usenet
-	default:
-		return bundle.Default
-	}
-}
-
 func (s *Service) getEffectiveMetadataLanguage(userID string, globalSettings config.Settings) string {
 	primary := globalSettings.Metadata.EffectivePrimaryLanguage()
 	if userID == "" || s.userSettings == nil {
@@ -945,10 +931,93 @@ func compareByRankingCriteria(i, j models.NZBResult, scoringCtx ScoringContext) 
 	return compareDeterministicTieBreaker(i, j)
 }
 
-func compareByRankingBundle(i, j models.NZBResult, baseCtx ScoringContext, rankings effectiveRankingBundle) int {
-	ctx := baseCtx
-	ctx.RankingCriteria = rankingBundleForComparison(rankings, i, j)
-	return compareByRankingCriteria(i, j, ctx)
+type rankedServiceGroup struct {
+	indices  []int
+	criteria []config.RankingCriterion
+	position int
+}
+
+// rankingOrderByBundle first ranks each service independently with its own
+// criteria, then merges the ordered service lists using the shared criteria.
+// This preserves the meaning of each service-specific order while allowing the
+// overall ranking (especially Service Priority) to control how services interleave.
+func rankingOrderByBundle(results []models.NZBResult, baseCtx ScoringContext, rankings effectiveRankingBundle) []int {
+	groups := []*rankedServiceGroup{
+		{criteria: rankings.Debrid},
+		{criteria: rankings.Usenet},
+		{criteria: rankings.Default},
+	}
+	for i := range results {
+		switch results[i].ServiceType {
+		case models.ServiceTypeDebrid:
+			groups[0].indices = append(groups[0].indices, i)
+		case models.ServiceTypeUsenet:
+			groups[1].indices = append(groups[1].indices, i)
+		default:
+			groups[2].indices = append(groups[2].indices, i)
+		}
+	}
+
+	for _, group := range groups {
+		ctx := baseCtx
+		ctx.RankingCriteria = group.criteria
+		sort.SliceStable(group.indices, func(i, j int) bool {
+			return compareByRankingCriteria(results[group.indices[i]], results[group.indices[j]], ctx) < 0
+		})
+	}
+
+	overallCtx := baseCtx
+	overallCtx.RankingCriteria = rankings.Default
+	order := make([]int, 0, len(results))
+	for len(order) < len(results) {
+		bestGroup := -1
+		for groupIndex, group := range groups {
+			if group.position >= len(group.indices) {
+				continue
+			}
+			if bestGroup == -1 {
+				bestGroup = groupIndex
+				continue
+			}
+			candidate := results[group.indices[group.position]]
+			best := groups[bestGroup]
+			bestResult := results[best.indices[best.position]]
+			if compareByRankingCriteria(candidate, bestResult, overallCtx) < 0 {
+				bestGroup = groupIndex
+			}
+		}
+		if bestGroup == -1 {
+			break
+		}
+		best := groups[bestGroup]
+		order = append(order, best.indices[best.position])
+		best.position++
+	}
+	return order
+}
+
+func sortResultsByRankingBundle(results []models.NZBResult, baseCtx ScoringContext, rankings effectiveRankingBundle) {
+	if len(results) < 2 {
+		return
+	}
+	original := append([]models.NZBResult(nil), results...)
+	for position, originalIndex := range rankingOrderByBundle(original, baseCtx, rankings) {
+		results[position] = original[originalIndex]
+	}
+}
+
+func sortScoredResultsByRankingBundle(results []models.ScoredNZBResult, baseCtx ScoringContext, rankings effectiveRankingBundle) {
+	if len(results) < 2 {
+		return
+	}
+	plain := make([]models.NZBResult, len(results))
+	for i := range results {
+		plain[i] = results[i].NZBResult
+	}
+	original := append([]models.ScoredNZBResult(nil), results...)
+	for position, originalIndex := range rankingOrderByBundle(plain, baseCtx, rankings) {
+		results[position] = original[originalIndex]
+	}
 }
 
 func (s *Service) buildScoringContext(opts SearchOptions, settings config.Settings, filterSettings models.FilterSettings, animeSettings models.AnimeFilteringSettings) ScoringContext {
@@ -1425,10 +1494,8 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBR
 	} else {
 		ctx := s.buildScoringContextWithCriteria(opts, settings, filterSettings, animeSettings, rankingBundle.Default)
 		scoringCtx = &ctx
-		log.Printf("[indexer] Sorting %d results with %d ranking criteria, ServicePriority=%q, downloadRanking=%v", len(aggregated), len(scoringCtx.RankingCriteria), settings.Filtering.ServicePriority, opts.UseDownloadRanking)
-		sort.SliceStable(aggregated, func(i, j int) bool {
-			return compareByRankingBundle(aggregated[i], aggregated[j], *scoringCtx, rankingBundle) < 0
-		})
+		log.Printf("[indexer] Ranking %d results per service, then merging with %d overall criteria, ServicePriority=%q, downloadRanking=%v", len(aggregated), len(scoringCtx.RankingCriteria), settings.Filtering.ServicePriority, opts.UseDownloadRanking)
+		sortResultsByRankingBundle(aggregated, *scoringCtx, rankingBundle)
 	}
 
 	// Debug: log all results after sorting
@@ -1596,9 +1663,7 @@ func (s *Service) SearchWithScoring(ctx context.Context, opts SearchOptions) ([]
 
 	// Sort passed results by the same priority order used by standard ranking.
 	if len(passed) > 0 {
-		sort.SliceStable(passed, func(i, j int) bool {
-			return compareByRankingBundle(passed[i].NZBResult, passed[j].NZBResult, scoringCtx, rankingBundle) < 0
-		})
+		sortScoredResultsByRankingBundle(passed, scoringCtx, rankingBundle)
 
 		// Apply per-resolution limit to passed results (same as Search path)
 		maxPerRes := models.IntVal(filterOverrides.MaxResultsPerResolution, 0)
@@ -2023,9 +2088,7 @@ func (s *Service) SearchSplit(ctx context.Context, opts SearchOptions) (debridCh
 			log.Printf("[indexer] Bypassing mediastorm ranking - AIOStreams is the only enabled scraper and bypass setting is enabled")
 			return
 		}
-		sort.SliceStable(results, func(i, j int) bool {
-			return compareByRankingBundle(results[i], results[j], scoringCtx, rankingBundle) < 0
-		})
+		sortResultsByRankingBundle(results, scoringCtx, rankingBundle)
 	}
 
 	// Launch debrid search

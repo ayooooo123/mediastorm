@@ -516,7 +516,7 @@ var SettingsSchema = map[string]interface{}{
 		"group": "searchFiltering",
 		"order": 3,
 		"fields": map[string]interface{}{
-			"splitByService": map[string]interface{}{"type": "boolean", "label": "Split Debrid/Usenet Ranking", "description": "Use service-specific ranking criteria when comparing results from the same service. Mixed Debrid/Usenet comparisons still use the shared criteria."},
+			"splitByService": map[string]interface{}{"type": "boolean", "label": "Split Debrid/Usenet Ranking", "description": "Rank Debrid and Usenet results independently with their service-specific criteria, then merge the two ordered lists using the shared Overall Ranking criteria."},
 		},
 	},
 	"ranking.criteria": map[string]interface{}{
@@ -531,6 +531,30 @@ var SettingsSchema = map[string]interface{}{
 			"enabled": map[string]interface{}{"type": "boolean", "label": "Enabled", "description": "Use this criterion for ranking", "order": 2},
 			"order":   map[string]interface{}{"type": "number", "label": "Order", "description": "Sort priority (lower = higher priority)", "order": 3},
 		},
+	},
+	"ranking.debrid.criteria": map[string]interface{}{
+		"label":    "Debrid Ranking Criteria",
+		"icon":     "shuffle",
+		"is_array": true,
+		"parent":   "ranking",
+		"key":      "debrid",
+		"showWhen": map[string]interface{}{
+			"field": "ranking.splitByService",
+			"value": true,
+		},
+		"fields": map[string]interface{}{},
+	},
+	"ranking.usenet.criteria": map[string]interface{}{
+		"label":    "Usenet Ranking Criteria",
+		"icon":     "shuffle",
+		"is_array": true,
+		"parent":   "ranking",
+		"key":      "usenet",
+		"showWhen": map[string]interface{}{
+			"field": "ranking.splitByService",
+			"value": true,
+		},
+		"fields": map[string]interface{}{},
 	},
 	"live": map[string]interface{}{
 		"label":    "Live TV",

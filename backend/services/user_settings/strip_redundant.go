@@ -921,16 +921,51 @@ func stripNetwork(n *models.NetworkSettings, g config.NetworkSettings) bool {
 }
 
 func stripRanking(r **models.UserRankingSettings, g config.RankingSettings) bool {
-	if *r == nil || len((*r).Criteria) == 0 {
+	if *r == nil {
 		return false
 	}
-	// Compare: each user ranking criterion must match a global criterion by ID
-	// with same Enabled and Order values. If all match, strip.
+
+	changed := false
+	if len((*r).Criteria) > 0 && userRankingCriteriaMatch((*r).Criteria, g.Criteria) {
+		(*r).Criteria = nil
+		changed = true
+	}
+	if (*r).SplitByService != nil && *(*r).SplitByService == g.SplitByService {
+		(*r).SplitByService = nil
+		changed = true
+	}
+
+	debridGlobal := g
+	if g.SplitByService && g.Debrid != nil {
+		debridGlobal = *g.Debrid
+	}
+	if stripRanking(&(*r).Debrid, debridGlobal) {
+		changed = true
+	}
+
+	usenetGlobal := g
+	if g.SplitByService && g.Usenet != nil {
+		usenetGlobal = *g.Usenet
+	}
+	if stripRanking(&(*r).Usenet, usenetGlobal) {
+		changed = true
+	}
+
+	if userRankingSettingsEmpty(*r) {
+		*r = nil
+		changed = true
+	}
+	return changed
+}
+
+func userRankingCriteriaMatch(criteria []models.UserRankingCriterion, global []config.RankingCriterion) bool {
+	// Each profile criterion is an override, so it is redundant when every value
+	// it specifies already matches the inherited criterion with the same ID.
 	globalByID := make(map[config.RankingCriterionID]config.RankingCriterion)
-	for _, gc := range g.Criteria {
+	for _, gc := range global {
 		globalByID[gc.ID] = gc
 	}
-	for _, uc := range (*r).Criteria {
+	for _, uc := range criteria {
 		gc, ok := globalByID[uc.ID]
 		if !ok {
 			return false
@@ -942,8 +977,11 @@ func stripRanking(r **models.UserRankingSettings, g config.RankingSettings) bool
 			return false
 		}
 	}
-	*r = nil
 	return true
+}
+
+func userRankingSettingsEmpty(r *models.UserRankingSettings) bool {
+	return r == nil || (len(r.Criteria) == 0 && r.SplitByService == nil && r.Debrid == nil && r.Usenet == nil)
 }
 
 // stripClientSettings removes client overrides that match their parent profile's effective value.

@@ -184,6 +184,20 @@ func TestAdminUIHandler_GetSchema(t *testing.T) {
 	if _, exists := fields["cleanPosters"]; exists {
 		t.Fatal("cleanPosters should be hidden from the admin settings schema")
 	}
+
+	for _, key := range []string{"ranking.debrid.criteria", "ranking.usenet.criteria"} {
+		section, ok := schema[key].(map[string]interface{})
+		if !ok {
+			t.Fatalf("schema missing %s section", key)
+		}
+		if section["parent"] != "ranking" {
+			t.Errorf("%s parent = %v, want ranking", key, section["parent"])
+		}
+		showWhen, ok := section["showWhen"].(map[string]interface{})
+		if !ok || showWhen["field"] != "ranking.splitByService" || showWhen["value"] != true {
+			t.Errorf("%s showWhen = %#v, want ranking.splitByService=true", key, section["showWhen"])
+		}
+	}
 }
 
 func TestAdminUIHandler_HasDefaultPassword(t *testing.T) {

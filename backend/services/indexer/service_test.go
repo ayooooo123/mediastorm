@@ -1579,9 +1579,7 @@ func TestServiceSpecificRankingCriteria(t *testing.T) {
 		{Title: "Movie.2160p.small", ServiceType: models.ServiceTypeDebrid, SizeBytes: 1000, Attributes: map[string]string{"resolution": "2160p"}},
 		{Title: "Movie.720p.large", ServiceType: models.ServiceTypeDebrid, SizeBytes: 9000, Attributes: map[string]string{"resolution": "720p"}},
 	}
-	sort.SliceStable(debridResults, func(i, j int) bool {
-		return compareByRankingBundle(debridResults[i], debridResults[j], baseCtx, rankingBundle) < 0
-	})
+	sortResultsByRankingBundle(debridResults, baseCtx, rankingBundle)
 	if got := debridResults[0].Title; got != "Movie.720p.large" {
 		t.Fatalf("expected debrid-specific size-first ranking to prefer large file, got %q", got)
 	}
@@ -1590,9 +1588,7 @@ func TestServiceSpecificRankingCriteria(t *testing.T) {
 		{Title: "Movie.720p.large", ServiceType: models.ServiceTypeUsenet, SizeBytes: 9000, Attributes: map[string]string{"resolution": "720p"}},
 		{Title: "Movie.2160p.small", ServiceType: models.ServiceTypeUsenet, SizeBytes: 1000, Attributes: map[string]string{"resolution": "2160p"}},
 	}
-	sort.SliceStable(usenetResults, func(i, j int) bool {
-		return compareByRankingBundle(usenetResults[i], usenetResults[j], baseCtx, rankingBundle) < 0
-	})
+	sortResultsByRankingBundle(usenetResults, baseCtx, rankingBundle)
 	if got := usenetResults[0].Title; got != "Movie.2160p.small" {
 		t.Fatalf("expected usenet-specific resolution-first ranking to prefer 2160p file, got %q", got)
 	}
@@ -1601,11 +1597,70 @@ func TestServiceSpecificRankingCriteria(t *testing.T) {
 		{Title: "Movie.720p.large", ServiceType: models.ServiceTypeDebrid, SizeBytes: 9000, Attributes: map[string]string{"resolution": "720p"}},
 		{Title: "Movie.2160p.small", ServiceType: models.ServiceTypeUsenet, SizeBytes: 1000, Attributes: map[string]string{"resolution": "2160p"}},
 	}
-	sort.SliceStable(mixed, func(i, j int) bool {
-		return compareByRankingBundle(mixed[i], mixed[j], baseCtx, rankingBundle) < 0
-	})
+	sortResultsByRankingBundle(mixed, baseCtx, rankingBundle)
 	if got := mixed[0].Title; got != "Movie.2160p.small" {
-		t.Fatalf("expected mixed-service comparison to use shared resolution-first ranking, got %q", got)
+		t.Fatalf("expected service lists to merge using shared resolution-first ranking, got %q", got)
+	}
+}
+
+func TestServiceSpecificRankingPreservedDuringOverallMerge(t *testing.T) {
+	rankings := effectiveRankingBundle{
+		Default: []config.RankingCriterion{
+			{ID: config.RankingServicePriority, Enabled: true, Order: 0},
+			{ID: config.RankingResolution, Enabled: true, Order: 1},
+		},
+		Debrid: []config.RankingCriterion{
+			{ID: config.RankingSize, Enabled: true, Order: 0},
+		},
+		Usenet: []config.RankingCriterion{
+			{ID: config.RankingResolution, Enabled: true, Order: 0},
+		},
+	}
+	ctx := ScoringContext{ServicePriority: config.StreamingServicePriorityDebrid}
+	results := []models.NZBResult{
+		{Title: "Debrid.2160p.small", ServiceType: models.ServiceTypeDebrid, SizeBytes: 1000, Attributes: map[string]string{"resolution": "2160p"}},
+		{Title: "Usenet.720p.large", ServiceType: models.ServiceTypeUsenet, SizeBytes: 9000, Attributes: map[string]string{"resolution": "720p"}},
+		{Title: "Debrid.720p.large", ServiceType: models.ServiceTypeDebrid, SizeBytes: 9000, Attributes: map[string]string{"resolution": "720p"}},
+		{Title: "Usenet.2160p.small", ServiceType: models.ServiceTypeUsenet, SizeBytes: 1000, Attributes: map[string]string{"resolution": "2160p"}},
+	}
+
+	sortResultsByRankingBundle(results, ctx, rankings)
+	want := []string{
+		"Debrid.720p.large",
+		"Debrid.2160p.small",
+		"Usenet.2160p.small",
+		"Usenet.720p.large",
+	}
+	for i := range want {
+		if results[i].Title != want[i] {
+			t.Fatalf("result %d = %q, want %q (full order: %#v)", i, results[i].Title, want[i], results)
+		}
+	}
+}
+
+func TestSharedRankingBundleMatchesSingleOverallSort(t *testing.T) {
+	criteria := []config.RankingCriterion{
+		{ID: config.RankingResolution, Enabled: true, Order: 0},
+		{ID: config.RankingSize, Enabled: true, Order: 1},
+	}
+	rankings := effectiveRankingBundle{Default: criteria, Debrid: criteria, Usenet: criteria}
+	ctx := ScoringContext{RankingCriteria: criteria}
+	results := []models.NZBResult{
+		{Title: "Debrid.720p", ServiceType: models.ServiceTypeDebrid, SizeBytes: 9000, Attributes: map[string]string{"resolution": "720p"}},
+		{Title: "Usenet.2160p.small", ServiceType: models.ServiceTypeUsenet, SizeBytes: 1000, Attributes: map[string]string{"resolution": "2160p"}},
+		{Title: "Debrid.2160p.large", ServiceType: models.ServiceTypeDebrid, SizeBytes: 9000, Attributes: map[string]string{"resolution": "2160p"}},
+		{Title: "Usenet.1080p", ServiceType: models.ServiceTypeUsenet, SizeBytes: 5000, Attributes: map[string]string{"resolution": "1080p"}},
+	}
+	want := append([]models.NZBResult(nil), results...)
+	sort.SliceStable(want, func(i, j int) bool {
+		return compareByRankingCriteria(want[i], want[j], ctx) < 0
+	})
+
+	sortResultsByRankingBundle(results, ctx, rankings)
+	for i := range want {
+		if results[i].Title != want[i].Title {
+			t.Fatalf("result %d = %q, want %q", i, results[i].Title, want[i].Title)
+		}
 	}
 }
 
