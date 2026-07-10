@@ -20,6 +20,29 @@ func TestDefaultUserSettingsDisablesMatchFrameRate(t *testing.T) {
 	}
 }
 
+func TestEnsureDefaultHomeShelvesDisablesExperimentalTonightShelf(t *testing.T) {
+	shelves := DefaultHomeShelfConfigs()
+	for i := range shelves {
+		if shelves[i].ID == "tonight" {
+			shelves[i].Enabled = true
+		}
+	}
+
+	migrated, changed := EnsureDefaultHomeShelves(shelves)
+	if !changed {
+		t.Fatal("expected enabled tonight shelf to trigger migration")
+	}
+	for _, shelf := range migrated {
+		if shelf.ID == "tonight" {
+			if shelf.Enabled {
+				t.Fatal("expected migration to disable tonight shelf")
+			}
+			return
+		}
+	}
+	t.Fatal("expected tonight shelf to remain present after migration")
+}
+
 func newGlobal() *ResolvedLiveSource {
 	return &ResolvedLiveSource{
 		Mode:                  "m3u",
