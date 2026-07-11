@@ -771,6 +771,100 @@ func TestIsBrowserCopyCompatibleVideo(t *testing.T) {
 	}
 }
 
+func TestIsLegacyCastCopyCompatibleVideo(t *testing.T) {
+	tests := []struct {
+		name  string
+		probe *UnifiedProbeResult
+		want  bool
+	}{
+		{
+			name: "1080p30 level 4.1",
+			probe: &UnifiedProbeResult{
+				VideoCodec: "h264", VideoPixFmt: "yuv420p", VideoProfile: "High",
+				VideoWidth: 1920, VideoHeight: 1080, VideoLevel: 41, AvgFrameRate: "30000/1001",
+			},
+			want: true,
+		},
+		{
+			name: "720p60 level 4.1",
+			probe: &UnifiedProbeResult{
+				VideoCodec: "h264", VideoPixFmt: "yuv420p", VideoProfile: "High",
+				VideoWidth: 1280, VideoHeight: 720, VideoLevel: 41, AvgFrameRate: "60000/1001",
+			},
+			want: true,
+		},
+		{
+			name: "1080p60 exceeds legacy frame rate",
+			probe: &UnifiedProbeResult{
+				VideoCodec: "h264", VideoPixFmt: "yuv420p", VideoProfile: "High",
+				VideoWidth: 1920, VideoHeight: 1080, VideoLevel: 42, AvgFrameRate: "60000/1001",
+			},
+			want: false,
+		},
+		{
+			name: "level 4.2 exceeds legacy decoder",
+			probe: &UnifiedProbeResult{
+				VideoCodec: "h264", VideoPixFmt: "yuv420p", VideoProfile: "High",
+				VideoWidth: 1920, VideoHeight: 1080, VideoLevel: 42, AvgFrameRate: "24000/1001",
+			},
+			want: false,
+		},
+		{
+			name: "missing dimensions are unsafe",
+			probe: &UnifiedProbeResult{
+				VideoCodec: "h264", VideoPixFmt: "yuv420p", VideoProfile: "High", VideoLevel: 41,
+				AvgFrameRate: "24000/1001",
+			},
+			want: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isLegacyCastCopyCompatibleVideo(tc.probe); got != tc.want {
+				t.Fatalf("isLegacyCastCopyCompatibleVideo() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAppendAACTranscodeArgs_LegacyCastUsesStereoAACLC(t *testing.T) {
+	args := appendAACTranscodeArgs(nil, ":0", true)
+	joined := strings.Join(args, " ")
+
+	for _, required := range []string{
+		"-c:a:0 aac",
+		"-profile:a:0 aac_low",
+		"-ac:a:0 2",
+		"-channel_layout:a:0 stereo",
+		"-ar:a:0 48000",
+	} {
+		if !strings.Contains(joined, required) {
+			t.Fatalf("legacy cast audio args missing %q: %s", required, joined)
+		}
+	}
+	if strings.Contains(joined, "5.1") || strings.Contains(joined, "-ac:a:0 6") {
+		t.Fatalf("legacy cast audio args retained surround output: %s", joined)
+	}
+}
+
+func TestParseUnifiedProbeOutputRetainsLegacyCastVideoLimits(t *testing.T) {
+	manager := &HLSManager{}
+	probe, err := manager.parseUnifiedProbeOutput([]byte(`{
+		"format":{"duration":"120.0"},
+		"streams":[{
+			"index":0,"codec_type":"video","codec_name":"h264","pix_fmt":"yuv420p",
+			"profile":"High","width":1920,"height":1080,"level":41,"avg_frame_rate":"30000/1001"
+		}]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if probe.VideoWidth != 1920 || probe.VideoHeight != 1080 || probe.VideoLevel != 41 {
+		t.Fatalf("video limits were not retained: %+v", probe)
+	}
+}
+
 func TestShouldUseAccurateRequestedSeekForWebSubtitle(t *testing.T) {
 	textSubs := []subtitleStreamInfo{{Index: 3, Codec: "subrip"}}
 

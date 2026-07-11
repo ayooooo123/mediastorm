@@ -307,6 +307,10 @@ func looksLikeCapabilityFlags(s string) bool {
 // are also limited to 1080p decode, and downscaling before tone mapping keeps
 // software pipelines realtime.
 func buildVideoEncodePlan(caps HWAccelCaps, tonemapNeeded bool, maxHeight int) videoEncodePlan {
+	return buildVideoEncodePlanWithLimits(caps, tonemapNeeded, maxHeight, 0)
+}
+
+func buildVideoEncodePlanWithLimits(caps HWAccelCaps, tonemapNeeded bool, maxHeight, maxFPS int) videoEncodePlan {
 	plan := videoEncodePlan{Kind: caps.Encode}
 
 	// VAAPI/QSV encoders need their own filter hardware device for the hwupload
@@ -328,6 +332,10 @@ func buildVideoEncodePlan(caps HWAccelCaps, tonemapNeeded bool, maxHeight int) v
 		// CPU scale on system-memory frames, ahead of tone mapping and any
 		// hwupload step, so it applies uniformly across encoder variants.
 		filters = append(filters, fmt.Sprintf("scale=-2:'min(%d,ih)'", maxHeight))
+	}
+	if maxFPS > 0 {
+		// Cap high-frame-rate input without duplicating frames in 24/25 fps media.
+		filters = append(filters, fmt.Sprintf("fps='min(source_fps,%d)'", maxFPS))
 	}
 	if tonemapNeeded && tonemapImpl != "" {
 		plan.Tonemapped = true
@@ -420,6 +428,11 @@ func buildVideoEncodePlan(caps HWAccelCaps, tonemapNeeded bool, maxHeight int) v
 			"-level", "4.1",
 			"-pix_fmt", "yuv420p",
 		}
+	}
+	if maxFPS > 0 {
+		// The legacy Cast profile is capped at H.264 Level 4.1 regardless of
+		// which software or hardware encoder was selected.
+		plan.EncoderArgs = append(plan.EncoderArgs, "-level:v", "4.1")
 	}
 
 	if len(filters) > 0 {

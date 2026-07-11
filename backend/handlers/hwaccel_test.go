@@ -178,3 +178,13 @@ func TestBuildVideoEncodePlanCastHeightCap(t *testing.T) {
 		t.Fatalf("expected scale cap first in filter chain, got %q", plan.Filter)
 	}
 }
+
+func TestBuildVideoEncodePlanLegacyCastLimits(t *testing.T) {
+	plan := buildVideoEncodePlanWithLimits(HWAccelCaps{Encode: HWNone}, false, 1080, 30)
+	if !strings.Contains(plan.Filter, "scale=-2:'min(1080,ih)',fps='min(source_fps,30)'") {
+		t.Fatalf("expected legacy Cast scale and frame-rate filters, got %q", plan.Filter)
+	}
+	if !strings.Contains(strings.Join(plan.EncoderArgs, " "), "-level:v 4.1") {
+		t.Fatalf("expected legacy Cast H.264 level cap, got %v", plan.EncoderArgs)
+	}
+}
