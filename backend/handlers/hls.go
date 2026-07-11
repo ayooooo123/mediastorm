@@ -2388,9 +2388,10 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 	// will be transcoded and whether a same-pass subtitle is being muxed, because both change the
 	// seek strategy needed to keep the subtitle aligned with the video.
 	videoWillTranscode := hlsWebVideoWillTranscode(session.PlaybackTarget, session.ProbeData)
-	if session.CastMode && session.ProbeData != nil && IsCastIncompatibleVideoCodec(session.ProbeData.VideoCodec) {
-		// Chromecast receivers can only decode H.264; HEVC sources that iOS plays
-		// natively must be transcoded for cast.
+	if session.CastMode && !isBrowserCopyCompatibleVideo(session.ProbeData) {
+		// Chromecast receivers share the browser decode envelope: 8-bit H.264
+		// only. HEVC, 10-bit H.264 (Hi10P), and unprobed sources must all be
+		// transcoded for cast even though iOS plays them natively.
 		videoWillTranscode = true
 	}
 	_, subtitleRenditionWanted := selectedTextSubtitleStream(subtitleStreams, session.SubtitleTrackIndex)
@@ -2597,10 +2598,15 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 	if session.ProbeData != nil {
 		videoCodec = session.ProbeData.VideoCodec
 		needsVideoTranscode = IsIncompatibleVideoCodec(videoCodec)
-		if session.CastMode && IsCastIncompatibleVideoCodec(videoCodec) {
-			needsVideoTranscode = true
-			log.Printf("[hls] session %s: cast receiver cannot play codec %q; transcoding to H.264", session.ID, videoCodec)
+	}
+	if session.CastMode && !isBrowserCopyCompatibleVideo(session.ProbeData) {
+		needsVideoTranscode = true
+		pixFmt, profile := "", ""
+		if session.ProbeData != nil {
+			pixFmt, profile = session.ProbeData.VideoPixFmt, session.ProbeData.VideoProfile
 		}
+		log.Printf("[hls] session %s: cast receiver needs 8-bit H.264 (source codec=%q pixFmt=%q profile=%q probed=%v); transcoding",
+			session.ID, videoCodec, pixFmt, profile, session.ProbeData != nil)
 	}
 	if session.PlaybackTarget == "web" && !isBrowserCopyCompatibleVideo(session.ProbeData) {
 		needsVideoTranscode = true

@@ -76,21 +76,6 @@ func IsIncompatibleVideoCodec(codec string) bool {
 	return true
 }
 
-// IsCastIncompatibleVideoCodec returns true for video codecs that Chromecast-class
-// receivers cannot play. Unlike iOS (see IsIncompatibleVideoCodec), most Chromecast
-// devices cannot decode HEVC — only H.264 is universally supported, so cast
-// sessions must transcode everything else.
-func IsCastIncompatibleVideoCodec(codec string) bool {
-	c := strings.ToLower(strings.TrimSpace(codec))
-	castCompatibleVideoCodecs := map[string]bool{
-		"h264": true, "avc": true, "avc1": true,
-	}
-	if c == "" || castCompatibleVideoCodecs[c] {
-		return false
-	}
-	return true
-}
-
 // IsCommentaryTrack checks if an audio track is a commentary track based on its title
 func IsCommentaryTrack(title string) bool {
 	lowerTitle := strings.ToLower(strings.TrimSpace(title))
