@@ -2411,7 +2411,13 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 	if useWebEncodePlan {
 		caps := m.hwAccelCaps()
 		tonemapNeeded := session.HasDV || session.HasHDR
-		webEncodePlan = buildVideoEncodePlan(caps, tonemapNeeded)
+		// Cast receivers that need the H.264 transcode are also 1080p-limited,
+		// and downscaling keeps software tone mapping realtime.
+		castMaxHeight := 0
+		if session.CastMode {
+			castMaxHeight = 1080
+		}
+		webEncodePlan = buildVideoEncodePlan(caps, tonemapNeeded, castMaxHeight)
 		if len(webEncodePlan.GlobalArgs) > 0 {
 			args = append(args, webEncodePlan.GlobalArgs...)
 		}
@@ -2638,6 +2644,10 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 				log.Printf("[hls] session %s: transcoding video codec %q to H.264 for accurate web subtitle seek/resume (ultrafast)", session.ID, videoCodec)
 			} else {
 				log.Printf("[hls] session %s: video transcode required for codec %q, transcoding to H.264 (ultrafast)", session.ID, videoCodec)
+			}
+			if session.CastMode {
+				// Cast receivers needing this transcode are 1080p-limited.
+				args = append(args, "-vf", "scale=-2:'min(1080,ih)'")
 			}
 			args = append(args,
 				"-c:v", "libx264",

@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"runtime"
@@ -301,7 +302,11 @@ func looksLikeCapabilityFlags(s string) bool {
 
 // buildVideoEncodePlan assembles the ffmpeg arguments for a web transcode given
 // the detected capabilities and whether the source is HDR/DV (tonemapNeeded).
-func buildVideoEncodePlan(caps HWAccelCaps, tonemapNeeded bool) videoEncodePlan {
+// maxHeight, when > 0, caps the output height (aspect preserved, never
+// upscales). Cast targets need this: devices that require the H.264 transcode
+// are also limited to 1080p decode, and downscaling before tone mapping keeps
+// software pipelines realtime.
+func buildVideoEncodePlan(caps HWAccelCaps, tonemapNeeded bool, maxHeight int) videoEncodePlan {
 	plan := videoEncodePlan{Kind: caps.Encode}
 
 	// VAAPI/QSV encoders need their own filter hardware device for the hwupload
@@ -319,6 +324,11 @@ func buildVideoEncodePlan(caps HWAccelCaps, tonemapNeeded bool) videoEncodePlan 
 	}
 
 	var filters []string
+	if maxHeight > 0 {
+		// CPU scale on system-memory frames, ahead of tone mapping and any
+		// hwupload step, so it applies uniformly across encoder variants.
+		filters = append(filters, fmt.Sprintf("scale=-2:'min(%d,ih)'", maxHeight))
+	}
 	if tonemapNeeded && tonemapImpl != "" {
 		plan.Tonemapped = true
 		switch tonemapImpl {

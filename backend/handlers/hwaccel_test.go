@@ -8,7 +8,7 @@ import (
 func joinArgs(args []string) string { return strings.Join(args, " ") }
 
 func TestBuildVideoEncodePlanCPUNoTonemap(t *testing.T) {
-	plan := buildVideoEncodePlan(HWAccelCaps{Encode: HWNone, Tonemap: "zscale"}, false)
+	plan := buildVideoEncodePlan(HWAccelCaps{Encode: HWNone, Tonemap: "zscale"}, false, 0)
 	if plan.HardwareEncode {
 		t.Fatalf("expected CPU encode, got hardware")
 	}
@@ -27,7 +27,7 @@ func TestBuildVideoEncodePlanCPUNoTonemap(t *testing.T) {
 }
 
 func TestBuildVideoEncodePlanCPUTonemap(t *testing.T) {
-	plan := buildVideoEncodePlan(HWAccelCaps{Encode: HWNone, Tonemap: "zscale"}, true)
+	plan := buildVideoEncodePlan(HWAccelCaps{Encode: HWNone, Tonemap: "zscale"}, true, 0)
 	if !plan.Tonemapped {
 		t.Fatalf("expected tone mapping")
 	}
@@ -41,7 +41,7 @@ func TestBuildVideoEncodePlanCPUTonemap(t *testing.T) {
 
 func TestBuildVideoEncodePlanTonemapWithoutSupportFallsBack(t *testing.T) {
 	// No tone-map implementation available -> cannot tone map; must not claim it did.
-	plan := buildVideoEncodePlan(HWAccelCaps{Encode: HWNone, Tonemap: ""}, true)
+	plan := buildVideoEncodePlan(HWAccelCaps{Encode: HWNone, Tonemap: ""}, true, 0)
 	if plan.Tonemapped {
 		t.Fatalf("must not tone map without a tonemap implementation")
 	}
@@ -51,7 +51,7 @@ func TestBuildVideoEncodePlanTonemapWithoutSupportFallsBack(t *testing.T) {
 }
 
 func TestBuildVideoEncodePlanLibplaceboTonemap(t *testing.T) {
-	plan := buildVideoEncodePlan(HWAccelCaps{Encode: HWNVENC, Tonemap: "libplacebo"}, true)
+	plan := buildVideoEncodePlan(HWAccelCaps{Encode: HWNVENC, Tonemap: "libplacebo"}, true, 0)
 	if !plan.Tonemapped || !plan.HardwareEncode {
 		t.Fatalf("expected GPU tonemap + hardware encode")
 	}
@@ -67,7 +67,7 @@ func TestBuildVideoEncodePlanLibplaceboTonemap(t *testing.T) {
 }
 
 func TestBuildVideoEncodePlanOpenCLTonemap(t *testing.T) {
-	plan := buildVideoEncodePlan(HWAccelCaps{Encode: HWNVENC, Tonemap: "opencl"}, true)
+	plan := buildVideoEncodePlan(HWAccelCaps{Encode: HWNVENC, Tonemap: "opencl"}, true, 0)
 	if !strings.Contains(plan.Filter, "tonemap_opencl") {
 		t.Fatalf("expected OpenCL tonemap, got %q", plan.Filter)
 	}
@@ -79,7 +79,7 @@ func TestBuildVideoEncodePlanOpenCLTonemap(t *testing.T) {
 func TestBuildVideoEncodePlanVAAPIForcesCPUTonemap(t *testing.T) {
 	// VAAPI encode + a GPU tonemap pref must not init a second filter device;
 	// tone mapping is forced onto the CPU (zscale) to avoid the conflict.
-	plan := buildVideoEncodePlan(HWAccelCaps{Encode: HWVAAPI, EncodeDevice: "/dev/dri/renderD128", Tonemap: "libplacebo"}, true)
+	plan := buildVideoEncodePlan(HWAccelCaps{Encode: HWVAAPI, EncodeDevice: "/dev/dri/renderD128", Tonemap: "libplacebo"}, true, 0)
 	if strings.Contains(joinArgs(plan.GlobalArgs), "vulkan") {
 		t.Fatalf("vaapi must not also init a vulkan filter device, got %v", plan.GlobalArgs)
 	}
@@ -89,7 +89,7 @@ func TestBuildVideoEncodePlanVAAPIForcesCPUTonemap(t *testing.T) {
 }
 
 func TestBuildVideoEncodePlanVAAPIUploads(t *testing.T) {
-	plan := buildVideoEncodePlan(HWAccelCaps{Encode: HWVAAPI, EncodeDevice: "/dev/dri/renderD128", Tonemap: "zscale"}, true)
+	plan := buildVideoEncodePlan(HWAccelCaps{Encode: HWVAAPI, EncodeDevice: "/dev/dri/renderD128", Tonemap: "zscale"}, true, 0)
 	if !strings.Contains(joinArgs(plan.GlobalArgs), "-vaapi_device /dev/dri/renderD128") {
 		t.Fatalf("expected vaapi device init, got %v", plan.GlobalArgs)
 	}
@@ -106,7 +106,7 @@ func TestBuildVideoEncodePlanVAAPIUploads(t *testing.T) {
 }
 
 func TestBuildVideoEncodePlanQSVDeviceInit(t *testing.T) {
-	plan := buildVideoEncodePlan(HWAccelCaps{Encode: HWQSV, EncodeDevice: "/dev/dri/renderD128", Tonemap: "zscale"}, false)
+	plan := buildVideoEncodePlan(HWAccelCaps{Encode: HWQSV, EncodeDevice: "/dev/dri/renderD128", Tonemap: "zscale"}, false, 0)
 	if !strings.Contains(joinArgs(plan.GlobalArgs), "qsv=hw:/dev/dri/renderD128") {
 		t.Fatalf("expected qsv device init, got %v", plan.GlobalArgs)
 	}
@@ -119,7 +119,7 @@ func TestBuildVideoEncodePlanQSVDeviceInit(t *testing.T) {
 }
 
 func TestBuildVideoEncodePlanVideoToolbox(t *testing.T) {
-	plan := buildVideoEncodePlan(HWAccelCaps{Encode: HWVideoToolbox, Tonemap: "zscale"}, false)
+	plan := buildVideoEncodePlan(HWAccelCaps{Encode: HWVideoToolbox, Tonemap: "zscale"}, false, 0)
 	if !plan.HardwareEncode {
 		t.Fatalf("expected hardware encode")
 	}
@@ -166,5 +166,15 @@ func TestFFmpegTokenSetParsesNames(t *testing.T) {
 	// rather than panicking.
 	if set := ffmpegTokenSet("/nonexistent/ffmpeg", "-encoders"); len(set) != 0 {
 		t.Fatalf("expected empty set for missing binary, got %v", set)
+	}
+}
+
+func TestBuildVideoEncodePlanCastHeightCap(t *testing.T) {
+	plan := buildVideoEncodePlan(HWAccelCaps{Encode: HWNone, Tonemap: "zscale"}, true, 1080)
+	if plan.Filter == "" {
+		t.Fatal("expected a filter chain")
+	}
+	if !strings.HasPrefix(plan.Filter, "scale=-2:'min(1080,ih)'") {
+		t.Fatalf("expected scale cap first in filter chain, got %q", plan.Filter)
 	}
 }
