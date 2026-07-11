@@ -576,6 +576,11 @@ func (h *HistoryHandler) UpdatePlaybackProgress(w http.ResponseWriter, r *http.R
 	}
 	allowedToContinue := !GetStreamTracker().ShouldStopPlayback(userID, update)
 	progress.AllowedToContinue = &allowedToContinue
+	GetStreamTracker().ObservePlaybackBandwidth(userID, update)
+	if reason, migrate := GetStreamTracker().ShouldMigratePlayback(userID, update); migrate {
+		progress.MigrationRequested = true
+		progress.MigrationReason = reason
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(progress)

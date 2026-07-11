@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"log"
 	"math"
 	"net"
 	"net/http"
@@ -18,10 +19,16 @@ import (
 
 // StreamTracker tracks active video streams for monitoring
 type StreamTracker struct {
-	streams       map[string]*TrackedStream
-	stopPlaybacks map[string]time.Time
-	mu            sync.RWMutex
-	counter       uint64
+	streams          map[string]*TrackedStream
+	stopPlaybacks    map[string]time.Time
+	migrationSignals map[string]playbackMigrationSignal
+	mu               sync.RWMutex
+	counter          uint64
+}
+
+type playbackMigrationSignal struct {
+	reason    string
+	expiresAt time.Time
 }
 
 // TrackedStream represents an active direct video stream
@@ -57,6 +64,14 @@ type TrackedStream struct {
 	lastSampleBytes int64
 	lastSampleNanos int64
 	throughputBps   int64
+	// Delivery-health sampling is independent of the smoothed dashboard rate.
+	// It compares raw five-second delivery windows with player-reported required
+	// bandwidth so sustained trickle delivery can arm migration before buffering.
+	requiredBps           int64
+	healthLastBytes       int64
+	healthLastNanos       int64
+	healthLowSamples      int32
+	healthLastSignalNanos int64
 }
 
 // throughputSampleInterval is the minimum window between throughput samples.
@@ -130,17 +145,87 @@ func sampleThroughput(bytesNow int64, lastBytes, lastNanos, outBps *int64) int64
 // on open, even when no dashboard was connected to drive sampling.
 const throughputSamplerInterval = 5 * time.Second
 
+const (
+	throughputHealthMinRequiredBps = int64(1_000_000)
+	throughputHealthMinWindow      = 3 * time.Second
+	throughputHealthFactor         = 0.90
+	throughputHealthLowSamples     = int32(2)
+	throughputHealthSignalCooldown = 30 * time.Second
+)
+
+type throughputHealthAlert struct {
+	streamID string
+	actual   int64
+	required int64
+}
+
+func sampleDeliveryHealth(s *TrackedStream, now time.Time) (int64, int64, bool) {
+	if s == nil || s.bytesCounter == nil {
+		return 0, 0, false
+	}
+	required := atomic.LoadInt64(&s.requiredBps)
+	if required < throughputHealthMinRequiredBps {
+		atomic.StoreInt32(&s.healthLowSamples, 0)
+		return 0, required, false
+	}
+
+	nowNanos := now.UnixNano()
+	bytesNow := atomic.LoadInt64(s.bytesCounter)
+	previousNanos := atomic.SwapInt64(&s.healthLastNanos, nowNanos)
+	previousBytes := atomic.SwapInt64(&s.healthLastBytes, bytesNow)
+	if previousNanos <= 0 || nowNanos <= previousNanos {
+		return 0, required, false
+	}
+	elapsed := nowNanos - previousNanos
+	if time.Duration(elapsed) < throughputHealthMinWindow {
+		return 0, required, false
+	}
+	deltaBytes := bytesNow - previousBytes
+	if deltaBytes < 0 {
+		deltaBytes = 0
+	}
+	actual := int64(float64(deltaBytes) * 8 * float64(time.Second) / float64(elapsed))
+	if float64(actual) >= float64(required)*throughputHealthFactor {
+		atomic.StoreInt32(&s.healthLowSamples, 0)
+		return actual, required, false
+	}
+
+	lowSamples := atomic.AddInt32(&s.healthLowSamples, 1)
+	if lowSamples < throughputHealthLowSamples {
+		return actual, required, false
+	}
+	lastSignal := atomic.LoadInt64(&s.healthLastSignalNanos)
+	if lastSignal > 0 && time.Duration(nowNanos-lastSignal) < throughputHealthSignalCooldown {
+		return actual, required, false
+	}
+	atomic.StoreInt64(&s.healthLastSignalNanos, nowNanos)
+	return actual, required, true
+}
+
 // SampleThroughput refreshes the throughput EWMA for every active direct stream.
 // Work is proportional to the number of active streams (a few atomics + one
 // exp() each), so it is effectively free when there are none.
 func (t *StreamTracker) SampleThroughput() {
 	t.mu.RLock()
-	defer t.mu.RUnlock()
+	alerts := make([]throughputHealthAlert, 0)
+	now := time.Now()
 	for _, s := range t.streams {
 		if s.bytesCounter == nil {
 			continue
 		}
 		sampleThroughput(atomic.LoadInt64(s.bytesCounter), &s.lastSampleBytes, &s.lastSampleNanos, &s.throughputBps)
+		if actual, required, alert := sampleDeliveryHealth(s, now); alert {
+			alerts = append(alerts, throughputHealthAlert{streamID: s.ID, actual: actual, required: required})
+		}
+	}
+	t.mu.RUnlock()
+
+	for _, alert := range alerts {
+		if t.MarkPlaybackMigration(alert.streamID, "backend-low-throughput") {
+			log.Printf("[stream-migration] sustained delivery underflow detected: streamID=%s actual=%.1fMbps required=%.1fMbps threshold=%.0f%% samples=%d",
+				alert.streamID, float64(alert.actual)/1_000_000, float64(alert.required)/1_000_000,
+				throughputHealthFactor*100, throughputHealthLowSamples)
+		}
 	}
 }
 
@@ -178,11 +263,13 @@ type StreamUsageSummary struct {
 
 // Global stream tracker instance
 var globalStreamTracker = &StreamTracker{
-	streams:       make(map[string]*TrackedStream),
-	stopPlaybacks: make(map[string]time.Time),
+	streams:          make(map[string]*TrackedStream),
+	stopPlaybacks:    make(map[string]time.Time),
+	migrationSignals: make(map[string]playbackMigrationSignal),
 }
 
 const playbackStopSignalDuration = 2 * time.Minute
+const playbackMigrationSignalDuration = 30 * time.Second
 
 // GetStreamTracker returns the global stream tracker
 func GetStreamTracker() *StreamTracker {
@@ -272,6 +359,18 @@ func (t *StreamTracker) pruneStopSignalsLocked() {
 	for key, expiresAt := range t.stopPlaybacks {
 		if !expiresAt.After(now) {
 			delete(t.stopPlaybacks, key)
+		}
+	}
+}
+
+func (t *StreamTracker) pruneMigrationSignalsLocked() {
+	if t.migrationSignals == nil {
+		t.migrationSignals = make(map[string]playbackMigrationSignal)
+	}
+	now := time.Now()
+	for key, signal := range t.migrationSignals {
+		if !signal.expiresAt.After(now) {
+			delete(t.migrationSignals, key)
 		}
 	}
 }
@@ -415,6 +514,139 @@ func (t *StreamTracker) ShouldStopPlayback(userID string, update models.Playback
 	}
 	delete(t.stopPlaybacks, key)
 	return true
+}
+
+// MarkPlaybackMigration records a short-lived recommendation for the player
+// associated with an active stream to switch to its next ranked candidate.
+// The recommendation is delivered through the next playback-progress response
+// once the player is buffering or reports critically low buffer runway.
+func (t *StreamTracker) MarkPlaybackMigration(id, reason string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.pruneMigrationSignalsLocked()
+
+	stream, ok := t.streams[id]
+	if !ok {
+		return false
+	}
+	keys := streamPlaybackControlKeys(stream)
+	if len(keys) == 0 {
+		return false
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "backend-starvation"
+	}
+	signal := playbackMigrationSignal{reason: reason, expiresAt: time.Now().Add(playbackMigrationSignalDuration)}
+	for _, key := range keys {
+		t.migrationSignals[key] = signal
+	}
+	return true
+}
+
+// MarkPlaybackMigrationForPath applies a recommendation to every active stream
+// reading the normalized path. This lets shared stream-pool readers notify the
+// correct player without coupling pool slots to individual HTTP requests.
+func (t *StreamTracker) MarkPlaybackMigrationForPath(path, reason string) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.pruneMigrationSignalsLocked()
+
+	normalized := normalizeStreamFailurePath(path)
+	if normalized == "" {
+		return 0
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "backend-starvation"
+	}
+	signal := playbackMigrationSignal{reason: reason, expiresAt: time.Now().Add(playbackMigrationSignalDuration)}
+	marked := 0
+	for _, stream := range t.streams {
+		if normalizeStreamFailurePath(stream.Path) != normalized {
+			continue
+		}
+		keys := streamPlaybackControlKeys(stream)
+		if len(keys) == 0 {
+			continue
+		}
+		for _, key := range keys {
+			t.migrationSignals[key] = signal
+		}
+		marked++
+	}
+	return marked
+}
+
+// ObservePlaybackBandwidth attaches the active release's estimated bandwidth to
+// every matching direct stream. The estimate comes from the migration candidate
+// size and media duration, which is more reliable than inferring total size from
+// an arbitrary resumed byte range.
+func (t *StreamTracker) ObservePlaybackBandwidth(userID string, update models.PlaybackProgressUpdate) int {
+	if update.RequiredMbps == nil || *update.RequiredMbps <= 0 || math.IsNaN(*update.RequiredMbps) || math.IsInf(*update.RequiredMbps, 0) {
+		return 0
+	}
+	required := int64(*update.RequiredMbps * 1_000_000)
+	if required < throughputHealthMinRequiredBps {
+		return 0
+	}
+	targetKey := playbackControlKey(userID, update.MediaType, update.ItemID)
+	nowNanos := time.Now().UnixNano()
+
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	matched := 0
+	for _, stream := range t.streams {
+		matches := false
+		for _, key := range streamPlaybackControlKeys(stream) {
+			if key == targetKey {
+				matches = true
+				break
+			}
+		}
+		if !matches || stream.bytesCounter == nil {
+			continue
+		}
+
+		previous := atomic.LoadInt64(&stream.requiredBps)
+		atomic.StoreInt64(&stream.requiredBps, required)
+		// Reset health sampling only for a new stream estimate or a material
+		// candidate change; ordinary progress heartbeats keep the rolling window.
+		materialChange := previous <= 0 || math.Abs(float64(previous-required))/float64(required) > 0.10
+		if materialChange {
+			atomic.StoreInt64(&stream.healthLastBytes, atomic.LoadInt64(stream.bytesCounter))
+			atomic.StoreInt64(&stream.healthLastNanos, nowNanos)
+			atomic.StoreInt32(&stream.healthLowSamples, 0)
+			atomic.StoreInt64(&stream.healthLastSignalNanos, 0)
+		}
+		matched++
+	}
+	return matched
+}
+
+// ShouldMigratePlayback consumes a pending backend recommendation only when
+// player telemetry confirms that upstream starvation is affecting playback.
+// A five-second runway catches imminent buffering without migrating merely
+// because a healthy player has temporarily stopped requesting more data.
+func (t *StreamTracker) ShouldMigratePlayback(userID string, update models.PlaybackProgressUpdate) (string, bool) {
+	if update.IsPaused || (!update.IsBuffering && (update.BufferAhead == nil || *update.BufferAhead > 5)) {
+		return "", false
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.pruneMigrationSignalsLocked()
+
+	key := playbackControlKey(userID, update.MediaType, update.ItemID)
+	signal, ok := t.migrationSignals[key]
+	if !ok || !signal.expiresAt.After(time.Now()) {
+		return "", false
+	}
+	if signal.reason == "backend-low-throughput" && update.Position <= 3 {
+		return "", false
+	}
+	delete(t.migrationSignals, key)
+	return signal.reason, true
 }
 
 // GetStream returns a copy of a tracked stream.

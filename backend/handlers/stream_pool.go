@@ -326,6 +326,22 @@ dataReady:
 	}
 	streamID, bytesCounter, activityCounter := tracker.StartStreamWithAccount(r, path, expectedLen, reqStart, 0, accountID)
 	defer tracker.EndStream(streamID)
+	var clientWriteWatch pipelineBlockWatch
+	stopDeliveryStarvationWatch := monitorPipelineStarvation(
+		ctx,
+		&clientWriteWatch,
+		pipelineStarvationTimeout,
+		pipelineStarvationCheckInterval,
+		func(blockedFor time.Duration) bool {
+			marked := tracker.MarkPlaybackMigration(streamID, "backend-delivery-starvation")
+			if marked {
+				log.Printf("[stream-migration] client delivery starvation detected in stream pool: path=%q blockedFor=%v streamID=%s",
+					path, blockedFor.Round(time.Millisecond), streamID)
+			}
+			return marked
+		},
+	)
+	defer stopDeliveryStarvationWatch()
 
 	// Stream data from slot buffer to client.
 	// IMPORTANT: Write data immediately without checking ctx.Done() first.
@@ -419,8 +435,10 @@ dataReady:
 
 		// Write directly — don't check ctx.Done() beforehand.
 		// The write itself is the fastest path to getting data to the client.
+		clientWriteWatch.begin()
 		writeStart := time.Now()
 		written, writeErr := w.Write(chunk)
+		clientWriteWatch.end()
 		clientWindowWrite += time.Since(writeStart)
 		if writeErr != nil {
 			if isClientGone(writeErr) && totalWritten > 0 {
@@ -653,6 +671,25 @@ func (s *poolSlot) backgroundReader(resp *streaming.Response) {
 	}()
 
 	buf := make([]byte, poolSlotReadChunk)
+	var upstreamWatch pipelineBlockWatch
+	stopStarvationWatch := monitorPipelineStarvation(
+		s.ctx,
+		&upstreamWatch,
+		pipelineStarvationTimeout,
+		pipelineStarvationCheckInterval,
+		func(blockedFor time.Duration) bool {
+			if atomic.LoadInt32(&s.readers) == 0 {
+				return false
+			}
+			marked := GetStreamTracker().MarkPlaybackMigrationForPath(s.path, "backend-starvation")
+			if marked > 0 {
+				log.Printf("[stream-migration] upstream starvation detected in stream pool: path=%q blockedFor=%v readers=%d playbacks=%d",
+					s.path, blockedFor.Round(time.Millisecond), atomic.LoadInt32(&s.readers), marked)
+			}
+			return marked > 0
+		},
+	)
+	defer stopStarvationWatch()
 	const cdnLogInterval = 5 * time.Second
 	cdnLogAt := time.Now()
 	var cdnWindowBytes int64
@@ -705,8 +742,10 @@ func (s *poolSlot) backgroundReader(resp *streaming.Response) {
 		}
 		s.mu.Unlock()
 
+		upstreamWatch.begin()
 		readStart := time.Now()
 		n, err := resp.Body.Read(buf)
+		upstreamWatch.end()
 		cdnWindowRead += time.Since(readStart)
 		if n > 0 {
 			cdnWindowBytes += int64(n)
