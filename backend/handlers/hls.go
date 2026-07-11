@@ -4314,7 +4314,7 @@ func (m *HLSManager) ServePlaylist(w http.ResponseWriter, r *http.Request, sessi
 		lines := strings.Split(playlistContent, "\n")
 		// Determine segment extension based on actual session format
 		segmentExt := ".m4s"
-		if session.forceAAC && !session.HasDV && !session.HasHDR {
+		if session.CastMode || (session.forceAAC && !session.HasDV && !session.HasHDR) {
 			segmentExt = ".ts" // Cast sessions use MPEG-TS for Chromecast compatibility
 		}
 		for _, line := range lines {

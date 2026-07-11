@@ -597,6 +597,52 @@ func TestHLSManager_ServePlaylist_WaitsForFirstSegment(t *testing.T) {
 	}
 }
 
+func TestHLSManager_ServePlaylist_CastUsesTransportStreamSegments(t *testing.T) {
+	tmpDir := t.TempDir()
+	manager := NewHLSManager(tmpDir, "", "", nil)
+	defer manager.Shutdown()
+
+	sessionID := "cast-hdr-playlist-session"
+	outputDir := filepath.Join(tmpDir, sessionID)
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	playlist := "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:EVENT\n#EXTINF:4.000000,\nsegment0.ts\n"
+	if err := os.WriteFile(filepath.Join(outputDir, "stream.m3u8"), []byte(playlist), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	session := &HLSSession{
+		ID:         sessionID,
+		OutputDir:  outputDir,
+		CreatedAt:  time.Now(),
+		LastAccess: time.Now(),
+		Duration:   8,
+		HasHDR:     true,
+		CastMode:   true,
+		forceAAC:   true,
+	}
+	manager.mu.Lock()
+	manager.sessions[sessionID] = session
+	manager.mu.Unlock()
+
+	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/video/hls/%s/stream.m3u8", sessionID), nil)
+	rr := httptest.NewRecorder()
+	manager.ServePlaylist(rr, req, sessionID)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusOK, rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	if strings.Contains(body, ".m4s") {
+		t.Fatalf("cast playlist advertised fMP4 segments even though cast output is MPEG-TS: %s", body)
+	}
+	if !strings.Contains(body, "segment1.ts") {
+		t.Fatalf("cast playlist did not extend using MPEG-TS segments: %s", body)
+	}
+}
+
 func TestHLSManager_ServeSegment_NotFound(t *testing.T) {
 	tmpDir := t.TempDir()
 	manager := NewHLSManager(tmpDir, "", "", nil)
