@@ -36,6 +36,12 @@ COPY frontend/utils ./utils
 COPY frontend/web_icons ./web_icons
 RUN npm run web:export
 
+# Empty web bundle used by single-repo CI builds (no frontend checkout needed;
+# the backend serves a friendly placeholder at /watch when the dist is empty).
+# Select with: docker build --build-arg WEB_APP_STAGE=web-stub
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS web-stub
+RUN mkdir -p /frontend/dist
+
 # Build stage
 FROM golang:1.24.5-bookworm AS builder
 
@@ -148,7 +154,10 @@ WORKDIR /root/
 COPY --from=builder /app/mediastorm .
 
 # Copy the exported Expo web app. The backend serves it from /watch.
-COPY --from=web-builder /frontend/dist /opt/strmr-web
+# WEB_APP_STAGE=web-stub skips the frontend build entirely (BuildKit only
+# builds referenced stages), for CI that has no frontend repo checkout.
+ARG WEB_APP_STAGE=web-builder
+COPY --from=${WEB_APP_STAGE} /frontend/dist /opt/strmr-web
 ENV STRMR_WEB_APP_DIR=/opt/strmr-web
 
 # Copy the iroh remote-access bridge binary. MEDIASTORM_IROH_DIRECT_DIR points the
