@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1216,5 +1219,202 @@ func TestInputLooksLikeHLS(t *testing.T) {
 		if got := inputLooksLikeHLS(c.url); got != c.want {
 			t.Errorf("inputLooksLikeHLS(%q) = %v, want %v", c.url, got, c.want)
 		}
+	}
+}
+
+func manifestReq(t *testing.T, attempt string) *http.Request {
+	t.Helper()
+	url := "/video/hls/s1/master.m3u8"
+	if attempt != "" {
+		url += "?castAttempt=" + attempt
+	}
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return req
+}
+
+func TestRecordManifestRequestCounters(t *testing.T) {
+	session := &HLSSession{}
+
+	recordManifestRequest(session, manifestReq(t, ""))
+	recordManifestRequest(session, manifestReq(t, "gen1-direct"))
+	recordManifestRequest(session, manifestReq(t, "gen1-direct"))
+	recordManifestRequest(session, manifestReq(t, "gen1-relay"))
+
+	if session.ManifestRequests != 4 {
+		t.Fatalf("total = %d, want 4", session.ManifestRequests)
+	}
+	if got := session.AttemptManifests["gen1-direct"]; got != 2 {
+		t.Fatalf("gen1-direct = %d, want 2", got)
+	}
+	if got := session.AttemptManifests["gen1-relay"]; got != 1 {
+		t.Fatalf("gen1-relay = %d, want 1", got)
+	}
+}
+
+func TestRecordManifestRequestRejectsInvalidAttemptIDs(t *testing.T) {
+	session := &HLSSession{}
+
+	for _, bad := range []string{"has space", "semi;colon", strings.Repeat("a", 65), "sla/sh"} {
+		recordManifestRequest(session, manifestReq(t, url.QueryEscape(bad)))
+	}
+
+	if session.ManifestRequests != 4 {
+		t.Fatalf("total = %d, want 4 (invalid IDs still count toward the total)", session.ManifestRequests)
+	}
+	if len(session.AttemptManifests) != 0 {
+		t.Fatalf("retained %d invalid attempt IDs, want 0", len(session.AttemptManifests))
+	}
+}
+
+func TestRecordManifestRequestCapsAttemptMap(t *testing.T) {
+	session := &HLSSession{}
+
+	for i := 0; i < castAttemptCounterCap+4; i++ {
+		recordManifestRequest(session, manifestReq(t, fmt.Sprintf("attempt-%d", i)))
+	}
+	// Existing entries keep counting past the cap.
+	recordManifestRequest(session, manifestReq(t, "attempt-0"))
+
+	if len(session.AttemptManifests) != castAttemptCounterCap {
+		t.Fatalf("retained %d attempt IDs, want %d", len(session.AttemptManifests), castAttemptCounterCap)
+	}
+	if got := session.AttemptManifests["attempt-0"]; got != 2 {
+		t.Fatalf("attempt-0 = %d, want 2", got)
+	}
+	if _, exists := session.AttemptManifests[fmt.Sprintf("attempt-%d", castAttemptCounterCap)]; exists {
+		t.Fatal("attempt beyond cap was retained")
+	}
+}
+
+func TestRecordManifestRequestConcurrent(t *testing.T) {
+	session := &HLSSession{}
+	const workers, perWorker = 8, 50
+
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < perWorker; i++ {
+				recordManifestRequest(session, manifestReq(t, "shared-attempt"))
+			}
+		}()
+	}
+	wg.Wait()
+
+	if session.ManifestRequests != workers*perWorker {
+		t.Fatalf("total = %d, want %d", session.ManifestRequests, workers*perWorker)
+	}
+	if got := session.AttemptManifests["shared-attempt"]; got != workers*perWorker {
+		t.Fatalf("shared-attempt = %d, want %d", got, workers*perWorker)
+	}
+}
+
+func TestLegacyCastEncodeLimits(t *testing.T) {
+	cases := []struct {
+		name    string
+		probe   *UnifiedProbeResult
+		wantH   int
+		wantFPS int
+	}{
+		{"nil probe caps at 1080p30", nil, 1080, 30},
+		{"4K source caps at 1080p30", &UnifiedProbeResult{VideoWidth: 3840, VideoHeight: 2160}, 1080, 30},
+		{"1080p source caps at 1080p30", &UnifiedProbeResult{VideoWidth: 1920, VideoHeight: 1080}, 1080, 30},
+		{"720p source allows 60fps", &UnifiedProbeResult{VideoWidth: 1280, VideoHeight: 720}, 1080, 60},
+	}
+	for _, c := range cases {
+		gotH, gotFPS := legacyCastEncodeLimits(c.probe)
+		if gotH != c.wantH || gotFPS != c.wantFPS {
+			t.Errorf("%s: got (%d, %d), want (%d, %d)", c.name, gotH, gotFPS, c.wantH, c.wantFPS)
+		}
+	}
+}
+
+func TestProbeCacheConversionRoundTripRetainsCastFields(t *testing.T) {
+	h := &VideoHandler{}
+	full := &VideoFullResult{
+		VideoCodec:   "h264",
+		VideoPixFmt:  "yuv420p",
+		VideoProfile: "high",
+		VideoWidth:   1920,
+		VideoHeight:  1080,
+		VideoLevel:   41,
+		AvgFrameRate: "24000/1001",
+		Duration:     7200,
+	}
+
+	cached := h.videoFullToUnifiedProbe(full)
+	if cached.VideoWidth != 1920 || cached.VideoHeight != 1080 || cached.VideoLevel != 41 ||
+		cached.AvgFrameRate != "24000/1001" || cached.VideoPixFmt != "yuv420p" || cached.VideoProfile != "high" {
+		t.Fatalf("VideoFullResult -> UnifiedProbeResult dropped cast fields: %+v", cached)
+	}
+	if !isLegacyCastCopyCompatibleVideo(cached) {
+		t.Fatal("cached probe of a compatible source must stay copy-compatible")
+	}
+
+	back := h.unifiedProbeToVideoFull(cached)
+	if back.VideoWidth != 1920 || back.VideoHeight != 1080 || back.VideoLevel != 41 ||
+		back.AvgFrameRate != "24000/1001" || back.VideoPixFmt != "yuv420p" || back.VideoProfile != "high" {
+		t.Fatalf("UnifiedProbeResult -> VideoFullResult dropped cast fields: %+v", back)
+	}
+}
+
+func TestGetSessionStatusAttemptTelemetry(t *testing.T) {
+	manager := NewHLSManager(t.TempDir(), "/usr/bin/ffmpeg", "/usr/bin/ffprobe", nil)
+	defer manager.Shutdown()
+
+	session := &HLSSession{ID: "cast-status-test"}
+	manager.mu.Lock()
+	manager.sessions[session.ID] = session
+	manager.mu.Unlock()
+
+	recordManifestRequest(session, manifestReq(t, "gen2-direct"))
+	recordManifestRequest(session, manifestReq(t, "gen2-direct"))
+
+	fetch := func(t *testing.T, query string) (int, HLSSessionStatus) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/video/hls/"+session.ID+"/status"+query, nil)
+		rec := httptest.NewRecorder()
+		manager.GetSessionStatus(rec, req, session.ID)
+		var status HLSSessionStatus
+		if rec.Code == http.StatusOK {
+			if err := json.NewDecoder(rec.Body).Decode(&status); err != nil {
+				t.Fatalf("decode status: %v", err)
+			}
+		}
+		return rec.Code, status
+	}
+
+	// Matching attempt: positive count proves the route attempt reached us.
+	code, status := fetch(t, "?attempt=gen2-direct")
+	if code != http.StatusOK {
+		t.Fatalf("status code = %d", code)
+	}
+	if status.ManifestRequests != 2 {
+		t.Fatalf("manifestRequests = %d, want 2", status.ManifestRequests)
+	}
+	if status.AttemptManifestRequests == nil || *status.AttemptManifestRequests != 2 {
+		t.Fatalf("attemptManifestRequests = %v, want 2", status.AttemptManifestRequests)
+	}
+
+	// Unknown-but-valid attempt: explicit zero (supported, not yet requested).
+	code, status = fetch(t, "?attempt=gen3-relay")
+	if code != http.StatusOK || status.AttemptManifestRequests == nil || *status.AttemptManifestRequests != 0 {
+		t.Fatalf("unknown attempt: code=%d value=%v, want explicit 0", code, status.AttemptManifestRequests)
+	}
+
+	// No attempt param: field absent so clients can distinguish unsupported/unasked.
+	code, status = fetch(t, "")
+	if code != http.StatusOK || status.AttemptManifestRequests != nil {
+		t.Fatalf("no attempt param: code=%d value=%v, want absent", code, status.AttemptManifestRequests)
+	}
+
+	// Invalid attempt ID: rejected.
+	code, _ = fetch(t, "?attempt=bad%20id")
+	if code != http.StatusBadRequest {
+		t.Fatalf("invalid attempt: code = %d, want 400", code)
 	}
 }

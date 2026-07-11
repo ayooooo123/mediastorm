@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -443,9 +444,15 @@ type HLSSession struct {
 	ccExtractor       *ccExtractor // Running ccextractor process for this session (nil if not started)
 
 	// Prequeue tracking
-	PrequeueType   string // "", "details" (details page), or "next_episode" (auto-play next)
-	CastMode       bool   // True when the session is being prepared for Chromecast-style HLS playback
-	PlaybackTarget string // Optional client target hint, e.g. "web"
+	PrequeueType string // "", "details" (details page), or "next_episode" (auto-play next)
+	CastMode     bool   // True when the session is being prepared for Chromecast-style HLS playback
+	// Cast route telemetry, protected by mu. ManifestRequests counts every
+	// playlist fetch; AttemptManifests counts fetches per castAttempt query
+	// value (capped at castAttemptCounterCap entries) so a route attempt can be
+	// confirmed by the receiver's own request rather than topology guesses.
+	ManifestRequests uint64
+	AttemptManifests map[string]uint64
+	PlaybackTarget   string // Optional client target hint, e.g. "web"
 
 	// TonemappedToSDR is set when an HDR/DV source was tone mapped down to SDR
 	// H.264 during transcode. The HLS playlist must then advertise SDR rather
@@ -587,24 +594,85 @@ func parseVideoFrameRate(value string) (float64, bool) {
 	return numerator / denominator, true
 }
 
+// Legacy (gen 1/2) Chromecast H.264 decode envelope. Shared by the copy-mode
+// check and the cast encode limits so the two can never drift apart.
+const (
+	legacyCastMaxWidth  = 1920
+	legacyCastMaxHeight = 1080
+	legacyCastMaxLevel  = 41
+	// 60fps is only inside the envelope at 720p and below; larger frames cap at 30.
+	legacyCastHDMaxWidth  = 1280
+	legacyCastHDMaxHeight = 720
+	legacyCastMaxFPSHD    = 60
+	legacyCastMaxFPSFull  = 30
+)
+
 // isLegacyCastCopyCompatibleVideo enforces the first/second-generation
 // Chromecast H.264 envelope: Level 4.1, up to 720p60 or 1080p30.
 func isLegacyCastCopyCompatibleVideo(probe *UnifiedProbeResult) bool {
 	if !isBrowserCopyCompatibleVideo(probe) || probe.VideoWidth <= 0 || probe.VideoHeight <= 0 || probe.VideoLevel <= 0 {
 		return false
 	}
-	if probe.VideoWidth > 1920 || probe.VideoHeight > 1080 || probe.VideoLevel > 41 {
+	if probe.VideoWidth > legacyCastMaxWidth || probe.VideoHeight > legacyCastMaxHeight || probe.VideoLevel > legacyCastMaxLevel {
 		return false
 	}
 	frameRate, ok := parseVideoFrameRate(probe.AvgFrameRate)
 	if !ok {
 		return false
 	}
-	maxFrameRate := 60.0
-	if probe.VideoWidth > 1280 || probe.VideoHeight > 720 {
-		maxFrameRate = 30.0
+	maxFrameRate := float64(legacyCastMaxFPSHD)
+	if probe.VideoWidth > legacyCastHDMaxWidth || probe.VideoHeight > legacyCastHDMaxHeight {
+		maxFrameRate = float64(legacyCastMaxFPSFull)
 	}
 	return frameRate <= maxFrameRate+0.01
+}
+
+// castVideoMustTranscode is the single cast copy-vs-transcode decision, used by
+// both the seek-strategy and encoder-argument branches.
+func castVideoMustTranscode(probe *UnifiedProbeResult) bool {
+	return !isLegacyCastCopyCompatibleVideo(probe)
+}
+
+// Cast route attempt telemetry limits: attempt IDs are bounded opaque tokens,
+// and only a handful are retained per session.
+const castAttemptCounterCap = 8
+
+var castAttemptIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+
+func isValidCastAttemptID(id string) bool {
+	return castAttemptIDPattern.MatchString(id)
+}
+
+// recordManifestRequest counts a playlist fetch the moment it arrives — before
+// any wait for FFmpeg output — so route reachability is decoupled from
+// transcoder latency. Invalid attempt IDs still count toward the total but are
+// never retained; new attempt IDs beyond the cap are dropped.
+func recordManifestRequest(session *HLSSession, r *http.Request) {
+	attempt := r.URL.Query().Get("castAttempt")
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	session.ManifestRequests++
+	if attempt == "" || !isValidCastAttemptID(attempt) {
+		return
+	}
+	if _, exists := session.AttemptManifests[attempt]; !exists && len(session.AttemptManifests) >= castAttemptCounterCap {
+		return
+	}
+	if session.AttemptManifests == nil {
+		session.AttemptManifests = make(map[string]uint64, 1)
+	}
+	session.AttemptManifests[attempt]++
+}
+
+// legacyCastEncodeLimits returns the height and frame-rate caps for a cast
+// transcode of this source (60fps is preserved only for ≤720p sources).
+func legacyCastEncodeLimits(probe *UnifiedProbeResult) (maxHeight, maxFPS int) {
+	maxHeight, maxFPS = legacyCastMaxHeight, legacyCastMaxFPSFull
+	if probe != nil && probe.VideoWidth > 0 && probe.VideoWidth <= legacyCastHDMaxWidth &&
+		probe.VideoHeight > 0 && probe.VideoHeight <= legacyCastHDMaxHeight {
+		maxFPS = legacyCastMaxFPSHD
+	}
+	return maxHeight, maxFPS
 }
 
 func appendAACTranscodeArgs(args []string, streamSpecifier string, legacyCast bool) []string {
@@ -2451,10 +2519,10 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 	// will be transcoded and whether a same-pass subtitle is being muxed, because both change the
 	// seek strategy needed to keep the subtitle aligned with the video.
 	videoWillTranscode := hlsWebVideoWillTranscode(session.PlaybackTarget, session.ProbeData)
-	if session.CastMode && !isLegacyCastCopyCompatibleVideo(session.ProbeData) {
-		// Chromecast receivers share the browser decode envelope: 8-bit H.264
-		// only. HEVC, 10-bit H.264 (Hi10P), and unprobed sources must all be
-		// transcoded for cast even though iOS plays them natively.
+	if session.CastMode && castVideoMustTranscode(session.ProbeData) {
+		// Cast receivers are held to the legacy Chromecast envelope (8-bit
+		// H.264 ≤L4.1, ≤1080p30/720p60); anything outside it — or unprobed —
+		// transcodes even though iOS plays it natively.
 		videoWillTranscode = true
 	}
 	_, subtitleRenditionWanted := selectedTextSubtitleStream(subtitleStreams, session.SubtitleTrackIndex)
@@ -2475,19 +2543,11 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 	if useWebEncodePlan {
 		caps := m.hwAccelCaps()
 		tonemapNeeded := session.HasDV || session.HasHDR
-		// Cast receivers that need the H.264 transcode are also 1080p-limited,
-		// and downscaling keeps software tone mapping realtime.
-		castMaxHeight := 0
+		// Cast transcodes are capped to the same legacy envelope the copy check
+		// enforces; downscaling also keeps software tone mapping realtime.
+		castMaxHeight, castMaxFPS := 0, 0
 		if session.CastMode {
-			castMaxHeight = 1080
-		}
-		castMaxFPS := 0
-		if session.CastMode {
-			castMaxFPS = 30
-			if session.ProbeData != nil && session.ProbeData.VideoWidth > 0 && session.ProbeData.VideoWidth <= 1280 &&
-				session.ProbeData.VideoHeight > 0 && session.ProbeData.VideoHeight <= 720 {
-				castMaxFPS = 60
-			}
+			castMaxHeight, castMaxFPS = legacyCastEncodeLimits(session.ProbeData)
 		}
 		webEncodePlan = buildVideoEncodePlanWithLimits(caps, tonemapNeeded, castMaxHeight, castMaxFPS)
 		if len(webEncodePlan.GlobalArgs) > 0 {
@@ -2670,13 +2730,13 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 		videoCodec = session.ProbeData.VideoCodec
 		needsVideoTranscode = IsIncompatibleVideoCodec(videoCodec)
 	}
-	if session.CastMode && !isLegacyCastCopyCompatibleVideo(session.ProbeData) {
+	if session.CastMode && castVideoMustTranscode(session.ProbeData) {
 		needsVideoTranscode = true
 		pixFmt, profile := "", ""
 		if session.ProbeData != nil {
 			pixFmt, profile = session.ProbeData.VideoPixFmt, session.ProbeData.VideoProfile
 		}
-		log.Printf("[hls] session %s: cast receiver needs 8-bit H.264 (source codec=%q pixFmt=%q profile=%q probed=%v); transcoding",
+		log.Printf("[hls] session %s: cast receiver needs legacy-envelope H.264 (source codec=%q pixFmt=%q profile=%q probed=%v); transcoding",
 			session.ID, videoCodec, pixFmt, profile, session.ProbeData != nil)
 	}
 	if session.PlaybackTarget == "web" && !isBrowserCopyCompatibleVideo(session.ProbeData) {
@@ -2722,10 +2782,8 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 			} else {
 				log.Printf("[hls] session %s: video transcode required for codec %q, transcoding to H.264 (ultrafast)", session.ID, videoCodec)
 			}
-			if session.CastMode {
-				// Cast receivers needing this transcode are 1080p-limited.
-				args = append(args, "-vf", "scale=-2:'min(1080,ih)'")
-			}
+			// No CastMode handling here: a cast transcode always sets
+			// videoWillTranscode, which routes it through the encode plan above.
 			args = append(args,
 				"-c:v", "libx264",
 				"-preset", "ultrafast",
@@ -4220,6 +4278,14 @@ type HLSSessionStatus struct {
 	HDRMetadataDisabled bool    `json:"hdrMetadataDisabled"`
 	DVDisabled          bool    `json:"dvDisabled"`
 	RecoveryAttempts    int     `json:"recoveryAttempts"`
+	// ManifestRequests is the total number of playlist fetches (diagnostic).
+	ManifestRequests uint64 `json:"manifestRequests"`
+	// AttemptManifestRequests is present only when the status request supplied a
+	// valid ?attempt= ID: 0 means the attempt has not reached the backend yet, a
+	// positive value proves that exact route attempt did. Absent on requests
+	// without an attempt ID (and on older backends, which clients treat as
+	// "telemetry unsupported").
+	AttemptManifestRequests *uint64 `json:"attemptManifestRequests,omitempty"`
 }
 
 // GetSessionStatus returns the current status of an HLS session
@@ -4227,6 +4293,12 @@ func (m *HLSManager) GetSessionStatus(w http.ResponseWriter, r *http.Request, se
 	session, exists := m.GetSession(sessionID)
 	if !exists {
 		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+
+	attempt := r.URL.Query().Get("attempt")
+	if attempt != "" && !isValidCastAttemptID(attempt) {
+		http.Error(w, "invalid attempt ID", http.StatusBadRequest)
 		return
 	}
 
@@ -4241,6 +4313,11 @@ func (m *HLSManager) GetSessionStatus(w http.ResponseWriter, r *http.Request, se
 		HDRMetadataDisabled: session.HDRMetadataDisabled,
 		DVDisabled:          session.DVDisabled,
 		RecoveryAttempts:    session.RecoveryAttempts,
+		ManifestRequests:    session.ManifestRequests,
+	}
+	if attempt != "" {
+		count := session.AttemptManifests[attempt]
+		status.AttemptManifestRequests = &count
 	}
 
 	if session.FatalError != "" {
@@ -4269,6 +4346,8 @@ func (m *HLSManager) ServePlaylist(w http.ResponseWriter, r *http.Request, sessi
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
+
+	recordManifestRequest(session, r)
 
 	// Update last activity time (playlist requests indicate active playback)
 	session.mu.Lock()
@@ -4471,6 +4550,8 @@ func (m *HLSManager) ServeMasterPlaylist(w http.ResponseWriter, r *http.Request,
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
+
+	recordManifestRequest(session, r)
 
 	session.mu.Lock()
 	session.LastSegmentRequest = time.Now()
