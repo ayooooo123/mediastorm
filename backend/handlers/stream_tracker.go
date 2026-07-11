@@ -381,6 +381,38 @@ func playbackControlKey(userID, mediaType, itemID string) string {
 		strings.ToLower(strings.TrimSpace(itemID))
 }
 
+func playbackMigrationKey(controlKey, sourcePath string) string {
+	normalizedPath := normalizeStreamFailurePath(sourcePath)
+	if normalizedPath == "" {
+		return controlKey
+	}
+	return controlKey + "\x00" + normalizedPath
+}
+
+func (t *StreamTracker) playbackMigrationSignalLocked(controlKey, sourcePath string) (string, playbackMigrationSignal, bool) {
+	if normalizedPath := normalizeStreamFailurePath(sourcePath); normalizedPath != "" {
+		key := playbackMigrationKey(controlKey, normalizedPath)
+		signal, ok := t.migrationSignals[key]
+		return key, signal, ok
+	}
+
+	// Backward compatibility for clients that do not yet report sourcePath:
+	// return the freshest recommendation associated with this playback item.
+	prefix := controlKey + "\x00"
+	bestKey := ""
+	bestSignal := playbackMigrationSignal{}
+	for key, signal := range t.migrationSignals {
+		if key != controlKey && !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		if bestKey == "" || signal.expiresAt.After(bestSignal.expiresAt) {
+			bestKey = key
+			bestSignal = signal
+		}
+	}
+	return bestKey, bestSignal, bestKey != ""
+}
+
 func streamPlaybackControlKeys(stream *TrackedStream) []string {
 	if stream == nil || strings.TrimSpace(stream.MediaMetadata.ItemID) == "" {
 		return nil
@@ -539,7 +571,7 @@ func (t *StreamTracker) MarkPlaybackMigration(id, reason string) bool {
 	}
 	signal := playbackMigrationSignal{reason: reason, expiresAt: time.Now().Add(playbackMigrationSignalDuration)}
 	for _, key := range keys {
-		t.migrationSignals[key] = signal
+		t.migrationSignals[playbackMigrationKey(key, stream.Path)] = signal
 	}
 	return true
 }
@@ -571,7 +603,7 @@ func (t *StreamTracker) MarkPlaybackMigrationForPath(path, reason string) int {
 			continue
 		}
 		for _, key := range keys {
-			t.migrationSignals[key] = signal
+			t.migrationSignals[playbackMigrationKey(key, stream.Path)] = signal
 		}
 		marked++
 	}
@@ -607,6 +639,9 @@ func (t *StreamTracker) ObservePlaybackBandwidth(userID string, update models.Pl
 		if !matches || stream.bytesCounter == nil {
 			continue
 		}
+		if update.SourcePath != "" && normalizeStreamFailurePath(stream.Path) != normalizeStreamFailurePath(update.SourcePath) {
+			continue
+		}
 
 		previous := atomic.LoadInt64(&stream.requiredBps)
 		atomic.StoreInt64(&stream.requiredBps, required)
@@ -637,8 +672,8 @@ func (t *StreamTracker) ShouldMigratePlayback(userID string, update models.Playb
 	defer t.mu.Unlock()
 	t.pruneMigrationSignalsLocked()
 
-	key := playbackControlKey(userID, update.MediaType, update.ItemID)
-	signal, ok := t.migrationSignals[key]
+	controlKey := playbackControlKey(userID, update.MediaType, update.ItemID)
+	key, signal, ok := t.playbackMigrationSignalLocked(controlKey, update.SourcePath)
 	if !ok || !signal.expiresAt.After(time.Now()) {
 		return "", false
 	}
@@ -646,6 +681,27 @@ func (t *StreamTracker) ShouldMigratePlayback(userID string, update models.Playb
 		return "", false
 	}
 	delete(t.migrationSignals, key)
+	return signal.reason, true
+}
+
+// ShouldPreparePlaybackMigration exposes a pending recommendation without
+// consuming it. This lets the player resolve and probe the next candidate while
+// the current buffer is still healthy, then perform only the source swap if
+// buffer pressure later confirms migration is necessary.
+func (t *StreamTracker) ShouldPreparePlaybackMigration(userID string, update models.PlaybackProgressUpdate) (string, bool) {
+	if update.IsPaused || update.Position <= 3 {
+		return "", false
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.pruneMigrationSignalsLocked()
+
+	controlKey := playbackControlKey(userID, update.MediaType, update.ItemID)
+	_, signal, ok := t.playbackMigrationSignalLocked(controlKey, update.SourcePath)
+	if !ok || !signal.expiresAt.After(time.Now()) {
+		return "", false
+	}
 	return signal.reason, true
 }
 

@@ -45,7 +45,7 @@ func NewPlaybackService(cfg *config.Manager, healthService *HealthService) *Play
 // For debrid, we add the torrent, select files, and get the download link.
 func (s *PlaybackService) Resolve(ctx context.Context, candidate models.NZBResult) (*models.PlaybackResolution, error) {
 	resolveStart := time.Now()
-	log.Printf("[debrid-playback] TIMING: resolve start title=%q link=%q", strings.TrimSpace(candidate.Title), strings.TrimSpace(candidate.Link))
+	log.Printf("[debrid-playback] TIMING: resolve start title=%q link=%q", strings.TrimSpace(candidate.Title), safeURLForLog(candidate.Link))
 
 	// Check if this is a pre-resolved stream (e.g., from AIOStreams)
 	// Pre-resolved streams already have a direct playback URL, but we need to verify they're cached
@@ -62,7 +62,7 @@ func (s *PlaybackService) Resolve(ctx context.Context, candidate models.NZBResul
 			return nil, fmt.Errorf("stream not cached: known placeholder stream URL")
 		}
 
-		log.Printf("[debrid-playback] using pre-resolved stream URL: %s", streamURL)
+		log.Printf("[debrid-playback] using pre-resolved stream URL: %s", safeURLForLog(streamURL))
 
 		// Verify the pre-resolved stream is actually cached (not a placeholder)
 		if s.healthService != nil {
@@ -192,7 +192,7 @@ func (s *PlaybackService) resolveWithProvider(ctx context.Context, client Provid
 		log.Printf("[debrid-playback] TIMING: AddMagnet took %v", time.Since(addStart))
 	} else if torrentURL != "" {
 		// Download and upload torrent file
-		log.Printf("[debrid-playback] downloading torrent file from %s", torrentURL)
+		log.Printf("[debrid-playback] downloading torrent file from %s", safeURLForLog(torrentURL))
 		torrentData, filename, downloadErr := s.downloadTorrentFile(ctx, torrentURL)
 		if downloadErr != nil {
 			return nil, fmt.Errorf("download torrent file: %w", downloadErr)

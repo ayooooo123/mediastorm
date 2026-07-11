@@ -117,6 +117,112 @@ func TestPlaybackBandwidthObservationAndSustainedUnderflow(t *testing.T) {
 	}
 }
 
+func TestPlaybackBandwidthObservationOnlyUpdatesActiveSource(t *testing.T) {
+	tracker := newTestTracker()
+	requestURL := "/video/stream?profileId=p1&mediaType=movie&itemId=tmdb:movie:14160"
+	oldID, _, _ := tracker.StartStreamWithAccount(
+		httptest.NewRequest(http.MethodGet, requestURL, nil),
+		"/webdav/nzbs/up/old.mkv",
+		1000,
+		0,
+		0,
+		"acct1",
+	)
+	newID, _, _ := tracker.StartStreamWithAccount(
+		httptest.NewRequest(http.MethodGet, requestURL, nil),
+		"/debrid/torbox/123/file/0/new.mkv",
+		1000,
+		0,
+		0,
+		"acct1",
+	)
+	requiredMbps := 60.0
+	if matched := tracker.ObservePlaybackBandwidth("p1", models.PlaybackProgressUpdate{
+		MediaType:    "movie",
+		ItemID:       "tmdb:movie:14160",
+		RequiredMbps: &requiredMbps,
+		SourcePath:   "debrid/torbox/123/file/0/new.mkv",
+	}); matched != 1 {
+		t.Fatalf("matched streams = %d, want only active source", matched)
+	}
+	if got := atomic.LoadInt64(&tracker.streams[oldID].requiredBps); got != 0 {
+		t.Fatalf("old source required bandwidth = %d, want 0", got)
+	}
+	if got := atomic.LoadInt64(&tracker.streams[newID].requiredBps); got != 60_000_000 {
+		t.Fatalf("new source required bandwidth = %d, want 60000000", got)
+	}
+}
+
+func TestPlaybackMigrationSignalIsScopedToSource(t *testing.T) {
+	tracker := newTestTracker()
+	requestURL := "/video/stream?profileId=p1&mediaType=movie&itemId=tmdb:movie:14160"
+	oldID, _, _ := tracker.StartStreamWithAccount(
+		httptest.NewRequest(http.MethodGet, requestURL, nil),
+		"/webdav/nzbs/up/old.mkv",
+		1000,
+		0,
+		0,
+		"acct1",
+	)
+	if !tracker.MarkPlaybackMigration(oldID, "backend-low-throughput") {
+		t.Fatal("expected old source migration signal")
+	}
+
+	if reason, prepare := tracker.ShouldPreparePlaybackMigration("p1", models.PlaybackProgressUpdate{
+		MediaType:  "movie",
+		ItemID:     "tmdb:movie:14160",
+		Position:   40,
+		SourcePath: "/debrid/torbox/123/file/0/new.mkv",
+	}); prepare {
+		t.Fatalf("old source signal leaked to replacement: reason=%q", reason)
+	}
+	if reason, prepare := tracker.ShouldPreparePlaybackMigration("p1", models.PlaybackProgressUpdate{
+		MediaType:  "movie",
+		ItemID:     "tmdb:movie:14160",
+		Position:   40,
+		SourcePath: "/webdav/nzbs/up/old.mkv",
+	}); !prepare || reason != "backend-low-throughput" {
+		t.Fatalf("matching source did not receive signal: prepare=%v reason=%q", prepare, reason)
+	}
+}
+
+func TestPlaybackMigrationPreparationDoesNotConsumeSignal(t *testing.T) {
+	tracker := newTestTracker()
+	req := httptest.NewRequest(http.MethodGet, "/video/stream?profileId=p1&mediaType=movie&itemId=tmdb:movie:14160", nil)
+	id, _, _ := tracker.StartStreamWithAccount(req, "/webdav/nzbs/up/up.mkv", 1000, 0, 0, "acct1")
+	if !tracker.MarkPlaybackMigration(id, "backend-low-throughput") {
+		t.Fatal("expected migration signal")
+	}
+	bufferAhead := 20.0
+	if reason, migrate := tracker.ShouldMigratePlayback("p1", models.PlaybackProgressUpdate{
+		MediaType:   "movie",
+		ItemID:      "tmdb:movie:14160",
+		Position:    39,
+		BufferAhead: &bufferAhead,
+	}); migrate {
+		t.Fatalf("healthy playback should prepare rather than migrate: reason=%q", reason)
+	}
+
+	reason, prepare := tracker.ShouldPreparePlaybackMigration("p1", models.PlaybackProgressUpdate{
+		MediaType: "movie",
+		ItemID:    "tmdb:movie:14160",
+		Position:  40,
+	})
+	if !prepare || reason != "backend-low-throughput" {
+		t.Fatalf("prepare=%v reason=%q", prepare, reason)
+	}
+
+	reason, migrate := tracker.ShouldMigratePlayback("p1", models.PlaybackProgressUpdate{
+		MediaType:   "movie",
+		ItemID:      "tmdb:movie:14160",
+		Position:    41,
+		IsBuffering: true,
+	})
+	if !migrate || reason != "backend-low-throughput" {
+		t.Fatalf("preparation consumed signal: migrate=%v reason=%q", migrate, reason)
+	}
+}
+
 func startTestStream(t *testing.T, tracker *StreamTracker, profileID, accountID string) string {
 	t.Helper()
 	r := httptest.NewRequest(http.MethodGet, "/video/stream?profileId="+profileID, nil)

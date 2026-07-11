@@ -114,6 +114,7 @@ type PlaybackProgressUpdate struct {
 	IsBuffering    bool              `json:"isBuffering"`                     // Whether the player is currently stalled/buffering (not paused)
 	BufferAhead    *float64          `json:"bufferAheadSeconds,omitempty"`    // Player-reported playable buffer runway, when available
 	RequiredMbps   *float64          `json:"requiredBandwidthMbps,omitempty"` // Estimated average bandwidth required by the active release
+	SourcePath     string            `json:"sourcePath,omitempty"`            // Active source path, used to isolate migration signals across replacements
 	ExternalIDs    map[string]string `json:"externalIds,omitempty"`
 
 	// Episode-specific fields
@@ -157,7 +158,9 @@ type PlaybackProgress struct {
 	HiddenFromContinueWatching bool `json:"hiddenFromContinueWatching,omitempty"`
 
 	// Runtime playback control response fields. Not persisted.
-	AllowedToContinue  *bool  `json:"allowedToContinue,omitempty"`
-	MigrationRequested bool   `json:"migrationRequested,omitempty"`
-	MigrationReason    string `json:"migrationReason,omitempty"`
+	AllowedToContinue             *bool  `json:"allowedToContinue,omitempty"`
+	MigrationRequested            bool   `json:"migrationRequested,omitempty"`
+	MigrationReason               string `json:"migrationReason,omitempty"`
+	MigrationPreparationRequested bool   `json:"migrationPreparationRequested,omitempty"`
+	MigrationPreparationReason    string `json:"migrationPreparationReason,omitempty"`
 }

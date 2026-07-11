@@ -176,7 +176,7 @@ func (s *Service) ResolveBatch(ctx context.Context, candidate models.NZBResult, 
 
 // Resolve ingests the supplied NZB search result, verifies it with our Usenet health check, and returns a streaming path.
 func (s *Service) Resolve(ctx context.Context, candidate models.NZBResult) (*models.PlaybackResolution, error) {
-	log.Printf("[playback] resolve start title=%q downloadURL=%q link=%q serviceType=%q", strings.TrimSpace(candidate.Title), strings.TrimSpace(candidate.DownloadURL), strings.TrimSpace(candidate.Link), candidate.ServiceType)
+	log.Printf("[playback] resolve start title=%q downloadURL=%q link=%q serviceType=%q", strings.TrimSpace(candidate.Title), safeURLForLog(candidate.DownloadURL), safeURLForLog(candidate.Link), candidate.ServiceType)
 
 	// Route to debrid service if this is a debrid result
 	if candidate.ServiceType == models.ServiceTypeDebrid {
@@ -1841,7 +1841,7 @@ func externalUsenetEnabledForProfile(settings config.Settings, profileID string)
 func (s *Service) fetchNZB(ctx context.Context, downloadURL string, candidate models.NZBResult) ([]byte, string, error) {
 	fetchNum := s.nzbFetchCount.Add(1)
 	log.Printf("[search-stats] NZB fetch #%d started (title=%q, indexer=%q)", fetchNum, strings.TrimSpace(candidate.Title), strings.TrimSpace(candidate.Indexer))
-	log.Printf("[playback] fetching nzb url=%q title=%q", downloadURL, strings.TrimSpace(candidate.Title))
+	log.Printf("[playback] fetching nzb url=%q title=%q", safeURLForLog(downloadURL), strings.TrimSpace(candidate.Title))
 
 	// Large NZBs for full-disc releases can be 10+ MB and some indexers stream
 	// them slowly. Keep the bound finite, but avoid failing valid releases while

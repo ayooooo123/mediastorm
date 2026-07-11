@@ -575,7 +575,7 @@ func (c *TorboxClient) UnrestrictLink(ctx context.Context, link string) (*Unrest
 		return nil, fmt.Errorf("no download URL returned from Torbox")
 	}
 
-	log.Printf("[torbox] unrestricted link for torrent %s file %s: %s", torrentID, fileID, downloadURL)
+	log.Printf("[torbox] unrestricted link for torrent %s file %s: %s", torrentID, fileID, safeURLForLog(downloadURL))
 
 	return &UnrestrictResult{
 		ID:          fmt.Sprintf("%s:%s", torrentID, fileID),

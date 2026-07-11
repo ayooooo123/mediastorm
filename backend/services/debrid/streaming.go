@@ -273,7 +273,7 @@ func (p *StreamingProvider) GetDirectURL(ctx context.Context, path string) (stri
 	// Cache the URL and filename for future requests
 	p.setCachedURL(cacheKey, downloadURL, filename, 0, 0)
 
-	log.Printf("[debrid-stream] resolved direct URL for path %s: %s (filename: %s)", path, downloadURL, filename)
+	log.Printf("[debrid-stream] resolved direct URL for path %s: %s (filename: %s)", path, safeURLForLog(downloadURL), filename)
 	return downloadURL, nil
 }
 
@@ -419,7 +419,7 @@ func (p *StreamingProvider) streamWithProvider(ctx context.Context, req streamin
 		// Cache the URL and filename for future requests
 		p.setCachedURL(cacheKey, downloadURL, filename, rarOffset, rarSize)
 
-		log.Printf("[debrid-stream] proxying to unrestricted URL: %s", downloadURL)
+		log.Printf("[debrid-stream] proxying to unrestricted URL: %s", safeURLForLog(downloadURL))
 	}
 
 	// Create HTTP request to the provider

@@ -27,6 +27,7 @@ import (
 	"novastream/internal/datastore"
 	"novastream/internal/integration"
 	"novastream/internal/pool"
+	"novastream/internal/slogutil"
 	internalusenet "novastream/internal/usenet"
 	"novastream/internal/webdav"
 	"novastream/services/accounts"
@@ -71,6 +72,7 @@ import (
 )
 
 func main() {
+	log.SetOutput(slogutil.NewRedactingWriter(os.Stderr))
 	if len(os.Args) > 1 && os.Args[1] == "recover-account" {
 		if err := accountrecovery.Run(os.Args[2:], os.Stdout, os.Getenv); err != nil {
 			log.Fatal(err)
@@ -120,7 +122,7 @@ func main() {
 			}
 			// Redirect standard log to both console and file
 			multiWriter := io.MultiWriter(os.Stdout, fileWriter)
-			log.SetOutput(multiWriter)
+			log.SetOutput(slogutil.NewRedactingWriter(multiWriter))
 			log.SetFlags(log.LstdFlags | log.Lshortfile)
 			log.Printf("Logging to file: %s", settings.Log.File)
 		}

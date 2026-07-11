@@ -580,6 +580,9 @@ func (h *HistoryHandler) UpdatePlaybackProgress(w http.ResponseWriter, r *http.R
 	if reason, migrate := GetStreamTracker().ShouldMigratePlayback(userID, update); migrate {
 		progress.MigrationRequested = true
 		progress.MigrationReason = reason
+	} else if reason, prepare := GetStreamTracker().ShouldPreparePlaybackMigration(userID, update); prepare {
+		progress.MigrationPreparationRequested = true
+		progress.MigrationPreparationReason = reason
 	}
 
 	w.Header().Set("Content-Type", "application/json")
