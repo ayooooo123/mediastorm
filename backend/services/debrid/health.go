@@ -497,7 +497,7 @@ func (s *HealthService) checkHealth(ctx context.Context, result models.NZBResult
 					resp.Body.Close()
 
 					log.Printf("[debrid-health] pre-resolved stream %s: HEAD status=%d content-length=%d content-type=%q final-url=%q",
-						result.Title, resp.StatusCode, contentLength, contentType, finalURL)
+						result.Title, resp.StatusCode, contentLength, contentType, safeURLForLog(finalURL))
 					if IsKnownPlaceholderURL(finalURL) {
 						log.Printf("[debrid-health] pre-resolved stream %s redirected to known placeholder URL", result.Title)
 						return &DebridHealthCheck{
@@ -873,7 +873,7 @@ func (s *HealthService) checkProviderHealth(ctx context.Context, client Provider
 		}
 	} else if torrentURL != "" {
 		// Download and upload torrent file
-		log.Printf("[debrid-health] downloading torrent file from %s", torrentURL)
+		log.Printf("[debrid-health] downloading torrent file from %s", safeURLForLog(torrentURL))
 		torrentData, filename, downloadErr := s.downloadTorrentFile(ctx, torrentURL)
 		if downloadErr != nil {
 			log.Printf("[debrid-health] %s download torrent failed for %s: %v", providerName, identifier, downloadErr)
