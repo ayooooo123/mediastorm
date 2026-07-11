@@ -386,6 +386,9 @@ func (t *Tracker) loadOutboundEvents(now time.Time) error {
 		return err
 	}
 	cutoff := now.Add(-outboundRetention)
+	windowCutoff := now.Add(-outboundWindowRetention)
+	loadedOutbound := make(map[string]OutboundUsage)
+	loadedEvents := make([]outboundEvent, 0)
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "outbound-") || !strings.HasSuffix(entry.Name(), ".jsonl") {
 			continue
@@ -404,15 +407,44 @@ func (t *Tracker) loadOutboundEvents(now time.Time) error {
 			if err := json.Unmarshal([]byte(line), &event); err != nil || event.At.Before(cutoff) {
 				continue
 			}
-			t.recordLoadedOutboundEvent(event)
+			recordLoadedOutboundUsage(loadedOutbound, event)
+			if !event.At.Before(windowCutoff) {
+				loadedEvents = append(loadedEvents, event)
+			}
 		}
 	}
+	sort.Slice(loadedEvents, func(i, j int) bool {
+		return loadedEvents[i].At.Before(loadedEvents[j].At)
+	})
+
+	t.mu.Lock()
+	t.outbound = loadedOutbound
+	t.outboundEvents = loadedEvents
+	t.mu.Unlock()
 	return nil
 }
 
-func (t *Tracker) recordLoadedOutboundEvent(event outboundEvent) {
-	duration := time.Duration(event.DurationMS) * time.Millisecond
-	t.recordOutboundAt(event.At, event.Provider, event.Operation, event.Method, "https://"+event.Host+event.Path, event.Status, duration, false)
+func recordLoadedOutboundUsage(outbound map[string]OutboundUsage, event outboundEvent) {
+	entry := outbound[event.Key]
+	entry.Key = event.Key
+	entry.Provider = event.Provider
+	entry.Operation = event.Operation
+	entry.Method = event.Method
+	entry.Host = event.Host
+	entry.Count++
+	if event.Status > 0 && event.Status < 400 {
+		entry.SuccessCount++
+	} else {
+		entry.FailureCount++
+	}
+	entry.TotalDurationMS += event.DurationMS
+	if entry.LastCalledAt.IsZero() || !event.At.Before(entry.LastCalledAt) {
+		entry.LastPath = event.Path
+		entry.LastStatus = event.Status
+		entry.LastDurationMS = event.DurationMS
+		entry.LastCalledAt = event.At
+	}
+	outbound[event.Key] = entry
 }
 
 func appendOutboundEvent(storageDir string, event outboundEvent) error {

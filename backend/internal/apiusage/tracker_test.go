@@ -97,6 +97,20 @@ func TestTrackerStoragePersistsAndLoadsOutboundEvents(t *testing.T) {
 	tracker.storageDir = dir
 
 	tracker.recordOutboundAt(now, "Torrentio", "Stream search", http.MethodGet, "https://torrentio.strem.fun/stream/movie/tt0133093.json?apikey=secret", http.StatusOK, 10*time.Millisecond, true)
+	oldEvent := outboundEvent{
+		Key:        "torrentio|stream search|GET|torrentio.strem.fun",
+		Provider:   "Torrentio",
+		Operation:  "Stream search",
+		Method:     http.MethodGet,
+		Host:       "torrentio.strem.fun",
+		Path:       "/stream/movie/tt1111111.json",
+		Status:     http.StatusTooManyRequests,
+		DurationMS: 20,
+		At:         now.Add(-25 * time.Hour),
+	}
+	if err := appendOutboundEvent(dir, oldEvent); err != nil {
+		t.Fatal(err)
+	}
 
 	loaded := &Tracker{endpoints: make(map[string]EndpointUsage), outbound: make(map[string]OutboundUsage), storageDir: dir}
 	if err := loaded.loadOutboundEvents(now.Add(5 * time.Minute)); err != nil {
@@ -105,6 +119,12 @@ func TestTrackerStoragePersistsAndLoadsOutboundEvents(t *testing.T) {
 	entries := loaded.snapshotOutboundAt(now.Add(5 * time.Minute))
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 loaded entry, got %d", len(entries))
+	}
+	if entries[0].Count != 2 {
+		t.Fatalf("loaded count = %d, want 2", entries[0].Count)
+	}
+	if entries[0].FailureCount != 1 {
+		t.Fatalf("loaded failure count = %d, want 1", entries[0].FailureCount)
 	}
 	if entries[0].Last24HourCount != 1 || entries[0].LastHourCount != 1 {
 		t.Fatalf("loaded counts = hour %d day %d, want 1/1", entries[0].LastHourCount, entries[0].Last24HourCount)
