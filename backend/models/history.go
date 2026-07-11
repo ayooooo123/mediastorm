@@ -104,14 +104,16 @@ type WatchHistoryUpdate struct {
 
 // PlaybackProgressUpdate represents a playback progress update from the player.
 type PlaybackProgressUpdate struct {
-	MediaType      string            `json:"mediaType"`      // "movie" | "episode" | "live"
-	ItemID         string            `json:"itemId"`         // The media ID
-	Position       float64           `json:"position"`       // Current playback position in seconds
-	Duration       float64           `json:"duration"`       // Total duration in seconds
-	PercentWatched float64           `json:"percentWatched"` // Override: set directly when duration is unknown (e.g. Trakt import)
-	Timestamp      time.Time         `json:"timestamp"`      // When this update was sent
-	IsPaused       bool              `json:"isPaused"`       // Whether playback is currently paused
-	IsBuffering    bool              `json:"isBuffering"`    // Whether the player is currently stalled/buffering (not paused)
+	MediaType      string            `json:"mediaType"`                       // "movie" | "episode" | "live"
+	ItemID         string            `json:"itemId"`                          // The media ID
+	Position       float64           `json:"position"`                        // Current playback position in seconds
+	Duration       float64           `json:"duration"`                        // Total duration in seconds
+	PercentWatched float64           `json:"percentWatched"`                  // Override: set directly when duration is unknown (e.g. Trakt import)
+	Timestamp      time.Time         `json:"timestamp"`                       // When this update was sent
+	IsPaused       bool              `json:"isPaused"`                        // Whether playback is currently paused
+	IsBuffering    bool              `json:"isBuffering"`                     // Whether the player is currently stalled/buffering (not paused)
+	BufferAhead    *float64          `json:"bufferAheadSeconds,omitempty"`    // Player-reported playable buffer runway, when available
+	RequiredMbps   *float64          `json:"requiredBandwidthMbps,omitempty"` // Estimated average bandwidth required by the active release
 	ExternalIDs    map[string]string `json:"externalIds,omitempty"`
 
 	// Episode-specific fields
@@ -155,5 +157,7 @@ type PlaybackProgress struct {
 	HiddenFromContinueWatching bool `json:"hiddenFromContinueWatching,omitempty"`
 
 	// Runtime playback control response fields. Not persisted.
-	AllowedToContinue *bool `json:"allowedToContinue,omitempty"`
+	AllowedToContinue  *bool  `json:"allowedToContinue,omitempty"`
+	MigrationRequested bool   `json:"migrationRequested,omitempty"`
+	MigrationReason    string `json:"migrationReason,omitempty"`
 }

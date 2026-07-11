@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,7 +13,108 @@ import (
 )
 
 func newTestTracker() *StreamTracker {
-	return &StreamTracker{streams: make(map[string]*TrackedStream), stopPlaybacks: make(map[string]time.Time)}
+	return &StreamTracker{
+		streams:          make(map[string]*TrackedStream),
+		stopPlaybacks:    make(map[string]time.Time),
+		migrationSignals: make(map[string]playbackMigrationSignal),
+	}
+}
+
+func TestPlaybackMigrationWaitsForBufferPressure(t *testing.T) {
+	tracker := newTestTracker()
+	req := httptest.NewRequest(http.MethodGet, "/video/stream?profileId=p1&mediaType=movie&itemId=tmdb:movie:14160", nil)
+	id, _, _ := tracker.StartStreamWithAccount(req, "/webdav/nzbs/up/up.mkv", 1000, 0, 0, "acct1")
+
+	if !tracker.MarkPlaybackMigration(id, "backend-starvation") {
+		t.Fatal("expected active playback migration signal to be recorded")
+	}
+
+	healthyRunway := 20.0
+	if reason, migrate := tracker.ShouldMigratePlayback("p1", models.PlaybackProgressUpdate{
+		MediaType:   "movie",
+		ItemID:      "tmdb:movie:14160",
+		BufferAhead: &healthyRunway,
+	}); migrate {
+		t.Fatalf("healthy buffer consumed migration signal: reason=%q", reason)
+	}
+
+	criticalRunway := 4.0
+	if reason, migrate := tracker.ShouldMigratePlayback("p1", models.PlaybackProgressUpdate{
+		MediaType:   "movie",
+		ItemID:      "tmdb:movie:14160",
+		IsPaused:    true,
+		BufferAhead: &criticalRunway,
+	}); migrate {
+		t.Fatalf("paused playback consumed migration signal: reason=%q", reason)
+	}
+
+	reason, migrate := tracker.ShouldMigratePlayback("p1", models.PlaybackProgressUpdate{
+		MediaType:   "movie",
+		ItemID:      "tmdb:movie:14160",
+		BufferAhead: &criticalRunway,
+	})
+	if !migrate || reason != "backend-starvation" {
+		t.Fatalf("critical buffer did not receive migration signal: migrate=%v reason=%q", migrate, reason)
+	}
+	if _, migrate := tracker.ShouldMigratePlayback("p1", models.PlaybackProgressUpdate{
+		MediaType:   "movie",
+		ItemID:      "tmdb:movie:14160",
+		IsBuffering: true,
+	}); migrate {
+		t.Fatal("migration signal should be consumed once")
+	}
+}
+
+func TestPlaybackMigrationForPathTriggersOnBuffering(t *testing.T) {
+	tracker := newTestTracker()
+	req := httptest.NewRequest(http.MethodGet, "/video/stream?profileId=p1&mediaType=movie&itemId=tmdb:movie:14160", nil)
+	tracker.StartStreamWithAccount(req, "/webdav/nzbs/up/up.mkv", 1000, 0, 0, "acct1")
+
+	if marked := tracker.MarkPlaybackMigrationForPath("webdav/nzbs/up/up.mkv", "backend-starvation"); marked != 1 {
+		t.Fatalf("marked playbacks = %d, want 1", marked)
+	}
+	reason, migrate := tracker.ShouldMigratePlayback("p1", models.PlaybackProgressUpdate{
+		MediaType:   "movie",
+		ItemID:      "tmdb:movie:14160",
+		IsBuffering: true,
+	})
+	if !migrate || reason != "backend-starvation" {
+		t.Fatalf("buffering playback did not receive path migration: migrate=%v reason=%q", migrate, reason)
+	}
+}
+
+func TestPlaybackBandwidthObservationAndSustainedUnderflow(t *testing.T) {
+	tracker := newTestTracker()
+	req := httptest.NewRequest(http.MethodGet, "/video/stream?profileId=p1&mediaType=movie&itemId=tmdb:movie:14160", nil)
+	id, bytesCounter, _ := tracker.StartStreamWithAccount(req, "/webdav/nzbs/up/up.mkv", 1000, 0, 0, "acct1")
+	requiredMbps := 60.0
+	if matched := tracker.ObservePlaybackBandwidth("p1", models.PlaybackProgressUpdate{
+		MediaType:    "movie",
+		ItemID:       "tmdb:movie:14160",
+		RequiredMbps: &requiredMbps,
+	}); matched != 1 {
+		t.Fatalf("matched streams = %d, want 1", matched)
+	}
+
+	stream := tracker.streams[id]
+	if got := atomic.LoadInt64(&stream.requiredBps); got != 60_000_000 {
+		t.Fatalf("required bandwidth = %d, want 60000000", got)
+	}
+
+	base := time.Now()
+	atomic.StoreInt64(&stream.healthLastBytes, 0)
+	atomic.StoreInt64(&stream.healthLastNanos, base.Add(-5*time.Second).UnixNano())
+	atomic.StoreInt64(bytesCounter, 3*1024*1024) // ~5 Mbps over five seconds
+	actual, required, alert := sampleDeliveryHealth(stream, base)
+	if alert || actual >= required {
+		t.Fatalf("first deficient sample should arm but not alert: actual=%d required=%d alert=%v", actual, required, alert)
+	}
+
+	atomic.AddInt64(bytesCounter, 3*1024*1024)
+	actual, required, alert = sampleDeliveryHealth(stream, base.Add(5*time.Second))
+	if !alert || actual >= required {
+		t.Fatalf("second deficient sample should alert: actual=%d required=%d alert=%v", actual, required, alert)
+	}
 }
 
 func startTestStream(t *testing.T, tracker *StreamTracker, profileID, accountID string) string {

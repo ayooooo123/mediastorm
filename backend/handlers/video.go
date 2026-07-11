@@ -5291,6 +5291,38 @@ func (h *VideoHandler) proxyExternalURL(w http.ResponseWriter, r *http.Request, 
 	accountID := h.resolveAccountID(r)
 	streamID, bytesCounter, actCounter := tracker.StartStreamWithAccount(r, cleanURL, expectedLength, 0, 0, accountID)
 	defer tracker.EndStream(streamID)
+	var upstreamWatch pipelineBlockWatch
+	stopUpstreamStarvationWatch := monitorPipelineStarvation(
+		ctx,
+		&upstreamWatch,
+		pipelineStarvationTimeout,
+		pipelineStarvationCheckInterval,
+		func(blockedFor time.Duration) bool {
+			marked := tracker.MarkPlaybackMigration(streamID, "backend-starvation")
+			if marked {
+				log.Printf("[stream-migration] upstream starvation detected in external proxy: host=%q path=%q blockedFor=%v streamID=%s",
+					parsedURL.Host, parsedURL.Path, blockedFor.Round(time.Millisecond), streamID)
+			}
+			return marked
+		},
+	)
+	defer stopUpstreamStarvationWatch()
+	var clientWriteWatch pipelineBlockWatch
+	stopDeliveryStarvationWatch := monitorPipelineStarvation(
+		ctx,
+		&clientWriteWatch,
+		pipelineStarvationTimeout,
+		pipelineStarvationCheckInterval,
+		func(blockedFor time.Duration) bool {
+			marked := tracker.MarkPlaybackMigration(streamID, "backend-delivery-starvation")
+			if marked {
+				log.Printf("[stream-migration] client delivery starvation detected in external proxy: host=%q path=%q blockedFor=%v streamID=%s",
+					parsedURL.Host, parsedURL.Path, blockedFor.Round(time.Millisecond), streamID)
+			}
+			return marked
+		},
+	)
+	defer stopDeliveryStarvationWatch()
 
 	// Stream the response body to the client
 	buf := make([]byte, 512*1024) // 512KB buffer
@@ -5323,13 +5355,17 @@ func (h *VideoHandler) proxyExternalURL(w http.ResponseWriter, r *http.Request, 
 		default:
 		}
 
+		upstreamWatch.begin()
 		readStart := time.Now()
 		n, readErr := resp.Body.Read(buf)
+		upstreamWatch.end()
 		upstreamWindowRead += time.Since(readStart)
 		if n > 0 {
 			upstreamWindowBytes += int64(n)
+			clientWriteWatch.begin()
 			writeStart := time.Now()
 			written, writeErr := w.Write(buf[:n])
+			clientWriteWatch.end()
 			clientWindowWrite += time.Since(writeStart)
 			if writeErr != nil {
 				if isClientGone(writeErr) || ctx.Err() == context.Canceled {
