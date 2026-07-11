@@ -59,8 +59,9 @@ type fakeMetadataService struct {
 
 	// applyArtworkLang, when non-empty, is stamped onto any title passed to
 	// ApplyLocalizedArtwork so tests can assert localization fired.
-	applyArtworkLang  string
-	applyArtworkCalls int32
+	applyArtworkLang      string
+	applyArtworkBackdrops []models.Image
+	applyArtworkCalls     int32
 
 	lastTrendingType         string
 	lastTrendingOptions      metadata.ShelfLoadOptions
@@ -335,11 +336,19 @@ func (f *fakeMetadataService) GetTextPosterURL(_ string, _ int64, _ int64) strin
 
 func (f *fakeMetadataService) ApplyLocalizedArtwork(_ context.Context, title *models.Title) bool {
 	atomic.AddInt32(&f.applyArtworkCalls, 1)
-	if f.applyArtworkLang == "" || title == nil {
+	if title == nil {
 		return false
 	}
-	title.TextPoster = &models.Image{Type: "poster", Language: f.applyArtworkLang}
-	return true
+	updated := false
+	if f.applyArtworkLang != "" {
+		title.TextPoster = &models.Image{Type: "poster", Language: f.applyArtworkLang}
+		updated = true
+	}
+	if len(f.applyArtworkBackdrops) > 0 {
+		title.Backdrops = append([]models.Image(nil), f.applyArtworkBackdrops...)
+		updated = true
+	}
+	return updated
 }
 
 func (f *fakeMetadataService) GetCachedArtworkURLs(mediaType string, tmdbID int64, tvdbID int64) (string, string, []string) {
@@ -1431,6 +1440,51 @@ func TestMetadataHandler_GetAIRecommendationsEmptyHistory(t *testing.T) {
 	}
 	if len(payload.Items) != 0 {
 		t.Fatalf("expected 0 items, got %d", len(payload.Items))
+	}
+}
+
+func TestEnrichPersonalizedArtworkFetchesMissingAlternates(t *testing.T) {
+	fake := &fakeMetadataService{
+		cachedArtwork: map[string]struct {
+			textPoster   string
+			textBackdrop string
+			backdrops    []string
+		}{
+			"movie:202:0": {
+				textBackdrop: "https://example.test/cached-text-backdrop.jpg",
+				backdrops:    []string{"https://example.test/cached-alt.jpg"},
+			},
+		},
+		applyArtworkBackdrops: []models.Image{
+			{URL: "https://example.test/fetched-alt-1.jpg", Type: "backdrop"},
+			{URL: "https://example.test/fetched-alt-2.jpg", Type: "backdrop"},
+		},
+	}
+	items := []models.TrendingItem{
+		{Title: models.Title{
+			ID:        "tmdb:movie:101",
+			MediaType: "movie",
+			TMDBID:    101,
+			Backdrop:  &models.Image{URL: "https://example.test/primary.jpg", Type: "backdrop"},
+		}},
+		{Title: models.Title{
+			ID:        "tmdb:movie:202",
+			MediaType: "movie",
+			TMDBID:    202,
+			Backdrop:  &models.Image{URL: "https://example.test/cached-primary.jpg", Type: "backdrop"},
+		}},
+	}
+
+	enrichPersonalizedArtwork(context.Background(), items, fake)
+
+	if got := atomic.LoadInt32(&fake.applyArtworkCalls); got != 1 {
+		t.Fatalf("ApplyLocalizedArtwork calls = %d, want 1", got)
+	}
+	if got := personalizedArtworkURLCount(items[0].Title); got < 2 {
+		t.Fatalf("fetched artwork URL count = %d, want at least 2", got)
+	}
+	if got := personalizedArtworkURLCount(items[1].Title); got < 2 {
+		t.Fatalf("cached artwork URL count = %d, want at least 2", got)
 	}
 }
 

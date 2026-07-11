@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"novastream/models"
@@ -404,8 +405,8 @@ func (h *MetadataHandler) buildPersonalizedRecommendations(
 
 	movies := finalizePersonalizedBucket(movieCandidates, limitPerType)
 	series := finalizePersonalizedBucket(seriesCandidates, limitPerType)
-	enrichPersonalizedArtwork(movies, service)
-	enrichPersonalizedArtwork(series, service)
+	enrichPersonalizedArtwork(ctx, movies, service)
+	enrichPersonalizedArtwork(ctx, series, service)
 	items := interleavePersonalizedItems(movies, series, limitPerType)
 	return PersonalizedRecommendationsResponse{
 		Items:       items,
@@ -874,11 +875,12 @@ func finalizePersonalizedBucket(candidates map[string]*personalizedCandidate, li
 	return items
 }
 
-func enrichPersonalizedArtwork(items []models.TrendingItem, meta metadataService) {
+func enrichPersonalizedArtwork(ctx context.Context, items []models.TrendingItem, meta metadataService) {
 	if meta == nil {
 		return
 	}
 
+	missingArtwork := make([]int, 0, len(items))
 	for i := range items {
 		title := &items[i].Title
 		if title.TMDBID <= 0 && title.TVDBID <= 0 {
@@ -904,7 +906,52 @@ func enrichPersonalizedArtwork(items []models.TrendingItem, meta metadataService
 				title.Backdrops = backdrops
 			}
 		}
+		if personalizedArtworkURLCount(*title) < 2 {
+			missingArtwork = append(missingArtwork, i)
+		}
 	}
+
+	// Personalized candidates often come from Similar() and have not appeared
+	// in another shelf yet, so a cache-only lookup leaves most of them with one
+	// backdrop. Fetch only the missing artwork, with the same bounded fan-out
+	// used by shelf enrichment, and retain it in the metadata cache.
+	const maxConcurrent = 5
+	sem := make(chan struct{}, maxConcurrent)
+	var wg sync.WaitGroup
+	for _, index := range missingArtwork {
+		index := index
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
+			}
+			meta.ApplyLocalizedArtwork(ctx, &items[index].Title)
+		}()
+	}
+	wg.Wait()
+}
+
+func personalizedArtworkURLCount(title models.Title) int {
+	seen := make(map[string]struct{}, len(title.Backdrops)+2)
+	add := func(image *models.Image) {
+		if image == nil {
+			return
+		}
+		url := strings.TrimSpace(image.URL)
+		if url != "" {
+			seen[url] = struct{}{}
+		}
+	}
+	add(title.Backdrop)
+	add(title.TextBackdrop)
+	for i := range title.Backdrops {
+		add(&title.Backdrops[i])
+	}
+	return len(seen)
 }
 
 func interleavePersonalizedItems(movies, series []models.TrendingItem, limitPerType int) []models.TrendingItem {

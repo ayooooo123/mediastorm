@@ -985,6 +985,7 @@ func startupDisplayListQueryForShelf(shelf models.ShelfConfig, homeShelfLimit in
 		query.Set("genreId", strconv.FormatInt(genreID, 10))
 		query.Set("mediaType", mediaType)
 		query.Set("lite", "true")
+		query.Set("artworkLimit", strconv.Itoa(minInt(limit, homeShelfLimit+startupExploreCollageItemCount)))
 	case "decade":
 		decade, mediaType, ok := parseStartupDecadeShelfID(shelf.ID)
 		if !ok {
@@ -994,6 +995,7 @@ func startupDisplayListQueryForShelf(shelf models.ShelfConfig, homeShelfLimit in
 		query.Set("decade", strconv.Itoa(decade))
 		query.Set("mediaType", mediaType)
 		query.Set("lite", "true")
+		query.Set("artworkLimit", strconv.Itoa(minInt(limit, homeShelfLimit+startupExploreCollageItemCount)))
 	default:
 		return nil, false
 	}
