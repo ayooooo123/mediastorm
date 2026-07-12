@@ -838,6 +838,8 @@ var SettingsSchema = map[string]interface{}{
 			"includeUnreleasedShowsInSearch":               map[string]interface{}{"type": "boolean", "label": "Include Unreleased Shows in Search", "description": "Show shows with no aired episodes in metadata search results.", "order": 8},
 			"bypassFilteringForAioStreamsOnly":             map[string]interface{}{"type": "boolean", "label": "Bypass Filtering for AIOStreams Only", "description": "Skip mediastorm filtering/ranking when AIOStreams is the only enabled scraper in debrid-only mode (use AIOStreams' own ranking). Does not apply in hybrid mode with usenet.", "order": 9},
 			"showParsedBadges":                             map[string]interface{}{"type": "boolean", "label": "Show Parsed Metadata Badges", "description": "Show parsed quality badges (resolution, codec, HDR, audio) instead of raw release titles in manual source selection", "order": 10},
+			"enableHeroArtPanning":                         map[string]interface{}{"type": "boolean", "label": "Enable Hero Art Panning", "description": "Animate hero artwork with a slow pan and zoom effect on TV platforms.", "order": 17},
+			"enableHeroArtRotation":                        map[string]interface{}{"type": "boolean", "label": "Enable Hero Art Rotation", "description": "Cycle through alternate hero artwork on TV platforms.", "order": 18},
 			"blurUnwatchedEpisodeThumbnails":               map[string]interface{}{"type": "boolean", "label": "Blur Unwatched Episode Thumbnails", "description": "Blur episode thumbnails on the Details page until the episode has been watched.", "order": 19},
 			"blurUnwatchedEpisodeThumbnailsIncludeCurrent": map[string]interface{}{"type": "boolean", "label": "Blur Current Episode Thumbnail", "description": "Also blur the currently selected episode thumbnail when it is unwatched.", "order": 20},
 			"blurUnwatchedEpisodeOverviews":                map[string]interface{}{"type": "boolean", "label": "Blur Unwatched Episode Overview", "description": "Blur episode overview text on the Details page until the episode has been watched.", "order": 21},
@@ -3493,6 +3495,8 @@ func (h *AdminUIHandler) GetUserSettings(w http.ResponseWriter, r *http.Request)
 			IncludeUnreleasedShowsInSearch:   models.BoolPtr(globalSettings.Display.IncludeUnreleasedShowsInSearch),
 			BypassFilteringForAIOStreamsOnly: models.BoolPtr(globalSettings.Display.BypassFilteringForAIOStreamsOnly),
 			DisableMobileTopCarousel:         models.BoolPtr(globalSettings.Display.DisableMobileTopCarousel),
+			EnableHeroArtPanning:             models.BoolPtr(globalSettings.Display.EnableHeroArtPanning),
+			EnableHeroArtRotation:            models.BoolPtr(globalSettings.Display.EnableHeroArtRotation),
 			AppLanguage:                      globalSettings.Display.AppLanguage,
 			Appearance: models.AppearanceSettings{
 				FontScale:            globalSettings.Display.Appearance.FontScale,

@@ -270,6 +270,12 @@ func (s *Service) GetWithDefaults(userID string, defaults models.UserSettings) (
 		if settings.Display.DisableMobileTopCarousel == nil {
 			settings.Display.DisableMobileTopCarousel = defaults.Display.DisableMobileTopCarousel
 		}
+		if settings.Display.EnableHeroArtPanning == nil {
+			settings.Display.EnableHeroArtPanning = defaults.Display.EnableHeroArtPanning
+		}
+		if settings.Display.EnableHeroArtRotation == nil {
+			settings.Display.EnableHeroArtRotation = defaults.Display.EnableHeroArtRotation
+		}
 		if settings.Display.AppLanguage == "" {
 			settings.Display.AppLanguage = defaults.Display.AppLanguage
 		}
@@ -600,6 +606,8 @@ func isSettingsEmpty(s models.UserSettings) bool {
 		s.Display.IncludeUnreleasedShowsInSearch != nil ||
 		s.Display.BypassFilteringForAIOStreamsOnly != nil ||
 		s.Display.DisableMobileTopCarousel != nil ||
+		s.Display.EnableHeroArtPanning != nil ||
+		s.Display.EnableHeroArtRotation != nil ||
 		s.Display.AppLanguage != "" ||
 		s.Display.Appearance.FontScale != nil ||
 		s.Display.Appearance.AccentColor != "" ||

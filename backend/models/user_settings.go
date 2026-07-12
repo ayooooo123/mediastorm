@@ -107,6 +107,10 @@ type DisplaySettings struct {
 	BypassFilteringForAIOStreamsOnly *bool `json:"bypassFilteringForAioStreamsOnly,omitempty"`
 	// DisableMobileTopCarousel hides the top hero carousel on mobile home.
 	DisableMobileTopCarousel *bool `json:"disableMobileTopCarousel,omitempty"`
+	// EnableHeroArtPanning animates TV hero artwork with a slow pan/zoom effect.
+	EnableHeroArtPanning *bool `json:"enableHeroArtPanning,omitempty"`
+	// EnableHeroArtRotation cycles through alternate TV hero artwork.
+	EnableHeroArtRotation *bool `json:"enableHeroArtRotation,omitempty"`
 	// BlurUnwatchedEpisodeThumbnails blurs Details-page thumbnails for unwatched episodes.
 	BlurUnwatchedEpisodeThumbnails *bool `json:"blurUnwatchedEpisodeThumbnails,omitempty"`
 	// BlurUnwatchedEpisodeThumbnailsIncludeCurrent applies thumbnail blurring to the selected/current episode too.
@@ -798,6 +802,8 @@ func DefaultUserSettings() UserSettings {
 			IncludeUnreleasedMoviesInSearch:           BoolPtr(true),
 			IncludeUnreleasedShowsInSearch:            BoolPtr(true),
 			DisableMobileTopCarousel:                  BoolPtr(false),
+			EnableHeroArtPanning:                      BoolPtr(true),
+			EnableHeroArtRotation:                     BoolPtr(true),
 			Appearance: AppearanceSettings{
 				FontScale:    FloatPtr(1.0),
 				ButtonStyle:  "soft",

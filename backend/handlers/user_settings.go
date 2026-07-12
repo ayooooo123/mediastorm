@@ -229,6 +229,8 @@ func (h *UserSettingsHandler) getDefaultsFromGlobal() models.UserSettings {
 			IncludeUnreleasedShowsInSearch:   models.BoolPtr(globalSettings.Display.IncludeUnreleasedShowsInSearch),
 			BypassFilteringForAIOStreamsOnly: models.BoolPtr(globalSettings.Display.BypassFilteringForAIOStreamsOnly),
 			DisableMobileTopCarousel:         models.BoolPtr(globalSettings.Display.DisableMobileTopCarousel),
+			EnableHeroArtPanning:             models.BoolPtr(globalSettings.Display.EnableHeroArtPanning),
+			EnableHeroArtRotation:            models.BoolPtr(globalSettings.Display.EnableHeroArtRotation),
 			AppLanguage:                      globalSettings.Display.AppLanguage,
 			Appearance: models.AppearanceSettings{
 				FontScale:            globalSettings.Display.Appearance.FontScale,

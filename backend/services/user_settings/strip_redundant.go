@@ -177,6 +177,8 @@ func globalToUserSettings(g config.Settings) models.UserSettings {
 			IncludeUnreleasedShowsInSearch:   models.BoolPtr(g.Display.IncludeUnreleasedShowsInSearch),
 			BypassFilteringForAIOStreamsOnly: models.BoolPtr(g.Display.BypassFilteringForAIOStreamsOnly),
 			DisableMobileTopCarousel:         models.BoolPtr(g.Display.DisableMobileTopCarousel),
+			EnableHeroArtPanning:             models.BoolPtr(g.Display.EnableHeroArtPanning),
+			EnableHeroArtRotation:            models.BoolPtr(g.Display.EnableHeroArtRotation),
 			AppLanguage:                      g.Display.AppLanguage,
 			Appearance: models.AppearanceSettings{
 				FontScale:            g.Display.Appearance.FontScale,
@@ -438,6 +440,12 @@ func mergeWithGlobal(us models.UserSettings, g config.Settings) models.UserSetti
 	}
 	if eff.Display.DisableMobileTopCarousel == nil {
 		eff.Display.DisableMobileTopCarousel = models.BoolPtr(g.Display.DisableMobileTopCarousel)
+	}
+	if eff.Display.EnableHeroArtPanning == nil {
+		eff.Display.EnableHeroArtPanning = models.BoolPtr(g.Display.EnableHeroArtPanning)
+	}
+	if eff.Display.EnableHeroArtRotation == nil {
+		eff.Display.EnableHeroArtRotation = models.BoolPtr(g.Display.EnableHeroArtRotation)
 	}
 
 	// AnimeFiltering
@@ -855,6 +863,14 @@ func stripDisplay(d *models.DisplaySettings, g config.DisplaySettings) bool {
 		d.DisableMobileTopCarousel = nil
 		changed = true
 	}
+	if d.EnableHeroArtPanning != nil && *d.EnableHeroArtPanning == g.EnableHeroArtPanning {
+		d.EnableHeroArtPanning = nil
+		changed = true
+	}
+	if d.EnableHeroArtRotation != nil && *d.EnableHeroArtRotation == g.EnableHeroArtRotation {
+		d.EnableHeroArtRotation = nil
+		changed = true
+	}
 	if d.AppLanguage != "" && d.AppLanguage == g.AppLanguage {
 		d.AppLanguage = ""
 		changed = true
@@ -1177,6 +1193,14 @@ func stripClientSettings(cs *models.ClientFilterSettings, eff models.UserSetting
 	}
 	if cs.DisableMobileTopCarousel != nil && eff.Display.DisableMobileTopCarousel != nil && *cs.DisableMobileTopCarousel == *eff.Display.DisableMobileTopCarousel {
 		cs.DisableMobileTopCarousel = nil
+		changed = true
+	}
+	if cs.EnableHeroArtPanning != nil && eff.Display.EnableHeroArtPanning != nil && *cs.EnableHeroArtPanning == *eff.Display.EnableHeroArtPanning {
+		cs.EnableHeroArtPanning = nil
+		changed = true
+	}
+	if cs.EnableHeroArtRotation != nil && eff.Display.EnableHeroArtRotation != nil && *cs.EnableHeroArtRotation == *eff.Display.EnableHeroArtRotation {
+		cs.EnableHeroArtRotation = nil
 		changed = true
 	}
 	if cs.NavigationTabVisibility != nil && stringSliceEqualUnordered(*cs.NavigationTabVisibility, eff.Display.NavigationTabVisibility) {
