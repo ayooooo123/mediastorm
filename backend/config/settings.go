@@ -973,6 +973,10 @@ type DisplaySettings struct {
 	CleanPosters bool `json:"cleanPosters,omitempty"`
 	// DisableMobileTopCarousel hides the top hero carousel on mobile home.
 	DisableMobileTopCarousel bool `json:"disableMobileTopCarousel,omitempty"`
+	// EnableHeroArtPanning animates TV hero artwork with a slow pan/zoom effect.
+	EnableHeroArtPanning bool `json:"enableHeroArtPanning"`
+	// EnableHeroArtRotation cycles through alternate TV hero artwork.
+	EnableHeroArtRotation bool `json:"enableHeroArtRotation"`
 	// BlurUnwatchedEpisodeThumbnails blurs Details-page thumbnails for unwatched episodes.
 	BlurUnwatchedEpisodeThumbnails bool `json:"blurUnwatchedEpisodeThumbnails,omitempty"`
 	// BlurUnwatchedEpisodeThumbnailsIncludeCurrent applies thumbnail blurring to the selected/current episode too.
@@ -1469,6 +1473,8 @@ func DefaultSettings() Settings {
 			IncludeUnreleasedShowsInSearch:  true,
 			CleanPosters:                    true,
 			AlwaysShowProfileSelector:       true,
+			EnableHeroArtPanning:            true,
+			EnableHeroArtRotation:           true,
 			Appearance: AppearanceSettings{
 				FontScale:    floatPtr(1.0),
 				ButtonStyle:  "soft",
@@ -1806,6 +1812,12 @@ func (m *Manager) Load() (Settings, error) {
 		if _, exists := displayMap["includeUnreleasedShowsInSearch"]; !exists {
 			displayMap["includeUnreleasedShowsInSearch"] = true
 		}
+		if _, exists := displayMap["enableHeroArtPanning"]; !exists {
+			displayMap["enableHeroArtPanning"] = true
+		}
+		if _, exists := displayMap["enableHeroArtRotation"]; !exists {
+			displayMap["enableHeroArtRotation"] = true
+		}
 	} else {
 		raw["display"] = map[string]interface{}{
 			"alwaysShowProfileSelector":       true,
@@ -1813,6 +1825,8 @@ func (m *Manager) Load() (Settings, error) {
 			"includeUnreleasedShowsInLists":   true,
 			"includeUnreleasedMoviesInSearch": true,
 			"includeUnreleasedShowsInSearch":  true,
+			"enableHeroArtPanning":            true,
+			"enableHeroArtRotation":           true,
 		}
 	}
 
