@@ -19,19 +19,17 @@
 //! Mitigations in place:
 //!   - High-entropy codes are the primary defense: the backend issues ~90-bit Crockford
 //!     base32 codes (`generateToken` in services/remoteaccess/service.go), well beyond an
-//!     offline brute force of the published derived key. This holds even if the key is
-//!     observed for the full unclaimed window.
-//!   - Single-use + expiring codes: enforced by the backend.
-//!   - Claimed codes stop being published: the backend lists only *pending* codes in the
-//!     rendezvous file, so on claim this publisher stops republishing the code and its DHT
-//!     record lapses at TTL. The lingering record is harmless — the code is single-use, so a
-//!     forged record has no victim: the already-paired client reconnects by dialing the
-//!     host's stable iroh NodeID (n0 discovery resolves current addressing), never by
-//!     re-resolving the code, and no new client resolves a used code.
+//!     offline brute force of the published derived key, including across the full active
+//!     lifetime of a pairing.
+//!   - A code can claim only one pairing, and the backend rejects reuse by another peer.
+//!   - Active pairings remain published until explicitly revoked. This is necessary because
+//!     an invite's cached addresses and even its NodeID can become stale after network or
+//!     deployment changes. The code is the recovery channel for discovering the host's
+//!     current invite without already having a working backend connection.
 //!
-//! Residual risk: a first-contact MITM during the unclaimed window (an attacker who wins the
-//! offline crack before the legitimate client claims — infeasible at ~90 bits, but the window
-//! is bounded by the invite's expiry, not necessarily short). Closeable with a short
+//! Residual risk: an attacker who learns the code can forge its rendezvous record and target
+//! first contact or a later recovery. Guessing remains infeasible at ~90 bits, so the code
+//! must be treated as a pairing secret until revoked. This is closeable with a short
 //! verification string (SAS) bound to the iroh channel keys, shown on both ends at pairing
 //! time — the lighter equivalent of a full PAKE.
 

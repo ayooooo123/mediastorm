@@ -374,7 +374,7 @@ func TestGenerateTokenHasHighEntropyUnambiguousBody(t *testing.T) {
 	}
 }
 
-func TestClaimDropsConnectionCodeFromRendezvousFile(t *testing.T) {
+func TestClaimKeepsConnectionCodeInRendezvousFileForRecovery(t *testing.T) {
 	repo := newFakeInviteRepo()
 	path := filepath.Join(t.TempDir(), "codes.txt")
 	host := &fakeRendezvousHost{path: path}
@@ -393,10 +393,27 @@ func TestClaimDropsConnectionCodeFromRendezvousFile(t *testing.T) {
 		t.Fatalf("ClaimInvite returned error: %v", err)
 	}
 
-	// A claimed invite stays active (host keeps running for reconnects) but its code must
-	// no longer be published to the DHT.
+	// The cached invite can become stale when the host's addresses or identity change.
+	// Keep the durable pairing code resolvable so the client can discover the current
+	// invite without already having a working path to the backend.
+	if codes := readRendezvousCodes(t, path); len(codes) != 1 || codes[0] != inv.ConnectionCode {
+		t.Fatalf("rendezvous codes after claim = %v, want [%s]", codes, inv.ConnectionCode)
+	}
+	stored := repo.byID[inv.ID]
+	stored.ExpiresAt = svc.now().Add(-time.Minute)
+	repo.byID[inv.ID] = stored
+	if _, err := svc.Supervise(context.Background()); err != nil {
+		t.Fatalf("Supervise returned error: %v", err)
+	}
+	if codes := readRendezvousCodes(t, path); len(codes) != 1 || codes[0] != inv.ConnectionCode {
+		t.Fatalf("rendezvous codes after claimed expiry = %v, want [%s]", codes, inv.ConnectionCode)
+	}
+
+	if err := svc.RevokeInvite(context.Background(), inv.ID); err != nil {
+		t.Fatalf("RevokeInvite returned error: %v", err)
+	}
 	if codes := readRendezvousCodes(t, path); len(codes) != 0 {
-		t.Fatalf("rendezvous codes after claim = %v, want none", codes)
+		t.Fatalf("rendezvous codes after revoke = %v, want none", codes)
 	}
 }
 

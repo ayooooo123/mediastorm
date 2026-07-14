@@ -201,10 +201,6 @@ func (s *Service) ClaimInvite(ctx context.Context, token, peerID string) (models
 		}
 		return models.RemoteAccessInvite{}, ErrInviteUsed
 	}
-	// The invite is now claimed, so its code no longer needs to be resolvable on the DHT;
-	// drop it immediately rather than waiting for the next Supervise tick. Best-effort:
-	// Supervise re-syncs on its timer, so a transient failure here self-heals.
-	s.trySyncRendezvousCodes(ctx)
 	inv.Token = ""
 	return *inv, nil
 }
@@ -328,10 +324,9 @@ func (s *Service) Supervise(ctx context.Context) (SyncSummary, error) {
 		}
 		summary.Updated++
 	}
-	publishable := filterPublishableInvites(active, s.now())
-	codes := make([]string, 0, len(publishable))
-	for i := range publishable {
-		if code := strings.TrimSpace(publishable[i].ConnectionCode); code != "" {
+	codes := make([]string, 0, len(active))
+	for i := range active {
+		if code := strings.TrimSpace(active[i].ConnectionCode); code != "" {
 			codes = append(codes, code)
 		}
 	}
@@ -373,16 +368,15 @@ func (s *Service) syncRendezvousCodes(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	// Only publish codes for invites still awaiting their first claim. Once an invite is
-	// claimed, the paired client reconnects via the host's stable iroh NodeID rather than
-	// re-resolving the code, so we drop the record to stop exposing the code-derived DHT
-	// key to an offline brute-force for the life of the pairing.
-	publishable := filterPublishableInvites(invites, s.now())
+	// Keep every active pairing resolvable. Cached iroh invites contain addressing that can
+	// become stale after a host restart or network change; the high-entropy connection code
+	// is the only recovery path that does not already require a working backend connection.
+	active := filterActiveInvites(invites, s.now())
 
 	var b strings.Builder
-	b.WriteString("# strmr pending connection codes — managed by remoteaccess.Service; do not edit\n")
-	for i := range publishable {
-		code := strings.TrimSpace(publishable[i].ConnectionCode)
+	b.WriteString("# strmr active connection codes — managed by remoteaccess.Service; do not edit\n")
+	for i := range active {
+		code := strings.TrimSpace(active[i].ConnectionCode)
 		if code != "" {
 			b.WriteString(code)
 			b.WriteByte('\n')
@@ -454,17 +448,4 @@ func filterActiveInvites(invites []models.RemoteAccessInvite, now time.Time) []m
 		}
 	}
 	return active
-}
-
-// filterPublishableInvites returns the invites whose connection codes should be live on
-// the rendezvous DHT — i.e. those still awaiting their first claim. Claimed invites stay
-// "active" (the host keeps running for them) but are no longer published.
-func filterPublishableInvites(invites []models.RemoteAccessInvite, now time.Time) []models.RemoteAccessInvite {
-	pending := make([]models.RemoteAccessInvite, 0, len(invites))
-	for _, inv := range invites {
-		if inv.IsPendingClaim(now) {
-			pending = append(pending, inv)
-		}
-	}
-	return pending
 }
