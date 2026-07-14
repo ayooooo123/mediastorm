@@ -139,14 +139,15 @@ func (m *mockHistoryService) ListAllPlaybackProgress() map[string][]models.Playb
 }
 
 type mockMetadataServiceStartup struct {
-	movieItems  []models.TrendingItem
-	seriesItems []models.TrendingItem
-	movieErr    error
-	seriesErr   error
-	movieDelay  time.Duration
-	seriesDelay time.Duration
-	mu          sync.Mutex
-	calls       []string
+	movieItems   []models.TrendingItem
+	seriesItems  []models.TrendingItem
+	movieErr     error
+	seriesErr    error
+	movieDelay   time.Duration
+	seriesDelay  time.Duration
+	releaseDelay time.Duration
+	mu           sync.Mutex
+	calls        []string
 
 	// Artwork-cache simulation for EnrichMissingArtwork tests.
 	// textPosterURL is the URL returned by GetTextPosterURL once the cache is
@@ -212,6 +213,9 @@ func (m *mockMetadataServiceStartup) MovieDetails(context.Context, models.MovieD
 	return nil, nil
 }
 func (m *mockMetadataServiceStartup) BatchMovieReleases(context.Context, []models.BatchMovieReleasesQuery) []models.BatchMovieReleasesItem {
+	if m.releaseDelay > 0 {
+		time.Sleep(m.releaseDelay)
+	}
 	return nil
 }
 func (m *mockMetadataServiceStartup) CollectionDetails(context.Context, int64) (*models.CollectionDetails, error) {
@@ -880,5 +884,56 @@ func TestStartupHandler_TimesOutSlowTrendingAndReturnsPartialResponse(t *testing
 	}
 	if len(resp.ContinueWatching) != 1 || resp.ContinueWatching[0].SeriesTitle != "Test Series" {
 		t.Fatalf("expected continue watching data to still be returned, got %+v", resp.ContinueWatching)
+	}
+}
+
+func TestStartupHandler_TimesOutSlowWatchlistReleaseEnrichment(t *testing.T) {
+	cfgManager := config.NewManager(t.TempDir() + "/settings.json")
+
+	h := handlers.NewStartupHandler(
+		&mockUserSettingsService{},
+		&mockWatchlistService{
+			items: []models.WatchlistItem{
+				{
+					ID:        "m1",
+					MediaType: "movie",
+					Name:      "Test Movie",
+					ExternalIDs: map[string]string{
+						"tmdb": "123",
+					},
+				},
+			},
+		},
+		&mockHistoryService{},
+		&mockMetadataServiceStartup{releaseDelay: 3 * time.Second},
+		cfgManager,
+		&mockUserServiceStartup{exists: true},
+	)
+
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/api/users/user1/startup?includeTrendingMovies=false&includeTrendingSeries=false",
+		nil,
+	)
+	req = mux.SetURLVars(req, map[string]string{"userID": "user1"})
+	rec := httptest.NewRecorder()
+
+	start := time.Now()
+	h.GetStartup(rec, req)
+	elapsed := time.Since(start)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if elapsed >= 1500*time.Millisecond {
+		t.Fatalf("expected startup response to fail open before slow release enrichment completed, took %v", elapsed)
+	}
+
+	var resp handlers.StartupResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if len(resp.Watchlist) != 1 || resp.Watchlist[0].Name != "Test Movie" {
+		t.Fatalf("expected core watchlist data to still be returned, got %+v", resp.Watchlist)
 	}
 }

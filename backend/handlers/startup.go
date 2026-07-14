@@ -36,6 +36,7 @@ const startupExploreCollageItemCount = 4
 // fail open with partial data instead of stalling the whole home screen.
 const startupTrendingTimeout = 1500 * time.Millisecond
 const startupHomeBundleTimeout = 3500 * time.Millisecond
+const startupReleaseEnrichmentTimeout = time.Second
 
 // startupCalendarService is the subset of the calendar service used by the
 // startup handler. It reads only from the pre-built cache (non-blocking).
@@ -489,7 +490,7 @@ func (h *StartupHandler) GetStartup(w http.ResponseWriter, r *http.Request) {
 	enrichWatchlistRatings(r.Context(), resp.Watchlist, h.metadata)
 	// Match display-list watchlist enrichment so the initial home shelf does not
 	// need to repair missing movie release metadata after first paint.
-	enrichDisplayListReleases(r, resp.Watchlist, h.metadata)
+	enrichStartupWatchlistReleases(r, resp.Watchlist, h.metadata)
 	resp.Watchlist = filterWatchlistItemsByUnreleasedVisibility(resp.Watchlist, listPolicy)
 	if resp.TrendingMovies != nil {
 		enrichTrendingItems(resp.TrendingMovies.Items, idx)
@@ -512,6 +513,35 @@ func (h *StartupHandler) GetStartup(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+func enrichStartupWatchlistReleases(r *http.Request, items []models.WatchlistItem, meta metadataService) {
+	if meta == nil || len(items) == 0 {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), startupReleaseEnrichmentTimeout)
+	defer cancel()
+
+	// Enrichment can call external metadata providers. Work on a copy so a
+	// provider that misses or ignores the deadline cannot race with the response.
+	enriched := append([]models.WatchlistItem(nil), items...)
+	done := make(chan struct{}, 1)
+	go func() {
+		enrichDisplayListReleases(r.Clone(ctx), enriched, meta)
+		done <- struct{}{}
+	}()
+
+	select {
+	case <-done:
+		for i := range items {
+			items[i].Status = enriched[i].Status
+			items[i].Theatrical = enriched[i].Theatrical
+			items[i].HomeRelease = enriched[i].HomeRelease
+		}
+	case <-ctx.Done():
+		log.Printf("[startup] watchlist release enrichment timed out after %v, returning core data", startupReleaseEnrichmentTimeout)
+	}
 }
 
 func (h *StartupHandler) hiddenItemsManifestHash(userID string) string {
