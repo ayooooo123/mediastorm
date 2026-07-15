@@ -91,6 +91,23 @@ func TestPrequeueStoreDoesNotValidateNonReadyEntry(t *testing.T) {
 	}
 }
 
+func TestNextEpisodeReadyEntryHasPlaybackRetentionFloor(t *testing.T) {
+	store := NewPrequeueStore(15 * time.Minute)
+	entry, created := store.Create("series:1", "Show", "default", "series", time.Now().Year(), nil, "next_episode")
+	if !created {
+		t.Fatal("Create returned created=false")
+	}
+
+	store.Update(entry.ID, func(e *PrequeueEntry) {
+		e.Status = PrequeueStatusReady
+		e.StreamPath = "/debrid/provider/next.mkv"
+	})
+
+	if remaining := time.Until(entry.ExpiresAt); remaining < nextEpisodeRetentionFloor-time.Minute {
+		t.Fatalf("next episode expires in %s, want at least %s", remaining, nextEpisodeRetentionFloor-time.Minute)
+	}
+}
+
 func TestPrequeueEntryToResponseIncludesServiceType(t *testing.T) {
 	entry := &PrequeueEntry{
 		ID:          "pq_test",

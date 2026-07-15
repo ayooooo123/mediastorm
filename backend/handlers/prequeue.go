@@ -813,6 +813,7 @@ func (h *PrequeueHandler) Prequeue(w http.ResponseWriter, r *http.Request) {
 				} else {
 					if prequeueEpisodeMatches(targetEpisode, warmEntry.TargetEpisode) {
 						log.Printf("[prequeue] Using pre-warmed entry %s for title=%s user=%s scope=%s", warm.PrequeueID, req.TitleID, req.UserID, settingsScopeKey)
+						h.store.PromoteRetention(warmEntry.ID, req.Reason)
 						resp := playback.PrequeueResponse{
 							PrequeueID:    warm.PrequeueID,
 							TargetEpisode: warmEntry.TargetEpisode,
@@ -851,6 +852,7 @@ func (h *PrequeueHandler) Prequeue(w http.ResponseWriter, r *http.Request) {
 					h.store.Delete(existing.ID)
 				} else {
 					log.Printf("[prequeue] Reusing existing ready entry %s for title=%s user=%s scope=%s", existing.ID, req.TitleID, req.UserID, settingsScopeKey)
+					h.store.PromoteRetention(existing.ID, req.Reason)
 					resp := playback.PrequeueResponse{
 						PrequeueID:    existing.ID,
 						TargetEpisode: existing.TargetEpisode,
@@ -866,6 +868,7 @@ func (h *PrequeueHandler) Prequeue(w http.ResponseWriter, r *http.Request) {
 		} else if isPrequeueInProgress(existing.Status) {
 			log.Printf("[prequeue] Reusing existing in-progress entry %s status=%s for title=%s user=%s scope=%s",
 				existing.ID, existing.Status, req.TitleID, req.UserID, settingsScopeKey)
+			h.store.PromoteRetention(existing.ID, req.Reason)
 			resp := playback.PrequeueResponse{
 				PrequeueID:    existing.ID,
 				TargetEpisode: existing.TargetEpisode,

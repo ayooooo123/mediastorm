@@ -31,6 +31,8 @@ const (
 
 const readyStreamValidationTTL = 5 * time.Minute
 
+const nextEpisodeRetentionFloor = 4 * time.Hour
+
 // WarmRef is a lightweight reference to a pre-warmed prequeue entry
 type WarmRef struct {
 	PrequeueID string
@@ -571,12 +573,7 @@ func (s *PrequeueStore) CreateScoped(titleID, titleName, userID, mediaType strin
 		SelectedSubtitleTrack: -1, // Default: none
 		CreatedAt:             time.Now(),
 	}
-	// Use dynamic TTL based on air date; fall back to store default
-	dynTTL := entry.DynamicTTL()
-	if dynTTL <= 0 {
-		dynTTL = s.defaultTTL
-	}
-	entry.ExpiresAt = time.Now().Add(dynTTL)
+	entry.ExpiresAt = time.Now().Add(entry.retentionTTL(s.defaultTTL))
 
 	s.entries[id] = entry
 	s.byTitleUser[key] = id
@@ -740,17 +737,47 @@ func (s *PrequeueStore) Update(id string, updateFn func(*PrequeueEntry)) bool {
 			}
 			s.streamPathValidated[streamPathValidationKey(id, entry.StreamPath)] = time.Now()
 		}
-		dynTTL := entry.DynamicTTL()
-		if dynTTL <= 0 {
-			dynTTL = s.defaultTTL
-		}
-		defaultExpiry := time.Now().Add(dynTTL)
+		defaultExpiry := time.Now().Add(entry.retentionTTL(s.defaultTTL))
 		if entry.ExpiresAt.Before(defaultExpiry) {
 			entry.ExpiresAt = defaultExpiry
 		}
 		s.saveToDisk()
 	}
 
+	return true
+}
+
+func (e *PrequeueEntry) retentionTTL(defaultTTL time.Duration) time.Duration {
+	ttl := e.DynamicTTL()
+	if ttl <= 0 {
+		ttl = defaultTTL
+	}
+	if e.Reason == "next_episode" && ttl < nextEpisodeRetentionFloor {
+		return nextEpisodeRetentionFloor
+	}
+	return ttl
+}
+
+// PromoteRetention upgrades a reused entry to the longer next-episode lifetime.
+func (s *PrequeueStore) PromoteRetention(id, reason string) bool {
+	if reason != "next_episode" {
+		return true
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry, exists := s.entries[id]
+	if !exists {
+		return false
+	}
+	entry.Reason = reason
+	minimumExpiry := time.Now().Add(entry.retentionTTL(s.defaultTTL))
+	if entry.ExpiresAt.Before(minimumExpiry) {
+		entry.ExpiresAt = minimumExpiry
+	}
+	if entry.Status == PrequeueStatusReady {
+		s.saveToDisk()
+	}
 	return true
 }
 

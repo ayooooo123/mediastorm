@@ -757,6 +757,44 @@ func TestPrequeueReusesAdoptedMigrationWithoutTrackMetadata(t *testing.T) {
 	}
 }
 
+func TestPrequeuePromotesReusedInProgressEntryForNextEpisodeRetention(t *testing.T) {
+	store := playback.NewPrequeueStore(15 * time.Minute)
+	episode := &models.EpisodeReference{SeasonNumber: 1, EpisodeNumber: 2}
+	entry, created := store.Create("series:1", "Example", "user1", "series", 2024, episode, "details")
+	if !created {
+		t.Fatal("Create returned created=false")
+	}
+
+	body, err := json.Marshal(playback.PrequeueRequest{
+		TitleID:       "series:1",
+		TitleName:     "Example",
+		MediaType:     "series",
+		UserID:        "user1",
+		Year:          2024,
+		SeasonNumber:  1,
+		EpisodeNumber: 2,
+		Reason:        "next_episode",
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	handler := &PrequeueHandler{store: store}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/playback/prequeue", bytes.NewReader(body))
+	handler.Prequeue(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	if entry.Reason != "next_episode" {
+		t.Fatalf("Reason = %q, want next_episode", entry.Reason)
+	}
+	if remaining := time.Until(entry.ExpiresAt); remaining < 4*time.Hour-time.Minute {
+		t.Fatalf("reused next episode expires in %s, want at least %s", remaining, 4*time.Hour-time.Minute)
+	}
+}
+
 func TestDefaultExternalURLValidator(t *testing.T) {
 	originalTransport := http.DefaultTransport
 	defer func() { http.DefaultTransport = originalTransport }()
