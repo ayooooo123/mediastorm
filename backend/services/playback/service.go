@@ -62,6 +62,10 @@ type Service struct {
 
 	externalMu     sync.Mutex
 	externalJobs   map[int64]*externalUsenetJob
+	externalByKey  map[string]int64
+	externalClaims map[string]chan struct{}
+	externalReady  map[string]*externalResolvedResult
+	externalDone   map[int64]*externalResolvedResult
 	externalNextID atomic.Int64
 
 	// NZB fetch/process counters for diagnostics (atomic, safe for concurrent use).
@@ -80,6 +84,12 @@ type externalUsenetJob struct {
 	CreatedAt      time.Time
 	LastStatus     string
 	LastError      string
+	ReuseKey       string
+}
+
+type externalResolvedResult struct {
+	Resolution models.PlaybackResolution
+	ResolvedAt time.Time
 }
 
 var (
@@ -87,11 +97,27 @@ var (
 	ErrQueueItemFailed   = errors.New("playback queue item failed")
 )
 
-const externalQueueIDBase int64 = 1_000_000_000
+const (
+	externalQueueIDBase        int64 = 1_000_000_000
+	externalResolutionCacheTTL       = 24 * time.Hour
+)
 
 func shortSHA256Bytes(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])[:12]
+}
+
+func externalUsenetReuseKey(engine config.UsenetEngineSettings, nzbBytes []byte) string {
+	nzbSum := sha256.Sum256(nzbBytes)
+	identity := strings.Join([]string{
+		strings.ToLower(strings.TrimSpace(engine.Type)),
+		strings.ToLower(strings.TrimRight(strings.TrimSpace(engine.BaseURL), "/")),
+		strings.TrimSpace(engine.APIPath),
+		strings.ToLower(strings.TrimSpace(engine.Category)),
+		hex.EncodeToString(nzbSum[:]),
+	}, "\x00")
+	sum := sha256.Sum256([]byte(identity))
+	return hex.EncodeToString(sum[:])
 }
 
 func shortSHA256String(value string) string {
@@ -152,11 +178,15 @@ func NewService(cfg *config.Manager, usenetSvc usenetHealthService, nzbSystem *i
 			Timeout:   60 * time.Second,
 			Transport: transport,
 		},
-		usenet:       usenetSvc,
-		debrid:       debrid.NewPlaybackService(cfg, nil),
-		nzbSystem:    nzbSystem,
-		metadataSvc:  metadataSvc,
-		externalJobs: make(map[int64]*externalUsenetJob),
+		usenet:         usenetSvc,
+		debrid:         debrid.NewPlaybackService(cfg, nil),
+		nzbSystem:      nzbSystem,
+		metadataSvc:    metadataSvc,
+		externalJobs:   make(map[int64]*externalUsenetJob),
+		externalByKey:  make(map[string]int64),
+		externalClaims: make(map[string]chan struct{}),
+		externalReady:  make(map[string]*externalResolvedResult),
+		externalDone:   make(map[int64]*externalResolvedResult),
 	}
 	service.externalNextID.Store(externalQueueIDBase)
 	return service
@@ -727,6 +757,23 @@ func (s *Service) resolveExternalUsenet(ctx context.Context, settings config.Set
 	}
 	sourceNZBPath := strings.TrimSpace(submitFileName)
 	fileSize := estimateNZBFileSize(submitNZB)
+	reuseKey := externalUsenetReuseKey(engineSettings, submitNZB)
+
+	for {
+		if res, ok := s.reuseExternalUsenetResolution(ctx, reuseKey, engineSettings, sourceNZBPath, fileSize); ok {
+			return res, nil
+		}
+		claimed, wait := s.claimExternalSubmission(reuseKey)
+		if claimed {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-wait:
+		}
+	}
+	defer s.releaseExternalSubmission(reuseKey)
 
 	if existingURL, ok := s.findExistingExternalUsenetResolution(ctx, engineSettings, candidate, sourceNZBPath); ok {
 		log.Printf("[playback] external usenet existing resolution found before submit engine=%q type=%q fileName=%q streamURL=%q; skipping NZB submit", engineSettings.Name, engineSettings.Type, submitFileName, safeURLForLog(existingURL))
@@ -766,7 +813,9 @@ func (s *Service) resolveExternalUsenet(ctx context.Context, settings config.Set
 		FileSize:       fileSize,
 		CreatedAt:      time.Now(),
 		LastStatus:     string(usenetengine.StatusQueued),
+		ReuseKey:       reuseKey,
 	}
+	s.externalByKey[reuseKey] = queueID
 	s.externalMu.Unlock()
 
 	log.Printf("[playback] external usenet job queued queueID=%d engineJobID=%q engine=%q type=%q fileName=%q nzbHash=%q inMemoryJobsBefore=%d note=%q", queueID, submit.JobID, engine.Name(), engineSettings.Type, submitFileName, shortSHA256Bytes(submitNZB), existingExternalJobs, "external jobs are tracked in memory until completion; resolved NZB cache is not written on submit")
@@ -776,6 +825,81 @@ func (s *Service) resolveExternalUsenet(ctx context.Context, settings config.Set
 		FileSize:      fileSize,
 		SourceNZBPath: sourceNZBPath,
 	}, nil
+}
+
+func (s *Service) reuseExternalUsenetResolution(ctx context.Context, reuseKey string, engine config.UsenetEngineSettings, sourceNZBPath string, fileSize int64) (*models.PlaybackResolution, bool) {
+	now := time.Now()
+	s.externalMu.Lock()
+	if cached := s.externalReady[reuseKey]; cached != nil {
+		if now.Sub(cached.ResolvedAt) <= externalResolutionCacheTTL {
+			resolution := cached.Resolution
+			s.externalMu.Unlock()
+			if s.externalWebDAVURLExists(ctx, engine, resolution.WebDAVPath) {
+				resolution.QueueID = 0
+				log.Printf("[playback] external usenet completed resolution cache hit reuseKey=%q sourceNZB=%q streamURL=%q", shortHash(reuseKey), sourceNZBPath, safeURLForLog(resolution.WebDAVPath))
+				return &resolution, true
+			}
+			s.externalMu.Lock()
+			if current := s.externalReady[reuseKey]; current == cached {
+				delete(s.externalReady, reuseKey)
+			}
+			s.externalMu.Unlock()
+			log.Printf("[playback] external usenet completed resolution cache stale reuseKey=%q sourceNZB=%q", shortHash(reuseKey), sourceNZBPath)
+			return nil, false
+		}
+		delete(s.externalReady, reuseKey)
+	}
+	if queueID := s.externalByKey[reuseKey]; queueID > 0 {
+		if job := s.externalJobs[queueID]; job != nil {
+			resolution := &models.PlaybackResolution{
+				QueueID:       queueID,
+				HealthStatus:  firstNonEmpty(job.LastStatus, string(usenetengine.StatusQueued)),
+				FileSize:      firstPositiveInt64(job.FileSize, fileSize),
+				SourceNZBPath: firstNonEmpty(job.SourceNZBPath, sourceNZBPath),
+			}
+			s.externalMu.Unlock()
+			log.Printf("[playback] external usenet active job reused reuseKey=%q queueID=%d engineJobID=%q sourceNZB=%q", shortHash(reuseKey), queueID, job.EngineJobID, resolution.SourceNZBPath)
+			return resolution, true
+		}
+		delete(s.externalByKey, reuseKey)
+	}
+	s.externalMu.Unlock()
+	return nil, false
+}
+
+func (s *Service) claimExternalSubmission(reuseKey string) (bool, <-chan struct{}) {
+	s.externalMu.Lock()
+	defer s.externalMu.Unlock()
+	if wait := s.externalClaims[reuseKey]; wait != nil {
+		return false, wait
+	}
+	wait := make(chan struct{})
+	s.externalClaims[reuseKey] = wait
+	return true, wait
+}
+
+func (s *Service) releaseExternalSubmission(reuseKey string) {
+	s.externalMu.Lock()
+	wait := s.externalClaims[reuseKey]
+	delete(s.externalClaims, reuseKey)
+	if wait != nil {
+		close(wait)
+	}
+	s.externalMu.Unlock()
+}
+
+func (s *Service) rememberExternalResolution(job *externalUsenetJob, resolution *models.PlaybackResolution) {
+	if job == nil || resolution == nil || strings.TrimSpace(resolution.WebDAVPath) == "" {
+		return
+	}
+	copyResolution := *resolution
+	entry := &externalResolvedResult{Resolution: copyResolution, ResolvedAt: time.Now()}
+	s.externalMu.Lock()
+	s.externalDone[job.ID] = entry
+	if job.ReuseKey != "" {
+		s.externalReady[job.ReuseKey] = entry
+	}
+	s.externalMu.Unlock()
 }
 
 // ResolveExternalUsenetForProbe resolves an external-engine Usenet candidate to
@@ -902,8 +1026,17 @@ func (s *Service) ResolveExternalUsenetForProbe(ctx context.Context, candidate m
 func (s *Service) externalQueueStatus(ctx context.Context, queueID int64) (*models.PlaybackResolution, bool, error) {
 	s.externalMu.Lock()
 	job := s.externalJobs[queueID]
+	completed := s.externalDone[queueID]
+	if completed != nil && time.Since(completed.ResolvedAt) > externalResolutionCacheTTL {
+		delete(s.externalDone, queueID)
+		completed = nil
+	}
 	s.externalMu.Unlock()
 	if job == nil {
+		if completed != nil {
+			res := completed.Resolution
+			return &res, true, nil
+		}
 		return nil, false, nil
 	}
 
@@ -927,7 +1060,7 @@ func (s *Service) externalQueueStatus(ctx context.Context, queueID int64) (*mode
 		sourceNZBPath = strings.TrimSpace(status.FileName)
 	}
 	statusFileName := strings.TrimSpace(status.FileName)
-	statusFileNameMatchesSubmission := statusFileName == "" || externalReleaseNameMatchesSubmitted(statusFileName, job.SubmittedTitle, sourceNZBPath)
+	statusFileNameMatchesSubmission := statusFileName == "" || externalStatusFileNameMatchesSubmission(job.Engine.Type, statusFileName, job.SubmittedTitle, sourceNZBPath)
 	log.Printf("[playback] external usenet status queueID=%d engineJobID=%q engine=%q type=%q status=%q rawStatus=%q submitted=%q sourceNZB=%q statusFileName=%q output=%q fileSize=%d", queueID, job.EngineJobID, job.Engine.Name, job.Engine.Type, status.Status, status.RawStatus, job.SubmittedTitle, sourceNZBPath, statusFileName, status.OutputPath, fileSize)
 
 	s.externalMu.Lock()
@@ -974,14 +1107,16 @@ func (s *Service) externalQueueStatus(ctx context.Context, queueID int64) (*mode
 				return nil, true, fallbackErr
 			} else if ok {
 				log.Printf("[playback] external usenet completed via fallback queueID=%d engineJobID=%q sourceNZB=%q streamURL=%q; deleting in-memory job without writing resolved NZB cache", queueID, job.EngineJobID, sourceNZBPath, safeURLForLog(fallbackURL))
-				s.deleteExternalJob(queueID)
-				return &models.PlaybackResolution{
+				resolution := &models.PlaybackResolution{
 					QueueID:       queueID,
 					WebDAVPath:    fallbackURL,
 					HealthStatus:  "healthy",
 					FileSize:      fileSize,
 					SourceNZBPath: sourceNZBPath,
-				}, true, nil
+				}
+				s.rememberExternalResolution(job, resolution)
+				s.deleteExternalJob(queueID)
+				return resolution, true, nil
 			}
 			return &models.PlaybackResolution{
 				QueueID:       queueID,
@@ -991,27 +1126,31 @@ func (s *Service) externalQueueStatus(ctx context.Context, queueID int64) (*mode
 			}, true, nil
 		}
 		log.Printf("[playback] external usenet completed queueID=%d engineJobID=%q sourceNZB=%q streamURL=%q; deleting in-memory job without writing resolved NZB cache", queueID, job.EngineJobID, sourceNZBPath, safeURLForLog(streamURL))
-		s.deleteExternalJob(queueID)
-		return &models.PlaybackResolution{
+		resolution := &models.PlaybackResolution{
 			QueueID:       queueID,
 			WebDAVPath:    streamURL,
 			HealthStatus:  "healthy",
 			FileSize:      fileSize,
 			SourceNZBPath: sourceNZBPath,
-		}, true, nil
+		}
+		s.rememberExternalResolution(job, resolution)
+		s.deleteExternalJob(queueID)
+		return resolution, true, nil
 	default:
 		if streamURL, ok, fallbackErr := s.resolveExternalWebDAVFallback(ctx, job.Engine, job.SubmittedTitle, sourceNZBPath); fallbackErr != nil {
 			return nil, true, fallbackErr
 		} else if ok {
 			log.Printf("[playback] external usenet fallback found before terminal status queueID=%d engineJobID=%q sourceNZB=%q streamURL=%q; deleting in-memory job without writing resolved NZB cache", queueID, job.EngineJobID, sourceNZBPath, safeURLForLog(streamURL))
-			s.deleteExternalJob(queueID)
-			return &models.PlaybackResolution{
+			resolution := &models.PlaybackResolution{
 				QueueID:       queueID,
 				WebDAVPath:    streamURL,
 				HealthStatus:  "healthy",
 				FileSize:      fileSize,
 				SourceNZBPath: sourceNZBPath,
-			}, true, nil
+			}
+			s.rememberExternalResolution(job, resolution)
+			s.deleteExternalJob(queueID)
+			return resolution, true, nil
 		}
 		return &models.PlaybackResolution{
 			QueueID:       queueID,
@@ -1033,6 +1172,20 @@ func externalReleaseNameMatchesSubmitted(value, submittedTitle, sourceNZBPath st
 		}
 	}
 	return false
+}
+
+var altMountJobPrefixPattern = regexp.MustCompile(`^\d+-`)
+
+func externalStatusFileNameMatchesSubmission(engineType, value, submittedTitle, sourceNZBPath string) bool {
+	if externalReleaseNameMatchesSubmitted(value, submittedTitle, sourceNZBPath) {
+		return true
+	}
+	if !strings.EqualFold(strings.TrimSpace(engineType), "altmount") {
+		return false
+	}
+	base := path.Base(strings.TrimSpace(value))
+	stripped := altMountJobPrefixPattern.ReplaceAllString(base, "")
+	return stripped != base && externalReleaseNameMatchesSubmitted(stripped, submittedTitle, sourceNZBPath)
 }
 
 func externalOutputPathMatchesSubmitted(outputPath, submittedTitle, sourceNZBPath string) bool {
@@ -1114,6 +1267,11 @@ func (s *Service) rememberExternalJobError(queueID int64, err error) {
 
 func (s *Service) deleteExternalJob(queueID int64) {
 	s.externalMu.Lock()
+	if job := s.externalJobs[queueID]; job != nil && job.ReuseKey != "" {
+		if existingID := s.externalByKey[job.ReuseKey]; existingID == queueID {
+			delete(s.externalByKey, job.ReuseKey)
+		}
+	}
 	delete(s.externalJobs, queueID)
 	s.externalMu.Unlock()
 }
@@ -1280,7 +1438,7 @@ func externalFallbackBasePaths(engine config.UsenetEngineSettings) []string {
 		if completeDir == "" {
 			completeDir = "complete"
 		}
-		return []string{"", category, path.Join(category, completeDir)}
+		return []string{"", category, path.Join(category, completeDir), path.Join(completeDir, category)}
 	case "decypharr":
 		return []string{"", "nzbs"}
 	case "nzbdav", "nzbdavex":
