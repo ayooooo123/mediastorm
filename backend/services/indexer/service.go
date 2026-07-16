@@ -811,26 +811,13 @@ func compareLanguage(i, j models.NZBResult, preferredLang string) int {
 	return 0
 }
 
-// compareYearPriority deranks results where year couldn't be parsed (kept by
-// leniency) below results that have both a confirmed year and a strong title
-// match. A year by itself is not enough to supersede title identity.
-func compareYearPriority(i, j models.NZBResult) int {
-	iMatch := i.Attributes["yearPriority"] == "true"
-	jMatch := j.Attributes["yearPriority"] == "true"
-	if iMatch && !jMatch {
-		return -1
-	}
-	if !iMatch && jMatch {
-		return 1
-	}
-	return 0
-}
-
 func compareSize(i, j models.NZBResult) int {
-	if i.SizeBytes > j.SizeBytes {
+	iSize := i.EffectiveItemSizeBytes()
+	jSize := j.EffectiveItemSizeBytes()
+	if iSize > jSize {
 		return -1
 	}
-	if i.SizeBytes < j.SizeBytes {
+	if iSize < jSize {
 		return 1
 	}
 	return 0
@@ -891,10 +878,6 @@ func compareDeterministicTieBreaker(i, j models.NZBResult) int {
 }
 
 func compareByRankingCriteria(i, j models.NZBResult, scoringCtx ScoringContext) int {
-	if cmp := compareYearPriority(i, j); cmp != 0 {
-		return cmp
-	}
-
 	if scoringCtx.UseDownloadRanking {
 		if cmp := compareDownloadPreferredTerms(i, j, scoringCtx.DownloadPreferredTerms); cmp != 0 {
 			return cmp

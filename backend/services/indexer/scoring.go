@@ -90,19 +90,14 @@ func ScoreResult(result models.NZBResult, ctx ScoringContext) (int, []models.Sco
 		totalScore += points
 	}
 
-	// Year priority is a sorter gate, not a normal point score. It requires
-	// both a confirmed year and a strong title identity from filtering.
-	if result.Attributes["yearPriority"] == "true" {
+	// A matching year is useful diagnostic information but does not outrank
+	// configured quality criteria. Explicitly wrong years are filtered earlier;
+	// missing years remain neutral.
+	if result.Attributes["yearMatch"] == "true" {
 		breakdown = append(breakdown, models.ScoreBreakdownItem{
 			Criterion: "Year Match",
 			Points:    0,
-			Reason:    "priority gate: confirmed year and strong title match rank before results without a confirmed year",
-		})
-	} else if result.Attributes["yearMatch"] == "true" {
-		breakdown = append(breakdown, models.ScoreBreakdownItem{
-			Criterion: "Year Match",
-			Points:    0,
-			Reason:    "matched year, but title match was not strong enough for year priority",
+			Reason:    "explicit year matches expected title year",
 		})
 	}
 
@@ -191,12 +186,17 @@ func scoreLanguage(r models.NZBResult, preferredLang string) (int, string) {
 const sizeLevelCapGB = 100.0
 
 func scoreSize(r models.NZBResult) (int, string) {
-	if r.SizeBytes <= 0 {
+	effectiveSize := r.EffectiveItemSizeBytes()
+	if effectiveSize <= 0 {
 		return 0, "size unknown"
 	}
-	sizeGB := float64(r.SizeBytes) / (1024 * 1024 * 1024)
+	sizeGB := float64(effectiveSize) / (1024 * 1024 * 1024)
 	level := int((sizeGB / sizeLevelCapGB) * float64(levelMax))
-	return clampLevel(level), fmt.Sprintf("%.1f GB", sizeGB)
+	reason := fmt.Sprintf("%.1f GB", sizeGB)
+	if r.EpisodeCount > 1 {
+		reason += " per item"
+	}
+	return clampLevel(level), reason
 }
 
 func scorePreferredScraper(r models.NZBResult, preferredScraper string) (int, string) {

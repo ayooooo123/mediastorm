@@ -205,12 +205,12 @@ func TestScoreResult_DisabledCriteria(t *testing.T) {
 	}
 }
 
-func TestScoreResult_YearMatchBreakdownIsPriorityGate(t *testing.T) {
+func TestScoreResult_YearMatchBreakdownIsDiagnosticOnly(t *testing.T) {
 	ctx := ScoringContext{
 		RankingCriteria: []config.RankingCriterion{},
 	}
 
-	with := models.NZBResult{Title: "Test", Attributes: map[string]string{"yearMatch": "true", "yearPriority": "true"}}
+	with := models.NZBResult{Title: "Test", Attributes: map[string]string{"yearMatch": "true"}}
 
 	score, breakdown := ScoreResult(with, ctx)
 	if score != 0 {
@@ -222,31 +222,28 @@ func TestScoreResult_YearMatchBreakdownIsPriorityGate(t *testing.T) {
 	if breakdown[0].Criterion != "Year Match" || breakdown[0].Points != 0 {
 		t.Fatalf("unexpected year match breakdown: %+v", breakdown[0])
 	}
-	if !strings.Contains(breakdown[0].Reason, "priority gate") {
-		t.Fatalf("expected priority gate reason, got %q", breakdown[0].Reason)
-	}
-}
-
-func TestScoreResult_YearMatchWithoutStrongTitleIsNotPriorityGate(t *testing.T) {
-	ctx := ScoringContext{
-		RankingCriteria: []config.RankingCriterion{},
-	}
-
-	with := models.NZBResult{Title: "Test", Attributes: map[string]string{"yearMatch": "true", "yearPriority": "false"}}
-
-	score, breakdown := ScoreResult(with, ctx)
-	if score != 0 {
-		t.Fatalf("expected year match explanation not to add score points, got %d", score)
-	}
-	if len(breakdown) != 1 {
-		t.Fatalf("expected one year match breakdown item, got %d", len(breakdown))
-	}
 	if strings.Contains(breakdown[0].Reason, "priority gate") {
 		t.Fatalf("did not expect priority gate reason, got %q", breakdown[0].Reason)
 	}
 }
 
-func TestSortResultsByScore_YearMatchSupersedesCriteria(t *testing.T) {
+func TestScoreResult_MissingYearHasNoBreakdown(t *testing.T) {
+	ctx := ScoringContext{
+		RankingCriteria: []config.RankingCriterion{},
+	}
+
+	without := models.NZBResult{Title: "Test", Attributes: map[string]string{}}
+
+	score, breakdown := ScoreResult(without, ctx)
+	if score != 0 {
+		t.Fatalf("expected missing year not to add score points, got %d", score)
+	}
+	if len(breakdown) != 0 {
+		t.Fatalf("expected missing year to have no breakdown item, got %+v", breakdown)
+	}
+}
+
+func TestSortResultsByScore_MissingYearIsNeutral(t *testing.T) {
 	ctx := ScoringContext{
 		RankingCriteria: []config.RankingCriterion{
 			{ID: config.RankingResolution, Name: "Resolution", Enabled: true, Order: 0},
@@ -257,18 +254,47 @@ func TestSortResultsByScore_YearMatchSupersedesCriteria(t *testing.T) {
 	confirmedYear := models.NZBResult{
 		Title:      "Wacky Races 1968 S01 DVDRip",
 		SizeBytes:  2 * 1024 * 1024 * 1024,
-		Attributes: map[string]string{"yearMatch": "true", "yearPriority": "true"},
+		Attributes: map[string]string{"yearMatch": "true"},
 	}
 	noParsedYear := models.NZBResult{
 		Title:      "Wacky Races Complete TV Series 2160p REMASTERED",
 		SizeBytes:  100 * 1024 * 1024 * 1024,
-		Attributes: map[string]string{"yearMatch": "false", "yearPriority": "false"},
+		Attributes: map[string]string{},
 	}
 
 	results := []models.NZBResult{noParsedYear, confirmedYear}
 	(&Service{}).sortResultsByScore(results, ctx)
-	if results[0].Title != confirmedYear.Title {
-		t.Fatalf("expected confirmed year result to rank first, got %q", results[0].Title)
+	if results[0].Title != noParsedYear.Title {
+		t.Fatalf("expected configured quality criteria to outrank year presence, got %q", results[0].Title)
+	}
+}
+
+func TestSortResultsByScore_UsesEffectivePackItemSize(t *testing.T) {
+	ctx := ScoringContext{
+		RankingCriteria: []config.RankingCriterion{
+			{ID: config.RankingSize, Name: "Size", Enabled: true, Order: 0},
+		},
+	}
+
+	pack := models.NZBResult{
+		Title:        "Show S01 1080p WEB-DL",
+		SizeBytes:    90 * 1024 * 1024 * 1024,
+		EpisodeCount: 9,
+	}
+	single := models.NZBResult{
+		Title:     "Show S01E01 1080p WEB-DL",
+		SizeBytes: 12 * 1024 * 1024 * 1024,
+	}
+
+	results := []models.NZBResult{pack, single}
+	(&Service{}).sortResultsByScore(results, ctx)
+	if results[0].Title != single.Title {
+		t.Fatalf("expected 12 GB episode to outrank pack estimated at 10 GB/item, got %q", results[0].Title)
+	}
+
+	_, breakdown := ScoreResult(pack, ctx)
+	if len(breakdown) != 1 || !strings.Contains(breakdown[0].Reason, "10.0 GB per item") {
+		t.Fatalf("expected per-item size breakdown, got %+v", breakdown)
 	}
 }
 
@@ -283,12 +309,12 @@ func TestSortResultsByScore_YearMatchAloneDoesNotSupersedeCriteria(t *testing.T)
 	looseYearMatch := models.NZBResult{
 		Title:      "Wacky Races Forever 1968 S01 DVDRip",
 		SizeBytes:  2 * 1024 * 1024 * 1024,
-		Attributes: map[string]string{"yearMatch": "true", "yearPriority": "false"},
+		Attributes: map[string]string{"yearMatch": "true"},
 	}
 	strongNoParsedYear := models.NZBResult{
 		Title:      "Wacky Races Complete TV Series 2160p REMASTERED",
 		SizeBytes:  100 * 1024 * 1024 * 1024,
-		Attributes: map[string]string{"yearMatch": "false", "yearPriority": "false"},
+		Attributes: map[string]string{},
 	}
 
 	results := []models.NZBResult{looseYearMatch, strongNoParsedYear}
@@ -324,7 +350,7 @@ func TestScoreResult_BoundedScore(t *testing.T) {
 		SizeBytes:   120 * 1024 * 1024 * 1024,
 		ServiceType: models.ServiceTypeUsenet,
 		Indexer:     "zilean",
-		Attributes:  map[string]string{"languages": "eng", "yearMatch": "true", "yearPriority": "true"},
+		Attributes:  map[string]string{"languages": "eng", "yearMatch": "true"},
 	}
 
 	score, _ := ScoreResult(result, ctx)
