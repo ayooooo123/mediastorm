@@ -1,0 +1,676 @@
+package remotemedia
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+
+	"novastream/config"
+	"novastream/internal/datastore"
+	"novastream/models"
+	"novastream/services/jellyfin"
+	"novastream/services/plex"
+	"novastream/services/streaming"
+)
+
+var ErrNotFound = errors.New("remote media not found")
+
+type AvailableLibrary struct {
+	ID         string                       `json:"id"`
+	Name       string                       `json:"name"`
+	Type       models.LocalMediaLibraryType `json:"type"`
+	ServerID   string                       `json:"serverId,omitempty"`
+	ServerName string                       `json:"serverName,omitempty"`
+}
+
+type Service struct {
+	repo     datastore.RemoteMediaRepository
+	cfg      *config.Manager
+	plex     *plex.Client
+	jellyfin *jellyfin.Client
+}
+
+func NewService(store *datastore.DataStore, cfg *config.Manager, plexClient *plex.Client, jellyfinClient *jellyfin.Client) (*Service, error) {
+	if store == nil || cfg == nil {
+		return nil, errors.New("remote media datastore and config are required")
+	}
+	return &Service{repo: store.RemoteMedia(), cfg: cfg, plex: plexClient, jellyfin: jellyfinClient}, nil
+}
+
+func (s *Service) ListLibraries(ctx context.Context) ([]models.RemoteMediaLibrary, error) {
+	return s.repo.ListLibraries(ctx)
+}
+func (s *Service) GetLibrary(ctx context.Context, id string) (*models.RemoteMediaLibrary, error) {
+	return s.repo.GetLibrary(ctx, id)
+}
+func (s *Service) GetItem(ctx context.Context, id string) (*models.RemoteMediaItem, error) {
+	return s.repo.GetItem(ctx, id)
+}
+
+func (s *Service) Discover(ctx context.Context, provider, accountID string) ([]AvailableLibrary, error) {
+	settings, err := s.cfg.Load()
+	if err != nil {
+		return nil, err
+	}
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case models.MediaSourceJellyfin:
+		account := settings.Jellyfin.GetAccountByID(accountID)
+		if account == nil || account.Token == "" {
+			return nil, errors.New("Jellyfin account not connected")
+		}
+		libraries, err := s.jellyfin.GetLibraries(account.ServerURL, account.Token, account.UserID)
+		if err != nil {
+			return nil, err
+		}
+		result := make([]AvailableLibrary, 0, len(libraries))
+		for _, library := range libraries {
+			t := models.LocalMediaLibraryTypeMovie
+			if strings.EqualFold(library.CollectionType, "tvshows") {
+				t = models.LocalMediaLibraryTypeShow
+			}
+			result = append(result, AvailableLibrary{ID: library.ID, Name: library.Name, Type: t, ServerName: account.Name})
+		}
+		return result, nil
+	case models.MediaSourcePlex:
+		account := settings.Plex.GetAccountByID(accountID)
+		if account == nil || account.AuthToken == "" {
+			return nil, errors.New("Plex account not connected")
+		}
+		servers, err := s.plex.GetAccessibleServers(account.AuthToken)
+		if err != nil {
+			return nil, err
+		}
+		result := []AvailableLibrary{}
+		for _, server := range servers {
+			libraries, err := s.plex.GetServerLibraries(server)
+			if err != nil {
+				continue
+			}
+			for _, library := range libraries {
+				t := models.LocalMediaLibraryTypeMovie
+				if library.Type == "show" {
+					t = models.LocalMediaLibraryTypeShow
+				}
+				result = append(result, AvailableLibrary{ID: library.Key, Name: library.Title, Type: t, ServerID: server.ClientIdentifier, ServerName: server.Name})
+			}
+		}
+		return result, nil
+	default:
+		return nil, errors.New("provider must be plex or jellyfin")
+	}
+}
+
+func (s *Service) CreateLibrary(ctx context.Context, input models.RemoteMediaLibraryCreateInput) (*models.RemoteMediaLibrary, error) {
+	provider := strings.ToLower(strings.TrimSpace(input.Provider))
+	if provider != models.MediaSourcePlex && provider != models.MediaSourceJellyfin {
+		return nil, errors.New("invalid remote provider")
+	}
+	if input.AccountID == "" || input.ExternalLibraryID == "" {
+		return nil, errors.New("accountId and externalLibraryId are required")
+	}
+	existing, err := s.repo.ListLibraries(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range existing {
+		library := &existing[i]
+		if library.Provider == provider && library.AccountID == input.AccountID && library.ServerID == input.ServerID && library.ExternalLibraryID == input.ExternalLibraryID {
+			if name := strings.TrimSpace(input.Name); name != "" && name != library.Name {
+				library.Name = name
+				library.UpdatedAt = time.Now().UTC()
+				if err := s.repo.UpdateLibrary(ctx, library); err != nil {
+					return nil, err
+				}
+			}
+			if _, err := s.Sync(ctx, library.ID); err != nil {
+				return s.repo.GetLibrary(ctx, library.ID)
+			}
+			return s.repo.GetLibrary(ctx, library.ID)
+		}
+	}
+	now := time.Now().UTC()
+	library := &models.RemoteMediaLibrary{ID: uuid.NewString(), Name: strings.TrimSpace(input.Name), Type: input.Type,
+		Provider: provider, AccountID: input.AccountID, ServerID: input.ServerID, ServerName: input.ServerName,
+		ExternalLibraryID: input.ExternalLibraryID, CreatedAt: now, UpdatedAt: now, LastSyncStatus: models.LocalMediaScanStatusIdle}
+	if library.Name == "" {
+		library.Name = "Remote Library"
+	}
+	if library.Type == "" {
+		library.Type = models.LocalMediaLibraryTypeMovie
+	}
+	if err := s.repo.CreateLibrary(ctx, library); err != nil {
+		return nil, err
+	}
+	if _, err := s.Sync(ctx, library.ID); err != nil {
+		// Keep the configuration and its failed status so the admin page can show
+		// the provider error and offer Sync retry without requiring re-entry.
+		return s.repo.GetLibrary(ctx, library.ID)
+	}
+	return s.repo.GetLibrary(ctx, library.ID)
+}
+
+func (s *Service) DeleteLibrary(ctx context.Context, id string) error {
+	return s.repo.DeleteLibrary(ctx, id)
+}
+
+func (s *Service) Sync(ctx context.Context, id string) (int, error) {
+	library, err := s.repo.GetLibrary(ctx, id)
+	if err != nil || library == nil {
+		if err == nil {
+			err = ErrNotFound
+		}
+		return 0, err
+	}
+	now := time.Now().UTC()
+	library.LastSyncStartedAt = &now
+	library.LastSyncStatus = models.LocalMediaScanStatusScanning
+	library.LastSyncError = ""
+	library.UpdatedAt = now
+	if err := s.repo.UpdateLibrary(ctx, library); err != nil {
+		return 0, err
+	}
+	items, syncErr := s.fetch(ctx, library)
+	if syncErr == nil {
+		syncID := uuid.NewString()
+		for i := range items {
+			items[i].LastSeenSyncID = syncID
+			items[i].LibraryID = library.ID
+			if err := s.repo.UpsertItem(ctx, &items[i]); err != nil {
+				syncErr = err
+				break
+			}
+		}
+		if syncErr == nil {
+			syncErr = s.repo.MarkItemsMissingNotSeenInSync(ctx, library.ID, syncID)
+		}
+	}
+	finished := time.Now().UTC()
+	library.LastSyncFinishedAt = &finished
+	library.UpdatedAt = finished
+	if syncErr != nil {
+		library.LastSyncStatus = models.LocalMediaScanStatusFailed
+		library.LastSyncError = syncErr.Error()
+	} else {
+		library.LastSyncStatus = models.LocalMediaScanStatusComplete
+		library.LastSyncTotal = len(items)
+	}
+	_ = s.repo.UpdateLibrary(ctx, library)
+	return len(items), syncErr
+}
+
+func (s *Service) fetch(ctx context.Context, library *models.RemoteMediaLibrary) ([]models.RemoteMediaItem, error) {
+	settings, err := s.cfg.Load()
+	if err != nil {
+		return nil, err
+	}
+	if library.Provider == models.MediaSourceJellyfin {
+		account := settings.Jellyfin.GetAccountByID(library.AccountID)
+		if account == nil {
+			return nil, errors.New("Jellyfin account missing")
+		}
+		collectionType := "movies"
+		if library.Type == models.LocalMediaLibraryTypeShow {
+			collectionType = "tvshows"
+		}
+		items, err := s.jellyfin.GetLibraryItems(account.ServerURL, account.Token, account.UserID, library.ExternalLibraryID, collectionType)
+		if err != nil {
+			return nil, err
+		}
+		return normalizeJellyfin(library, items), nil
+	}
+	account := settings.Plex.GetAccountByID(library.AccountID)
+	if account == nil {
+		return nil, errors.New("Plex account missing")
+	}
+	servers, err := s.plex.GetAccessibleServers(account.AuthToken)
+	if err != nil {
+		return nil, err
+	}
+	for _, server := range servers {
+		if server.ClientIdentifier == library.ServerID {
+			items, err := s.plex.GetServerLibraryItems(server, library.ExternalLibraryID, string(library.Type))
+			if err != nil {
+				return nil, err
+			}
+			return normalizePlex(library, items), nil
+		}
+	}
+	return nil, errors.New("Plex server unavailable")
+}
+
+func normalizeJellyfin(library *models.RemoteMediaLibrary, source []jellyfin.JellyfinItem) []models.RemoteMediaItem {
+	now := time.Now().UTC()
+	result := []models.RemoteMediaItem{}
+	for _, item := range source {
+		groupKey := item.ID
+		title := item.Name
+		episodeTitle := ""
+		if item.Type == "Episode" {
+			groupKey = item.SeriesID
+			title = item.SeriesName
+			episodeTitle = item.Name
+		}
+		exts := &models.LocalMediaExternalIDs{IMDB: item.ProviderIDs["imdb"], TMDB: item.ProviderIDs["tmdb"], TVDB: item.ProviderIDs["tvdb"]}
+		sources := item.MediaSources
+		if len(sources) == 0 {
+			sources = []jellyfin.JellyfinMediaSource{{ID: item.ID, Name: item.Name}}
+		}
+		for _, media := range sources {
+			v := models.RemoteMediaItem{ID: stableItemID(library.ID, item.ID, media.ID), ExternalItemID: item.ID, ExternalMediaID: media.ID, GroupKey: groupKey,
+				LibraryType: library.Type, Title: title, Year: item.Year, Overview: item.Overview, Certification: item.OfficialRating,
+				SeasonNumber: item.SeasonNum, EpisodeNumber: item.EpisodeNum, EpisodeTitle: episodeTitle, ExternalIDs: exts,
+				FileName: filepath.Base(media.Path), Container: media.Container, SizeBytes: media.Size, CreatedAt: now, UpdatedAt: now,
+				ProviderData: map[string]string{"itemId": item.ID, "mediaSourceId": media.ID}}
+			for _, stream := range media.MediaStreams {
+				if stream.Type == "Video" {
+					v.VideoCodec = stream.Codec
+					v.Width = stream.Width
+					v.Height = stream.Height
+					v.HDRFormat = stream.VideoRange
+				}
+				if stream.Type == "Audio" && v.AudioCodec == "" {
+					v.AudioCodec = stream.Codec
+				}
+			}
+			v.VersionLabel = versionLabel(v.Height, v.VideoCodec, v.HDRFormat, media.Name)
+			v.StreamPath = "jellyfinmedia:" + v.ID
+			result = append(result, v)
+		}
+	}
+	return result
+}
+
+func normalizePlex(library *models.RemoteMediaLibrary, source []plex.PlexLibraryItem) []models.RemoteMediaItem {
+	now := time.Now().UTC()
+	result := []models.RemoteMediaItem{}
+	for _, item := range source {
+		groupKey := item.RatingKey
+		title := item.Title
+		episodeTitle := ""
+		posterPath := item.Thumb
+		backdropPath := item.Art
+		if item.Type == "episode" {
+			groupKey = item.GrandparentRatingKey
+			title = item.GrandparentTitle
+			episodeTitle = item.Title
+			posterPath = item.GrandparentThumb
+			backdropPath = item.GrandparentArt
+		}
+		exts := plexExternalIDs(item.Guid)
+		for _, media := range item.Media {
+			for _, part := range media.Part {
+				externalMediaID := strconv.FormatInt(part.ID, 10)
+				v := models.RemoteMediaItem{ID: stableItemID(library.ID, item.RatingKey, externalMediaID), ExternalItemID: item.RatingKey, ExternalMediaID: externalMediaID, GroupKey: groupKey,
+					LibraryType: library.Type, Title: title, Year: item.Year, Overview: item.Summary, Certification: item.ContentRating,
+					SeasonNumber: item.ParentIndex, EpisodeNumber: item.Index, EpisodeTitle: episodeTitle, ExternalIDs: exts,
+					FileName: filepath.Base(part.File), Container: part.Container, VideoCodec: media.VideoCodec, AudioCodec: media.AudioCodec,
+					Width: media.Width, Height: media.Height, HDRFormat: media.VideoDynamicRange, SizeBytes: part.Size, CreatedAt: now, UpdatedAt: now,
+					ProviderData: map[string]string{"partKey": part.Key, "posterPath": posterPath, "backdropPath": backdropPath}}
+				v.VersionLabel = versionLabel(v.Height, v.VideoCodec, v.HDRFormat, media.VideoResolution)
+				v.StreamPath = "plexmedia:" + v.ID
+				result = append(result, v)
+			}
+		}
+	}
+	return result
+}
+
+func plexExternalIDs(guids []plex.PlexGuid) *models.LocalMediaExternalIDs {
+	v := &models.LocalMediaExternalIDs{}
+	for _, guid := range guids {
+		parts := strings.SplitN(guid.ID, "://", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		switch strings.ToLower(parts[0]) {
+		case "imdb":
+			v.IMDB = parts[1]
+		case "tmdb":
+			v.TMDB = parts[1]
+		case "tvdb":
+			v.TVDB = parts[1]
+		}
+	}
+	return v
+}
+
+func versionLabel(height int, codec, hdr, fallback string) string {
+	bits := []string{}
+	if height > 0 {
+		bits = append(bits, fmt.Sprintf("%dp", height))
+	}
+	if codec != "" {
+		bits = append(bits, strings.ToUpper(codec))
+	}
+	if hdr != "" && !strings.EqualFold(hdr, "SDR") {
+		bits = append(bits, strings.ToUpper(hdr))
+	}
+	if len(bits) == 0 {
+		bits = append(bits, strings.TrimSpace(fallback))
+	}
+	return strings.Join(bits, " · ")
+}
+
+func stableItemID(libraryID, externalItemID, externalMediaID string) string {
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(libraryID+"\x00"+externalItemID+"\x00"+externalMediaID)).String()
+}
+
+func (s *Service) ListGroups(ctx context.Context, libraryID string, query models.LocalMediaItemListQuery) (*models.LocalMediaGroupListResult, error) {
+	library, err := s.repo.GetLibrary(ctx, libraryID)
+	if err != nil || library == nil {
+		return nil, ErrNotFound
+	}
+	items, err := s.repo.ListItems(ctx, libraryID, query.IncludeMissing)
+	if err != nil {
+		return nil, err
+	}
+	groups := groupItems(library, items, query.IncludeCards)
+	if filter := strings.TrimSpace(query.Filter); filter != "" && filter != "all" && filter != string(models.LocalMediaMatchStatusMatched) && filter != string(models.LocalMediaMatchStatusManual) {
+		groups = []models.LocalMediaItemGroup{}
+	}
+	if q := strings.ToLower(strings.TrimSpace(query.Query)); q != "" {
+		filtered := groups[:0]
+		for _, g := range groups {
+			if strings.Contains(strings.ToLower(g.Title), q) {
+				filtered = append(filtered, g)
+			}
+		}
+		groups = filtered
+	}
+	sort.SliceStable(groups, func(i, j int) bool { return strings.ToLower(groups[i].Title) < strings.ToLower(groups[j].Title) })
+	total := len(groups)
+	limit := query.Limit
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	offset := query.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	if offset > total {
+		offset = total
+	}
+	return &models.LocalMediaGroupListResult{Groups: groups[offset:end], Total: total, Limit: limit, Offset: offset}, nil
+}
+
+func groupItems(library *models.RemoteMediaLibrary, items []models.RemoteMediaItem, cards bool) []models.LocalMediaItemGroup {
+	byKey := map[string]*models.LocalMediaItemGroup{}
+	order := []string{}
+	for _, item := range items {
+		g := byKey[item.GroupKey]
+		if g == nil {
+			g = &models.LocalMediaItemGroup{ID: item.GroupKey, GroupType: "title", LibraryType: item.LibraryType, Title: item.Title, Overview: item.Overview, Certification: item.Certification, Year: item.Year, MatchStatus: models.LocalMediaMatchStatusMatched, Poster: &models.Image{URL: "/api/library/items/" + item.ID + "/artwork/poster", Type: "poster"}, Backdrop: &models.Image{URL: "/api/library/items/" + item.ID + "/artwork/backdrop", Type: "backdrop"}}
+			if item.LibraryType == models.LocalMediaLibraryTypeShow {
+				g.GroupType = "show"
+			}
+			applyExternalIDs(g, item.ExternalIDs)
+			byKey[item.GroupKey] = g
+			order = append(order, item.GroupKey)
+		}
+		g.ItemCount++
+		g.TotalSizeBytes += item.SizeBytes
+		if cards {
+			continue
+		}
+		converted := toLocalItem(library, item)
+		if item.LibraryType == models.LocalMediaLibraryTypeMovie {
+			g.Items = append(g.Items, converted)
+			continue
+		}
+		seasonIndex := -1
+		for i := range g.Seasons {
+			if g.Seasons[i].SeasonNumber == item.SeasonNumber {
+				seasonIndex = i
+				break
+			}
+		}
+		if seasonIndex < 0 {
+			g.Seasons = append(g.Seasons, models.LocalMediaSeasonGroup{ID: fmt.Sprintf("%s:s%d", item.GroupKey, item.SeasonNumber), SeasonNumber: item.SeasonNumber, MatchStatus: models.LocalMediaMatchStatusMatched})
+			seasonIndex = len(g.Seasons) - 1
+		}
+		season := &g.Seasons[seasonIndex]
+		season.ItemCount++
+		episodeIndex := -1
+		for i := range season.Episodes {
+			if season.Episodes[i].EpisodeNumber == item.EpisodeNumber {
+				episodeIndex = i
+				break
+			}
+		}
+		if episodeIndex < 0 {
+			season.Episodes = append(season.Episodes, models.LocalMediaEpisodeGroup{ID: fmt.Sprintf("%s:s%de%d", item.GroupKey, item.SeasonNumber, item.EpisodeNumber), EpisodeNumber: item.EpisodeNumber, EpisodeTitle: item.EpisodeTitle, MatchStatus: models.LocalMediaMatchStatusMatched})
+			episodeIndex = len(season.Episodes) - 1
+		}
+		ep := &season.Episodes[episodeIndex]
+		ep.Items = append(ep.Items, converted)
+		ep.ItemCount++
+	}
+	result := make([]models.LocalMediaItemGroup, 0, len(order))
+	for _, key := range order {
+		result = append(result, *byKey[key])
+	}
+	return result
+}
+
+func applyExternalIDs(g *models.LocalMediaItemGroup, ids *models.LocalMediaExternalIDs) {
+	if ids == nil {
+		return
+	}
+	g.IMDBID = ids.IMDB
+	g.TMDBID, _ = strconv.ParseInt(ids.TMDB, 10, 64)
+	g.TVDBID, _ = strconv.ParseInt(ids.TVDB, 10, 64)
+}
+func toLocalItem(library *models.RemoteMediaLibrary, item models.RemoteMediaItem) models.LocalMediaItem {
+	return models.LocalMediaItem{ID: item.ID, LibraryID: item.LibraryID, FileName: item.FileName, LibraryType: item.LibraryType, DetectedTitle: item.Title, DetectedYear: item.Year, SeasonNumber: item.SeasonNumber, EpisodeNumber: item.EpisodeNumber, MatchStatus: models.LocalMediaMatchStatusMatched, MatchedName: item.Title, MatchedYear: item.Year, ExternalIDs: item.ExternalIDs, EpisodeTitle: item.EpisodeTitle, SizeBytes: item.SizeBytes, Probe: &models.LocalMediaProbe{SizeBytes: item.SizeBytes, VideoCodec: item.VideoCodec, Width: item.Width, Height: item.Height, HDRFormat: item.HDRFormat, AudioCodecs: []string{item.AudioCodec}}, SourceType: library.Provider, SourceName: strings.Title(library.Provider), SourceServerName: library.ServerName, VersionLabel: item.VersionLabel}
+}
+
+func (s *Service) FindMatches(ctx context.Context, query models.LocalMediaMatchQuery) ([]models.LocalMediaMatchedGroup, error) {
+	libraries, err := s.repo.ListLibraries(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := []models.LocalMediaMatchedGroup{}
+	for _, library := range libraries {
+		groups, err := s.ListGroups(ctx, library.ID, models.LocalMediaItemListQuery{Limit: 200, Query: query.Title})
+		if err != nil {
+			continue
+		}
+		for _, g := range groups.Groups {
+			if matches(g, query) {
+				result = append(result, models.LocalMediaMatchedGroup{LibraryID: library.ID, LibraryName: library.Name, LibraryType: library.Type, Group: g})
+			}
+		}
+	}
+	return result, nil
+}
+func matches(g models.LocalMediaItemGroup, q models.LocalMediaMatchQuery) bool {
+	if q.IMDBID != "" && g.IMDBID == q.IMDBID {
+		return true
+	}
+	if q.TMDBID != "" && strconv.FormatInt(g.TMDBID, 10) == q.TMDBID {
+		return true
+	}
+	if q.TVDBID != "" && strconv.FormatInt(g.TVDBID, 10) == q.TVDBID {
+		return true
+	}
+	return q.Title != "" && strings.EqualFold(strings.TrimSpace(g.Title), strings.TrimSpace(q.Title)) && (q.Year == 0 || g.Year == 0 || q.Year == g.Year)
+}
+
+func (s *Service) Playback(ctx context.Context, itemID string) (*models.LocalMediaPlaybackResponse, error) {
+	item, err := s.repo.GetItem(ctx, itemID)
+	if err != nil || item == nil {
+		return nil, ErrNotFound
+	}
+	library, err := s.repo.GetLibrary(ctx, item.LibraryID)
+	if err != nil || library == nil {
+		return nil, ErrNotFound
+	}
+	mediaType := "movie"
+	if item.LibraryType == models.LocalMediaLibraryTypeShow {
+		mediaType = "episode"
+	}
+	values := url.Values{"path": {item.StreamPath}, "transmux": {"0"}, "mediaType": {mediaType}, "itemId": {item.ID}}
+	seriesTitle := ""
+	if mediaType == "episode" {
+		seriesTitle = item.Title
+	}
+	return &models.LocalMediaPlaybackResponse{ItemID: item.ID, FileName: item.FileName, DisplayName: item.Title, TitleID: item.GroupKey, Title: item.Title, SeriesTitle: seriesTitle, EpisodeTitle: item.EpisodeTitle, Year: item.Year, ExternalIDs: externalMap(item.ExternalIDs), StreamPath: item.StreamPath, StreamURL: "/api/video/stream?" + values.Encode(), DirectStream: true, SourceType: library.Provider, SourceName: strings.Title(library.Provider)}, nil
+}
+func externalMap(ids *models.LocalMediaExternalIDs) map[string]string {
+	m := map[string]string{}
+	if ids != nil {
+		if ids.IMDB != "" {
+			m["imdb"] = ids.IMDB
+		}
+		if ids.TMDB != "" {
+			m["tmdb"] = ids.TMDB
+		}
+		if ids.TVDB != "" {
+			m["tvdb"] = ids.TVDB
+		}
+	}
+	return m
+}
+
+type Provider struct{ service *Service }
+
+func NewProvider(service *Service) *Provider { return &Provider{service: service} }
+func (p *Provider) Stream(ctx context.Context, req streaming.Request) (*streaming.Response, error) {
+	prefix := ""
+	provider := ""
+	if strings.HasPrefix(req.Path, "plexmedia:") {
+		prefix = "plexmedia:"
+		provider = models.MediaSourcePlex
+	} else if strings.HasPrefix(req.Path, "jellyfinmedia:") {
+		prefix = "jellyfinmedia:"
+		provider = models.MediaSourceJellyfin
+	} else {
+		return nil, streaming.ErrNotFound
+	}
+	id := strings.TrimSpace(strings.TrimPrefix(req.Path, prefix))
+	if slash := strings.IndexByte(id, '/'); slash >= 0 {
+		id = id[:slash]
+	}
+	item, err := p.service.repo.GetItem(ctx, id)
+	if err != nil || item == nil {
+		return nil, streaming.ErrNotFound
+	}
+	library, err := p.service.repo.GetLibrary(ctx, item.LibraryID)
+	if err != nil || library == nil || library.Provider != provider {
+		return nil, streaming.ErrNotFound
+	}
+	resp, err := p.service.openStream(ctx, library, item, req.Method, req.RangeHeader)
+	if err != nil {
+		return nil, err
+	}
+	headers := make(http.Header)
+	for _, key := range []string{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "Content-Disposition"} {
+		if value := resp.Header.Get(key); value != "" {
+			headers.Set(key, value)
+		}
+	}
+	length, _ := strconv.ParseInt(resp.Header.Get("Content-Length"), 10, 64)
+	return &streaming.Response{Body: resp.Body, Headers: headers, Status: resp.StatusCode, ContentLength: length, Filename: item.FileName}, nil
+}
+func (s *Service) openStream(ctx context.Context, library *models.RemoteMediaLibrary, item *models.RemoteMediaItem, method, rangeHeader string) (*http.Response, error) {
+	settings, err := s.cfg.Load()
+	if err != nil {
+		return nil, err
+	}
+	if method == "" {
+		method = http.MethodGet
+	}
+	if library.Provider == models.MediaSourceJellyfin {
+		account := settings.Jellyfin.GetAccountByID(library.AccountID)
+		if account == nil {
+			return nil, ErrNotFound
+		}
+		return s.jellyfin.OpenStream(ctx, account.ServerURL, account.Token, item.ExternalItemID, item.ExternalMediaID, method, rangeHeader)
+	}
+	account := settings.Plex.GetAccountByID(library.AccountID)
+	if account == nil {
+		return nil, ErrNotFound
+	}
+	servers, err := s.plex.GetAccessibleServers(account.AuthToken)
+	if err != nil {
+		return nil, err
+	}
+	for _, server := range servers {
+		if server.ClientIdentifier == library.ServerID {
+			return s.plex.OpenServerPath(ctx, server, item.ProviderData["partKey"], method, rangeHeader)
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (s *Service) OpenArtwork(ctx context.Context, itemID, kind string) (*http.Response, error) {
+	item, err := s.repo.GetItem(ctx, itemID)
+	if err != nil || item == nil {
+		return nil, ErrNotFound
+	}
+	library, err := s.repo.GetLibrary(ctx, item.LibraryID)
+	if err != nil || library == nil {
+		return nil, ErrNotFound
+	}
+	settings, err := s.cfg.Load()
+	if err != nil {
+		return nil, err
+	}
+	if library.Provider == models.MediaSourceJellyfin {
+		account := settings.Jellyfin.GetAccountByID(library.AccountID)
+		if account == nil {
+			return nil, ErrNotFound
+		}
+		target := item.ExternalItemID
+		if item.LibraryType == models.LocalMediaLibraryTypeShow && item.GroupKey != "" {
+			target = item.GroupKey
+		}
+		imageKind := "Primary"
+		if kind == "backdrop" {
+			imageKind = "Backdrop"
+		}
+		return s.jellyfin.OpenImage(ctx, account.ServerURL, account.Token, target, imageKind)
+	}
+	account := settings.Plex.GetAccountByID(library.AccountID)
+	if account == nil {
+		return nil, ErrNotFound
+	}
+	path := item.ProviderData["posterPath"]
+	if kind == "backdrop" {
+		path = item.ProviderData["backdropPath"]
+	}
+	servers, err := s.plex.GetAccessibleServers(account.AuthToken)
+	if err != nil {
+		return nil, err
+	}
+	for _, server := range servers {
+		if server.ClientIdentifier == library.ServerID {
+			return s.plex.OpenServerPath(ctx, server, path, http.MethodGet, "")
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func CopyArtwork(w http.ResponseWriter, resp *http.Response) {
+	defer resp.Body.Close()
+	if ct := resp.Header.Get("Content-Type"); ct != "" {
+		w.Header().Set("Content-Type", ct)
+	}
+	w.Header().Set("Cache-Control", "private, max-age=3600")
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
+}

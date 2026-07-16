@@ -246,6 +246,18 @@ type LocalMediaRepository interface {
 	DeleteItem(ctx context.Context, id string) error
 }
 
+type RemoteMediaRepository interface {
+	ListLibraries(ctx context.Context) ([]models.RemoteMediaLibrary, error)
+	GetLibrary(ctx context.Context, id string) (*models.RemoteMediaLibrary, error)
+	CreateLibrary(ctx context.Context, library *models.RemoteMediaLibrary) error
+	UpdateLibrary(ctx context.Context, library *models.RemoteMediaLibrary) error
+	DeleteLibrary(ctx context.Context, id string) error
+	ListItems(ctx context.Context, libraryID string, includeMissing bool) ([]models.RemoteMediaItem, error)
+	GetItem(ctx context.Context, id string) (*models.RemoteMediaItem, error)
+	UpsertItem(ctx context.Context, item *models.RemoteMediaItem) error
+	MarkItemsMissingNotSeenInSync(ctx context.Context, libraryID, syncID string) error
+}
+
 type RecordingRepository interface {
 	Get(ctx context.Context, id string) (*models.Recording, error)
 	List(ctx context.Context, filter models.RecordingListFilter) ([]models.Recording, error)

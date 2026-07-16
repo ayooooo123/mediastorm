@@ -1,6 +1,7 @@
 package plex
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -24,8 +25,9 @@ const (
 
 // Client handles Plex API interactions for OAuth and watchlist fetching
 type Client struct {
-	httpClient *http.Client
-	clientID   string
+	httpClient   *http.Client
+	streamClient *http.Client
+	clientID     string
 }
 
 // PINResponse represents the response from creating/checking a PIN
@@ -74,8 +76,9 @@ type UserInfo struct {
 // NewClient creates a new Plex API client
 func NewClient(clientID string) *Client {
 	return &Client{
-		httpClient: apiusage.TrackClient(&http.Client{Timeout: 30 * time.Second}, "Plex", "API request"),
-		clientID:   clientID,
+		httpClient:   apiusage.TrackClient(&http.Client{Timeout: 30 * time.Second}, "Plex", "API request"),
+		streamClient: apiusage.TrackClient(&http.Client{}, "Plex", "Media stream"),
+		clientID:     clientID,
 	}
 }
 
@@ -768,6 +771,53 @@ type PlexConnection struct {
 	Relay    bool   `json:"relay"`
 }
 
+type PlexLibrary struct {
+	Key   string `json:"key"`
+	Title string `json:"title"`
+	Type  string `json:"type"`
+}
+
+type PlexGuid struct {
+	ID string `json:"id"`
+}
+type PlexPart struct {
+	ID        int64  `json:"id"`
+	Key       string `json:"key"`
+	File      string `json:"file"`
+	Container string `json:"container"`
+	Size      int64  `json:"size"`
+}
+type PlexMedia struct {
+	ID                int64      `json:"id"`
+	VideoCodec        string     `json:"videoCodec"`
+	AudioCodec        string     `json:"audioCodec"`
+	Container         string     `json:"container"`
+	Width             int        `json:"width"`
+	Height            int        `json:"height"`
+	VideoResolution   string     `json:"videoResolution"`
+	VideoDynamicRange string     `json:"videoDynamicRange"`
+	Part              []PlexPart `json:"Part"`
+}
+type PlexLibraryItem struct {
+	RatingKey            string      `json:"ratingKey"`
+	GrandparentRatingKey string      `json:"grandparentRatingKey,omitempty"`
+	Title                string      `json:"title"`
+	GrandparentTitle     string      `json:"grandparentTitle,omitempty"`
+	Type                 string      `json:"type"`
+	Year                 int         `json:"year,omitempty"`
+	Summary              string      `json:"summary,omitempty"`
+	ContentRating        string      `json:"contentRating,omitempty"`
+	Thumb                string      `json:"thumb,omitempty"`
+	Art                  string      `json:"art,omitempty"`
+	GrandparentThumb     string      `json:"grandparentThumb,omitempty"`
+	GrandparentArt       string      `json:"grandparentArt,omitempty"`
+	Index                int         `json:"index,omitempty"`
+	ParentIndex          int         `json:"parentIndex,omitempty"`
+	GUID                 string      `json:"guid,omitempty"`
+	Guid                 []PlexGuid  `json:"Guid,omitempty"`
+	Media                []PlexMedia `json:"Media,omitempty"`
+}
+
 // WatchHistoryItem represents an item from Plex watch history
 type WatchHistoryItem struct {
 	RatingKey            string `json:"ratingKey"`
@@ -839,6 +889,138 @@ func (c *Client) GetOwnedServers(authToken string) ([]PlexResource, error) {
 		}
 	}
 	return servers, nil
+}
+
+// GetAccessibleServers returns online Plex Media Servers visible to the token,
+// including shared servers. Library access is still enforced by Plex itself.
+func (c *Client) GetAccessibleServers(authToken string) ([]PlexResource, error) {
+	resources, err := c.GetResources(authToken)
+	if err != nil {
+		return nil, err
+	}
+	servers := []PlexResource{}
+	for _, resource := range resources {
+		if strings.Contains(resource.Provides, "server") && resource.Presence {
+			servers = append(servers, resource)
+		}
+	}
+	return servers, nil
+}
+
+func PreferredConnection(server PlexResource) (string, error) {
+	for _, want := range []struct {
+		local, relay bool
+		protocol     string
+	}{{true, false, "https"}, {true, false, "http"}, {false, false, "https"}, {false, false, "http"}, {false, true, "https"}} {
+		for _, conn := range server.Connections {
+			if conn.Local == want.local && conn.Relay == want.relay && conn.Protocol == want.protocol {
+				return strings.TrimRight(conn.URI, "/"), nil
+			}
+		}
+	}
+	if len(server.Connections) > 0 {
+		return strings.TrimRight(server.Connections[0].URI, "/"), nil
+	}
+	return "", fmt.Errorf("no available connection for server %s", server.Name)
+}
+
+func (c *Client) GetServerLibraries(server PlexResource) ([]PlexLibrary, error) {
+	base, err := PreferredConnection(server)
+	if err != nil {
+		return nil, err
+	}
+	var result struct {
+		MediaContainer struct {
+			Directory []PlexLibrary `json:"Directory"`
+		} `json:"MediaContainer"`
+	}
+	if err := c.serverJSON(context.Background(), server, base+"/library/sections", nil, &result); err != nil {
+		return nil, err
+	}
+	libraries := []PlexLibrary{}
+	for _, library := range result.MediaContainer.Directory {
+		if library.Type == "movie" || library.Type == "show" {
+			libraries = append(libraries, library)
+		}
+	}
+	return libraries, nil
+}
+
+func (c *Client) GetServerLibraryItems(server PlexResource, sectionID, libraryType string) ([]PlexLibraryItem, error) {
+	base, err := PreferredConnection(server)
+	if err != nil {
+		return nil, err
+	}
+	params := url.Values{"includeGuids": {"1"}}
+	if libraryType == "show" {
+		params.Set("type", "4")
+	}
+	start := 0
+	items := []PlexLibraryItem{}
+	for {
+		params.Set("X-Plex-Container-Start", strconv.Itoa(start))
+		params.Set("X-Plex-Container-Size", "500")
+		var page struct {
+			MediaContainer struct {
+				TotalSize int               `json:"totalSize"`
+				Size      int               `json:"size"`
+				Metadata  []PlexLibraryItem `json:"Metadata"`
+			} `json:"MediaContainer"`
+		}
+		endpoint := fmt.Sprintf("%s/library/sections/%s/all", base, url.PathEscape(sectionID))
+		if err := c.serverJSON(context.Background(), server, endpoint, params, &page); err != nil {
+			return nil, err
+		}
+		items = append(items, page.MediaContainer.Metadata...)
+		start += len(page.MediaContainer.Metadata)
+		if len(page.MediaContainer.Metadata) == 0 || (page.MediaContainer.TotalSize > 0 && start >= page.MediaContainer.TotalSize) || (page.MediaContainer.TotalSize == 0 && len(page.MediaContainer.Metadata) < 500) {
+			break
+		}
+	}
+	return items, nil
+}
+
+func (c *Client) OpenServerPath(ctx context.Context, server PlexResource, path, method, rangeHeader string) (*http.Response, error) {
+	base, err := PreferredConnection(server)
+	if err != nil {
+		return nil, err
+	}
+	endpoint := path
+	if !strings.HasPrefix(endpoint, "http") {
+		endpoint = base + "/" + strings.TrimLeft(path, "/")
+	}
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	c.setPlexHeaders(req)
+	req.Header.Set("X-Plex-Token", server.AccessToken)
+	if rangeHeader != "" {
+		req.Header.Set("Range", rangeHeader)
+	}
+	return c.streamClient.Do(req)
+}
+
+func (c *Client) serverJSON(ctx context.Context, server PlexResource, endpoint string, params url.Values, out interface{}) error {
+	if len(params) > 0 {
+		endpoint += "?" + params.Encode()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	c.setPlexHeaders(req)
+	req.Header.Set("X-Plex-Token", server.AccessToken)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("plex server failed: %s - %s", resp.Status, string(body))
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
 }
 
 // GetServerWatchHistory fetches watch history from a specific Plex server
