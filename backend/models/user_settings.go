@@ -356,6 +356,7 @@ type PlaybackSettings struct {
 	PreferredPlayer               string   `json:"preferredPlayer"`
 	PreferredAudioLanguage        string   `json:"preferredAudioLanguage,omitempty"`
 	PreferredSubtitleLanguage     string   `json:"preferredSubtitleLanguage,omitempty"`
+	AllowedTrackLanguages         []string `json:"allowedTrackLanguages,omitempty"`
 	PreferredSubtitleMode         string   `json:"preferredSubtitleMode,omitempty"`
 	PauseWhenAppInactive          bool     `json:"pauseWhenAppInactive,omitempty"`
 	UseLoadingScreen              bool     `json:"useLoadingScreen,omitempty"`

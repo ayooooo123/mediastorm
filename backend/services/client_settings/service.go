@@ -28,6 +28,26 @@ type Service struct {
 	settings map[string]models.ClientFilterSettings
 }
 
+func sanitizeAllowedTrackLanguages(settings *models.ClientFilterSettings) {
+	if settings.AllowedTrackLanguages == nil {
+		return
+	}
+	seen := make(map[string]struct{}, len(*settings.AllowedTrackLanguages))
+	cleaned := make([]string, 0, len(*settings.AllowedTrackLanguages))
+	for _, raw := range *settings.AllowedTrackLanguages {
+		code := strings.ToLower(strings.TrimSpace(strings.Trim(raw, "'\"")))
+		if code == "" {
+			continue
+		}
+		if _, ok := seen[code]; ok {
+			continue
+		}
+		seen[code] = struct{}{}
+		cleaned = append(cleaned, code)
+	}
+	settings.AllowedTrackLanguages = &cleaned
+}
+
 // useDB returns true when the service is backed by PostgreSQL.
 func (s *Service) useDB() bool { return s.store != nil }
 
@@ -89,6 +109,7 @@ func (s *Service) Update(clientID string, settings models.ClientFilterSettings) 
 	if clientID == "" {
 		return ErrClientIDRequired
 	}
+	sanitizeAllowedTrackLanguages(&settings)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -123,6 +144,7 @@ func (s *Service) UpdateBatch(settings map[string]models.ClientFilterSettings) e
 
 	cleaned := make(map[string]models.ClientFilterSettings, len(settings))
 	for k, v := range settings {
+		sanitizeAllowedTrackLanguages(&v)
 		if !v.IsEmpty() {
 			cleaned[k] = v
 		}
