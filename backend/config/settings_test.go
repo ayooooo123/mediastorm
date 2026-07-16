@@ -4,8 +4,17 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
+
+func TestPlaybackSettingsNormalizeAllowedTrackLanguages(t *testing.T) {
+	playback := PlaybackSettings{AllowedTrackLanguages: []string{" ENG ", "'fra'", "eng", ""}}
+	playback.NormalizeAllowedTrackLanguages()
+	if !reflect.DeepEqual(playback.AllowedTrackLanguages, []string{"eng", "fra"}) {
+		t.Fatalf("AllowedTrackLanguages = %#v, want eng/fra", playback.AllowedTrackLanguages)
+	}
+}
 
 func TestMigrateLibraryShelfConfigs(t *testing.T) {
 	shelves := []ShelfConfig{{ID: "local-library-library-123", Type: "local-library"}}

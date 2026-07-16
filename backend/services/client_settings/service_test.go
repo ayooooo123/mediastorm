@@ -1,10 +1,30 @@
 package client_settings
 
 import (
+	"reflect"
 	"testing"
 
 	"novastream/models"
 )
+
+func TestServiceSanitizesAllowedTrackLanguages(t *testing.T) {
+	dir := t.TempDir()
+	svc, err := NewService(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	languages := []string{" ENG ", "'fra'", "eng"}
+	if err := svc.Update("client-languages", models.ClientFilterSettings{AllowedTrackLanguages: &languages}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.Get("client-languages")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.AllowedTrackLanguages == nil || !reflect.DeepEqual(*got.AllowedTrackLanguages, []string{"eng", "fra"}) {
+		t.Fatalf("AllowedTrackLanguages = %#v, want eng/fra", got)
+	}
+}
 
 func TestClearAppearanceOverrides_RemovesOnlyAppearance(t *testing.T) {
 	dir := t.TempDir()

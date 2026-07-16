@@ -1454,7 +1454,7 @@
             description: 'Player, language, subtitle appearance, seek/rewind, transcoding, and playback behavior settings',
             detailSection: 'Playback',
             detailFields: [
-                'Audio Language', 'Subtitle Language', 'Subtitle Mode', 'Pause When App Inactive', 'Pause When Covered',
+                'Audio Language', 'Subtitle Language', 'Languages Shown in Player', 'Subtitle Mode', 'Pause When App Inactive', 'Pause When Covered',
                 'Dolby Vision Compatibility Check', 'Match Frame Rate', 'Credits Detection',
                 // Subtitle appearance + remaining playback fields (acknowledgement only; propagation stays opt-in)
                 'Preferred Player', 'Subtitle Size', 'Crop-Detect Subtitle Position', 'Subtitle Color', 'Subtitle Opacity',
@@ -1466,6 +1466,7 @@
             userPaths: [
                 'playback.preferredAudioLanguage',
                 'playback.preferredSubtitleLanguage',
+                'playback.allowedTrackLanguages',
                 'playback.preferredSubtitleMode',
                 'playback.pauseWhenAppInactive',
                 'playback.ignoreDolbyVisionCompatibilityCheck',
@@ -1498,6 +1499,7 @@
             clientPaths: [
                 'preferredAudioLanguage',
                 'preferredSubtitleLanguage',
+                'allowedTrackLanguages',
                 'preferredSubtitleMode',
                 'pauseWhenAppInactive',
                 'ignoreDolbyVisionCompatibilityCheck',
@@ -1870,6 +1872,7 @@
             playback: settings?.playback ? {
                 preferredAudioLanguage: settings.playback.preferredAudioLanguage,
                 preferredSubtitleLanguage: settings.playback.preferredSubtitleLanguage,
+                allowedTrackLanguages: settings.playback.allowedTrackLanguages,
                 preferredSubtitleMode: settings.playback.preferredSubtitleMode,
             } : undefined,
             metadata: settings?.metadata ? {
@@ -2447,6 +2450,7 @@
         'preferredPlayer',
         'preferredAudioLanguage',
         'preferredSubtitleLanguage',
+        'allowedTrackLanguages',
         'preferredSubtitleMode',
         'pauseWhenAppInactive',
         'useLoadingScreen',

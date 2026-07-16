@@ -3,11 +3,33 @@ package user_settings
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"novastream/models"
 )
+
+func TestUpdateSanitizesAllowedTrackLanguages(t *testing.T) {
+	dir := t.TempDir()
+	svc, err := NewService(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings := models.UserSettings{Playback: models.PlaybackSettings{
+		AllowedTrackLanguages: []string{" ENG ", "'fra'", "eng"},
+	}}
+	if err := svc.Update("language-user", settings); err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.Get("language-user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || !reflect.DeepEqual(got.Playback.AllowedTrackLanguages, []string{"eng", "fra"}) {
+		t.Fatalf("AllowedTrackLanguages = %#v, want eng/fra", got)
+	}
+}
 
 func TestSanitizeLanguageCode(t *testing.T) {
 	tests := []struct {

@@ -73,7 +73,27 @@ func sanitizeLanguageCode(code string) string {
 	code = strings.TrimSpace(code)
 	code = strings.Trim(code, "'\"")
 	code = strings.TrimSpace(code)
-	return code
+	return strings.ToLower(code)
+}
+
+func sanitizeLanguageCodes(codes []string) []string {
+	if len(codes) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(codes))
+	result := make([]string, 0, len(codes))
+	for _, raw := range codes {
+		code := sanitizeLanguageCode(raw)
+		if code == "" {
+			continue
+		}
+		if _, ok := seen[code]; ok {
+			continue
+		}
+		seen[code] = struct{}{}
+		result = append(result, code)
+	}
+	return result
 }
 
 func defaultPreferredAudioLanguage(code string) string {
@@ -159,6 +179,7 @@ func (s *Service) GetWithDefaults(userID string, defaults models.UserSettings) (
 		// Sanitize language codes (strip stray quotes/whitespace)
 		settings.Playback.PreferredAudioLanguage = sanitizeLanguageCode(settings.Playback.PreferredAudioLanguage)
 		settings.Playback.PreferredSubtitleLanguage = sanitizeLanguageCode(settings.Playback.PreferredSubtitleLanguage)
+		settings.Playback.AllowedTrackLanguages = sanitizeLanguageCodes(settings.Playback.AllowedTrackLanguages)
 		settings.Playback.PreferredSubtitleMode = strings.TrimSpace(strings.Trim(settings.Playback.PreferredSubtitleMode, "'\""))
 		settings.Metadata.PrimaryLanguage = sanitizeLanguageCode(settings.Metadata.PrimaryLanguage)
 
@@ -172,6 +193,9 @@ func (s *Service) GetWithDefaults(userID string, defaults models.UserSettings) (
 		}
 		if settings.Playback.PreferredSubtitleLanguage == "" {
 			settings.Playback.PreferredSubtitleLanguage = sanitizeLanguageCode(defaults.Playback.PreferredSubtitleLanguage)
+		}
+		if len(settings.Playback.AllowedTrackLanguages) == 0 {
+			settings.Playback.AllowedTrackLanguages = sanitizeLanguageCodes(defaults.Playback.AllowedTrackLanguages)
 		}
 		if settings.Playback.PreferredSubtitleMode == "" {
 			settings.Playback.PreferredSubtitleMode = defaults.Playback.PreferredSubtitleMode
@@ -510,6 +534,7 @@ func (s *Service) Update(userID string, settings models.UserSettings) error {
 	// Sanitize language codes on save to prevent stray quotes from persisting
 	settings.Playback.PreferredAudioLanguage = sanitizeLanguageCode(settings.Playback.PreferredAudioLanguage)
 	settings.Playback.PreferredSubtitleLanguage = sanitizeLanguageCode(settings.Playback.PreferredSubtitleLanguage)
+	settings.Playback.AllowedTrackLanguages = sanitizeLanguageCodes(settings.Playback.AllowedTrackLanguages)
 	settings.Playback.PreferredSubtitleMode = strings.TrimSpace(strings.Trim(settings.Playback.PreferredSubtitleMode, "'\""))
 	settings.Metadata.PrimaryLanguage = sanitizeLanguageCode(settings.Metadata.PrimaryLanguage)
 
@@ -538,6 +563,7 @@ func isSettingsEmpty(s models.UserSettings) bool {
 	if s.Playback.PreferredPlayer != "" ||
 		s.Playback.PreferredAudioLanguage != "" ||
 		s.Playback.PreferredSubtitleLanguage != "" ||
+		len(s.Playback.AllowedTrackLanguages) > 0 ||
 		s.Playback.PreferredSubtitleMode != "" ||
 		s.Playback.PauseWhenAppInactive ||
 		s.Playback.UseLoadingScreen ||

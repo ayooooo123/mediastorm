@@ -407,6 +407,7 @@ func (h *AccountUIHandler) GetUserSettings(w http.ResponseWriter, r *http.Reques
 			if globalSettings.Playback.PreferredSubtitleLanguage != "" {
 				defaults.Playback.PreferredSubtitleLanguage = globalSettings.Playback.PreferredSubtitleLanguage
 			}
+			defaults.Playback.AllowedTrackLanguages = append([]string(nil), globalSettings.Playback.AllowedTrackLanguages...)
 			if globalSettings.Playback.PreferredSubtitleMode != "" {
 				defaults.Playback.PreferredSubtitleMode = globalSettings.Playback.PreferredSubtitleMode
 			}

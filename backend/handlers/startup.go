@@ -1312,6 +1312,7 @@ func (h *StartupHandler) getDefaultsFromGlobal() models.UserSettings {
 			PreferredPlayer:               globalSettings.Playback.PreferredPlayer,
 			PreferredAudioLanguage:        globalSettings.Playback.PreferredAudioLanguage,
 			PreferredSubtitleLanguage:     globalSettings.Playback.PreferredSubtitleLanguage,
+			AllowedTrackLanguages:         append([]string(nil), globalSettings.Playback.AllowedTrackLanguages...),
 			PreferredSubtitleMode:         globalSettings.Playback.PreferredSubtitleMode,
 			PauseWhenAppInactive:          globalSettings.Playback.PauseWhenAppInactive,
 			UseLoadingScreen:              globalSettings.Playback.UseLoadingScreen,

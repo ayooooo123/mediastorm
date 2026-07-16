@@ -366,6 +366,7 @@ type PlaybackSettings struct {
 	PreferredPlayer               string                    `json:"preferredPlayer"`
 	PreferredAudioLanguage        string                    `json:"preferredAudioLanguage,omitempty"`
 	PreferredSubtitleLanguage     string                    `json:"preferredSubtitleLanguage,omitempty"`
+	AllowedTrackLanguages         []string                  `json:"allowedTrackLanguages,omitempty"`
 	PreferredSubtitleMode         string                    `json:"preferredSubtitleMode,omitempty"`
 	PauseWhenAppInactive          bool                      `json:"pauseWhenAppInactive"` // Pause playback when the app becomes inactive or backgrounded
 	UseLoadingScreen              bool                      `json:"useLoadingScreen,omitempty"`
@@ -403,6 +404,27 @@ type PlaybackSettings struct {
 type PlaybackThumbnailSettings struct {
 	Enabled bool `json:"enabled"`
 	Workers int  `json:"workers"`
+}
+
+func (p *PlaybackSettings) NormalizeAllowedTrackLanguages() {
+	seen := make(map[string]struct{}, len(p.AllowedTrackLanguages))
+	cleaned := make([]string, 0, len(p.AllowedTrackLanguages))
+	for _, raw := range p.AllowedTrackLanguages {
+		code := strings.ToLower(strings.TrimSpace(strings.Trim(raw, "'\"")))
+		if code == "" {
+			continue
+		}
+		if _, ok := seen[code]; ok {
+			continue
+		}
+		seen[code] = struct{}{}
+		cleaned = append(cleaned, code)
+	}
+	if len(cleaned) == 0 {
+		p.AllowedTrackLanguages = nil
+		return
+	}
+	p.AllowedTrackLanguages = cleaned
 }
 
 // LiveTVFilterSettings controls backend-side filtering for Live TV channels.
@@ -1947,6 +1969,7 @@ func (m *Manager) Load() (Settings, error) {
 	// Backfill defaults for newly introduced settings when config predates them
 	s.Metadata.NormalizeAISettings()
 	s.Metadata.NormalizeLanguages()
+	s.Playback.NormalizeAllowedTrackLanguages()
 
 	if !s.Transmux.Enabled && strings.TrimSpace(s.Transmux.FFmpegPath) == "" && strings.TrimSpace(s.Transmux.FFprobePath) == "" {
 		s.Transmux = TransmuxSettings{Enabled: true, FFmpegPath: "ffmpeg", FFprobePath: "ffprobe", HLSTempDirectory: "/tmp/novastream-hls"}
@@ -2401,6 +2424,7 @@ func (m *Manager) Save(s Settings) error {
 	}
 	s.Metadata.NormalizeAISettings()
 	s.Metadata.NormalizeLanguages()
+	s.Playback.NormalizeAllowedTrackLanguages()
 	s.UsenetEngines = normalizeEnabledUsenetEngines(s.UsenetEngines)
 	if s.Playback.Thumbnails.Workers < 1 {
 		s.Playback.Thumbnails.Workers = 1

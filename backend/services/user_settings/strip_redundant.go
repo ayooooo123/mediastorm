@@ -3,6 +3,7 @@ package user_settings
 import (
 	"log"
 	"reflect"
+	"slices"
 	"sort"
 
 	"novastream/config"
@@ -122,6 +123,7 @@ func globalToUserSettings(g config.Settings) models.UserSettings {
 			PreferredPlayer:               g.Playback.PreferredPlayer,
 			PreferredAudioLanguage:        g.Playback.PreferredAudioLanguage,
 			PreferredSubtitleLanguage:     g.Playback.PreferredSubtitleLanguage,
+			AllowedTrackLanguages:         append([]string(nil), g.Playback.AllowedTrackLanguages...),
 			PreferredSubtitleMode:         g.Playback.PreferredSubtitleMode,
 			PauseWhenAppInactive:          g.Playback.PauseWhenAppInactive,
 			UseLoadingScreen:              g.Playback.UseLoadingScreen,
@@ -319,6 +321,9 @@ func mergeWithGlobal(us models.UserSettings, g config.Settings) models.UserSetti
 	}
 	if eff.Playback.PreferredSubtitleLanguage == "" {
 		eff.Playback.PreferredSubtitleLanguage = g.Playback.PreferredSubtitleLanguage
+	}
+	if len(eff.Playback.AllowedTrackLanguages) == 0 {
+		eff.Playback.AllowedTrackLanguages = append([]string(nil), g.Playback.AllowedTrackLanguages...)
 	}
 	if eff.Playback.PreferredSubtitleMode == "" {
 		eff.Playback.PreferredSubtitleMode = g.Playback.PreferredSubtitleMode
@@ -609,6 +614,10 @@ func stripPlayback(p *models.PlaybackSettings, g config.PlaybackSettings) bool {
 	}
 	if p.PreferredSubtitleLanguage != "" && p.PreferredSubtitleLanguage == g.PreferredSubtitleLanguage {
 		p.PreferredSubtitleLanguage = ""
+		changed = true
+	}
+	if len(p.AllowedTrackLanguages) > 0 && slices.Equal(p.AllowedTrackLanguages, g.AllowedTrackLanguages) {
+		p.AllowedTrackLanguages = nil
 		changed = true
 	}
 	if p.PreferredSubtitleMode != "" && p.PreferredSubtitleMode == g.PreferredSubtitleMode {
@@ -1016,6 +1025,10 @@ func stripClientSettings(cs *models.ClientFilterSettings, eff models.UserSetting
 	}
 	if cs.PreferredSubtitleLanguage != nil && *cs.PreferredSubtitleLanguage == eff.Playback.PreferredSubtitleLanguage {
 		cs.PreferredSubtitleLanguage = nil
+		changed = true
+	}
+	if cs.AllowedTrackLanguages != nil && slices.Equal(*cs.AllowedTrackLanguages, eff.Playback.AllowedTrackLanguages) {
+		cs.AllowedTrackLanguages = nil
 		changed = true
 	}
 	if cs.PreferredSubtitleMode != nil && *cs.PreferredSubtitleMode == eff.Playback.PreferredSubtitleMode {
