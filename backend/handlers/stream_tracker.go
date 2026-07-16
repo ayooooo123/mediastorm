@@ -659,15 +659,11 @@ func (t *StreamTracker) ObservePlaybackBandwidth(userID string, update models.Pl
 	return matched
 }
 
-// ShouldMigratePlayback consumes a pending backend recommendation only when
-// player telemetry confirms that upstream starvation is affecting playback.
-// A five-second runway catches imminent buffering without migrating merely
-// because a healthy player has temporarily stopped requesting more data.
+// ShouldMigratePlayback consumes a pending backend recommendation. Confirmed
+// upstream starvation is actionable immediately; delivery underflow and blocked
+// client writes still require player-side buffer pressure because both can be a
+// normal consequence of a healthy player filling its buffer in bursts.
 func (t *StreamTracker) ShouldMigratePlayback(userID string, update models.PlaybackProgressUpdate) (string, bool) {
-	if update.IsPaused || (!update.IsBuffering && (update.BufferAhead == nil || *update.BufferAhead > 5)) {
-		return "", false
-	}
-
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.pruneMigrationSignalsLocked()
@@ -675,6 +671,13 @@ func (t *StreamTracker) ShouldMigratePlayback(userID string, update models.Playb
 	controlKey := playbackControlKey(userID, update.MediaType, update.ItemID)
 	key, signal, ok := t.playbackMigrationSignalLocked(controlKey, update.SourcePath)
 	if !ok || !signal.expiresAt.After(time.Now()) {
+		return "", false
+	}
+	if update.IsPaused {
+		return "", false
+	}
+	confirmedUpstreamStarvation := signal.reason == "backend-starvation"
+	if !confirmedUpstreamStarvation && !update.IsBuffering && (update.BufferAhead == nil || *update.BufferAhead > 5) {
 		return "", false
 	}
 	if signal.reason == "backend-low-throughput" && update.Position <= 3 {
