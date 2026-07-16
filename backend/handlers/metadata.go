@@ -455,6 +455,9 @@ func (h *MetadataHandler) Search(w http.ResponseWriter, r *http.Request) {
 		requestClientID(r),
 		unreleasedVisibilitySearch,
 	)
+	if !policy.IncludeMovies {
+		enrichSearchMovieReleaseVisibility(r.Context(), results, service)
+	}
 	results = filterSearchResultsByUnreleasedVisibility(results, policy)
 
 	// Apply kids rating filter if user is a kids profile with rating mode

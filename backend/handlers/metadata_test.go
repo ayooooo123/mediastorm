@@ -1153,6 +1153,46 @@ func TestMetadataHandler_SearchNormalUserUnfiltered(t *testing.T) {
 	}
 }
 
+func TestMetadataHandler_SearchReleasedOnlyUsesHomeReleaseWindows(t *testing.T) {
+	previousYear := time.Now().Year() - 1
+	fake := &fakeMetadataService{
+		searchResp: []models.SearchResult{
+			{Score: 100, Title: models.Title{Name: "Previous Year But Upcoming Home", MediaType: "movie", TMDBID: 100, Year: previousYear, Status: models.MovieReleaseStatusReleased}},
+			{Score: 90, Title: models.Title{Name: "Physical Release", MediaType: "movie", TMDBID: 200, Year: time.Now().Year(), Status: models.MovieReleaseStatusTheatrical}},
+			{Score: 80, Title: models.Title{Name: "Released Series", MediaType: "series", Status: models.SeriesReleaseStatusReleased}},
+		},
+		batchMovieReleaseResp: []models.BatchMovieReleasesItem{
+			{Status: models.MovieReleaseStatusUpcoming, HomeRelease: &models.Release{Type: "digital", Date: "2099-01-01"}},
+			{Status: models.MovieReleaseStatusReleased, HomeRelease: &models.Release{Type: "physical", Date: "2026-01-01"}},
+		},
+	}
+	handler := NewMetadataHandler(fake, testConfigManager(t))
+	handler.SetUserSettingsProvider(fakeUnreleasedVisibilityUserSettings{settings: &models.UserSettings{
+		Display: models.DisplaySettings{IncludeUnreleasedMoviesInSearch: models.BoolPtr(false)},
+	}})
+	req := httptest.NewRequest(http.MethodGet, "/api/search?q=release&type=all&userId=user1", nil)
+	rec := httptest.NewRecorder()
+
+	handler.Search(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	var payload []models.SearchResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if len(payload) != 2 {
+		t.Fatalf("expected released movie and series, got %d: %+v", len(payload), payload)
+	}
+	if payload[0].Title.Name != "Physical Release" || payload[0].Title.HomeRelease == nil || payload[0].Title.HomeRelease.Type != "physical" {
+		t.Fatalf("unexpected released movie: %+v", payload[0].Title)
+	}
+	if payload[1].Title.Name != "Released Series" {
+		t.Fatalf("unexpected series result: %+v", payload[1].Title)
+	}
+}
+
 func TestMetadataHandler_DiscoverByGenre(t *testing.T) {
 	fake := &fakeMetadataService{
 		discoverByGenreResp: []models.TrendingItem{

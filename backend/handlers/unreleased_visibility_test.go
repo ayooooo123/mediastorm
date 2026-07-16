@@ -118,7 +118,7 @@ func TestFilterSearchResultsByUnreleasedVisibilityUsesMovieStatus(t *testing.T) 
 	results := []models.SearchResult{
 		{Title: models.Title{Name: "Released Search Movie", MediaType: "movie", Status: models.MovieReleaseStatusReleased}},
 		{Title: models.Title{Name: "Toy Story 5", MediaType: "movie", Status: models.MovieReleaseStatusUpcoming}},
-		{Title: models.Title{Name: "Unknown Search Movie", MediaType: "movie", Status: models.MovieReleaseStatusUnknown}},
+		{Title: models.Title{Name: "Unknown Search Movie", MediaType: "movie", Year: currentYear() - 10, Status: models.MovieReleaseStatusUnknown}},
 	}
 
 	filtered := filterSearchResultsByUnreleasedVisibility(results, unreleasedVisibilityPolicy{

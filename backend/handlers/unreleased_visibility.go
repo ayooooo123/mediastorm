@@ -145,11 +145,58 @@ func filterSearchResultsByUnreleasedVisibility(results []models.SearchResult, po
 	}
 	filtered := make([]models.SearchResult, 0, len(results))
 	for _, result := range results {
-		if titleAllowedByUnreleasedVisibility(result.Title, policy) {
+		allowed := titleAllowedByUnreleasedVisibility(result.Title, policy)
+		if !policy.IncludeMovies && strings.EqualFold(strings.TrimSpace(result.Title.MediaType), "movie") {
+			// Released-only search is strict once enrichment has run: unknown,
+			// theatrical, and upcoming statuses must not survive via the legacy
+			// year fallback used by broad list shelves.
+			status := strings.TrimSpace(result.Title.Status)
+			if status != "" {
+				allowed = strings.EqualFold(status, models.MovieReleaseStatusReleased)
+			}
+		}
+		if allowed {
 			filtered = append(filtered, result)
 		}
 	}
 	return filtered
+}
+
+// enrichSearchMovieReleaseVisibility replaces search's theatrical/year-only
+// status with full home-release windows before released-only filtering.
+func enrichSearchMovieReleaseVisibility(ctx context.Context, results []models.SearchResult, service metadataService) {
+	if service == nil || len(results) == 0 {
+		return
+	}
+	queries := make([]models.BatchMovieReleasesQuery, 0, len(results))
+	indexes := make([]int, 0, len(results))
+	for i := range results {
+		title := &results[i].Title
+		if !strings.EqualFold(strings.TrimSpace(title.MediaType), "movie") || (title.TMDBID <= 0 && strings.TrimSpace(title.IMDBID) == "") {
+			continue
+		}
+		queries = append(queries, models.BatchMovieReleasesQuery{
+			TitleID: title.ID,
+			TMDBID:  title.TMDBID,
+			IMDBID:  title.IMDBID,
+		})
+		indexes = append(indexes, i)
+	}
+	if len(queries) == 0 {
+		return
+	}
+	items := service.BatchMovieReleases(ctx, queries)
+	for i := range items {
+		if i >= len(indexes) {
+			break
+		}
+		title := &results[indexes[i]].Title
+		if strings.TrimSpace(items[i].Status) != "" {
+			title.Status = items[i].Status
+		}
+		title.Theatrical = items[i].Theatrical
+		title.HomeRelease = items[i].HomeRelease
+	}
 }
 
 func filterTrendingItemsByUnreleasedVisibility(items []models.TrendingItem, policy unreleasedVisibilityPolicy) []models.TrendingItem {
