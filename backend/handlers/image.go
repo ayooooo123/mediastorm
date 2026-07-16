@@ -25,7 +25,10 @@ import (
 	"golang.org/x/image/draw"
 )
 
-const imageProxyDefaultQuality = 80
+const (
+	imageProxyDefaultQuality = 80
+	imageProxyMaxWidth       = 3840
+)
 
 type imageWarmRequest struct {
 	Images []imageWarmItem `json:"images"`
@@ -98,8 +101,8 @@ func (h *ImageHandler) Proxy(w http.ResponseWriter, r *http.Request) {
 	// Parse target width (0 = original size)
 	targetWidth := 0
 	if wStr := r.URL.Query().Get("w"); wStr != "" {
-		if w, err := strconv.Atoi(wStr); err == nil && w > 0 && w <= 2000 {
-			targetWidth = w
+		if w, err := strconv.Atoi(wStr); err == nil {
+			targetWidth = normalizeProxyWidth(w)
 		}
 	}
 
@@ -177,10 +180,10 @@ func validateExternalGIFURL(sourceURL string) error {
 }
 
 func normalizeProxyWidth(width int) int {
-	if width > 0 && width <= 2000 {
-		return width
+	if width <= 0 {
+		return 0
 	}
-	return 0
+	return min(width, imageProxyMaxWidth)
 }
 
 func normalizeProxyQuality(quality int) int {
