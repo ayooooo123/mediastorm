@@ -50,6 +50,7 @@ type adoptMigrationFullProber struct {
 func (m *adoptMigrationFullProber) ProbeVideoFull(_ context.Context, path string) (*VideoFullResult, error) {
 	m.path = path
 	return &VideoFullResult{
+		VideoCodec:         "h264",
 		HasDolbyVision:     true,
 		HasHDR10:           true,
 		DolbyVisionProfile: "8",
@@ -64,6 +65,27 @@ func (m *adoptMigrationFullProber) ProbeVideoFull(_ context.Context, path string
 			{Index: 3, Codec: "hdmv_pgs_subtitle", Language: "eng", Title: "English PGS"},
 		},
 	}, nil
+}
+
+func TestValidatePrequeueVideoProbe(t *testing.T) {
+	tests := []struct {
+		name    string
+		result  *VideoFullResult
+		wantErr bool
+	}{
+		{name: "missing result", result: nil, wantErr: true},
+		{name: "missing video track", result: &VideoFullResult{AudioStreams: []AudioStreamInfo{{Index: 1}}}, wantErr: true},
+		{name: "playable video track", result: &VideoFullResult{VideoCodec: "h264"}, wantErr: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validatePrequeueVideoProbe(tt.result)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("validatePrequeueVideoProbe() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
 }
 
 // mockMovieDetailsProvider implements MovieDetailsProvider for testing

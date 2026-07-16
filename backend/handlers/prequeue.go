@@ -517,6 +517,16 @@ type VideoFullProber interface {
 	ProbeVideoFull(ctx context.Context, path string) (*VideoFullResult, error)
 }
 
+func validatePrequeueVideoProbe(result *VideoFullResult) error {
+	if result == nil {
+		return fmt.Errorf("metadata probe returned no result")
+	}
+	if strings.TrimSpace(result.VideoCodec) == "" {
+		return fmt.Errorf("metadata probe found no playable video track")
+	}
+	return nil
+}
+
 // HLSCreator interface for creating HLS sessions
 type HLSCreator interface {
 	CreateHLSSession(ctx context.Context, path string, hasDV bool, dvProfile string, hasHDR bool, audioTrackIndex int, subtitleTrackIndex int, profileID string, startOffset float64, prequeueType string) (*HLSSessionResult, error)
@@ -1565,12 +1575,35 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 		var probeResult *VideoFullResult
 		var metadataResult *VideoMetadataResult
 
-		// Check DV compatibility and/or unknown track policy with the least probing possible.
-		if (needsDVCheck || needsUnknownTrackCheck) && h.fullProber != nil {
+		// Every resolved prequeue candidate must expose a playable video track.
+		// This probe is also reused below for HDR and track selection, so moving it
+		// into candidate selection does not add work for the successful candidate.
+		if h.fullProber != nil {
 			var probeErr error
 			probeResult, probeErr = h.fullProber.ProbeVideoFull(ctx, resolution.WebDAVPath)
 			if probeErr != nil {
 				log.Printf("[prequeue] Probe check failed for %s: %v, trying next result", result.Title, probeErr)
+				resolution = nil
+				lastErr = probeErr
+				continue
+			}
+			if probeErr = validatePrequeueVideoProbe(probeResult); probeErr != nil {
+				log.Printf("[prequeue] Unplayable probe result for %s: %v, trying next result", result.Title, probeErr)
+				if h.badStreamsSvc != nil {
+					provider := result.Attributes["provider"]
+					if provider == "" {
+						provider = result.Attributes["debridProvider"]
+					}
+					if _, markErr := h.badStreamsSvc.Mark(badstreams.MarkRequest{
+						ReleaseName: result.Title,
+						ServiceType: string(result.ServiceType),
+						Provider:    provider,
+						SourcePath:  resolution.WebDAVPath,
+						Reason:      "prequeue:metadata-probe-unplayable",
+					}); markErr != nil {
+						log.Printf("[prequeue] Failed to mark unplayable probe result bad for %s: %v", result.Title, markErr)
+					}
+				}
 				resolution = nil
 				lastErr = probeErr
 				continue
