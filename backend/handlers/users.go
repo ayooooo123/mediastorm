@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"novastream/config"
 	"novastream/internal/auth"
 	"novastream/models"
 	"novastream/services/users"
@@ -54,11 +55,16 @@ type usersService interface {
 var _ usersService = (*users.Service)(nil)
 
 type UsersHandler struct {
-	Service usersService
+	Service       usersService
+	configManager *config.Manager
 }
 
 func NewUsersHandler(service usersService) *UsersHandler {
 	return &UsersHandler{Service: service}
+}
+
+func (h *UsersHandler) SetConfigManager(configManager *config.Manager) {
+	h.configManager = configManager
 }
 
 func (h *UsersHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -155,6 +161,10 @@ func (h *UsersHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	accountID := auth.GetAccountID(r)
 	if !h.Service.BelongsToAccount(id, accountID) {
 		http.Error(w, "profile not found", http.StatusNotFound)
+		return
+	}
+
+	if rejectScheduledTaskProfileDeletion(w, h.configManager, id) {
 		return
 	}
 

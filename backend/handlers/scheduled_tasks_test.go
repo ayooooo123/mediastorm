@@ -72,6 +72,19 @@ func postCreateTask(t *testing.T, h *ScheduledTasksHandler, body interface{}) *h
 	return rec
 }
 
+func TestValidateScheduledTaskProfileIDRejectsLegacyDefaultFallback(t *testing.T) {
+	users := &fakeScheduledTaskUsersProvider{
+		users: map[string]models.User{
+			"mom-profile": {ID: "mom-profile", Name: models.DefaultUserName},
+		},
+	}
+
+	err := validateScheduledTaskProfileID(models.DefaultUserID, users)
+	if err == nil {
+		t.Fatal("expected missing legacy default profile to be rejected")
+	}
+}
+
 func TestCreateTask_OnceFrequency(t *testing.T) {
 	h := newTestScheduledTasksHandler(t)
 

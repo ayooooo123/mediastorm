@@ -6907,6 +6907,9 @@ func (h *AdminUIHandler) DeleteProfile(w http.ResponseWriter, r *http.Request) {
 	if ok, _ := h.requireProfileScope(w, r, profileID); !ok {
 		return
 	}
+	if rejectScheduledTaskProfileDeletion(w, h.configManager, profileID) {
+		return
+	}
 
 	err := h.usersService.Delete(profileID)
 	if err != nil {

@@ -337,7 +337,7 @@ func TestResolveProfileID(t *testing.T) {
 		}
 	})
 
-	t.Run("legacy default resolves to sole profile", func(t *testing.T) {
+	t.Run("missing legacy default fails closed at runtime", func(t *testing.T) {
 		svc := &Service{
 			usersService: &fakeSchedulerUsersProvider{
 				users: map[string]models.User{
@@ -346,16 +346,13 @@ func TestResolveProfileID(t *testing.T) {
 			},
 		}
 
-		got, err := svc.resolveProfileID(models.DefaultUserID)
-		if err != nil {
-			t.Fatalf("resolveProfileID() error = %v", err)
-		}
-		if got != "uuid-1" {
-			t.Fatalf("resolveProfileID() = %q, want %q", got, "uuid-1")
+		_, err := svc.resolveProfileID(models.DefaultUserID)
+		if err == nil || !strings.Contains(err.Error(), `profile "default" not found`) {
+			t.Fatalf("resolveProfileID() error = %v, want missing profile error", err)
 		}
 	})
 
-	t.Run("legacy default resolves to primary profile by name", func(t *testing.T) {
+	t.Run("missing legacy default with named primary still fails at runtime", func(t *testing.T) {
 		svc := &Service{
 			usersService: &fakeSchedulerUsersProvider{
 				users: map[string]models.User{
@@ -365,12 +362,9 @@ func TestResolveProfileID(t *testing.T) {
 			},
 		}
 
-		got, err := svc.resolveProfileID(models.DefaultUserID)
-		if err != nil {
-			t.Fatalf("resolveProfileID() error = %v", err)
-		}
-		if got != "uuid-2" {
-			t.Fatalf("resolveProfileID() = %q, want %q", got, "uuid-2")
+		_, err := svc.resolveProfileID(models.DefaultUserID)
+		if err == nil || !strings.Contains(err.Error(), `profile "default" not found`) {
+			t.Fatalf("resolveProfileID() error = %v, want missing profile error", err)
 		}
 	})
 
@@ -391,6 +385,40 @@ func TestResolveProfileID(t *testing.T) {
 			t.Fatalf("resolveProfileID() error = %v, want missing profile error", err)
 		}
 	})
+}
+
+func TestMigrateLegacyDefaultTaskProfiles(t *testing.T) {
+	path := t.TempDir() + "/settings.json"
+	manager := config.NewManager(path)
+	settings := config.DefaultSettings()
+	settings.ScheduledTasks.Tasks = []config.ScheduledTask{{
+		ID:   "task-1",
+		Name: "Trakt History",
+		Type: config.ScheduledTaskTypeTraktHistorySync,
+		Config: map[string]string{
+			"profileId":      models.DefaultUserID,
+			"traktAccountId": "acct-1",
+		},
+	}}
+	if err := manager.Save(settings); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	svc := NewService(manager, nil, nil, nil)
+	svc.SetUsersService(&fakeSchedulerUsersProvider{users: map[string]models.User{
+		"uuid-1": {ID: "uuid-1", Name: "Mom"},
+	}})
+
+	loaded, err := manager.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := loaded.ScheduledTasks.Tasks[0].Config["profileId"]; got != "uuid-1" {
+		t.Fatalf("migrated profileId = %q, want uuid-1", got)
+	}
+	if got, err := svc.resolveProfileID("uuid-1"); err != nil || got != "uuid-1" {
+		t.Fatalf("resolveProfileID(uuid-1) = %q, %v", got, err)
+	}
 }
 
 func TestIsNewerWatchState_PrefersExplicitUnwatchedOnTimestampTie(t *testing.T) {
