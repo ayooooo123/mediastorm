@@ -496,6 +496,55 @@ func TestResults_PackSizeCalculation(t *testing.T) {
 			t.Errorf("Expected season pack to pass with EpisodeResolver, got %d results", len(filtered))
 		}
 	})
+
+	t.Run("metadata is calculated without a configured size limit", func(t *testing.T) {
+		results := []models.NZBResult{{
+			Title:     "The.Righteous.Gemstones.S01.1080p.WEB-DL",
+			SizeBytes: 90 * 1024 * 1024 * 1024,
+		}}
+		resolver := NewSeriesEpisodeResolver(map[int]int{1: 9})
+
+		filtered := Results(results, Options{
+			ExpectedTitle:   "The Righteous Gemstones",
+			IsMovie:         false,
+			EpisodeResolver: resolver,
+		})
+		if len(filtered) != 1 {
+			t.Fatalf("expected pack to pass, got %d results", len(filtered))
+		}
+		if filtered[0].EpisodeCount != 9 || filtered[0].SizePerFile {
+			t.Fatalf("expected a 9-item total-size pack, got count=%d perFile=%v", filtered[0].EpisodeCount, filtered[0].SizePerFile)
+		}
+		want := int64(10 * 1024 * 1024 * 1024)
+		if got := filtered[0].EffectiveItemSizeBytes(); got != want {
+			t.Fatalf("effective item size = %d, want %d", got, want)
+		}
+	})
+
+	t.Run("file-index pack size remains per item", func(t *testing.T) {
+		itemSize := int64(4 * 1024 * 1024 * 1024)
+		results := []models.NZBResult{{
+			Title:      "The.Righteous.Gemstones.S01.1080p.WEB-DL",
+			SizeBytes:  itemSize,
+			Attributes: map[string]string{"fileIndex": "3"},
+		}}
+		resolver := NewSeriesEpisodeResolver(map[int]int{1: 9})
+
+		filtered := Results(results, Options{
+			ExpectedTitle:   "The Righteous Gemstones",
+			IsMovie:         false,
+			EpisodeResolver: resolver,
+		})
+		if len(filtered) != 1 {
+			t.Fatalf("expected pack to pass, got %d results", len(filtered))
+		}
+		if filtered[0].EpisodeCount != 9 || !filtered[0].SizePerFile {
+			t.Fatalf("expected a 9-item per-file pack, got count=%d perFile=%v", filtered[0].EpisodeCount, filtered[0].SizePerFile)
+		}
+		if got := filtered[0].EffectiveItemSizeBytes(); got != itemSize {
+			t.Fatalf("effective item size = %d, want reported per-file size %d", got, itemSize)
+		}
+	})
 }
 
 func TestEstimatePackEpisodeCount(t *testing.T) {
@@ -997,9 +1046,6 @@ func TestResults_SeriesYearMismatch(t *testing.T) {
 			if result.Attributes["yearMatch"] != "true" {
 				t.Fatalf("expected %q to have yearMatch=true, got %q", title, result.Attributes["yearMatch"])
 			}
-			if result.Attributes["yearPriority"] != "true" {
-				t.Fatalf("expected %q to have yearPriority=true, got %q", title, result.Attributes["yearPriority"])
-			}
 		}
 		if _, ok := passed["Wacky Races (2017) Complete Season 1 S01 720p"]; ok {
 			t.Fatal("expected 2017 reboot result to be rejected")
@@ -1025,6 +1071,35 @@ func TestResults_SeriesYearMismatch(t *testing.T) {
 			t.Fatalf("expected loose title rejection reason, got %q", filtered[0].RejectReason)
 		}
 	})
+}
+
+func TestResults_MissingYearIsNeutral(t *testing.T) {
+	results := []models.NZBResult{
+		{Title: "The.Righteous.Gemstones.2019.S01E04.1080p.WEB-DL"},
+		{Title: "The.Righteous.Gemstones.S01E04.2160p.MAX.WEB-DL.DV.HDR-FLUX"},
+		{Title: "The.Righteous.Gemstones.2024.S01E04.1080p.WEB-DL"},
+	}
+
+	detailed := ResultsWithDetails(results, Options{
+		ExpectedTitle: "The Righteous Gemstones",
+		ExpectedYear:  2019,
+		IsMovie:       false,
+	})
+	if len(detailed) != 3 {
+		t.Fatalf("expected details for all three results, got %d", len(detailed))
+	}
+	if !detailed[0].Passed || detailed[0].Result.Attributes["yearMatch"] != "true" {
+		t.Fatalf("expected matching explicit year to pass with diagnostic match, got %+v", detailed[0])
+	}
+	if !detailed[1].Passed {
+		t.Fatalf("expected missing year to pass neutrally, got %+v", detailed[1])
+	}
+	if _, exists := detailed[1].Result.Attributes["yearMatch"]; exists {
+		t.Fatalf("expected missing year not to set yearMatch, got %+v", detailed[1].Result.Attributes)
+	}
+	if detailed[2].Passed || !strings.Contains(detailed[2].RejectReason, "year difference") {
+		t.Fatalf("expected explicitly wrong year to be rejected, got %+v", detailed[2])
+	}
 }
 
 func TestResults_EpisodeAirYear(t *testing.T) {

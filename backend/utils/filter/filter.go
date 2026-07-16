@@ -436,18 +436,23 @@ func ResultsWithDetails(results []models.NZBResult, opts Options) []FilteredResu
 					continue
 				}
 				result.Attributes["yearMatch"] = "true"
-				result.Attributes["yearPriority"] = "true"
 				if episodeYearMatch && yearDiff > MaxYearDifference {
 					log.Printf("[filter] Accepted %q: year %d matches episode air year %d (series year: %d)",
 						result.Title, parsedYear, opts.EpisodeAirYear, opts.ExpectedYear)
 				}
 			} else {
-				// If we can't parse a year from the title, be lenient and keep it
-				// but flag it so ranking can derank it below year-matched results
-				log.Printf("[filter] Warning: could not parse year from title %q, keeping but deranked", result.Title)
-				result.Attributes["yearMatch"] = "false"
-				result.Attributes["yearPriority"] = "false"
+				// Missing years are normal in release names, especially for TV
+				// episodes. Keep them neutral; only an explicitly wrong parsed year
+				// is rejected above.
+				log.Printf("[filter] Could not parse year from title %q, keeping without year preference", result.Title)
 			}
+		}
+
+		// Normalize series pack metadata regardless of whether a size limit is
+		// configured. The UI and ranking both need to know whether SizeBytes is
+		// a pack total or the size of the selected playable file.
+		if !opts.IsMovie && result.SizeBytes > 0 {
+			normalizePackSizeMetadata(&result, parsed, isCompletePack, opts)
 		}
 
 		// Check size limits if configured
@@ -462,65 +467,11 @@ func ResultsWithDetails(results []models.NZBResult, opts Options) []FilteredResu
 					continue
 				}
 			} else if !opts.IsMovie && opts.MaxSizeEpisodeGB > 0 {
-				// For TV shows, check if this is a pack and calculate per-episode size
-				// A pack is: complete flag OR has seasons but NO specific episodes OR has multiple episodes
-				// (S01E01 has both seasons=[1] and episodes=[1], so it's NOT a pack)
-				// Anime batches like "01-26" have episodes=[1,2,3...26] with no seasons
-				isMultiEpisodePack := len(parsed.Episodes) > 1
-				isPack := isCompletePack || (len(parsed.Seasons) > 0 && len(parsed.Episodes) == 0) || isMultiEpisodePack
-				effectiveSizeGB := sizeGB
-
-				// Stremio-based scrapers (Torrentio, Comet, AIOStreams) report per-file
-				// size via fileIdx, so sizeBytes is already per-episode. Indexer-based
-				// scrapers (Zilean, Jackett, Nyaa) report full pack size.
-				_, hasFileIndex := result.Attributes["fileIndex"]
-				isSingleEpisode := len(parsed.Episodes) == 1
-
-				if isPack {
-					var episodeCount int
-					if isMultiEpisodePack {
-						// Use the actual episode count from parsed title (e.g., anime "01-26" = 26 episodes)
-						episodeCount = len(parsed.Episodes)
-						log.Printf("[filter] Multi-episode pack detected from title: %d episodes", episodeCount)
-					} else {
-						// Get episode count from metadata or estimate for season packs
-						episodeCount = getPackEpisodeCount(parsed.Seasons, isCompletePack, opts.EpisodeResolver, opts.TotalSeriesEpisodes)
-					}
-					if episodeCount > 0 {
-						if hasFileIndex {
-							// Scraper reported a specific file index — sizeBytes is already per-file
-							result.EpisodeCount = episodeCount
-							result.SizePerFile = true
-							log.Printf("[filter] Pack with per-file size: %q - %.2f GB per file (scraper provides fileIndex), %d episodes",
-								result.Title, sizeGB, episodeCount)
-						} else {
-							// Scraper reported total pack size — divide to get per-episode
-							effectiveSizeGB = sizeGB / float64(episodeCount)
-							result.EpisodeCount = episodeCount // Pass to frontend for display
-							log.Printf("[filter] Pack detected: %q - %.2f GB / %d episodes = %.2f GB per episode",
-								result.Title, sizeGB, episodeCount, effectiveSizeGB)
-						}
-					} else {
-						if hasFileIndex {
-							// Per-file scraper, pack with unknown episode count — still per-file
-							result.SizePerFile = true
-							log.Printf("[filter] Pack with per-file size (unknown ep count): %q - %.2f GB per file",
-								result.Title, sizeGB)
-						} else {
-							// Complete pack but no season info and no metadata - skip size filter
-							log.Printf("[filter] Complete pack %q with unknown episode count - skipping size filter", result.Title)
-							effectiveSizeGB = 0
-						}
-					}
-				} else if hasFileIndex && !isSingleEpisode {
-					// Stremio scraper with fileIndex but title didn't parse as a pack
-					// (e.g., "Show + OVAs [BD]" with no S01 pattern). Since the title
-					// doesn't identify a single episode, the size is likely per-file.
-					result.SizePerFile = true
-					log.Printf("[filter] Per-file size (ambiguous title): %q - %.2f GB per file (scraper provides fileIndex, no single episode in title)",
-						result.Title, sizeGB)
+				effectiveSizeGB := float64(result.EffectiveItemSizeBytes()) / (1024 * 1024 * 1024)
+				// A pack total with no usable item count cannot be evaluated safely.
+				if result.EpisodeCount == 0 && !result.SizePerFile && isCompletePack {
+					effectiveSizeGB = 0
 				}
-
 				if effectiveSizeGB > opts.MaxSizeEpisodeGB {
 					reason := fmt.Sprintf("size %.1f GB > %.1f GB limit", effectiveSizeGB, opts.MaxSizeEpisodeGB)
 					log.Printf("[filter] Rejecting %q: %s (episode)", result.Title, reason)
@@ -638,6 +589,39 @@ func ResultsWithDetails(results []models.NZBResult, opts Options) []FilteredResu
 		len(results), passedCount, len(results)-passedCount)
 
 	return detailed
+}
+
+func normalizePackSizeMetadata(result *models.NZBResult, parsed *parsett.ParsedTitle, isCompletePack bool, opts Options) {
+	if result == nil || parsed == nil || result.SizeBytes <= 0 {
+		return
+	}
+
+	isMultiEpisodePack := len(parsed.Episodes) > 1
+	isPack := isCompletePack || (len(parsed.Seasons) > 0 && len(parsed.Episodes) == 0) || isMultiEpisodePack
+	_, hasFileIndex := result.Attributes["fileIndex"]
+	if !isPack {
+		return
+	}
+
+	episodeCount := 0
+	if isMultiEpisodePack {
+		episodeCount = len(parsed.Episodes)
+	} else {
+		episodeCount = getPackEpisodeCount(parsed.Seasons, isCompletePack, opts.EpisodeResolver, opts.TotalSeriesEpisodes)
+	}
+	result.EpisodeCount = episodeCount
+	result.SizePerFile = hasFileIndex
+
+	sizeGB := float64(result.SizeBytes) / (1024 * 1024 * 1024)
+	if hasFileIndex {
+		log.Printf("[filter] Pack uses per-file size: %q - %.2f GB/item, %d item(s)", result.Title, sizeGB, episodeCount)
+	} else if episodeCount > 0 {
+		effectiveGB := float64(result.EffectiveItemSizeBytes()) / (1024 * 1024 * 1024)
+		log.Printf("[filter] Pack uses estimated item size: %q - %.2f GB total / %d item(s) = %.2f GB/item",
+			result.Title, sizeGB, episodeCount, effectiveGB)
+	} else {
+		log.Printf("[filter] Pack size scope unresolved: %q - %.2f GB total with unknown item count", result.Title, sizeGB)
+	}
 }
 
 // hasDolbyVision checks if the HDR formats include Dolby Vision

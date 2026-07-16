@@ -26,6 +26,20 @@ type NZBResult struct {
 	SizePerFile  bool               `json:"sizePerFile,omitempty"`  // True when sizeBytes is per-file (Stremio scrapers), false when total pack
 }
 
+// EffectiveItemSizeBytes returns the size represented by one playable item.
+// SizeBytes remains the source-reported value so clients can also show the
+// total pack size. Indexer-style sources generally report a pack total, while
+// Stremio-style sources with a file index generally report the selected file.
+func (r NZBResult) EffectiveItemSizeBytes() int64 {
+	if r.SizeBytes <= 0 {
+		return r.SizeBytes
+	}
+	if r.EpisodeCount > 1 && !r.SizePerFile {
+		return r.SizeBytes / int64(r.EpisodeCount)
+	}
+	return r.SizeBytes
+}
+
 // ScoreBreakdownItem represents a single scoring criterion's contribution to a result's total score.
 type ScoreBreakdownItem struct {
 	Criterion string `json:"criterion"` // Display name of the criterion
