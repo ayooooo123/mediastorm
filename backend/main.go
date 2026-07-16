@@ -105,6 +105,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to load settings: %v", err)
 	}
+	if config.MigrateGlobalLiveProxyToDefaultSource(&settings) {
+		if err := cfgManager.Save(settings); err != nil {
+			log.Printf("warning: failed to persist global Live TV proxy migration: %v", err)
+		}
+	}
 	apiusage.ConfigureStorage(settings.Cache.Directory)
 
 	// Set up file logging with rotation

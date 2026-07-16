@@ -1,6 +1,9 @@
 package config
 
-import "log"
+import (
+	"log"
+	"strings"
+)
 
 // MigrateRawSettings applies all known migrations to a raw settings JSON map.
 // Migrations move or rename fields between sections, ensuring backward
@@ -15,6 +18,44 @@ func MigrateRawSettings(raw map[string]interface{}) {
 	migrateRemoveHdrRankingCriterion(raw)
 	migratePrewarmFrequencyClear(raw)
 	migrateGeminiAISettings(raw)
+}
+
+// MigrateGlobalLiveProxyToDefaultSource moves the currently unsupported
+// global Live TV proxy fallback onto the default provider and leaves the
+// global field unset. Keep LiveSettings.ProxyURL in the model so a global
+// fallback can be restored in the future without another schema change.
+func MigrateGlobalLiveProxyToDefaultSource(settings *Settings) bool {
+	if settings == nil {
+		return false
+	}
+
+	proxyURL := strings.TrimSpace(settings.Live.ProxyURL)
+	if proxyURL == "" {
+		return false
+	}
+
+	defaultIndex := -1
+	for i := range settings.Live.Sources {
+		source := &settings.Live.Sources[i]
+		if strings.EqualFold(strings.TrimSpace(source.ID), "default") ||
+			strings.EqualFold(strings.TrimSpace(source.Name), "default") {
+			defaultIndex = i
+			break
+		}
+	}
+	if defaultIndex < 0 && len(settings.Live.Sources) > 0 {
+		// Legacy single-source configurations may not have received an ID or
+		// name yet, but the first source is their effective default provider.
+		defaultIndex = 0
+	}
+
+	if defaultIndex >= 0 && strings.TrimSpace(settings.Live.Sources[defaultIndex].ProxyURL) == "" {
+		settings.Live.Sources[defaultIndex].ProxyURL = proxyURL
+	}
+	settings.Live.ProxyURL = ""
+
+	log.Printf("[config] migrated global Live TV proxy to default provider and cleared global fallback")
+	return true
 }
 
 // MigrateRawUserSettings applies migrations to a single user's raw settings map.
