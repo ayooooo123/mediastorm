@@ -57,6 +57,30 @@ func TestConfirmedUpstreamStarvationMigratesBeforeBufferPressure(t *testing.T) {
 	}
 }
 
+func TestWeakerMigrationSignalDoesNotOverwriteConfirmedStarvation(t *testing.T) {
+	tracker := newTestTracker()
+	req := httptest.NewRequest(http.MethodGet, "/video/stream?profileId=p1&mediaType=movie&itemId=tmdb:movie:14160", nil)
+	id, _, _ := tracker.StartStreamWithAccount(req, "/webdav/nzbs/up/up.mkv", 1000, 0, 0, "acct1")
+
+	if !tracker.MarkPlaybackMigration(id, "backend-starvation") {
+		t.Fatal("expected confirmed starvation signal")
+	}
+	if !tracker.MarkPlaybackMigration(id, "backend-low-throughput") {
+		t.Fatal("expected later low-throughput observation to match playback")
+	}
+
+	healthyRunway := 20.0
+	reason, migrate := tracker.ShouldMigratePlayback("p1", models.PlaybackProgressUpdate{
+		MediaType:   "movie",
+		ItemID:      "tmdb:movie:14160",
+		Position:    40,
+		BufferAhead: &healthyRunway,
+	})
+	if !migrate || reason != "backend-starvation" {
+		t.Fatalf("weaker signal replaced confirmed starvation: migrate=%v reason=%q", migrate, reason)
+	}
+}
+
 func TestPredictiveMigrationWaitsForBufferPressure(t *testing.T) {
 	tracker := newTestTracker()
 	req := httptest.NewRequest(http.MethodGet, "/video/stream?profileId=p1&mediaType=movie&itemId=tmdb:movie:14160", nil)
