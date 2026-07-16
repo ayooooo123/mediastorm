@@ -20,7 +20,7 @@ func newTestTracker() *StreamTracker {
 	}
 }
 
-func TestPlaybackMigrationWaitsForBufferPressure(t *testing.T) {
+func TestConfirmedUpstreamStarvationMigratesBeforeBufferPressure(t *testing.T) {
 	tracker := newTestTracker()
 	req := httptest.NewRequest(http.MethodGet, "/video/stream?profileId=p1&mediaType=movie&itemId=tmdb:movie:14160", nil)
 	id, _, _ := tracker.StartStreamWithAccount(req, "/webdav/nzbs/up/up.mkv", 1000, 0, 0, "acct1")
@@ -33,35 +33,58 @@ func TestPlaybackMigrationWaitsForBufferPressure(t *testing.T) {
 	if reason, migrate := tracker.ShouldMigratePlayback("p1", models.PlaybackProgressUpdate{
 		MediaType:   "movie",
 		ItemID:      "tmdb:movie:14160",
+		IsPaused:    true,
 		BufferAhead: &healthyRunway,
 	}); migrate {
-		t.Fatalf("healthy buffer consumed migration signal: reason=%q", reason)
-	}
-
-	criticalRunway := 4.0
-	if reason, migrate := tracker.ShouldMigratePlayback("p1", models.PlaybackProgressUpdate{
-		MediaType:   "movie",
-		ItemID:      "tmdb:movie:14160",
-		IsPaused:    true,
-		BufferAhead: &criticalRunway,
-	}); migrate {
-		t.Fatalf("paused playback consumed migration signal: reason=%q", reason)
+		t.Fatalf("paused playback consumed confirmed migration signal: reason=%q", reason)
 	}
 
 	reason, migrate := tracker.ShouldMigratePlayback("p1", models.PlaybackProgressUpdate{
 		MediaType:   "movie",
 		ItemID:      "tmdb:movie:14160",
-		BufferAhead: &criticalRunway,
+		BufferAhead: &healthyRunway,
 	})
 	if !migrate || reason != "backend-starvation" {
-		t.Fatalf("critical buffer did not receive migration signal: migrate=%v reason=%q", migrate, reason)
+		t.Fatalf("confirmed starvation did not migrate immediately: migrate=%v reason=%q", migrate, reason)
 	}
+
 	if _, migrate := tracker.ShouldMigratePlayback("p1", models.PlaybackProgressUpdate{
 		MediaType:   "movie",
 		ItemID:      "tmdb:movie:14160",
 		IsBuffering: true,
 	}); migrate {
 		t.Fatal("migration signal should be consumed once")
+	}
+}
+
+func TestPredictiveMigrationWaitsForBufferPressure(t *testing.T) {
+	tracker := newTestTracker()
+	req := httptest.NewRequest(http.MethodGet, "/video/stream?profileId=p1&mediaType=movie&itemId=tmdb:movie:14160", nil)
+	id, _, _ := tracker.StartStreamWithAccount(req, "/webdav/nzbs/up/up.mkv", 1000, 0, 0, "acct1")
+
+	if !tracker.MarkPlaybackMigration(id, "backend-low-throughput") {
+		t.Fatal("expected active playback migration signal to be recorded")
+	}
+
+	healthyRunway := 20.0
+	if reason, migrate := tracker.ShouldMigratePlayback("p1", models.PlaybackProgressUpdate{
+		MediaType:   "movie",
+		ItemID:      "tmdb:movie:14160",
+		Position:    40,
+		BufferAhead: &healthyRunway,
+	}); migrate {
+		t.Fatalf("healthy buffer consumed predictive migration signal: reason=%q", reason)
+	}
+
+	criticalRunway := 4.0
+	reason, migrate := tracker.ShouldMigratePlayback("p1", models.PlaybackProgressUpdate{
+		MediaType:   "movie",
+		ItemID:      "tmdb:movie:14160",
+		Position:    41,
+		BufferAhead: &criticalRunway,
+	})
+	if !migrate || reason != "backend-low-throughput" {
+		t.Fatalf("critical buffer did not receive migration signal: migrate=%v reason=%q", migrate, reason)
 	}
 }
 
