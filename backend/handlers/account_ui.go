@@ -797,6 +797,9 @@ func (h *AccountUIHandler) DeleteProfile(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "Cannot delete last profile", http.StatusBadRequest)
 		return
 	}
+	if rejectScheduledTaskProfileDeletion(w, h.configManager, profileID) {
+		return
+	}
 
 	if err := h.usersService.Delete(profileID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

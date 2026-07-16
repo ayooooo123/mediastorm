@@ -874,6 +874,7 @@ func main() {
 	schedulerService.SetMetadataService(metadataService)
 	schedulerService.SetSimklClient(simklClient)
 	schedulerService.SetUsersService(userService)
+	usersHandler.SetConfigManager(cfgManager)
 	schedulerService.SetJellyfinClient(jellyfinClient)
 	schedulerService.SetLocalMediaService(localMediaService)
 	scheduledTasksHandler := handlers.NewScheduledTasksHandler(cfgManager, schedulerService, userService)

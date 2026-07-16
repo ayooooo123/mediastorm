@@ -138,26 +138,37 @@ func validateScheduledTaskProfileID(profileID string, usersService scheduledTask
 	if usersService.Exists(profileID) {
 		return nil
 	}
-	if profileID != models.DefaultUserID {
-		return fmt.Errorf("profileId %q does not exist", profileID)
-	}
+	return fmt.Errorf("profileId %q does not exist", profileID)
+}
 
-	users := usersService.ListAll()
-	if len(users) == 1 {
-		return nil
+func scheduledTaskReferencesForProfile(configManager *config.Manager, profileID string) ([]string, error) {
+	if configManager == nil || strings.TrimSpace(profileID) == "" {
+		return nil, nil
 	}
-
-	primaryCount := 0
-	for _, user := range users {
-		if user.Name == models.DefaultUserName {
-			primaryCount++
+	settings, err := configManager.Load()
+	if err != nil {
+		return nil, err
+	}
+	var references []string
+	for _, task := range settings.ScheduledTasks.Tasks {
+		if strings.TrimSpace(task.Config["profileId"]) == profileID {
+			references = append(references, task.Name)
 		}
 	}
-	if primaryCount == 1 {
-		return nil
-	}
+	return references, nil
+}
 
-	return fmt.Errorf("profileId %q does not exist", profileID)
+func rejectScheduledTaskProfileDeletion(w http.ResponseWriter, configManager *config.Manager, profileID string) bool {
+	references, err := scheduledTaskReferencesForProfile(configManager, profileID)
+	if err != nil {
+		http.Error(w, "failed to check scheduled task references", http.StatusInternalServerError)
+		return true
+	}
+	if len(references) == 0 {
+		return false
+	}
+	http.Error(w, "profile is used by scheduled tasks: "+strings.Join(references, ", ")+"; retarget or delete those tasks first", http.StatusConflict)
+	return true
 }
 
 // ListTasks returns all scheduled tasks with current status

@@ -615,8 +615,63 @@ func (s *Service) SetJellyfinClient(jellyfinClient *jellyfin.Client) {
 // SetUsersService sets the users service for validating and resolving profile IDs.
 func (s *Service) SetUsersService(usersService schedulerUsersProvider) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.usersService = usersService
+	s.mu.Unlock()
+
+	if err := s.migrateLegacyDefaultTaskProfiles(); err != nil {
+		log.Printf("[scheduler] Failed to migrate legacy scheduled task profile references: %v", err)
+	}
+}
+
+// migrateLegacyDefaultTaskProfiles replaces legacy "default" task references
+// with a concrete profile ID. This is deliberately a one-time persisted
+// migration: runtime task execution must never silently follow a different
+// profile after the configured profile is deleted.
+func (s *Service) migrateLegacyDefaultTaskProfiles() error {
+	s.mu.RLock()
+	usersService := s.usersService
+	s.mu.RUnlock()
+	if usersService == nil || usersService.Exists(models.DefaultUserID) {
+		return nil
+	}
+
+	users := usersService.ListAll()
+	var replacementID string
+	if len(users) == 1 {
+		replacementID = users[0].ID
+	} else {
+		for _, user := range users {
+			if user.Name != models.DefaultUserName {
+				continue
+			}
+			if replacementID != "" {
+				return nil
+			}
+			replacementID = user.ID
+		}
+	}
+	if replacementID == "" {
+		return nil
+	}
+
+	settings, err := s.configManager.Load()
+	if err != nil {
+		return err
+	}
+	changed := false
+	for i := range settings.ScheduledTasks.Tasks {
+		task := &settings.ScheduledTasks.Tasks[i]
+		if strings.TrimSpace(task.Config["profileId"]) != models.DefaultUserID {
+			continue
+		}
+		task.Config["profileId"] = replacementID
+		changed = true
+		log.Printf("[scheduler] Migrated task %q profile id from %q to %q", task.Name, models.DefaultUserID, replacementID)
+	}
+	if !changed {
+		return nil
+	}
+	return s.configManager.Save(settings)
 }
 
 func (s *Service) resolveTaskProfileID(task config.ScheduledTask) (string, error) {
@@ -640,32 +695,7 @@ func (s *Service) resolveProfileID(profileID string) (string, error) {
 		return profileID, nil
 	}
 
-	if profileID != models.DefaultUserID {
-		return "", fmt.Errorf("profile %q not found", profileID)
-	}
-
-	users := usersService.ListAll()
-	if len(users) == 0 {
-		return "", fmt.Errorf("legacy profile %q could not be resolved: no profiles exist", profileID)
-	}
-
-	if len(users) == 1 {
-		log.Printf("[scheduler] Resolved legacy profile id %q to %q", profileID, users[0].ID)
-		return users[0].ID, nil
-	}
-
-	var primaryMatches []models.User
-	for _, user := range users {
-		if user.Name == models.DefaultUserName {
-			primaryMatches = append(primaryMatches, user)
-		}
-	}
-	if len(primaryMatches) == 1 {
-		log.Printf("[scheduler] Resolved legacy profile id %q to primary profile %q", profileID, primaryMatches[0].ID)
-		return primaryMatches[0].ID, nil
-	}
-
-	return "", fmt.Errorf("legacy profile %q could not be resolved automatically; update the task to use a current profile id", profileID)
+	return "", fmt.Errorf("profile %q not found", profileID)
 }
 
 // executePlexWatchlistSync syncs a Plex watchlist to/from a profile

@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"novastream/config"
 	"novastream/handlers"
 	"novastream/internal/auth"
 	"novastream/models"
@@ -335,6 +337,33 @@ func TestUsersHandler_Delete_NotFound(t *testing.T) {
 
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusNotFound)
+	}
+}
+
+func TestUsersHandler_Delete_BlockedByScheduledTask(t *testing.T) {
+	svc := &fakeUsersService{belongsTo: true}
+	h := handlers.NewUsersHandler(svc)
+	manager := config.NewManager(t.TempDir() + "/settings.json")
+	settings := config.DefaultSettings()
+	settings.ScheduledTasks.Tasks = []config.ScheduledTask{{
+		ID:     "task-1",
+		Name:   "Trakt History",
+		Config: map[string]string{"profileId": "u1"},
+	}}
+	if err := manager.Save(settings); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	h.SetConfigManager(manager)
+
+	r := usersRequest(http.MethodDelete, "/", nil, map[string]string{"userID": "u1"}, "acct-1", false)
+	w := httptest.NewRecorder()
+	h.Delete(w, r)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusConflict)
+	}
+	if !strings.Contains(w.Body.String(), "Trakt History") {
+		t.Fatalf("body = %q, want task name", w.Body.String())
 	}
 }
 
