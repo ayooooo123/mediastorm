@@ -1033,6 +1033,194 @@ func TestResolveExternalUsenetReusesExistingWebDAVResolutionBeforeSubmit(t *test
 	}
 }
 
+func TestExternalFallbackBasePathsIncludesAltMountCompleteCategoryLayout(t *testing.T) {
+	paths := externalFallbackBasePaths(config.UsenetEngineSettings{
+		Type:     "altmount",
+		Category: "MediaStorm",
+	})
+	want := "complete/MediaStorm"
+	for _, candidate := range paths {
+		if candidate == want {
+			return
+		}
+	}
+	t.Fatalf("fallback paths = %#v, want %q", paths, want)
+}
+
+func TestExternalQueueStatusNormalizesAltMountJobPrefixAndCachesResolution(t *testing.T) {
+	const release = "Release.Name"
+	var addFileCalls int
+	var webDAVReady bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/sabnzbd/api" && r.URL.Query().Get("mode") == "addfile":
+			addFileCalls++
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":  true,
+				"nzo_ids": []string{"altmount-job"},
+			})
+		case r.URL.Path == "/sabnzbd/api" && r.URL.Query().Get("mode") == "queue":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": true,
+				"queue":  map[string]any{"slots": []map[string]any{}},
+			})
+		case r.URL.Path == "/sabnzbd/api" && r.URL.Query().Get("mode") == "history":
+			webDAVReady = true
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": true,
+				"history": map[string]any{"slots": []map[string]any{{
+					"nzo_id":   "altmount-job",
+					"status":   "Completed",
+					"nzb_name": "4825-" + release + ".nzb",
+					"storage":  "/mnt/media/complete/MediaStorm/" + release,
+				}}},
+			})
+		case r.Method == "HEAD" && r.URL.Path == "/webdav/complete/MediaStorm/Release.Name/Release.Name.mkv":
+			if webDAVReady {
+				w.WriteHeader(http.StatusOK)
+			} else {
+				w.WriteHeader(http.StatusNotFound)
+			}
+		case r.Method == "HEAD":
+			w.WriteHeader(http.StatusNotFound)
+		case r.Method == "PROPFIND" && r.URL.Path == "/webdav/complete/MediaStorm/Release.Name/":
+			if !webDAVReady {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusMultiStatus)
+			_, _ = io.WriteString(w, `<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/webdav/complete/MediaStorm/Release.Name/</D:href>
+    <D:propstat><D:status>HTTP/1.1 200 OK</D:status><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop></D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/webdav/complete/MediaStorm/Release.Name/Release.Name.mkv</D:href>
+    <D:propstat><D:status>HTTP/1.1 200 OK</D:status><D:prop><D:displayname>Release.Name.mkv</D:displayname><D:getcontentlength>123456789</D:getcontentlength></D:prop></D:propstat>
+  </D:response>
+</D:multistatus>`)
+		case r.Method == "PROPFIND":
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			t.Fatalf("unexpected request method=%q path=%q mode=%q", r.Method, r.URL.Path, r.URL.Query().Get("mode"))
+		}
+	}))
+	defer server.Close()
+
+	indexerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Disposition", `attachment; filename="Release.Name.nzb"`)
+		_, _ = io.WriteString(w, `<?xml version="1.0"?><nzb><file subject="archive.part01.rar"><segments><segment bytes="123456">abc</segment></segments></file></nzb>`)
+	}))
+	defer indexerServer.Close()
+
+	settings := config.DefaultSettings()
+	settings.UsenetEngines = []config.UsenetEngineSettings{{
+		Name:          "AltMount",
+		Type:          "altmount",
+		Enabled:       true,
+		BaseURL:       server.URL,
+		APIPath:       "/sabnzbd/api",
+		Category:      "MediaStorm",
+		WebDAVBaseURL: server.URL + "/webdav",
+		Config: map[string]string{
+			"webdavPathPrefix": "/mnt/media",
+		},
+	}}
+	cfg := config.NewManager(filepath.Join(t.TempDir(), "settings.json"))
+	if err := cfg.Save(settings); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	svc := NewService(cfg, nil, nil, nil)
+	candidate := models.NZBResult{Title: release, DownloadURL: indexerServer.URL + "/Release.Name.nzb"}
+	queued, err := svc.Resolve(context.Background(), candidate)
+	if err != nil {
+		t.Fatalf("first Resolve: %v", err)
+	}
+	if queued.QueueID == 0 {
+		t.Fatal("first Resolve QueueID = 0, want queued external job")
+	}
+
+	completed, err := svc.QueueStatus(context.Background(), queued.QueueID)
+	if err != nil {
+		t.Fatalf("QueueStatus: %v", err)
+	}
+	wantURL := server.URL + "/webdav/complete/MediaStorm/Release.Name/Release.Name.mkv"
+	if completed.WebDAVPath != wantURL {
+		t.Fatalf("completed WebDAVPath = %q, want %q", completed.WebDAVPath, wantURL)
+	}
+
+	retained, err := svc.QueueStatus(context.Background(), queued.QueueID)
+	if err != nil {
+		t.Fatalf("retained QueueStatus: %v", err)
+	}
+	if retained.WebDAVPath != wantURL {
+		t.Fatalf("retained WebDAVPath = %q, want %q", retained.WebDAVPath, wantURL)
+	}
+
+	reused, err := svc.Resolve(context.Background(), candidate)
+	if err != nil {
+		t.Fatalf("second Resolve: %v", err)
+	}
+	if reused.QueueID != 0 || reused.WebDAVPath != wantURL {
+		t.Fatalf("reused resolution = %#v, want direct cached URL %q", reused, wantURL)
+	}
+	if addFileCalls != 1 {
+		t.Fatalf("addfile calls = %d, want 1", addFileCalls)
+	}
+}
+
+func TestResolveExternalUsenetReusesActiveJobByNZBHash(t *testing.T) {
+	var addFileCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/sabnzbd/api" && r.URL.Query().Get("mode") == "addfile":
+			addFileCalls++
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": true, "nzo_ids": []string{"active-job"}})
+		case r.Method == "HEAD" || r.Method == "PROPFIND":
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			t.Fatalf("unexpected request method=%q path=%q mode=%q", r.Method, r.URL.Path, r.URL.Query().Get("mode"))
+		}
+	}))
+	defer server.Close()
+
+	indexerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Disposition", `attachment; filename="Release.Name.nzb"`)
+		_, _ = io.WriteString(w, `<?xml version="1.0"?><nzb><file subject="archive.part01.rar"><segments><segment bytes="123456">abc</segment></segments></file></nzb>`)
+	}))
+	defer indexerServer.Close()
+
+	settings := config.DefaultSettings()
+	settings.UsenetEngines = []config.UsenetEngineSettings{{
+		Name: "AltMount", Type: "altmount", Enabled: true,
+		BaseURL: server.URL, APIPath: "/sabnzbd/api", WebDAVBaseURL: server.URL + "/webdav",
+	}}
+	cfg := config.NewManager(filepath.Join(t.TempDir(), "settings.json"))
+	if err := cfg.Save(settings); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	svc := NewService(cfg, nil, nil, nil)
+	candidate := models.NZBResult{Title: "Release.Name", DownloadURL: indexerServer.URL + "/Release.Name.nzb"}
+	first, err := svc.Resolve(context.Background(), candidate)
+	if err != nil {
+		t.Fatalf("first Resolve: %v", err)
+	}
+	second, err := svc.Resolve(context.Background(), candidate)
+	if err != nil {
+		t.Fatalf("second Resolve: %v", err)
+	}
+	if first.QueueID == 0 || second.QueueID != first.QueueID {
+		t.Fatalf("queue IDs first=%d second=%d, want same non-zero queue", first.QueueID, second.QueueID)
+	}
+	if addFileCalls != 1 {
+		t.Fatalf("addfile calls = %d, want 1", addFileCalls)
+	}
+}
+
 func TestExternalWebDAVRelativePathStripsWebDAVPrefix(t *testing.T) {
 	got := externalWebDAVRelativePath(config.UsenetEngineSettings{}, "/webdav/__all__/Movie/Movie.mkv")
 	if got != "__all__/Movie/Movie.mkv" {
