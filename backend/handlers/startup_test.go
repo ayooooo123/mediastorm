@@ -566,6 +566,43 @@ func TestStartupHandler_UsesHomeShelfItemCap(t *testing.T) {
 	}
 }
 
+func TestStartupHandler_HonorsTrendingShelfHideUnreleased(t *testing.T) {
+	cfgManager := config.NewManager(t.TempDir() + "/settings.json")
+	shelves := models.DefaultHomeShelfConfigs()
+	for i := range shelves {
+		if shelves[i].ID == "trending-movies" {
+			shelves[i].HideUnreleased = true
+		}
+	}
+	h := handlers.NewStartupHandler(
+		&mockUserSettingsService{withDefault: models.UserSettings{HomeShelves: models.HomeShelvesSettings{Shelves: shelves}}},
+		&mockWatchlistService{},
+		&mockHistoryService{},
+		&mockMetadataServiceStartup{movieItems: []models.TrendingItem{
+			{Title: models.Title{Name: "Released", MediaType: "movie", Status: models.MovieReleaseStatusReleased}},
+			{Title: models.Title{Name: "Upcoming", MediaType: "movie", Status: models.MovieReleaseStatusUpcoming}},
+		}},
+		cfgManager,
+		&mockUserServiceStartup{exists: true},
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/users/user1/startup?includeTrendingSeries=false", nil)
+	req = mux.SetURLVars(req, map[string]string{"userID": "user1"})
+	rec := httptest.NewRecorder()
+	h.GetStartup(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp handlers.StartupResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.TrendingMovies == nil || len(resp.TrendingMovies.Items) != 1 || resp.TrendingMovies.Items[0].Title.Name != "Released" {
+		t.Fatalf("unexpected trending movies: %+v", resp.TrendingMovies)
+	}
+}
+
 func TestStartupHandler_WatchlistOverflowSkipsDisplayedDuplicates(t *testing.T) {
 	cfgManager := config.NewManager(t.TempDir() + "/settings.json")
 	watchlistItems := []models.WatchlistItem{

@@ -224,6 +224,18 @@ func MovieReleaseStatus(title Title) string {
 	if !strings.EqualFold(strings.TrimSpace(title.MediaType), "movie") {
 		return strings.TrimSpace(title.Status)
 	}
+	// Treat any completed home window as released. The primary HomeRelease
+	// pointer is a display choice and must not hide an already-available
+	// physical/TV release merely because a higher-priority digital date is
+	// still in the future.
+	for i := range title.Releases {
+		switch strings.ToLower(strings.TrimSpace(title.Releases[i].Type)) {
+		case "digital", "physical", "tv":
+			if releaseIsReleased(&title.Releases[i]) {
+				return MovieReleaseStatusReleased
+			}
+		}
+	}
 	status := MovieReleaseStatusFromWindows(title.Theatrical, title.HomeRelease)
 	if status != MovieReleaseStatusUnknown {
 		return status

@@ -6771,6 +6771,7 @@ func (s *Service) ensureMovieReleasePointers(title *models.Title) {
 		bestHomeTS  time.Time
 		bestHomePri = math.MaxInt32
 	)
+	now := time.Now()
 
 	for i := range title.Releases {
 		release := &title.Releases[i]
@@ -6791,7 +6792,12 @@ func (s *Service) ensureMovieReleasePointers(title *models.Title) {
 			}
 		case "digital", "physical", "tv":
 			priority := homeReleasePriority(releaseType)
-			if priority < bestHomePri || (priority == bestHomePri && (bestHomeIdx == -1 || ts.Before(bestHomeTS))) {
+			candidateReleased := !ts.After(now)
+			bestReleased := bestHomeIdx >= 0 && !bestHomeTS.After(now)
+			if bestHomeIdx == -1 ||
+				(candidateReleased && !bestReleased) ||
+				(candidateReleased == bestReleased && (priority < bestHomePri ||
+					(priority == bestHomePri && ts.Before(bestHomeTS)))) {
 				bestHomeIdx = i
 				bestHomeTS = ts
 				bestHomePri = priority
