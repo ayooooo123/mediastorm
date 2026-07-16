@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"novastream/config"
@@ -179,10 +180,19 @@ type MetadataHandler struct {
 	SimklClient        *simkl.Client
 	MDBListListsClient *mdblist.ListsClient
 	LetterboxdClient   *letterboxd.Client
+
+	personalizedMu       sync.Mutex
+	personalizedCache    map[string]personalizedRecommendationsCacheEntry
+	personalizedInFlight map[string]*personalizedRecommendationsBuild
 }
 
 func NewMetadataHandler(s metadataService, cfgManager *config.Manager) *MetadataHandler {
-	return &MetadataHandler{Service: s, CfgManager: cfgManager}
+	return &MetadataHandler{
+		Service:              s,
+		CfgManager:           cfgManager,
+		personalizedCache:    make(map[string]personalizedRecommendationsCacheEntry),
+		personalizedInFlight: make(map[string]*personalizedRecommendationsBuild),
+	}
 }
 
 // SetUserSettingsProvider sets the user settings provider for per-user settings.

@@ -1689,6 +1689,68 @@ func TestMetadataHandler_GetPersonalizedRecommendations_UsesSimilarAndExcludesKn
 	}
 }
 
+func TestMetadataHandler_GetPersonalizedRecommendations_CachesUnchangedWatchState(t *testing.T) {
+	now := time.Now().UTC()
+	fake := &fakeMetadataService{
+		similarByKey: map[string][]models.Title{
+			"movie:1": {{ID: "tmdb:movie:101", Name: "Cached Pick", MediaType: "movie", TMDBID: 101}},
+		},
+	}
+	handler := NewMetadataHandler(fake, testConfigManager(t))
+	handler.HistoryService = &fakeMetadataHistoryService{history: []models.WatchHistoryItem{{
+		ID:          "movie:tmdb:movie:1",
+		MediaType:   "movie",
+		ItemID:      "tmdb:movie:1",
+		Name:        "Seed",
+		Watched:     true,
+		WatchedAt:   now,
+		UpdatedAt:   now,
+		ExternalIDs: map[string]string{"tmdb": "1"},
+	}}}
+
+	request := func() PersonalizedRecommendationsResponse {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/recommendations/personalized?userId=user1&limitPerType=1", nil)
+		handler.GetPersonalizedRecommendations(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+		}
+		var payload PersonalizedRecommendationsResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		return payload
+	}
+
+	first := request()
+	if len(first.Items) == 0 {
+		t.Fatal("first response did not contain recommendations")
+	}
+	fake.similarByKey = nil
+	second := request()
+	if len(second.Items) != len(first.Items) || second.Items[0].Title.TMDBID != first.Items[0].Title.TMDBID {
+		t.Fatalf("second response did not use cached result: first=%+v second=%+v", first.Items, second.Items)
+	}
+}
+
+func TestPersonalizedRecommendationsCacheKeyChangesWithProgress(t *testing.T) {
+	now := time.Now().UTC()
+	progress := []models.PlaybackProgress{{
+		ID:             "movie:tmdb:movie:1",
+		MediaType:      "movie",
+		ItemID:         "tmdb:movie:1",
+		PercentWatched: 20,
+		UpdatedAt:      now,
+	}}
+	first := personalizedRecommendationsCacheKey("user1", 14, 20, nil, progress)
+	progress[0].PercentWatched = 40
+	progress[0].UpdatedAt = now.Add(time.Second)
+	second := personalizedRecommendationsCacheKey("user1", 14, 20, nil, progress)
+	if first == second {
+		t.Fatalf("cache key did not change after progress update: %q", first)
+	}
+}
+
 func TestMetadataHandler_GetPersonalizedRecommendations_FiltersKidsProfileRatings(t *testing.T) {
 	now := time.Now().UTC()
 	title := func(mediaType string, tmdbID int64, name, certification string) models.Title {
