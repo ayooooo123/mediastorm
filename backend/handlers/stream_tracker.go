@@ -164,6 +164,10 @@ const (
 	throughputHealthFactor         = 0.90
 	throughputHealthLowSamples     = int32(2)
 	throughputHealthSignalCooldown = 30 * time.Second
+	// Client-write pacing can fall below the media bitrate while a healthy
+	// native player is applying backpressure. Only prepare an alternative once
+	// the player reports that its buffered runway is actually shrinking.
+	migrationPreparationBufferRunway = 15.0
 )
 
 type throughputHealthAlert struct {
@@ -711,9 +715,9 @@ func (t *StreamTracker) ShouldMigratePlayback(userID string, update models.Playb
 }
 
 // ShouldPreparePlaybackMigration exposes a pending recommendation without
-// consuming it. This lets the player resolve and probe the next candidate while
-// the current buffer is still healthy, then perform only the source swap if
-// buffer pressure later confirms migration is necessary.
+// consuming it. Predictive client-delivery signals wait until the current buffer
+// runway is shrinking, then let the player resolve and probe the next candidate
+// before migration becomes critical.
 func (t *StreamTracker) ShouldPreparePlaybackMigration(userID string, update models.PlaybackProgressUpdate) (string, bool) {
 	if update.IsPaused || update.Position <= 3 {
 		return "", false
@@ -726,6 +730,10 @@ func (t *StreamTracker) ShouldPreparePlaybackMigration(userID string, update mod
 	controlKey := playbackControlKey(userID, update.MediaType, update.ItemID)
 	_, signal, ok := t.playbackMigrationSignalLocked(controlKey, update.SourcePath)
 	if !ok || !signal.expiresAt.After(time.Now()) {
+		return "", false
+	}
+	if signal.reason != "backend-starvation" && !update.IsBuffering &&
+		(update.BufferAhead == nil || *update.BufferAhead > migrationPreparationBufferRunway) {
 		return "", false
 	}
 	return signal.reason, true
