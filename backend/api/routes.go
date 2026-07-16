@@ -370,6 +370,7 @@ func Register(
 	protected.HandleFunc("/library/matches", handleOptions).Methods(http.MethodOptions)
 	protected.HandleFunc("/library/items/{itemID}/playback", localMediaHandler.GetPlayback).Methods(http.MethodGet)
 	protected.HandleFunc("/library/items/{itemID}/playback", handleOptions).Methods(http.MethodOptions)
+	protected.HandleFunc("/library/items/{itemID}/artwork/{kind}", localMediaHandler.GetArtwork).Methods(http.MethodGet)
 	protected.HandleFunc("/live/hls/start", RateLimitHandlerFunc(hlsStartLimiter, videoHandler.StartLiveHLSSession)).Methods(http.MethodGet, http.MethodOptions)
 	protected.HandleFunc("/live/usage", videoHandler.GetLiveUsage).Methods(http.MethodGet)
 	protected.HandleFunc("/live/usage", handleOptions).Methods(http.MethodOptions)

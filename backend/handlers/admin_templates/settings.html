@@ -395,6 +395,7 @@
     let traktListsCache = {}; // accountId -> custom lists
     let simklAccountsData = []; // Available Simkl accounts for the current admin scope
     let letterboxdListsData = []; // Imported Letterboxd lists (MDBList external lists)
+    let mediaLibrariesData = []; // Configured local, Plex, and Jellyfin libraries
     let hasDefaultPassword = false; // Whether admin has default password
     let userOverrides = {{json .UserOverrides}}; // Map of userId -> hasOverrides
     const isAdmin = {{json .IsAdmin}};
@@ -5474,10 +5475,13 @@
             const isRecentlyAired = s.id === 'my-recently-aired';
             const isStreamingServices = s.id === 'streaming-services';
             const isCollectionHub = s.type === 'collection-hub';
-            const isCustom = !!s.listUrl || s.type === 'mdblist' || s.type === 'trakt' || s.type === 'simkl' || s.type === 'letterboxd' || s.type === 'genre' || s.type === 'decade' || isCollectionHub || (s.id && (s.id.startsWith('mdblist-') || s.id.startsWith('streaming-service-') || s.id.startsWith('trakt-') || s.id.startsWith('simkl-') || s.id.startsWith('letterboxd-') || s.id.startsWith('genre-') || s.id.startsWith('decade-') || s.id.startsWith('collection-hub-')));
+            const isLibrary = s.type === 'library' || s.type === 'local-library';
+            const isCustom = !!s.listUrl || isLibrary || s.type === 'mdblist' || s.type === 'trakt' || s.type === 'simkl' || s.type === 'letterboxd' || s.type === 'genre' || s.type === 'decade' || isCollectionHub || (s.id && (s.id.startsWith('mdblist-') || s.id.startsWith('streaming-service-') || s.id.startsWith('trakt-') || s.id.startsWith('simkl-') || s.id.startsWith('letterboxd-') || s.id.startsWith('genre-') || s.id.startsWith('decade-') || s.id.startsWith('collection-hub-')));
             const typeLabel = isRecentlyAired ? '<span class="shelf-type-badge">Calendar</span>' : (isCustom ? '<span class="shelf-type-badge">'+getShelfTypeLabel(s.type)+'</span>' : '');
             const filterBadge = (isCustom && s.hideUnreleased) ? '<span class="shelf-filter-badge" title="Hide Unreleased enabled">🎬</span>' : '';
-            const sourceBadge = isRecentlyAired ? '<span class="shelf-source-badge" title="Sources">'+getCalendarSourceSummary(s)+'</span>' : '';
+            const sourceBadge = isRecentlyAired
+                ? '<span class="shelf-source-badge" title="Sources">'+getCalendarSourceSummary(s)+'</span>'
+                : (isLibrary ? '<span class="shelf-source-badge" title="Selected library">'+getMediaLibraryLabel(s.libraryId || getLegacyShelfLibraryId(s))+'</span>' : '');
             const sortBadge = isMyUpcoming ? '<span class="shelf-source-badge" title="Sort">'+getMyUpcomingSortLabel(s.sort)+'</span>' : '';
             const streamingBadge = isStreamingServices && Array.isArray(s.streamingServices) && s.streamingServices.length
                 ? '<span class="shelf-source-badge" title="Configured services">'+s.streamingServices.filter(service => service.enabled !== false).length+' services</span>'
@@ -5617,11 +5621,16 @@
                         '<option value="trakt">Trakt</option>'+
                         '<option value="simkl">Simkl</option>'+
                         '<option value="letterboxd">Letterboxd</option>'+
+                        '<option value="library">Media Library</option>'+
                         '<option value="genre">Genre</option>'+
                         '<option value="decade">Decade</option>'+
                         '<option value="collection-hub">Collection Hub</option>'+
                         '<option value="streaming-service">Streaming Service</option>'+
                     '</select>'+
+                '</div>'+
+                '<div class="form-group" id="mediaLibraryGroup" style="display:none;flex:2;">'+
+                    '<label class="form-label" style="font-size:12px;margin-bottom:4px;">Library</label>'+
+                    '<select id="newShelfLibrary" onchange="onMediaLibraryShelfSourceChange()"></select>'+
                 '</div>'+
                 '<div class="form-group" id="traktAccountGroup" style="display:none;">'+
                     '<label class="form-label" style="font-size:12px;margin-bottom:4px;">Trakt Account</label>'+
@@ -5845,8 +5854,44 @@
             case 'genre': return 'Genre';
             case 'decade': return 'Decade';
             case 'collection-hub': return 'Collection Hub';
+            case 'library':
+            case 'local-library': return 'Media Library';
             default: return type || 'MDBList';
         }
+    }
+
+    function getLegacyShelfLibraryId(shelf) {
+        return shelf?.id?.startsWith('local-library-') ? shelf.id.slice('local-library-'.length) : '';
+    }
+
+    function getMediaLibraryLabel(libraryId) {
+        const library = mediaLibrariesData.find((item) => item.id === libraryId);
+        if (!library) return libraryId ? 'Missing library' : 'No library selected';
+        const source = library.sourceType && library.sourceType !== 'local'
+            ? (library.sourceName || library.serverName || library.sourceType)
+            : 'Local';
+        return `${library.name} · ${source}`;
+    }
+
+    function renderMediaLibraryOptions(selectId, selectedValue) {
+        const select = document.getElementById(selectId);
+        if (!select) return;
+        if (!mediaLibrariesData.length) {
+            select.innerHTML = '<option value="">No configured libraries</option>';
+            return;
+        }
+        select.innerHTML = mediaLibrariesData.map((library) => {
+            const selected = library.id === selectedValue ? 'selected' : '';
+            return `<option value="${library.id}" ${selected}>${getMediaLibraryLabel(library.id)}</option>`;
+        }).join('');
+        if (!selectedValue && select.options.length) select.value = select.options[0].value;
+    }
+
+    function onMediaLibraryShelfSourceChange() {
+        const libraryId = document.getElementById('newShelfLibrary')?.value || '';
+        const library = mediaLibrariesData.find((item) => item.id === libraryId);
+        const nameInput = document.getElementById('newShelfName');
+        if (nameInput && library) nameInput.value = `Recently Added - ${library.name}`;
     }
 
     function defaultRecentlyAiredSources() {
@@ -6272,6 +6317,8 @@
         const isGenre = type === 'genre';
         const isDecade = type === 'decade';
         const isCollectionHub = type === 'collection-hub';
+        const isLibrary = type === 'library';
+        document.getElementById('mediaLibraryGroup').style.display = isLibrary ? '' : 'none';
         document.getElementById('streamingServiceGroup').style.display = isStreaming ? '' : 'none';
         document.getElementById('streamingMediaTypeGroup').style.display = isStreaming ? '' : 'none';
         document.getElementById('traktAccountGroup').style.display = isTrakt ? '' : 'none';
@@ -6287,10 +6334,10 @@
         document.getElementById('genreGroup').style.display = isGenre ? '' : 'none';
         document.getElementById('decadeMediaTypeGroup').style.display = isDecade ? '' : 'none';
         document.getElementById('decadeGroup').style.display = isDecade ? '' : 'none';
-        document.getElementById('mdblistUrlGroup').style.display = (isStreaming || isTrakt || isSimkl || isLetterboxd || isGenre || isDecade || isCollectionHub) ? 'none' : '';
+        document.getElementById('mdblistUrlGroup').style.display = (isStreaming || isTrakt || isSimkl || isLetterboxd || isGenre || isDecade || isCollectionHub || isLibrary) ? 'none' : '';
         const hint = document.getElementById('shelfFormHint');
         if (hint) {
-            hint.style.display = (isStreaming || isTrakt || isSimkl || isLetterboxd || isGenre || isDecade || isCollectionHub) ? 'none' : '';
+            hint.style.display = (isStreaming || isTrakt || isSimkl || isLetterboxd || isGenre || isDecade || isCollectionHub || isLibrary) ? 'none' : '';
         }
         if (!isLetterboxd) {
             const urlHint = document.getElementById('letterboxdUrlHint');
@@ -6298,7 +6345,11 @@
             if (urlHint) urlHint.style.display = 'none';
             if (mdblistHint) mdblistHint.style.display = 'none';
         }
-        if (isStreaming) onStreamingServiceChange();
+        if (isLibrary) {
+            renderMediaLibraryOptions('newShelfLibrary');
+            onMediaLibraryShelfSourceChange();
+        }
+        else if (isStreaming) onStreamingServiceChange();
         else if (isTrakt) {
             renderTraktAccountOptions('newShelfTraktAccount');
             onTraktShelfSourceChange();
@@ -6384,7 +6435,27 @@
             shelves = currentSettings.homeShelves.shelves;
         }
 
-        if (shelfType === 'streaming-service') {
+        if (shelfType === 'library') {
+            const libraryId = document.getElementById('newShelfLibrary')?.value || '';
+            const name = nameInput?.value?.trim();
+            if (!libraryId) { alert('Please select a configured media library'); return; }
+            if (!name) { alert('Please enter a name'); return; }
+            shelves.push({
+                id: 'library-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+                name,
+                enabled: true,
+                order: Math.max(...shelves.map(s => s.order || 0), -1) + 1,
+                type: 'library',
+                libraryId,
+                limit,
+                hideUnreleased
+            });
+            if (typeSelect) typeSelect.value = 'mdblist';
+            nameInput.value = '';
+            if (limitInput) limitInput.value = '0';
+            if (hideUnreleasedInput) hideUnreleasedInput.checked = false;
+            onShelfTypeChange();
+        } else if (shelfType === 'streaming-service') {
             // Handle streaming service — may add one or two shelves
             const serviceId = document.getElementById('newShelfService')?.value;
             const mediaType = document.getElementById('newShelfMediaType')?.value;
@@ -7117,6 +7188,11 @@
         const isLetterboxdShelf = shelf.type === 'letterboxd';
         const isGenreShelf = shelf.type === 'genre';
         const isDecadeShelf = shelf.type === 'decade';
+        const isLibraryShelf = shelf.type === 'library' || shelf.type === 'local-library';
+        const selectedLibraryId = shelf.libraryId || getLegacyShelfLibraryId(shelf);
+        const mediaLibraryOptions = mediaLibrariesData.map((library) =>
+            `<option value="${library.id}" ${library.id === selectedLibraryId ? 'selected' : ''}>${getMediaLibraryLabel(library.id)}</option>`
+        ).join('') || '<option value="">No configured libraries</option>';
         const traktAccounts = getAvailableTraktAccountsForShelfForm();
         const traktAccountOptions = traktAccounts.map((acc) => {
             const selected = acc.id === (shelf.traktAccountId || '') ? 'selected' : '';
@@ -7168,6 +7244,13 @@
         `;
         } else if (isRecentlyAiredShelf) {
             traktSourceFields = buildCalendarSourceFields(shelf, 'editShelfCalendar');
+        } else if (isLibraryShelf) {
+            traktSourceFields = `
+                    <div style="margin-bottom:12px;">
+                        <label class="form-label" style="font-size:12px;margin-bottom:4px;display:block;">Library</label>
+                        <select id="editShelfLibrary" class="form-input">${mediaLibraryOptions}</select>
+                    </div>
+        `;
         } else if (isTraktShelf) {
             traktSourceFields = `
                     <div style="margin-bottom:12px;">
@@ -7390,6 +7473,14 @@
             shelf.traktAccountId = accountId;
             shelf.traktListType = listType;
             shelf.traktListId = listType === 'custom' ? listId : '';
+        } else if (shelf.type === 'library' || shelf.type === 'local-library') {
+            const libraryId = document.getElementById('editShelfLibrary')?.value || '';
+            if (!libraryId) {
+                alert('Please select a configured media library');
+                return;
+            }
+            shelf.type = 'library';
+            shelf.libraryId = libraryId;
         } else if (shelf.type === 'simkl') {
             const accountId = document.getElementById('editShelfSimklAccount')?.value?.trim();
             const mediaType = document.getElementById('editShelfSimklMediaType')?.value?.trim() || 'movies';
@@ -8618,6 +8709,21 @@
         }
     }
 
+    async function loadMediaLibraries() {
+        try {
+            const response = await fetch(basePath + '/api/library/libraries');
+            if (response.ok) {
+                const data = await response.json();
+                mediaLibrariesData = Array.isArray(data) ? data : (data.libraries || []);
+            } else {
+                mediaLibrariesData = [];
+            }
+        } catch (e) {
+            console.error('Error loading media libraries:', e);
+            mediaLibrariesData = [];
+        }
+    }
+
     async function loadTraktLists(accountId) {
         if (!accountId || accountId === '__all__') return [];
         if (traktListsCache[accountId]) return traktListsCache[accountId];
@@ -9454,7 +9560,7 @@
         const urlProfileId = new URLSearchParams(window.location.search).get('profileId');
 
         if (isAdmin) {
-            await Promise.all([loadProfiles(), loadAccounts(), loadTraktAccounts(), loadSimklAccounts(), loadLetterboxdLists(), checkDefaultPassword()]);
+            await Promise.all([loadProfiles(), loadAccounts(), loadTraktAccounts(), loadSimklAccounts(), loadLetterboxdLists(), loadMediaLibraries(), checkDefaultPassword()]);
             const selector = document.getElementById('userSelector');
             // Pre-select from query param if provided
             if (urlProfileId && selector) {
@@ -9474,7 +9580,7 @@
             // This fixes the indicator showing for profiles with saved settings that match global
             await recalculateAllUserOverrides();
         } else {
-            await Promise.all([loadProfiles(), loadTraktAccounts()]);
+            await Promise.all([loadProfiles(), loadTraktAccounts(), loadMediaLibraries()]);
             const selector = document.getElementById('userSelector');
             // Pre-select from query param if provided
             if (urlProfileId && selector) {

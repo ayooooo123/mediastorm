@@ -222,6 +222,7 @@ func configShelvesToModel(shelves []config.ShelfConfig) []models.ShelfConfig {
 			Enabled:                s.Enabled,
 			Order:                  s.Order,
 			Type:                   s.Type,
+			LibraryID:              s.LibraryID,
 			ListURL:                s.ListURL,
 			StreamingServices:      configStreamingServicesToModel(s.StreamingServices),
 			CollectionItems:        configCollectionHubItemsToModel(s.CollectionItems),
@@ -1339,6 +1340,7 @@ func shelfConfigsEqual(user []models.ShelfConfig, global []config.ShelfConfig) b
 		}
 		if us.Name != gs.Name || us.Enabled != gs.Enabled || us.Order != gs.Order ||
 			(us.Type != "" && us.Type != gs.Type) ||
+			(us.LibraryID != "" && us.LibraryID != gs.LibraryID) ||
 			(us.ListURL != "" && us.ListURL != gs.ListURL) ||
 			us.Limit != gs.Limit ||
 			us.HideUnreleased != gs.HideUnreleased ||

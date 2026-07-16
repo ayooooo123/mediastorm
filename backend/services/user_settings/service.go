@@ -411,16 +411,35 @@ func reconcileProfileHomeShelves(us *models.UserSettings) bool {
 		// No stored override → fully inherits global. Never materialize defaults here.
 		return false
 	}
+	changed := models.MigrateLibraryShelfConfigs(shelves)
+	if deduped, duplicatesRemoved := dedupeShelfConfigsByID(shelves); duplicatesRemoved {
+		shelves = deduped
+		us.HomeShelves.Shelves = shelves
+		changed = true
+	}
 	if shelvesArePristineDefaults(shelves) {
 		// Auto-materialized default set → restore the inherit state.
 		us.HomeShelves.Shelves = nil
 		return true
 	}
-	if merged, changed := models.EnsureDefaultHomeShelves(shelves); changed {
+	if merged, defaultsChanged := models.EnsureDefaultHomeShelves(shelves); defaultsChanged {
 		us.HomeShelves.Shelves = merged
 		return true
 	}
-	return false
+	return changed
+}
+
+func dedupeShelfConfigsByID(shelves []models.ShelfConfig) ([]models.ShelfConfig, bool) {
+	seen := make(map[string]struct{}, len(shelves))
+	deduped := make([]models.ShelfConfig, 0, len(shelves))
+	for _, shelf := range shelves {
+		if _, exists := seen[shelf.ID]; exists {
+			continue
+		}
+		seen[shelf.ID] = struct{}{}
+		deduped = append(deduped, shelf)
+	}
+	return deduped, len(deduped) != len(shelves)
 }
 
 // shelvesArePristineDefaults reports whether shelves is exactly the built-in default
@@ -446,6 +465,7 @@ func shelfConfigEqualsDefault(stored, def models.ShelfConfig) bool {
 		stored.Enabled == def.Enabled &&
 		stored.Order == def.Order &&
 		stored.Type == def.Type &&
+		stored.LibraryID == def.LibraryID &&
 		stored.ListURL == def.ListURL &&
 		stored.TraktAccountID == def.TraktAccountID &&
 		stored.TraktListType == def.TraktListType &&

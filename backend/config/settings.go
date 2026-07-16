@@ -528,7 +528,8 @@ type ShelfConfig struct {
 	Name                   string                 `json:"name"`                             // Display name
 	Enabled                bool                   `json:"enabled"`                          // Whether the shelf is visible
 	Order                  int                    `json:"order"`                            // Sort order (lower numbers appear first)
-	Type                   string                 `json:"type,omitempty"`                   // "builtin" (default), "mdblist", "trakt", "simkl", "letterboxd", "genre", "decade", "collection-hub", or "local-library"
+	Type                   string                 `json:"type,omitempty"`                   // "builtin" (default), "mdblist", "trakt", "simkl", "letterboxd", "genre", "decade", "collection-hub", or "library"
+	LibraryID              string                 `json:"libraryId,omitempty"`              // Configured media library selected by a "library" shelf
 	ListURL                string                 `json:"listUrl,omitempty"`                // MDBList URL for custom lists (e.g., https://mdblist.com/lists/username/list-name/json)
 	StreamingServices      []StreamingServiceLink `json:"streamingServices,omitempty"`      // Service cards for the built-in Streaming Services shelf
 	CollectionItems        []CollectionHubLink    `json:"collectionItems,omitempty"`        // Shelf cards for collection hub shelves
@@ -863,6 +864,26 @@ func EnsureDefaultHomeShelves(shelves []ShelfConfig) ([]ShelfConfig, bool) {
 	}
 
 	return nextShelves, changed
+}
+
+// MigrateLibraryShelfConfigs converts the legacy local-library shelf shape,
+// whose shelf ID doubled as its source reference, into an explicit libraryId.
+func MigrateLibraryShelfConfigs(shelves []ShelfConfig) bool {
+	changed := false
+	for i := range shelves {
+		if shelves[i].Type != "local-library" && shelves[i].Type != "library" {
+			continue
+		}
+		if shelves[i].LibraryID == "" && strings.HasPrefix(shelves[i].ID, "local-library-") {
+			shelves[i].LibraryID = strings.TrimPrefix(shelves[i].ID, "local-library-")
+			changed = true
+		}
+		if shelves[i].Type == "local-library" {
+			shelves[i].Type = "library"
+			changed = true
+		}
+	}
+	return changed
 }
 
 // HDRDVPolicy determines what HDR/DV content to exclude from search results.
@@ -2079,6 +2100,7 @@ func (m *Manager) Load() (Settings, error) {
 	if shelves, changed := EnsureDefaultHomeShelves(s.HomeShelves.Shelves); changed {
 		s.HomeShelves.Shelves = shelves
 	}
+	MigrateLibraryShelfConfigs(s.HomeShelves.Shelves)
 
 	// Backfill shelf type for mdblist shelves missing the type field (legacy data)
 	for i := range s.HomeShelves.Shelves {

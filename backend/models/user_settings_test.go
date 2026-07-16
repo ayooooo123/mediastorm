@@ -2,6 +2,17 @@ package models
 
 import "testing"
 
+func TestMigrateLibraryShelfConfigs(t *testing.T) {
+	shelves := []ShelfConfig{{ID: "local-library-library-123", Type: "local-library"}}
+
+	if !MigrateLibraryShelfConfigs(shelves) {
+		t.Fatal("expected legacy shelf migration")
+	}
+	if shelves[0].Type != "library" || shelves[0].LibraryID != "library-123" {
+		t.Fatalf("unexpected migrated shelf: %+v", shelves[0])
+	}
+}
+
 func TestStringPtr(t *testing.T) {
 	s := StringPtr("hello")
 	if s == nil || *s != "hello" {
