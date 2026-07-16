@@ -2381,7 +2381,7 @@ func (s *Service) enrichSeriesTVDB(title *models.Title, tvShow mdblistTVShow) {
 			title.ID = fmt.Sprintf("tvdb:series:%d", tvdbID)
 			title.Overview = ext.Overview
 			title.LifecycleStatus = strings.TrimSpace(ext.Status.Name)
-			title.Status = seriesReleaseStatusFromTVDBEpisodes(ext.Episodes)
+			title.Status = seriesReleaseStatusFromTVDBExtended(ext, *title)
 			found = true
 			applyTVDBArtworks(title, ext.Artworks)
 			if genres := tvdbGenreNames(ext.Genres); len(genres) > 0 {
@@ -5446,7 +5446,7 @@ func (s *Service) SeriesInfo(ctx context.Context, req models.SeriesDetailsQuery)
 	if extended.Status.Name != "" {
 		seriesTitle.LifecycleStatus = extended.Status.Name
 	}
-	seriesTitle.Status = seriesReleaseStatusFromTVDBEpisodes(extended.Episodes)
+	seriesTitle.Status = seriesReleaseStatusFromTVDBExtended(extended, seriesTitle)
 
 	// Apply artworks (poster and backdrop)
 	if img := newTVDBImage(extended.Poster, "poster", 0, 0); img != nil {
@@ -8110,7 +8110,7 @@ func (s *Service) enrichLiteCustomListItem(ctx context.Context, item mdblistItem
 	if ext.Status.Name != "" {
 		title.LifecycleStatus = ext.Status.Name
 	}
-	title.Status = seriesReleaseStatusFromTVDBEpisodes(ext.Episodes)
+	title.Status = seriesReleaseStatusFromTVDBExtended(ext, *title)
 	applyTVDBArtworks(title, ext.Artworks)
 	applyTVDBRemoteIDs(title, ext.RemoteIDs)
 	if genres := tvdbGenreNames(ext.Genres); len(genres) > 0 {
@@ -8335,9 +8335,12 @@ func (s *Service) preFilterUnreleased(ctx context.Context, items []mdblistItem) 
 			} else {
 				// Series: check status via lightweight extended call (no artworks)
 				if it.TVDBID != nil && *it.TVDBID > 0 {
-					ext, err := s.cachedSeriesExtended(*it.TVDBID, nil)
+					ext, err := s.cachedSeriesExtended(*it.TVDBID, []string{"episodes"})
 					if err == nil {
-						status := seriesReleaseStatusFromTVDBEpisodes(ext.Episodes)
+						status := seriesReleaseStatusFromTVDBExtended(ext, models.Title{
+							MediaType: "series",
+							Year:      it.ReleaseYear,
+						})
 						if status != models.SeriesReleaseStatusReleased {
 							keep[idx] = false
 						}
@@ -8377,6 +8380,23 @@ func seriesReleaseStatusFromTVDBEpisodes(episodes []tvdbEpisode) string {
 		}
 	}
 	return models.SeriesReleaseStatusUnreleased
+}
+
+// seriesReleaseStatusFromTVDBExtended determines whether a series has begun
+// airing without assuming the extended response contains episodes. TVDB only
+// includes episode rows when the request asks for episode metadata, while the
+// lightweight list paths intentionally request artwork alone.
+func seriesReleaseStatusFromTVDBExtended(ext tvdbSeriesExtendedData, fallback models.Title) string {
+	if len(ext.Episodes) > 0 {
+		return seriesReleaseStatusFromTVDBEpisodes(ext.Episodes)
+	}
+	if firstAired := strings.TrimSpace(ext.FirstAired); firstAired != "" {
+		return models.SeriesReleaseStatusFromDate(firstAired)
+	}
+	if strings.EqualFold(strings.TrimSpace(fallback.Status), models.SeriesReleaseStatusReleased) {
+		return models.SeriesReleaseStatusReleased
+	}
+	return models.SeriesReleaseStatusFromDate(seriesTitleAirDateFallback(fallback))
 }
 
 func applyTVDBMovieExtendedMetadata(title *models.Title, ext tvdbMovieExtendedData) {
@@ -8479,7 +8499,7 @@ func (s *Service) enrichCustomListItem(ctx context.Context, item mdblistItem, li
 				title.ID = fmt.Sprintf("tvdb:series:%d", tvdbID)
 				title.Overview = ext.Overview
 				title.LifecycleStatus = strings.TrimSpace(ext.Status.Name)
-				title.Status = seriesReleaseStatusFromTVDBEpisodes(ext.Episodes)
+				title.Status = seriesReleaseStatusFromTVDBExtended(ext, title)
 				found = true
 				applyTVDBArtworks(&title, ext.Artworks)
 
@@ -8595,7 +8615,7 @@ func (s *Service) enrichCustomListItem(ctx context.Context, item mdblistItem, li
 						if strings.TrimSpace(title.LifecycleStatus) == "" {
 							title.LifecycleStatus = strings.TrimSpace(ext.Status.Name)
 						}
-						title.Status = seriesReleaseStatusFromTVDBEpisodes(ext.Episodes)
+						title.Status = seriesReleaseStatusFromTVDBExtended(ext, title)
 					}
 					if result.Overview != "" {
 						title.Overview = result.Overview

@@ -99,11 +99,39 @@ func TestEnrichLiteCustomListItemKeepsGenres(t *testing.T) {
 	if got := strings.Join(series.Title.Genres, ","); got != "Comedy,Mystery" {
 		t.Fatalf("series genres = %q, want Comedy,Mystery", got)
 	}
-	if series.Title.Status != models.SeriesReleaseStatusUnreleased {
-		t.Fatalf("series status = %q, want unreleased", series.Title.Status)
+	if series.Title.Status != models.SeriesReleaseStatusReleased {
+		t.Fatalf("series status = %q, want released", series.Title.Status)
 	}
 	if series.Title.LifecycleStatus != "Continuing" {
 		t.Fatalf("series lifecycle status = %q, want Continuing", series.Title.LifecycleStatus)
+	}
+}
+
+func TestEnrichLiteCustomListItemUsesFirstAiredWithoutEpisodes(t *testing.T) {
+	svc := &Service{
+		client: &tvdbClient{language: "eng"},
+		cache:  newFileCache(t.TempDir(), 24),
+	}
+
+	seriesTVDBID := int64(201)
+	seriesCacheID := cacheKey("tvdb", "series", "extended", "v1", "201", "artworks")
+	if err := svc.cache.set(seriesCacheID, tvdbSeriesExtendedData{
+		Name:       "Current Year Series",
+		FirstAired: time.Now().Add(-24 * time.Hour).Format("2006-01-02"),
+	}); err != nil {
+		t.Fatalf("set series cache: %v", err)
+	}
+
+	series := svc.enrichLiteCustomListItem(context.Background(), mdblistItem{
+		ID:          3,
+		Rank:        1,
+		Title:       "Current Year Series",
+		TVDBID:      &seriesTVDBID,
+		MediaType:   "show",
+		ReleaseYear: time.Now().Year(),
+	})
+	if series.Title.Status != models.SeriesReleaseStatusReleased {
+		t.Fatalf("series status = %q, want released", series.Title.Status)
 	}
 }
 

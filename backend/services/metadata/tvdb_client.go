@@ -559,6 +559,7 @@ type tvdbSeriesExtendedData struct {
 	ID              int64               `json:"id"`
 	Name            string              `json:"name"`
 	Overview        string              `json:"overview"`
+	FirstAired      string              `json:"firstAired"`
 	Year            tvdbYear            `json:"year"`
 	Network         string              `json:"network"`
 	AirsTime        string              `json:"airsTime"`        // e.g. "21:00"
