@@ -31,6 +31,19 @@ type playbackMigrationSignal struct {
 	expiresAt time.Time
 }
 
+func playbackMigrationSignalPriority(reason string) int {
+	switch strings.TrimSpace(reason) {
+	case "backend-starvation":
+		return 3
+	case "backend-low-throughput":
+		return 2
+	case "backend-delivery-starvation":
+		return 1
+	default:
+		return 0
+	}
+}
+
 // TrackedStream represents an active direct video stream
 type TrackedStream struct {
 	ID              string
@@ -405,12 +418,22 @@ func (t *StreamTracker) playbackMigrationSignalLocked(controlKey, sourcePath str
 		if key != controlKey && !strings.HasPrefix(key, prefix) {
 			continue
 		}
-		if bestKey == "" || signal.expiresAt.After(bestSignal.expiresAt) {
+		if bestKey == "" || playbackMigrationSignalPriority(signal.reason) > playbackMigrationSignalPriority(bestSignal.reason) ||
+			(playbackMigrationSignalPriority(signal.reason) == playbackMigrationSignalPriority(bestSignal.reason) && signal.expiresAt.After(bestSignal.expiresAt)) {
 			bestKey = key
 			bestSignal = signal
 		}
 	}
 	return bestKey, bestSignal, bestKey != ""
+}
+
+func (t *StreamTracker) recordPlaybackMigrationSignalLocked(key string, signal playbackMigrationSignal) {
+	existing, ok := t.migrationSignals[key]
+	if ok && existing.expiresAt.After(time.Now()) &&
+		playbackMigrationSignalPriority(existing.reason) > playbackMigrationSignalPriority(signal.reason) {
+		return
+	}
+	t.migrationSignals[key] = signal
 }
 
 func streamPlaybackControlKeys(stream *TrackedStream) []string {
@@ -571,7 +594,7 @@ func (t *StreamTracker) MarkPlaybackMigration(id, reason string) bool {
 	}
 	signal := playbackMigrationSignal{reason: reason, expiresAt: time.Now().Add(playbackMigrationSignalDuration)}
 	for _, key := range keys {
-		t.migrationSignals[playbackMigrationKey(key, stream.Path)] = signal
+		t.recordPlaybackMigrationSignalLocked(playbackMigrationKey(key, stream.Path), signal)
 	}
 	return true
 }
@@ -603,7 +626,7 @@ func (t *StreamTracker) MarkPlaybackMigrationForPath(path, reason string) int {
 			continue
 		}
 		for _, key := range keys {
-			t.migrationSignals[playbackMigrationKey(key, stream.Path)] = signal
+			t.recordPlaybackMigrationSignalLocked(playbackMigrationKey(key, stream.Path), signal)
 		}
 		marked++
 	}
