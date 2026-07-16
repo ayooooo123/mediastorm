@@ -24,6 +24,8 @@ const (
 	personalizedSimilarLimitPerSeed = 28
 	personalizedMaxPerPrimarySeed   = 4
 	personalizedTopTenBudget        = 1100 * time.Millisecond
+	personalizedResponseCacheTTL    = 30 * time.Minute
+	personalizedSimilarConcurrency  = 4
 )
 
 type PersonalizedRecommendationsResponse struct {
@@ -83,6 +85,16 @@ type personalizedKidsRatingFilter struct {
 	maxTVRating    string
 }
 
+type personalizedRecommendationsCacheEntry struct {
+	response  PersonalizedRecommendationsResponse
+	expiresAt time.Time
+}
+
+type personalizedRecommendationsBuild struct {
+	done     chan struct{}
+	response PersonalizedRecommendationsResponse
+}
+
 // GetPersonalizedRecommendations returns a non-AI "Recommended For You" shelf.
 // It uses recent watch/progress activity as seeds, the details-page Similar
 // engine as the candidate generator, and today's top-ten/trending shelves as
@@ -124,6 +136,24 @@ func (h *MetadataHandler) GetPersonalizedRecommendations(w http.ResponseWriter, 
 	}
 
 	kidsRatingFilter := h.personalizedKidsRatingFilter(userID)
+	cacheKey := personalizedRecommendationsCacheKey(userID, days, limitPerType, history, progress)
+	if response, ok := h.cachedPersonalizedRecommendations(cacheKey); ok {
+		log.Printf("[metadata] personalized recommendations cache hit user=%s items=%d", userID, len(response.Items))
+		writePersonalizedRecommendations(w, response)
+		return
+	}
+	build, leader := h.beginPersonalizedRecommendationsBuild(cacheKey)
+	if !leader {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-build.done:
+			log.Printf("[metadata] personalized recommendations shared in-flight result user=%s items=%d", userID, len(build.response.Items))
+			writePersonalizedRecommendations(w, build.response)
+			return
+		}
+	}
+
 	resp := h.buildPersonalizedRecommendations(r.Context(), userID, history, progress, days, limitPerType, kidsRatingFilter)
 	service := h.serviceForUser(userID)
 	if resp.Items == nil {
@@ -153,8 +183,96 @@ func (h *MetadataHandler) GetPersonalizedRecommendations(w http.ResponseWriter, 
 		enrichTrendingItems(resp.Series, idx)
 	}
 
+	h.finishPersonalizedRecommendationsBuild(cacheKey, build, resp, r.Context().Err() == nil)
+	writePersonalizedRecommendations(w, resp)
+}
+
+func writePersonalizedRecommendations(w http.ResponseWriter, response PersonalizedRecommendationsResponse) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(response)
+}
+
+func personalizedRecommendationsCacheKey(
+	userID string,
+	days int,
+	limitPerType int,
+	history []models.WatchHistoryItem,
+	progress []models.PlaybackProgress,
+) string {
+	records := make([]string, 0, len(history)+len(progress))
+	for _, item := range history {
+		records = append(records, strings.Join([]string{
+			"h", item.ID, item.MediaType, item.ItemID, item.SeriesID,
+			strconv.FormatBool(item.Watched),
+			strconv.FormatInt(item.WatchedAt.UnixNano(), 10),
+			strconv.FormatInt(item.UpdatedAt.UnixNano(), 10),
+		}, "\x00"))
+	}
+	for _, item := range progress {
+		records = append(records, strings.Join([]string{
+			"p", item.ID, item.MediaType, item.ItemID, item.SeriesID,
+			strconv.FormatFloat(item.PercentWatched, 'f', 3, 64),
+			strconv.FormatInt(item.UpdatedAt.UnixNano(), 10),
+		}, "\x00"))
+	}
+	sort.Strings(records)
+	hash := fnv.New64a()
+	for _, record := range records {
+		_, _ = hash.Write([]byte(record))
+		_, _ = hash.Write([]byte{'\n'})
+	}
+	return strings.Join([]string{
+		userID,
+		strconv.Itoa(days),
+		strconv.Itoa(limitPerType),
+		strconv.FormatUint(hash.Sum64(), 16),
+	}, ":")
+}
+
+func (h *MetadataHandler) cachedPersonalizedRecommendations(key string) (PersonalizedRecommendationsResponse, bool) {
+	h.personalizedMu.Lock()
+	defer h.personalizedMu.Unlock()
+	now := time.Now()
+	for cachedKey, cached := range h.personalizedCache {
+		if now.After(cached.expiresAt) {
+			delete(h.personalizedCache, cachedKey)
+		}
+	}
+	entry, ok := h.personalizedCache[key]
+	if !ok {
+		return PersonalizedRecommendationsResponse{}, false
+	}
+	return entry.response, true
+}
+
+func (h *MetadataHandler) beginPersonalizedRecommendationsBuild(key string) (*personalizedRecommendationsBuild, bool) {
+	h.personalizedMu.Lock()
+	defer h.personalizedMu.Unlock()
+	if build, ok := h.personalizedInFlight[key]; ok {
+		return build, false
+	}
+	build := &personalizedRecommendationsBuild{done: make(chan struct{})}
+	h.personalizedInFlight[key] = build
+	return build, true
+}
+
+func (h *MetadataHandler) finishPersonalizedRecommendationsBuild(
+	key string,
+	build *personalizedRecommendationsBuild,
+	response PersonalizedRecommendationsResponse,
+	cacheResponse bool,
+) {
+	h.personalizedMu.Lock()
+	build.response = response
+	if cacheResponse {
+		h.personalizedCache[key] = personalizedRecommendationsCacheEntry{
+			response:  response,
+			expiresAt: time.Now().Add(personalizedResponseCacheTTL),
+		}
+	}
+	delete(h.personalizedInFlight, key)
+	close(build.done)
+	h.personalizedMu.Unlock()
 }
 
 func (h *MetadataHandler) personalizedKidsRatingFilter(userID string) personalizedKidsRatingFilter {
@@ -342,35 +460,57 @@ func (h *MetadataHandler) buildPersonalizedRecommendations(
 		}
 	}
 
-	for _, seed := range seeds {
-		select {
-		case <-ctx.Done():
-			movies := finalizePersonalizedBucket(movieCandidates, limitPerType)
-			series := finalizePersonalizedBucket(seriesCandidates, limitPerType)
-			items := interleavePersonalizedItems(movies, series, limitPerType)
-			return PersonalizedRecommendationsResponse{
-				Items:       items,
-				Movies:      movies,
-				Series:      series,
-				Total:       len(items),
-				SeedCount:   len(seeds),
-				Explanation: buildPersonalizedExplanation(seeds, days, len(topTenAll)+len(topTenMovies)+len(topTenSeries) > 0),
+	type similarResult struct {
+		titles []models.Title
+		err    error
+	}
+	similarResults := make([]similarResult, len(seeds))
+	sem := make(chan struct{}, personalizedSimilarConcurrency)
+	var similarWG sync.WaitGroup
+	for index, seed := range seeds {
+		index, seed := index, seed
+		similarWG.Add(1)
+		go func() {
+			defer similarWG.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				similarResults[index].err = ctx.Err()
+				return
 			}
-		default:
-		}
+			similarResults[index].titles, similarResults[index].err = service.Similar(ctx, seed.MediaType, seed.TMDBID)
+		}()
+	}
+	similarWG.Wait()
 
-		titles, err := service.Similar(ctx, seed.MediaType, seed.TMDBID)
-		if err != nil {
-			log.Printf("[metadata] personalized recommendations similar skipped user=%s seed=%q type=%s tmdb=%d: %v", userID, seed.Title, seed.MediaType, seed.TMDBID, err)
+	for index, seed := range seeds {
+		result := similarResults[index]
+		if result.err != nil {
+			log.Printf("[metadata] personalized recommendations similar skipped user=%s seed=%q type=%s tmdb=%d: %v", userID, seed.Title, seed.MediaType, seed.TMDBID, result.err)
 			continue
 		}
-		for idx, title := range titles {
+		for idx, title := range result.titles {
 			if idx >= personalizedSimilarLimitPerSeed {
 				break
 			}
 			rankScore := maxFloat(0, 52-float64(idx)*1.9)
 			recencyScore := personalizedRecencyScore(seed.Activity, cutoff, now) * 14
 			addCandidate(title, rankScore*seed.Strength+recencyScore, seed.Key)
+		}
+	}
+
+	if ctx.Err() != nil {
+		movies := finalizePersonalizedBucket(movieCandidates, limitPerType)
+		series := finalizePersonalizedBucket(seriesCandidates, limitPerType)
+		items := interleavePersonalizedItems(movies, series, limitPerType)
+		return PersonalizedRecommendationsResponse{
+			Items:       items,
+			Movies:      movies,
+			Series:      series,
+			Total:       len(items),
+			SeedCount:   len(seeds),
+			Explanation: buildPersonalizedExplanation(seeds, days, len(topTenAll)+len(topTenMovies)+len(topTenSeries) > 0),
 		}
 	}
 

@@ -34,6 +34,7 @@ const (
 	playlistContentTypePlain = "text/plain; charset=utf-8"
 	liveStreamTimeout        = 30 * time.Minute
 	defaultCacheTTL          = 24 * time.Hour
+	defaultXtreamCacheTTL    = 30 * time.Minute
 	cacheDir                 = "cache/live"
 
 	// liveStreamUserAgent is sent on all upstream live stream requests. Some
@@ -157,6 +158,17 @@ type LiveUserSettingsProvider interface {
 	Get(userID string) (*models.UserSettings, error)
 }
 
+type xtreamChannelsCacheEntry struct {
+	channels  []LiveChannel
+	expiresAt time.Time
+}
+
+type xtreamChannelsFetch struct {
+	done     chan struct{}
+	channels []LiveChannel
+	err      error
+}
+
 // LiveHandler proxies remote M3U playlists through the backend and can transmux
 // individual live channel streams into browser-friendly MP4 fragments.
 type LiveHandler struct {
@@ -174,6 +186,10 @@ type LiveHandler struct {
 
 	stremioMu    sync.Mutex
 	stremioCache map[string]stremioChannelsCacheEntry
+
+	xtreamMu       sync.Mutex
+	xtreamCache    map[string]xtreamChannelsCacheEntry
+	xtreamInFlight map[string]*xtreamChannelsFetch
 }
 
 // NewLiveHandler creates a handler capable of fetching remote playlists.
@@ -208,6 +224,8 @@ func NewLiveHandler(client *http.Client, transmuxEnabled bool, ffmpegPath string
 		cfgManager:         cfgManager,
 		userSettingsSvc:    userSettingsSvc,
 		stremioCache:       make(map[string]stremioChannelsCacheEntry),
+		xtreamCache:        make(map[string]xtreamChannelsCacheEntry),
+		xtreamInFlight:     make(map[string]*xtreamChannelsFetch),
 	}
 }
 
@@ -1391,6 +1409,53 @@ func (h *LiveHandler) fetchXtreamWithUAFallback(ctx context.Context, client *htt
 
 // fetchXtreamChannels fetches live channels from the Xtream Codes API.
 func (h *LiveHandler) fetchXtreamChannels(ctx context.Context, host, username, password, proxyURL string) ([]LiveChannel, error) {
+	identity := host + "\x00" + username + "\x00" + password + "\x00" + proxyURL
+	keyBytes := sha256.Sum256([]byte(identity))
+	cacheKey := hex.EncodeToString(keyBytes[:])
+
+	h.xtreamMu.Lock()
+	if cached, ok := h.xtreamCache[cacheKey]; ok && time.Now().Before(cached.expiresAt) {
+		channels := cached.channels
+		h.xtreamMu.Unlock()
+		log.Printf("[live] serving %d Xtream channels from memory cache", len(channels))
+		return channels, nil
+	}
+	if inFlight, ok := h.xtreamInFlight[cacheKey]; ok {
+		h.xtreamMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-inFlight.done:
+			return inFlight.channels, inFlight.err
+		}
+	}
+	inFlight := &xtreamChannelsFetch{done: make(chan struct{})}
+	h.xtreamInFlight[cacheKey] = inFlight
+	h.xtreamMu.Unlock()
+
+	// Finish and retain a catalog refresh even if the initiating app request is
+	// cancelled. Other concurrent requests share this fetch, and the next cold
+	// app launch can use the populated backend cache.
+	fetchCtx, cancel := context.WithTimeout(context.Background(), defaultPlaylistTimeout)
+	channels, err := h.fetchXtreamChannelsUncached(fetchCtx, host, username, password, proxyURL)
+	cancel()
+
+	h.xtreamMu.Lock()
+	inFlight.channels = channels
+	inFlight.err = err
+	if err == nil {
+		h.xtreamCache[cacheKey] = xtreamChannelsCacheEntry{
+			channels:  channels,
+			expiresAt: time.Now().Add(defaultXtreamCacheTTL),
+		}
+	}
+	delete(h.xtreamInFlight, cacheKey)
+	close(inFlight.done)
+	h.xtreamMu.Unlock()
+	return channels, err
+}
+
+func (h *LiveHandler) fetchXtreamChannelsUncached(ctx context.Context, host, username, password, proxyURL string) ([]LiveChannel, error) {
 	host = strings.TrimRight(host, "/")
 
 	// Fetch categories first to build a category ID -> name map

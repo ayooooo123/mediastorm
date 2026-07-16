@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -670,6 +671,36 @@ func TestFetchXtreamChannelsSendsUserAgent(t *testing.T) {
 	}
 	if streamUA != liveStreamUserAgent {
 		t.Fatalf("streams User-Agent = %q, want %q", streamUA, liveStreamUserAgent)
+	}
+}
+
+func TestFetchXtreamChannelsCachesCatalog(t *testing.T) {
+	var requests atomic.Int32
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		switch r.URL.Query().Get("action") {
+		case "get_live_categories":
+			_, _ = w.Write([]byte(`[{"category_id":"1","category_name":"News"}]`))
+		case "get_live_streams":
+			_, _ = w.Write([]byte(`[{"stream_id":10,"name":"Channel One","stream_type":"live","category_id":"1"}]`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer provider.Close()
+
+	h := NewLiveHandler(provider.Client(), false, "", 24, 0, 0, false, nil, nil)
+	for i := 0; i < 2; i++ {
+		channels, err := h.fetchXtreamChannels(context.Background(), provider.URL, "user", "pass", "")
+		if err != nil {
+			t.Fatalf("fetch %d: %v", i+1, err)
+		}
+		if len(channels) != 1 || channels[0].Name != "Channel One" {
+			t.Fatalf("fetch %d channels = %+v", i+1, channels)
+		}
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("provider requests = %d, want 2 from one categories+streams fetch", got)
 	}
 }
 
