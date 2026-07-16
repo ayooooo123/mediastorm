@@ -45,6 +45,9 @@ type LocalMediaLibrary struct {
 	LastScanTotal      int                   `json:"lastScanTotal"`
 	LastScanMatched    int                   `json:"lastScanMatched"`
 	LastScanLowConf    int                   `json:"lastScanLowConfidence"`
+	SourceType         string                `json:"sourceType"`
+	SourceName         string                `json:"sourceName"`
+	SourceServerName   string                `json:"sourceServerName,omitempty"`
 }
 
 type LocalMediaProbe struct {
@@ -98,6 +101,10 @@ type LocalMediaItem struct {
 	LastSeenScanID   string                 `json:"-"`
 	CreatedAt        time.Time              `json:"createdAt"`
 	UpdatedAt        time.Time              `json:"updatedAt"`
+	SourceType       string                 `json:"sourceType"`
+	SourceName       string                 `json:"sourceName"`
+	SourceServerName string                 `json:"sourceServerName,omitempty"`
+	VersionLabel     string                 `json:"versionLabel,omitempty"`
 }
 
 type LocalMediaItemListQuery struct {
@@ -259,4 +266,79 @@ type LocalMediaPlaybackResponse struct {
 	HLSStartURL  string            `json:"hlsStartUrl,omitempty"`
 	DirectStream bool              `json:"directStream"`
 	HLSAvailable bool              `json:"hlsAvailable"`
+	SourceType   string            `json:"sourceType"`
+	SourceName   string            `json:"sourceName"`
+}
+
+const (
+	MediaSourceLocal    = "local"
+	MediaSourcePlex     = "plex"
+	MediaSourceJellyfin = "jellyfin"
+)
+
+// RemoteMediaLibrary is a configured Plex or Jellyfin library mirrored into
+// PostgreSQL. Provider credentials remain in settings and are referenced by ID.
+type RemoteMediaLibrary struct {
+	ID                 string                `json:"id"`
+	Name               string                `json:"name"`
+	Type               LocalMediaLibraryType `json:"type"`
+	Provider           string                `json:"provider"`
+	AccountID          string                `json:"accountId"`
+	ServerID           string                `json:"serverId,omitempty"`
+	ServerName         string                `json:"serverName,omitempty"`
+	ExternalLibraryID  string                `json:"externalLibraryId"`
+	CreatedAt          time.Time             `json:"createdAt"`
+	UpdatedAt          time.Time             `json:"updatedAt"`
+	LastSyncStartedAt  *time.Time            `json:"lastSyncStartedAt,omitempty"`
+	LastSyncFinishedAt *time.Time            `json:"lastSyncFinishedAt,omitempty"`
+	LastSyncStatus     LocalMediaScanStatus  `json:"lastSyncStatus"`
+	LastSyncError      string                `json:"lastSyncError,omitempty"`
+	LastSyncTotal      int                   `json:"lastSyncTotal"`
+}
+
+type RemoteMediaLibraryCreateInput struct {
+	Name              string                `json:"name"`
+	Type              LocalMediaLibraryType `json:"type"`
+	Provider          string                `json:"provider"`
+	AccountID         string                `json:"accountId"`
+	ServerID          string                `json:"serverId,omitempty"`
+	ServerName        string                `json:"serverName,omitempty"`
+	ExternalLibraryID string                `json:"externalLibraryId"`
+}
+
+// RemoteMediaItem represents one playable provider version. Multiple rows may
+// share GroupKey (or GroupKey/season/episode) and become version choices.
+type RemoteMediaItem struct {
+	ID              string                 `json:"id"`
+	LibraryID       string                 `json:"libraryId"`
+	ExternalItemID  string                 `json:"externalItemId"`
+	ExternalMediaID string                 `json:"externalMediaId,omitempty"`
+	GroupKey        string                 `json:"groupKey"`
+	LibraryType     LocalMediaLibraryType  `json:"libraryType"`
+	Title           string                 `json:"title"`
+	Year            int                    `json:"year,omitempty"`
+	Overview        string                 `json:"overview,omitempty"`
+	Certification   string                 `json:"certification,omitempty"`
+	SeasonNumber    int                    `json:"seasonNumber,omitempty"`
+	EpisodeNumber   int                    `json:"episodeNumber,omitempty"`
+	EpisodeTitle    string                 `json:"episodeTitle,omitempty"`
+	ExternalIDs     *LocalMediaExternalIDs `json:"externalIds,omitempty"`
+	PosterURL       string                 `json:"posterUrl,omitempty"`
+	BackdropURL     string                 `json:"backdropUrl,omitempty"`
+	EpisodeImageURL string                 `json:"episodeImageUrl,omitempty"`
+	FileName        string                 `json:"fileName,omitempty"`
+	VersionLabel    string                 `json:"versionLabel,omitempty"`
+	Container       string                 `json:"container,omitempty"`
+	VideoCodec      string                 `json:"videoCodec,omitempty"`
+	AudioCodec      string                 `json:"audioCodec,omitempty"`
+	Width           int                    `json:"width,omitempty"`
+	Height          int                    `json:"height,omitempty"`
+	HDRFormat       string                 `json:"hdrFormat,omitempty"`
+	SizeBytes       int64                  `json:"sizeBytes,omitempty"`
+	StreamPath      string                 `json:"streamPath"`
+	ProviderData    map[string]string      `json:"-"`
+	LastSeenSyncID  string                 `json:"-"`
+	IsMissing       bool                   `json:"isMissing,omitempty"`
+	CreatedAt       time.Time              `json:"createdAt"`
+	UpdatedAt       time.Time              `json:"updatedAt"`
 }

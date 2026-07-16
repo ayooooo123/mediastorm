@@ -106,6 +106,7 @@ func (ds *DataStore) ImportQueue() ImportQueueRepository { return &pgImportQueue
 func (ds *DataStore) FileHealth() FileHealthRepository   { return &pgFileHealthRepo{pool: ds.pool} }
 func (ds *DataStore) MediaFiles() MediaFileRepository    { return &pgMediaFileRepo{pool: ds.pool} }
 func (ds *DataStore) LocalMedia() LocalMediaRepository   { return &pgLocalMediaRepo{pool: ds.pool} }
+func (ds *DataStore) RemoteMedia() RemoteMediaRepository { return &pgRemoteMediaRepo{pool: ds.pool} }
 func (ds *DataStore) Recordings() RecordingRepository    { return &pgRecordingRepo{pool: ds.pool} }
 
 // --- Transaction support ---
@@ -161,4 +162,5 @@ func (t *Tx) ImportQueue() ImportQueueRepository { return &pgImportQueueRepo{poo
 func (t *Tx) FileHealth() FileHealthRepository   { return &pgFileHealthRepo{pool: t.tx} }
 func (t *Tx) MediaFiles() MediaFileRepository    { return &pgMediaFileRepo{pool: t.tx} }
 func (t *Tx) LocalMedia() LocalMediaRepository   { return &pgLocalMediaRepo{pool: t.tx} }
+func (t *Tx) RemoteMedia() RemoteMediaRepository { return &pgRemoteMediaRepo{pool: t.tx} }
 func (t *Tx) Recordings() RecordingRepository    { return &pgRecordingRepo{pool: t.tx} }
