@@ -228,6 +228,10 @@ func TestPlaybackMigrationSignalIsScopedToSource(t *testing.T) {
 		ItemID:     "tmdb:movie:14160",
 		Position:   40,
 		SourcePath: "/webdav/nzbs/up/old.mkv",
+		BufferAhead: func() *float64 {
+			value := 10.0
+			return &value
+		}(),
 	}); !prepare || reason != "backend-low-throughput" {
 		t.Fatalf("matching source did not receive signal: prepare=%v reason=%q", prepare, reason)
 	}
@@ -251,9 +255,21 @@ func TestPlaybackMigrationPreparationDoesNotConsumeSignal(t *testing.T) {
 	}
 
 	reason, prepare := tracker.ShouldPreparePlaybackMigration("p1", models.PlaybackProgressUpdate{
-		MediaType: "movie",
-		ItemID:    "tmdb:movie:14160",
-		Position:  40,
+		MediaType:   "movie",
+		ItemID:      "tmdb:movie:14160",
+		Position:    40,
+		BufferAhead: &bufferAhead,
+	})
+	if prepare {
+		t.Fatalf("healthy runway unexpectedly prepared: reason=%q", reason)
+	}
+
+	preparationRunway := 10.0
+	reason, prepare = tracker.ShouldPreparePlaybackMigration("p1", models.PlaybackProgressUpdate{
+		MediaType:   "movie",
+		ItemID:      "tmdb:movie:14160",
+		Position:    40,
+		BufferAhead: &preparationRunway,
 	})
 	if !prepare || reason != "backend-low-throughput" {
 		t.Fatalf("prepare=%v reason=%q", prepare, reason)
