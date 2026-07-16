@@ -1077,6 +1077,8 @@ func homeShelfSourceKey(shelf models.ShelfConfig) string {
 		return fmt.Sprintf("simkl:%s:%s:%s", shelf.SimklAccountID, shelf.SimklMediaType, shelf.SimklListType)
 	case "letterboxd":
 		return fmt.Sprintf("letterboxd:%s:%s", shelf.LetterboxdListID, shelf.LetterboxdListURL)
+	case "library":
+		return "library:" + strings.TrimSpace(shelf.LibraryID)
 	case "genre", "decade", "collection-hub", "local-library":
 		return shelf.Type + ":" + shelf.ID
 	default:
@@ -1304,11 +1306,6 @@ func (h *StartupHandler) getDefaultsFromGlobal() models.UserSettings {
 	}
 
 	shelves := convertShelves(globalSettings.HomeShelves.Shelves)
-	if h.localMedia != nil {
-		if libs, err := h.localMedia.ListLibraries(context.Background()); err == nil {
-			shelves = injectLocalLibraryShelves(shelves, libs)
-		}
-	}
 
 	return models.UserSettings{
 		Playback: models.PlaybackSettings{

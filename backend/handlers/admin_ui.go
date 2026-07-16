@@ -50,6 +50,7 @@ import (
 	"novastream/services/metadata"
 	"novastream/services/plex"
 	"novastream/services/remoteaccess"
+	"novastream/services/remotemedia"
 	"novastream/services/sessions"
 	"novastream/services/simkl"
 	"novastream/services/trakt"
@@ -747,9 +748,16 @@ var SettingsSchema = map[string]interface{}{
 			"type": map[string]interface{}{
 				"type":        "select",
 				"label":       "Type",
-				"options":     []string{"builtin", "mdblist", "trakt", "local-library"},
-				"description": "Shelf type (builtin, custom MDBList, Trakt, or local media library)",
+				"options":     []string{"builtin", "mdblist", "trakt", "library"},
+				"description": "Shelf type (builtin, custom MDBList, Trakt, or configured media library)",
 				"order":       2,
+			},
+			"libraryId": map[string]interface{}{
+				"type":        "text",
+				"label":       "Media Library",
+				"description": "Configured local, Plex, or Jellyfin library ID",
+				"showWhen":    "type=library",
+				"order":       3,
 			},
 			"listUrl": map[string]interface{}{
 				"type":        "text",
@@ -1413,6 +1421,7 @@ type AdminUIHandler struct {
 	metadataService       MetadataService
 	debridSearchService   *debrid.SearchService
 	localMediaService     *localmedia.Service
+	remoteMediaService    *remotemedia.Service
 	calendarService       *calendar.Service
 	clientsService        clientsService
 	clientSettingsService clientSettingsService
@@ -1470,6 +1479,10 @@ func (h *AdminUIHandler) SetHiddenItemsService(svc hiddenItemsService) {
 // SetLocalMediaService sets the local media service for library management.
 func (h *AdminUIHandler) SetLocalMediaService(ls *localmedia.Service) {
 	h.localMediaService = ls
+}
+
+func (h *AdminUIHandler) SetRemoteMediaService(service *remotemedia.Service) {
+	h.remoteMediaService = service
 }
 
 // SetAccountsService sets the accounts service for account management
@@ -1762,48 +1775,6 @@ func (h *AdminUIHandler) SettingsPage(w http.ResponseWriter, r *http.Request) {
 	var userOverrides map[string]bool
 	if h.userSettingsService != nil {
 		userOverrides = h.userSettingsService.GetUsersWithOverrides()
-	}
-
-	// Inject local library shelves into the settings view so they appear in the
-	// Home Shelves section. These are not persisted to settings.json unless the
-	// admin explicitly saves them; existing entries are preserved as-is.
-	if h.localMediaService != nil {
-		if libs, err := h.localMediaService.ListLibraries(r.Context()); err == nil {
-			libNameByID := make(map[string]string, len(libs))
-			for _, lib := range libs {
-				libNameByID["local-library-"+lib.ID] = lib.Name
-			}
-			existing := make(map[string]bool, len(settings.HomeShelves.Shelves))
-			maxOrder := -1
-			for i, s := range settings.HomeShelves.Shelves {
-				existing[s.ID] = true
-				if s.Order > maxOrder {
-					maxOrder = s.Order
-				}
-				if s.Type == "local-library" {
-					if libName, ok := libNameByID[s.ID]; ok {
-						want := "Recently Added - " + libName
-						if settings.HomeShelves.Shelves[i].Name != want {
-							settings.HomeShelves.Shelves[i].Name = want
-						}
-					}
-				}
-			}
-			injected := 0
-			for _, lib := range libs {
-				id := "local-library-" + lib.ID
-				if !existing[id] {
-					settings.HomeShelves.Shelves = append(settings.HomeShelves.Shelves, config.ShelfConfig{
-						ID:      id,
-						Name:    "Recently Added - " + lib.Name,
-						Enabled: true,
-						Order:   maxOrder + 1 + injected,
-						Type:    "local-library",
-					})
-					injected++
-				}
-			}
-		}
 	}
 
 	data := AdminPageData{
@@ -3421,11 +3392,6 @@ func (h *AdminUIHandler) GetUserSettings(w http.ResponseWriter, r *http.Request)
 	}
 
 	shelves := convertShelves(globalSettings.HomeShelves.Shelves)
-	if h.localMediaService != nil {
-		if libs, err := h.localMediaService.ListLibraries(r.Context()); err == nil {
-			shelves = injectLocalLibraryShelves(shelves, libs)
-		}
-	}
 
 	defaults := models.UserSettings{
 		Playback: models.PlaybackSettings{
@@ -3629,11 +3595,6 @@ func (h *AdminUIHandler) PropagateSettings(w http.ResponseWriter, r *http.Reques
 			} else {
 				// Start with defaults
 				propagateShelves := convertShelves(globalSettings.HomeShelves.Shelves)
-				if h.localMediaService != nil {
-					if libs, err := h.localMediaService.ListLibraries(r.Context()); err == nil {
-						propagateShelves = injectLocalLibraryShelves(propagateShelves, libs)
-					}
-				}
 				newSettings = models.UserSettings{
 					Playback: models.PlaybackSettings{
 						PreferredPlayer:            globalSettings.Playback.PreferredPlayer,
@@ -10492,6 +10453,20 @@ func (h *AdminUIHandler) ListLocalMediaLibraries(w http.ResponseWriter, r *http.
 	if libraries == nil {
 		libraries = []models.LocalMediaLibrary{}
 	}
+	for i := range libraries {
+		libraries[i].SourceType = models.MediaSourceLocal
+		libraries[i].SourceName = "Local"
+	}
+	if h.remoteMediaService != nil {
+		remoteLibraries, remoteErr := h.remoteMediaService.ListLibraries(r.Context())
+		if remoteErr != nil {
+			http.Error(w, remoteErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		for _, remote := range remoteLibraries {
+			libraries = append(libraries, models.LocalMediaLibrary{ID: remote.ID, Name: remote.Name, Type: remote.Type, CreatedAt: remote.CreatedAt, UpdatedAt: remote.UpdatedAt, LastScanStartedAt: remote.LastSyncStartedAt, LastScanFinishedAt: remote.LastSyncFinishedAt, LastScanStatus: remote.LastSyncStatus, LastScanError: remote.LastSyncError, LastScanDiscovered: remote.LastSyncTotal, LastScanTotal: remote.LastSyncTotal, LastScanMatched: remote.LastSyncTotal, SourceType: remote.Provider, SourceName: strings.Title(remote.Provider), SourceServerName: remote.ServerName})
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(libraries)
 }
@@ -10500,12 +10475,33 @@ func (h *AdminUIHandler) CreateLocalMediaLibrary(w http.ResponseWriter, r *http.
 	if !h.requireLocalMediaAdmin(w, r) {
 		return
 	}
-	var input models.LocalMediaLibraryCreateInput
+	var input struct {
+		models.LocalMediaLibraryCreateInput
+		Provider          string `json:"provider"`
+		AccountID         string `json:"accountId"`
+		ServerID          string `json:"serverId"`
+		ServerName        string `json:"serverName"`
+		ExternalLibraryID string `json:"externalLibraryId"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	library, err := h.localMediaService.CreateLibrary(r.Context(), input)
+	if input.Provider != "" && input.Provider != models.MediaSourceLocal {
+		if h.remoteMediaService == nil {
+			http.Error(w, "remote media service unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		library, err := h.remoteMediaService.CreateLibrary(r.Context(), models.RemoteMediaLibraryCreateInput{Name: input.Name, Type: input.Type, Provider: input.Provider, AccountID: input.AccountID, ServerID: input.ServerID, ServerName: input.ServerName, ExternalLibraryID: input.ExternalLibraryID})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(library)
+		return
+	}
+	library, err := h.localMediaService.CreateLibrary(r.Context(), input.LocalMediaLibraryCreateInput)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -10542,6 +10538,16 @@ func (h *AdminUIHandler) DeleteLocalMediaLibrary(w http.ResponseWriter, r *http.
 		return
 	}
 	id := mux.Vars(r)["libraryID"]
+	if h.remoteMediaService != nil {
+		if remote, _ := h.remoteMediaService.GetLibrary(r.Context(), id); remote != nil {
+			if err := h.remoteMediaService.DeleteLibrary(r.Context(), id); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+	}
 	if err := h.localMediaService.DeleteLibrary(r.Context(), id); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -10554,6 +10560,18 @@ func (h *AdminUIHandler) ScanLocalMediaLibrary(w http.ResponseWriter, r *http.Re
 		return
 	}
 	id := mux.Vars(r)["libraryID"]
+	if h.remoteMediaService != nil {
+		if remote, _ := h.remoteMediaService.GetLibrary(r.Context(), id); remote != nil {
+			count, err := h.remoteMediaService.Sync(r.Context(), id)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]int{"discovered": count, "matched": count})
+			return
+		}
+	}
 	summary, err := h.localMediaService.StartScan(r.Context(), id)
 	if err != nil {
 		status := http.StatusBadRequest
@@ -10574,7 +10592,7 @@ func (h *AdminUIHandler) ListLocalMediaItems(w http.ResponseWriter, r *http.Requ
 	id := mux.Vars(r)["libraryID"]
 	limit, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("limit")))
 	offset, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("offset")))
-	items, err := h.localMediaService.ListItems(r.Context(), id, models.LocalMediaItemListQuery{
+	listQuery := models.LocalMediaItemListQuery{
 		Filter:         r.URL.Query().Get("filter"),
 		Sort:           r.URL.Query().Get("sort"),
 		Dir:            r.URL.Query().Get("dir"),
@@ -10582,7 +10600,33 @@ func (h *AdminUIHandler) ListLocalMediaItems(w http.ResponseWriter, r *http.Requ
 		Limit:          limit,
 		Offset:         offset,
 		IncludeMissing: true,
-	})
+	}
+	var items *models.LocalMediaItemListResult
+	var err error
+	if h.remoteMediaService != nil {
+		if remoteLibrary, remoteErr := h.remoteMediaService.GetLibrary(r.Context(), id); remoteErr != nil {
+			err = remoteErr
+		} else if remoteLibrary != nil {
+			groups, remoteErr := h.remoteMediaService.ListGroups(r.Context(), id, models.LocalMediaItemListQuery{Limit: 200, IncludeMissing: true})
+			if remoteErr != nil {
+				err = remoteErr
+			} else {
+				flat := []models.LocalMediaItem{}
+				for _, group := range groups.Groups {
+					flat = append(flat, group.Items...)
+					for _, season := range group.Seasons {
+						for _, episode := range season.Episodes {
+							flat = append(flat, episode.Items...)
+						}
+					}
+				}
+				items = &models.LocalMediaItemListResult{Items: flat, Total: len(flat), Limit: 200}
+			}
+		}
+	}
+	if items == nil && err == nil {
+		items, err = h.localMediaService.ListItems(r.Context(), id, listQuery)
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -10601,7 +10645,7 @@ func (h *AdminUIHandler) ListLocalMediaGroups(w http.ResponseWriter, r *http.Req
 	id := mux.Vars(r)["libraryID"]
 	limit, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("limit")))
 	offset, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("offset")))
-	groups, err := h.localMediaService.ListGroups(r.Context(), id, models.LocalMediaItemListQuery{
+	listQuery := models.LocalMediaItemListQuery{
 		Filter:         r.URL.Query().Get("filter"),
 		Sort:           r.URL.Query().Get("sort"),
 		Dir:            r.URL.Query().Get("dir"),
@@ -10612,7 +10656,19 @@ func (h *AdminUIHandler) ListLocalMediaGroups(w http.ResponseWriter, r *http.Req
 		// Cards mode returns lightweight group summaries (no items/seasons, no live
 		// metadata enrichment) for fast shelf rendering in the web player.
 		IncludeCards: strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include")), "cards"),
-	})
+	}
+	var groups *models.LocalMediaGroupListResult
+	var err error
+	if h.remoteMediaService != nil {
+		if remoteLibrary, remoteErr := h.remoteMediaService.GetLibrary(r.Context(), id); remoteErr != nil {
+			err = remoteErr
+		} else if remoteLibrary != nil {
+			groups, err = h.remoteMediaService.ListGroups(r.Context(), id, listQuery)
+		}
+	}
+	if groups == nil && err == nil {
+		groups, err = h.localMediaService.ListGroups(r.Context(), id, listQuery)
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -10622,6 +10678,23 @@ func (h *AdminUIHandler) ListLocalMediaGroups(w http.ResponseWriter, r *http.Req
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(groups)
+}
+
+func (h *AdminUIHandler) DiscoverRemoteMediaLibraries(w http.ResponseWriter, r *http.Request) {
+	if !h.requireLocalMediaAdmin(w, r) {
+		return
+	}
+	if h.remoteMediaService == nil {
+		http.Error(w, "remote media service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	libraries, err := h.remoteMediaService.Discover(r.Context(), r.URL.Query().Get("provider"), r.URL.Query().Get("accountId"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(libraries)
 }
 
 func (h *AdminUIHandler) SearchLocalMediaMetadata(w http.ResponseWriter, r *http.Request) {

@@ -784,6 +784,39 @@ func TestGetWithDefaults_InjectsNewLocalLibraryShelf(t *testing.T) {
 	}
 }
 
+func TestReconcileProfileHomeShelves_RemovesDuplicateShelfIDs(t *testing.T) {
+	settings := models.UserSettings{
+		HomeShelves: models.HomeShelvesSettings{
+			Shelves: []models.ShelfConfig{
+				{ID: "continue-watching", Name: "Continue Watching", Enabled: true, Order: 0},
+				{ID: "local-library-movies-id", Name: "Movies", Enabled: true, Order: 1, Type: "local-library"},
+				{ID: "local-library-movies-id", Name: "Duplicate Movies", Enabled: false, Order: 9, Type: "local-library"},
+			},
+		},
+	}
+
+	if !reconcileProfileHomeShelves(&settings) {
+		t.Fatal("expected duplicate shelf cleanup to report a change")
+	}
+
+	count := 0
+	for _, shelf := range settings.HomeShelves.Shelves {
+		if shelf.ID != "local-library-movies-id" {
+			continue
+		}
+		count++
+		if shelf.Name != "Movies" || !shelf.Enabled {
+			t.Fatalf("expected first duplicate to be preserved, got %+v", shelf)
+		}
+		if shelf.Type != "library" || shelf.LibraryID != "movies-id" {
+			t.Fatalf("expected preserved shelf to be migrated, got %+v", shelf)
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected one library shelf after reconciliation, got %d", count)
+	}
+}
+
 func TestGetWithDefaults_InheritsMissingBuiltinShelfFromDefaults(t *testing.T) {
 	dir := t.TempDir()
 	svc, err := NewService(dir)

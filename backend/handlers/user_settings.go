@@ -156,11 +156,6 @@ func (h *UserSettingsHandler) getDefaultsFromGlobal() models.UserSettings {
 	}
 
 	shelves := convertShelves(globalSettings.HomeShelves.Shelves)
-	if h.LocalMedia != nil {
-		if libs, err := h.LocalMedia.ListLibraries(context.Background()); err == nil {
-			shelves = injectLocalLibraryShelves(shelves, libs)
-		}
-	}
 
 	return models.UserSettings{
 		Metadata: models.MetadataSettings{
@@ -264,6 +259,7 @@ func convertShelves(configShelves []config.ShelfConfig) []models.ShelfConfig {
 			Enabled:                s.Enabled,
 			Order:                  s.Order,
 			Type:                   s.Type,
+			LibraryID:              s.LibraryID,
 			ListURL:                s.ListURL,
 			StreamingServices:      convertStreamingServices(s.StreamingServices),
 			CollectionItems:        convertCollectionHubItems(s.CollectionItems),
@@ -338,56 +334,6 @@ func convertStreamingServices(services []config.StreamingServiceLink) []models.S
 			LogoScale: service.LogoScale,
 			TintColor: service.TintColor,
 			Lists:     lists,
-		}
-	}
-	return result
-}
-
-// injectLocalLibraryShelves adds any local media libraries that are not yet present
-// in the shelves list. Existing entries (from saved settings) are preserved as-is,
-// so the admin can configure ordering and enable/disable without losing their changes.
-func injectLocalLibraryShelves(shelves []models.ShelfConfig, libs []models.LocalMediaLibrary) []models.ShelfConfig {
-	existing := make(map[string]bool, len(shelves))
-	maxOrder := -1
-	for _, s := range shelves {
-		existing[s.ID] = true
-		if s.Order > maxOrder {
-			maxOrder = s.Order
-		}
-	}
-
-	// Build a lookup from shelf ID to library name for renaming existing shelves
-	libNameByID := make(map[string]string, len(libs))
-	for _, lib := range libs {
-		libNameByID["local-library-"+lib.ID] = lib.Name
-	}
-
-	result := make([]models.ShelfConfig, 0, len(shelves))
-	for _, s := range shelves {
-		if s.Type == "local-library" {
-			if libName, ok := libNameByID[s.ID]; ok {
-				want := "Recently Added - " + libName
-				if s.Name != want {
-					s.Name = want
-				}
-			}
-		}
-		result = append(result, s)
-	}
-
-	injected := 0
-	for _, lib := range libs {
-		id := "local-library-" + lib.ID
-		if !existing[id] {
-			result = append(result, models.ShelfConfig{
-				ID:      id,
-				Name:    "Recently Added - " + lib.Name,
-				Enabled: true,
-				Order:   maxOrder + 1 + injected,
-				Type:    "local-library",
-			})
-			log.Printf("[user-settings] injectLocalLibraryShelves: injected new shelf id=%s name=%q", id, "Recently Added - "+lib.Name)
-			injected++
 		}
 	}
 	return result

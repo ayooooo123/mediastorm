@@ -17,6 +17,7 @@ import (
 	"novastream/internal/auth"
 	"novastream/models"
 	"novastream/services/localmedia"
+	"novastream/services/remotemedia"
 
 	"github.com/gorilla/mux"
 )
@@ -42,7 +43,10 @@ type LocalMediaHandler struct {
 	metadata     metadataService
 	cfgManager   *config.Manager
 	userSettings userSettingsProvider
+	remote       *remotemedia.Service
 }
+
+func (h *LocalMediaHandler) SetRemoteMediaService(service *remotemedia.Service) { h.remote = service }
 
 func NewLocalMediaHandler(service localMediaService, usersSvc localMediaUsersProvider, transmuxEnabled bool) *LocalMediaHandler {
 	return &LocalMediaHandler{
@@ -72,6 +76,20 @@ func (h *LocalMediaHandler) ListLibraries(w http.ResponseWriter, r *http.Request
 	}
 	if libraries == nil {
 		libraries = []models.LocalMediaLibrary{}
+	}
+	for i := range libraries {
+		libraries[i].SourceType = models.MediaSourceLocal
+		libraries[i].SourceName = "Local"
+	}
+	if h.remote != nil {
+		remoteLibraries, remoteErr := h.remote.ListLibraries(r.Context())
+		if remoteErr != nil {
+			http.Error(w, remoteErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		for _, remote := range remoteLibraries {
+			libraries = append(libraries, models.LocalMediaLibrary{ID: remote.ID, Name: remote.Name, Type: remote.Type, CreatedAt: remote.CreatedAt, UpdatedAt: remote.UpdatedAt, LastScanStartedAt: remote.LastSyncStartedAt, LastScanFinishedAt: remote.LastSyncFinishedAt, LastScanStatus: remote.LastSyncStatus, LastScanError: remote.LastSyncError, LastScanTotal: remote.LastSyncTotal, LastScanDiscovered: remote.LastSyncTotal, LastScanMatched: remote.LastSyncTotal, SourceType: remote.Provider, SourceName: strings.Title(remote.Provider), SourceServerName: remote.ServerName})
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(libraries)
@@ -123,7 +141,7 @@ func (h *LocalMediaHandler) ListGroups(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[localmedia] ListGroups: libraryID=%s limit=%d offset=%d filter=%q sort=%q", libraryID, limit, offset, r.URL.Query().Get("filter"), r.URL.Query().Get("sort"))
 	t0 := time.Now()
-	groups, err := h.service.ListGroups(r.Context(), libraryID, models.LocalMediaItemListQuery{
+	listQuery := models.LocalMediaItemListQuery{
 		Filter:         r.URL.Query().Get("filter"),
 		Sort:           r.URL.Query().Get("sort"),
 		Dir:            r.URL.Query().Get("dir"),
@@ -133,7 +151,19 @@ func (h *LocalMediaHandler) ListGroups(w http.ResponseWriter, r *http.Request) {
 		IncludeCards:   strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include")), "cards"),
 		MaxMovieRating: maxMovieRating,
 		MaxTVRating:    maxTVRating,
-	})
+	}
+	var groups *models.LocalMediaGroupListResult
+	var err error
+	if h.remote != nil {
+		if remoteLibrary, remoteErr := h.remote.GetLibrary(r.Context(), libraryID); remoteErr != nil {
+			err = remoteErr
+		} else if remoteLibrary != nil {
+			groups, err = h.remote.ListGroups(r.Context(), libraryID, listQuery)
+		}
+	}
+	if groups == nil && err == nil {
+		groups, err = h.service.ListGroups(r.Context(), libraryID, listQuery)
+	}
 	if err != nil {
 		log.Printf("[localmedia] ListGroups: libraryID=%s error after %s: %v", libraryID, time.Since(t0).Round(time.Millisecond), err)
 		switch {
@@ -250,6 +280,14 @@ func (h *LocalMediaHandler) FindMatches(w http.ResponseWriter, r *http.Request) 
 	if matches == nil {
 		matches = []models.LocalMediaMatchedGroup{}
 	}
+	if h.remote != nil {
+		remoteMatches, remoteErr := h.remote.FindMatches(r.Context(), models.LocalMediaMatchQuery{MediaType: strings.TrimSpace(r.URL.Query().Get("mediaType")), TitleID: strings.TrimSpace(r.URL.Query().Get("titleId")), Title: strings.TrimSpace(r.URL.Query().Get("title")), Year: year, IMDBID: strings.TrimSpace(r.URL.Query().Get("imdbId")), TMDBID: strings.TrimSpace(r.URL.Query().Get("tmdbId")), TVDBID: strings.TrimSpace(r.URL.Query().Get("tvdbId"))})
+		if remoteErr != nil {
+			http.Error(w, remoteErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		matches = append(matches, remoteMatches...)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(matches)
 }
@@ -276,6 +314,14 @@ func (h *LocalMediaHandler) GetPlayback(w http.ResponseWriter, r *http.Request) 
 	}
 
 	item, err := h.service.GetItem(r.Context(), itemID)
+	if errors.Is(err, localmedia.ErrItemNotFound) && h.remote != nil {
+		playback, remoteErr := h.remote.Playback(r.Context(), itemID)
+		if remoteErr == nil {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(playback)
+			return
+		}
+	}
 	if err != nil {
 		switch {
 		case errors.Is(err, localmedia.ErrItemNotFound), errors.Is(err, localmedia.ErrLibraryNotFound):
@@ -458,6 +504,8 @@ func (h *LocalMediaHandler) GetPlayback(w http.ResponseWriter, r *http.Request) 
 		StreamPath:   streamPath,
 		StreamURL:    "/api/video/stream?" + query.Encode(),
 		DirectStream: true,
+		SourceType:   models.MediaSourceLocal,
+		SourceName:   "Local",
 	}
 	if h.transmuxEnabled {
 		resp.HLSAvailable = true
@@ -466,4 +514,17 @@ func (h *LocalMediaHandler) GetPlayback(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (h *LocalMediaHandler) GetArtwork(w http.ResponseWriter, r *http.Request) {
+	if h.remote == nil {
+		http.NotFound(w, r)
+		return
+	}
+	resp, err := h.remote.OpenArtwork(r.Context(), strings.TrimSpace(mux.Vars(r)["itemID"]), strings.TrimSpace(mux.Vars(r)["kind"]))
+	if err != nil {
+		http.Error(w, "artwork not found", http.StatusNotFound)
+		return
+	}
+	remotemedia.CopyArtwork(w, resp)
 }

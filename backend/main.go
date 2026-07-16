@@ -55,6 +55,7 @@ import (
 	"novastream/services/prewarm"
 	"novastream/services/recordings"
 	"novastream/services/remoteaccess"
+	"novastream/services/remotemedia"
 	"novastream/services/scheduler"
 	"novastream/services/sessions"
 	"novastream/services/simkl"
@@ -603,11 +604,18 @@ func main() {
 
 	historyHandler := handlers.NewHistoryHandler(historyService, userService, *demoMode)
 	displayListHandler.SetHistoryHandler(historyHandler)
+	plexClient := plex.NewClient(plex.GenerateClientID())
+	jellyfinClient := jellyfin.NewClient()
 	localMediaService, err := localmedia.NewService(store, metadataService, settings.Transmux.FFprobePath)
 	if err != nil {
 		log.Fatalf("failed to initialise local media service: %v", err)
 	}
 	localMediaProvider := localmedia.NewProvider(localMediaService)
+	remoteMediaService, err := remotemedia.NewService(store, cfgManager, plexClient, jellyfinClient)
+	if err != nil {
+		log.Fatalf("failed to initialise remote media service: %v", err)
+	}
+	remoteMediaProvider := remotemedia.NewProvider(remoteMediaService)
 
 	// Startup handler bundles multiple API calls for low-power devices
 	startupHandler := handlers.NewStartupHandler(
@@ -670,7 +678,7 @@ func main() {
 
 	// Create composite streaming provider that handles both usenet and debrid
 	debridStreamingProvider := debrid.NewStreamingProvider(cfgManager)
-	compositeProvider := debrid.NewCompositeProvider(localMediaProvider, recordingsStreamProvider, debridStreamingProvider, nzbSystem)
+	compositeProvider := debrid.NewCompositeProvider(localMediaProvider, remoteMediaProvider, recordingsStreamProvider, debridStreamingProvider, nzbSystem)
 	prequeueHandler.GetStore().SetStreamPathValidator(func(ctx context.Context, streamPath string) error {
 		cleanPath := strings.TrimSpace(streamPath)
 		if strings.HasPrefix(cleanPath, "http://") || strings.HasPrefix(cleanPath, "https://") {
@@ -769,6 +777,7 @@ func main() {
 	liveHandler := handlers.NewLiveHandler(nil, settings.Transmux.Enabled, settings.Transmux.FFmpegPath, settings.Live.PlaylistCacheTTLHours, settings.Live.ProbeSizeMB, settings.Live.AnalyzeDurationSec, settings.Live.LowLatency, cfgManager, userSettingsService)
 	localMediaHandler := handlers.NewLocalMediaHandler(localMediaService, userService, settings.Transmux.Enabled)
 	localMediaHandler.SetMetadataLanguageProviders(metadataService, cfgManager, userSettingsService)
+	localMediaHandler.SetRemoteMediaService(remoteMediaService)
 	userSettingsHandler.LocalMedia = localMediaService
 	userSettingsHandler.SetPrequeueStore(prequeueHandler.GetStore())
 	userSettingsHandler.SetSearchCacheClearer(indexerService)
@@ -852,11 +861,9 @@ func main() {
 	api.RegisterTraktRoutes(r, traktAccountsHandler, sessionsService, accountsService)
 
 	// Create Plex client and register Plex accounts handler
-	plexClient := plex.NewClient(plex.GenerateClientID())
 	plexAccountsHandler := handlers.NewPlexAccountsHandler(cfgManager, plexClient, userService, accountsService)
 
 	// Create Jellyfin client and register accounts handler
-	jellyfinClient := jellyfin.NewClient()
 	jellyfinAccountsHandler := handlers.NewJellyfinAccountsHandler(cfgManager, jellyfinClient)
 
 	// Create scheduler service for background tasks
@@ -898,6 +905,7 @@ func main() {
 	adminUIHandler.SetClientSettingsService(clientSettingsService)
 	adminUIHandler.SetCalendarService(calendarService)
 	adminUIHandler.SetLocalMediaService(localMediaService)
+	adminUIHandler.SetRemoteMediaService(remoteMediaService)
 
 	// Login/logout routes (no auth required)
 	r.HandleFunc("/admin/login", adminUIHandler.LoginPage).Methods(http.MethodGet)
@@ -1073,6 +1081,7 @@ func main() {
 	r.HandleFunc("/admin/api/library/libraries/{libraryID}/groups", adminUIHandler.RequireAuth(adminUIHandler.ListLocalMediaGroups)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/library/search", adminUIHandler.RequireAuth(adminUIHandler.SearchLocalMediaMetadata)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/library/fs", adminUIHandler.RequireAuth(adminUIHandler.BrowseLocalMediaDirectories)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/api/library/remote/discover", adminUIHandler.RequireMasterAuth(adminUIHandler.DiscoverRemoteMediaLibraries)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/library/items/{itemID}/match", adminUIHandler.RequireAuth(adminUIHandler.UpdateLocalMediaItemMatch)).Methods(http.MethodPut)
 	r.HandleFunc("/admin/api/library/items/{itemID}", adminUIHandler.RequireAuth(adminUIHandler.DeleteLocalMediaItem)).Methods(http.MethodDelete)
 	r.HandleFunc("/admin/api/profiles/reassign", adminUIHandler.RequireAuth(adminUIHandler.ReassignProfile)).Methods(http.MethodPut)
@@ -1407,6 +1416,7 @@ func main() {
 	r.HandleFunc("/account/api/library/libraries/{libraryID}/groups", adminUIHandler.RequireAuth(adminUIHandler.ListLocalMediaGroups)).Methods(http.MethodGet)
 	r.HandleFunc("/account/api/library/search", adminUIHandler.RequireAuth(adminUIHandler.SearchLocalMediaMetadata)).Methods(http.MethodGet)
 	r.HandleFunc("/account/api/library/fs", adminUIHandler.RequireAuth(adminUIHandler.BrowseLocalMediaDirectories)).Methods(http.MethodGet)
+	r.HandleFunc("/account/api/library/remote/discover", adminUIHandler.RequireMasterAuth(adminUIHandler.DiscoverRemoteMediaLibraries)).Methods(http.MethodGet)
 	r.HandleFunc("/account/api/library/items/{itemID}/match", adminUIHandler.RequireAuth(adminUIHandler.UpdateLocalMediaItemMatch)).Methods(http.MethodPut)
 	r.HandleFunc("/account/api/library/items/{itemID}", adminUIHandler.RequireAuth(adminUIHandler.DeleteLocalMediaItem)).Methods(http.MethodDelete)
 

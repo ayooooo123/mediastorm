@@ -7,7 +7,7 @@
 {{define "content"}}
 <div class="page-header">
     <h1>Library Management</h1>
-    <p>Add local media roots, scan files with best-guess matching, and fix low-confidence matches.</p>
+    <p>Add local, Plex, and Jellyfin libraries, inspect their files, and control playback sources.</p>
 </div>
 
 <div class="grid grid-2" style="align-items: start;">
@@ -21,10 +21,32 @@
         <div class="card-body">
             <form id="libraryForm" style="display: grid; gap: 0.875rem;">
                 <div class="form-group">
+                    <label class="form-label" for="librarySource">Source</label>
+                    <select id="librarySource" class="form-select">
+                        <option value="local">Local filesystem</option>
+                        <option value="plex">Plex</option>
+                        <option value="jellyfin">Jellyfin</option>
+                    </select>
+                </div>
+                <div id="remoteLibraryFields" style="display: none; gap: 0.875rem;">
+                    <div class="form-group">
+                        <label class="form-label" for="remoteAccount">Connected account</label>
+                        <select id="remoteAccount" class="form-select"></select>
+                        <div class="form-hint">Accounts are managed on the Tools page.</div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="remoteLibrary">Server library</label>
+                        <div class="path-picker-row">
+                            <select id="remoteLibrary" class="form-select" style="flex: 1;"></select>
+                            <button class="btn btn-secondary" type="button" id="discoverRemoteBtn">Discover</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="form-group local-library-field">
                     <label class="form-label" for="libraryName">Name</label>
                     <input id="libraryName" class="form-input" placeholder="Movies, TV Shows, Home Videos" required>
                 </div>
-                <div class="form-group">
+                <div class="form-group local-library-field">
                     <label class="form-label" for="libraryType">Type</label>
                     <select id="libraryType" class="form-select">
                         <option value="movie">Movies</option>
@@ -32,7 +54,7 @@
                         <option value="other">Other Videos</option>
                     </select>
                 </div>
-                <div class="form-group">
+                <div class="form-group local-library-field">
                     <label class="form-label" for="libraryRootPath">Root Path</label>
                     <div class="path-picker-row">
                         <input id="libraryRootPath" class="form-input" placeholder="/Volumes/Media/Movies" required>
@@ -40,12 +62,12 @@
                     </div>
                     <div class="form-hint">Use the browser to pick a folder on the server filesystem.</div>
                 </div>
-                <div class="form-group">
+                <div class="form-group local-library-field">
                     <label class="form-label" for="libraryFilterOutTerms">Filter Out Terms</label>
                     <textarea id="libraryFilterOutTerms" class="form-input" rows="4" placeholder="Trailer&#10;Featurette&#10;Sample"></textarea>
                     <div class="form-hint">One term per line or comma-separated. Matching is case-insensitive against the relative file path.</div>
                 </div>
-                <div class="form-group">
+                <div class="form-group local-library-field">
                     <label class="form-label" for="libraryMinFileSizeMb" id="libraryMinFileSizeLabel">Minimum Movie File Size (MB)</label>
                     <input id="libraryMinFileSizeMb" class="form-input" type="number" min="0" step="1" placeholder="0">
                     <div class="form-hint" id="libraryMinFileSizeHint">Files smaller than this are ignored during scans. Use `0` to disable the limit.</div>
@@ -854,6 +876,13 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('libraryForm').addEventListener('submit', createLibrary);
   document.getElementById('browseDirsBtn').addEventListener('click', openDirectoryBrowser);
   document.getElementById('libraryType').addEventListener('change', syncLibraryFormSettings);
+  document.getElementById('librarySource').addEventListener('change', onLibrarySourceChange);
+  document.getElementById('remoteAccount').addEventListener('change', discoverRemoteLibraries);
+  document.getElementById('remoteLibrary').addEventListener('change', () => {
+    const option = document.getElementById('remoteLibrary').selectedOptions[0];
+    if (option) document.getElementById('libraryName').value = option.dataset.name || '';
+  });
+  document.getElementById('discoverRemoteBtn').addEventListener('click', discoverRemoteLibraries);
   document.getElementById('cancelLibraryEditBtn').addEventListener('click', resetLibraryForm);
   document.getElementById('closeDirBrowserBtn').addEventListener('click', closeDirectoryBrowser);
   document.getElementById('goDirBrowserBtn').addEventListener('click', () => loadDirectoryListing(document.getElementById('directoryBrowserPath').value.trim()));
@@ -919,21 +948,28 @@ document.addEventListener('DOMContentLoaded', () => {
   syncLibraryControls();
   syncLibraryFormSettings();
   resetLibraryForm();
+  loadRemoteAccounts();
   loadLibraries();
   librariesPollHandle = window.setInterval(loadLibraries, 4000);
 });
 
 async function createLibrary(event) {
   event.preventDefault();
-  const minFileSizeBytes = parseLibraryMinFileSizeBytes();
+  const source = document.getElementById('librarySource').value || 'local';
+  const minFileSizeBytes = source === 'local' ? parseLibraryMinFileSizeBytes() : 0;
   if (minFileSizeBytes === null) return;
-  const payload = {
+  let payload = {
     name: document.getElementById('libraryName').value.trim(),
     type: document.getElementById('libraryType').value,
     rootPath: document.getElementById('libraryRootPath').value.trim(),
     filterOutTerms: parseFilterOutTerms(document.getElementById('libraryFilterOutTerms').value),
     minFileSizeBytes,
   };
+  if (source !== 'local') {
+    const option = document.getElementById('remoteLibrary').selectedOptions[0];
+    if (!option || !option.value) { showToast('Select a server library', 'error'); return; }
+    payload = { name: option.dataset.name || 'Remote Library', type: option.dataset.type, provider: source, accountId: document.getElementById('remoteAccount').value, serverId: option.dataset.serverId || '', serverName: option.dataset.serverName || '', externalLibraryId: option.value };
+  }
   try {
     const isEditing = Boolean(editingLibraryId);
     const endpoint = isEditing
@@ -999,14 +1035,14 @@ function renderLibraries(container) {
         <div class="card-body" style="display: grid; gap: 0.75rem;">
           <div style="display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap;">
             <div>
-              <div style="font-weight: 600;">${escapeHtml(library.name)}</div>
-              <div style="color: var(--text-muted); font-size: 0.85rem;">${escapeHtml(library.rootPath)}</div>
+              <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;"><div style="font-weight: 600;">${escapeHtml(library.name)}</div><span class="status-badge online">${escapeHtml(library.sourceName || 'Local')}</span></div>
+              <div style="color: var(--text-muted); font-size: 0.85rem;">${escapeHtml(library.sourceServerName || library.rootPath || '')}</div>
             </div>
             <div class="status-badge ${statusClass(library.lastScanStatus)}">${formatStatus(library.lastScanStatus)}</div>
           </div>
           <div style="display: flex; gap: 0.75rem; flex-wrap: wrap; color: var(--text-secondary); font-size: 0.85rem;">
             <span>${escapeHtml(library.type)}</span>
-            <span>${library.lastScanDiscovered || 0} files</span>
+            <span>${library.lastScanDiscovered || 0} items</span>
             ${library.minFileSizeBytes ? `<span>Min size ${formatBytes(library.minFileSizeBytes)}</span>` : ''}
             ${(Array.isArray(library.filterOutTerms) && library.filterOutTerms.length) ? `<span>Exclude ${escapeHtml(library.filterOutTerms.join(', '))}</span>` : ''}
             ${library.lastScanStatus === 'scanning' && library.lastScanTotal ? `<span>${Math.min(100, Math.round(((library.lastScanDiscovered || 0) / library.lastScanTotal) * 100))}% complete</span>` : ''}
@@ -1017,8 +1053,8 @@ function renderLibraries(container) {
           ${renderScanProgress(library)}
           ${library.lastScanError ? `<div style="color: var(--danger); font-size: 0.85rem;">${escapeHtml(library.lastScanError)}</div>` : ''}
           <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;" onclick="event.stopPropagation()">
-            <button class="btn btn-primary btn-sm" onclick="scanLibrary('${library.id}')" ${library.lastScanStatus === 'scanning' ? 'disabled' : ''}>${library.lastScanStatus === 'scanning' ? 'Scanning...' : 'Scan'}</button>
-            <button class="btn btn-secondary btn-sm" onclick="editLibrary('${library.id}')">Edit</button>
+            <button class="btn btn-primary btn-sm" onclick="scanLibrary('${library.id}')" ${library.lastScanStatus === 'scanning' ? 'disabled' : ''}>${library.lastScanStatus === 'scanning' ? 'Working...' : (library.sourceType && library.sourceType !== 'local' ? 'Sync' : 'Scan')}</button>
+            ${!library.sourceType || library.sourceType === 'local' ? `<button class="btn btn-secondary btn-sm" onclick="editLibrary('${library.id}')">Edit</button>` : ''}
             <button class="btn btn-danger btn-sm" onclick="deleteLibrary('${library.id}')">Delete</button>
           </div>
         </div>
@@ -2154,6 +2190,8 @@ function resetLibraryForm() {
   const form = document.getElementById('libraryForm');
   if (form) form.reset();
   document.getElementById('libraryType').value = 'movie';
+  document.getElementById('librarySource').value = 'local';
+  onLibrarySourceChange();
   syncLibraryFormSettings();
 }
 
@@ -2178,6 +2216,46 @@ function syncLibraryFormSettings() {
     : 'Create a new library root and scan profile.';
   document.getElementById('librarySubmitBtn').textContent = isEditing ? 'Save Changes' : 'Add Library';
   document.getElementById('cancelLibraryEditBtn').style.display = isEditing ? 'inline-flex' : 'none';
+}
+
+async function loadRemoteAccounts() {
+  const source = document.getElementById('librarySource').value || 'local';
+  if (source === 'local') return;
+  const select = document.getElementById('remoteAccount');
+  select.innerHTML = '<option value="">Loading accounts…</option>';
+  try {
+    const res = await fetch(basePath + '/api/' + source + '/accounts');
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    const accounts = (data.accounts || []).filter(account => account.connected);
+    select.innerHTML = accounts.length ? accounts.map(account => `<option value="${escapeHtml(account.id)}">${escapeHtml(account.name || account.username || source)}</option>`).join('') : '<option value="">No connected accounts</option>';
+    if (accounts.length) discoverRemoteLibraries();
+  } catch (error) { select.innerHTML = '<option value="">Unable to load accounts</option>'; showToast(error.message || 'Unable to load accounts', 'error'); }
+}
+
+function onLibrarySourceChange() {
+  const source = document.getElementById('librarySource').value || 'local';
+  const remote = source !== 'local';
+  document.getElementById('remoteLibraryFields').style.display = remote ? 'grid' : 'none';
+  document.querySelectorAll('.local-library-field').forEach(element => element.style.display = remote ? 'none' : 'block');
+  document.getElementById('libraryRootPath').required = !remote;
+  if (remote) loadRemoteAccounts();
+  syncLibraryFormSettings();
+}
+
+async function discoverRemoteLibraries() {
+  const provider = document.getElementById('librarySource').value;
+  const accountId = document.getElementById('remoteAccount').value;
+  const select = document.getElementById('remoteLibrary');
+  if (!accountId || provider === 'local') { select.innerHTML = '<option value="">Select a connected account</option>'; return; }
+  select.innerHTML = '<option value="">Discovering…</option>';
+  try {
+    const res = await fetch(basePath + '/api/library/remote/discover?provider=' + encodeURIComponent(provider) + '&accountId=' + encodeURIComponent(accountId));
+    if (!res.ok) throw new Error(await res.text());
+    const libraries = await res.json();
+    select.innerHTML = libraries.length ? libraries.map(library => `<option value="${escapeHtml(library.id)}" data-name="${escapeHtml(library.name)}" data-type="${escapeHtml(library.type)}" data-server-id="${escapeHtml(library.serverId || '')}" data-server-name="${escapeHtml(library.serverName || '')}">${escapeHtml((library.serverName ? library.serverName + ' · ' : '') + library.name)} (${escapeHtml(library.type)})</option>`).join('') : '<option value="">No movie/show libraries found</option>';
+    const option = select.selectedOptions[0]; if (option && !document.getElementById('libraryName').value.trim()) document.getElementById('libraryName').value = option.dataset.name || '';
+  } catch (error) { select.innerHTML = '<option value="">Discovery failed</option>'; showToast(error.message || 'Discovery failed', 'error'); }
 }
 
 function syncLibraryControls() {
