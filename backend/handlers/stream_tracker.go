@@ -161,6 +161,12 @@ const throughputSamplerInterval = 5 * time.Second
 const (
 	throughputHealthMinRequiredBps = int64(1_000_000)
 	throughputHealthMinWindow      = 3 * time.Second
+	// A direct stream can remain registered after its player disappears while the
+	// HTTP handler is still blocked. Treating that idle transport as 0 Mbps can
+	// arm a migration signal that a later playback of the same item consumes.
+	// Delivery health is only meaningful while bytes are actively reaching the
+	// client; upstream starvation is detected separately by the proxy readers.
+	throughputHealthActivityWindow = 2 * throughputSamplerInterval
 	throughputHealthFactor         = 0.90
 	throughputHealthLowSamples     = int32(2)
 	throughputHealthSignalCooldown = 30 * time.Second
@@ -182,6 +188,20 @@ func sampleDeliveryHealth(s *TrackedStream, now time.Time) (int64, int64, bool) 
 	}
 	required := atomic.LoadInt64(&s.requiredBps)
 	if required < throughputHealthMinRequiredBps {
+		atomic.StoreInt32(&s.healthLowSamples, 0)
+		return 0, required, false
+	}
+	if s.activityCounter == nil {
+		atomic.StoreInt32(&s.healthLowSamples, 0)
+		return 0, required, false
+	}
+	lastActivityNanos := atomic.LoadInt64(s.activityCounter)
+	if lastActivityNanos <= 0 || now.Sub(time.Unix(0, lastActivityNanos)) > throughputHealthActivityWindow {
+		// Reset the sampling baseline as well as the deficient-sample count. If
+		// delivery resumes, the next observation seeds a fresh window instead of
+		// including the idle period in its calculated rate.
+		atomic.StoreInt64(&s.healthLastBytes, atomic.LoadInt64(s.bytesCounter))
+		atomic.StoreInt64(&s.healthLastNanos, now.UnixNano())
 		atomic.StoreInt32(&s.healthLowSamples, 0)
 		return 0, required, false
 	}

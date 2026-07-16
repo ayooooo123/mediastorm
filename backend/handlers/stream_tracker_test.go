@@ -164,6 +164,56 @@ func TestPlaybackBandwidthObservationAndSustainedUnderflow(t *testing.T) {
 	}
 }
 
+func TestPlaybackBandwidthIgnoresAbandonedIdleStream(t *testing.T) {
+	tracker := newTestTracker()
+	req := httptest.NewRequest(http.MethodGet, "/video/stream?profileId=p1&mediaType=episode&itemId=tmdb:tv:261145:S01E02", nil)
+	id, bytesCounter, activityCounter := tracker.StartStreamWithAccount(
+		req,
+		"/webdav/nzbs/digital-circus/s01e02.mkv",
+		1000,
+		0,
+		0,
+		"acct1",
+	)
+	requiredMbps := 7.0
+	if matched := tracker.ObservePlaybackBandwidth("p1", models.PlaybackProgressUpdate{
+		MediaType:    "episode",
+		ItemID:       "tmdb:tv:261145:S01E02",
+		RequiredMbps: &requiredMbps,
+	}); matched != 1 {
+		t.Fatalf("matched streams = %d, want 1", matched)
+	}
+
+	stream := tracker.streams[id]
+	now := time.Now()
+	atomic.StoreInt64(activityCounter, now.Add(-throughputHealthActivityWindow-time.Second).UnixNano())
+	atomic.StoreInt64(&stream.healthLastBytes, atomic.LoadInt64(bytesCounter))
+	atomic.StoreInt64(&stream.healthLastNanos, now.Add(-throughputHealthMinWindow-time.Second).UnixNano())
+	atomic.StoreInt32(&stream.healthLowSamples, throughputHealthLowSamples-1)
+
+	actual, required, alert := sampleDeliveryHealth(stream, now)
+	if alert || actual != 0 || required != 7_000_000 {
+		t.Fatalf("idle stream produced delivery alert: actual=%d required=%d alert=%v", actual, required, alert)
+	}
+	if lowSamples := atomic.LoadInt32(&stream.healthLowSamples); lowSamples != 0 {
+		t.Fatalf("idle stream retained %d low samples, want 0", lowSamples)
+	}
+
+	// Exercise the production sampler as well: it must not convert the abandoned
+	// stream's zero delivery into a signal for a later playback heartbeat.
+	atomic.StoreInt32(&stream.healthLowSamples, throughputHealthLowSamples-1)
+	tracker.SampleThroughput()
+	if reason, migrate := tracker.ShouldMigratePlayback("p1", models.PlaybackProgressUpdate{
+		MediaType:   "episode",
+		ItemID:      "tmdb:tv:261145:S01E02",
+		Position:    461,
+		IsBuffering: true,
+		SourcePath:  "/webdav/nzbs/digital-circus/s01e02.mkv",
+	}); migrate {
+		t.Fatalf("abandoned stream armed migration for fresh playback: reason=%q", reason)
+	}
+}
+
 func TestPlaybackBandwidthObservationOnlyUpdatesActiveSource(t *testing.T) {
 	tracker := newTestTracker()
 	requestURL := "/video/stream?profileId=p1&mediaType=movie&itemId=tmdb:movie:14160"
