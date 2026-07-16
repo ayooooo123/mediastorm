@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"time"
@@ -164,6 +165,43 @@ func filterTrendingItemsByUnreleasedVisibility(items []models.TrendingItem, poli
 	return filtered
 }
 
+// enrichTrendingMovieReleaseVisibility replaces year-only discover status with
+// the full TMDB release windows before applying the released-only policy.
+func enrichTrendingMovieReleaseVisibility(ctx context.Context, items []models.TrendingItem, service metadataService) {
+	if service == nil || len(items) == 0 {
+		return
+	}
+	queries := make([]models.BatchMovieReleasesQuery, 0, len(items))
+	indexes := make([]int, 0, len(items))
+	for i := range items {
+		title := &items[i].Title
+		if !strings.EqualFold(strings.TrimSpace(title.MediaType), "movie") || title.TMDBID <= 0 {
+			continue
+		}
+		queries = append(queries, models.BatchMovieReleasesQuery{
+			TitleID: title.ID,
+			TMDBID:  title.TMDBID,
+			IMDBID:  title.IMDBID,
+		})
+		indexes = append(indexes, i)
+	}
+	if len(queries) == 0 {
+		return
+	}
+	results := service.BatchMovieReleases(ctx, queries)
+	for i := range results {
+		if i >= len(indexes) {
+			break
+		}
+		title := &items[indexes[i]].Title
+		if strings.TrimSpace(results[i].Status) != "" {
+			title.Status = results[i].Status
+		}
+		title.Theatrical = results[i].Theatrical
+		title.HomeRelease = results[i].HomeRelease
+	}
+}
+
 func filterTitlesByUnreleasedVisibility(titles []models.Title, policy unreleasedVisibilityPolicy) []models.Title {
 	if policy.IncludeMovies && policy.IncludeShows {
 		return titles
@@ -209,12 +247,17 @@ func titleAllowedByUnreleasedVisibility(title models.Title, policy unreleasedVis
 }
 
 func titleMovieReleasedForUnreleasedVisibility(title models.Title) bool {
+	if len(title.Releases) > 0 || title.Theatrical != nil || title.HomeRelease != nil {
+		if computed := models.MovieReleaseStatus(title); computed != models.MovieReleaseStatusUnknown {
+			return computed == models.MovieReleaseStatusReleased
+		}
+	}
 	status := strings.TrimSpace(title.Status)
 	if status != "" && !strings.EqualFold(status, models.MovieReleaseStatusUnknown) {
 		return strings.EqualFold(status, models.MovieReleaseStatusReleased)
 	}
-	if models.MovieReleaseStatus(title) == models.MovieReleaseStatusReleased {
-		return true
+	if computed := models.MovieReleaseStatus(title); computed != models.MovieReleaseStatusUnknown {
+		return computed == models.MovieReleaseStatusReleased
 	}
 	return title.Year > 0 && title.Year < currentYear()
 }

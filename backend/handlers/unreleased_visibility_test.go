@@ -133,3 +133,30 @@ func TestFilterSearchResultsByUnreleasedVisibilityUsesMovieStatus(t *testing.T) 
 		t.Fatalf("unexpected filtered results: %+v", filtered)
 	}
 }
+
+func TestFilterPersonalizedRecommendationsByUnreleasedVisibility(t *testing.T) {
+	released := models.TrendingItem{Title: models.Title{Name: "Released", MediaType: "movie", Status: models.MovieReleaseStatusReleased}}
+	upcoming := models.TrendingItem{Title: models.Title{Name: "Upcoming", MediaType: "movie", Status: models.MovieReleaseStatusUpcoming}}
+	series := models.TrendingItem{Title: models.Title{Name: "Series", MediaType: "series", Status: models.SeriesReleaseStatusReleased}}
+	response := PersonalizedRecommendationsResponse{
+		Items:  []models.TrendingItem{released, upcoming, series},
+		Movies: []models.TrendingItem{released, upcoming},
+		Series: []models.TrendingItem{series},
+		Total:  3,
+	}
+
+	filtered := filterPersonalizedRecommendationsByUnreleasedVisibility(response, unreleasedVisibilityPolicy{
+		IncludeMovies: false,
+		IncludeShows:  true,
+	})
+
+	if len(filtered.Items) != 2 || filtered.Total != 2 {
+		t.Fatalf("filtered items/total = %d/%d, want 2/2", len(filtered.Items), filtered.Total)
+	}
+	if len(filtered.Movies) != 1 || filtered.Movies[0].Title.Name != "Released" {
+		t.Fatalf("unexpected filtered movies: %+v", filtered.Movies)
+	}
+	if len(filtered.Series) != 1 {
+		t.Fatalf("unexpected filtered series: %+v", filtered.Series)
+	}
+}

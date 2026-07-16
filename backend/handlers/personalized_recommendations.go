@@ -139,7 +139,7 @@ func (h *MetadataHandler) GetPersonalizedRecommendations(w http.ResponseWriter, 
 	cacheKey := personalizedRecommendationsCacheKey(userID, days, limitPerType, history, progress)
 	if response, ok := h.cachedPersonalizedRecommendations(cacheKey); ok {
 		log.Printf("[metadata] personalized recommendations cache hit user=%s items=%d", userID, len(response.Items))
-		writePersonalizedRecommendations(w, response)
+		h.writePersonalizedRecommendations(w, r, userID, response)
 		return
 	}
 	build, leader := h.beginPersonalizedRecommendationsBuild(cacheKey)
@@ -149,7 +149,7 @@ func (h *MetadataHandler) GetPersonalizedRecommendations(w http.ResponseWriter, 
 			return
 		case <-build.done:
 			log.Printf("[metadata] personalized recommendations shared in-flight result user=%s items=%d", userID, len(build.response.Items))
-			writePersonalizedRecommendations(w, build.response)
+			h.writePersonalizedRecommendations(w, r, userID, build.response)
 			return
 		}
 	}
@@ -184,12 +184,45 @@ func (h *MetadataHandler) GetPersonalizedRecommendations(w http.ResponseWriter, 
 	}
 
 	h.finishPersonalizedRecommendationsBuild(cacheKey, build, resp, r.Context().Err() == nil)
-	writePersonalizedRecommendations(w, resp)
+	h.writePersonalizedRecommendations(w, r, userID, resp)
 }
 
-func writePersonalizedRecommendations(w http.ResponseWriter, response PersonalizedRecommendationsResponse) {
+func (h *MetadataHandler) writePersonalizedRecommendations(w http.ResponseWriter, r *http.Request, userID string, response PersonalizedRecommendationsResponse) {
+	policy := resolveUnreleasedVisibilityPolicy(
+		h.CfgManager,
+		h.UserSettings,
+		h.ClientSettings,
+		userID,
+		requestClientID(r),
+		unreleasedVisibilityLists,
+	)
+	if !policy.IncludeMovies {
+		enrichTrendingMovieReleaseVisibility(r.Context(), response.Items, h.serviceForUser(userID))
+		movieReleases := make(map[int64]models.Title, len(response.Items))
+		for i := range response.Items {
+			if response.Items[i].Title.TMDBID > 0 && strings.EqualFold(response.Items[i].Title.MediaType, "movie") {
+				movieReleases[response.Items[i].Title.TMDBID] = response.Items[i].Title
+			}
+		}
+		for i := range response.Movies {
+			if enriched, ok := movieReleases[response.Movies[i].Title.TMDBID]; ok {
+				response.Movies[i].Title.Status = enriched.Status
+				response.Movies[i].Title.Theatrical = enriched.Theatrical
+				response.Movies[i].Title.HomeRelease = enriched.HomeRelease
+			}
+		}
+	}
+	response = filterPersonalizedRecommendationsByUnreleasedVisibility(response, policy)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(response)
+}
+
+func filterPersonalizedRecommendationsByUnreleasedVisibility(response PersonalizedRecommendationsResponse, policy unreleasedVisibilityPolicy) PersonalizedRecommendationsResponse {
+	response.Items = filterTrendingItemsByUnreleasedVisibility(response.Items, policy)
+	response.Movies = filterTrendingItemsByUnreleasedVisibility(response.Movies, policy)
+	response.Series = filterTrendingItemsByUnreleasedVisibility(response.Series, policy)
+	response.Total = len(response.Items)
+	return response
 }
 
 func personalizedRecommendationsCacheKey(

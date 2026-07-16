@@ -25,19 +25,20 @@ import (
 )
 
 type fakeMetadataService struct {
-	trendingResp   []models.TrendingItem
-	trendingErr    error
-	trendingByType map[string][]models.TrendingItem
-	topTenByType   map[string][]models.TrendingItem
-	similarByKey   map[string][]models.Title
-	searchResp     []models.SearchResult
-	searchErr      error
-	youtubeResp    []models.YouTubeVideoSearchResult
-	youtubeErr     error
-	seriesResp     *models.SeriesDetails
-	seriesErr      error
-	movieResp      *models.Title
-	movieErr       error
+	trendingResp          []models.TrendingItem
+	trendingErr           error
+	trendingByType        map[string][]models.TrendingItem
+	topTenByType          map[string][]models.TrendingItem
+	similarByKey          map[string][]models.Title
+	searchResp            []models.SearchResult
+	searchErr             error
+	youtubeResp           []models.YouTubeVideoSearchResult
+	youtubeErr            error
+	seriesResp            *models.SeriesDetails
+	seriesErr             error
+	movieResp             *models.Title
+	movieErr              error
+	batchMovieReleaseResp []models.BatchMovieReleasesItem
 
 	discoverByGenreResp  []models.TrendingItem
 	discoverByGenreTotal int
@@ -187,6 +188,9 @@ func (f *fakeMetadataService) BatchSeriesTitleFields(_ context.Context, queries 
 }
 
 func (f *fakeMetadataService) BatchMovieReleases(_ context.Context, queries []models.BatchMovieReleasesQuery) []models.BatchMovieReleasesItem {
+	if f.batchMovieReleaseResp != nil {
+		return f.batchMovieReleaseResp
+	}
 	results := make([]models.BatchMovieReleasesItem, len(queries))
 	for i, query := range queries {
 		results[i].Query = query
@@ -1202,6 +1206,37 @@ func TestMetadataHandler_DiscoverByGenre(t *testing.T) {
 	}
 }
 
+func TestMetadataHandler_DiscoverByGenreHideUnreleasedUsesHomeReleaseWindows(t *testing.T) {
+	futureYear := time.Now().Year() + 1
+	fake := &fakeMetadataService{
+		discoverByGenreResp: []models.TrendingItem{
+			{Title: models.Title{Name: "Physical Release", MediaType: "movie", TMDBID: 100, Year: futureYear}},
+			{Title: models.Title{Name: "Upcoming", MediaType: "movie", TMDBID: 200, Year: futureYear}},
+		},
+		discoverByGenreTotal: 2,
+		batchMovieReleaseResp: []models.BatchMovieReleasesItem{
+			{Status: models.MovieReleaseStatusReleased, HomeRelease: &models.Release{Type: "physical", Date: "2026-01-01"}},
+			{Status: models.MovieReleaseStatusUpcoming, HomeRelease: &models.Release{Type: "digital", Date: "2099-01-01"}},
+		},
+	}
+	handler := NewMetadataHandler(fake, testConfigManager(t))
+	req := httptest.NewRequest(http.MethodGet, "/api/discover/genre?type=movie&genreId=28&hideUnreleased=true", nil)
+	rec := httptest.NewRecorder()
+
+	handler.DiscoverByGenre(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	var payload DiscoverNewResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if len(payload.Items) != 1 || payload.Items[0].Title.Name != "Physical Release" || payload.Total != 1 {
+		t.Fatalf("unexpected filtered payload: %+v", payload)
+	}
+}
+
 func TestMetadataHandler_DiscoverByGenreMissingGenreID(t *testing.T) {
 	fake := &fakeMetadataService{}
 	handler := NewMetadataHandler(fake, testConfigManager(t))
@@ -1341,6 +1376,36 @@ func TestMetadataHandler_DiscoverByDecade(t *testing.T) {
 	}
 	if payload.Total != 42 {
 		t.Fatalf("expected total 42, got %d", payload.Total)
+	}
+}
+
+func TestMetadataHandler_DiscoverByDecadeHonorsHideUnreleased(t *testing.T) {
+	fake := &fakeMetadataService{
+		discoverByDecadeResp: []models.TrendingItem{
+			{Title: models.Title{Name: "Released", MediaType: "movie", TMDBID: 100, Status: models.MovieReleaseStatusReleased}},
+			{Title: models.Title{Name: "Upcoming", MediaType: "movie", TMDBID: 200, Status: models.MovieReleaseStatusUpcoming}},
+		},
+		discoverByDecadeTotal: 2,
+		batchMovieReleaseResp: []models.BatchMovieReleasesItem{
+			{Status: models.MovieReleaseStatusReleased},
+			{Status: models.MovieReleaseStatusUpcoming},
+		},
+	}
+	handler := NewMetadataHandler(fake, testConfigManager(t))
+	req := httptest.NewRequest(http.MethodGet, "/api/discover/decade?type=movie&decade=1980&hideUnreleased=true", nil)
+	rec := httptest.NewRecorder()
+
+	handler.DiscoverByDecade(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	var payload DiscoverNewResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if len(payload.Items) != 1 || payload.Items[0].Title.Name != "Released" || payload.Total != 1 {
+		t.Fatalf("unexpected filtered payload: %+v", payload)
 	}
 }
 

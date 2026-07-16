@@ -265,6 +265,26 @@ func (h *StartupHandler) GetStartup(w http.ResponseWriter, r *http.Request) {
 		listPolicy.IncludeMovies = false
 		listPolicy.IncludeShows = false
 	}
+	trendingMoviesPolicy := listPolicy
+	trendingSeriesPolicy := listPolicy
+	if resp.UserSettings != nil {
+		if homeShelfHidesUnreleased(resp.UserSettings.HomeShelves.Shelves, "trending-movies") {
+			trendingMoviesPolicy.IncludeMovies = false
+			trendingMoviesPolicy.IncludeShows = false
+		}
+		if homeShelfHidesUnreleased(resp.UserSettings.HomeShelves.Shelves, "trending-tv") {
+			trendingSeriesPolicy.IncludeMovies = false
+			trendingSeriesPolicy.IncludeShows = false
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("hideUnreleasedMovies")), "true") {
+		trendingMoviesPolicy.IncludeMovies = false
+		trendingMoviesPolicy.IncludeShows = false
+	}
+	if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("hideUnreleasedSeries")), "true") {
+		trendingSeriesPolicy.IncludeMovies = false
+		trendingSeriesPolicy.IncludeShows = false
+	}
 
 	startupShelfLimit := defaultStartupShelfLimit
 	if resp.UserSettings != nil && resp.UserSettings.HomeShelves.ItemCap > 0 {
@@ -402,7 +422,7 @@ func (h *StartupHandler) GetStartup(w http.ResponseWriter, r *http.Request) {
 						log.Printf("[startup] trending movies error: %v", err)
 						return
 					}
-					items = h.applyFilters(items, userID, listPolicy, hideWatched)
+					items = h.applyFilters(items, userID, trendingMoviesPolicy, hideWatched)
 					items = h.filterHiddenTrendingItems(userID, items)
 					total := len(items)
 					if len(items) > startupPayloadLimit {
@@ -425,7 +445,7 @@ func (h *StartupHandler) GetStartup(w http.ResponseWriter, r *http.Request) {
 						log.Printf("[startup] trending series error: %v", err)
 						return
 					}
-					items = h.applyFilters(items, userID, listPolicy, hideWatched)
+					items = h.applyFilters(items, userID, trendingSeriesPolicy, hideWatched)
 					items = h.filterHiddenTrendingItems(userID, items)
 					total := len(items)
 					if len(items) > startupPayloadLimit {
@@ -512,6 +532,15 @@ func (h *StartupHandler) GetStartup(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+func homeShelfHidesUnreleased(shelves []models.ShelfConfig, id string) bool {
+	for i := range shelves {
+		if shelves[i].ID == id {
+			return shelves[i].HideUnreleased
+		}
+	}
+	return false
 }
 
 func (h *StartupHandler) hiddenItemsManifestHash(userID string) string {

@@ -1977,6 +1977,13 @@ func (h *MetadataHandler) DiscoverByGenre(w http.ResponseWriter, r *http.Request
 	}
 	userID := strings.TrimSpace(r.URL.Query().Get("userId"))
 	policy := resolveUnreleasedVisibilityPolicy(h.CfgManager, h.UserSettings, h.ClientSettings, userID, requestClientID(r), unreleasedVisibilityLists)
+	if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("hideUnreleased")), "true") {
+		policy.IncludeMovies = false
+		policy.IncludeShows = false
+	}
+	if !policy.IncludeMovies {
+		enrichTrendingMovieReleaseVisibility(r.Context(), items, service)
+	}
 	beforeVisibility := len(items)
 	items = filterTrendingItemsByUnreleasedVisibility(items, policy)
 	total -= beforeVisibility - len(items)
@@ -2060,6 +2067,13 @@ func (h *MetadataHandler) DiscoverByDecade(w http.ResponseWriter, r *http.Reques
 	}
 	userID := strings.TrimSpace(r.URL.Query().Get("userId"))
 	policy := resolveUnreleasedVisibilityPolicy(h.CfgManager, h.UserSettings, h.ClientSettings, userID, requestClientID(r), unreleasedVisibilityLists)
+	if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("hideUnreleased")), "true") {
+		policy.IncludeMovies = false
+		policy.IncludeShows = false
+	}
+	if !policy.IncludeMovies {
+		enrichTrendingMovieReleaseVisibility(r.Context(), items, service)
+	}
 	beforeVisibility := len(items)
 	items = filterTrendingItemsByUnreleasedVisibility(items, policy)
 	total -= beforeVisibility - len(items)

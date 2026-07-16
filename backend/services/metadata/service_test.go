@@ -2180,6 +2180,27 @@ func TestBatchMovieReleasesUsesV2ReleaseCache(t *testing.T) {
 	}
 }
 
+func TestEnsureMovieReleasePointersPrefersReleasedPhysicalOverFutureDigital(t *testing.T) {
+	now := time.Now()
+	title := models.Title{
+		MediaType: "movie",
+		Releases: []models.Release{
+			{Type: "digital", Date: now.AddDate(0, 1, 0).Format("2006-01-02")},
+			{Type: "physical", Date: now.AddDate(0, 0, -1).Format("2006-01-02")},
+		},
+	}
+
+	service := &Service{}
+	service.ensureMovieReleasePointers(&title)
+
+	if title.HomeRelease == nil || title.HomeRelease.Type != "physical" {
+		t.Fatalf("home release = %#v, want released physical window", title.HomeRelease)
+	}
+	if title.Status != models.MovieReleaseStatusReleased {
+		t.Fatalf("status = %q, want %q", title.Status, models.MovieReleaseStatusReleased)
+	}
+}
+
 func TestClearCacheClearsAllMetadataCaches(t *testing.T) {
 	tempDir := t.TempDir()
 	svc := &Service{
