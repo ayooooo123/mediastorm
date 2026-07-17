@@ -31,6 +31,13 @@ func TestDefaultUserSettingsDisablesMatchFrameRate(t *testing.T) {
 	}
 }
 
+func TestDefaultUserSettingsEnablesApplicationAnimations(t *testing.T) {
+	settings := DefaultUserSettings()
+	if settings.Display.EnableAnimations == nil || !*settings.Display.EnableAnimations {
+		t.Fatal("application animations should be enabled by default")
+	}
+}
+
 func TestEnsureDefaultHomeShelvesDisablesExperimentalTonightShelf(t *testing.T) {
 	shelves := DefaultHomeShelfConfigs()
 	for i := range shelves {

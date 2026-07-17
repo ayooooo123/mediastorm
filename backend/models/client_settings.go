@@ -33,6 +33,7 @@ type ClientFilterSettings struct {
 	IncludeUnreleasedMoviesInSearch              *bool               `json:"includeUnreleasedMoviesInSearch,omitempty"`
 	IncludeUnreleasedShowsInSearch               *bool               `json:"includeUnreleasedShowsInSearch,omitempty"`
 	DisableMobileTopCarousel                     *bool               `json:"disableMobileTopCarousel,omitempty"`
+	EnableAnimations                             *bool               `json:"enableAnimations,omitempty"`
 	EnableHeroArtPanning                         *bool               `json:"enableHeroArtPanning,omitempty"`
 	EnableHeroArtRotation                        *bool               `json:"enableHeroArtRotation,omitempty"`
 	BlurUnwatchedEpisodeThumbnails               *bool               `json:"blurUnwatchedEpisodeThumbnails,omitempty"`
@@ -112,6 +113,7 @@ func (c *ClientFilterSettings) IsEmpty() bool {
 		c.IncludeUnreleasedMoviesInSearch == nil &&
 		c.IncludeUnreleasedShowsInSearch == nil &&
 		c.DisableMobileTopCarousel == nil &&
+		c.EnableAnimations == nil &&
 		c.EnableHeroArtPanning == nil &&
 		c.EnableHeroArtRotation == nil &&
 		c.BlurUnwatchedEpisodeThumbnails == nil &&
