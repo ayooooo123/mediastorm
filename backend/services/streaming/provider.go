@@ -49,3 +49,11 @@ type DirectURLProvider interface {
 	Provider
 	GetDirectURL(ctx context.Context, path string) (string, error)
 }
+
+// RelatedFileProvider is an optional interface for providers that can locate a
+// companion file in the same source collection. It is used for container
+// metadata stored outside the media file, such as Blu-ray CLPI files.
+type RelatedFileProvider interface {
+	Provider
+	StreamRelatedFile(ctx context.Context, sourcePath, relatedPath string) (*Response, error)
+}

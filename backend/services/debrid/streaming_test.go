@@ -17,6 +17,7 @@ import (
 type streamingMockProvider struct {
 	name            string
 	info            *TorrentInfo
+	infoCalls       int64
 	unrestrictCalls int64
 }
 
@@ -28,6 +29,7 @@ func (m *streamingMockProvider) AddTorrentFile(context.Context, []byte, string) 
 	return &AddMagnetResult{ID: "torrent1"}, nil
 }
 func (m *streamingMockProvider) GetTorrentInfo(context.Context, string) (*TorrentInfo, error) {
+	atomic.AddInt64(&m.infoCalls, 1)
 	return m.info, nil
 }
 func (m *streamingMockProvider) SelectFiles(context.Context, string, string) error { return nil }
@@ -38,6 +40,57 @@ func (m *streamingMockProvider) UnrestrictLink(_ context.Context, link string) (
 }
 func (m *streamingMockProvider) CheckInstantAvailability(context.Context, string) (bool, error) {
 	return true, nil
+}
+
+func TestStreamingProviderStreamsRelatedFileByTorrentPath(t *testing.T) {
+	clpiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("clpi-data"))
+	}))
+	defer clpiServer.Close()
+
+	providerName := "testprovider_related_file"
+	mock := &streamingMockProvider{
+		name: providerName,
+		info: &TorrentInfo{
+			ID: "torrent1",
+			Files: []File{
+				{ID: 180, Path: "Disc/BDMV/STREAM/00801.m2ts", Selected: 1},
+				{ID: 337, Path: "Disc/BDMV/CLIPINF/00801.clpi", Selected: 1},
+			},
+			Links: []string{"unused-video-link", clpiServer.URL + "/00801.clpi"},
+		},
+	}
+
+	mgr := config.NewManager(filepath.Join(t.TempDir(), "settings.json"))
+	if err := mgr.Save(config.Settings{Streaming: config.StreamingSettings{
+		DebridProviders: []config.DebridProviderSettings{
+			{Provider: providerName, APIKey: "test-key", Enabled: true},
+		},
+	}}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	RegisterProvider(providerName, func(string) Provider { return mock })
+
+	p := NewStreamingProvider(mgr)
+	resp, err := p.StreamRelatedFile(
+		context.Background(),
+		"/debrid/"+providerName+"/torrent1/file/180/Disc/BDMV/STREAM/00801.m2ts",
+		"Disc/BDMV/CLIPINF/00801.clpi",
+	)
+	if err != nil {
+		t.Fatalf("StreamRelatedFile() error = %v", err)
+	}
+	defer resp.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read related file: %v", err)
+	}
+	if got, want := string(body), "clpi-data"; got != want {
+		t.Fatalf("related body = %q, want %q", got, want)
+	}
+	if got := atomic.LoadInt64(&mock.infoCalls); got != 1 {
+		t.Fatalf("GetTorrentInfo calls = %d, want 1", got)
+	}
 }
 
 func TestStreamingProviderEvictsCachedURLAndRetriesOnRequestFailure(t *testing.T) {

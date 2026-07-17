@@ -3,11 +3,13 @@ package debrid
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -328,6 +330,10 @@ func (p *StreamingProvider) Stream(ctx context.Context, req streaming.Request) (
 }
 
 func (p *StreamingProvider) streamWithProvider(ctx context.Context, req streaming.Request, client Provider, torrentID, fileID string, retryCachedFailure bool) (*streaming.Response, error) {
+	return p.streamWithProviderInfo(ctx, req, client, torrentID, fileID, retryCachedFailure, nil)
+}
+
+func (p *StreamingProvider) streamWithProviderInfo(ctx context.Context, req streaming.Request, client Provider, torrentID, fileID string, retryCachedFailure bool, prefetchedInfo *TorrentInfo) (*streaming.Response, error) {
 	providerName := client.Name()
 	var downloadURL string
 	var filename string
@@ -347,7 +353,11 @@ func (p *StreamingProvider) streamWithProvider(ctx context.Context, req streamin
 	} else {
 		// Cache miss - need to unrestrict the link
 		// Get fresh torrent info to get download links
-		info, err := client.GetTorrentInfo(ctx, torrentID)
+		info := prefetchedInfo
+		var err error
+		if info == nil {
+			info, err = client.GetTorrentInfo(ctx, torrentID)
+		}
 		if err != nil && isStaleTorrentError(err) {
 			// Torrent expired/deleted — try to re-add from magnet registry
 			newID, retryErr := p.readdFromRegistry(ctx, client, providerName, torrentID)
@@ -530,6 +540,60 @@ func (p *StreamingProvider) streamWithProvider(ctx context.Context, req streamin
 	}, nil
 }
 
+// StreamRelatedFile locates and streams a companion file from the same debrid
+// torrent without requiring callers to know its provider-specific file ID.
+func (p *StreamingProvider) StreamRelatedFile(ctx context.Context, sourcePath, relatedPath string) (*streaming.Response, error) {
+	providerName, torrentID, _, err := parseDebridPath(sourcePath)
+	if err != nil {
+		return nil, streaming.ErrNotFound
+	}
+
+	settings, err := p.cfg.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load settings: %w", err)
+	}
+
+	var providerConfig *config.DebridProviderSettings
+	for i := range settings.Streaming.DebridProviders {
+		candidate := &settings.Streaming.DebridProviders[i]
+		if candidate.Enabled && strings.EqualFold(candidate.Provider, providerName) {
+			providerConfig = candidate
+			break
+		}
+	}
+	if providerConfig == nil {
+		return nil, streaming.ErrNotFound
+	}
+
+	client, ok := GetProvider(strings.ToLower(providerConfig.Provider), providerConfig.APIKey)
+	if !ok {
+		return nil, streaming.ErrNotFound
+	}
+
+	info, err := client.GetTorrentInfo(ctx, torrentID)
+	if err != nil {
+		return nil, fmt.Errorf("get torrent info: %w", err)
+	}
+
+	target := strings.TrimPrefix(filepath.ToSlash(strings.TrimSpace(relatedPath)), "/")
+	fileID := ""
+	for _, file := range info.Files {
+		candidate := strings.TrimPrefix(filepath.ToSlash(strings.TrimSpace(file.Path)), "/")
+		if strings.EqualFold(candidate, target) {
+			fileID = strconv.Itoa(file.ID)
+			break
+		}
+	}
+	if fileID == "" {
+		return nil, streaming.ErrNotFound
+	}
+
+	return p.streamWithProviderInfo(ctx, streaming.Request{
+		Path:   sourcePath,
+		Method: http.MethodGet,
+	}, client, torrentID, fileID, true, info)
+}
+
 // drainOnCloseBody wraps an io.ReadCloser so that on Close(), it drains a small
 // amount of unread data in the background instead of immediately closing the
 // connection. With HTTP/1.1 CDNs (like Real-Debrid), an unread response body
@@ -610,6 +674,26 @@ func (c *CompositeProvider) GetDirectURL(ctx context.Context, path string) (stri
 	}
 
 	return "", streaming.ErrNotFound
+}
+
+// StreamRelatedFile asks each capable provider for a companion file belonging
+// to the same source collection.
+func (c *CompositeProvider) StreamRelatedFile(ctx context.Context, sourcePath, relatedPath string) (*streaming.Response, error) {
+	for _, provider := range c.providers {
+		relatedProvider, ok := provider.(streaming.RelatedFileProvider)
+		if !ok {
+			continue
+		}
+
+		resp, err := relatedProvider.StreamRelatedFile(ctx, sourcePath, relatedPath)
+		if err == nil {
+			return resp, nil
+		}
+		if !errors.Is(err, streaming.ErrNotFound) {
+			return nil, err
+		}
+	}
+	return nil, streaming.ErrNotFound
 }
 
 // Stream tries each provider in order until one handles the request.
