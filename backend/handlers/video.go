@@ -54,6 +54,9 @@ var transmuxableExtensions = map[string]struct{}{
 
 var googleVideoURLPattern = regexp.MustCompile(`https?://[^\s\]\)]+googlevideo\.com/[^\s\]\)]+`)
 
+var debridFilePathPattern = regexp.MustCompile(`(?i)^/?debrid/[^/]+/[^/]+/file/[^/]+/(.+)$`)
+var bluRayStreamPathPattern = regexp.MustCompile(`(?i)^(.*BDMV/)STREAM/([0-9]{5})\.m2ts$`)
+
 var copyableAudioCodecs = map[string]struct{}{
 	"aac":  {},
 	"ac3":  {},
@@ -1622,6 +1625,7 @@ func (h *VideoHandler) runFFProbeFromProvider(ctx context.Context, cleanPath str
 				// Log but don't fail - fall through to WebDAV or piped approach
 				log.Printf("[video] ffprobe with direct URL failed, trying alternatives: %v", err)
 			} else {
+				h.enrichBluRayStreamLanguages(ctx, cleanPath, meta)
 				return meta, nil
 			}
 		} else if err != nil && errors.Is(err, streaming.ErrStaleTorrent) {
@@ -1639,6 +1643,7 @@ func (h *VideoHandler) runFFProbeFromProvider(ctx context.Context, cleanPath str
 			// Log but don't fail - fall through to piped approach
 			log.Printf("[video] ffprobe with WebDAV URL failed, falling back to piped probe: %v", err)
 		} else {
+			h.enrichBluRayStreamLanguages(ctx, cleanPath, meta)
 			return meta, nil
 		}
 	}
@@ -1676,7 +1681,152 @@ func (h *VideoHandler) runFFProbeFromProvider(ctx context.Context, cleanPath str
 		pw.CloseWithError(err)
 		return nil, err
 	}
+	h.enrichBluRayStreamLanguages(ctx, cleanPath, meta)
 	return meta, nil
+}
+
+const maxCLPIBytes = 1024 * 1024
+
+func bluRayCLPIPath(sourcePath string) (string, bool) {
+	matches := debridFilePathPattern.FindStringSubmatch(strings.TrimSpace(sourcePath))
+	if len(matches) != 2 {
+		return "", false
+	}
+
+	relativePath := filepath.ToSlash(matches[1])
+	streamMatches := bluRayStreamPathPattern.FindStringSubmatch(relativePath)
+	if len(streamMatches) != 3 {
+		return "", false
+	}
+
+	return streamMatches[1] + "CLIPINF/" + streamMatches[2] + ".clpi", true
+}
+
+func parseCLPIStreamLanguages(data []byte) map[int]string {
+	languages := make(map[int]string)
+	for i := 0; i+6 < len(data); i++ {
+		pid := int(data[i])<<8 | int(data[i+1])
+		codingInfoLength := int(data[i+2])
+		codingType := data[i+3]
+
+		languageOffset := -1
+		switch {
+		case pid >= 0x1200 && pid <= 0x12ff && codingType == 0x90 && codingInfoLength >= 4:
+			languageOffset = i + 4 // Presentation Graphics stream
+		case pid >= 0x1100 && pid <= 0x11ff && codingType >= 0x80 && codingType <= 0x86 && codingInfoLength >= 5:
+			languageOffset = i + 5 // Audio format/rate byte precedes language
+		}
+		if languageOffset < 0 || languageOffset+3 > len(data) {
+			continue
+		}
+
+		languageBytes := data[languageOffset : languageOffset+3]
+		valid := true
+		for _, value := range languageBytes {
+			if value < 'a' || value > 'z' {
+				valid = false
+				break
+			}
+		}
+		if valid {
+			languages[pid] = string(languageBytes)
+		}
+	}
+	return languages
+}
+
+func parseFFProbeStreamPID(value string) (int, bool) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return 0, false
+	}
+	pid, err := strconv.ParseInt(trimmed, 0, 32)
+	if err != nil || pid < 0 || pid > 0xffff {
+		return 0, false
+	}
+	return int(pid), true
+}
+
+func (h *VideoHandler) enrichBluRayStreamLanguages(ctx context.Context, sourcePath string, meta *ffprobeOutput) {
+	if meta == nil || h.streamer == nil {
+		return
+	}
+
+	needsLanguages := false
+	for i := range meta.Streams {
+		stream := &meta.Streams[i]
+		codecType := strings.ToLower(strings.TrimSpace(stream.CodecType))
+		if (codecType == "subtitle" || codecType == "audio") && normalizeTag(stream.Tags, "language") == "" {
+			if _, ok := parseFFProbeStreamPID(stream.ID); ok {
+				needsLanguages = true
+				break
+			}
+		}
+	}
+	if !needsLanguages {
+		return
+	}
+
+	clpiPath, ok := bluRayCLPIPath(sourcePath)
+	if !ok {
+		return
+	}
+	relatedProvider, ok := h.streamer.(streaming.RelatedFileProvider)
+	if !ok {
+		return
+	}
+
+	resp, err := relatedProvider.StreamRelatedFile(ctx, sourcePath, clpiPath)
+	if err != nil {
+		if !errors.Is(err, streaming.ErrNotFound) && !errors.Is(err, context.Canceled) {
+			videoTracef("[video] CLPI lookup failed for %q: %v", sourcePath, err)
+		}
+		return
+	}
+	if resp == nil || resp.Body == nil {
+		if resp != nil {
+			_ = resp.Close()
+		}
+		return
+	}
+	defer resp.Close()
+	if resp.ContentLength > maxCLPIBytes {
+		videoTracef("[video] ignoring oversized CLPI companion for %q: %d bytes", sourcePath, resp.ContentLength)
+		return
+	}
+
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxCLPIBytes+1))
+	if err != nil || len(data) > maxCLPIBytes {
+		return
+	}
+	languages := parseCLPIStreamLanguages(data)
+	if len(languages) == 0 {
+		return
+	}
+
+	enriched := 0
+	for i := range meta.Streams {
+		stream := &meta.Streams[i]
+		if normalizeTag(stream.Tags, "language") != "" {
+			continue
+		}
+		pid, ok := parseFFProbeStreamPID(stream.ID)
+		if !ok {
+			continue
+		}
+		language, ok := languages[pid]
+		if !ok {
+			continue
+		}
+		if stream.Tags == nil {
+			stream.Tags = make(map[string]string)
+		}
+		stream.Tags["language"] = language
+		enriched++
+	}
+	if enriched > 0 {
+		log.Printf("[video] enriched %d Blu-ray stream language(s) from %s", enriched, clpiPath)
+	}
 }
 
 // ProbeVideo returns lightweight metadata about the requested media without relying on external WebDAV probes.
@@ -2671,6 +2821,7 @@ type ffprobeOutput struct {
 
 type ffprobeStream struct {
 	Index          int               `json:"index"`
+	ID             string            `json:"id"`
 	CodecType      string            `json:"codec_type"`
 	CodecName      string            `json:"codec_name"`
 	CodecLongName  string            `json:"codec_long_name"`
