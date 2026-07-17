@@ -84,6 +84,7 @@ func displayUnreleasedVisibilityInitialized(display config.DisplaySettings) bool
 		display.ShowParsedBadges ||
 		display.CleanPosters ||
 		display.DisableMobileTopCarousel ||
+		display.EnableAnimations ||
 		display.BlurUnwatchedEpisodeThumbnails ||
 		display.BlurUnwatchedEpisodeThumbnailsIncludeCurrent ||
 		display.BlurUnwatchedEpisodeOverviews ||

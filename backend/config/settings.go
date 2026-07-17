@@ -1016,6 +1016,8 @@ type DisplaySettings struct {
 	CleanPosters bool `json:"cleanPosters,omitempty"`
 	// DisableMobileTopCarousel hides the top hero carousel on mobile home.
 	DisableMobileTopCarousel bool `json:"disableMobileTopCarousel,omitempty"`
+	// EnableAnimations controls application UI motion such as animated scrolling and transitions.
+	EnableAnimations bool `json:"enableAnimations"`
 	// EnableHeroArtPanning animates TV hero artwork with a slow pan/zoom effect.
 	EnableHeroArtPanning bool `json:"enableHeroArtPanning"`
 	// EnableHeroArtRotation cycles through alternate TV hero artwork.
@@ -1516,6 +1518,7 @@ func DefaultSettings() Settings {
 			IncludeUnreleasedShowsInSearch:  true,
 			CleanPosters:                    true,
 			AlwaysShowProfileSelector:       true,
+			EnableAnimations:                true,
 			EnableHeroArtPanning:            true,
 			EnableHeroArtRotation:           true,
 			Appearance: AppearanceSettings{
@@ -1858,6 +1861,9 @@ func (m *Manager) Load() (Settings, error) {
 		if _, exists := displayMap["enableHeroArtPanning"]; !exists {
 			displayMap["enableHeroArtPanning"] = true
 		}
+		if _, exists := displayMap["enableAnimations"]; !exists {
+			displayMap["enableAnimations"] = true
+		}
 		if _, exists := displayMap["enableHeroArtRotation"]; !exists {
 			displayMap["enableHeroArtRotation"] = true
 		}
@@ -1868,6 +1874,7 @@ func (m *Manager) Load() (Settings, error) {
 			"includeUnreleasedShowsInLists":   true,
 			"includeUnreleasedMoviesInSearch": true,
 			"includeUnreleasedShowsInSearch":  true,
+			"enableAnimations":                true,
 			"enableHeroArtPanning":            true,
 			"enableHeroArtRotation":           true,
 		}

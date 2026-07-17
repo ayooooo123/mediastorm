@@ -179,6 +179,7 @@ func globalToUserSettings(g config.Settings) models.UserSettings {
 			IncludeUnreleasedShowsInSearch:   models.BoolPtr(g.Display.IncludeUnreleasedShowsInSearch),
 			BypassFilteringForAIOStreamsOnly: models.BoolPtr(g.Display.BypassFilteringForAIOStreamsOnly),
 			DisableMobileTopCarousel:         models.BoolPtr(g.Display.DisableMobileTopCarousel),
+			EnableAnimations:                 models.BoolPtr(g.Display.EnableAnimations),
 			EnableHeroArtPanning:             models.BoolPtr(g.Display.EnableHeroArtPanning),
 			EnableHeroArtRotation:            models.BoolPtr(g.Display.EnableHeroArtRotation),
 			AppLanguage:                      g.Display.AppLanguage,
@@ -446,6 +447,9 @@ func mergeWithGlobal(us models.UserSettings, g config.Settings) models.UserSetti
 	}
 	if eff.Display.DisableMobileTopCarousel == nil {
 		eff.Display.DisableMobileTopCarousel = models.BoolPtr(g.Display.DisableMobileTopCarousel)
+	}
+	if eff.Display.EnableAnimations == nil {
+		eff.Display.EnableAnimations = models.BoolPtr(g.Display.EnableAnimations)
 	}
 	if eff.Display.EnableHeroArtPanning == nil {
 		eff.Display.EnableHeroArtPanning = models.BoolPtr(g.Display.EnableHeroArtPanning)
@@ -873,6 +877,10 @@ func stripDisplay(d *models.DisplaySettings, g config.DisplaySettings) bool {
 		d.DisableMobileTopCarousel = nil
 		changed = true
 	}
+	if d.EnableAnimations != nil && *d.EnableAnimations == g.EnableAnimations {
+		d.EnableAnimations = nil
+		changed = true
+	}
 	if d.EnableHeroArtPanning != nil && *d.EnableHeroArtPanning == g.EnableHeroArtPanning {
 		d.EnableHeroArtPanning = nil
 		changed = true
@@ -1207,6 +1215,10 @@ func stripClientSettings(cs *models.ClientFilterSettings, eff models.UserSetting
 	}
 	if cs.DisableMobileTopCarousel != nil && eff.Display.DisableMobileTopCarousel != nil && *cs.DisableMobileTopCarousel == *eff.Display.DisableMobileTopCarousel {
 		cs.DisableMobileTopCarousel = nil
+		changed = true
+	}
+	if cs.EnableAnimations != nil && eff.Display.EnableAnimations != nil && *cs.EnableAnimations == *eff.Display.EnableAnimations {
+		cs.EnableAnimations = nil
 		changed = true
 	}
 	if cs.EnableHeroArtPanning != nil && eff.Display.EnableHeroArtPanning != nil && *cs.EnableHeroArtPanning == *eff.Display.EnableHeroArtPanning {

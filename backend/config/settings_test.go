@@ -108,6 +108,13 @@ func TestDefaultSettingsEnablesCleanPosters(t *testing.T) {
 	}
 }
 
+func TestDefaultSettingsEnablesApplicationAnimations(t *testing.T) {
+	settings := DefaultSettings()
+	if !settings.Display.EnableAnimations {
+		t.Fatal("application animations should be enabled by default")
+	}
+}
+
 func TestSavePreservesDisabledUnreleasedVisibility(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
 	manager := NewManager(path)

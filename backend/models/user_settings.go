@@ -109,6 +109,8 @@ type DisplaySettings struct {
 	BypassFilteringForAIOStreamsOnly *bool `json:"bypassFilteringForAioStreamsOnly,omitempty"`
 	// DisableMobileTopCarousel hides the top hero carousel on mobile home.
 	DisableMobileTopCarousel *bool `json:"disableMobileTopCarousel,omitempty"`
+	// EnableAnimations controls application UI motion such as animated scrolling and transitions.
+	EnableAnimations *bool `json:"enableAnimations,omitempty"`
 	// EnableHeroArtPanning animates TV hero artwork with a slow pan/zoom effect.
 	EnableHeroArtPanning *bool `json:"enableHeroArtPanning,omitempty"`
 	// EnableHeroArtRotation cycles through alternate TV hero artwork.
@@ -824,6 +826,7 @@ func DefaultUserSettings() UserSettings {
 			IncludeUnreleasedMoviesInSearch:           BoolPtr(true),
 			IncludeUnreleasedShowsInSearch:            BoolPtr(true),
 			DisableMobileTopCarousel:                  BoolPtr(false),
+			EnableAnimations:                          BoolPtr(true),
 			EnableHeroArtPanning:                      BoolPtr(true),
 			EnableHeroArtRotation:                     BoolPtr(true),
 			Appearance: AppearanceSettings{
