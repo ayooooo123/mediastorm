@@ -32,30 +32,46 @@ var defaultStreamFailureRegistry = &streamFailureRegistry{
 }
 
 func (r *streamFailureRegistry) recordIfMissingArticles(path string, err error) bool {
+	_, recorded := r.recordRecognizedFailure(path, err)
+	return recorded
+}
+
+// recordRecognizedFailure records content-specific failures separately from a
+// transient provider outage so the frontend can migrate immediately without
+// permanently blacklisting a valid release for temporary infrastructure trouble.
+func (r *streamFailureRegistry) recordRecognizedFailure(path string, err error) (streamFailureRecord, bool) {
 	if r == nil || err == nil {
-		return false
+		return streamFailureRecord{}, false
 	}
 	reason, ok := missingArticleFailureReason(err)
 	if !ok {
-		return false
+		return streamFailureRecord{}, false
 	}
 
 	normalized := normalizeStreamFailurePath(path)
 	if normalized == "" {
-		return false
+		return streamFailureRecord{}, false
 	}
 
 	now := time.Now()
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.records[normalized] = streamFailureRecord{
+	record := streamFailureRecord{
 		Path:       normalized,
 		Reason:     reason,
 		Error:      err.Error(),
 		RecordedAt: now,
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.records[normalized] = record
 	r.pruneLocked(now)
-	return true
+	return record, true
+}
+
+func streamFailureMigrationReason(record streamFailureRecord) string {
+	if record.Reason == "provider_unavailable" {
+		return "backend-provider-unavailable"
+	}
+	return "backend-source-failure"
 }
 
 func (r *streamFailureRegistry) confirmedRecent(path string, maxAge time.Duration) (streamFailureRecord, bool) {

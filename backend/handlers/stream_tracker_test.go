@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,7 +19,7 @@ func newTestTracker() *StreamTracker {
 	}
 }
 
-func TestConfirmedUpstreamStarvationMigratesBeforeBufferPressure(t *testing.T) {
+func TestUpstreamStarvationWaitsForPlayerBufferPressure(t *testing.T) {
 	tracker := newTestTracker()
 	req := httptest.NewRequest(http.MethodGet, "/video/stream?profileId=p1&mediaType=movie&itemId=tmdb:movie:14160", nil)
 	id, _, _ := tracker.StartStreamWithAccount(req, "/webdav/nzbs/up/up.mkv", 1000, 0, 0, "acct1")
@@ -39,13 +38,33 @@ func TestConfirmedUpstreamStarvationMigratesBeforeBufferPressure(t *testing.T) {
 		t.Fatalf("paused playback consumed confirmed migration signal: reason=%q", reason)
 	}
 
-	reason, migrate := tracker.ShouldMigratePlayback("p1", models.PlaybackProgressUpdate{
+	if reason, migrate := tracker.ShouldMigratePlayback("p1", models.PlaybackProgressUpdate{
 		MediaType:   "movie",
 		ItemID:      "tmdb:movie:14160",
 		BufferAhead: &healthyRunway,
+	}); migrate {
+		t.Fatalf("transient upstream stall migrated with healthy runway: reason=%q", reason)
+	}
+
+	preparationRunway := 10.0
+	if reason, prepare := tracker.ShouldPreparePlaybackMigration("p1", models.PlaybackProgressUpdate{
+		MediaType:   "movie",
+		ItemID:      "tmdb:movie:14160",
+		Position:    40,
+		BufferAhead: &preparationRunway,
+	}); !prepare || reason != "backend-starvation" {
+		t.Fatalf("shrinking runway did not expose preparation signal: prepare=%v reason=%q", prepare, reason)
+	}
+
+	criticalRunway := 4.0
+	reason, migrate := tracker.ShouldMigratePlayback("p1", models.PlaybackProgressUpdate{
+		MediaType:   "movie",
+		ItemID:      "tmdb:movie:14160",
+		Position:    41,
+		BufferAhead: &criticalRunway,
 	})
 	if !migrate || reason != "backend-starvation" {
-		t.Fatalf("confirmed starvation did not migrate immediately: migrate=%v reason=%q", migrate, reason)
+		t.Fatalf("critical runway did not consume upstream stall: migrate=%v reason=%q", migrate, reason)
 	}
 
 	if _, migrate := tracker.ShouldMigratePlayback("p1", models.PlaybackProgressUpdate{
@@ -70,11 +89,20 @@ func TestWeakerMigrationSignalDoesNotOverwriteConfirmedStarvation(t *testing.T) 
 	}
 
 	healthyRunway := 20.0
-	reason, migrate := tracker.ShouldMigratePlayback("p1", models.PlaybackProgressUpdate{
+	if reason, migrate := tracker.ShouldMigratePlayback("p1", models.PlaybackProgressUpdate{
 		MediaType:   "movie",
 		ItemID:      "tmdb:movie:14160",
 		Position:    40,
 		BufferAhead: &healthyRunway,
+	}); migrate {
+		t.Fatalf("healthy runway consumed confirmed starvation: reason=%q", reason)
+	}
+	criticalRunway := 4.0
+	reason, migrate := tracker.ShouldMigratePlayback("p1", models.PlaybackProgressUpdate{
+		MediaType:   "movie",
+		ItemID:      "tmdb:movie:14160",
+		Position:    41,
+		BufferAhead: &criticalRunway,
 	})
 	if !migrate || reason != "backend-starvation" {
 		t.Fatalf("weaker signal replaced confirmed starvation: migrate=%v reason=%q", migrate, reason)
@@ -130,123 +158,68 @@ func TestPlaybackMigrationForPathTriggersOnBuffering(t *testing.T) {
 	}
 }
 
-func TestPlaybackBandwidthObservationAndSustainedUnderflow(t *testing.T) {
+func TestTerminalSourceFailureMigratesWithoutWaitingForBufferPressure(t *testing.T) {
 	tracker := newTestTracker()
 	req := httptest.NewRequest(http.MethodGet, "/video/stream?profileId=p1&mediaType=movie&itemId=tmdb:movie:14160", nil)
-	id, bytesCounter, _ := tracker.StartStreamWithAccount(req, "/webdav/nzbs/up/up.mkv", 1000, 0, 0, "acct1")
-	requiredMbps := 60.0
-	if matched := tracker.ObservePlaybackBandwidth("p1", models.PlaybackProgressUpdate{
-		MediaType:    "movie",
-		ItemID:       "tmdb:movie:14160",
-		RequiredMbps: &requiredMbps,
-	}); matched != 1 {
-		t.Fatalf("matched streams = %d, want 1", matched)
+	id, _, _ := tracker.StartStreamWithAccount(req, "/webdav/nzbs/up/up.mkv", 1000, 0, 0, "acct1")
+	if !tracker.MarkPlaybackMigration(id, "backend-source-failure") {
+		t.Fatal("expected terminal source failure signal")
 	}
-
-	stream := tracker.streams[id]
-	if got := atomic.LoadInt64(&stream.requiredBps); got != 60_000_000 {
-		t.Fatalf("required bandwidth = %d, want 60000000", got)
-	}
-
-	base := time.Now()
-	atomic.StoreInt64(&stream.healthLastBytes, 0)
-	atomic.StoreInt64(&stream.healthLastNanos, base.Add(-5*time.Second).UnixNano())
-	atomic.StoreInt64(bytesCounter, 3*1024*1024) // ~5 Mbps over five seconds
-	actual, required, alert := sampleDeliveryHealth(stream, base)
-	if alert || actual >= required {
-		t.Fatalf("first deficient sample should arm but not alert: actual=%d required=%d alert=%v", actual, required, alert)
-	}
-
-	atomic.AddInt64(bytesCounter, 3*1024*1024)
-	actual, required, alert = sampleDeliveryHealth(stream, base.Add(5*time.Second))
-	if !alert || actual >= required {
-		t.Fatalf("second deficient sample should alert: actual=%d required=%d alert=%v", actual, required, alert)
+	healthyRunway := 20.0
+	reason, migrate := tracker.ShouldMigratePlayback("p1", models.PlaybackProgressUpdate{
+		MediaType:   "movie",
+		ItemID:      "tmdb:movie:14160",
+		Position:    40,
+		BufferAhead: &healthyRunway,
+	})
+	if !migrate || reason != "backend-source-failure" {
+		t.Fatalf("terminal source failure was not actionable: migrate=%v reason=%q", migrate, reason)
 	}
 }
 
-func TestPlaybackBandwidthIgnoresAbandonedIdleStream(t *testing.T) {
+func TestTransientProviderOutageMigratesWithoutBecomingContentFailure(t *testing.T) {
 	tracker := newTestTracker()
-	req := httptest.NewRequest(http.MethodGet, "/video/stream?profileId=p1&mediaType=episode&itemId=tmdb:tv:261145:S01E02", nil)
-	id, bytesCounter, activityCounter := tracker.StartStreamWithAccount(
-		req,
-		"/webdav/nzbs/digital-circus/s01e02.mkv",
-		1000,
-		0,
-		0,
-		"acct1",
-	)
-	requiredMbps := 7.0
-	if matched := tracker.ObservePlaybackBandwidth("p1", models.PlaybackProgressUpdate{
-		MediaType:    "episode",
-		ItemID:       "tmdb:tv:261145:S01E02",
-		RequiredMbps: &requiredMbps,
-	}); matched != 1 {
-		t.Fatalf("matched streams = %d, want 1", matched)
+	req := httptest.NewRequest(http.MethodGet, "/video/stream?profileId=p1&mediaType=movie&itemId=tmdb:movie:14160", nil)
+	id, _, _ := tracker.StartStreamWithAccount(req, "/debrid/torbox/123/file/0/title.mkv", 1000, 0, 0, "acct1")
+	if !tracker.MarkPlaybackMigration(id, "backend-provider-unavailable") {
+		t.Fatal("expected transient provider outage signal")
 	}
-
-	stream := tracker.streams[id]
-	now := time.Now()
-	atomic.StoreInt64(activityCounter, now.Add(-throughputHealthActivityWindow-time.Second).UnixNano())
-	atomic.StoreInt64(&stream.healthLastBytes, atomic.LoadInt64(bytesCounter))
-	atomic.StoreInt64(&stream.healthLastNanos, now.Add(-throughputHealthMinWindow-time.Second).UnixNano())
-	atomic.StoreInt32(&stream.healthLowSamples, throughputHealthLowSamples-1)
-
-	actual, required, alert := sampleDeliveryHealth(stream, now)
-	if alert || actual != 0 || required != 7_000_000 {
-		t.Fatalf("idle stream produced delivery alert: actual=%d required=%d alert=%v", actual, required, alert)
-	}
-	if lowSamples := atomic.LoadInt32(&stream.healthLowSamples); lowSamples != 0 {
-		t.Fatalf("idle stream retained %d low samples, want 0", lowSamples)
-	}
-
-	// Exercise the production sampler as well: it must not convert the abandoned
-	// stream's zero delivery into a signal for a later playback heartbeat.
-	atomic.StoreInt32(&stream.healthLowSamples, throughputHealthLowSamples-1)
-	tracker.SampleThroughput()
-	if reason, migrate := tracker.ShouldMigratePlayback("p1", models.PlaybackProgressUpdate{
-		MediaType:   "episode",
-		ItemID:      "tmdb:tv:261145:S01E02",
-		Position:    461,
-		IsBuffering: true,
-		SourcePath:  "/webdav/nzbs/digital-circus/s01e02.mkv",
-	}); migrate {
-		t.Fatalf("abandoned stream armed migration for fresh playback: reason=%q", reason)
+	healthyRunway := 20.0
+	reason, migrate := tracker.ShouldMigratePlayback("p1", models.PlaybackProgressUpdate{
+		MediaType:   "movie",
+		ItemID:      "tmdb:movie:14160",
+		Position:    40,
+		BufferAhead: &healthyRunway,
+	})
+	if !migrate || reason != "backend-provider-unavailable" {
+		t.Fatalf("provider outage was not immediately actionable: migrate=%v reason=%q", migrate, reason)
 	}
 }
 
-func TestPlaybackBandwidthObservationOnlyUpdatesActiveSource(t *testing.T) {
-	tracker := newTestTracker()
-	requestURL := "/video/stream?profileId=p1&mediaType=movie&itemId=tmdb:movie:14160"
-	oldID, _, _ := tracker.StartStreamWithAccount(
-		httptest.NewRequest(http.MethodGet, requestURL, nil),
-		"/webdav/nzbs/up/old.mkv",
-		1000,
-		0,
-		0,
-		"acct1",
-	)
-	newID, _, _ := tracker.StartStreamWithAccount(
-		httptest.NewRequest(http.MethodGet, requestURL, nil),
-		"/debrid/torbox/123/file/0/new.mkv",
-		1000,
-		0,
-		0,
-		"acct1",
-	)
-	requiredMbps := 60.0
-	if matched := tracker.ObservePlaybackBandwidth("p1", models.PlaybackProgressUpdate{
-		MediaType:    "movie",
-		ItemID:       "tmdb:movie:14160",
-		RequiredMbps: &requiredMbps,
-		SourcePath:   "debrid/torbox/123/file/0/new.mkv",
-	}); matched != 1 {
-		t.Fatalf("matched streams = %d, want only active source", matched)
-	}
-	if got := atomic.LoadInt64(&tracker.streams[oldID].requiredBps); got != 0 {
-		t.Fatalf("old source required bandwidth = %d, want 0", got)
-	}
-	if got := atomic.LoadInt64(&tracker.streams[newID].requiredBps); got != 60_000_000 {
-		t.Fatalf("new source required bandwidth = %d, want 60000000", got)
+func TestTerminalSourceFailureOutranksProviderOutageInEitherOrder(t *testing.T) {
+	for _, reasons := range [][]string{
+		{"backend-source-failure", "backend-provider-unavailable"},
+		{"backend-provider-unavailable", "backend-source-failure"},
+	} {
+		tracker := newTestTracker()
+		path := "/debrid/torbox/123/file/0/title.mkv"
+		req := httptest.NewRequest(http.MethodGet, "/video/stream?profileId=p1&mediaType=movie&itemId=tmdb:movie:14160", nil)
+		id, _, _ := tracker.StartStreamWithAccount(req, path, 1000, 0, 0, "acct1")
+		for _, reason := range reasons {
+			if !tracker.MarkPlaybackMigration(id, reason) {
+				t.Fatalf("MarkPlaybackMigration(%q) = false", reason)
+			}
+		}
+		healthyRunway := 20.0
+		reason, migrate := tracker.ShouldMigratePlayback("p1", models.PlaybackProgressUpdate{
+			MediaType:   "movie",
+			ItemID:      "tmdb:movie:14160",
+			SourcePath:  path,
+			BufferAhead: &healthyRunway,
+		})
+		if !migrate || reason != "backend-source-failure" {
+			t.Fatalf("signals %v resolved to migrate=%v reason=%q, want backend-source-failure", reasons, migrate, reason)
+		}
 	}
 }
 

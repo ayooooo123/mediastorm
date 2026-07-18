@@ -135,7 +135,7 @@ func IsBlockedContentError(err error) bool {
 // IsProviderUnavailableError reports transient provider-side failures where the
 // selected item may be unusable right now, but another source can still work.
 func IsProviderUnavailableError(err error) bool {
-	if err == nil {
+	if err == nil || errors.Is(err, context.Canceled) {
 		return false
 	}
 	var sourceErr *SourceError
