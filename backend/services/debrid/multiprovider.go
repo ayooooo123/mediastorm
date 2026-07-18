@@ -26,12 +26,13 @@ type ProviderCacheResult struct {
 
 // MultiProviderService handles parallel debrid provider operations
 type MultiProviderService struct {
-	cfg *config.Manager
+	cfg     *config.Manager
+	circuit *providerResolutionCircuit
 }
 
 // NewMultiProviderService creates a new multi-provider service
-func NewMultiProviderService(cfg *config.Manager) *MultiProviderService {
-	return &MultiProviderService{cfg: cfg}
+func NewMultiProviderService(cfg *config.Manager, circuit *providerResolutionCircuit) *MultiProviderService {
+	return &MultiProviderService{cfg: cfg, circuit: circuit}
 }
 
 // providerEntry holds provider config and client together
@@ -68,6 +69,7 @@ func (s *MultiProviderService) CheckCacheAcrossProviders(
 			log.Printf("[multi-provider] provider %q not registered, skipping", p.Provider)
 			continue
 		}
+		client = s.circuit.wrap(client)
 
 		// Apply provider-specific configuration if supported
 		if configurable, ok := client.(Configurable); ok && p.Config != nil {

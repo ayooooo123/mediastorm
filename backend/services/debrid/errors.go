@@ -1,8 +1,10 @@
 package debrid
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 )
@@ -16,6 +18,50 @@ type ProviderError struct {
 	Code       int
 	Message    string
 	Body       string
+}
+
+// IsProviderAPIUnavailableError reports provider-wide API failures suitable
+// for temporarily pausing new resolution attempts. Item-specific source/CDN
+// failures are intentionally excluded.
+func IsProviderAPIUnavailableError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary()) {
+		return true
+	}
+	var providerErr *ProviderError
+	if errors.As(err, &providerErr) {
+		return providerErr.StatusCode == http.StatusTooManyRequests || providerErr.StatusCode >= http.StatusInternalServerError
+	}
+	msg := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"context deadline exceeded",
+		"client.timeout exceeded",
+		"connection refused",
+		"connection reset",
+		"network is unreachable",
+		"no such host",
+		"unexpected eof",
+		"database_error",
+		"temporarily unavailable",
+		"try again later",
+		"cloudflare",
+		"status 429",
+		"status 500",
+		"status 502",
+		"status 503",
+		"status 504",
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // SourceError reports a failure while opening or reading the provider's direct

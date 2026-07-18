@@ -21,6 +21,7 @@ type PlaybackService struct {
 	cfg           *config.Manager
 	healthService *HealthService
 	multiProvider *MultiProviderService
+	circuit       *providerResolutionCircuit
 }
 
 // NewPlaybackService creates a new debrid playback service.
@@ -34,10 +35,12 @@ func NewPlaybackService(cfg *config.Manager, healthService *HealthService) *Play
 			}
 		}
 	}
+	circuit := newProviderResolutionCircuit()
 	return &PlaybackService{
 		cfg:           cfg,
 		healthService: healthService,
-		multiProvider: NewMultiProviderService(cfg),
+		multiProvider: NewMultiProviderService(cfg, circuit),
+		circuit:       circuit,
 	}
 }
 
@@ -432,6 +435,7 @@ func (s *PlaybackService) resolveSingleProvider(
 	if !ok {
 		return nil, fmt.Errorf("provider %q not registered", providerConfig.Provider)
 	}
+	client = s.circuit.wrap(client)
 
 	if shouldUseQuickTorboxCacheCheck(settings.Streaming.DebridProviders, providerConfig, explicitProvider, infoHash) {
 		cached, err := client.CheckInstantAvailability(ctx, infoHash)
@@ -864,6 +868,7 @@ func (s *PlaybackService) ResolveBatch(ctx context.Context, candidate models.NZB
 	if !ok {
 		return nil, fmt.Errorf("provider %q not registered", providerConfig.Provider)
 	}
+	client = s.circuit.wrap(client)
 	providerName := client.Name()
 
 	// --- AddMagnet / AddTorrentFile (once) ---

@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -71,6 +72,36 @@ type slowReader struct {
 	data    []byte
 	pos     int
 	maxRead int
+}
+
+type playbackProbeProvider struct {
+	mu        sync.Mutex
+	calls     int
+	lastRange string
+}
+
+func (p *playbackProbeProvider) Stream(_ context.Context, req streaming.Request) (*streaming.Response, error) {
+	p.mu.Lock()
+	p.calls++
+	p.lastRange = req.RangeHeader
+	p.mu.Unlock()
+
+	start, end, ok := parseByteRange(req.RangeHeader)
+	if !ok {
+		return nil, fmt.Errorf("expected bounded range, got %q", req.RangeHeader)
+	}
+	data := make([]byte, end-start+1)
+	headers := make(http.Header)
+	headers.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, end+1024))
+	headers.Set("Content-Length", strconv.FormatInt(int64(len(data)), 10))
+	headers.Set("Content-Type", "video/mp4")
+	return &streaming.Response{
+		Body:          io.NopCloser(bytes.NewReader(data)),
+		Headers:       headers,
+		Status:        http.StatusPartialContent,
+		ContentLength: int64(len(data)),
+		Filename:      "probe.mp4",
+	}, nil
 }
 
 func newSlowReader(data []byte, maxRead int) *slowReader {
@@ -159,6 +190,53 @@ func TestInitialPreBufferTargetUsesMinimumForOpenEndedRange(t *testing.T) {
 	got := initialPreBufferTarget(0, -1, 100*1024*1024)
 	if got != poolMinPreBuffer {
 		t.Fatalf("initialPreBufferTarget open-ended range = %d, want %d", got, poolMinPreBuffer)
+	}
+}
+
+func TestPlaybackProbeBypassesPersistentStreamPool(t *testing.T) {
+	provider := &playbackProbeProvider{}
+	pool := newStreamPool(nil)
+	defer pool.close()
+	handler := &VideoHandler{
+		streamer:   provider,
+		streamPool: pool,
+	}
+
+	const rangeHeader = "bytes=1000000-4145727"
+	req := httptest.NewRequest(http.MethodGet, "/api/video/stream?_probe=123", nil)
+	req.Header.Set("Range", rangeHeader)
+	recorder := httptest.NewRecorder()
+
+	served, err := handler.streamViaProvider(
+		recorder,
+		req,
+		"/debrid/torbox/123/file/0/probe.mp4",
+	)
+	if err != nil {
+		t.Fatalf("streamViaProvider returned error: %v", err)
+	}
+	if !served {
+		t.Fatal("expected playback probe to be served")
+	}
+	if recorder.Code != http.StatusPartialContent {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusPartialContent)
+	}
+	if recorder.Body.Len() != 3*1024*1024 {
+		t.Fatalf("body size = %d, want %d", recorder.Body.Len(), 3*1024*1024)
+	}
+
+	provider.mu.Lock()
+	calls := provider.calls
+	gotRange := provider.lastRange
+	provider.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("provider calls = %d, want 1", calls)
+	}
+	if gotRange != rangeHeader {
+		t.Fatalf("provider range = %q, want %q", gotRange, rangeHeader)
+	}
+	if stats := pool.Stats(); stats.TotalSlots != 0 {
+		t.Fatalf("persistent pool slots = %d, want 0", stats.TotalSlots)
 	}
 }
 
