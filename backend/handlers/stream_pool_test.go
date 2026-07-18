@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -74,10 +75,61 @@ type slowReader struct {
 	maxRead int
 }
 
+// gatedReader lets a test hold an upstream read in flight while the last pool
+// reader disconnects. Each release permits exactly one byte to be returned.
+type gatedReader struct {
+	mu      sync.Mutex
+	reads   int
+	started chan int
+	release chan struct{}
+}
+
+func newGatedReader() *gatedReader {
+	return &gatedReader{
+		started: make(chan int),
+		release: make(chan struct{}),
+	}
+}
+
+func (r *gatedReader) Read(p []byte) (int, error) {
+	r.mu.Lock()
+	r.reads++
+	readNumber := r.reads
+	r.mu.Unlock()
+	r.started <- readNumber
+	<-r.release
+	p[0] = byte(readNumber)
+	return 1, nil
+}
+
 type playbackProbeProvider struct {
 	mu        sync.Mutex
 	calls     int
 	lastRange string
+}
+
+type blockingOpenProvider struct {
+	base    *mockStreamProvider
+	started chan string
+	release chan struct{}
+}
+
+func newBlockingOpenProvider() *blockingOpenProvider {
+	return &blockingOpenProvider{
+		base:    newMockStreamProvider(100*1024*1024, nil),
+		started: make(chan string, 4),
+		release: make(chan struct{}),
+	}
+}
+
+func (p *blockingOpenProvider) Stream(ctx context.Context, req streaming.Request) (*streaming.Response, error) {
+	p.started <- req.Path
+	select {
+	case <-p.release:
+		return p.base.Stream(ctx, req)
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func (p *playbackProbeProvider) Stream(_ context.Context, req streaming.Request) (*streaming.Response, error) {
@@ -276,6 +328,8 @@ func TestStreamPoolSlotReuse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first getOrCreate failed: %v", err)
 	}
+	readerID := slot1.registerReader(0)
+	defer slot1.unregisterReader(readerID)
 
 	// Wait for some data to be buffered
 	deadline := time.After(2 * time.Second)
@@ -427,6 +481,177 @@ func TestStreamPoolClientDisconnectKeepsSlot(t *testing.T) {
 	_ = done2
 }
 
+func TestPoolSlotPausesWithoutReadersAndResumesOnReconnect(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	reader := newGatedReader()
+	slot := &poolSlot{
+		path:          "/test/paused-reader.mp4",
+		ctx:           ctx,
+		cancel:        cancel,
+		lastAccess:    time.Now(),
+		lastReadAt:    time.Now(),
+		readStartedAt: time.Now(),
+		signal:        make(chan struct{}),
+		readerChanged: make(chan struct{}),
+	}
+	response := &streaming.Response{Body: io.NopCloser(reader)}
+	backgroundDone := make(chan struct{})
+	go func() {
+		slot.backgroundReader(response)
+		close(backgroundDone)
+	}()
+
+	// A freshly created slot must not consume upstream data before serve has
+	// registered its reader.
+	select {
+	case readNumber := <-reader.started:
+		t.Fatalf("upstream read %d started without an active reader", readNumber)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	firstReaderID := slot.registerReader(0)
+	select {
+	case readNumber := <-reader.started:
+		if readNumber != 1 {
+			t.Fatalf("first upstream read number = %d, want 1", readNumber)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("upstream reader did not resume after registration")
+	}
+
+	// Disconnect during an in-flight read. That read may finish, but the slot
+	// must park before beginning a second chunk.
+	slot.unregisterReader(firstReaderID)
+	reader.release <- struct{}{}
+	deadline := time.Now().Add(time.Second)
+	for {
+		slot.mu.Lock()
+		totalRead := slot.totalRead
+		slot.mu.Unlock()
+		if totalRead == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("in-flight chunk was not retained; totalRead=%d", totalRead)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case readNumber := <-reader.started:
+		t.Fatalf("upstream read %d started after the last reader disconnected", readNumber)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// Reconnecting closes the exact channel captured by the parked background
+	// goroutine, so it cannot miss this wakeup.
+	secondReaderID := slot.registerReader(1)
+	select {
+	case readNumber := <-reader.started:
+		if readNumber != 2 {
+			t.Fatalf("reconnected upstream read number = %d, want 2", readNumber)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("upstream reader did not resume after reconnect")
+	}
+
+	// Verify the same one-in-flight-chunk bound again, then ensure cancellation
+	// wakes a background reader parked with no clients.
+	slot.unregisterReader(secondReaderID)
+	reader.release <- struct{}{}
+	deadline = time.Now().Add(time.Second)
+	for {
+		slot.mu.Lock()
+		totalRead := slot.totalRead
+		slot.mu.Unlock()
+		if totalRead == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("second in-flight chunk was not retained; totalRead=%d", totalRead)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case readNumber := <-reader.started:
+		t.Fatalf("upstream read %d started while the slot was orphaned", readNumber)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	cancel()
+	select {
+	case <-backgroundDone:
+	case <-time.After(time.Second):
+		t.Fatal("cancellation did not wake the paused background reader")
+	}
+
+	slot.mu.Lock()
+	cdnDone := slot.cdnDone
+	slot.mu.Unlock()
+	if !cdnDone {
+		t.Fatal("slot was not marked done after cancellation")
+	}
+}
+
+func TestPoolSlotTracksSlowestReaderPosition(t *testing.T) {
+	slot := &poolSlot{readerChanged: make(chan struct{})}
+	slowReader := slot.registerReader(100)
+	fastReader := slot.registerReader(200)
+	defer slot.unregisterReader(slowReader)
+	defer slot.unregisterReader(fastReader)
+
+	slot.updateReaderPosition(fastReader, 1000)
+	slot.mu.Lock()
+	minPosition := slot.minReaderPos
+	slot.mu.Unlock()
+	if minPosition != 100 {
+		t.Fatalf("fast reader moved trim boundary to %d, want slow reader at 100", minPosition)
+	}
+
+	slot.updateReaderPosition(slowReader, 300)
+	slot.mu.Lock()
+	minPosition = slot.minReaderPos
+	slot.mu.Unlock()
+	if minPosition != 300 {
+		t.Fatalf("trim boundary = %d, want 300 after slow reader advanced", minPosition)
+	}
+}
+
+func TestPoolSlotTrimNeverPassesSlowestReader(t *testing.T) {
+	slot := &poolSlot{
+		data:          make([]byte, 40),
+		readerChanged: make(chan struct{}),
+	}
+	backingStart := &slot.data[0]
+	slowReader := slot.registerReader(4)
+	fastReader := slot.registerReader(40)
+	defer slot.unregisterReader(slowReader)
+	defer slot.unregisterReader(fastReader)
+
+	slot.mu.Lock()
+	trimmed := slot.trimConsumedBufferLocked(24)
+	startByte := slot.startByte
+	remaining := len(slot.data)
+	slot.mu.Unlock()
+	if trimmed != 4 || startByte != 4 || remaining != 36 {
+		t.Fatalf("first trim = %d start=%d remaining=%d, want trim=4 start=4 remaining=36", trimmed, startByte, remaining)
+	}
+	if &slot.data[0] != backingStart {
+		t.Fatal("trim replaced the backing buffer instead of compacting in place")
+	}
+
+	slot.updateReaderPosition(slowReader, 20)
+	slot.mu.Lock()
+	trimmed = slot.trimConsumedBufferLocked(24)
+	startByte = slot.startByte
+	remaining = len(slot.data)
+	slot.mu.Unlock()
+	if trimmed != 12 || startByte != 16 || remaining != 24 {
+		t.Fatalf("second trim = %d start=%d remaining=%d, want trim=12 start=16 remaining=24", trimmed, startByte, remaining)
+	}
+}
+
 func TestStreamPoolEviction(t *testing.T) {
 	pool := newStreamPool(nil)
 	defer pool.close()
@@ -484,6 +709,155 @@ func TestStreamPoolMaxSlots(t *testing.T) {
 	}
 }
 
+func TestStreamPoolDoesNotEvictActiveSlotAtCapacity(t *testing.T) {
+	pool := newStreamPool(nil)
+	defer pool.close()
+	provider := newMockStreamProvider(100*1024*1024, nil)
+	readerIDs := make([]uint64, 0, poolMaxSlotsPerFile)
+	slots := make([]*poolSlot, 0, poolMaxSlotsPerFile)
+
+	for i := 0; i < poolMaxSlotsPerFile; i++ {
+		position := int64(i) * 20 * 1024 * 1024
+		slot, err := pool.getOrCreate("/test/active-capacity.mp4", position, provider)
+		if err != nil {
+			t.Fatalf("getOrCreate active slot %d: %v", i, err)
+		}
+		slots = append(slots, slot)
+		readerIDs = append(readerIDs, slot.registerReader(position))
+	}
+	defer func() {
+		for i, slot := range slots {
+			slot.unregisterReader(readerIDs[i])
+		}
+	}()
+	provider.mu.Lock()
+	callsBeforeCapacityMiss := provider.calls
+	provider.mu.Unlock()
+
+	if _, err := pool.getOrCreate(
+		"/test/active-capacity.mp4",
+		int64(poolMaxSlotsPerFile)*20*1024*1024,
+		provider,
+	); err == nil {
+		t.Fatal("expected pool capacity error while every slot has an active reader")
+	}
+	provider.mu.Lock()
+	callsAfterCapacityMiss := provider.calls
+	provider.mu.Unlock()
+	if callsAfterCapacityMiss != callsBeforeCapacityMiss {
+		t.Fatalf("capacity miss opened provider %d extra times, want 0", callsAfterCapacityMiss-callsBeforeCapacityMiss)
+	}
+	pool.mu.RLock()
+	remaining := len(pool.files["/test/active-capacity.mp4"])
+	pool.mu.RUnlock()
+	if remaining != poolMaxSlotsPerFile {
+		t.Fatalf("active slots remaining = %d, want %d", remaining, poolMaxSlotsPerFile)
+	}
+}
+
+func TestStreamPoolCoalescesConcurrentSlotCreation(t *testing.T) {
+	pool := newStreamPool(nil)
+	defer pool.close()
+	provider := newMockStreamProvider(100*1024*1024, nil)
+
+	const callers = 8
+	var wg sync.WaitGroup
+	wg.Add(callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			defer wg.Done()
+			if _, err := pool.getOrCreate("/test/concurrent-create.mp4", 0, provider); err != nil {
+				t.Errorf("getOrCreate: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	provider.mu.Lock()
+	calls := provider.calls
+	provider.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("provider opens = %d, want 1 for concurrent identical misses", calls)
+	}
+}
+
+func TestStreamPoolCreatesUnrelatedPathsConcurrently(t *testing.T) {
+	pool := newStreamPool(nil)
+	defer pool.close()
+	provider := newBlockingOpenProvider()
+	results := make(chan error, 2)
+
+	for _, path := range []string{"/test/first.mp4", "/test/second.mp4"} {
+		path := path
+		go func() {
+			_, err := pool.getOrCreate(path, 0, provider)
+			results <- err
+		}()
+	}
+
+	started := make(map[string]bool)
+	deadline := time.After(time.Second)
+	for len(started) < 2 {
+		select {
+		case path := <-provider.started:
+			started[path] = true
+		case <-deadline:
+			close(provider.release)
+			for i := 0; i < 2; i++ {
+				<-results
+			}
+			t.Fatalf("provider opens serialized across unrelated paths; started=%v", started)
+		}
+	}
+	close(provider.release)
+	for i := 0; i < 2; i++ {
+		if err := <-results; err != nil {
+			t.Fatalf("getOrCreate unrelated path: %v", err)
+		}
+	}
+}
+
+func TestStreamPoolCanceledWaiterEscapesPathCreationGate(t *testing.T) {
+	pool := newStreamPool(nil)
+	defer pool.close()
+	provider := newBlockingOpenProvider()
+	firstResult := make(chan error, 1)
+	go func() {
+		_, err := pool.getOrCreate("/test/cancel-wait.mp4", 0, provider)
+		firstResult <- err
+	}()
+
+	select {
+	case <-provider.started:
+	case <-time.After(time.Second):
+		close(provider.release)
+		t.Fatal("first provider open did not start")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	secondResult := make(chan error, 1)
+	go func() {
+		_, _, err := pool.acquire(ctx, "/test/cancel-wait.mp4", 0, provider)
+		secondResult <- err
+	}()
+	cancel()
+
+	select {
+	case err := <-secondResult:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("waiting acquire error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		close(provider.release)
+		t.Fatal("canceled waiter remained blocked on creation gate")
+	}
+
+	close(provider.release)
+	if err := <-firstResult; err != nil {
+		t.Fatalf("first getOrCreate: %v", err)
+	}
+}
+
 func TestAbs64(t *testing.T) {
 	tests := []struct {
 		input int64
@@ -513,6 +887,8 @@ func TestStreamPoolFindSlotDataAvailable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("getOrCreate failed: %v", err)
 	}
+	readerID := slot.registerReader(1000)
+	defer slot.unregisterReader(readerID)
 
 	// Wait for some data
 	deadline := time.After(2 * time.Second)

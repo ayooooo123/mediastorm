@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"log"
 	"math"
 	"net"
 	"net/http"
@@ -33,6 +32,10 @@ type playbackMigrationSignal struct {
 
 func playbackMigrationSignalPriority(reason string) int {
 	switch strings.TrimSpace(reason) {
+	case "backend-source-failure":
+		return 5
+	case "backend-provider-unavailable":
+		return 4
 	case "backend-starvation":
 		return 3
 	case "backend-low-throughput":
@@ -77,14 +80,6 @@ type TrackedStream struct {
 	lastSampleBytes int64
 	lastSampleNanos int64
 	throughputBps   int64
-	// Delivery-health sampling is independent of the smoothed dashboard rate.
-	// It compares raw five-second delivery windows with player-reported required
-	// bandwidth so sustained trickle delivery can arm migration before buffering.
-	requiredBps           int64
-	healthLastBytes       int64
-	healthLastNanos       int64
-	healthLowSamples      int32
-	healthLastSignalNanos int64
 }
 
 // throughputSampleInterval is the minimum window between throughput samples.
@@ -158,112 +153,25 @@ func sampleThroughput(bytesNow int64, lastBytes, lastNanos, outBps *int64) int64
 // on open, even when no dashboard was connected to drive sampling.
 const throughputSamplerInterval = 5 * time.Second
 
-const (
-	throughputHealthMinRequiredBps = int64(1_000_000)
-	throughputHealthMinWindow      = 3 * time.Second
-	// A direct stream can remain registered after its player disappears while the
-	// HTTP handler is still blocked. Treating that idle transport as 0 Mbps can
-	// arm a migration signal that a later playback of the same item consumes.
-	// Delivery health is only meaningful while bytes are actively reaching the
-	// client; upstream starvation is detected separately by the proxy readers.
-	throughputHealthActivityWindow = 2 * throughputSamplerInterval
-	throughputHealthFactor         = 0.90
-	throughputHealthLowSamples     = int32(2)
-	throughputHealthSignalCooldown = 30 * time.Second
-	// Client-write pacing can fall below the media bitrate while a healthy
-	// native player is applying backpressure. Only prepare an alternative once
-	// the player reports that its buffered runway is actually shrinking.
-	migrationPreparationBufferRunway = 15.0
-)
-
-type throughputHealthAlert struct {
-	streamID string
-	actual   int64
-	required int64
-}
-
-func sampleDeliveryHealth(s *TrackedStream, now time.Time) (int64, int64, bool) {
-	if s == nil || s.bytesCounter == nil {
-		return 0, 0, false
-	}
-	required := atomic.LoadInt64(&s.requiredBps)
-	if required < throughputHealthMinRequiredBps {
-		atomic.StoreInt32(&s.healthLowSamples, 0)
-		return 0, required, false
-	}
-	if s.activityCounter == nil {
-		atomic.StoreInt32(&s.healthLowSamples, 0)
-		return 0, required, false
-	}
-	lastActivityNanos := atomic.LoadInt64(s.activityCounter)
-	if lastActivityNanos <= 0 || now.Sub(time.Unix(0, lastActivityNanos)) > throughputHealthActivityWindow {
-		// Reset the sampling baseline as well as the deficient-sample count. If
-		// delivery resumes, the next observation seeds a fresh window instead of
-		// including the idle period in its calculated rate.
-		atomic.StoreInt64(&s.healthLastBytes, atomic.LoadInt64(s.bytesCounter))
-		atomic.StoreInt64(&s.healthLastNanos, now.UnixNano())
-		atomic.StoreInt32(&s.healthLowSamples, 0)
-		return 0, required, false
-	}
-
-	nowNanos := now.UnixNano()
-	bytesNow := atomic.LoadInt64(s.bytesCounter)
-	previousNanos := atomic.SwapInt64(&s.healthLastNanos, nowNanos)
-	previousBytes := atomic.SwapInt64(&s.healthLastBytes, bytesNow)
-	if previousNanos <= 0 || nowNanos <= previousNanos {
-		return 0, required, false
-	}
-	elapsed := nowNanos - previousNanos
-	if time.Duration(elapsed) < throughputHealthMinWindow {
-		return 0, required, false
-	}
-	deltaBytes := bytesNow - previousBytes
-	if deltaBytes < 0 {
-		deltaBytes = 0
-	}
-	actual := int64(float64(deltaBytes) * 8 * float64(time.Second) / float64(elapsed))
-	if float64(actual) >= float64(required)*throughputHealthFactor {
-		atomic.StoreInt32(&s.healthLowSamples, 0)
-		return actual, required, false
-	}
-
-	lowSamples := atomic.AddInt32(&s.healthLowSamples, 1)
-	if lowSamples < throughputHealthLowSamples {
-		return actual, required, false
-	}
-	lastSignal := atomic.LoadInt64(&s.healthLastSignalNanos)
-	if lastSignal > 0 && time.Duration(nowNanos-lastSignal) < throughputHealthSignalCooldown {
-		return actual, required, false
-	}
-	atomic.StoreInt64(&s.healthLastSignalNanos, nowNanos)
-	return actual, required, true
-}
+// Client-write throughput is deliberately dashboard-only. HTTP writes are paced
+// by the native player's demand and buffer backpressure, so comparing their
+// completion rate with the media bitrate can manufacture migration signals even
+// while the CDN and playback are healthy. Upstream stalls remain diagnostic;
+// player-reported buffer pressure and terminal source failures are authoritative.
+const migrationPreparationBufferRunway = 15.0
 
 // SampleThroughput refreshes the throughput EWMA for every active direct stream.
 // Work is proportional to the number of active streams (a few atomics + one
 // exp() each), so it is effectively free when there are none.
 func (t *StreamTracker) SampleThroughput() {
 	t.mu.RLock()
-	alerts := make([]throughputHealthAlert, 0)
-	now := time.Now()
 	for _, s := range t.streams {
 		if s.bytesCounter == nil {
 			continue
 		}
 		sampleThroughput(atomic.LoadInt64(s.bytesCounter), &s.lastSampleBytes, &s.lastSampleNanos, &s.throughputBps)
-		if actual, required, alert := sampleDeliveryHealth(s, now); alert {
-			alerts = append(alerts, throughputHealthAlert{streamID: s.ID, actual: actual, required: required})
-		}
 	}
 	t.mu.RUnlock()
-
-	for _, alert := range alerts {
-		if t.MarkPlaybackMigration(alert.streamID, "backend-low-throughput") {
-			log.Printf("[stream-migration] sustained delivery underflow detected: streamID=%s actual=%.1fMbps required=%.1fMbps threshold=%.0f%% samples=%d",
-				alert.streamID, float64(alert.actual)/1_000_000, float64(alert.required)/1_000_000,
-				throughputHealthFactor*100, throughputHealthLowSamples)
-		}
-	}
 }
 
 // StartThroughputSampler launches a background goroutine that keeps each active
@@ -657,59 +565,9 @@ func (t *StreamTracker) MarkPlaybackMigrationForPath(path, reason string) int {
 	return marked
 }
 
-// ObservePlaybackBandwidth attaches the active release's estimated bandwidth to
-// every matching direct stream. The estimate comes from the migration candidate
-// size and media duration, which is more reliable than inferring total size from
-// an arbitrary resumed byte range.
-func (t *StreamTracker) ObservePlaybackBandwidth(userID string, update models.PlaybackProgressUpdate) int {
-	if update.RequiredMbps == nil || *update.RequiredMbps <= 0 || math.IsNaN(*update.RequiredMbps) || math.IsInf(*update.RequiredMbps, 0) {
-		return 0
-	}
-	required := int64(*update.RequiredMbps * 1_000_000)
-	if required < throughputHealthMinRequiredBps {
-		return 0
-	}
-	targetKey := playbackControlKey(userID, update.MediaType, update.ItemID)
-	nowNanos := time.Now().UnixNano()
-
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	matched := 0
-	for _, stream := range t.streams {
-		matches := false
-		for _, key := range streamPlaybackControlKeys(stream) {
-			if key == targetKey {
-				matches = true
-				break
-			}
-		}
-		if !matches || stream.bytesCounter == nil {
-			continue
-		}
-		if update.SourcePath != "" && normalizeStreamFailurePath(stream.Path) != normalizeStreamFailurePath(update.SourcePath) {
-			continue
-		}
-
-		previous := atomic.LoadInt64(&stream.requiredBps)
-		atomic.StoreInt64(&stream.requiredBps, required)
-		// Reset health sampling only for a new stream estimate or a material
-		// candidate change; ordinary progress heartbeats keep the rolling window.
-		materialChange := previous <= 0 || math.Abs(float64(previous-required))/float64(required) > 0.10
-		if materialChange {
-			atomic.StoreInt64(&stream.healthLastBytes, atomic.LoadInt64(stream.bytesCounter))
-			atomic.StoreInt64(&stream.healthLastNanos, nowNanos)
-			atomic.StoreInt32(&stream.healthLowSamples, 0)
-			atomic.StoreInt64(&stream.healthLastSignalNanos, 0)
-		}
-		matched++
-	}
-	return matched
-}
-
-// ShouldMigratePlayback consumes a pending backend recommendation. Confirmed
-// upstream starvation is actionable immediately; delivery underflow and blocked
-// client writes still require player-side buffer pressure because both can be a
-// normal consequence of a healthy player filling its buffer in bursts.
+// ShouldMigratePlayback consumes transient recommendations only after the player
+// confirms buffer pressure. Terminal source/provider failures are immediately
+// actionable because the current request cannot recover normally.
 func (t *StreamTracker) ShouldMigratePlayback(userID string, update models.PlaybackProgressUpdate) (string, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -723,8 +581,8 @@ func (t *StreamTracker) ShouldMigratePlayback(userID string, update models.Playb
 	if update.IsPaused {
 		return "", false
 	}
-	confirmedUpstreamStarvation := signal.reason == "backend-starvation"
-	if !confirmedUpstreamStarvation && !update.IsBuffering && (update.BufferAhead == nil || *update.BufferAhead > 5) {
+	terminalSourceFailure := signal.reason == "backend-source-failure" || signal.reason == "backend-provider-unavailable"
+	if !terminalSourceFailure && !update.IsBuffering && (update.BufferAhead == nil || *update.BufferAhead > 5) {
 		return "", false
 	}
 	if signal.reason == "backend-low-throughput" && update.Position <= 3 {
@@ -734,10 +592,9 @@ func (t *StreamTracker) ShouldMigratePlayback(userID string, update models.Playb
 	return signal.reason, true
 }
 
-// ShouldPreparePlaybackMigration exposes a pending recommendation without
-// consuming it. Predictive client-delivery signals wait until the current buffer
-// runway is shrinking, then let the player resolve and probe the next candidate
-// before migration becomes critical.
+// ShouldPreparePlaybackMigration exposes a pending transient recommendation
+// without consuming it once the current buffer runway is shrinking. This keeps
+// compatibility with signals issued by an older running backend during rollout.
 func (t *StreamTracker) ShouldPreparePlaybackMigration(userID string, update models.PlaybackProgressUpdate) (string, bool) {
 	if update.IsPaused || update.Position <= 3 {
 		return "", false
@@ -752,8 +609,7 @@ func (t *StreamTracker) ShouldPreparePlaybackMigration(userID string, update mod
 	if !ok || !signal.expiresAt.After(time.Now()) {
 		return "", false
 	}
-	if signal.reason != "backend-starvation" && !update.IsBuffering &&
-		(update.BufferAhead == nil || *update.BufferAhead > migrationPreparationBufferRunway) {
+	if !update.IsBuffering && (update.BufferAhead == nil || *update.BufferAhead > migrationPreparationBufferRunway) {
 		return "", false
 	}
 	return signal.reason, true

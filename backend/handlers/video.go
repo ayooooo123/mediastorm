@@ -937,8 +937,9 @@ func (h *VideoHandler) streamViaProvider(w http.ResponseWriter, r *http.Request,
 	})
 	if err != nil {
 		log.Printf("[video] provider stream failed path=%q range=%q err=%v", cleanPath, rangeHeader, err)
-		if h.failures != nil && h.failures.recordIfMissingArticles(cleanPath, err) {
+		if record, confirmed := h.failures.recordRecognizedFailure(cleanPath, err); confirmed {
 			log.Printf("[stream-migration] confirmed recoverable stream failure during open path=%q range=%q err=%v", cleanPath, rangeHeader, err)
+			tracker.MarkPlaybackMigrationForPath(cleanPath, streamFailureMigrationReason(record))
 			h.invalidatePrequeuesForFailedPath(cleanPath)
 		}
 		if errors.Is(err, streaming.ErrNotFound) {
@@ -1056,6 +1057,19 @@ func (h *VideoHandler) streamViaProvider(w http.ResponseWriter, r *http.Request,
 		var providerWindowRead time.Duration
 		var clientWindowBytes int64
 		var clientWindowWrite time.Duration
+		var upstreamWatch pipelineBlockWatch
+		stopUpstreamStarvationWatch := monitorPipelineStarvation(
+			ctx,
+			&upstreamWatch,
+			pipelineStarvationTimeout,
+			pipelineStarvationCheckInterval,
+			func(blockedFor time.Duration) bool {
+				log.Printf("[stream-health] upstream read blocked in provider stream: path=%q blockedFor=%v streamID=%s",
+					cleanPath, blockedFor.Round(time.Millisecond), streamID)
+				return true
+			},
+		)
+		defer stopUpstreamStarvationWatch()
 
 		videoTracef("[video] starting stream copy: path=%q range=%q streamID=%s", cleanPath, rangeHeader, streamID)
 
@@ -1068,8 +1082,10 @@ func (h *VideoHandler) streamViaProvider(w http.ResponseWriter, r *http.Request,
 			default:
 			}
 
+			upstreamWatch.begin()
 			readStart := time.Now()
 			n, readErr := reader.Read(buf)
+			upstreamWatch.end()
 			providerWindowRead += time.Since(readStart)
 			if n > 0 {
 				providerWindowBytes += int64(n)
@@ -1148,8 +1164,9 @@ func (h *VideoHandler) streamViaProvider(w http.ResponseWriter, r *http.Request,
 			if readErr != nil {
 				if readErr != io.EOF {
 					log.Printf("[video] SEEK ERROR: provider read error path=%q total=%d range=%q err=%v", cleanPath, total, rangeHeader, readErr)
-					if h.failures != nil && h.failures.recordIfMissingArticles(cleanPath, readErr) {
+					if record, confirmed := h.failures.recordRecognizedFailure(cleanPath, readErr); confirmed {
 						log.Printf("[stream-migration] confirmed missing-article stream failure during read path=%q range=%q total=%d err=%v", cleanPath, rangeHeader, total, readErr)
+						tracker.MarkPlaybackMigrationForPath(cleanPath, streamFailureMigrationReason(record))
 						h.invalidatePrequeuesForFailedPath(cleanPath)
 					}
 					return true, readErr
@@ -5453,31 +5470,12 @@ func (h *VideoHandler) proxyExternalURL(w http.ResponseWriter, r *http.Request, 
 		pipelineStarvationTimeout,
 		pipelineStarvationCheckInterval,
 		func(blockedFor time.Duration) bool {
-			marked := tracker.MarkPlaybackMigration(streamID, "backend-starvation")
-			if marked {
-				log.Printf("[stream-migration] upstream starvation detected in external proxy: host=%q path=%q blockedFor=%v streamID=%s",
-					parsedURL.Host, parsedURL.Path, blockedFor.Round(time.Millisecond), streamID)
-			}
-			return marked
+			log.Printf("[stream-health] upstream read blocked in external proxy: host=%q path=%q blockedFor=%v streamID=%s",
+				parsedURL.Host, parsedURL.Path, blockedFor.Round(time.Millisecond), streamID)
+			return true
 		},
 	)
 	defer stopUpstreamStarvationWatch()
-	var clientWriteWatch pipelineBlockWatch
-	stopDeliveryStarvationWatch := monitorPipelineStarvation(
-		ctx,
-		&clientWriteWatch,
-		pipelineStarvationTimeout,
-		pipelineStarvationCheckInterval,
-		func(blockedFor time.Duration) bool {
-			marked := tracker.MarkPlaybackMigration(streamID, "backend-delivery-starvation")
-			if marked {
-				log.Printf("[stream-migration] client delivery starvation detected in external proxy: host=%q path=%q blockedFor=%v streamID=%s",
-					parsedURL.Host, parsedURL.Path, blockedFor.Round(time.Millisecond), streamID)
-			}
-			return marked
-		},
-	)
-	defer stopDeliveryStarvationWatch()
 
 	// Stream the response body to the client
 	buf := make([]byte, 512*1024) // 512KB buffer
@@ -5517,10 +5515,11 @@ func (h *VideoHandler) proxyExternalURL(w http.ResponseWriter, r *http.Request, 
 		upstreamWindowRead += time.Since(readStart)
 		if n > 0 {
 			upstreamWindowBytes += int64(n)
-			clientWriteWatch.begin()
+			// Slow client writes are normal backpressure when the player has buffered
+			// ahead. Do not turn them into migration signals; player buffer telemetry
+			// determines whether a transient upstream stall is actually harmful.
 			writeStart := time.Now()
 			written, writeErr := w.Write(buf[:n])
-			clientWriteWatch.end()
 			clientWindowWrite += time.Since(writeStart)
 			if writeErr != nil {
 				if isClientGone(writeErr) || ctx.Err() == context.Canceled {

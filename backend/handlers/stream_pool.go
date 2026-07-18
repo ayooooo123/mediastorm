@@ -50,10 +50,17 @@ func initialPreBufferTarget(reqStart, reqEnd, totalSize int64) int64 {
 // CDN in the background, so subsequent requests at nearby positions are served
 // instantly from the buffer.
 type streamPool struct {
-	mu       sync.RWMutex
-	files    map[string][]*poolSlot
-	done     chan struct{}
-	failures *streamFailureRegistry
+	mu            sync.RWMutex
+	creationMu    sync.Mutex // protects creationGates; never held during provider I/O
+	creationGates map[string]*poolCreationGate
+	files         map[string][]*poolSlot
+	done          chan struct{}
+	failures      *streamFailureRegistry
+}
+
+type poolCreationGate struct {
+	semaphore chan struct{}
+	refs      int
 }
 
 type poolSlot struct {
@@ -78,25 +85,197 @@ type poolSlot struct {
 	contentType string // Content-Type from CDN
 
 	// Usage tracking
-	lastAccess    time.Time
-	readers       int32 // atomic: active reader count
-	minReaderPos  int64 // lowest active reader position (updated by readers under mu)
-	totalRead     int64 // cumulative bytes read from CDN into this slot
-	lastReadAt    time.Time
-	readStartedAt time.Time
+	lastAccess      time.Time
+	readers         int32 // atomic: active reader count
+	minReaderPos    int64 // lowest active reader position (updated from readerPositions under mu)
+	nextReaderID    uint64
+	readerPositions map[uint64]int64
+	totalRead       int64 // cumulative bytes read from CDN into this slot
+	lastReadAt      time.Time
+	readStartedAt   time.Time
 
 	// Notification: closed when new data is written, then replaced with a fresh channel
 	signal chan struct{}
+
+	// Notification: closed and replaced while holding mu whenever the active
+	// reader count changes. The background reader uses this separate channel to
+	// pause the upstream connection while nobody is consuming the slot without
+	// missing a reconnect that races with entering the wait.
+	readerChanged chan struct{}
+}
+
+func (s *poolSlot) updateMinReaderPosLocked() {
+	if len(s.readerPositions) == 0 {
+		s.minReaderPos = s.startByte + int64(len(s.data))
+		return
+	}
+	first := true
+	for _, pos := range s.readerPositions {
+		if first || pos < s.minReaderPos {
+			s.minReaderPos = pos
+			first = false
+		}
+	}
+}
+
+// trimConsumedBufferLocked shrinks the sliding window toward targetBytes without
+// discarding a byte that any active reader has not consumed. s.mu must be held.
+func (s *poolSlot) trimConsumedBufferLocked(targetBytes int) int {
+	if targetBytes < 0 || len(s.data) <= targetBytes {
+		return 0
+	}
+	safeTrimTo := s.minReaderPos
+	if atomic.LoadInt32(&s.readers) == 0 {
+		safeTrimTo = s.startByte + int64(len(s.data))
+	}
+	maxTrim := int(safeTrimTo - s.startByte)
+	if maxTrim <= 0 {
+		return 0
+	}
+	trimAmount := len(s.data) - targetBytes
+	if trimAmount > maxTrim {
+		trimAmount = maxTrim
+	}
+	if trimAmount <= 0 {
+		return 0
+	}
+	remaining := len(s.data) - trimAmount
+	// Compact in place. Allocating and copying a fresh 24-32 MiB window on
+	// every trim creates exactly the kind of transient memory/CPU pressure that
+	// can feed back into player delivery while a migration is already active.
+	copy(s.data[:remaining], s.data[trimAmount:])
+	s.data = s.data[:remaining]
+	s.startByte += int64(trimAmount)
+	return trimAmount
+}
+
+func (s *poolSlot) registerReader(pos int64) uint64 {
+	s.mu.Lock()
+	readerID := s.registerReaderLocked(pos)
+	s.mu.Unlock()
+	return readerID
+}
+
+// registerReaderLocked pins a slot before the pool membership lock is released,
+// preventing the reaper or capacity eviction from cancelling a slot between
+// lookup and reader registration. s.mu must be held by the caller.
+func (s *poolSlot) registerReaderLocked(pos int64) uint64 {
+	s.nextReaderID++
+	readerID := s.nextReaderID
+	if s.readerPositions == nil {
+		s.readerPositions = make(map[uint64]int64)
+	}
+	s.readerPositions[readerID] = pos
+	s.updateMinReaderPosLocked()
+	atomic.AddInt32(&s.readers, 1)
+	s.notifyReaderChangedLocked()
+	return readerID
+}
+
+func (s *poolSlot) updateReaderPosition(readerID uint64, pos int64) {
+	s.mu.Lock()
+	if _, ok := s.readerPositions[readerID]; ok {
+		s.readerPositions[readerID] = pos
+		s.updateMinReaderPosLocked()
+	}
+	s.mu.Unlock()
+}
+
+func (s *poolSlot) unregisterReader(readerID uint64) {
+	s.mu.Lock()
+	if _, ok := s.readerPositions[readerID]; !ok {
+		s.mu.Unlock()
+		return
+	}
+	delete(s.readerPositions, readerID)
+	s.updateMinReaderPosLocked()
+	atomic.AddInt32(&s.readers, -1)
+	s.notifyReaderChangedLocked()
+	s.mu.Unlock()
+}
+
+// notifyReaderChangedLocked wakes waiters without a gap between publishing the
+// replacement channel and closing the old one. s.mu must be held by the caller.
+func (s *poolSlot) notifyReaderChangedLocked() {
+	if s.readerChanged == nil {
+		s.readerChanged = make(chan struct{})
+		return
+	}
+	old := s.readerChanged
+	s.readerChanged = make(chan struct{})
+	close(old)
+}
+
+// waitForActiveReader pauses upstream read-ahead while the slot is orphaned.
+// Checking the count and capturing readerChanged under the same lock as
+// registerReader prevents a reconnect from being lost between those actions.
+func (s *poolSlot) waitForActiveReader() bool {
+	for {
+		s.mu.Lock()
+		if atomic.LoadInt32(&s.readers) > 0 {
+			s.mu.Unlock()
+			return true
+		}
+		if s.readerChanged == nil {
+			s.readerChanged = make(chan struct{})
+		}
+		changed := s.readerChanged
+		s.mu.Unlock()
+
+		select {
+		case <-s.ctx.Done():
+			return false
+		case <-changed:
+		}
+	}
 }
 
 func newStreamPool(failures *streamFailureRegistry) *streamPool {
 	p := &streamPool{
-		files:    make(map[string][]*poolSlot),
-		done:     make(chan struct{}),
-		failures: failures,
+		creationGates: make(map[string]*poolCreationGate),
+		files:         make(map[string][]*poolSlot),
+		done:          make(chan struct{}),
+		failures:      failures,
 	}
 	go p.reaper()
 	return p
+}
+
+// lockCreation serializes misses only for the same media path. Waiting is
+// request-cancellable, and a slow provider open for one file never blocks an
+// unrelated playback from opening its own slot.
+func (p *streamPool) lockCreation(ctx context.Context, path string) (func(), error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	p.creationMu.Lock()
+	gate := p.creationGates[path]
+	if gate == nil {
+		gate = &poolCreationGate{semaphore: make(chan struct{}, 1)}
+		p.creationGates[path] = gate
+	}
+	gate.refs++
+	p.creationMu.Unlock()
+
+	releaseRef := func() {
+		p.creationMu.Lock()
+		gate.refs--
+		if gate.refs == 0 {
+			delete(p.creationGates, path)
+		}
+		p.creationMu.Unlock()
+	}
+
+	select {
+	case gate.semaphore <- struct{}{}:
+		return func() {
+			<-gate.semaphore
+			releaseRef()
+		}, nil
+	case <-ctx.Done():
+		releaseRef()
+		return nil, ctx.Err()
+	}
 }
 
 func (p *streamPool) close() {
@@ -133,10 +312,12 @@ func (p *streamPool) evictIdle() {
 		for _, s := range slots {
 			s.mu.Lock()
 			idle := now.Sub(s.lastAccess) > poolSlotIdleTimeout && atomic.LoadInt32(&s.readers) == 0
+			startByte := s.startByte
+			buffered := len(s.data)
 			s.mu.Unlock()
 			if idle {
 				videoTracef("[stream-pool] evicting idle slot: path=%q startByte=%d buffered=%d",
-					path, s.startByte, len(s.data))
+					path, startByte, buffered)
 				s.cancel()
 			} else {
 				live = append(live, s)
@@ -163,21 +344,12 @@ func (p *streamPool) serve(
 	displayName string,
 	accountID string,
 ) (bool, error) {
-	slot, err := p.getOrCreate(path, reqStart, streamer)
+	slot, readerID, err := p.acquire(r.Context(), path, reqStart, streamer)
 	if err != nil {
 		return false, nil
 	}
 
-	// Register reader and track position for safe buffer trimming
-	slot.mu.Lock()
-	atomic.AddInt32(&slot.readers, 1)
-	if atomic.LoadInt32(&slot.readers) == 1 || reqStart < slot.minReaderPos {
-		slot.minReaderPos = reqStart
-	}
-	slot.mu.Unlock()
-	defer func() {
-		atomic.AddInt32(&slot.readers, -1)
-	}()
+	defer slot.unregisterReader(readerID)
 
 	ctx := r.Context()
 	requestStartedAt := time.Now()
@@ -198,12 +370,13 @@ func (p *streamPool) serve(
 	slotTotalRead := slot.totalRead
 	slotLastReadAt := slot.lastReadAt
 	slotReadStartedAt := slot.readStartedAt
+	slotStart := slot.startByte
 	ch := slot.signal
 	slot.mu.Unlock()
 
 	// If requested position is before the slot's buffer start, can't serve
-	if reqStart < slot.startByte {
-		videoTracef("[stream-pool] MISS: data trimmed past reqStart=%d slotStart=%d", reqStart, slot.startByte)
+	if reqStart < slotStart {
+		videoTracef("[stream-pool] MISS: data trimmed past reqStart=%d slotStart=%d", reqStart, slotStart)
 		return false, nil
 	}
 
@@ -221,7 +394,7 @@ func (p *streamPool) serve(
 		}
 		waitStart := time.Now()
 		videoTracef("[stream-pool] WAIT-START: path=%q range=%q reqStart=%d endPos=%d gap=%d slotStart=%d cdnDone=%v preBuffer=%d/%d slotTotalRead=%d slotAge=%v sinceLastRead=%v readers=%d",
-			path, rangeHeader, reqStart, endPos, gap, slot.startByte, false, buffered, preBufferTarget,
+			path, rangeHeader, reqStart, endPos, gap, slotStart, false, buffered, preBufferTarget,
 			slotTotalRead, time.Since(slotReadStartedAt).Round(time.Millisecond), time.Since(slotLastReadAt).Round(time.Millisecond), atomic.LoadInt32(&slot.readers))
 		waitDeadline := time.After(poolWaitTimeout)
 		for {
@@ -326,22 +499,6 @@ dataReady:
 	}
 	streamID, bytesCounter, activityCounter := tracker.StartStreamWithAccount(r, path, expectedLen, reqStart, 0, accountID)
 	defer tracker.EndStream(streamID)
-	var clientWriteWatch pipelineBlockWatch
-	stopDeliveryStarvationWatch := monitorPipelineStarvation(
-		ctx,
-		&clientWriteWatch,
-		pipelineStarvationTimeout,
-		pipelineStarvationCheckInterval,
-		func(blockedFor time.Duration) bool {
-			marked := tracker.MarkPlaybackMigration(streamID, "backend-delivery-starvation")
-			if marked {
-				log.Printf("[stream-migration] client delivery starvation detected in stream pool: path=%q blockedFor=%v streamID=%s",
-					path, blockedFor.Round(time.Millisecond), streamID)
-			}
-			return marked
-		},
-	)
-	defer stopDeliveryStarvationWatch()
 
 	// Stream data from slot buffer to client.
 	// IMPORTANT: Write data immediately without checking ctx.Done() first.
@@ -358,7 +515,7 @@ dataReady:
 	}
 
 	videoTracef("[stream-pool] serving: path=%q range=%q reqStart=%d slotStart=%d buffered=%d slotTotalRead=%d readers=%d",
-		path, rangeHeader, reqStart, slot.startByte, endPos-slot.startByte, slotTotalRead, atomic.LoadInt32(&slot.readers))
+		path, rangeHeader, reqStart, slotStart, endPos-slotStart, slotTotalRead, atomic.LoadInt32(&slot.readers))
 
 	const clientLogInterval = 5 * time.Second
 	clientLogAt := time.Now()
@@ -373,8 +530,9 @@ dataReady:
 		slot.mu.Lock()
 		// Check if the buffer has been trimmed past our read position
 		if pos < slot.startByte {
+			trimmedStart := slot.startByte
 			slot.mu.Unlock()
-			videoTracef("[stream-pool] buffer trimmed past reader: path=%q pos=%d slotStart=%d", path, pos, slot.startByte)
+			videoTracef("[stream-pool] buffer trimmed past reader: path=%q pos=%d slotStart=%d", path, pos, trimmedStart)
 			return true, fmt.Errorf("buffer trimmed past reader position")
 		}
 
@@ -435,10 +593,14 @@ dataReady:
 
 		// Write directly — don't check ctx.Done() beforehand.
 		// The write itself is the fastest path to getting data to the client.
-		clientWriteWatch.begin()
+		// A blocked ResponseWriter write is client backpressure, not evidence that
+		// the upstream stream is starved. Native players intentionally stop reading
+		// while their local buffer is full, and a low-bitrate stream can take longer
+		// than the generic starvation timeout to consume this 4 MiB chunk. Only an
+		// upstream read stall combined with player-reported buffer pressure can arm
+		// a migration.
 		writeStart := time.Now()
 		written, writeErr := w.Write(chunk)
-		clientWriteWatch.end()
 		clientWindowWrite += time.Since(writeStart)
 		if writeErr != nil {
 			if isClientGone(writeErr) && totalWritten > 0 {
@@ -452,13 +614,9 @@ dataReady:
 		totalWritten += int64(written)
 		clientWindowBytes += int64(written)
 
-		// Update minimum reader position so the background reader
-		// knows how far it can safely trim the buffer.
-		slot.mu.Lock()
-		if pos > slot.minReaderPos {
-			slot.minReaderPos = pos
-		}
-		slot.mu.Unlock()
+		// Update this reader independently so a fast parallel range request
+		// cannot move the trim boundary past a slower reader.
+		slot.updateReaderPosition(readerID, pos)
 
 		if bytesCounter != nil {
 			atomic.StoreInt64(bytesCounter, totalWritten)
@@ -519,11 +677,10 @@ func logStreamThroughput(leg, path string, bytes int64, activeDur, wallDur time.
 		leg, name, wallRate*8, wallRate, activeRate*8, activeRate, busy, bytes, wallSecs)
 }
 
-// findSlot returns an existing pool slot that can serve data at reqPos, or nil.
-func (p *streamPool) findSlot(path string, reqPos int64) *poolSlot {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
+// findSlotLocked returns an existing slot and optionally registers a reader
+// before the caller releases p.mu. The caller must hold p.mu for reading or
+// writing; pool membership then cannot change during acquisition.
+func (p *streamPool) findSlotLocked(path string, reqPos int64, acquire bool) (*poolSlot, uint64) {
 	slots := p.files[path]
 	var best *poolSlot
 	var bestDist int64 = int64(^uint64(0) >> 1) // MaxInt64
@@ -540,8 +697,12 @@ func (p *streamPool) findSlot(path string, reqPos int64) *poolSlot {
 
 		if reqPos >= s.startByte && reqPos < endPos {
 			// Data already available in buffer — perfect match
+			var readerID uint64
+			if acquire {
+				readerID = s.registerReaderLocked(reqPos)
+			}
 			s.mu.Unlock()
-			return s
+			return s, readerID
 		}
 
 		if reqPos >= s.startByte && !s.cdnDone {
@@ -555,31 +716,105 @@ func (p *streamPool) findSlot(path string, reqPos int64) *poolSlot {
 		s.mu.Unlock()
 	}
 
-	return best
+	if best == nil {
+		return nil, 0
+	}
+
+	// The background reader can advance or trim while candidates are scanned.
+	// Revalidate the selected slot under its lock before pinning it.
+	best.mu.Lock()
+	endPos := best.startByte + int64(len(best.data))
+	dist := reqPos - endPos
+	eligible := !(best.cdnDone && best.cdnErr != nil) && reqPos >= best.startByte &&
+		(reqPos < endPos || (!best.cdnDone && dist >= 0 && dist < poolMaxWaitAhead))
+	if !eligible {
+		best.mu.Unlock()
+		return nil, 0
+	}
+	var readerID uint64
+	if acquire {
+		readerID = best.registerReaderLocked(reqPos)
+	}
+	best.mu.Unlock()
+	return best, readerID
 }
 
-// getOrCreate finds an existing slot or creates a new one with a CDN connection.
-func (p *streamPool) getOrCreate(path string, reqPos int64, streamer streaming.Provider) (*poolSlot, error) {
-	if slot := p.findSlot(path, reqPos); slot != nil {
-		slot.mu.Lock()
-		buffered := int64(len(slot.data))
-		endPos := slot.startByte + buffered
-		cdnDone := slot.cdnDone
-		slot.mu.Unlock()
-		gap := reqPos - endPos
-		if gap < 0 {
-			gap = 0
+// findSlot returns an unpinned slot for diagnostics and tests. Serving code must
+// use acquire so the returned slot cannot be evicted before registration.
+func (p *streamPool) findSlot(path string, reqPos int64) *poolSlot {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	slot, _ := p.findSlotLocked(path, reqPos, false)
+	return slot
+}
+
+func logReusedPoolSlot(path string, reqPos int64, slot *poolSlot) {
+	if slot == nil {
+		return
+	}
+	slot.mu.Lock()
+	buffered := int64(len(slot.data))
+	endPos := slot.startByte + buffered
+	startByte := slot.startByte
+	cdnDone := slot.cdnDone
+	slot.mu.Unlock()
+	gap := reqPos - endPos
+	if gap < 0 {
+		gap = 0
+	}
+	videoTracef("[stream-pool] REUSE slot: path=%q reqPos=%d slotStart=%d buffered=%d endPos=%d gap=%d cdnDone=%v",
+		path, reqPos, startByte, buffered, endPos, gap, cdnDone)
+}
+
+// getOrCreateInternal finds or creates a slot. When acquire is true, it pins a
+// reader while p.mu still protects pool membership and returns its reader ID.
+func (p *streamPool) getOrCreateInternal(waitCtx context.Context, path string, reqPos int64, streamer streaming.Provider, acquire bool) (*poolSlot, uint64, error) {
+	p.mu.RLock()
+	slot, readerID := p.findSlotLocked(path, reqPos, acquire)
+	p.mu.RUnlock()
+	if slot != nil {
+		logReusedPoolSlot(path, reqPos, slot)
+		return slot, readerID, nil
+	}
+
+	// Only one miss for this media path opens an upstream connection at a time.
+	// Recheck after taking the keyed gate so identical concurrent seeks coalesce
+	// before any network work, while unrelated playbacks remain independent.
+	unlockCreation, err := p.lockCreation(waitCtx, path)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer unlockCreation()
+	p.mu.RLock()
+	slot, readerID = p.findSlotLocked(path, reqPos, acquire)
+	if slot == nil && len(p.files[path]) >= poolMaxSlotsPerFile {
+		allActive := true
+		for _, existing := range p.files[path] {
+			existing.mu.Lock()
+			active := atomic.LoadInt32(&existing.readers) > 0
+			existing.mu.Unlock()
+			if !active {
+				allActive = false
+				break
+			}
 		}
-		videoTracef("[stream-pool] REUSE slot: path=%q reqPos=%d slotStart=%d buffered=%d endPos=%d gap=%d cdnDone=%v",
-			path, reqPos, slot.startByte, buffered, endPos, gap, cdnDone)
-		return slot, nil
+		if allActive {
+			p.mu.RUnlock()
+			return nil, 0, fmt.Errorf("stream pool at capacity for %q: all %d slots have active readers", path, poolMaxSlotsPerFile)
+		}
+	}
+	p.mu.RUnlock()
+	if slot != nil {
+		logReusedPoolSlot(path, reqPos, slot)
+		return slot, readerID, nil
+	}
+	if err := waitCtx.Err(); err != nil {
+		return nil, 0, err
 	}
 
 	// Create a new slot — start a fresh CDN connection at reqPos.
-	// The slot lifetime is controlled by the client/reaper paths. Do not put a
-	// fixed timeout on this context: long-running playback can legitimately keep
-	// a slot alive past 30 minutes, and a context deadline here forces a CDN
-	// reconnect that surfaces to the player as buffering.
+	// The provider is opened outside p.mu; membership is rechecked after the open
+	// so a concurrent acquisition can win without creating a duplicate slot.
 	ctx, cancel := context.WithCancel(context.Background())
 	rangeHeader := fmt.Sprintf("bytes=%d-", reqPos)
 
@@ -590,7 +825,7 @@ func (p *streamPool) getOrCreate(path string, reqPos int64, streamer streaming.P
 	})
 	if err != nil {
 		cancel()
-		return nil, err
+		return nil, 0, err
 	}
 
 	// Parse total file size from Content-Range header
@@ -605,7 +840,7 @@ func (p *streamPool) getOrCreate(path string, reqPos int64, streamer streaming.P
 		contentType = "video/mp4"
 	}
 
-	slot := &poolSlot{
+	slot = &poolSlot{
 		path:          path,
 		startByte:     reqPos,
 		data:          make([]byte, 0, 1024*1024), // start 1MB, grows as needed
@@ -620,47 +855,76 @@ func (p *streamPool) getOrCreate(path string, reqPos int64, streamer streaming.P
 		lastReadAt:    time.Now(),
 		readStartedAt: time.Now(),
 		signal:        make(chan struct{}),
+		readerChanged: make(chan struct{}),
 	}
 
-	// Register slot, evicting the least recently used slot if at capacity
+	// Register slot, evicting the least recently used idle slot if at capacity.
 	p.mu.Lock()
+	if existing, existingReaderID := p.findSlotLocked(path, reqPos, acquire); existing != nil {
+		p.mu.Unlock()
+		cancel()
+		_ = resp.Close()
+		logReusedPoolSlot(path, reqPos, existing)
+		return existing, existingReaderID, nil
+	}
 	slots := p.files[path]
 	if len(slots) >= poolMaxSlotsPerFile {
-		lruIdx := 0
+		lruIdx := -1
 		lruTime := time.Now()
-		for i, s := range slots {
-			s.mu.Lock()
-			la := s.lastAccess
-			readers := atomic.LoadInt32(&s.readers)
-			s.mu.Unlock()
-			// Prefer to evict slots with no active readers; among those, pick oldest
+		for i, existing := range slots {
+			existing.mu.Lock()
+			la := existing.lastAccess
+			readers := atomic.LoadInt32(&existing.readers)
+			existing.mu.Unlock()
 			if readers == 0 && la.Before(lruTime) {
 				lruTime = la
 				lruIdx = i
 			}
 		}
+		if lruIdx < 0 {
+			p.mu.Unlock()
+			cancel()
+			_ = resp.Close()
+			return nil, 0, fmt.Errorf("stream pool at capacity for %q: all %d slots have active readers", path, poolMaxSlotsPerFile)
+		}
 		evicted := slots[lruIdx]
 		evicted.mu.Lock()
 		evictedStart := evicted.startByte
 		evicted.mu.Unlock()
-		videoTracef("[stream-pool] evicting LRU slot: startByte=%d newPos=%d",
-			evictedStart, reqPos)
+		videoTracef("[stream-pool] evicting LRU slot: startByte=%d newPos=%d", evictedStart, reqPos)
 		evicted.cancel()
 		slots = append(slots[:lruIdx], slots[lruIdx+1:]...)
+	}
+	if acquire {
+		slot.mu.Lock()
+		readerID = slot.registerReaderLocked(reqPos)
+		slot.mu.Unlock()
 	}
 	p.files[path] = append(slots, slot)
 	p.mu.Unlock()
 
-	// Start background CDN reader
 	go slot.backgroundReader(resp)
 
 	videoTracef("[stream-pool] NEW slot: path=%q startByte=%d totalSize=%d contentType=%q status=%d", path, reqPos, totalSize, contentType, resp.Status)
-	return slot, nil
+	return slot, readerID, nil
 }
 
-// backgroundReader continuously reads from the CDN response body into the
-// slot's buffer. It survives client disconnects and continues buffering
-// data for future requests at nearby positions.
+// acquire returns a slot already pinned by a reader. Reaper/capacity eviction
+// cannot invalidate it between lookup and the first byte served.
+func (p *streamPool) acquire(ctx context.Context, path string, reqPos int64, streamer streaming.Provider) (*poolSlot, uint64, error) {
+	return p.getOrCreateInternal(ctx, path, reqPos, streamer, true)
+}
+
+// getOrCreate is retained for pool lifecycle tests and diagnostics.
+func (p *streamPool) getOrCreate(path string, reqPos int64, streamer streaming.Provider) (*poolSlot, error) {
+	slot, _, err := p.getOrCreateInternal(context.Background(), path, reqPos, streamer, false)
+	return slot, err
+}
+
+// backgroundReader reads from the CDN response body into the slot's buffer.
+// The connection survives client disconnects, but upstream read-ahead pauses
+// until another reader registers so orphaned migration candidates do not keep
+// consuming bandwidth.
 func (s *poolSlot) backgroundReader(resp *streaming.Response) {
 	defer resp.Close()
 	defer func() {
@@ -681,12 +945,13 @@ func (s *poolSlot) backgroundReader(resp *streaming.Response) {
 			if atomic.LoadInt32(&s.readers) == 0 {
 				return false
 			}
-			marked := GetStreamTracker().MarkPlaybackMigrationForPath(s.path, "backend-starvation")
-			if marked > 0 {
-				log.Printf("[stream-migration] upstream starvation detected in stream pool: path=%q blockedFor=%v readers=%d playbacks=%d",
-					s.path, blockedFor.Round(time.Millisecond), atomic.LoadInt32(&s.readers), marked)
-			}
-			return marked > 0
+			// Keep this as transport diagnostics only. A single range read can
+			// recover while another is active, so it cannot safely own a shared
+			// playback migration signal. Actual player buffer pressure and terminal
+			// source failures drive migration.
+			log.Printf("[stream-health] upstream read blocked in stream pool: path=%q blockedFor=%v readers=%d",
+				s.path, blockedFor.Round(time.Millisecond), atomic.LoadInt32(&s.readers))
+			return true
 		},
 	)
 	defer stopStarvationWatch()
@@ -695,10 +960,11 @@ func (s *poolSlot) backgroundReader(resp *streaming.Response) {
 	var cdnWindowBytes int64
 	var cdnWindowRead time.Duration
 	for {
-		select {
-		case <-s.ctx.Done():
+		// A disconnect can race with an in-flight Body.Read, so at most that
+		// single chunk is retained before the next iteration parks here. The
+		// dedicated readerChanged channel wakes this connection on reconnect.
+		if !s.waitForActiveReader() {
 			return
-		default:
 		}
 
 		// Backpressure: if buffer is at the hard limit, trim data that
@@ -708,29 +974,10 @@ func (s *poolSlot) backgroundReader(resp *streaming.Response) {
 		// to the CDN download (TCP window will close naturally).
 		s.mu.Lock()
 		if len(s.data) >= poolSlotBufferHard {
-			readers := atomic.LoadInt32(&s.readers)
-			safeTrimTo := s.minReaderPos
-			if readers == 0 {
-				// No readers — safe to trim aggressively
-				safeTrimTo = s.startByte + int64(len(s.data))
-			}
-			maxTrim := int(safeTrimTo - s.startByte)
-			if maxTrim > 0 {
-				// Trim only data already consumed by all readers
-				trimAmount := len(s.data) - poolSlotBufferTrim
-				if trimAmount > maxTrim {
-					trimAmount = maxTrim
-				}
-				if trimAmount > 0 {
-					remaining := len(s.data) - trimAmount
-					newData := make([]byte, remaining, remaining+4*1024*1024)
-					copy(newData, s.data[trimAmount:])
-					oldStart := s.startByte
-					s.data = newData
-					s.startByte += int64(trimAmount)
-					videoTracef("[stream-pool] backpressure trim: path=%q oldStart=%d newStart=%d trimmed=%d readers=%d minReaderPos=%d",
-						s.path, oldStart, s.startByte, trimAmount, readers, safeTrimTo)
-				}
+			oldStart := s.startByte
+			if trimmed := s.trimConsumedBufferLocked(poolSlotBufferTrim); trimmed > 0 {
+				videoTracef("[stream-pool] backpressure trim: path=%q oldStart=%d newStart=%d trimmed=%d readers=%d minReaderPos=%d",
+					s.path, oldStart, s.startByte, trimmed, atomic.LoadInt32(&s.readers), s.minReaderPos)
 			}
 			if len(s.data) >= poolSlotBufferHard {
 				// Still at hard limit — can't trim more without passing readers.
@@ -753,17 +1000,11 @@ func (s *poolSlot) backgroundReader(resp *streaming.Response) {
 			s.data = append(s.data, buf[:n]...)
 			s.totalRead += int64(n)
 			s.lastReadAt = time.Now()
-			// Trim when buffer exceeds the sliding window size, but ONLY
-			// when no readers are active. When readers are consuming data,
-			// let the buffer grow toward the hard limit (poolSlotBufferHard)
-			// to avoid trimming past their read position and causing errors.
-			if len(s.data) > poolSlotBufferMax && atomic.LoadInt32(&s.readers) == 0 {
-				trimAmount := len(s.data) - poolSlotBufferTrim
-				remaining := len(s.data) - trimAmount
-				newData := make([]byte, remaining, remaining+4*1024*1024)
-				copy(newData, s.data[trimAmount:])
-				s.data = newData
-				s.startByte += int64(trimAmount)
+			// Keep the normal window near 32 MiB even with active readers, now
+			// that their positions are tracked independently. If a slow reader
+			// pins old data, the hard limit still applies backpressure above.
+			if len(s.data) > poolSlotBufferMax {
+				s.trimConsumedBufferLocked(poolSlotBufferTrim)
 			}
 			s.mu.Unlock()
 			s.broadcast()
@@ -782,8 +1023,9 @@ func (s *poolSlot) backgroundReader(resp *streaming.Response) {
 				s.cdnErr = err
 				s.mu.Unlock()
 				log.Printf("[stream-pool] CDN read error: path=%q err=%v", s.path, err)
-				if s.failures != nil && s.failures.recordIfMissingArticles(s.path, err) {
+				if record, confirmed := s.failures.recordRecognizedFailure(s.path, err); confirmed {
 					log.Printf("[stream-migration] confirmed recoverable stream failure in stream pool path=%q err=%v", s.path, err)
+					GetStreamTracker().MarkPlaybackMigrationForPath(s.path, streamFailureMigrationReason(record))
 				}
 			}
 			return

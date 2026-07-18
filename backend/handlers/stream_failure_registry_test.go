@@ -50,6 +50,9 @@ func TestStreamFailureRegistryRecordsProviderUnavailableFailures(t *testing.T) {
 	if record.Reason != "provider_unavailable" {
 		t.Fatalf("reason = %q, want provider_unavailable", record.Reason)
 	}
+	if reason := streamFailureMigrationReason(record); reason != "backend-provider-unavailable" {
+		t.Fatalf("migration reason = %q, want backend-provider-unavailable", reason)
+	}
 }
 
 func TestStreamFailureRegistryRecordsDebridSourceFailures(t *testing.T) {
