@@ -794,6 +794,7 @@ func (h *VideoHandler) streamViaProvider(w http.ResponseWriter, r *http.Request,
 	defer cancel()
 
 	rangeHeader := r.Header.Get("Range")
+	isPlaybackProbe := strings.TrimSpace(r.URL.Query().Get("_probe")) != ""
 
 	// Read-ahead range cache: serve tiny range requests from memory to prevent
 	// seek storms from hammering the debrid CDN. ExoPlayer on Android TV generates
@@ -897,7 +898,7 @@ func (h *VideoHandler) streamViaProvider(w http.ResponseWriter, r *http.Request,
 	// in non-interleaved MP4 files. The pool keeps CDN connections alive after
 	// client disconnects, so the next request at a nearby position is served
 	// from the buffer instead of making a new CDN round-trip.
-	if rangeHeader != "" && r.Method == http.MethodGet && h.streamPool != nil && isDebridPath && !isLocalMediaPath {
+	if rangeHeader != "" && r.Method == http.MethodGet && h.streamPool != nil && isDebridPath && !isLocalMediaPath && !isPlaybackProbe {
 		if reqStart, ok := parseRangeStart(rangeHeader); ok {
 			displayName := sanitizeExternalDisplayName(r.URL.Query().Get("displayName"))
 			if displayName == "" {
@@ -909,6 +910,9 @@ func (h *VideoHandler) streamViaProvider(w http.ResponseWriter, r *http.Request,
 			}
 			videoTracef("[stream-pool] falling back to direct streaming: path=%q range=%q", cleanPath, rangeHeader)
 		}
+	}
+	if isPlaybackProbe {
+		videoTracef("[stream-pool] bypassing persistent pool for playback probe: path=%q range=%q", cleanPath, rangeHeader)
 	}
 
 	// Track this stream for admin monitoring
