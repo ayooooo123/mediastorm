@@ -20,6 +20,7 @@ import (
 var (
 	ErrSessionNotFound    = errors.New("session not found")
 	ErrSessionExpired     = errors.New("session expired")
+	ErrRefreshNotAllowed  = errors.New("session scope cannot be refreshed")
 	ErrInvalidToken       = errors.New("invalid token")
 	ErrStorageDirRequired = errors.New("storage directory not provided")
 )
@@ -28,8 +29,8 @@ const (
 	// DefaultSessionDuration is the default lifetime of a session.
 	DefaultSessionDuration = 30 * 24 * time.Hour // 30 days
 
-	// PersistentSessionDuration is the lifetime of a "remember me" session (100 years).
-	PersistentSessionDuration = 100 * 365 * 24 * time.Hour
+	// PersistentSessionDuration is the bounded lifetime of a "remember me" session.
+	PersistentSessionDuration = 90 * 24 * time.Hour
 
 	// TokenLength is the number of random bytes used for session tokens.
 	TokenLength = 32
@@ -105,7 +106,7 @@ func (s *Service) Create(accountID string, isMaster bool, userAgent, ipAddress s
 	return s.CreateWithDuration(accountID, isMaster, userAgent, ipAddress, s.sessionDuration)
 }
 
-// CreatePersistent generates a new persistent (never expires) session for the given account.
+// CreatePersistent generates a longer-lived, bounded session for the given account.
 func (s *Service) CreatePersistent(accountID string, isMaster bool, userAgent, ipAddress string) (models.Session, error) {
 	return s.CreateWithDuration(accountID, isMaster, userAgent, ipAddress, PersistentSessionDuration)
 }
@@ -229,6 +230,30 @@ func (s *Service) RevokeAllForAccount(accountID string) int {
 	return count
 }
 
+// RevokeAllForAccountExcept invalidates an account's other sessions, preserving
+// the token used to perform a sensitive authenticated operation.
+func (s *Service) RevokeAllForAccountExcept(accountID, keepToken string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	count := 0
+	for token, session := range s.sessions {
+		if session.AccountID == accountID && token != keepToken {
+			delete(s.sessions, token)
+			count++
+		}
+	}
+	if count == 0 {
+		return 0
+	}
+	if s.useDB() {
+		_ = s.store.Sessions().DeleteByAccountExcept(context.Background(), accountID, keepToken)
+		return count
+	}
+	_ = s.saveLocked()
+	return count
+}
+
 // GetSessionsForAccount returns all active sessions for an account.
 func (s *Service) GetSessionsForAccount(accountID string) []models.Session {
 	s.mu.RLock()
@@ -243,8 +268,13 @@ func (s *Service) GetSessionsForAccount(accountID string) []models.Session {
 	return sessions
 }
 
-// Refresh extends a session's expiration time.
+// Refresh rotates the token and extends a normal account session. Scoped share
+// sessions have an absolute expiry and cannot be refreshed.
 func (s *Service) Refresh(token string) (models.Session, error) {
+	newToken, err := generateToken()
+	if err != nil {
+		return models.Session{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -262,13 +292,31 @@ func (s *Service) Refresh(token string) (models.Session, error) {
 		}
 		return models.Session{}, ErrSessionExpired
 	}
+	if session.Scope != "" {
+		return models.Session{}, ErrRefreshNotAllowed
+	}
 
+	originalSession := session
+	oldToken := session.Token
+	session.Token = newToken
 	session.ExpiresAt = time.Now().UTC().Add(s.sessionDuration)
-	s.sessions[token] = session
 	if s.useDB() {
-		_ = s.store.Sessions().Update(context.Background(), &session)
-	} else {
-		_ = s.saveLocked()
+		if err := s.store.Sessions().Create(context.Background(), &session); err != nil {
+			return models.Session{}, err
+		}
+		if err := s.store.Sessions().Delete(context.Background(), oldToken); err != nil {
+			_ = s.store.Sessions().Delete(context.Background(), newToken)
+			return models.Session{}, err
+		}
+	}
+	delete(s.sessions, oldToken)
+	s.sessions[newToken] = session
+	if !s.useDB() {
+		if err := s.saveLocked(); err != nil {
+			delete(s.sessions, newToken)
+			s.sessions[oldToken] = originalSession
+			return models.Session{}, err
+		}
 	}
 
 	return session, nil

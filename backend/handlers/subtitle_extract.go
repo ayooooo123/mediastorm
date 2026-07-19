@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"novastream/internal/requestsecurity"
 	"novastream/services/streaming"
 
 	"github.com/google/uuid"
@@ -100,7 +101,7 @@ func (m *SubtitleExtractManager) ConfigureLocalWebDAVAccess(baseURL, prefix, use
 
 	m.webdavBase = strings.TrimRight(parsed.String(), "/")
 	m.webdavPrefix = prefix
-	log.Printf("[subtitle-extract] configured WebDAV access: base=%q prefix=%q", m.webdavBase, m.webdavPrefix)
+	log.Printf("[subtitle-extract] configured WebDAV access: base=%q prefix=%q", requestsecurity.URLForLog(m.webdavBase), m.webdavPrefix)
 }
 
 // buildWebDAVURL constructs a WebDAV URL for the given path
@@ -424,7 +425,7 @@ func (m *SubtitleExtractManager) probeSubtitleStreams(ctx context.Context, strea
 		return nil, fmt.Errorf("ffprobe not configured")
 	}
 
-	log.Printf("[subtitle-extract] probing subtitle streams from: %s", streamURL)
+	log.Printf("[subtitle-extract] probing subtitle streams from: %s", requestsecurity.URLForLog(streamURL))
 
 	probeCtx, probeCancel := context.WithTimeout(ctx, 60*time.Second)
 	defer probeCancel()
@@ -570,7 +571,7 @@ func (m *SubtitleExtractManager) startExtraction(session *SubtitleExtractSession
 			// Try WebDAV URL as fallback (for usenet paths)
 			webdavURL := m.buildWebDAVURL(session.Path)
 			if webdavURL != "" {
-				log.Printf("[subtitle-extract] using WebDAV URL for session %s: %s", session.ID, session.Path)
+				log.Printf("[subtitle-extract] using WebDAV URL for session %s: %s", session.ID, requestsecurity.URLForLog(session.Path))
 				streamURL = webdavURL
 				useDirectProbe = true
 			} else {
@@ -585,7 +586,7 @@ func (m *SubtitleExtractManager) startExtraction(session *SubtitleExtractSession
 		// No direct provider, try WebDAV URL
 		webdavURL := m.buildWebDAVURL(session.Path)
 		if webdavURL != "" {
-			log.Printf("[subtitle-extract] using WebDAV URL for session %s: %s", session.ID, session.Path)
+			log.Printf("[subtitle-extract] using WebDAV URL for session %s: %s", session.ID, requestsecurity.URLForLog(session.Path))
 			streamURL = webdavURL
 			useDirectProbe = true
 		} else {
@@ -640,7 +641,7 @@ func (m *SubtitleExtractManager) startExtraction(session *SubtitleExtractSession
 	log.Printf("[subtitle-extract] session %s: SELECTED track %d → stream index %d (codec: %s, language: %s, title: %s)",
 		session.ID, session.SubtitleTrack, actualStreamIndex, subtitleStreams[session.SubtitleTrack].Codec, subtitleStreams[session.SubtitleTrack].Language, subtitleStreams[session.SubtitleTrack].Title)
 
-	log.Printf("[subtitle-extract] session %s: starting extraction from %s (startOffset=%.1f)", session.ID, streamURL, session.StartOffset)
+	log.Printf("[subtitle-extract] session %s: starting extraction from %s (startOffset=%.1f)", session.ID, requestsecurity.URLForLog(streamURL), session.StartOffset)
 
 	// Build ffmpeg command to extract the subtitle track in the requested output format.
 	// Use the absolute stream index, not the relative subtitle index.
@@ -824,7 +825,7 @@ func (m *SubtitleExtractManager) probeSubtitleStreamsWithMetadata(ctx context.Co
 		return nil, fmt.Errorf("ffprobe not configured")
 	}
 
-	log.Printf("[subtitle-extract] probing subtitle tracks with metadata from: %s", streamURL)
+	log.Printf("[subtitle-extract] probing subtitle tracks with metadata from: %s", requestsecurity.URLForLog(streamURL))
 
 	probeCtx, probeCancel := context.WithTimeout(ctx, 60*time.Second)
 	defer probeCancel()
@@ -1478,7 +1479,7 @@ func (m *SubtitleExtractManager) startBatchExtraction(path, outputDir string, tr
 			track.Index, track.AbsoluteIndex, track.Codec, track.Language, vttPath)
 	}
 
-	log.Printf("[subtitle-extract] batch extraction starting: %d tracks from %s (single ffmpeg process)", len(tracks), streamURL)
+	log.Printf("[subtitle-extract] batch extraction starting: %d tracks from %s (single ffmpeg process)", len(tracks), requestsecurity.URLForLog(streamURL))
 
 	cmd := exec.CommandContext(ctx, m.ffmpegPath, args...)
 

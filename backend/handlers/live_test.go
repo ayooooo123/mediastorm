@@ -557,7 +557,13 @@ func TestFetchM3UCategoriesIgnoresPlaylistBodyLimit(t *testing.T) {
 	}))
 	defer playlistServer.Close()
 
-	h := NewLiveHandler(playlistServer.Client(), false, "", 24, 0, 0, false, nil, nil)
+	mgr := config.NewManager(filepath.Join(t.TempDir(), "settings.json"))
+	settings := config.DefaultSettings()
+	settings.Live.PlaylistURL = playlistServer.URL
+	if err := mgr.Save(settings); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+	h := NewLiveHandler(playlistServer.Client(), false, "", 24, 0, 0, false, mgr, nil)
 	h.maxSize = 64
 
 	categories, err := h.fetchM3UCategories(t.Context(), playlistServer.URL, "")
@@ -610,7 +616,7 @@ func TestStreamChannelWebRequestUsesProxyAndUserAgent(t *testing.T) {
 	if err := mgr.Save(config.Settings{
 		Live: config.LiveSettings{
 			Mode:           "xtream",
-			XtreamHost:     "http://provider.example",
+			XtreamHost:     "http://192.0.2.1",
 			XtreamUsername: "user",
 			XtreamPassword: "pass",
 			ProxyURL:       proxyServer.URL,
@@ -621,7 +627,7 @@ func TestStreamChannelWebRequestUsesProxyAndUserAgent(t *testing.T) {
 
 	h := NewLiveHandler(proxyServer.Client(), true, scriptPath, 24, 0, 0, false, mgr, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/live/stream?target=web&url=http://provider.example/live/user/pass/1.ts", nil)
+	req := httptest.NewRequest(http.MethodGet, "/live/stream?target=web&url=http://192.0.2.1/live/user/pass/1.ts", nil)
 	rec := httptest.NewRecorder()
 	h.StreamChannel(rec, req)
 

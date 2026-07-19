@@ -97,7 +97,7 @@ func (s *PlaybackService) Resolve(ctx context.Context, candidate models.NZBResul
 			SourceNZBPath: streamURL,
 		}
 
-		log.Printf("[debrid-playback] TIMING: pre-resolved resolution complete (took: %v): url=%s filename=%s", time.Since(resolveStart), streamURL, filename)
+		log.Printf("[debrid-playback] TIMING: pre-resolved resolution complete (took: %v): url=%s filename=%s", time.Since(resolveStart), safeURLForLog(streamURL), filename)
 		return resolution, nil
 	}
 
@@ -398,7 +398,7 @@ func (s *PlaybackService) resolveWithProvider(ctx context.Context, client Provid
 		SourceNZBPath: downloadURL, // Store the actual download URL here
 	}
 
-	log.Printf("[debrid-playback] resolution successful: webdavPath=%s downloadURL=%s", webdavPath, downloadURL)
+	log.Printf("[debrid-playback] resolution successful: webdavPath=%s downloadURL=%s", safeURLForLog(webdavPath), safeURLForLog(downloadURL))
 	return resolution, nil
 }
 
@@ -557,7 +557,7 @@ func (s *PlaybackService) completeResolution(
 		SourceNZBPath: downloadURL,
 	}
 
-	log.Printf("[debrid-playback] resolution successful: webdavPath=%s downloadURL=%s", webdavPath, downloadURL)
+	log.Printf("[debrid-playback] resolution successful: webdavPath=%s downloadURL=%s", safeURLForLog(webdavPath), safeURLForLog(downloadURL))
 	return resolution, nil
 }
 

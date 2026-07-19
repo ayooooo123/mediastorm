@@ -4,7 +4,7 @@
 # Web app build stage. The exported Expo bundle is static and architecture
 # independent, so build it once on the native builder platform instead of
 # running npm ci separately for each target platform in multi-arch buildx jobs.
-FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS web-builder
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS web-builder
 
 WORKDIR /frontend
 
@@ -37,7 +37,7 @@ COPY frontend/web_icons ./web_icons
 RUN npm run web:export
 
 # Build stage
-FROM golang:1.24.5-bookworm AS builder
+FROM golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651 AS builder
 
 # Set working directory
 WORKDIR /app
@@ -73,7 +73,7 @@ RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked \
 
 # iroh bridge build stage. The Go backend shells out to this Rust binary to host
 # the iroh remote-access endpoint, so the image needs a Linux build of it.
-FROM rust:1-bookworm AS iroh-builder
+FROM rust:1-bookworm@sha256:77fac8b98f9f46062bb680b6d25d5bcaabfc400143952ebc572e924bcbedc3fa AS iroh-builder
 WORKDIR /iroh
 COPY experiments/iroh-direct-spike/ ./
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
@@ -82,7 +82,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     cp target/release/iroh-direct-spike /iroh/iroh-direct-spike
 
 # Final stage
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
 
 # Install ca-certificates, download tools, Python for title parsing, and
 # software Vulkan so libplacebo DV5 thumbnails do not require GPU passthrough.
@@ -97,22 +97,27 @@ ENV VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lavapipe_icd.json
 
 # Create Python virtual environment and install dependencies
 RUN python3 -m venv /.venv && \
-    /.venv/bin/pip install --no-cache-dir parsett subliminal
+    /.venv/bin/pip install --no-cache-dir parsett==1.8.5 subliminal==2.6.0
 
-# Download static ffmpeg build with Dolby Vision (libdovi) support
-# Use TARGETARCH to select the correct binary for multi-platform builds
+# Download a checksum-pinned static ffmpeg build with Dolby Vision support.
+# Use TARGETARCH to select the correct binary for multi-platform builds.
 ARG TARGETARCH
+ARG FFMPEG_RELEASE=autobuild-2026-07-19-13-12
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
-        FFMPEG_ARCH="linuxarm64"; \
-    else \
-        FFMPEG_ARCH="linux64"; \
-    fi && \
-    wget -q "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-${FFMPEG_ARCH}-gpl.tar.xz" \
-    && tar -xf "ffmpeg-master-latest-${FFMPEG_ARCH}-gpl.tar.xz" \
-    && mv "ffmpeg-master-latest-${FFMPEG_ARCH}-gpl/bin/ffmpeg" /usr/local/bin/ \
-    && mv "ffmpeg-master-latest-${FFMPEG_ARCH}-gpl/bin/ffprobe" /usr/local/bin/ \
-    && rm -rf "ffmpeg-master-latest-${FFMPEG_ARCH}-gpl" "ffmpeg-master-latest-${FFMPEG_ARCH}-gpl.tar.xz" \
-    && chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
+		FFMPEG_ARCHIVE="ffmpeg-N-125681-gddc587bad1-linuxarm64-gpl.tar.xz"; \
+		FFMPEG_SHA256="989a0213da1ad70e5207df654b416ef8ded7d77a2d5c2beb74c17e82aa02fcf5"; \
+	else \
+		FFMPEG_ARCHIVE="ffmpeg-N-125674-g9bc73ba344-linux64-gpl.tar.xz"; \
+		FFMPEG_SHA256="4a16a5c14ff81fe06d19beef8e2397cb6b237bfea6761e02082d7410ee756393"; \
+	fi && \
+	wget -q "https://github.com/BtbN/FFmpeg-Builds/releases/download/${FFMPEG_RELEASE}/${FFMPEG_ARCHIVE}" \
+	&& echo "${FFMPEG_SHA256}  ${FFMPEG_ARCHIVE}" | sha256sum -c - \
+	&& tar -xf "${FFMPEG_ARCHIVE}" \
+	&& FFMPEG_DIR="${FFMPEG_ARCHIVE%.tar.xz}" \
+	&& mv "${FFMPEG_DIR}/bin/ffmpeg" /usr/local/bin/ \
+	&& mv "${FFMPEG_DIR}/bin/ffprobe" /usr/local/bin/ \
+	&& rm -rf "${FFMPEG_DIR}" "${FFMPEG_ARCHIVE}" \
+	&& chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
 
 # Thumbnail HDR/DV tone mapping requires libplacebo for DV profile 5 and zscale
 # as the high-quality software fallback for HDR10/DV profile 7/8.
@@ -125,27 +130,38 @@ RUN ffmpeg -hide_banner -loglevel error \
         -f null - \
     || echo "warning: libplacebo runtime probe failed during image build; application runtime probe will select fallback"
 
-# Install yt-dlp nightly (required for YouTube trailer support, handles SABR streaming)
-RUN wget -q "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp" -O /usr/local/bin/yt-dlp \
-    && chmod +x /usr/local/bin/yt-dlp
+# Install a checksum-pinned yt-dlp release for YouTube trailer support.
+ARG YTDLP_VERSION=2026.06.09
+ARG YTDLP_SHA256=e5d57466682cfa9d61e9cf7c8a4f09b00f4a62af37d3bbdc4bcffdf63615feac
+RUN wget -q "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp" -O /usr/local/bin/yt-dlp \
+	&& echo "${YTDLP_SHA256}  /usr/local/bin/yt-dlp" | sha256sum -c - \
+	&& chmod +x /usr/local/bin/yt-dlp
 
 # Install deno (JavaScript runtime required by yt-dlp for YouTube challenge solving)
+ARG DENO_VERSION=2.9.3
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
-        DENO_ARCH="aarch64-unknown-linux-gnu"; \
-    else \
-        DENO_ARCH="x86_64-unknown-linux-gnu"; \
-    fi && \
-    wget -q "https://github.com/denoland/deno/releases/latest/download/deno-${DENO_ARCH}.zip" -O /tmp/deno.zip \
-    && apt-get update && apt-get install -y --no-install-recommends unzip \
+		DENO_ARCH="aarch64-unknown-linux-gnu"; \
+		DENO_SHA256="753937db98a4b56cbbbd26e8f00eb4b789191a229afec93f74bcfa4e79bc2c8b"; \
+	else \
+		DENO_ARCH="x86_64-unknown-linux-gnu"; \
+		DENO_SHA256="8101865641cbede56f08ad19c0a67a87df84bce127fee0d3e3e1f7467717ffa6"; \
+	fi && \
+	wget -q "https://github.com/denoland/deno/releases/download/v${DENO_VERSION}/deno-${DENO_ARCH}.zip" -O /tmp/deno.zip \
+	&& echo "${DENO_SHA256}  /tmp/deno.zip" | sha256sum -c - \
+	&& apt-get update && apt-get install -y --no-install-recommends unzip \
     && unzip -q /tmp/deno.zip -d /usr/local/bin/ \
     && rm /tmp/deno.zip \
     && chmod +x /usr/local/bin/deno \
     && apt-get purge -y unzip && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /root/
+RUN groupadd --system strmr && useradd --system --gid strmr --home-dir /app strmr \
+	&& mkdir -p /app \
+	&& chown strmr:strmr /app
+
+WORKDIR /app
 
 # Copy the binary from builder stage
-COPY --from=builder /app/mediastorm .
+COPY --from=builder --chown=strmr:strmr /app/mediastorm .
 
 # Copy the exported Expo web app. The backend serves it from /watch.
 COPY --from=web-builder /frontend/dist /opt/strmr-web
@@ -170,4 +186,5 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD wget -qO- http://localhost:7777/health > /dev/null || exit 1
 
 # Run the application
+USER strmr
 CMD ["./mediastorm"]

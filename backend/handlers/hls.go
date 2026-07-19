@@ -28,6 +28,7 @@ import (
 
 	"novastream/internal/dnscache"
 	"novastream/internal/netproxy"
+	"novastream/internal/requestsecurity"
 	"novastream/models"
 	"novastream/services/streaming"
 	"novastream/utils"
@@ -163,7 +164,7 @@ func newThrottlingProxy(targetURL string, session *HLSSession, applyAuth func(*h
 	}()
 
 	localURL := fmt.Sprintf("http://127.0.0.1:%d/stream", proxy.port)
-	log.Printf("[hls] session %s: started throttling proxy on port %d for URL: %s", session.ID, proxy.port, targetURL)
+	log.Printf("[hls] session %s: started throttling proxy on port %d for upstream: %s", session.ID, proxy.port, requestsecurity.URLForLog(targetURL))
 
 	// Pre-warm the CDN connection by making a HEAD request
 	// This establishes TCP + TLS before FFmpeg needs it, reducing seek latency
@@ -225,7 +226,7 @@ func (p *throttlingProxy) handleStream(w http.ResponseWriter, r *http.Request) {
 
 	// Log upstream response status for debugging
 	if resp.StatusCode >= 400 {
-		log.Printf("[hls] session %s: proxy upstream returned %d %s for URL: %s", p.session.ID, resp.StatusCode, resp.Status, p.targetURL)
+		log.Printf("[hls] session %s: proxy upstream returned %d %s for host: %s", p.session.ID, resp.StatusCode, resp.Status, requestsecurity.URLForLog(p.targetURL))
 	}
 
 	// Copy response headers
@@ -1033,7 +1034,7 @@ func (m *HLSManager) ConfigureLocalWebDAVAccess(baseURL, prefix, username, passw
 	m.localWebDAVPrefix = normalizedPrefix
 	m.localAccessMu.Unlock()
 
-	log.Printf("[hls] configured local WebDAV direct access: base=%q prefix=%q", normalizedBase, normalizedPrefix)
+	log.Printf("[hls] configured local WebDAV direct access: base=%q prefix=%q", requestsecurity.URLForLog(normalizedBase), normalizedPrefix)
 }
 
 // generateSessionID creates a random session ID
@@ -1166,7 +1167,7 @@ func (m *HLSManager) getDirectURL(ctx context.Context, session *HLSSession) (str
 		return "", false
 	}
 
-	log.Printf("[hls] successfully got direct URL for %s: %s", session.Path, url)
+	log.Printf("[hls] successfully got direct URL for %s: %s", session.Path, requestsecurity.URLForLog(url))
 	return url, true
 }
 
@@ -1198,7 +1199,7 @@ func (m *HLSManager) buildLocalWebDAVURL(session *HLSSession) (string, bool) {
 	}
 
 	full := strings.TrimRight(base, "/") + original
-	log.Printf("[hls] using local WebDAV direct URL for session %s: %s", session.ID, full)
+	log.Printf("[hls] using local WebDAV direct URL for session %s: %s", session.ID, requestsecurity.URLForLog(full))
 	return full, true
 }
 
@@ -1230,7 +1231,7 @@ func (m *HLSManager) buildLocalWebDAVURLFromPath(path string) (string, bool) {
 	}
 
 	full := strings.TrimRight(base, "/") + path
-	log.Printf("[hls] built local WebDAV URL from path: %s", full)
+	log.Printf("[hls] built local WebDAV URL from path: %s", requestsecurity.URLForLog(full))
 	return full, true
 }
 
@@ -1259,7 +1260,7 @@ func (m *HLSManager) CreateSession(ctx context.Context, path string, originalPat
 			log.Printf("[hls] session %s: failed to resolve external URL, using original: %v", sessionID, err)
 			// Continue with original URL - ffmpeg/ffprobe can follow redirects
 		} else if resolvedURL != path {
-			log.Printf("[hls] session %s: using resolved URL for probing and FFmpeg: %s", sessionID, resolvedURL)
+			log.Printf("[hls] session %s: using resolved URL for probing and FFmpeg: %s", sessionID, requestsecurity.URLForLog(resolvedURL))
 			path = resolvedURL
 		}
 	}
@@ -1743,7 +1744,7 @@ func (m *HLSManager) CreateLiveSession(ctx context.Context, liveURL, provider, b
 	// Detect closed captions in background (non-blocking)
 	m.detectAndSetClosedCaptions(session)
 
-	log.Printf("[hls] created live session %s for URL %q", sessionID, liveURL)
+	log.Printf("[hls] created live session %s for host %q", sessionID, requestsecurity.URLForLog(liveURL))
 	return session, nil
 }
 
@@ -1846,7 +1847,7 @@ func (m *HLSManager) startLiveTranscoding(ctx context.Context, session *HLSSessi
 		}
 		proxyBody = resp.Body
 		inputArg = "pipe:0"
-		log.Printf("[hls] live session %s: streaming upstream via proxy %s", session.ID, proxyURL)
+		log.Printf("[hls] live session %s: streaming upstream via proxy %s", session.ID, requestsecurity.URLForLog(proxyURL))
 	}
 
 	// Build FFmpeg args optimized for live input
@@ -4912,7 +4913,7 @@ func (m *HLSManager) extractSubtitleTrackToVTT(ctx context.Context, session *HLS
 		// No direct URL available (not debrid, no WebDAV) - cannot extract subtitles
 		return fmt.Errorf("no direct URL available for subtitle extraction (usenet streams require WebDAV)")
 	}
-	log.Printf("[hls] using URL for subtitle extraction: %s", streamURL)
+	log.Printf("[hls] using URL for subtitle extraction: %s", requestsecurity.URLForLog(streamURL))
 
 	// Build ffmpeg command to extract subtitle track to VTT
 	// If the session has a StartOffset (warm start/seek), we need to:

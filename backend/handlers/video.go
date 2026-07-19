@@ -29,10 +29,10 @@ import (
 
 	"novastream/config"
 	"novastream/internal/auth"
-	"novastream/internal/dnscache"
 	"novastream/internal/integration"
 	"novastream/internal/liveusage"
 	"novastream/internal/netproxy"
+	"novastream/internal/requestsecurity"
 	"novastream/internal/ytdlp"
 	"novastream/models"
 	"novastream/services/credits"
@@ -79,8 +79,6 @@ var legacyAudioWhitelist = []string{"aac", "ac3", "eac3", "mp3"}
 const ffprobeTimeout = 15 * time.Second
 const providerProbeSampleBytes int64 = 16 * 1024 * 1024
 
-var externalProxyHTTPClient = newExternalProxyHTTPClient()
-
 var debugVideoTraceLogs = envFlag("STRMR_VIDEO_TRACE_LOGS")
 
 func envFlag(name string) bool {
@@ -103,27 +101,6 @@ func resolveScopedPlaybackPath(r *http.Request, path string) string {
 func videoTracef(format string, args ...any) {
 	if debugVideoTraceLogs {
 		log.Printf(format, args...)
-	}
-}
-
-func newExternalProxyHTTPClient() *http.Client {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	dnscache.ConfigureTransport(transport, dnscache.DefaultTTL)
-
-	return &http.Client{
-		Timeout:   30 * time.Minute,
-		Transport: transport,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 10 {
-				return fmt.Errorf("too many redirects")
-			}
-			for key, values := range via[0].Header {
-				for _, value := range values {
-					req.Header.Add(key, value)
-				}
-			}
-			return nil
-		},
 	}
 }
 
@@ -468,6 +445,9 @@ func (h *VideoHandler) DetectCredits(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing path parameter", http.StatusBadRequest)
 		return
 	}
+	if !h.requireAllowedExternalPath(w, r, streamPath) {
+		return
+	}
 
 	durationStr := strings.TrimSpace(r.URL.Query().Get("duration"))
 	if durationStr == "" {
@@ -665,8 +645,15 @@ func (h *VideoHandler) StreamVideo(w http.ResponseWriter, r *http.Request) {
 		if profileID == "" {
 			profileID = r.URL.Query().Get("userId")
 		}
+		accountIDForLimit := auth.GetAccountID(r)
 		if profileID != "" {
-			if user, ok := h.usersSvc.Get(profileID); ok {
+			user, ok := h.usersSvc.Get(profileID)
+			if !ok || (!auth.IsMaster(r) && accountIDForLimit != "" && user.AccountID != accountIDForLimit) {
+				http.Error(w, "profile not found", http.StatusNotFound)
+				return
+			}
+			if ok {
+				accountIDForLimit = user.AccountID
 				// Check per-profile limit first
 				if h.userSettingsSvc != nil {
 					if settings, err := h.userSettingsSvc.Get(profileID); err == nil && settings != nil {
@@ -688,22 +675,25 @@ func (h *VideoHandler) StreamVideo(w http.ResponseWriter, r *http.Request) {
 						}
 					}
 				}
-				// Check per-account limit
-				if account, ok := h.accountsSvc.Get(user.AccountID); ok && account.MaxStreams > 0 {
-					tracker := GetStreamTracker()
-					usage, exceeds := tracker.WouldExceedAccountLimit(r, cleanPath, user.AccountID, account.MaxStreams)
-					if exceeds {
-						w.Header().Set("Content-Type", "application/json")
-						w.WriteHeader(http.StatusTooManyRequests)
-						_ = json.NewEncoder(w).Encode(map[string]interface{}{
-							"code":           "STREAM_LIMIT_REACHED",
-							"message":        fmt.Sprintf("Account stream limit reached (%d/%d)", usage.CurrentStreams, usage.MaxStreams),
-							"currentStreams": usage.CurrentStreams,
-							"maxStreams":     usage.MaxStreams,
-							"scope":          "account",
-						})
-						return
-					}
+			}
+		}
+		// Enforce the authenticated account limit even when optional profile
+		// parameters are omitted.
+		if accountIDForLimit != "" {
+			if account, ok := h.accountsSvc.Get(accountIDForLimit); ok && account.MaxStreams > 0 {
+				tracker := GetStreamTracker()
+				usage, exceeds := tracker.WouldExceedAccountLimit(r, cleanPath, accountIDForLimit, account.MaxStreams)
+				if exceeds {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusTooManyRequests)
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"code":           "STREAM_LIMIT_REACHED",
+						"message":        fmt.Sprintf("Account stream limit reached (%d/%d)", usage.CurrentStreams, usage.MaxStreams),
+						"currentStreams": usage.CurrentStreams,
+						"maxStreams":     usage.MaxStreams,
+						"scope":          "account",
+					})
+					return
 				}
 			}
 		}
@@ -1870,6 +1860,9 @@ func (h *VideoHandler) ProbeVideo(w http.ResponseWriter, r *http.Request) {
 	filePath := strings.TrimSpace(resolveScopedPlaybackPath(r, r.URL.Query().Get("path")))
 	if filePath == "" {
 		http.Error(w, "Missing path parameter", http.StatusBadRequest)
+		return
+	}
+	if !h.requireAllowedExternalPath(w, r, filePath) {
 		return
 	}
 
@@ -3170,6 +3163,9 @@ func (h *VideoHandler) StartHLSSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing path parameter", http.StatusBadRequest)
 		return
 	}
+	if !h.requireAllowedExternalPath(w, r, path) {
+		return
+	}
 
 	// Clean the path
 	cleanPath := path
@@ -4100,7 +4096,7 @@ func resolveStremioLiveStreamResource(ctx context.Context, streamResourceURL, pr
 		ResponseHeaderTimeout: defaultStreamOpenTimeout,
 	}, proxyURL)
 	if err != nil {
-		log.Printf("[video] invalid stremio live proxy URL %q: %v", proxyURL, err)
+		log.Printf("[video] invalid stremio live proxy URL %q: %v", requestsecurity.URLForLog(proxyURL), err)
 		client, _ = netproxy.NewHTTPClientWithOptions(netproxy.HTTPClientOptions{
 			ResponseHeaderTimeout: defaultStreamOpenTimeout,
 		}, "")
@@ -4134,8 +4130,19 @@ func (h *VideoHandler) StartLiveHLSSession(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "invalid url scheme", http.StatusBadRequest)
 		return
 	}
+	if !h.requireAllowedExternalPath(w, r, liveURL) {
+		return
+	}
 
 	profileID := strings.TrimSpace(r.URL.Query().Get("profileId"))
+	if profileID != "" && h.usersSvc != nil && !auth.IsMaster(r) {
+		accountID := auth.GetAccountID(r)
+		profile, ok := h.usersSvc.Get(profileID)
+		if !ok || accountID == "" || profile.AccountID != accountID {
+			http.Error(w, "profile not found", http.StatusNotFound)
+			return
+		}
+	}
 	profileName := strings.TrimSpace(r.URL.Query().Get("profileName"))
 	if profileName == "" && profileID != "" && h.usersSvc != nil {
 		if user, ok := h.usersSvc.Get(profileID); ok {
@@ -4177,7 +4184,7 @@ func (h *VideoHandler) StartLiveHLSSession(w http.ResponseWriter, r *http.Reques
 	// that explicitly request this HLS endpoint also need the managed HLS path
 	// instead of the direct live proxy.
 	if streamFormat == "direct" && forceHLS {
-		log.Printf("[video] forcing HLS for live client (source configured direct) url=%s", liveURL)
+		log.Printf("[video] forcing HLS for live client (source configured direct) url=%s", requestsecurity.URLForLog(liveURL))
 		streamFormat = "hls"
 	}
 
@@ -4203,7 +4210,7 @@ func (h *VideoHandler) StartLiveHLSSession(w http.ResponseWriter, r *http.Reques
 		addStreamMediaMetadataParams(proxyParams, mediaMetadata)
 		directURL := fmt.Sprintf("/live/stream?%s", proxyParams.Encode())
 
-		log.Printf("[video] live session using direct proxy for URL: %s (provider=%s profile=%s)", liveURL, target.Provider, profileID)
+		log.Printf("[video] live session using direct proxy for URL: %s (provider=%s profile=%s)", requestsecurity.URLForLog(liveURL), target.Provider, profileID)
 
 		response := map[string]interface{}{
 			"streamUrl": directURL,
@@ -4220,16 +4227,19 @@ func (h *VideoHandler) StartLiveHLSSession(w http.ResponseWriter, r *http.Reques
 	selectedStremioStreamIndex := parseOptionalStremioStreamIndex(r.URL.Query().Get("stremioStreamIndex"))
 	var stremioRequestHeaders map[string]string
 	if resolved, err := resolveStremioLiveStreamResource(r.Context(), liveURL, target.ProxyURL, selectedStremioStreamIndex); err != nil {
-		log.Printf("[video] failed to resolve stremio live HLS stream %q: %v", liveURL, err)
+		log.Printf("[video] failed to resolve stremio live HLS stream %q: %v", requestsecurity.URLForLog(liveURL), err)
 		http.Error(w, "failed to resolve live stream", http.StatusBadGateway)
 		return
 	} else if resolved.URL != liveURL {
-		log.Printf("[video] resolved stremio live HLS stream resource: %s -> %s", liveURL, resolved.URL)
+		log.Printf("[video] resolved stremio live HLS stream resource: %s -> %s", requestsecurity.URLForLog(liveURL), requestsecurity.URLForLog(resolved.URL))
 		liveURL = resolved.URL
 		stremioRequestHeaders = resolved.RequestHeaders
 	}
+	if !h.requireAllowedExternalPath(w, r, liveURL) {
+		return
+	}
 
-	log.Printf("[video] creating live HLS session for URL: %s (provider=%s bucket=%s profile=%s)", liveURL, target.Provider, target.BucketKey, profileID)
+	log.Printf("[video] creating live HLS session for URL: %s (provider=%s bucket=%s profile=%s)", requestsecurity.URLForLog(liveURL), target.Provider, target.BucketKey, profileID)
 
 	tuning := LiveTuningSettings{
 		ProbeSizeMB:        target.ProbeSizeMB,
@@ -4604,7 +4614,7 @@ func (h *VideoHandler) ConfigureLocalWebDAVAccess(baseURL, prefix, username, pas
 			h.webdavPrefix = "/" + strings.Trim(prefix, "/")
 			h.webdavMu.Unlock()
 
-			log.Printf("[video] configured WebDAV access for ffprobe: base=%q prefix=%q", h.webdavBaseURL, h.webdavPrefix)
+			log.Printf("[video] configured WebDAV access for ffprobe: base=%q prefix=%q", requestsecurity.URLForLog(h.webdavBaseURL), h.webdavPrefix)
 		}
 	}
 
@@ -5321,6 +5331,11 @@ func (h *VideoHandler) proxyExternalURL(w http.ResponseWriter, r *http.Request, 
 	}
 
 	videoTracef("[video] external proxy: final URL host=%s", parsedURL.Host)
+	allowRestricted := h.configuredExternalHostPolicy()
+	if err := requestsecurity.ValidateOutboundURL(r.Context(), cleanURL, allowRestricted); err != nil {
+		http.Error(w, "external URL is not allowed", http.StatusBadRequest)
+		return true, fmt.Errorf("validate external URL: %w", err)
+	}
 
 	// Create request to external URL
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
@@ -5354,6 +5369,7 @@ func (h *VideoHandler) proxyExternalURL(w http.ResponseWriter, r *http.Request, 
 	videoTracef("[video] external proxy request: method=%s host=%s path=%s", proxyReq.Method, proxyReq.URL.Host, proxyReq.URL.Path)
 
 	// Make the request
+	externalProxyHTTPClient := requestsecurity.NewSafeHTTPClient(30*time.Minute, 10, allowRestricted)
 	resp, err := externalProxyHTTPClient.Do(proxyReq)
 	if err != nil {
 		log.Printf("[video] external proxy request failed: %v", err)
@@ -5585,6 +5601,68 @@ func (h *VideoHandler) proxyExternalURL(w http.ResponseWriter, r *http.Request, 
 	return true, nil
 }
 
+// configuredExternalHostPolicy permits private destinations only when their
+// hostname is explicitly present in enabled provider configuration.
+func (h *VideoHandler) configuredExternalHostPolicy() requestsecurity.RestrictedHostPolicy {
+	return configuredProviderHostPolicy(h.configManager)
+}
+
+func (h *VideoHandler) requireAllowedExternalPath(w http.ResponseWriter, r *http.Request, source string) bool {
+	source = strings.TrimSpace(source)
+	if !strings.HasPrefix(source, "http://") && !strings.HasPrefix(source, "https://") {
+		return true
+	}
+	if err := requestsecurity.ValidateOutboundURL(r.Context(), source, h.configuredExternalHostPolicy()); err != nil {
+		http.Error(w, "external media URL is not allowed", http.StatusBadRequest)
+		return false
+	}
+	return true
+}
+
+func configuredProviderHostPolicy(configManager ConfigProvider) requestsecurity.RestrictedHostPolicy {
+	allowed := make(map[string]struct{})
+	if configManager != nil {
+		if settings, err := configManager.Load(); err == nil {
+			addURLHost := func(raw string) {
+				parsed, err := url.Parse(strings.TrimSpace(raw))
+				if err == nil && parsed.Hostname() != "" {
+					allowed[strings.ToLower(parsed.Hostname())] = struct{}{}
+				}
+			}
+			for _, engine := range settings.UsenetEngines {
+				if engine.Enabled {
+					addURLHost(engine.BaseURL)
+					addURLHost(engine.WebDAVBaseURL)
+				}
+			}
+			for _, indexer := range settings.Indexers {
+				if indexer.Enabled {
+					addURLHost(indexer.URL)
+				}
+			}
+			for _, scraper := range settings.TorrentScrapers {
+				if scraper.Enabled {
+					addURLHost(scraper.URL)
+				}
+			}
+			addURLHost(settings.Live.PlaylistURL)
+			addURLHost(settings.Live.ManifestURL)
+			addURLHost(settings.Live.XtreamHost)
+			for _, source := range append(settings.Live.Sources, settings.Live.PlaylistSources...) {
+				if source.Enabled == nil || *source.Enabled {
+					addURLHost(source.PlaylistURL)
+					addURLHost(source.ManifestURL)
+					addURLHost(source.XtreamHost)
+				}
+			}
+		}
+	}
+	return func(hostname string) bool {
+		_, ok := allowed[strings.ToLower(strings.TrimSpace(hostname))]
+		return ok
+	}
+}
+
 func (h *VideoHandler) applyExternalUsenetWebDAVAuth(req *http.Request) {
 	if h == nil || h.configManager == nil || req == nil || req.URL == nil {
 		return
@@ -5792,6 +5870,9 @@ func (h *VideoHandler) CropDetect(w http.ResponseWriter, r *http.Request) {
 	filePath := strings.TrimSpace(resolveScopedPlaybackPath(r, r.URL.Query().Get("path")))
 	if filePath == "" {
 		http.Error(w, "Missing path parameter", http.StatusBadRequest)
+		return
+	}
+	if !h.requireAllowedExternalPath(w, r, filePath) {
 		return
 	}
 

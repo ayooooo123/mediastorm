@@ -228,10 +228,30 @@ func extractToken(r *http.Request) string {
 		return token
 	}
 
-	// Fall back to query parameter for streaming URLs (video players can't set headers)
-	if token := strings.TrimSpace(r.URL.Query().Get("token")); token != "" {
-		return token
+	// Fall back to a query parameter only for player/media URLs whose consumers
+	// cannot attach headers. General API bearer tokens must never be put in URLs.
+	if queryTokenAllowed(r.URL.Path) {
+		if token := strings.TrimSpace(r.URL.Query().Get("token")); token != "" {
+			return token
+		}
 	}
 
 	return ""
+}
+
+func queryTokenAllowed(path string) bool {
+	if path == "/api/video/stream" || strings.HasPrefix(path, "/api/video/stream/") ||
+		path == "/api/video/share-progress" || isStreamScopedSessionPath(path) {
+		return true
+	}
+	if _, ok := streamScopedSourcePaths[path]; ok {
+		return true
+	}
+	if strings.HasPrefix(path, "/api/live/hls/") || path == "/api/live/stream" {
+		return true
+	}
+	if strings.HasPrefix(path, "/api/recordings/") && strings.HasSuffix(path, "/stream") {
+		return true
+	}
+	return false
 }

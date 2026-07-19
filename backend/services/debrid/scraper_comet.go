@@ -291,7 +291,7 @@ func (c *CometScraper) fetchStreams(ctx context.Context, mediaType, id, fallback
 	} else {
 		endpoint = fmt.Sprintf("%s/stream/%s/%s.json", c.baseURL, mediaType, url.PathEscape(id))
 	}
-	log.Printf("[comet] Fetching: %s", endpoint)
+	log.Printf("[comet] Fetching: %s", safeURLForLog(endpoint))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {

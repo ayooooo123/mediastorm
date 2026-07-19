@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"novastream/internal/auth"
+	"novastream/internal/requestsecurity"
 	"novastream/models"
 )
 
@@ -109,7 +110,7 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	raw, err := io.ReadAll(r.Body)
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {
 		writeShareJSONError(w, http.StatusBadRequest, "invalid request body")
 		return
@@ -365,16 +366,7 @@ var shareRedirectSensitiveParams = map[string]bool{
 }
 
 func clientIPForShare(r *http.Request) string {
-	if fwd := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); fwd != "" {
-		if comma := strings.IndexByte(fwd, ','); comma >= 0 {
-			return strings.TrimSpace(fwd[:comma])
-		}
-		return fwd
-	}
-	if host, _, found := strings.Cut(r.RemoteAddr, ":"); found {
-		return host
-	}
-	return r.RemoteAddr
+	return requestsecurity.ClientIP(r)
 }
 
 func writeShareJSONError(w http.ResponseWriter, status int, message string) {

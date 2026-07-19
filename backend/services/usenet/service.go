@@ -19,6 +19,7 @@ import (
 	"novastream/config"
 	"novastream/internal/httpheaders"
 	"novastream/internal/pool"
+	"novastream/internal/requestsecurity"
 	"novastream/models"
 	"novastream/services/usenetengine"
 
@@ -69,7 +70,7 @@ func (s *Service) CheckHealth(ctx context.Context, candidate models.NZBResult) (
 	}
 
 	start := time.Now()
-	log.Printf("[usenet] health check start title=%q url=%q", strings.TrimSpace(candidate.Title), downloadURL)
+	log.Printf("[usenet] health check start title=%q url=%q", strings.TrimSpace(candidate.Title), requestsecurity.URLForLog(downloadURL))
 
 	profileID := strings.TrimSpace(candidate.Attributes["profileId"])
 	settings, err := s.loadUsenetSettings()
@@ -95,7 +96,7 @@ func (s *Service) CheckHealthWithNZB(ctx context.Context, candidate models.NZBRe
 		downloadURL = strings.TrimSpace(candidate.Link)
 	}
 	start := time.Now()
-	log.Printf("[usenet] health check start title=%q url=%q (prefetched=true)", strings.TrimSpace(candidate.Title), downloadURL)
+	log.Printf("[usenet] health check start title=%q url=%q (prefetched=true)", strings.TrimSpace(candidate.Title), requestsecurity.URLForLog(downloadURL))
 
 	profileID := strings.TrimSpace(candidate.Attributes["profileId"])
 	settings, err := s.loadUsenetSettings()

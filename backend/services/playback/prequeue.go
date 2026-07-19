@@ -992,13 +992,18 @@ func (s *PrequeueStore) ForceExpiry(id string, expiresAt time.Time) {
 // ListExpired returns all entries whose TTL has elapsed (ready entries only).
 // Used by prewarm to know which entries need re-resolving.
 func (s *PrequeueStore) ListExpired() []*PrequeueEntry {
+	return s.ListExpiringBefore(time.Now())
+}
+
+// ListExpiringBefore returns ready entries that need renewal before a deadline.
+// Prewarm uses a look-ahead so cleanup cannot create a cold gap at expiry.
+func (s *PrequeueStore) ListExpiringBefore(deadline time.Time) []*PrequeueEntry {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	now := time.Now()
 	var result []*PrequeueEntry
 	for _, entry := range s.entries {
-		if entry.Status == PrequeueStatusReady && now.After(entry.ExpiresAt) {
+		if entry.Status == PrequeueStatusReady && !entry.ExpiresAt.After(deadline) {
 			result = append(result, entry)
 		}
 	}

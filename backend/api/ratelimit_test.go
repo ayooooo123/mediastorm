@@ -102,21 +102,31 @@ func TestRateLimitHandler_PerIPIsolation(t *testing.T) {
 	}
 }
 
-func TestGetClientIP_XForwardedFor(t *testing.T) {
+func TestGetClientIP_IgnoresXForwardedForFromUntrustedPeer(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("X-Forwarded-For", "203.0.113.50, 70.41.3.18")
 	ip := getClientIP(req)
-	if ip != "203.0.113.50" {
-		t.Fatalf("expected 203.0.113.50, got %q", ip)
+	if ip != "192.0.2.1" {
+		t.Fatalf("expected TCP peer 192.0.2.1, got %q", ip)
 	}
 }
 
-func TestGetClientIP_XRealIP(t *testing.T) {
+func TestGetClientIP_IgnoresXRealIPFromUntrustedPeer(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("X-Real-IP", "198.51.100.10")
 	ip := getClientIP(req)
-	if ip != "198.51.100.10" {
-		t.Fatalf("expected 198.51.100.10, got %q", ip)
+	if ip != "192.0.2.1" {
+		t.Fatalf("expected TCP peer 192.0.2.1, got %q", ip)
+	}
+}
+
+func TestGetClientIP_TrustsLoopbackProxy(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "127.0.0.1:4321"
+	req.Header.Set("X-Forwarded-For", "203.0.113.50, 127.0.0.1")
+	ip := getClientIP(req)
+	if ip != "203.0.113.50" {
+		t.Fatalf("expected forwarded client 203.0.113.50, got %q", ip)
 	}
 }
 

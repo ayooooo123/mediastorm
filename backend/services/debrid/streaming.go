@@ -386,7 +386,7 @@ func (p *StreamingProvider) streamWithProviderInfo(ctx context.Context, req stre
 			log.Printf("[debrid-stream] resolved filename: %s", resolvedFilename)
 		}
 
-		log.Printf("[debrid-stream] unrestricting link: %s", restrictedLink)
+		log.Printf("[debrid-stream] unrestricting link: %s", safeURLForLog(restrictedLink))
 
 		// Unrestrict the link to get the actual download URL
 		unrestricted, err := client.UnrestrictLink(ctx, restrictedLink)

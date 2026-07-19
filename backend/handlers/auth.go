@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"novastream/internal/requestsecurity"
 	"novastream/models"
 	"novastream/services/accounts"
 	"novastream/services/sessions"
@@ -51,6 +52,7 @@ type AccountResponse struct {
 
 // Login authenticates a user and returns a session token.
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	log.Printf("[auth] login request method=%s path=%s host=%s remote=%s xff=%q xrealip=%q xfh=%q xfp=%q contentType=%q accept=%q ua=%q",
 		r.Method,
 		r.URL.Path,
@@ -85,6 +87,13 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"error": msg})
 		return
 	}
+	if account.IsMaster && h.accounts.HasDefaultPassword() && !requestsecurity.IsLoopback(r) {
+		log.Printf("[auth] blocked remote login using legacy default master password from %s", getClientIPAddress(r))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{"error": "default admin password may only be changed from localhost"})
+		return
+	}
 
 	// Create session
 	userAgent := r.Header.Get("User-Agent")
@@ -103,11 +112,11 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[auth] login success accountID=%s username=%q isMaster=%t ip=%s", account.ID, account.Username, account.IsMaster, ipAddress)
 
 	resp := LoginResponse{
-		Token:           session.Token,
-		ExpiresAt:       session.ExpiresAt.Format("2006-01-02T15:04:05Z"),
-		AccountID:       account.ID,
-		Username:        account.Username,
-		IsMaster:        account.IsMaster,
+		Token:     session.Token,
+		ExpiresAt: session.ExpiresAt.Format("2006-01-02T15:04:05Z"),
+		AccountID: account.ID,
+		Username:  account.Username,
+		IsMaster:  account.IsMaster,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -157,9 +166,9 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := AccountResponse{
-		ID:              account.ID,
-		Username:        account.Username,
-		IsMaster:        account.IsMaster,
+		ID:       account.ID,
+		Username: account.Username,
+		IsMaster: account.IsMaster,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -168,6 +177,7 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 
 // Refresh extends the session expiration.
 func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	token := extractBearerToken(r)
 	if token == "" {
 		http.Error(w, `{"error": "not authenticated"}`, http.StatusUnauthorized)
@@ -189,11 +199,11 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := LoginResponse{
-		Token:           session.Token,
-		ExpiresAt:       session.ExpiresAt.Format("2006-01-02T15:04:05Z"),
-		AccountID:       account.ID,
-		Username:        account.Username,
-		IsMaster:        account.IsMaster,
+		Token:     session.Token,
+		ExpiresAt: session.ExpiresAt.Format("2006-01-02T15:04:05Z"),
+		AccountID: account.ID,
+		Username:  account.Username,
+		IsMaster:  account.IsMaster,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -208,6 +218,7 @@ type ChangePasswordRequest struct {
 
 // ChangePassword changes the current account's password.
 func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	token := extractBearerToken(r)
 	if token == "" {
 		http.Error(w, `{"error": "not authenticated"}`, http.StatusUnauthorized)
@@ -248,6 +259,10 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A password change invalidates every other device session while preserving
+	// the session that performed the authenticated change.
+	h.sessions.RevokeAllForAccountExcept(session.AccountID, token)
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "password changed"})
 }
@@ -274,26 +289,5 @@ func extractBearerToken(r *http.Request) string {
 
 // getClientIPAddress extracts the client IP address from the request.
 func getClientIPAddress(r *http.Request) string {
-	// Check X-Forwarded-For header first
-	xff := r.Header.Get("X-Forwarded-For")
-	if xff != "" {
-		// Take the first IP in the chain
-		if idx := strings.Index(xff, ","); idx != -1 {
-			return strings.TrimSpace(xff[:idx])
-		}
-		return strings.TrimSpace(xff)
-	}
-
-	// Check X-Real-IP header
-	xri := r.Header.Get("X-Real-IP")
-	if xri != "" {
-		return strings.TrimSpace(xri)
-	}
-
-	// Fall back to RemoteAddr
-	addr := r.RemoteAddr
-	if idx := strings.LastIndex(addr, ":"); idx != -1 {
-		return addr[:idx]
-	}
-	return addr
+	return requestsecurity.ClientIP(r)
 }

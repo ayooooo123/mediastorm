@@ -278,7 +278,7 @@ func (a *AIOStreamsScraper) fetchStreams(ctx context.Context, mediaType, id stri
 	}
 
 	endpoint := fmt.Sprintf("%s/stream/%s/%s.json", a.baseURL, mediaType, url.PathEscape(id))
-	log.Printf("[aiostreams] Fetching: %s", endpoint)
+	log.Printf("[aiostreams] Fetching: %s", safeURLForLog(endpoint))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -312,13 +312,13 @@ func (a *AIOStreamsScraper) fetchStreams(ctx context.Context, mediaType, id stri
 		streamURL := strings.TrimSpace(stream.URL)
 		if streamURL == "" {
 			if externalURL := strings.TrimSpace(stream.ExternalURL); externalURL != "" {
-				log.Printf("[aiostreams] skipping externalUrl-only stream entry %q: %s", strings.TrimSpace(stream.Name), externalURL)
+				log.Printf("[aiostreams] skipping externalUrl-only stream entry %q: %s", strings.TrimSpace(stream.Name), safeURLForLog(externalURL))
 			}
 			continue
 		}
 
 		if IsKnownPlaceholderURL(streamURL) {
-			log.Printf("[aiostreams] skipping known placeholder stream URL: %s", streamURL)
+			log.Printf("[aiostreams] skipping known placeholder stream URL: %s", safeURLForLog(streamURL))
 			continue
 		}
 

@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"novastream/config"
+	"novastream/internal/requestsecurity"
 	"novastream/models"
 	resultfilter "novastream/utils/filter"
 	langutil "novastream/utils/language"
@@ -259,7 +260,7 @@ type SubtitleDownloadParams struct {
 
 // Download downloads a specific subtitle and returns VTT content
 func (h *SubtitlesHandler) Download(w http.ResponseWriter, r *http.Request) {
-	log.Printf("[subtitles] Download request: %s", r.URL.String())
+	log.Printf("[subtitles] download request path=%s", r.URL.Path)
 	q := r.URL.Query()
 	subtitleID := q.Get("subtitleId")
 	provider := q.Get("provider")
@@ -358,7 +359,7 @@ func (h *SubtitlesHandler) Download(w http.ResponseWriter, r *http.Request) {
 // Translate proxies and translates a VTT subtitle into a target language.
 // This is used to translate embedded English subtitles before online search fallback.
 func (h *SubtitlesHandler) Translate(w http.ResponseWriter, r *http.Request) {
-	log.Printf("[subtitles] translate request: %s", r.URL.String())
+	log.Printf("[subtitles] translate request path=%s", r.URL.Path)
 	if !h.translationEnabled() {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
@@ -422,14 +423,14 @@ func (h *SubtitlesHandler) Translate(w http.ResponseWriter, r *http.Request) {
 		authHeader,
 	)
 	if err != nil {
-		log.Printf("[subtitles] translation failed source=%q from=%q (%q) to=%q (%q) err=%v", resolvedSourceURL, rawSourceLanguage, sourceLanguage, rawTargetLanguage, targetLanguage, err)
+		log.Printf("[subtitles] translation failed source=%q from=%q (%q) to=%q (%q) err=%v", requestsecurity.URLForLog(resolvedSourceURL), rawSourceLanguage, sourceLanguage, rawTargetLanguage, targetLanguage, err)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadGateway)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "subtitle translation failed"})
 		return
 	}
 
-	log.Printf("[subtitles] translate response: %d bytes, source=%q from=%q (%q) to=%q (%q)", len(translated), sourceURL, rawSourceLanguage, sourceLanguage, rawTargetLanguage, targetLanguage)
+	log.Printf("[subtitles] translate response: %d bytes, source=%q from=%q (%q) to=%q (%q)", len(translated), requestsecurity.URLForLog(resolvedSourceURL), rawSourceLanguage, sourceLanguage, rawTargetLanguage, targetLanguage)
 	w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache, no-store")
 	w.Write(translated)

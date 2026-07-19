@@ -14,8 +14,10 @@ import (
 	"time"
 
 	"novastream/config"
+	"novastream/internal/auth"
 	"novastream/internal/mediaidentity"
 	"novastream/internal/mediaresolve"
+	"novastream/internal/requestsecurity"
 	"novastream/models"
 	"novastream/services/badstreams"
 	content_preferences "novastream/services/content_preferences"
@@ -48,6 +50,10 @@ type PrewarmService interface {
 	InvalidatePrequeue(prequeueID string)
 }
 
+type prequeueOwnershipService interface {
+	BelongsToAccount(profileID, accountID string) bool
+}
+
 // PrequeueHandler handles prequeue requests for pre-loading playback streams
 type PrequeueHandler struct {
 	store                 *playback.PrequeueStore
@@ -69,7 +75,24 @@ type PrequeueHandler struct {
 	failures              *streamFailureRegistry
 	badStreamsSvc         *badstreams.Service
 	externalURLValidator  func(context.Context, string) error
+	users                 prequeueOwnershipService
 	demoMode              bool
+}
+
+func (h *PrequeueHandler) canAccessUser(r *http.Request, userID string) bool {
+	if h.users == nil || auth.IsMaster(r) {
+		return true
+	}
+	accountID := auth.GetAccountID(r)
+	return accountID != "" && h.users.BelongsToAccount(userID, accountID)
+}
+
+func (h *PrequeueHandler) authorizeEntry(w http.ResponseWriter, r *http.Request, entry *playback.PrequeueEntry) bool {
+	if entry != nil && h.canAccessUser(r, entry.UserID) {
+		return true
+	}
+	http.Error(w, "prequeue not found or expired", http.StatusNotFound)
+	return false
 }
 
 func hasReusablePreparation(entry *playback.PrequeueEntry) bool {
@@ -210,17 +233,30 @@ func unknownTrackPolicyRejects(policy string, audioStreams []AudioStreamInfo, su
 // the single source of truth for external-URL staleness, shared by the prequeue
 // reuse path and the prequeue store's stream-path validator.
 func DefaultExternalURLValidator(ctx context.Context, streamURL string) error {
-	return defaultExternalURLValidator(ctx, streamURL)
+	return validateExternalStreamURL(ctx, streamURL, nil)
 }
 
 func defaultExternalURLValidator(ctx context.Context, streamURL string) error {
+	return validateExternalStreamURL(ctx, streamURL, nil)
+}
+
+// ValidateExternalURL validates a cached stream URL using the same network
+// policy as playback, including explicitly configured private provider hosts.
+func (h *PrequeueHandler) ValidateExternalURL(ctx context.Context, streamURL string) error {
+	return validateExternalStreamURL(ctx, streamURL, configuredProviderHostPolicy(h.configManager))
+}
+
+func validateExternalStreamURL(ctx context.Context, streamURL string, allowRestricted requestsecurity.RestrictedHostPolicy) error {
+	if err := requestsecurity.ValidateOutboundURL(ctx, streamURL, allowRestricted); err != nil {
+		return err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, streamURL, nil)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; mediastorm/1.0)")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := requestsecurity.NewSafeHTTPClient(5*time.Second, 5, allowRestricted).Do(req)
 	if err != nil {
 		return err
 	}
@@ -614,6 +650,11 @@ func (h *PrequeueHandler) SetUserSettingsService(svc *user_settings.Service) {
 	h.userSettingsSvc = svc
 }
 
+// SetUsersService enables authenticated profile ownership enforcement.
+func (h *PrequeueHandler) SetUsersService(svc prequeueOwnershipService) {
+	h.users = svc
+}
+
 // SetContentPreferencesService sets the content preferences service for per-content language preferences
 func (h *PrequeueHandler) SetContentPreferencesService(svc *content_preferences.Service) {
 	h.contentPreferencesSvc = svc
@@ -724,6 +765,10 @@ func (h *PrequeueHandler) Prequeue(w http.ResponseWriter, r *http.Request) {
 
 	if strings.TrimSpace(req.UserID) == "" {
 		http.Error(w, "userId is required", http.StatusBadRequest)
+		return
+	}
+	if !h.canAccessUser(r, req.UserID) {
+		http.Error(w, "user not found", http.StatusNotFound)
 		return
 	}
 
@@ -927,6 +972,9 @@ func (h *PrequeueHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "prequeue not found or expired", http.StatusNotFound)
 		return
 	}
+	if !h.authorizeEntry(w, r, entry) {
+		return
+	}
 
 	resp := entry.ToResponse()
 
@@ -961,6 +1009,10 @@ func (h *PrequeueHandler) AdoptMigration(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "prequeueID is required", http.StatusBadRequest)
 		return
 	}
+	current, exists := h.store.Get(prequeueID)
+	if !exists || !h.authorizeEntry(w, r, current) {
+		return
+	}
 
 	var req adoptMigrationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -971,6 +1023,15 @@ func (h *PrequeueHandler) AdoptMigration(w http.ResponseWriter, r *http.Request)
 	if req.StreamPath == "" {
 		http.Error(w, "streamPath is required", http.StatusBadRequest)
 		return
+	}
+	if isExternalStreamPath(req.StreamPath) {
+		checkCtx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		err := h.ValidateExternalURL(checkCtx, req.StreamPath)
+		cancel()
+		if err != nil {
+			http.Error(w, "streamPath is not an allowed external URL", http.StatusBadRequest)
+			return
+		}
 	}
 
 	updated := h.store.Update(prequeueID, func(e *playback.PrequeueEntry) {
@@ -2165,6 +2226,10 @@ func (h *PrequeueHandler) StartSubtitles(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "missing prequeue ID", http.StatusBadRequest)
 		return
 	}
+	entry, exists := h.store.Get(prequeueID)
+	if !exists || !h.authorizeEntry(w, r, entry) {
+		return
+	}
 
 	// Parse request body
 	var req StartSubtitlesRequest
@@ -2188,68 +2253,6 @@ func (h *PrequeueHandler) StartSubtitles(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(StartSubtitlesResponse{
 		SubtitleSessions: make(map[int]*models.SubtitleSessionInfo),
-	})
-	return
-
-	// Get the prequeue entry
-	entry, exists := h.store.Get(prequeueID)
-	if !exists {
-		http.Error(w, "prequeue not found", http.StatusNotFound)
-		return
-	}
-
-	// Check if prequeue is ready
-	if entry.Status != playback.PrequeueStatusReady {
-		http.Error(w, "prequeue not ready", http.StatusConflict)
-		return
-	}
-
-	// Check if we have subtitle tracks to extract
-	if len(entry.SubtitleTracks) == 0 {
-		// No subtitle tracks - return empty response
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(StartSubtitlesResponse{
-			SubtitleSessions: make(map[int]*models.SubtitleSessionInfo),
-		})
-		return
-	}
-
-	// Check if subtitles already extracted (sessions exist)
-	if len(entry.SubtitleSessions) > 0 {
-		log.Printf("[prequeue] Subtitles already extracted for %s, returning existing sessions", prequeueID)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(StartSubtitlesResponse{
-			SubtitleSessions: entry.SubtitleSessions,
-		})
-		return
-	}
-
-	// Check if we have the subtitle extractor
-	if h.subtitleExtractor == nil {
-		http.Error(w, "subtitle extraction not available", http.StatusServiceUnavailable)
-		return
-	}
-
-	// Convert playback tracks to handler format and start extraction
-	tracks := ConvertPlaybackTracksToHandler(entry.SubtitleTracks)
-
-	log.Printf("[prequeue] Starting subtitle extraction for %s with %d tracks at offset %.3f",
-		prequeueID, len(tracks), req.StartOffset)
-	sessions := h.subtitleExtractor.StartPreExtraction(r.Context(), entry.StreamPath, tracks, req.StartOffset)
-
-	// Convert sessions to SubtitleSessionInfo using the playback track metadata
-	sessionInfos := ConvertSessionsFromPlaybackTracks(sessions, entry.SubtitleTracks)
-
-	// Store the sessions in the prequeue entry
-	h.store.Update(prequeueID, func(e *playback.PrequeueEntry) {
-		e.SubtitleSessions = sessionInfos
-	})
-
-	log.Printf("[prequeue] Started subtitle extraction for %d sessions", len(sessionInfos))
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(StartSubtitlesResponse{
-		SubtitleSessions: sessionInfos,
 	})
 }
 

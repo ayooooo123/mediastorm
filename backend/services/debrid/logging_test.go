@@ -11,7 +11,7 @@ func TestSafeURLForLogRemovesCredentials(t *testing.T) {
 	if strings.Contains(got, "secret") || strings.Contains(got, "signed") || strings.Contains(got, "fragment") {
 		t.Fatalf("safeURLForLog exposed credentials: %q", got)
 	}
-	if got != "https://indexer.example/download" {
+	if got != "https://indexer.example" {
 		t.Fatalf("safeURLForLog=%q", got)
 	}
 }

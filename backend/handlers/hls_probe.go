@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"novastream/internal/requestsecurity"
 	"novastream/services/streaming"
 )
 
@@ -528,7 +529,7 @@ func (m *HLSManager) probeAudioStreams(ctx context.Context, path string) (stream
 
 // probeAudioStreamsFromURL probes audio streams directly from an external URL
 func (m *HLSManager) probeAudioStreamsFromURL(ctx context.Context, url string) (streams []audioStreamInfo, hasTrueHD bool, hasCompatibleAudio bool, err error) {
-	log.Printf("[hls] probing audio streams from external URL: %s", url)
+	log.Printf("[hls] probing audio streams from external URL: %s", requestsecurity.URLForLog(url))
 
 	// Use 60 second timeout for external URLs (need to download data over network)
 	probeCtx, probeCancel := context.WithTimeout(ctx, 60*time.Second)
@@ -714,7 +715,7 @@ func (m *HLSManager) probeSubtitleStreams(ctx context.Context, path string) (str
 
 // probeSubtitleStreamsFromURL probes subtitle streams directly from an external URL
 func (m *HLSManager) probeSubtitleStreamsFromURL(ctx context.Context, url string) (streams []subtitleStreamInfo, err error) {
-	log.Printf("[hls] probing subtitle streams from external URL: %s", url)
+	log.Printf("[hls] probing subtitle streams from external URL: %s", requestsecurity.URLForLog(url))
 
 	// Use 60 second timeout for external URLs (need to download data over network)
 	probeCtx, probeCancel := context.WithTimeout(ctx, 60*time.Second)

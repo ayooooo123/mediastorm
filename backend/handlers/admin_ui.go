@@ -36,6 +36,7 @@ import (
 	"novastream/internal/importer"
 	"novastream/internal/netproxy"
 	internalpool "novastream/internal/pool"
+	"novastream/internal/requestsecurity"
 	internalusenet "novastream/internal/usenet"
 
 	"github.com/google/uuid"
@@ -3996,6 +3997,10 @@ func (h *AdminUIHandler) LoginSubmit(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if account.IsMaster && h.accountsService.HasDefaultPassword() && !requestsecurity.IsLoopback(r) {
+		h.renderLoginError(w, "The legacy default admin password can only be changed from localhost")
+		return
+	}
 
 	// Check if "remember me" is checked
 	rememberMe := r.FormValue("remember") == "1"
@@ -4021,6 +4026,7 @@ func (h *AdminUIHandler) LoginSubmit(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		MaxAge:   maxAge,
 		HttpOnly: true,
+		Secure:   requestsecurity.IsSecure(r),
 		SameSite: http.SameSiteLaxMode,
 	})
 

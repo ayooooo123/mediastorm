@@ -295,7 +295,7 @@ type cinemetaMeta struct {
 
 func (t *TorrentioScraper) fetchCinemeta(ctx context.Context, title string, mediaType MediaType, preferredYear int) ([]cinemetaMeta, error) {
 	endpoint := fmt.Sprintf("%s/catalog/%s/search=%s.json", cinemetaBaseURL, mediaType, url.PathEscape(title))
-	log.Printf("[torrentio] Fetching cinemeta: %s", endpoint)
+	log.Printf("[torrentio] Fetching cinemeta: %s", safeURLForLog(endpoint))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err

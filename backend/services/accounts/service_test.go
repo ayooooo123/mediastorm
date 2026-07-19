@@ -14,6 +14,7 @@ import (
 // setupTestService creates a new accounts service for testing with a temp directory.
 func setupTestService(t *testing.T) *Service {
 	t.Helper()
+	t.Setenv(initialMasterPasswordEnv, DefaultMasterPassword)
 	tmpDir := t.TempDir()
 	svc, err := NewService(tmpDir)
 	if err != nil {
@@ -38,6 +39,21 @@ func TestNewService_InitializesMasterAccount(t *testing.T) {
 	}
 	if !master.IsMaster {
 		t.Error("expected master account IsMaster to be true")
+	}
+}
+
+func TestNewService_GeneratesUniqueInitialMasterPassword(t *testing.T) {
+	t.Setenv(initialMasterPasswordEnv, "")
+	svc, err := NewService(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewService failed: %v", err)
+	}
+	password := svc.InitialMasterPassword()
+	if password == "" || password == DefaultMasterPassword {
+		t.Fatalf("initial password was not installation-specific")
+	}
+	if _, err := svc.Authenticate(models.MasterAccountUsername, password); err != nil {
+		t.Fatalf("generated initial password did not authenticate: %v", err)
 	}
 }
 

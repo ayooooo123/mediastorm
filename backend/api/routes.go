@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"novastream/handlers"
+	"novastream/internal/requestsecurity"
 	"novastream/services/accounts"
 	"novastream/services/sessions"
 	"novastream/services/users"
@@ -20,21 +21,12 @@ import (
 func itoa(i int) string      { return strconv.Itoa(i) }
 func itoa64(i uint64) string { return strconv.FormatUint(i, 10) }
 
-// localhostOnlyMiddleware restricts access to localhost requests only
+// localhostOnlyMiddleware restricts access using the actual TCP peer. The Host
+// header is attacker-controlled and must never be used as an authorization
+// boundary.
 func localhostOnlyMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		host := r.Host
-		// Strip port if present
-		if idx := len(host) - 1; idx >= 0 {
-			for i := len(host) - 1; i >= 0; i-- {
-				if host[i] == ':' {
-					host = host[:i]
-					break
-				}
-			}
-		}
-		// Allow localhost, 127.0.0.1, ::1
-		if host != "localhost" && host != "127.0.0.1" && host != "::1" {
+		if !requestsecurity.IsLoopback(r) {
 			http.Error(w, "Debug endpoints only accessible from localhost", http.StatusForbidden)
 			return
 		}
@@ -42,21 +34,30 @@ func localhostOnlyMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// devOnlyMiddleware restricts access to dev hosts (localhost + docker hostname)
+// devOnlyMiddleware restricts access to a local TCP peer.
 func devOnlyMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		host := r.Host
-		// Strip port if present
-		for i := len(host) - 1; i >= 0; i-- {
-			if host[i] == ':' {
-				host = host[:i]
-				break
-			}
-		}
-		// Allow localhost, 127.0.0.1, ::1, and docker hostname
-		if host != "localhost" && host != "127.0.0.1" && host != "::1" && host != "docker" {
+		if !requestsecurity.IsLoopback(r) {
 			http.Error(w, "Dev endpoints only accessible from allowed hosts", http.StatusForbidden)
 			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+const maxAPIRequestBodyBytes int64 = 32 << 20
+
+func apiSecurityMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		if requestsecurity.IsSecure(r) {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, maxAPIRequestBodyBytes)
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -131,6 +132,7 @@ func Register(
 
 	// Add CORS middleware to API subrouter
 	api.Use(corsMiddleware)
+	api.Use(apiSecurityMiddleware)
 
 	// Rate limiters for auth endpoints
 	loginLimiter := NewIPRateLimiter(rate.Every(12*time.Second), 5)     // 5/min per IP

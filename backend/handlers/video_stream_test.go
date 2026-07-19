@@ -7,9 +7,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"novastream/config"
 	"novastream/models"
 	"novastream/services/playback"
 	"novastream/services/streaming"
@@ -146,6 +148,18 @@ func TestVideoHandlerInvalidatesPrequeueOnExternalURL404(t *testing.T) {
 	prewarm := &invalidationPrewarmMock{}
 	// Provider is irrelevant — external http URLs are proxied directly.
 	handler := NewVideoHandlerWithProvider(false, "", "", "", failingProvider{err: streaming.ErrNotFound})
+	settingsManager := config.NewManager(filepath.Join(t.TempDir(), "settings.json"))
+	settings := config.DefaultSettings()
+	settings.TorrentScrapers = []config.TorrentScraperConfig{{
+		Name:    "test provider",
+		Type:    "aiostreams",
+		URL:     expired.URL,
+		Enabled: true,
+	}}
+	if err := settingsManager.Save(settings); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+	handler.SetConfigManager(settingsManager)
 	handler.SetPrequeueStore(store)
 	handler.SetPrewarmService(prewarm)
 

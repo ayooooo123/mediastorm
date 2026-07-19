@@ -2,6 +2,8 @@ package accounts
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,15 +36,35 @@ var (
 const (
 	// DefaultMasterPassword is the initial password for the master account.
 	// Users should be warned to change this immediately.
-	DefaultMasterPassword = "admin"
+	DefaultMasterPassword    = "admin"
+	initialMasterPasswordEnv = "STRMR_INITIAL_ADMIN_PASSWORD"
 )
 
 // Service manages persistence of user accounts.
 type Service struct {
-	mu       sync.RWMutex
-	path     string
-	store    *datastore.DataStore
-	accounts map[string]models.Account
+	mu                      sync.RWMutex
+	path                    string
+	store                   *datastore.DataStore
+	accounts                map[string]models.Account
+	initialMasterPassword   string
+	bootstrapCredentialPath string
+}
+
+// InitialMasterPassword returns the randomly generated password only for the
+// process that created the first master account. Existing installations return
+// an empty string.
+func (s *Service) InitialMasterPassword() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.initialMasterPassword
+}
+
+// SetBootstrapCredentialPath records the protected bootstrap file so it can be
+// removed as soon as the master password is changed.
+func (s *Service) SetBootstrapCredentialPath(path string) {
+	s.mu.Lock()
+	s.bootstrapCredentialPath = strings.TrimSpace(path)
+	s.mu.Unlock()
 }
 
 // useDB returns true when the service is backed by PostgreSQL.
@@ -346,9 +368,16 @@ func (s *Service) UpdatePassword(id, newPassword string) error {
 	account.UpdatedAt = time.Now().UTC()
 	s.accounts[id] = account
 
-	return s.saveLocked()
+	if err := s.saveLocked(); err != nil {
+		return err
+	}
+	if account.IsMaster && s.bootstrapCredentialPath != "" {
+		_ = os.Remove(s.bootstrapCredentialPath)
+		s.bootstrapCredentialPath = ""
+		s.initialMasterPassword = ""
+	}
+	return nil
 }
-
 
 // SetMaxStreams updates the concurrent VOD stream limit for an account.
 func (s *Service) SetMaxStreams(id string, maxStreams int) error {
@@ -436,8 +465,17 @@ func (s *Service) ensureMasterAccount() error {
 		}
 	}
 
-	// Create master account with default password
-	hash, err := bcrypt.GenerateFromPassword([]byte(DefaultMasterPassword), bcrypt.DefaultCost)
+	initialPassword := strings.TrimSpace(os.Getenv(initialMasterPasswordEnv))
+	if initialPassword == "" {
+		randomBytes := make([]byte, 24)
+		if _, err := rand.Read(randomBytes); err != nil {
+			return fmt.Errorf("generate initial master password: %w", err)
+		}
+		initialPassword = base64.RawURLEncoding.EncodeToString(randomBytes)
+	}
+
+	// Create the first master account with an installation-specific password.
+	hash, err := bcrypt.GenerateFromPassword([]byte(initialPassword), bcrypt.DefaultCost)
 	if err != nil {
 		return fmt.Errorf("hash default password: %w", err)
 	}
@@ -453,6 +491,7 @@ func (s *Service) ensureMasterAccount() error {
 	}
 
 	s.accounts[master.ID] = master
+	s.initialMasterPassword = initialPassword
 
 	return s.saveLocked()
 }

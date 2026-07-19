@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"novastream/config"
+	"novastream/internal/requestsecurity"
 	"novastream/models"
 	"novastream/utils/filter"
 )
@@ -119,28 +120,28 @@ func buildScrapersFromSettings(settings config.Settings) []Scraper {
 		}
 		switch strings.ToLower(scraperCfg.Type) {
 		case "torrentio":
-			log.Printf("[debrid] Initializing Torrentio scraper: %s (options: %s, url: %s)", scraperCfg.Name, scraperCfg.Options, scraperCfg.URL)
+			log.Printf("[debrid] Initializing Torrentio scraper: %s (custom URL=%v)", scraperCfg.Name, strings.TrimSpace(scraperCfg.URL) != "")
 			scrapers = append(scrapers, NewTorrentioScraper(httpClient, scraperCfg.Options, scraperCfg.Name, scraperCfg.URL))
 		case "jackett":
 			if scraperCfg.URL == "" || scraperCfg.APIKey == "" {
 				log.Printf("[debrid] Skipping Jackett scraper %s: missing URL or API key", scraperCfg.Name)
 				continue
 			}
-			log.Printf("[debrid] Initializing Jackett scraper: %s at %s", scraperCfg.Name, scraperCfg.URL)
+			log.Printf("[debrid] Initializing Jackett scraper: %s at %s", scraperCfg.Name, requestsecurity.URLForLog(scraperCfg.URL))
 			scrapers = append(scrapers, NewJackettScraper(scraperCfg.URL, scraperCfg.APIKey, scraperCfg.Name, httpClient))
 		case "prowlarr":
 			if scraperCfg.URL == "" || scraperCfg.APIKey == "" {
 				log.Printf("[debrid] Skipping Prowlarr scraper %s: missing Torznab URL or API key", scraperCfg.Name)
 				continue
 			}
-			log.Printf("[debrid] Initializing Prowlarr scraper: %s at %s", scraperCfg.Name, scraperCfg.URL)
+			log.Printf("[debrid] Initializing Prowlarr scraper: %s at %s", scraperCfg.Name, requestsecurity.URLForLog(scraperCfg.URL))
 			scrapers = append(scrapers, NewProwlarrScraper(scraperCfg.URL, scraperCfg.APIKey, scraperCfg.Name, httpClient))
 		case "zilean":
 			if scraperCfg.URL == "" {
 				log.Printf("[debrid] Skipping Zilean scraper %s: missing URL", scraperCfg.Name)
 				continue
 			}
-			log.Printf("[debrid] Initializing Zilean scraper: %s at %s", scraperCfg.Name, scraperCfg.URL)
+			log.Printf("[debrid] Initializing Zilean scraper: %s at %s", scraperCfg.Name, requestsecurity.URLForLog(scraperCfg.URL))
 			scrapers = append(scrapers, NewZileanScraper(scraperCfg.URL, scraperCfg.Name, httpClient))
 		case "aiostreams":
 			if scraperCfg.URL == "" {
@@ -148,7 +149,7 @@ func buildScrapersFromSettings(settings config.Settings) []Scraper {
 				continue
 			}
 			passthroughFormat := scraperCfg.Config["passthroughFormat"] == "true"
-			log.Printf("[debrid] Initializing AIOStreams scraper: %s at %s (passthrough=%v)", scraperCfg.Name, scraperCfg.URL, passthroughFormat)
+			log.Printf("[debrid] Initializing AIOStreams scraper: %s at %s (passthrough=%v)", scraperCfg.Name, requestsecurity.URLForLog(scraperCfg.URL), passthroughFormat)
 			scrapers = append(scrapers, NewAIOStreamsScraper(scraperCfg.URL, scraperCfg.Name, passthroughFormat, httpClient))
 		case "nyaa":
 			baseURL := scraperCfg.URL
@@ -163,21 +164,21 @@ func buildScrapersFromSettings(settings config.Settings) []Scraper {
 			if filter == "" {
 				filter = "0" // Default: No filter
 			}
-			log.Printf("[debrid] Initializing Nyaa scraper: %s at %s (category: %s, filter: %s)", scraperCfg.Name, baseURL, category, filter)
+			log.Printf("[debrid] Initializing Nyaa scraper: %s at %s (category: %s, filter: %s)", scraperCfg.Name, requestsecurity.URLForLog(baseURL), category, filter)
 			scrapers = append(scrapers, NewNyaaScraper(baseURL, scraperCfg.Name, category, filter, httpClient))
 		case "comet":
 			baseURL := scraperCfg.URL
 			if baseURL == "" {
 				baseURL = cometDefaultBaseURL
 			}
-			log.Printf("[debrid] Initializing Comet scraper: %s at %s (options: %s)", scraperCfg.Name, baseURL, scraperCfg.Options)
+			log.Printf("[debrid] Initializing Comet scraper: %s at %s", scraperCfg.Name, requestsecurity.URLForLog(baseURL))
 			scrapers = append(scrapers, NewCometScraper(httpClient, baseURL, scraperCfg.Options, scraperCfg.Name))
 		case "mediafusion":
 			baseURL := scraperCfg.URL
 			if baseURL == "" {
 				baseURL = mediafusionDefaultBaseURL
 			}
-			log.Printf("[debrid] Initializing MediaFusion scraper: %s at %s", scraperCfg.Name, baseURL)
+			log.Printf("[debrid] Initializing MediaFusion scraper: %s at %s", scraperCfg.Name, requestsecurity.URLForLog(baseURL))
 			scrapers = append(scrapers, NewMediaFusionScraper(httpClient, baseURL, scraperCfg.Name))
 		case "internetarchive":
 			log.Printf("[debrid] Initializing Internet Archive scraper: %s", scraperCfg.Name)
