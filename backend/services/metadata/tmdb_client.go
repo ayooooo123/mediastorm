@@ -430,7 +430,7 @@ func (c *tmdbClient) fetchImages(ctx context.Context, mediaType string, tmdbID i
 				result.TextBackdrop.IsFallbackLanguage = withText[0].ISO6391 != preferredLang
 			}
 		}
-		result.Backdrops = c.rankAlternateBackdrops(ctx, append(append([]tmdbImageItem{}, textless...), withText...), result.TextlessBackdrop, result.TextBackdrop)
+		result.Backdrops = c.rankAlternateBackdrops(ctx, textless, result.TextlessBackdrop, result.TextBackdrop)
 	}
 
 	// Find best textless poster (no language = textless) and best text poster (has language tag)
@@ -686,6 +686,8 @@ func (c *tmdbClient) rankAlternateBackdrops(ctx context.Context, items []tmdbIma
 		if img == nil {
 			continue
 		}
+		img.Language = item.ISO6391
+		img.IsTextless = item.ISO6391 == ""
 		score := item.VoteAverage * 0.25
 		if primarySig != nil {
 			if sig, err := c.fetchBackdropVisualSignature(ctx, img.URL); err == nil {

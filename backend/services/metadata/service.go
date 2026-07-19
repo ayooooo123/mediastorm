@@ -1105,7 +1105,7 @@ func (s *Service) GetCachedArtworkURLs(mediaType string, tmdbID int64, tvdbID in
 			if ok, _ := s.cache.get(cacheID, &cached); ok {
 				mergeTitle(cached)
 			}
-			imagesKey := cacheKey("tmdb", "images", "v6", s.client.language, "movie", fmt.Sprintf("%d", tmdbID))
+			imagesKey := cacheKey("tmdb", "images", "v7", s.client.language, "movie", fmt.Sprintf("%d", tmdbID))
 			var images tmdbImagesResult
 			if ok, _ := s.cache.get(imagesKey, &images); ok {
 				mergeImages(images)
@@ -1122,7 +1122,7 @@ func (s *Service) GetCachedArtworkURLs(mediaType string, tmdbID int64, tvdbID in
 			}
 		}
 		if movieTVDBID > 0 {
-			cacheID := cacheKey("tvdb", "movie", "details", "v5", s.client.language, strconv.FormatInt(movieTVDBID, 10))
+			cacheID := cacheKey("tvdb", "movie", "details", "v6", s.client.language, strconv.FormatInt(movieTVDBID, 10))
 			var cached models.Title
 			if ok, _ := s.cache.get(cacheID, &cached); ok {
 				mergeTitle(cached)
@@ -1145,7 +1145,7 @@ func (s *Service) GetCachedArtworkURLs(mediaType string, tmdbID int64, tvdbID in
 			}
 		}
 		if tmdbID > 0 {
-			imagesKey := cacheKey("tmdb", "images", "v6", s.client.language, "series", fmt.Sprintf("%d", tmdbID))
+			imagesKey := cacheKey("tmdb", "images", "v7", s.client.language, "series", fmt.Sprintf("%d", tmdbID))
 			var images tmdbImagesResult
 			if ok, _ := s.cache.get(imagesKey, &images); ok {
 				mergeImages(images)
@@ -1188,7 +1188,7 @@ func (s *Service) GetCachedOverview(mediaType string, tmdbID int64, tvdbID int64
 			}
 		}
 		if movieTVDBID > 0 {
-			cacheID := cacheKey("tvdb", "movie", "details", "v5", s.client.language, strconv.FormatInt(movieTVDBID, 10))
+			cacheID := cacheKey("tvdb", "movie", "details", "v6", s.client.language, strconv.FormatInt(movieTVDBID, 10))
 			var cached models.Title
 			if ok, _ := s.cache.get(cacheID, &cached); ok {
 				overview = mergeOverview(overview, cached.Overview)
@@ -1355,7 +1355,7 @@ func seriesDetailsCacheKey(lang string, tvdbID int64, seasonType string) string 
 	if st == "" {
 		st = "default"
 	}
-	return cacheKey("tvdb", "series", "details", "v12", lang, strconv.FormatInt(tvdbID, 10), st)
+	return cacheKey("tvdb", "series", "details", "v13", lang, strconv.FormatInt(tvdbID, 10), st)
 }
 
 // ShelfLoadOptions configures fast shelf rendering for list-style endpoints.
@@ -3432,7 +3432,14 @@ func applyTVDBArtworks(title *models.Title, arts []tvdbArtwork) bool {
 			updated = true
 		}
 		if artworkLooksLikeBackdrop(art) {
-			img := models.Image{URL: normalized, Type: "backdrop", Width: art.Width, Height: art.Height}
+			img := models.Image{
+				URL:        normalized,
+				Type:       "backdrop",
+				Width:      art.Width,
+				Height:     art.Height,
+				Language:   art.Language,
+				IsTextless: art.Language == "",
+			}
 			if title.Backdrop == nil {
 				title.Backdrop = &img
 				updated = true
@@ -4468,7 +4475,7 @@ func (s *Service) SeriesDetailsLite(ctx context.Context, req models.SeriesDetail
 	if liteSeasonType == "" {
 		liteSeasonType = "default"
 	}
-	cacheID := cacheKey("tvdb", "series", "details", "v12-lite", s.client.language, strconv.FormatInt(tvdbID, 10), liteSeasonType)
+	cacheID := cacheKey("tvdb", "series", "details", "v13-lite", s.client.language, strconv.FormatInt(tvdbID, 10), liteSeasonType)
 	var cached models.SeriesDetails
 	if ok, _ := s.cache.get(cacheID, &cached); ok && len(cached.Seasons) > 0 {
 		normalizeSeriesDetailsReleaseStatus(&cached)
@@ -5167,7 +5174,7 @@ func (s *Service) cachedMovieTitleFields(query models.MovieDetailsQuery, fields 
 	}
 
 	if tvdbID > 0 {
-		cacheID := cacheKey("tvdb", "movie", "details", "v5", language, strconv.FormatInt(tvdbID, 10))
+		cacheID := cacheKey("tvdb", "movie", "details", "v6", language, strconv.FormatInt(tvdbID, 10))
 		var cached models.Title
 		if ok, _ := s.cache.get(cacheID, &cached); ok && cached.ID != "" {
 			s.attachCachedMovieRatings(&cached, fields, query)
@@ -6182,7 +6189,7 @@ func (s *Service) movieDetailsInternal(ctx context.Context, req models.MovieDeta
 	}
 
 	// Check cache.
-	cacheID := cacheKey("tvdb", "movie", "details", "v5", s.client.language, strconv.FormatInt(tvdbID, 10))
+	cacheID := cacheKey("tvdb", "movie", "details", "v6", s.client.language, strconv.FormatInt(tvdbID, 10))
 	var cached models.Title
 	if ok, _ := s.cache.get(cacheID, &cached); ok && cached.ID != "" {
 		metadataTracef("[metadata] movie details cache hit tvdbId=%d lang=%s", tvdbID, s.client.language)
@@ -7628,7 +7635,7 @@ func (s *Service) cachedFetchImages(ctx context.Context, mediaType string, tmdbI
 	if s.tmdb == nil || !s.tmdb.isConfigured() {
 		return nil, errors.New("tmdb api key not configured")
 	}
-	key := cacheKey("tmdb", "images", "v6", s.client.language, mediaType, fmt.Sprintf("%d", tmdbID))
+	key := cacheKey("tmdb", "images", "v7", s.client.language, mediaType, fmt.Sprintf("%d", tmdbID))
 	var cached tmdbImagesResult
 	if ok, _ := s.cache.get(key, &cached); ok {
 		return &cached, nil
@@ -7662,7 +7669,7 @@ func (s *Service) cachedTMDBImagesOnly(mediaType string, tmdbID int64) (*tmdbIma
 	if s.client != nil {
 		language = s.client.language
 	}
-	key := cacheKey("tmdb", "images", "v6", language, mediaType, fmt.Sprintf("%d", tmdbID))
+	key := cacheKey("tmdb", "images", "v7", language, mediaType, fmt.Sprintf("%d", tmdbID))
 	var cached tmdbImagesResult
 	if ok, _ := s.cache.get(key, &cached); ok {
 		return &cached, true
