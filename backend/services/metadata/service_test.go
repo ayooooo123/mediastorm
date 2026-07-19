@@ -391,12 +391,12 @@ func TestGetCachedArtworkURLsUsesMetadataLanguageForTMDBImages(t *testing.T) {
 		cache:  cache,
 	}
 
-	if err := cache.set(cacheKey("tmdb", "images", "v6", "eng", "series", "71712"), tmdbImagesResult{
+	if err := cache.set(cacheKey("tmdb", "images", "v7", "eng", "series", "71712"), tmdbImagesResult{
 		TextPoster: &models.Image{URL: "https://example.test/english-poster.jpg", Type: "poster", Language: "en"},
 	}); err != nil {
 		t.Fatalf("set english images cache: %v", err)
 	}
-	if err := cache.set(cacheKey("tmdb", "images", "v6", "fra", "series", "71712"), tmdbImagesResult{
+	if err := cache.set(cacheKey("tmdb", "images", "v7", "fra", "series", "71712"), tmdbImagesResult{
 		TextPoster: &models.Image{URL: "https://example.test/french-poster.jpg", Type: "poster", Language: "fr"},
 	}); err != nil {
 		t.Fatalf("set french images cache: %v", err)
@@ -415,7 +415,7 @@ func TestEnrichShelfArtworkFromCacheAppliesArtworkPastFetchLimit(t *testing.T) {
 		cache:  cache,
 	}
 
-	if err := cache.set(cacheKey("tmdb", "images", "v6", "eng", "movie", "1674087"), tmdbImagesResult{
+	if err := cache.set(cacheKey("tmdb", "images", "v7", "eng", "movie", "1674087"), tmdbImagesResult{
 		TextlessPoster: &models.Image{URL: "https://image.example/poster.jpg", Type: "poster"},
 		TextPoster:     &models.Image{URL: "https://image.example/text-poster.jpg", Type: "poster"},
 	}); err != nil {
@@ -448,7 +448,7 @@ func TestGetCachedArtworkURLsResolvesMovieTMDBToTVDBCache(t *testing.T) {
 	if err := cache.set(cacheKey("tvdb", "resolve", "movie", "tmdb", "752"), int64(528)); err != nil {
 		t.Fatalf("set resolve cache: %v", err)
 	}
-	if err := cache.set(cacheKey("tvdb", "movie", "details", "v5", "eng", "528"), models.Title{
+	if err := cache.set(cacheKey("tvdb", "movie", "details", "v6", "eng", "528"), models.Title{
 		TextBackdrop: &models.Image{URL: "https://example.test/movie-text-backdrop.jpg", Type: "backdrop"},
 		Backdrops: []models.Image{
 			{URL: "https://example.test/movie-alt-1.jpg", Type: "backdrop"},
@@ -2246,7 +2246,7 @@ func TestMovieDetailsCacheHitHydratesRatingsFromRatingsCache(t *testing.T) {
 		mdblist:      newMDBListClient("test-key", []string{"tomatoes", "audience"}, true, 24),
 	}
 
-	cacheID := cacheKey("tvdb", "movie", "details", "v5", "eng", "369859")
+	cacheID := cacheKey("tvdb", "movie", "details", "v6", "eng", "369859")
 	if err := svc.cache.set(cacheID, models.Title{
 		ID:            "tvdb:movie:369859",
 		Name:          "Primate",
