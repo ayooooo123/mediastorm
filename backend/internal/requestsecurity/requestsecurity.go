@@ -8,10 +8,13 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 )
+
+var embeddedHTTPURL = regexp.MustCompile(`https?://[^\s\"'<>]+`)
 
 const trustedProxiesEnv = "STRMR_TRUSTED_PROXIES"
 
@@ -127,6 +130,13 @@ func URLForLog(rawURL string) string {
 		return "[redacted-url]"
 	}
 	return parsed.Scheme + "://" + parsed.Host
+}
+
+// TextForLog removes sensitive URL components from URLs embedded in error
+// messages. Standard library and provider errors often include the complete
+// request URL, including credentials or signed query parameters.
+func TextForLog(value string) string {
+	return embeddedHTTPURL.ReplaceAllStringFunc(value, URLForLog)
 }
 
 // ValidateOutboundURL verifies an HTTP(S) URL and resolves its host, rejecting

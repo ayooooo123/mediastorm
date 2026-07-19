@@ -1950,17 +1950,19 @@ func (m *HLSManager) startLiveTranscoding(ctx context.Context, session *HLSSessi
 
 	session.mu.Lock()
 	session.FFmpegCmd = cmd
+	startErr := cmd.Start()
+	pid := 0
+	if startErr == nil {
+		pid = cmd.Process.Pid
+		session.FFmpegPID = pid
+	}
 	session.mu.Unlock()
 
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start ffmpeg: %w", err)
+	if startErr != nil {
+		return fmt.Errorf("start ffmpeg: %w", startErr)
 	}
 
-	session.mu.Lock()
-	session.FFmpegPID = cmd.Process.Pid
-	session.mu.Unlock()
-
-	log.Printf("[hls] live session %s: FFmpeg started (PID=%d)", session.ID, cmd.Process.Pid)
+	log.Printf("[hls] live session %s: FFmpeg started (PID=%d)", session.ID, pid)
 
 	// Log stderr in background
 	go func() {
@@ -5125,10 +5127,8 @@ func (m *HLSManager) CleanupSession(sessionID string) {
 		if err := ffmpegCmd.Process.Kill(); err != nil {
 			log.Printf("[hls] failed to kill FFmpeg process: %v", err)
 		}
-		// Wait briefly for process to exit to prevent zombie processes
-		go func() {
-			ffmpegCmd.Wait()
-		}()
+		// The transcoding goroutine owns Cmd.Wait and will reap the process.
+		// Calling Wait here as well races with that owner and is unsupported.
 	}
 
 	// Cancel context after killing process

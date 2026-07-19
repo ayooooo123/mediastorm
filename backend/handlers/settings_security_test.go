@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"testing"
 
 	"novastream/config"
@@ -294,5 +295,108 @@ func TestRedactSettings_EmptyFieldsNotRedacted(t *testing.T) {
 	}
 	if s.Metadata.TMDBAPIKey != "••••••••" {
 		t.Errorf("non-empty TMDBAPIKey should be redacted, got %q", s.Metadata.TMDBAPIKey)
+	}
+}
+
+func TestRedactSettings_LiveURLsAndAccountKeys(t *testing.T) {
+	s := config.Settings{
+		MDBList: config.MDBListSettings{
+			Accounts: []config.MDBListAccount{{ID: "mdb-1", APIKey: "account-key"}},
+		},
+		Live: config.LiveSettings{
+			PlaylistURL:    "https://live.example/playlist.m3u?token=secret",
+			ManifestURL:    "https://addon.example/manifest.json?key=secret",
+			ProxyURL:       "http://proxy-user:proxy-pass@proxy.example:8080",
+			XtreamHost:     "https://xtream.example",
+			XtreamUsername: "xtream-user",
+			XtreamPassword: "xtream-pass",
+			EPG: config.EPGSettings{
+				XmltvUrl: "https://epg.example/guide.xml?token=secret",
+				Sources:  []config.EPGSource{{ID: "epg-1", URL: "https://epg.example/second.xml?key=secret"}},
+			},
+			Sources: []config.LivePlaylistSource{{
+				ID: "source-1", PlaylistURL: "https://source.example/list?token=secret", ManifestURL: "https://source.example/manifest?key=secret",
+				ProxyURL: "http://user:pass@source-proxy.example", XtreamHost: "https://source-xtream.example", XtreamUsername: "user", XtreamPassword: "pass",
+				EPG: config.EPGSettings{XmltvUrl: "https://source-epg.example/guide?token=secret", Sources: []config.EPGSource{{URL: "https://source-epg.example/second?key=secret"}}},
+			}},
+			PlaylistSources: []config.LivePlaylistSource{{
+				ID: "playlist-source-1", PlaylistURL: "https://legacy.example/list?token=secret", ManifestURL: "https://legacy.example/manifest?key=secret",
+				ProxyURL: "http://user:pass@legacy-proxy.example", XtreamHost: "https://legacy-xtream.example", XtreamUsername: "user", XtreamPassword: "pass",
+				EPG: config.EPGSettings{XmltvUrl: "https://legacy-epg.example/guide?token=secret", Sources: []config.EPGSource{{URL: "https://legacy-epg.example/second?key=secret"}}},
+			}},
+		},
+	}
+
+	redactSettings(&s)
+
+	values := []string{
+		s.MDBList.Accounts[0].APIKey,
+		s.Live.PlaylistURL, s.Live.ManifestURL, s.Live.ProxyURL, s.Live.XtreamHost, s.Live.XtreamUsername, s.Live.XtreamPassword,
+		s.Live.EPG.XmltvUrl, s.Live.EPG.Sources[0].URL,
+		s.Live.Sources[0].PlaylistURL, s.Live.Sources[0].ManifestURL, s.Live.Sources[0].ProxyURL,
+		s.Live.Sources[0].XtreamHost, s.Live.Sources[0].XtreamUsername, s.Live.Sources[0].XtreamPassword,
+		s.Live.Sources[0].EPG.XmltvUrl, s.Live.Sources[0].EPG.Sources[0].URL,
+		s.Live.PlaylistSources[0].PlaylistURL, s.Live.PlaylistSources[0].ManifestURL, s.Live.PlaylistSources[0].ProxyURL,
+		s.Live.PlaylistSources[0].XtreamHost, s.Live.PlaylistSources[0].XtreamUsername, s.Live.PlaylistSources[0].XtreamPassword,
+		s.Live.PlaylistSources[0].EPG.XmltvUrl, s.Live.PlaylistSources[0].EPG.Sources[0].URL,
+	}
+	for i, got := range values {
+		if got != redactedPlaceholder {
+			t.Errorf("sensitive value %d not redacted: %q", i, got)
+		}
+	}
+}
+
+func TestPreserveRedactedFields_LiveURLsAndAccountKeys(t *testing.T) {
+	existing := config.Settings{
+		MDBList: config.MDBListSettings{Accounts: []config.MDBListAccount{{ID: "mdb-1", APIKey: "real-account-key"}}},
+		Live: config.LiveSettings{
+			PlaylistURL: "real-playlist", ManifestURL: "real-manifest", ProxyURL: "real-proxy", XtreamHost: "real-host", XtreamUsername: "real-user", XtreamPassword: "real-pass",
+			EPG: config.EPGSettings{XmltvUrl: "real-xmltv", Sources: []config.EPGSource{{URL: "real-epg-source"}}},
+			Sources: []config.LivePlaylistSource{{
+				PlaylistURL: "real-source-playlist", ManifestURL: "real-source-manifest", ProxyURL: "real-source-proxy", XtreamHost: "real-source-host", XtreamUsername: "real-source-user", XtreamPassword: "real-source-pass",
+				EPG: config.EPGSettings{XmltvUrl: "real-source-xmltv", Sources: []config.EPGSource{{URL: "real-source-epg"}}},
+			}},
+			PlaylistSources: []config.LivePlaylistSource{{
+				PlaylistURL: "real-legacy-playlist", ManifestURL: "real-legacy-manifest", ProxyURL: "real-legacy-proxy", XtreamHost: "real-legacy-host", XtreamUsername: "real-legacy-user", XtreamPassword: "real-legacy-pass",
+				EPG: config.EPGSettings{XmltvUrl: "real-legacy-xmltv", Sources: []config.EPGSource{{URL: "real-legacy-epg"}}},
+			}},
+		},
+	}
+	encoded, err := json.Marshal(existing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var incoming config.Settings
+	if err := json.Unmarshal(encoded, &incoming); err != nil {
+		t.Fatal(err)
+	}
+	redactSettings(&incoming)
+
+	preserveRedactedFields(&incoming, &existing)
+
+	if incoming.MDBList.Accounts[0].APIKey != existing.MDBList.Accounts[0].APIKey {
+		t.Fatal("MDBList account key was not restored")
+	}
+	if incoming.Live.PlaylistURL != existing.Live.PlaylistURL || incoming.Live.XtreamUsername != existing.Live.XtreamUsername || incoming.Live.EPG.Sources[0].URL != existing.Live.EPG.Sources[0].URL {
+		t.Fatal("global live provider values were not restored")
+	}
+	if incoming.Live.Sources[0].ManifestURL != existing.Live.Sources[0].ManifestURL || incoming.Live.Sources[0].EPG.XmltvUrl != existing.Live.Sources[0].EPG.XmltvUrl {
+		t.Fatal("live source values were not restored")
+	}
+	if incoming.Live.PlaylistSources[0].ProxyURL != existing.Live.PlaylistSources[0].ProxyURL || incoming.Live.PlaylistSources[0].EPG.Sources[0].URL != existing.Live.PlaylistSources[0].EPG.Sources[0].URL {
+		t.Fatal("legacy live source values were not restored")
+	}
+}
+
+func TestRedactedEffectivePlaylistURL(t *testing.T) {
+	if got := redactedEffectivePlaylistURL(config.LiveSettings{PlaylistURL: "https://live.example/list?token=secret"}); got != redactedPlaceholder {
+		t.Fatalf("playlist effective URL = %q", got)
+	}
+	if got := redactedEffectivePlaylistURL(config.LiveSettings{Mode: "xtream", XtreamHost: "https://live.example", XtreamUsername: "user", XtreamPassword: "pass"}); got != redactedPlaceholder {
+		t.Fatalf("Xtream effective URL = %q", got)
+	}
+	if got := redactedEffectivePlaylistURL(config.LiveSettings{}); got != "" {
+		t.Fatalf("empty effective URL = %q", got)
 	}
 }
