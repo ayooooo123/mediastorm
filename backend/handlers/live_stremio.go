@@ -313,6 +313,9 @@ func (h *LiveHandler) fetchStremioChannels(ctx context.Context, manifestURL, pro
 	if manifestURL == "" {
 		return nil, fmt.Errorf("stremio: empty manifest url")
 	}
+	if _, err := h.parseRemoteURL(ctx, manifestURL); err != nil {
+		return nil, fmt.Errorf("stremio: manifest URL is not allowed")
+	}
 
 	cacheKey := manifestURL + "|" + strings.TrimSpace(proxyURL)
 	h.stremioMu.Lock()
@@ -415,6 +418,9 @@ func fetchStremioCatalog(ctx context.Context, client *http.Client, baseURL strin
 // resolveStremioStream fetches a stream resource and returns a playable stream.
 // selectedIndex < 0 means "first playable".
 func (h *LiveHandler) resolveStremioStream(ctx context.Context, streamResourceURL, proxyURL string, selectedIndex int) (resolvedStremioStream, error) {
+	if _, err := h.parseRemoteURL(ctx, streamResourceURL); err != nil {
+		return resolvedStremioStream{}, fmt.Errorf("stremio: stream URL is not allowed")
+	}
 	client := h.liveStreamHTTPClient(proxyURL)
 	var resp stremioStreamResponse
 	if err := getStremioJSON(ctx, client, streamResourceURL, &resp); err != nil {
@@ -432,7 +438,7 @@ func (h *LiveHandler) GetStremioStreamOptions(w http.ResponseWriter, r *http.Req
 		http.Error(w, `{"error":"missing url parameter"}`, http.StatusBadRequest)
 		return
 	}
-	parsed, err := h.parseRemoteURL(streamResourceURL)
+	parsed, err := h.parseRemoteURL(r.Context(), streamResourceURL)
 	if err != nil {
 		http.Error(w, `{"error":"invalid url parameter"}`, http.StatusBadRequest)
 		return

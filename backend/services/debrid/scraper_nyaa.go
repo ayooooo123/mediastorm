@@ -161,7 +161,7 @@ func (n *NyaaScraper) searchRSS(ctx context.Context, query string) ([]ScrapeResu
 
 	apiURL := fmt.Sprintf("%s/?%s", n.baseURL, params.Encode())
 
-	log.Printf("[nyaa] RSS request: %s", apiURL)
+	log.Printf("[nyaa] RSS request: %s", safeURLForLog(apiURL))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {

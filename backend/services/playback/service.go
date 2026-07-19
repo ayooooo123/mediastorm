@@ -31,6 +31,7 @@ import (
 	"novastream/internal/integration"
 	"novastream/internal/mediaresolve"
 	metapb "novastream/internal/nzb/metadata/proto"
+	"novastream/internal/requestsecurity"
 	"novastream/models"
 	"novastream/services/debrid"
 	usenetsvc "novastream/services/usenet"
@@ -145,10 +146,7 @@ func safeURLForLog(rawURL string) string {
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return fmt.Sprintf("hash:%s", shortSHA256String(rawURL))
 	}
-	parsed.User = nil
-	parsed.RawQuery = ""
-	parsed.Fragment = ""
-	return fmt.Sprintf("%s hash:%s", parsed.String(), shortSHA256String(rawURL))
+	return fmt.Sprintf("%s hash:%s", requestsecurity.URLForLog(rawURL), shortSHA256String(rawURL))
 }
 
 // HealthCheckResult holds the result of a parallel health check for a single candidate

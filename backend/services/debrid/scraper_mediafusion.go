@@ -350,7 +350,7 @@ func (m *MediaFusionScraper) fetchStreams(ctx context.Context, mediaType, id str
 
 func (m *MediaFusionScraper) fetchAddonPayload(ctx context.Context, resource, mediaType, id string) (*mediafusionResponse, error) {
 	endpoint := fmt.Sprintf("%s/%s/%s/%s.json", m.baseURL, resource, mediaType, url.PathEscape(id))
-	log.Printf("[mediafusion] Fetching: %s", endpoint)
+	log.Printf("[mediafusion] Fetching: %s", safeURLForLog(endpoint))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {

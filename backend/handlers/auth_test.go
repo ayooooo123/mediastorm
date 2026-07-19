@@ -14,6 +14,8 @@ import (
 	"novastream/services/sessions"
 )
 
+const testMasterPassword = "secure-test-master-password"
+
 // fakeAccountsService implements a minimal accounts service for testing auth handlers.
 type fakeAccountsService struct {
 	authenticateAccount models.Account
@@ -76,6 +78,7 @@ func (f *fakeSessionsService) Refresh(token string) (models.Session, error) {
 // Helper to create accounts and sessions services and auth handler for testing.
 func setupAuthHandler(t *testing.T) (*handlers.AuthHandler, *accounts.Service, *sessions.Service) {
 	t.Helper()
+	t.Setenv("STRMR_INITIAL_ADMIN_PASSWORD", testMasterPassword)
 	tmpDir := t.TempDir()
 
 	accountsSvc, err := accounts.NewService(tmpDir)
@@ -97,11 +100,12 @@ func TestLogin_Success(t *testing.T) {
 
 	reqBody := handlers.LoginRequest{
 		Username: "admin",
-		Password: "admin", // Default master password
+		Password: testMasterPassword,
 	}
 	body, _ := json.Marshal(reqBody)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(body))
+	req.RemoteAddr = "127.0.0.1:4321"
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
@@ -127,6 +131,31 @@ func TestLogin_Success(t *testing.T) {
 	}
 	if !resp.IsMaster {
 		t.Error("expected IsMaster to be true")
+	}
+}
+
+func TestLogin_DefaultMasterPasswordRejectedRemotely(t *testing.T) {
+	t.Setenv("STRMR_INITIAL_ADMIN_PASSWORD", accounts.DefaultMasterPassword)
+	tmpDir := t.TempDir()
+	accountsSvc, err := accounts.NewService(tmpDir)
+	if err != nil {
+		t.Fatalf("accounts service: %v", err)
+	}
+	sessionsSvc, err := sessions.NewService(tmpDir, sessions.DefaultSessionDuration)
+	if err != nil {
+		t.Fatalf("sessions service: %v", err)
+	}
+	handler := handlers.NewAuthHandler(accountsSvc, sessionsSvc)
+	body, _ := json.Marshal(handlers.LoginRequest{Username: "admin", Password: accounts.DefaultMasterPassword})
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(body))
+	req.RemoteAddr = "192.0.2.10:4321"
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.Login(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusUnauthorized, rec.Body.String())
 	}
 }
 
@@ -169,7 +198,7 @@ func TestLogin_WithRememberMe(t *testing.T) {
 
 	reqBody := handlers.LoginRequest{
 		Username:   "admin",
-		Password:   "admin",
+		Password:   testMasterPassword,
 		RememberMe: true,
 	}
 	body, _ := json.Marshal(reqBody)
@@ -195,8 +224,8 @@ func TestLogin_WithRememberMe(t *testing.T) {
 		t.Fatalf("failed to parse expiry: %v", err)
 	}
 
-	// Persistent sessions should expire in ~100 years
-	if expiresAt.Before(time.Now().Add(50 * 365 * 24 * time.Hour)) {
+	// Persistent sessions should retain a useful but bounded multi-month lifetime.
+	if expiresAt.Before(time.Now().Add(60 * 24 * time.Hour)) {
 		t.Error("expected persistent session to have far future expiry")
 	}
 }
@@ -206,13 +235,14 @@ func TestLogin_CapturesMetadata(t *testing.T) {
 
 	reqBody := handlers.LoginRequest{
 		Username: "admin",
-		Password: "admin",
+		Password: testMasterPassword,
 	}
 	body, _ := json.Marshal(reqBody)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "TestBrowser/1.0")
+	req.RemoteAddr = "127.0.0.1:4321"
 	req.Header.Set("X-Forwarded-For", "192.168.1.100")
 	rec := httptest.NewRecorder()
 
@@ -387,9 +417,10 @@ func TestRefresh_Success(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	// Verify response contains expected fields
-	if resp.Token != session.Token {
-		t.Errorf("expected same token, got different")
+	// Refresh rotates the bearer credential so a captured old token cannot be
+	// reused for the remainder of its original lifetime.
+	if resp.Token == session.Token {
+		t.Error("expected refreshed session token to rotate")
 	}
 	if resp.AccountID != "master" {
 		t.Errorf("expected AccountID 'master', got %q", resp.AccountID)
@@ -433,7 +464,7 @@ func TestChangePassword_Success(t *testing.T) {
 	session, _ := sessionsSvc.Create("master", true, "", "")
 
 	reqBody := handlers.ChangePasswordRequest{
-		CurrentPassword: "admin",
+		CurrentPassword: testMasterPassword,
 		NewPassword:     "newpassword123",
 	}
 	body, _ := json.Marshal(reqBody)
@@ -456,7 +487,7 @@ func TestChangePassword_Success(t *testing.T) {
 	}
 
 	// Verify old password no longer works
-	_, err = accountsSvc.Authenticate("admin", "admin")
+	_, err = accountsSvc.Authenticate("admin", testMasterPassword)
 	if err == nil {
 		t.Error("expected old password to fail")
 	}
@@ -466,7 +497,7 @@ func TestChangePassword_NoToken(t *testing.T) {
 	handler, _, _ := setupAuthHandler(t)
 
 	reqBody := handlers.ChangePasswordRequest{
-		CurrentPassword: "admin",
+		CurrentPassword: testMasterPassword,
 		NewPassword:     "newpassword",
 	}
 	body, _ := json.Marshal(reqBody)
@@ -578,7 +609,7 @@ func TestGetClientIPAddress_XForwardedFor(t *testing.T) {
 
 	reqBody := handlers.LoginRequest{
 		Username: "admin",
-		Password: "admin",
+		Password: testMasterPassword,
 	}
 	body, _ := json.Marshal(reqBody)
 
@@ -597,11 +628,12 @@ func TestGetClientIPAddress_XRealIP(t *testing.T) {
 
 	reqBody := handlers.LoginRequest{
 		Username: "admin",
-		Password: "admin",
+		Password: testMasterPassword,
 	}
 	body, _ := json.Marshal(reqBody)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(body))
+	req.RemoteAddr = "127.0.0.1:4321"
 	req.Header.Set("X-Real-IP", "172.16.0.1")
 	rec := httptest.NewRecorder()
 
@@ -625,7 +657,7 @@ func TestGetClientIPAddress_RemoteAddr(t *testing.T) {
 
 	reqBody := handlers.LoginRequest{
 		Username: "admin",
-		Password: "admin",
+		Password: testMasterPassword,
 	}
 	body, _ := json.Marshal(reqBody)
 

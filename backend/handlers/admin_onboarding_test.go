@@ -60,6 +60,7 @@ func newAdminRequestWithSession(t *testing.T, sessionsSvc *sessions.Service, met
 }
 
 func TestAdminOnboardingStatus_DefaultNeedsOnboarding(t *testing.T) {
+	t.Setenv("STRMR_INITIAL_ADMIN_PASSWORD", accounts.DefaultMasterPassword)
 	h, sessionsSvc, _ := newAdminOnboardingTestHandler(t, nil)
 	req := newAdminRequestWithSession(t, sessionsSvc, http.MethodGet, "/admin/api/onboarding/status", true)
 	rr := httptest.NewRecorder()

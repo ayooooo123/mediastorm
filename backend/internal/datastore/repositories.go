@@ -38,6 +38,7 @@ type SessionRepository interface {
 	Update(ctx context.Context, sess *models.Session) error
 	Delete(ctx context.Context, token string) error
 	DeleteByAccount(ctx context.Context, accountID string) error
+	DeleteByAccountExcept(ctx context.Context, accountID, keepToken string) error
 	DeleteExpired(ctx context.Context) (int64, error)
 	Count(ctx context.Context) (int64, error)
 }

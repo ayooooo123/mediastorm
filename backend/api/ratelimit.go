@@ -3,9 +3,10 @@ package api
 import (
 	"encoding/json"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
+
+	"novastream/internal/requestsecurity"
 
 	"golang.org/x/time/rate"
 )
@@ -66,22 +67,9 @@ func (rl *IPRateLimiter) cleanup() {
 	}
 }
 
-// getClientIP extracts client IP from the request using the same logic as handlers/auth.go.
+// getClientIP only honors forwarding headers from explicitly trusted proxies.
 func getClientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if idx := strings.Index(xff, ","); idx != -1 {
-			return strings.TrimSpace(xff[:idx])
-		}
-		return strings.TrimSpace(xff)
-	}
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return strings.TrimSpace(xri)
-	}
-	addr := r.RemoteAddr
-	if idx := strings.LastIndex(addr, ":"); idx != -1 {
-		return addr[:idx]
-	}
-	return addr
+	return requestsecurity.ClientIP(r)
 }
 
 // RateLimitHandler wraps an http.Handler with per-IP rate limiting.

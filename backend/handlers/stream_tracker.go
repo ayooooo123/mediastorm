@@ -3,7 +3,6 @@ package handlers
 import (
 	"context"
 	"math"
-	"net"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -13,6 +12,7 @@ import (
 
 	"novastream/internal/auth"
 	"novastream/internal/mediaidentity"
+	"novastream/internal/requestsecurity"
 	"novastream/models"
 )
 
@@ -1019,30 +1019,7 @@ func generateStreamID(counter uint64) string {
 }
 
 func getClientIP(r *http.Request) string {
-	// Check X-Forwarded-For header first (for proxied requests)
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// Take the first IP in the chain
-		if idx := len(xff); idx > 0 {
-			for i, c := range xff {
-				if c == ',' {
-					return xff[:i]
-				}
-			}
-			return xff
-		}
-	}
-
-	// Check X-Real-IP header
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return xri
-	}
-
-	// Fall back to RemoteAddr
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
+	return requestsecurity.ClientIP(r)
 }
 
 // TrackingResponseWriter wraps http.ResponseWriter to track bytes written

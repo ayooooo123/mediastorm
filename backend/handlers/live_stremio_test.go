@@ -15,9 +15,18 @@ import (
 	"novastream/models"
 )
 
-func newStremioTestHandler() *LiveHandler {
+func newStremioTestHandler(t *testing.T, providerURL string) *LiveHandler {
+	t.Helper()
+	manager := config.NewManager(filepath.Join(t.TempDir(), "settings.json"))
+	settings := config.DefaultSettings()
+	settings.Live.Mode = "stremio"
+	settings.Live.ManifestURL = providerURL + "/manifest.json"
+	if err := manager.Save(settings); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
 	return &LiveHandler{
 		client:       &http.Client{},
+		cfgManager:   manager,
 		stremioCache: make(map[string]stremioChannelsCacheEntry),
 	}
 }
@@ -91,7 +100,7 @@ func TestFetchStremioChannels(t *testing.T) {
 	srv := stremioTestServer(t, nil)
 	defer srv.Close()
 
-	h := newStremioTestHandler()
+	h := newStremioTestHandler(t, srv.URL)
 	channels, err := h.fetchStremioChannels(context.Background(), srv.URL+"/manifest.json", "")
 	if err != nil {
 		t.Fatalf("fetchStremioChannels error: %v", err)
@@ -133,7 +142,7 @@ func TestFetchStremioChannelsCaches(t *testing.T) {
 	srv := stremioTestServer(t, &hits)
 	defer srv.Close()
 
-	h := newStremioTestHandler()
+	h := newStremioTestHandler(t, srv.URL)
 	for i := 0; i < 3; i++ {
 		if _, err := h.fetchStremioChannels(context.Background(), srv.URL+"/manifest.json", ""); err != nil {
 			t.Fatalf("call %d: %v", i, err)
@@ -213,7 +222,7 @@ func TestResolveStremioStream(t *testing.T) {
 	srv := stremioTestServer(t, nil)
 	defer srv.Close()
 
-	h := newStremioTestHandler()
+	h := newStremioTestHandler(t, srv.URL)
 	got, err := h.resolveStremioStream(context.Background(), srv.URL+"/stream/sport/sf:skyf1.json", "", -1)
 	if err != nil {
 		t.Fatalf("resolveStremioStream error: %v", err)
@@ -271,7 +280,7 @@ func TestGetStremioStreamOptions(t *testing.T) {
 	srv := stremioTestServer(t, nil)
 	defer srv.Close()
 
-	h := newStremioTestHandler()
+	h := newStremioTestHandler(t, srv.URL)
 	req := httptest.NewRequest(http.MethodGet, "/live/stremio/streams?url="+url.QueryEscape(srv.URL+"/stream/sport/sf:skyf1.json"), nil)
 	rec := httptest.NewRecorder()
 	h.GetStremioStreamOptions(rec, req)

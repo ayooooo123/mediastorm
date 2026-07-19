@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,7 +13,6 @@ import (
 	"image/png"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -22,12 +22,17 @@ import (
 	"sync"
 	"time"
 
+	"novastream/internal/requestsecurity"
+
 	"golang.org/x/image/draw"
 )
 
 const (
 	imageProxyDefaultQuality = 80
 	imageProxyMaxWidth       = 3840
+	imageProxyMaxBytes       = 20 << 20
+	imageProxyMaxDimension   = 8192
+	imageProxyMaxPixels      = 40_000_000
 )
 
 type imageWarmRequest struct {
@@ -72,10 +77,8 @@ func NewImageHandler(cacheDir string) *ImageHandler {
 	}
 
 	return &ImageHandler{
-		cacheDir: imgCacheDir,
-		httpc: &http.Client{
-			Timeout: 30 * time.Second,
-		},
+		cacheDir:   imgCacheDir,
+		httpc:      requestsecurity.NewSafeHTTPClient(30*time.Second, 5, nil),
 		inProgress: make(map[string]chan struct{}),
 	}
 }
@@ -167,14 +170,26 @@ func validateExternalGIFURL(sourceURL string) error {
 	if host == "" || strings.EqualFold(host, "localhost") {
 		return fmt.Errorf("URL host not allowed")
 	}
-	ips, err := net.LookupIP(host)
+	return requestsecurity.ValidateOutboundURL(context.Background(), sourceURL, nil)
+}
+
+func readBoundedImage(body io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(body, imageProxyMaxBytes+1))
 	if err != nil {
-		return fmt.Errorf("URL host lookup failed")
+		return nil, err
 	}
-	for _, ip := range ips {
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
-			return fmt.Errorf("URL host not allowed")
-		}
+	if len(data) > imageProxyMaxBytes {
+		return nil, fmt.Errorf("image exceeds size limit")
+	}
+	return data, nil
+}
+
+func validateImageDimensions(config image.Config) error {
+	if config.Width <= 0 || config.Height <= 0 || config.Width > imageProxyMaxDimension || config.Height > imageProxyMaxDimension {
+		return fmt.Errorf("image dimensions exceed limit")
+	}
+	if int64(config.Width)*int64(config.Height) > imageProxyMaxPixels {
+		return fmt.Errorf("image pixel count exceeds limit")
 	}
 	return nil
 }
@@ -230,27 +245,38 @@ func (h *ImageHandler) ensureCached(sourceURL string, targetWidth, quality int) 
 		if len(via) >= 5 {
 			return http.ErrUseLastResponse
 		}
-		if err := validateExternalGIFURL(req.URL.String()); err != nil {
+		if err := validateProxyImageURL(req.URL.String()); err != nil {
 			return err
 		}
-		return nil
+		return requestsecurity.ValidateOutboundURL(req.Context(), req.URL.String(), nil)
 	}
 	resp, err := client.Get(sourceURL)
 	if err != nil {
-		log.Printf("[ImageProxy] Fetch error for %s: %v", sourceURL, err)
+		log.Printf("[ImageProxy] Fetch error for %s: %v", requestsecurity.URLForLog(sourceURL), err)
 		return cachePath, nil, false, fmt.Errorf("failed to fetch image")
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		log.Printf("[ImageProxy] Fetch returned %d for %s", resp.StatusCode, sourceURL)
+		log.Printf("[ImageProxy] Fetch returned %d for %s", resp.StatusCode, requestsecurity.URLForLog(sourceURL))
 		return cachePath, nil, false, fmt.Errorf("image source error")
 	}
 
 	// Decode the image
-	img, _, err := image.Decode(resp.Body)
+	imageData, err := readBoundedImage(resp.Body)
 	if err != nil {
-		log.Printf("[ImageProxy] Decode error for %s: %v", sourceURL, err)
+		return cachePath, nil, false, err
+	}
+	imageConfig, _, err := image.DecodeConfig(bytes.NewReader(imageData))
+	if err != nil {
+		return cachePath, nil, false, fmt.Errorf("failed to decode image")
+	}
+	if err := validateImageDimensions(imageConfig); err != nil {
+		return cachePath, nil, false, err
+	}
+	img, _, err := image.Decode(bytes.NewReader(imageData))
+	if err != nil {
+		log.Printf("[ImageProxy] Decode error for %s: %v", requestsecurity.URLForLog(sourceURL), err)
 		return cachePath, nil, false, fmt.Errorf("failed to decode image")
 	}
 
@@ -365,20 +391,41 @@ func (h *ImageHandler) ensureGIFFirstFrameCached(sourceURL string) (string, []by
 		h.mu.Unlock()
 	}()
 
-	resp, err := h.httpc.Get(sourceURL)
+	client := *h.httpc
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return http.ErrUseLastResponse
+		}
+		if err := validateExternalGIFURL(req.URL.String()); err != nil {
+			return err
+		}
+		return requestsecurity.ValidateOutboundURL(req.Context(), req.URL.String(), nil)
+	}
+	resp, err := client.Get(sourceURL)
 	if err != nil {
-		log.Printf("[ImageProxy] GIF first-frame fetch error for %s: %v", sourceURL, err)
+		log.Printf("[ImageProxy] GIF first-frame fetch error for %s: %v", requestsecurity.URLForLog(sourceURL), err)
 		return cachePath, nil, false, fmt.Errorf("failed to fetch image")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		log.Printf("[ImageProxy] GIF first-frame fetch returned %d for %s", resp.StatusCode, sourceURL)
+		log.Printf("[ImageProxy] GIF first-frame fetch returned %d for %s", resp.StatusCode, requestsecurity.URLForLog(sourceURL))
 		return cachePath, nil, false, fmt.Errorf("image source error")
 	}
 
-	firstFrame, err := gif.Decode(resp.Body)
+	gifData, err := readBoundedImage(resp.Body)
 	if err != nil {
-		log.Printf("[ImageProxy] GIF first-frame decode error for %s: %v", sourceURL, err)
+		return cachePath, nil, false, err
+	}
+	gifConfig, err := gif.DecodeConfig(bytes.NewReader(gifData))
+	if err != nil {
+		return cachePath, nil, false, fmt.Errorf("failed to decode GIF")
+	}
+	if err := validateImageDimensions(gifConfig); err != nil {
+		return cachePath, nil, false, err
+	}
+	firstFrame, err := gif.Decode(bytes.NewReader(gifData))
+	if err != nil {
+		log.Printf("[ImageProxy] GIF first-frame decode error for %s: %v", requestsecurity.URLForLog(sourceURL), err)
 		return cachePath, nil, false, fmt.Errorf("failed to decode GIF")
 	}
 

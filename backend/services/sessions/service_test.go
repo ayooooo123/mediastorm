@@ -3,6 +3,8 @@ package sessions
 import (
 	"testing"
 	"time"
+
+	"novastream/models"
 )
 
 // setupTestService creates a new sessions service for testing with a temp directory.
@@ -321,6 +323,23 @@ func TestRefresh_ExtendsExpiry(t *testing.T) {
 
 	if !refreshed.ExpiresAt.After(originalExpiry) {
 		t.Errorf("expected new expiry %v to be after original %v", refreshed.ExpiresAt, originalExpiry)
+	}
+	if refreshed.Token == session.Token {
+		t.Error("expected refresh to rotate the session token")
+	}
+	if _, err := svc.Validate(session.Token); err != ErrSessionNotFound {
+		t.Fatalf("old token remained valid after refresh: %v", err)
+	}
+}
+
+func TestRefresh_RejectsScopedSession(t *testing.T) {
+	svc := setupTestService(t)
+	session, err := svc.CreateScoped("account-123", false, "", "", time.Hour, models.SessionScopeStream)
+	if err != nil {
+		t.Fatalf("CreateScoped failed: %v", err)
+	}
+	if _, err := svc.Refresh(session.Token); err != ErrRefreshNotAllowed {
+		t.Fatalf("Refresh scoped session error = %v, want %v", err, ErrRefreshNotAllowed)
 	}
 }
 

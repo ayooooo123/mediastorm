@@ -24,6 +24,7 @@ import (
 
 	"novastream/config"
 	"novastream/internal/netproxy"
+	"novastream/internal/requestsecurity"
 	"novastream/models"
 )
 
@@ -197,9 +198,9 @@ type LiveHandler struct {
 // defaults will be created. cacheTTLHours specifies how long to cache playlists.
 func NewLiveHandler(client *http.Client, transmuxEnabled bool, ffmpegPath string, cacheTTLHours int, probeSizeMB int, analyzeDurationSec int, lowLatency bool, cfgManager *config.Manager, userSettingsSvc LiveUserSettingsProvider) *LiveHandler {
 	if client == nil {
-		client = &http.Client{
-			Timeout: defaultPlaylistTimeout,
-		}
+		client = requestsecurity.NewSafeHTTPClient(defaultPlaylistTimeout, 10, configuredLiveHostPolicy(cfgManager))
+	} else {
+		client = secureLiveRedirects(client, configuredLiveHostPolicy(cfgManager))
 	}
 
 	// Ensure cache directory exists
@@ -230,7 +231,7 @@ func NewLiveHandler(client *http.Client, transmuxEnabled bool, ffmpegPath string
 }
 
 func (h *LiveHandler) FetchPlaylist(w http.ResponseWriter, r *http.Request) {
-	targetURL, err := h.parseRemoteURL(r.URL.Query().Get("url"))
+	targetURL, err := h.parseRemoteURL(r.Context(), r.URL.Query().Get("url"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -313,7 +314,7 @@ func (h *LiveHandler) StreamChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	targetURL, err := h.parseRemoteURL(r.URL.Query().Get("url"))
+	targetURL, err := h.parseRemoteURL(r.Context(), r.URL.Query().Get("url"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -336,7 +337,7 @@ func (h *LiveHandler) StreamChannel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		stremioRequestHeaders = resolved.RequestHeaders
-		targetURL, err = h.parseRemoteURL(resolved.URL)
+		targetURL, err = h.parseRemoteURL(ctx, resolved.URL)
 		if err != nil {
 			log.Printf("[live] resolved stremio stream is invalid %q: %v", resolved.URL, err)
 			http.Error(w, "live stream unavailable", http.StatusBadGateway)
@@ -638,7 +639,7 @@ func liveSourceMatchesStreamHost(source resolvedM3USource, targetHost string) bo
 	return false
 }
 
-func (h *LiveHandler) parseRemoteURL(raw string) (*url.URL, error) {
+func (h *LiveHandler) parseRemoteURL(ctx context.Context, raw string) (*url.URL, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return nil, errors.New("missing url query parameter")
@@ -653,6 +654,9 @@ func (h *LiveHandler) parseRemoteURL(raw string) (*url.URL, error) {
 	case "http", "https":
 	default:
 		return nil, fmt.Errorf("unsupported url scheme %q", parsed.Scheme)
+	}
+	if err := requestsecurity.ValidateOutboundURL(ctx, parsed.String(), configuredLiveHostPolicy(h.cfgManager)); err != nil {
+		return nil, errors.New("remote URL is not allowed")
 	}
 
 	return parsed, nil
@@ -1142,7 +1146,7 @@ func (h *LiveHandler) fetchPlaylistContents(ctx context.Context, playlistURL, pr
 		return "", errors.New("no playlist URL configured")
 	}
 
-	targetURL, err := h.parseRemoteURL(playlistURL)
+	targetURL, err := h.parseRemoteURL(ctx, playlistURL)
 	if err != nil {
 		return "", err
 	}
@@ -1202,7 +1206,7 @@ func (h *LiveHandler) fetchM3UCategories(ctx context.Context, playlistURL, proxy
 		return nil, errors.New("no playlist URL configured")
 	}
 
-	targetURL, err := h.parseRemoteURL(playlistURL)
+	targetURL, err := h.parseRemoteURL(ctx, playlistURL)
 	if err != nil {
 		return nil, err
 	}
@@ -1277,7 +1281,7 @@ func (h *LiveHandler) liveHTTPClient(proxyURL string) *http.Client {
 		log.Printf("[live] invalid proxy URL %q: %v", proxyURL, err)
 		return h.client
 	}
-	return client
+	return secureLiveRedirects(client, configuredLiveHostPolicy(h.cfgManager))
 }
 
 func (h *LiveHandler) livePlaylistScanHTTPClient(proxyURL string) *http.Client {
@@ -1290,7 +1294,7 @@ func (h *LiveHandler) livePlaylistScanHTTPClient(proxyURL string) *http.Client {
 			ResponseHeaderTimeout: defaultPlaylistTimeout,
 		}, "")
 	}
-	return client
+	return secureLiveRedirects(client, configuredLiveHostPolicy(h.cfgManager))
 }
 
 func (h *LiveHandler) liveStreamHTTPClient(proxyURL string) *http.Client {
@@ -1303,7 +1307,35 @@ func (h *LiveHandler) liveStreamHTTPClient(proxyURL string) *http.Client {
 			ResponseHeaderTimeout: defaultStreamOpenTimeout,
 		}, "")
 	}
-	return client
+	return secureLiveRedirects(client, configuredLiveHostPolicy(h.cfgManager))
+}
+
+func configuredLiveHostPolicy(manager *config.Manager) requestsecurity.RestrictedHostPolicy {
+	if manager == nil {
+		return nil
+	}
+	return configuredProviderHostPolicy(manager)
+}
+
+func secureLiveRedirects(client *http.Client, policy requestsecurity.RestrictedHostPolicy) *http.Client {
+	if client == nil {
+		return requestsecurity.NewSafeHTTPClient(defaultPlaylistTimeout, 10, policy)
+	}
+	copyClient := *client
+	previous := copyClient.CheckRedirect
+	copyClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return errors.New("too many redirects")
+		}
+		if err := requestsecurity.ValidateOutboundURL(req.Context(), req.URL.String(), policy); err != nil {
+			return err
+		}
+		if previous != nil {
+			return previous(req, via)
+		}
+		return nil
+	}
+	return &copyClient
 }
 
 // WarmPlaylistCache fetches configured Live TV sources so later category/channel

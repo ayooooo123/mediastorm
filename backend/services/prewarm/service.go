@@ -77,6 +77,7 @@ const prewarmNoResultsCurrentYearRetryDelay = time.Hour
 const prewarmStableReResolveDefaultDays = 7
 const prewarmStableReResolveMinDays = 1
 const prewarmStableReResolveMaxDays = 30
+const prewarmRenewalLead = 8 * time.Minute
 
 // Service manages pre-warming of continue watching items
 type Service struct {
@@ -1099,14 +1100,15 @@ func (s *Service) prequeueExpiry(lastResolve time.Time, entry *playback.Prequeue
 	return lastResolve.Add(ttl)
 }
 
-// reResolveExpired re-resolves prequeue entries whose dynamic TTL has expired.
+// reResolveExpired renews prequeue entries shortly before their dynamic TTL
+// expires so cleanup cannot create a cold interval between scheduler cycles.
 // Returns the number of entries re-resolved.
 func (s *Service) reResolveExpired(ctx context.Context) int {
 	if s.prequeueStore == nil || s.workerFn == nil {
 		return 0
 	}
 
-	expired := s.prequeueStore.ListExpired()
+	expired := s.prequeueStore.ListExpiringBefore(time.Now().Add(prewarmRenewalLead))
 	if len(expired) == 0 {
 		return 0
 	}

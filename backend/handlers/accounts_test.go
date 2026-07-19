@@ -608,6 +608,7 @@ func TestAccountsReassignProfile_ProfileNotFound(t *testing.T) {
 }
 
 func TestHasDefaultPassword_True(t *testing.T) {
+	t.Setenv("STRMR_INITIAL_ADMIN_PASSWORD", accounts.DefaultMasterPassword)
 	handler, _, _, _ := setupAccountsHandler(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/auth/default-password", nil)

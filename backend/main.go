@@ -316,7 +316,7 @@ func main() {
 			if err := cfgManager.Save(settings); err != nil {
 				log.Printf("warning: failed to save WebDAV password: %v", err)
 			}
-			fmt.Printf("🔐 WebDAV credentials: %s / %s\n", settings.WebDAV.Username, settings.WebDAV.Password)
+			fmt.Println("🔐 Generated WebDAV credentials and saved them to protected application settings")
 		}
 
 		webdavConfig := &webdav.Config{
@@ -347,7 +347,7 @@ func main() {
 		if err := cfgManager.Save(settings); err != nil {
 			log.Printf("warning: failed to save Homepage API key: %v", err)
 		}
-		fmt.Printf("🔐 Homepage API key: %s\n", settings.Server.HomepageAPIKey)
+		fmt.Println("🔐 Generated Homepage API key and saved it to protected application settings")
 	}
 
 	badStreamsService := badstreams.New(filepath.Join(settings.Cache.Directory, "bad_streams.json"))
@@ -371,6 +371,14 @@ func main() {
 	}
 	if err != nil {
 		log.Fatalf("failed to initialise accounts: %v", err)
+	}
+	if initialPassword := accountsService.InitialMasterPassword(); initialPassword != "" {
+		credentialPath := filepath.Join(settings.Cache.Directory, "initial_admin_password")
+		if err := os.WriteFile(credentialPath, []byte(initialPassword+"\n"), 0o600); err != nil {
+			log.Fatalf("failed to write initial admin credential: %v", err)
+		}
+		accountsService.SetBootstrapCredentialPath(credentialPath)
+		fmt.Printf("🔐 Initial admin password written to %s (removed after password change)\n", credentialPath)
 	}
 
 	var userService *users.Service
@@ -515,7 +523,7 @@ func main() {
 		log.Fatalf("failed to initialise client settings: %v", err)
 	}
 	clearLegacyAppearanceOverridesOnce(settings.Cache.Directory, userSettingsService, clientSettingsService)
-	clientsHandler := handlers.NewClientsHandler(clientsService, clientSettingsService)
+	clientsHandler := handlers.NewClientsHandler(clientsService, clientSettingsService, userService)
 
 	// Wire up user settings to services for per-user settings
 	debridSearchService.SetUserSettingsProvider(userSettingsService)
@@ -650,6 +658,7 @@ func main() {
 	// Video prober and HLS creator are optional - we'll set them after videoHandler is created
 	prequeueHandler = handlers.NewPrequeueHandler(indexerService, playbackService, historyService, nil, nil, *demoMode)
 	prequeueHandler.SetBadStreamsService(badStreamsService)
+	prequeueHandler.SetUsersService(userService)
 	if store != nil {
 		prequeueHandler.GetStore().SetDataStore(store)
 	}
@@ -691,7 +700,7 @@ func main() {
 			// when the upstream addon refreshes. Probe the URL so an expired link is
 			// detected and the ready entry is dropped, forcing a fresh re-search
 			// instead of serving a dead "404 - Link expired" link.
-			return handlers.DefaultExternalURLValidator(ctx, cleanPath)
+			return prequeueHandler.ValidateExternalURL(ctx, cleanPath)
 		}
 		if strings.HasPrefix(cleanPath, "/webdav/") {
 			cleanPath = strings.TrimPrefix(cleanPath, "/webdav")

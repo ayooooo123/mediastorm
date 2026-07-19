@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"novastream/internal/auth"
 	"novastream/models"
 	"novastream/services/client_settings"
 	"novastream/services/clients"
@@ -33,6 +34,10 @@ type clientSettingsService interface {
 	Delete(clientID string) error
 }
 
+type clientOwnershipService interface {
+	BelongsToAccount(profileID, accountID string) bool
+}
+
 var _ clientsService = (*clients.Service)(nil)
 var _ clientSettingsService = (*client_settings.Service)(nil)
 
@@ -54,6 +59,7 @@ type pendingClientMessage struct {
 type ClientsHandler struct {
 	clients         clientsService
 	settings        clientSettingsService
+	users           clientOwnershipService
 	pendingPings    map[string]pendingPing
 	pendingMessages []pendingClientMessage
 	pingMu          sync.RWMutex
@@ -64,13 +70,38 @@ const pingExpiry = 30 * time.Second // Pings expire after 30 seconds
 const clientMessageExpiry = 24 * time.Hour
 const clientMessageMaxLength = 1000
 
-func NewClientsHandler(clientsSvc clientsService, settingsSvc clientSettingsService) *ClientsHandler {
-	return &ClientsHandler{
+func NewClientsHandler(clientsSvc clientsService, settingsSvc clientSettingsService, usersSvc ...clientOwnershipService) *ClientsHandler {
+	h := &ClientsHandler{
 		clients:         clientsSvc,
 		settings:        settingsSvc,
 		pendingPings:    make(map[string]pendingPing),
 		pendingMessages: make([]pendingClientMessage, 0),
 	}
+	if len(usersSvc) > 0 {
+		h.users = usersSvc[0]
+	}
+	return h
+}
+
+func (h *ClientsHandler) canAccessProfile(r *http.Request, profileID string) bool {
+	if auth.IsMaster(r) {
+		return true
+	}
+	accountID := auth.GetAccountID(r)
+	return accountID != "" && h.users != nil && h.users.BelongsToAccount(profileID, accountID)
+}
+
+func (h *ClientsHandler) getAuthorizedClient(w http.ResponseWriter, r *http.Request, clientID string) (*models.Client, bool) {
+	client, err := h.clients.Get(clientID)
+	if err != nil {
+		writeJSONError(w, err.Error(), http.StatusInternalServerError)
+		return nil, false
+	}
+	if client == nil || !h.canAccessProfile(r, client.UserID) {
+		writeJSONError(w, "client not found", http.StatusNotFound)
+		return nil, false
+	}
+	return client, true
 }
 
 // ClientRegistrationRequest is the request body for registering a client
@@ -94,6 +125,17 @@ func (h *ClientsHandler) Register(w http.ResponseWriter, r *http.Request) {
 
 	if req.ID == "" {
 		writeJSONError(w, "client id is required", http.StatusBadRequest)
+		return
+	}
+	if !h.canAccessProfile(r, req.UserID) {
+		writeJSONError(w, "user not found", http.StatusNotFound)
+		return
+	}
+	if existing, err := h.clients.Get(req.ID); err != nil {
+		writeJSONError(w, err.Error(), http.StatusInternalServerError)
+		return
+	} else if existing != nil && !h.canAccessProfile(r, existing.UserID) {
+		writeJSONError(w, "client not found", http.StatusNotFound)
 		return
 	}
 
@@ -124,16 +166,24 @@ type ClientWithOverrides struct {
 func (h *ClientsHandler) List(w http.ResponseWriter, r *http.Request) {
 	userID := r.URL.Query().Get("userId")
 
-	var clients []models.Client
+	var clientList []models.Client
 	if userID != "" {
-		clients = h.clients.ListByUser(userID)
+		if !h.canAccessProfile(r, userID) {
+			writeJSONError(w, "user not found", http.StatusNotFound)
+			return
+		}
+		clientList = h.clients.ListByUser(userID)
 	} else {
-		clients = h.clients.List()
+		for _, client := range h.clients.List() {
+			if h.canAccessProfile(r, client.UserID) {
+				clientList = append(clientList, client)
+			}
+		}
 	}
 
 	// Enrich with override information
-	result := make([]ClientWithOverrides, len(clients))
-	for i, c := range clients {
+	result := make([]ClientWithOverrides, len(clientList))
+	for i, c := range clientList {
 		hasOverrides := false
 		if settings, err := h.settings.Get(c.ID); err == nil && settings != nil {
 			hasOverrides = !settings.IsEmpty()
@@ -157,13 +207,8 @@ func (h *ClientsHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client, err := h.clients.Get(clientID)
-	if err != nil {
-		writeJSONError(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if client == nil {
-		writeJSONError(w, "client not found", http.StatusNotFound)
+	client, ok := h.getAuthorizedClient(w, r, clientID)
+	if !ok {
 		return
 	}
 
@@ -194,13 +239,8 @@ func (h *ClientsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get current client
-	client, err := h.clients.Get(clientID)
-	if err != nil {
-		writeJSONError(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if client == nil {
-		writeJSONError(w, "client not found", http.StatusNotFound)
+	client, ok := h.getAuthorizedClient(w, r, clientID)
+	if !ok {
 		return
 	}
 
@@ -235,6 +275,9 @@ func (h *ClientsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "client id is required", http.StatusBadRequest)
 		return
 	}
+	if _, ok := h.getAuthorizedClient(w, r, clientID); !ok {
+		return
+	}
 
 	// Also delete client settings
 	if err := h.settings.Delete(clientID); err != nil {
@@ -264,13 +307,7 @@ func (h *ClientsHandler) GetSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify client exists
-	client, err := h.clients.Get(clientID)
-	if err != nil {
-		writeJSONError(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if client == nil {
-		writeJSONError(w, "client not found", http.StatusNotFound)
+	if _, ok := h.getAuthorizedClient(w, r, clientID); !ok {
 		return
 	}
 
@@ -299,13 +336,7 @@ func (h *ClientsHandler) UpdateSettings(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Verify client exists
-	client, err := h.clients.Get(clientID)
-	if err != nil {
-		writeJSONError(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if client == nil {
-		writeJSONError(w, "client not found", http.StatusNotFound)
+	if _, ok := h.getAuthorizedClient(w, r, clientID); !ok {
 		return
 	}
 
@@ -335,13 +366,7 @@ func (h *ClientsHandler) ResetSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify client exists
-	client, err := h.clients.Get(clientID)
-	if err != nil {
-		writeJSONError(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if client == nil {
-		writeJSONError(w, "client not found", http.StatusNotFound)
+	if _, ok := h.getAuthorizedClient(w, r, clientID); !ok {
 		return
 	}
 
@@ -368,13 +393,7 @@ func (h *ClientsHandler) Ping(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify client exists
-	client, err := h.clients.Get(clientID)
-	if err != nil {
-		writeJSONError(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if client == nil {
-		writeJSONError(w, "client not found", http.StatusNotFound)
+	if _, ok := h.getAuthorizedClient(w, r, clientID); !ok {
 		return
 	}
 
@@ -399,6 +418,9 @@ func (h *ClientsHandler) CheckPing(w http.ResponseWriter, r *http.Request) {
 	clientID := strings.TrimSpace(vars["clientID"])
 	if clientID == "" {
 		writeJSONError(w, "client id is required", http.StatusBadRequest)
+		return
+	}
+	if _, ok := h.getAuthorizedClient(w, r, clientID); !ok {
 		return
 	}
 
@@ -501,6 +523,14 @@ func (h *ClientsHandler) CheckMessages(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "profileId is required", http.StatusBadRequest)
 		return
 	}
+	client, ok := h.getAuthorizedClient(w, r, clientID)
+	if !ok {
+		return
+	}
+	if client.UserID != profileID || !h.canAccessProfile(r, profileID) {
+		writeJSONError(w, "client not found", http.StatusNotFound)
+		return
+	}
 
 	now := time.Now().UTC()
 	messages := make([]ClientMessageResponse, 0)
@@ -590,6 +620,13 @@ func (h *ClientsHandler) Reassign(w http.ResponseWriter, r *http.Request) {
 
 	if strings.TrimSpace(req.UserID) == "" {
 		writeJSONError(w, "userId is required", http.StatusBadRequest)
+		return
+	}
+	if _, ok := h.getAuthorizedClient(w, r, clientID); !ok {
+		return
+	}
+	if !h.canAccessProfile(r, req.UserID) {
+		writeJSONError(w, "user not found", http.StatusNotFound)
 		return
 	}
 

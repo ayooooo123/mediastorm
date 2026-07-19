@@ -108,6 +108,14 @@ func (r *pgSessionRepo) DeleteByAccount(ctx context.Context, accountID string) e
 	return nil
 }
 
+func (r *pgSessionRepo) DeleteByAccountExcept(ctx context.Context, accountID, keepToken string) error {
+	_, err := r.pool.Exec(ctx, `DELETE FROM sessions WHERE account_id = $1 AND token <> $2`, accountID, keepToken)
+	if err != nil {
+		return fmt.Errorf("delete other account sessions: %w", err)
+	}
+	return nil
+}
+
 func (r *pgSessionRepo) DeleteExpired(ctx context.Context) (int64, error) {
 	tag, err := r.pool.Exec(ctx, `DELETE FROM sessions WHERE expires_at < $1`, time.Now())
 	if err != nil {

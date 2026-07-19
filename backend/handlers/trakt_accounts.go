@@ -11,6 +11,8 @@ import (
 	"github.com/gorilla/mux"
 
 	"novastream/config"
+	"novastream/internal/auth"
+	"novastream/models"
 	"novastream/services/accounts"
 	"novastream/services/trakt"
 	"novastream/services/users"
@@ -22,6 +24,32 @@ type TraktAccountsHandler struct {
 	traktClient     *trakt.Client
 	usersService    *users.Service
 	accountsService *accounts.Service
+}
+
+func traktRequestSession(r *http.Request) *models.Session {
+	if session := adminSessionFromContext(r.Context()); session != nil {
+		return session
+	}
+	if session, ok := auth.GetSession(r); ok {
+		return &session
+	}
+	return nil
+}
+
+func canAccessTraktAccount(r *http.Request, account *config.TraktAccount) bool {
+	if account == nil {
+		return false
+	}
+	session := traktRequestSession(r)
+	return session != nil && (session.IsMaster || (account.OwnerAccountID != "" && account.OwnerAccountID == session.AccountID))
+}
+
+func requireTraktAccountAccess(w http.ResponseWriter, r *http.Request, account *config.TraktAccount) bool {
+	if canAccessTraktAccount(r, account) {
+		return true
+	}
+	jsonError(w, "Account not found", http.StatusNotFound)
+	return false
 }
 
 // NewTraktAccountsHandler creates a new Trakt accounts handler.
@@ -57,7 +85,7 @@ func (h *TraktAccountsHandler) ListAccounts(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Check if the logged-in user is a master account
-	session := adminSessionFromContext(r.Context())
+	session := traktRequestSession(r)
 	var isMaster bool
 	var sessionAccountID string
 	if session != nil {
@@ -128,7 +156,7 @@ func (h *TraktAccountsHandler) CreateAccount(w http.ResponseWriter, r *http.Requ
 	}
 
 	// Get session to determine owner
-	session := adminSessionFromContext(r.Context())
+	session := traktRequestSession(r)
 	var ownerAccountID string
 	if session != nil && !session.IsMaster {
 		// Non-master accounts own their created Trakt accounts
@@ -180,6 +208,9 @@ func (h *TraktAccountsHandler) GetAccount(w http.ResponseWriter, r *http.Request
 	account := settings.Trakt.GetAccountByID(accountID)
 	if account == nil {
 		jsonError(w, "Account not found", http.StatusNotFound)
+		return
+	}
+	if !requireTraktAccountAccess(w, r, account) {
 		return
 	}
 
@@ -234,6 +265,9 @@ func (h *TraktAccountsHandler) UpdateAccount(w http.ResponseWriter, r *http.Requ
 		jsonError(w, "Account not found", http.StatusNotFound)
 		return
 	}
+	if !requireTraktAccountAccess(w, r, account) {
+		return
+	}
 
 	if req.Name != nil {
 		account.Name = strings.TrimSpace(*req.Name)
@@ -276,6 +310,10 @@ func (h *TraktAccountsHandler) DeleteAccount(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	account := settings.Trakt.GetAccountByID(accountID)
+	if account == nil || !requireTraktAccountAccess(w, r, account) {
+		return
+	}
 	if !settings.Trakt.RemoveAccount(accountID) {
 		jsonError(w, "Account not found", http.StatusNotFound)
 		return
@@ -318,6 +356,9 @@ func (h *TraktAccountsHandler) StartAuth(w http.ResponseWriter, r *http.Request)
 	account := settings.Trakt.GetAccountByID(accountID)
 	if account == nil {
 		jsonError(w, "Account not found", http.StatusNotFound)
+		return
+	}
+	if !requireTraktAccountAccess(w, r, account) {
 		return
 	}
 
@@ -365,6 +406,9 @@ func (h *TraktAccountsHandler) CheckAuth(w http.ResponseWriter, r *http.Request)
 	account := settings.Trakt.GetAccountByID(accountID)
 	if account == nil {
 		jsonError(w, "Account not found", http.StatusNotFound)
+		return
+	}
+	if !requireTraktAccountAccess(w, r, account) {
 		return
 	}
 
@@ -434,6 +478,9 @@ func (h *TraktAccountsHandler) Disconnect(w http.ResponseWriter, r *http.Request
 		jsonError(w, "Account not found", http.StatusNotFound)
 		return
 	}
+	if !requireTraktAccountAccess(w, r, account) {
+		return
+	}
 
 	account.AccessToken = ""
 	account.RefreshToken = ""
@@ -482,6 +529,9 @@ func (h *TraktAccountsHandler) SetScrobbling(w http.ResponseWriter, r *http.Requ
 		jsonError(w, "Account not found", http.StatusNotFound)
 		return
 	}
+	if !requireTraktAccountAccess(w, r, account) {
+		return
+	}
 
 	account.ScrobblingEnabled = req.Enabled
 	settings.Trakt.UpdateAccount(*account)
@@ -516,6 +566,9 @@ func (h *TraktAccountsHandler) GetWatchlist(w http.ResponseWriter, r *http.Reque
 	account := settings.Trakt.GetAccountByID(accountID)
 	if account == nil {
 		jsonError(w, "Account not found", http.StatusNotFound)
+		return
+	}
+	if !requireTraktAccountAccess(w, r, account) {
 		return
 	}
 
@@ -584,6 +637,9 @@ func (h *TraktAccountsHandler) GetHistory(w http.ResponseWriter, r *http.Request
 	account := settings.Trakt.GetAccountByID(accountID)
 	if account == nil {
 		jsonError(w, "Account not found", http.StatusNotFound)
+		return
+	}
+	if !requireTraktAccountAccess(w, r, account) {
 		return
 	}
 
@@ -703,6 +759,9 @@ func (h *TraktAccountsHandler) GetLists(w http.ResponseWriter, r *http.Request) 
 	account := settings.Trakt.GetAccountByID(accountID)
 	if account == nil {
 		jsonError(w, "Account not found", http.StatusNotFound)
+		return
+	}
+	if !requireTraktAccountAccess(w, r, account) {
 		return
 	}
 

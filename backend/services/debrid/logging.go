@@ -1,8 +1,9 @@
 package debrid
 
 import (
-	"net/url"
 	"strings"
+
+	"novastream/internal/requestsecurity"
 )
 
 func safeURLForLog(rawURL string) string {
@@ -19,15 +20,5 @@ func safeURLForLog(rawURL string) string {
 		}
 		return rawURL
 	}
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		return "[redacted-url]"
-	}
-	if parsed.Scheme == "" || parsed.Host == "" {
-		return rawURL
-	}
-	parsed.User = nil
-	parsed.RawQuery = ""
-	parsed.Fragment = ""
-	return parsed.String()
+	return requestsecurity.URLForLog(rawURL)
 }

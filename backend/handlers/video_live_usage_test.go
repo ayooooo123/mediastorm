@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -9,6 +11,7 @@ import (
 	"testing"
 
 	"novastream/config"
+	"novastream/internal/auth"
 	"novastream/internal/liveusage"
 	"novastream/models"
 )
@@ -154,11 +157,12 @@ func TestStartLiveHLSSessionDirectIncludesProfileParams(t *testing.T) {
 	})
 	handler.SetUsersService(fakeLiveUsageUsersProvider{
 		users: map[string]models.User{
-			"profile-1": {ID: "profile-1", Name: "Living Room"},
+			"profile-1": {ID: "profile-1", Name: "Living Room", AccountID: "account-1"},
 		},
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/live/hls/start?url=http%3A%2F%2Fexample.com%2Fchannel.ts&profileId=profile-1&target=app&mediaType=channel&itemId=tvg-1&title=Evening%20News", nil)
+	req = req.WithContext(context.WithValue(req.Context(), auth.ContextKeyAccountID, "account-1"))
 	rec := httptest.NewRecorder()
 
 	handler.StartLiveHLSSession(rec, req)
@@ -246,13 +250,29 @@ func TestStartLiveHLSSessionDirectForcesHLSWhenRequested(t *testing.T) {
 	}
 }
 
+func TestStartLiveHLSSessionRejectsUnconfiguredPrivateURL(t *testing.T) {
+	handler := NewVideoHandlerWithProvider(true, "/usr/bin/true", "/usr/bin/true", t.TempDir(), nil)
+	handler.SetConfigManager(fakeLiveUsageConfigProvider{settings: config.Settings{
+		Live: config.LiveSettings{Mode: "m3u", PlaylistURL: "https://example.com/live.m3u"},
+	}})
+	req := httptest.NewRequest(http.MethodGet, "/live/hls/start?url=http%3A%2F%2F127.0.0.1%3A7777%2Fapi%2Fsettings", nil)
+	rec := httptest.NewRecorder()
+
+	handler.StartLiveHLSSession(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
 func TestStartLiveHLSSessionResolvesStremioStreamResource(t *testing.T) {
-	stremio := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var stremio *httptest.Server
+	stremio = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/stream/sport/event.json" {
 			http.NotFound(w, r)
 			return
 		}
-		_, _ = w.Write([]byte(`{"streams":[{"url":"https://cdn.example/live/event.m3u8","behaviorHints":{"proxyHeaders":{"request":{"Referer":"https://stremio.example/","Origin":"https://stremio.example"}}}}]}`))
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"streams":[{"url":%q,"behaviorHints":{"proxyHeaders":{"request":{"Referer":"https://stremio.example/","Origin":"https://stremio.example"}}}}]}`, stremio.URL+"/live/event.m3u8")))
 	}))
 	defer stremio.Close()
 
@@ -296,7 +316,7 @@ func TestStartLiveHLSSessionResolvesStremioStreamResource(t *testing.T) {
 	if session == nil {
 		t.Fatalf("session %q not found", body.SessionID)
 	}
-	if session.Path != "https://cdn.example/live/event.m3u8" {
+	if session.Path != stremio.URL+"/live/event.m3u8" {
 		t.Fatalf("session path = %q, want resolved stream URL", session.Path)
 	}
 	if session.LiveTuning.RequestHeaders["Referer"] != "https://stremio.example/" {
