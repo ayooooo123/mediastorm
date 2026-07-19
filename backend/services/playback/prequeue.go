@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"novastream/internal/datastore"
+	"novastream/internal/requestsecurity"
 	"novastream/models"
 )
 
@@ -677,8 +678,8 @@ func (s *PrequeueStore) validateReadyEntry(entry readyValidationSnapshot, valida
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := validator(ctx, entry.StreamPath); err != nil {
-		log.Printf("[prequeue] Removing stale ready entry %s for title=%s user=%s path=%q: %v",
-			entry.ID, entry.TitleID, entry.UserID, entry.StreamPath, err)
+		log.Printf("[prequeue] Removing stale ready entry %s for title=%s user=%s path=%q: %s",
+			entry.ID, entry.TitleID, entry.UserID, requestsecurity.URLForLog(entry.StreamPath), requestsecurity.TextForLog(err.Error()))
 		s.Delete(entry.ID)
 		return false
 	}

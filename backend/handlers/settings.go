@@ -213,6 +213,8 @@ func (h *SettingsHandler) GetSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	effectivePlaylistURL := redactedEffectivePlaylistURL(s.Live)
+
 	// Always redact credentials — secrets are write-only, never sent back to any client
 	redactSettings(&s)
 
@@ -224,11 +226,18 @@ func (h *SettingsHandler) GetSettings(w http.ResponseWriter, r *http.Request) {
 		},
 		Live: LiveSettingsWithEffectiveURL{
 			LiveSettings:         s.Live,
-			EffectivePlaylistURL: s.Live.GetEffectivePlaylistURL(),
+			EffectivePlaylistURL: effectivePlaylistURL,
 		},
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+func redactedEffectivePlaylistURL(live config.LiveSettings) string {
+	if strings.TrimSpace(live.GetEffectivePlaylistURL()) == "" {
+		return ""
+	}
+	return redactedPlaceholder
 }
 
 func (h *SettingsHandler) GetPublicBranding(w http.ResponseWriter, r *http.Request) {
@@ -603,6 +612,9 @@ func redactSettings(s *config.Settings) {
 
 	// MDBList
 	mask(&s.MDBList.APIKey)
+	for i := range s.MDBList.Accounts {
+		mask(&s.MDBList.Accounts[i].APIKey)
+	}
 
 	// Trakt (legacy fields + account-level tokens)
 	mask(&s.Trakt.ClientSecret)
@@ -631,13 +643,41 @@ func redactSettings(s *config.Settings) {
 		mask(&s.Jellyfin.Accounts[i].Token)
 	}
 
-	// Live (Xtream)
+	// Live provider URLs and credentials. Playlist, manifest, proxy, and EPG
+	// URLs can contain embedded credentials or signed query parameters.
+	mask(&s.Live.PlaylistURL)
+	mask(&s.Live.ManifestURL)
+	mask(&s.Live.ProxyURL)
+	mask(&s.Live.XtreamHost)
+	mask(&s.Live.XtreamUsername)
 	mask(&s.Live.XtreamPassword)
+	mask(&s.Live.EPG.XmltvUrl)
+	for i := range s.Live.EPG.Sources {
+		mask(&s.Live.EPG.Sources[i].URL)
+	}
 	for i := range s.Live.Sources {
+		mask(&s.Live.Sources[i].PlaylistURL)
+		mask(&s.Live.Sources[i].ManifestURL)
+		mask(&s.Live.Sources[i].ProxyURL)
+		mask(&s.Live.Sources[i].XtreamHost)
+		mask(&s.Live.Sources[i].XtreamUsername)
 		mask(&s.Live.Sources[i].XtreamPassword)
+		mask(&s.Live.Sources[i].EPG.XmltvUrl)
+		for j := range s.Live.Sources[i].EPG.Sources {
+			mask(&s.Live.Sources[i].EPG.Sources[j].URL)
+		}
 	}
 	for i := range s.Live.PlaylistSources {
+		mask(&s.Live.PlaylistSources[i].PlaylistURL)
+		mask(&s.Live.PlaylistSources[i].ManifestURL)
+		mask(&s.Live.PlaylistSources[i].ProxyURL)
+		mask(&s.Live.PlaylistSources[i].XtreamHost)
+		mask(&s.Live.PlaylistSources[i].XtreamUsername)
 		mask(&s.Live.PlaylistSources[i].XtreamPassword)
+		mask(&s.Live.PlaylistSources[i].EPG.XmltvUrl)
+		for j := range s.Live.PlaylistSources[i].EPG.Sources {
+			mask(&s.Live.PlaylistSources[i].EPG.Sources[j].URL)
+		}
 	}
 
 	// Database URL (may contain credentials in the connection string)
@@ -714,6 +754,11 @@ func preserveRedactedFields(incoming *config.Settings, existing *config.Settings
 
 	// MDBList
 	restore(&incoming.MDBList.APIKey, existing.MDBList.APIKey)
+	for i := range incoming.MDBList.Accounts {
+		if i < len(existing.MDBList.Accounts) {
+			restore(&incoming.MDBList.Accounts[i].APIKey, existing.MDBList.Accounts[i].APIKey)
+		}
+	}
 
 	// Trakt (legacy fields + account-level tokens)
 	restore(&incoming.Trakt.ClientSecret, existing.Trakt.ClientSecret)
@@ -750,16 +795,49 @@ func preserveRedactedFields(incoming *config.Settings, existing *config.Settings
 		}
 	}
 
-	// Live (Xtream)
+	// Live provider URLs and credentials
+	restore(&incoming.Live.PlaylistURL, existing.Live.PlaylistURL)
+	restore(&incoming.Live.ManifestURL, existing.Live.ManifestURL)
+	restore(&incoming.Live.ProxyURL, existing.Live.ProxyURL)
+	restore(&incoming.Live.XtreamHost, existing.Live.XtreamHost)
+	restore(&incoming.Live.XtreamUsername, existing.Live.XtreamUsername)
 	restore(&incoming.Live.XtreamPassword, existing.Live.XtreamPassword)
+	restore(&incoming.Live.EPG.XmltvUrl, existing.Live.EPG.XmltvUrl)
+	for i := range incoming.Live.EPG.Sources {
+		if i < len(existing.Live.EPG.Sources) {
+			restore(&incoming.Live.EPG.Sources[i].URL, existing.Live.EPG.Sources[i].URL)
+		}
+	}
 	for i := range incoming.Live.Sources {
 		if i < len(existing.Live.Sources) {
+			restore(&incoming.Live.Sources[i].PlaylistURL, existing.Live.Sources[i].PlaylistURL)
+			restore(&incoming.Live.Sources[i].ManifestURL, existing.Live.Sources[i].ManifestURL)
+			restore(&incoming.Live.Sources[i].ProxyURL, existing.Live.Sources[i].ProxyURL)
+			restore(&incoming.Live.Sources[i].XtreamHost, existing.Live.Sources[i].XtreamHost)
+			restore(&incoming.Live.Sources[i].XtreamUsername, existing.Live.Sources[i].XtreamUsername)
 			restore(&incoming.Live.Sources[i].XtreamPassword, existing.Live.Sources[i].XtreamPassword)
+			restore(&incoming.Live.Sources[i].EPG.XmltvUrl, existing.Live.Sources[i].EPG.XmltvUrl)
+			for j := range incoming.Live.Sources[i].EPG.Sources {
+				if j < len(existing.Live.Sources[i].EPG.Sources) {
+					restore(&incoming.Live.Sources[i].EPG.Sources[j].URL, existing.Live.Sources[i].EPG.Sources[j].URL)
+				}
+			}
 		}
 	}
 	for i := range incoming.Live.PlaylistSources {
 		if i < len(existing.Live.PlaylistSources) {
+			restore(&incoming.Live.PlaylistSources[i].PlaylistURL, existing.Live.PlaylistSources[i].PlaylistURL)
+			restore(&incoming.Live.PlaylistSources[i].ManifestURL, existing.Live.PlaylistSources[i].ManifestURL)
+			restore(&incoming.Live.PlaylistSources[i].ProxyURL, existing.Live.PlaylistSources[i].ProxyURL)
+			restore(&incoming.Live.PlaylistSources[i].XtreamHost, existing.Live.PlaylistSources[i].XtreamHost)
+			restore(&incoming.Live.PlaylistSources[i].XtreamUsername, existing.Live.PlaylistSources[i].XtreamUsername)
 			restore(&incoming.Live.PlaylistSources[i].XtreamPassword, existing.Live.PlaylistSources[i].XtreamPassword)
+			restore(&incoming.Live.PlaylistSources[i].EPG.XmltvUrl, existing.Live.PlaylistSources[i].EPG.XmltvUrl)
+			for j := range incoming.Live.PlaylistSources[i].EPG.Sources {
+				if j < len(existing.Live.PlaylistSources[i].EPG.Sources) {
+					restore(&incoming.Live.PlaylistSources[i].EPG.Sources[j].URL, existing.Live.PlaylistSources[i].EPG.Sources[j].URL)
+				}
+			}
 		}
 	}
 

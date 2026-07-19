@@ -64,3 +64,11 @@ func TestURLForLogRemovesCredentialsAndResourceData(t *testing.T) {
 		t.Fatalf("URLForLog() = %q", got)
 	}
 }
+
+func TestTextForLogRedactsEmbeddedRequestURLs(t *testing.T) {
+	message := `request failed: Get "https://user:password@api.example.com/private/file?token=secret&signature=signed": deadline exceeded`
+	got := TextForLog(message)
+	if got != `request failed: Get "https://api.example.com": deadline exceeded` {
+		t.Fatalf("TextForLog() = %q", got)
+	}
+}
