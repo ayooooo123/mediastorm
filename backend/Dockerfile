@@ -154,10 +154,17 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
     && chmod +x /usr/local/bin/deno \
     && apt-get purge -y unzip && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /root/
+RUN mkdir -p /app /root/cache \
+	&& chmod 0755 /app \
+	&& chmod 0711 /root \
+	&& ln -s /root/cache /app/cache \
+	&& ln -s /app/mediastorm /root/mediastorm
+
+ENV HOME=/tmp
+WORKDIR /app
 
 # Copy the binary from builder stage
-COPY --from=builder /app/mediastorm .
+COPY --from=builder --chown=root:root --chmod=0755 /app/mediastorm .
 
 # Copy the exported Expo web app. The backend serves it from /watch.
 COPY --from=web-builder /frontend/dist /opt/strmr-web
@@ -169,10 +176,10 @@ COPY --from=iroh-builder /iroh/iroh-direct-spike /opt/iroh/iroh-direct-spike
 ENV MEDIASTORM_IROH_DIRECT_DIR=/opt/iroh
 
 # Copy version file
-COPY backend/version.txt /app/version.txt
+COPY --chown=root:root --chmod=0444 backend/version.txt /app/version.txt
 
 # Copy Python scripts to root (title parsing, subtitle search, credits detection)
-COPY backend/parse_title.py backend/parse_title_batch.py backend/search_subtitles.py backend/download_subtitle.py backend/detect_credits.py /
+COPY --chown=root:root --chmod=0555 backend/parse_title.py backend/parse_title_batch.py backend/search_subtitles.py backend/download_subtitle.py backend/detect_credits.py /
 
 # Expose port
 EXPOSE 7777
