@@ -46,6 +46,53 @@ func TestApplyTVDBMovieExtendedMetadataCopiesGenresWithoutExternalIDs(t *testing
 	}
 }
 
+func TestGetCuratedListChecksRawCacheBeforeResolvingIDs(t *testing.T) {
+	cache := newFileCache(t.TempDir(), 24)
+	rt := &countingRoundTripper{body: `{"results":[]}`}
+	svc := &Service{
+		client:  &tvdbClient{language: "en"},
+		tmdb:    newTMDBClient("test-key", "en", &http.Client{Transport: rt}, cache),
+		cache:   cache,
+		idCache: newFileCache(t.TempDir(), 24),
+	}
+	items := []CuratedItem{{Title: "Marnie", Year: 1964, MediaType: "movie"}}
+	cached := []models.TrendingItem{{Title: models.Title{Name: "Marnie", Year: 1964, MediaType: "movie"}}}
+	if err := cache.set(svc.curatedListCacheID(items), cached); err != nil {
+		t.Fatalf("seed curated cache: %v", err)
+	}
+
+	got, err := svc.GetCuratedList(context.Background(), items, "Letterboxd List")
+	if err != nil {
+		t.Fatalf("GetCuratedList: %v", err)
+	}
+	if len(got) != 1 || got[0].Title.Name != "Marnie" {
+		t.Fatalf("GetCuratedList returned %+v", got)
+	}
+	if calls := rt.callCount(); calls != 0 {
+		t.Fatalf("TMDB calls = %d, want 0 on raw curated cache hit", calls)
+	}
+}
+
+func TestResolveTMDBMovieByTitleYearCachesFailure(t *testing.T) {
+	cache := newFileCache(t.TempDir(), 24)
+	rt := &countingRoundTripper{status: http.StatusNotFound, body: `{}`}
+	svc := &Service{
+		tmdb:    newTMDBClient("test-key", "en", &http.Client{Transport: rt}, cache),
+		cache:   cache,
+		idCache: newFileCache(t.TempDir(), 24),
+	}
+
+	if got := svc.resolveTMDBMovieByTitleYear(context.Background(), "Missing Movie", 1999); got != 0 {
+		t.Fatalf("first resolution = %d, want 0", got)
+	}
+	if got := svc.resolveTMDBMovieByTitleYear(context.Background(), "Missing Movie", 1999); got != 0 {
+		t.Fatalf("cached resolution = %d, want 0", got)
+	}
+	if calls := rt.callCount(); calls != 1 {
+		t.Fatalf("TMDB calls = %d, want 1 after cached failure", calls)
+	}
+}
+
 func TestEnrichLiteCustomListItemKeepsGenres(t *testing.T) {
 	svc := &Service{
 		client: &tvdbClient{language: "eng"},
