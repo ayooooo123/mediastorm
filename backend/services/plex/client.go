@@ -807,6 +807,7 @@ type PlexLibraryItem struct {
 	Year                 int         `json:"year,omitempty"`
 	Summary              string      `json:"summary,omitempty"`
 	ContentRating        string      `json:"contentRating,omitempty"`
+	Duration             int64       `json:"duration,omitempty"`
 	Thumb                string      `json:"thumb,omitempty"`
 	Art                  string      `json:"art,omitempty"`
 	GrandparentThumb     string      `json:"grandparentThumb,omitempty"`

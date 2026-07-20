@@ -2218,6 +2218,7 @@
             imdbId: ext.imdb || meta.imdbId || '',
             tmdbId: ext.tmdb || (meta.tmdbId ? String(meta.tmdbId) : ''),
             tvdbId: ext.tvdb || (meta.tvdbId ? String(meta.tvdbId) : ''),
+            durationSeconds: Number(localItem.probe?.durationSeconds || 0),
         };
     }
 
@@ -2429,7 +2430,7 @@
         selectedItem = selected;
         selectedEpisode = episode || null;
         selectedDetails = null;
-        resolvedPlayback = { webdavPath };
+        resolvedPlayback = { webdavPath, durationHint: Number(selected?.durationSeconds || 0) };
         currentResolvedCandidate = null;
         manualResults = [];
         preparePlaybackPanelForDirect({ badge, title, subtitle });
@@ -3420,6 +3421,7 @@
             if (selectedItem.tmdbId) params.set('tmdb', selectedItem.tmdbId);
             if (selectedItem.tvdbId) params.set('tvdb', selectedItem.tvdbId);
             if (selectedItem.posterUrl) params.set('posterUrl', selectedItem.posterUrl);
+            if (Number(resolvedPlayback.durationHint) > 0) params.set('durationHint', String(resolvedPlayback.durationHint));
             if (selectedItem.mediaType === 'series') {
                 params.set('seasonNumber', String(selectedEpisode?.seasonNumber || 1));
                 params.set('episodeNumber', String(selectedEpisode?.episodeNumber || 1));

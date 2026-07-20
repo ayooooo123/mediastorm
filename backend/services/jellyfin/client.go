@@ -41,6 +41,7 @@ type JellyfinItem struct {
 	DatePlayed        *time.Time            `json:"LastPlayedDate,omitempty"`
 	Overview          string                `json:"Overview,omitempty"`
 	OfficialRating    string                `json:"OfficialRating,omitempty"`
+	RunTimeTicks      int64                 `json:"RunTimeTicks,omitempty"`
 	SeriesID          string                `json:"SeriesId,omitempty"`
 	ImageTags         map[string]string     `json:"ImageTags,omitempty"`
 	BackdropImageTags []string              `json:"BackdropImageTags,omitempty"`
@@ -67,6 +68,7 @@ type JellyfinMediaSource struct {
 	Path         string                `json:"Path"`
 	Container    string                `json:"Container"`
 	Size         int64                 `json:"Size"`
+	RunTimeTicks int64                 `json:"RunTimeTicks,omitempty"`
 	MediaStreams []JellyfinMediaStream `json:"MediaStreams"`
 }
 
@@ -162,7 +164,7 @@ func (c *Client) GetLibraries(serverURL, token, userID string) ([]JellyfinLibrar
 func (c *Client) GetLibraryItems(serverURL, token, userID, libraryID, collectionType string) ([]JellyfinItem, error) {
 	params := url.Values{
 		"ParentId": {libraryID}, "Recursive": {"true"},
-		"Fields":       {"ProviderIds,Overview,OfficialRating,MediaSources,MediaStreams,ImageTags,BackdropImageTags"},
+		"Fields":       {"ProviderIds,Overview,OfficialRating,MediaSources,MediaStreams,ImageTags,BackdropImageTags,RunTimeTicks"},
 		"EnableImages": {"true"}, "EnableTotalRecordCount": {"true"},
 	}
 	if strings.EqualFold(collectionType, "tvshows") {

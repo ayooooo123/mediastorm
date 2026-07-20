@@ -50,6 +50,13 @@ type DirectURLProvider interface {
 	GetDirectURL(ctx context.Context, path string) (string, error)
 }
 
+// DurationProvider optionally supplies catalog metadata for inputs that cannot
+// report a duration when probed through a non-seekable stream.
+type DurationProvider interface {
+	Provider
+	GetDuration(ctx context.Context, path string) (float64, error)
+}
+
 // RelatedFileProvider is an optional interface for providers that can locate a
 // companion file in the same source collection. It is used for container
 // metadata stored outside the media file, such as Blu-ray CLPI files.

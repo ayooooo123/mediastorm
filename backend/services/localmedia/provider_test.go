@@ -130,6 +130,26 @@ func TestProviderGetDirectURL(t *testing.T) {
 	}
 }
 
+func TestProviderGetDurationUsesScannedProbe(t *testing.T) {
+	root := t.TempDir()
+	filePath := filepath.Join(root, "Movie.mkv")
+	now := time.Now().UTC()
+	repo := &fakeLocalMediaRepo{
+		library: &models.LocalMediaLibrary{ID: "lib1", RootPath: root, CreatedAt: now, UpdatedAt: now},
+		items: map[string]*models.LocalMediaItem{
+			"Movie.mkv": {ID: "item1", LibraryID: "lib1", FilePath: filePath, FileName: "Movie.mkv", Probe: &models.LocalMediaProbe{DurationSeconds: 123.5, VideoCodec: "h264"}},
+		},
+	}
+	provider := NewProvider(&Service{repo: repo})
+	duration, err := provider.GetDuration(context.Background(), "localmedia:item1/Movie.mkv")
+	if err != nil {
+		t.Fatalf("GetDuration() error = %v", err)
+	}
+	if duration != 123.5 {
+		t.Fatalf("GetDuration() = %v, want 123.5", duration)
+	}
+}
+
 func TestProviderRejectsPathOutsideLibraryRoot(t *testing.T) {
 	root := t.TempDir()
 	outsideDir := t.TempDir()

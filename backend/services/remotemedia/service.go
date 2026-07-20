@@ -314,10 +314,14 @@ func normalizeJellyfin(library *models.RemoteMediaLibrary, source []jellyfin.Jel
 			sources = []jellyfin.JellyfinMediaSource{{ID: item.ID, Name: item.Name}}
 		}
 		for _, media := range sources {
+			durationTicks := media.RunTimeTicks
+			if durationTicks <= 0 {
+				durationTicks = item.RunTimeTicks
+			}
 			v := models.RemoteMediaItem{ID: stableItemID(library.ID, item.ID, media.ID), ExternalItemID: item.ID, ExternalMediaID: media.ID, GroupKey: groupKey,
 				LibraryType: library.Type, Title: title, Year: item.Year, Overview: item.Overview, Certification: item.OfficialRating,
 				SeasonNumber: item.SeasonNum, EpisodeNumber: item.EpisodeNum, EpisodeTitle: episodeTitle, ExternalIDs: exts,
-				FileName: filepath.Base(media.Path), Container: media.Container, SizeBytes: media.Size, CreatedAt: now, UpdatedAt: now,
+				FileName: filepath.Base(media.Path), Container: media.Container, DurationSeconds: float64(durationTicks) / 10_000_000, SizeBytes: media.Size, CreatedAt: now, UpdatedAt: now,
 				ProviderData: map[string]string{"itemId": item.ID, "mediaSourceId": media.ID}}
 			for _, stream := range media.MediaStreams {
 				if stream.Type == "Video" {
@@ -362,7 +366,7 @@ func normalizePlex(library *models.RemoteMediaLibrary, source []plex.PlexLibrary
 					LibraryType: library.Type, Title: title, Year: item.Year, Overview: item.Summary, Certification: item.ContentRating,
 					SeasonNumber: item.ParentIndex, EpisodeNumber: item.Index, EpisodeTitle: episodeTitle, ExternalIDs: exts,
 					FileName: filepath.Base(part.File), Container: part.Container, VideoCodec: media.VideoCodec, AudioCodec: media.AudioCodec,
-					Width: media.Width, Height: media.Height, HDRFormat: media.VideoDynamicRange, SizeBytes: part.Size, CreatedAt: now, UpdatedAt: now,
+					Width: media.Width, Height: media.Height, HDRFormat: media.VideoDynamicRange, DurationSeconds: float64(item.Duration) / 1000, SizeBytes: part.Size, CreatedAt: now, UpdatedAt: now,
 					ProviderData: map[string]string{"partKey": part.Key, "posterPath": posterPath, "backdropPath": backdropPath}}
 				v.VersionLabel = versionLabel(v.Height, v.VideoCodec, v.HDRFormat, media.VideoResolution)
 				v.StreamPath = "plexmedia:" + v.ID
@@ -523,7 +527,7 @@ func applyExternalIDs(g *models.LocalMediaItemGroup, ids *models.LocalMediaExter
 	g.TVDBID, _ = strconv.ParseInt(ids.TVDB, 10, 64)
 }
 func toLocalItem(library *models.RemoteMediaLibrary, item models.RemoteMediaItem) models.LocalMediaItem {
-	return models.LocalMediaItem{ID: item.ID, LibraryID: item.LibraryID, FileName: item.FileName, LibraryType: item.LibraryType, DetectedTitle: item.Title, DetectedYear: item.Year, SeasonNumber: item.SeasonNumber, EpisodeNumber: item.EpisodeNumber, MatchStatus: models.LocalMediaMatchStatusMatched, MatchedName: item.Title, MatchedYear: item.Year, ExternalIDs: item.ExternalIDs, EpisodeTitle: item.EpisodeTitle, SizeBytes: item.SizeBytes, Probe: &models.LocalMediaProbe{SizeBytes: item.SizeBytes, VideoCodec: item.VideoCodec, Width: item.Width, Height: item.Height, HDRFormat: item.HDRFormat, AudioCodecs: []string{item.AudioCodec}}, SourceType: library.Provider, SourceName: strings.Title(library.Provider), SourceServerName: library.ServerName, VersionLabel: item.VersionLabel}
+	return models.LocalMediaItem{ID: item.ID, LibraryID: item.LibraryID, FileName: item.FileName, LibraryType: item.LibraryType, DetectedTitle: item.Title, DetectedYear: item.Year, SeasonNumber: item.SeasonNumber, EpisodeNumber: item.EpisodeNumber, MatchStatus: models.LocalMediaMatchStatusMatched, MatchedName: item.Title, MatchedYear: item.Year, ExternalIDs: item.ExternalIDs, EpisodeTitle: item.EpisodeTitle, SizeBytes: item.SizeBytes, Probe: &models.LocalMediaProbe{DurationSeconds: item.DurationSeconds, SizeBytes: item.SizeBytes, VideoCodec: item.VideoCodec, Width: item.Width, Height: item.Height, HDRFormat: item.HDRFormat, AudioCodecs: []string{item.AudioCodec}}, SourceType: library.Provider, SourceName: strings.Title(library.Provider), SourceServerName: library.ServerName, VersionLabel: item.VersionLabel}
 }
 
 func (s *Service) FindMatches(ctx context.Context, query models.LocalMediaMatchQuery) ([]models.LocalMediaMatchedGroup, error) {
@@ -576,7 +580,7 @@ func (s *Service) Playback(ctx context.Context, itemID string) (*models.LocalMed
 	if mediaType == "episode" {
 		seriesTitle = item.Title
 	}
-	return &models.LocalMediaPlaybackResponse{ItemID: item.ID, FileName: item.FileName, DisplayName: item.Title, TitleID: item.GroupKey, Title: item.Title, SeriesTitle: seriesTitle, EpisodeTitle: item.EpisodeTitle, Year: item.Year, ExternalIDs: externalMap(item.ExternalIDs), StreamPath: item.StreamPath, StreamURL: "/api/video/stream?" + values.Encode(), DirectStream: true, SourceType: library.Provider, SourceName: strings.Title(library.Provider)}, nil
+	return &models.LocalMediaPlaybackResponse{ItemID: item.ID, FileName: item.FileName, DisplayName: item.Title, TitleID: item.GroupKey, Title: item.Title, SeriesTitle: seriesTitle, EpisodeTitle: item.EpisodeTitle, Year: item.Year, DurationSeconds: item.DurationSeconds, ExternalIDs: externalMap(item.ExternalIDs), StreamPath: item.StreamPath, StreamURL: "/api/video/stream?" + values.Encode(), DirectStream: true, SourceType: library.Provider, SourceName: strings.Title(library.Provider)}, nil
 }
 func externalMap(ids *models.LocalMediaExternalIDs) map[string]string {
 	m := map[string]string{}
@@ -597,6 +601,28 @@ func externalMap(ids *models.LocalMediaExternalIDs) map[string]string {
 type Provider struct{ service *Service }
 
 func NewProvider(service *Service) *Provider { return &Provider{service: service} }
+func (p *Provider) GetDuration(ctx context.Context, path string) (float64, error) {
+	if p == nil || p.service == nil {
+		return 0, streaming.ErrNotFound
+	}
+	prefix := ""
+	if strings.HasPrefix(path, "plexmedia:") {
+		prefix = "plexmedia:"
+	} else if strings.HasPrefix(path, "jellyfinmedia:") {
+		prefix = "jellyfinmedia:"
+	} else {
+		return 0, streaming.ErrNotFound
+	}
+	id := strings.TrimSpace(strings.TrimPrefix(path, prefix))
+	if slash := strings.IndexByte(id, '/'); slash >= 0 {
+		id = id[:slash]
+	}
+	item, err := p.service.repo.GetItem(ctx, id)
+	if err != nil || item == nil || item.DurationSeconds <= 0 {
+		return 0, streaming.ErrNotFound
+	}
+	return item.DurationSeconds, nil
+}
 func (p *Provider) Stream(ctx context.Context, req streaming.Request) (*streaming.Response, error) {
 	prefix := ""
 	provider := ""

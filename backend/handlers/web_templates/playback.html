@@ -1353,6 +1353,8 @@
       if (playbackMeta.tmdbId) params.set('tmdb', playbackMeta.tmdbId);
       if (playbackMeta.tvdbId) params.set('tvdb', playbackMeta.tvdbId);
       if (playbackMeta.posterUrl) params.set('posterUrl', playbackMeta.posterUrl);
+      const durationHint = numericRouteParam('durationHint');
+      if (durationHint > 0) params.set('durationHint', String(durationHint));
 
       if (playbackMeta.mediaType === 'episode') {
         params.set('seasonNumber', String(playbackMeta.seasonNumber || 1));
