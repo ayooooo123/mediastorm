@@ -3189,6 +3189,12 @@ func (h *VideoHandler) StartHLSSession(w http.ResponseWriter, r *http.Request) {
 	forceAAC := r.URL.Query().Get("forceAAC") == "true"
 	castMode := r.URL.Query().Get("cast") == "true"
 	playbackTarget := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("target")))
+	durationHint := 0.0
+	if durationParam := strings.TrimSpace(r.URL.Query().Get("durationHint")); durationParam != "" {
+		if parsed, err := strconv.ParseFloat(durationParam, 64); err == nil {
+			durationHint = parsed
+		}
+	}
 	// Check global setting for forced AAC transcoding (for Bluetooth compatibility)
 	if !forceAAC && h.configManager != nil {
 		if settings, err := h.configManager.Load(); err == nil {
@@ -3299,7 +3305,7 @@ func (h *VideoHandler) StartHLSSession(w http.ResponseWriter, r *http.Request) {
 	videoTracef("[video] creating HLS session for path=%q dv=%v dvProfile=%q hdr=%v start=%.3fs transcodingOffset=%.3fs audioTrack=%d subtitleTrack=%d",
 		cleanPath, hasDV, dvProfile, hasHDR, startSeconds, transcodingOffset, audioTrackIndex, subtitleTrackIndex)
 
-	session, err := h.hlsManager.CreateSession(r.Context(), cleanPath, path, hasDV, dvProfile, hasHDR, forceAAC, startSeconds, transcodingOffset, audioTrackIndex, subtitleTrackIndex, profileID, profileName, getClientIP(r), castMode, "", playbackTarget)
+	session, err := h.hlsManager.CreateSession(r.Context(), cleanPath, path, hasDV, dvProfile, hasHDR, forceAAC, startSeconds, transcodingOffset, audioTrackIndex, subtitleTrackIndex, profileID, profileName, getClientIP(r), castMode, "", playbackTarget, durationHint)
 	if err != nil {
 		log.Printf("[video] failed to create HLS session: %v", err)
 		if errors.Is(err, streaming.ErrStaleTorrent) {
@@ -4829,7 +4835,7 @@ func (h *VideoHandler) CreateHLSSession(ctx context.Context, path string, hasDV 
 		}
 	}
 
-	session, err := h.hlsManager.CreateSession(ctx, path, path, hasDV, dvProfile, hasHDR, false, startOffset, 0, audioTrackIndex, subtitleTrackIndex, profileID, "", "", false, prequeueType, "")
+	session, err := h.hlsManager.CreateSession(ctx, path, path, hasDV, dvProfile, hasHDR, false, startOffset, 0, audioTrackIndex, subtitleTrackIndex, profileID, "", "", false, prequeueType, "", 0)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HLS session: %w", err)
 	}

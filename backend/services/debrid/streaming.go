@@ -676,6 +676,24 @@ func (c *CompositeProvider) GetDirectURL(ctx context.Context, path string) (stri
 	return "", streaming.ErrNotFound
 }
 
+// GetDuration asks the provider that owns path for its catalog duration.
+func (c *CompositeProvider) GetDuration(ctx context.Context, path string) (float64, error) {
+	for _, provider := range c.providers {
+		durationProvider, ok := provider.(streaming.DurationProvider)
+		if !ok {
+			continue
+		}
+		duration, err := durationProvider.GetDuration(ctx, path)
+		if err == nil && duration > 0 {
+			return duration, nil
+		}
+		if err != nil && !errors.Is(err, streaming.ErrNotFound) {
+			return 0, err
+		}
+	}
+	return 0, streaming.ErrNotFound
+}
+
 // StreamRelatedFile asks each capable provider for a companion file belonging
 // to the same source collection.
 func (c *CompositeProvider) StreamRelatedFile(ctx context.Context, sourcePath, relatedPath string) (*streaming.Response, error) {

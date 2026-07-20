@@ -70,7 +70,7 @@ func TestNormalizeJellyfinEpisodeVersions(t *testing.T) {
 	items := normalizeJellyfin(library, []jellyfin.JellyfinItem{{
 		ID: "episode-1", Name: "Pilot", Type: "Episode", SeriesID: "series-1", SeriesName: "Example Show",
 		SeasonNum: 1, EpisodeNum: 1, ProviderIDs: map[string]string{"tvdb": "42"},
-		MediaSources: []jellyfin.JellyfinMediaSource{{ID: "source-4k", Path: "/media/pilot.mkv", Container: "mkv", Size: 100,
+		MediaSources: []jellyfin.JellyfinMediaSource{{ID: "source-4k", Path: "/media/pilot.mkv", Container: "mkv", Size: 100, RunTimeTicks: 1_205_000_000,
 			MediaStreams: []jellyfin.JellyfinMediaStream{{Type: "Video", Codec: "hevc", Width: 3840, Height: 2160, VideoRange: "HDR10"}}}},
 	}})
 	if len(items) != 1 {
@@ -86,11 +86,14 @@ func TestNormalizeJellyfinEpisodeVersions(t *testing.T) {
 	if item.ProviderData["mediaSourceId"] != "source-4k" {
 		t.Fatalf("missing media source ID")
 	}
+	if item.DurationSeconds != 120.5 {
+		t.Fatalf("DurationSeconds=%v, want 120.5", item.DurationSeconds)
+	}
 }
 
 func TestNormalizePlexMovieParts(t *testing.T) {
 	library := &models.RemoteMediaLibrary{ID: "lib", Type: models.LocalMediaLibraryTypeMovie, Provider: models.MediaSourcePlex}
-	items := normalizePlex(library, []plex.PlexLibraryItem{{RatingKey: "10", Title: "Example Movie", Type: "movie", Year: 2025,
+	items := normalizePlex(library, []plex.PlexLibraryItem{{RatingKey: "10", Title: "Example Movie", Type: "movie", Year: 2025, Duration: 120500,
 		Guid: []plex.PlexGuid{{ID: "tmdb://123"}}, Media: []plex.PlexMedia{{VideoCodec: "h264", Height: 1080,
 			Part: []plex.PlexPart{{ID: 7, Key: "/library/parts/7/file.mkv", File: "/movies/file.mkv", Size: 99}}}},
 	}})
@@ -99,6 +102,9 @@ func TestNormalizePlexMovieParts(t *testing.T) {
 	}
 	if items[0].ExternalIDs.TMDB != "123" || items[0].ProviderData["partKey"] == "" {
 		t.Fatalf("unexpected Plex normalization: %#v", items[0])
+	}
+	if items[0].DurationSeconds != 120.5 {
+		t.Fatalf("DurationSeconds=%v, want 120.5", items[0].DurationSeconds)
 	}
 }
 

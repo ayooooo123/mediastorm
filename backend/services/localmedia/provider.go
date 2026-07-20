@@ -52,6 +52,27 @@ func NewProvider(service *Service) *Provider {
 	return &Provider{service: service}
 }
 
+func (p *Provider) GetDuration(ctx context.Context, path string) (float64, error) {
+	if p == nil || p.service == nil {
+		return 0, streaming.ErrNotFound
+	}
+	itemID, ok := ParseStreamPath(path)
+	if !ok {
+		return 0, streaming.ErrNotFound
+	}
+	// Duration is catalog metadata only. Playback validation remains the
+	// responsibility of ProbeItemForPlayback; avoid another filesystem access
+	// here because os.Stat/os.Open can block indefinitely on a stale mount.
+	item, err := p.service.repo.GetItem(ctx, itemID)
+	if err != nil || item == nil {
+		return 0, streaming.ErrNotFound
+	}
+	if item.Probe == nil || item.Probe.DurationSeconds <= 0 {
+		return 0, streaming.ErrNotFound
+	}
+	return item.Probe.DurationSeconds, nil
+}
+
 func (p *Provider) GetDirectURL(ctx context.Context, path string) (string, error) {
 	if p == nil || p.service == nil {
 		return "", streaming.ErrNotFound

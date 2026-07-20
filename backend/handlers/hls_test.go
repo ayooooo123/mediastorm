@@ -1078,3 +1078,24 @@ func TestInputLooksLikeHLS(t *testing.T) {
 		}
 	}
 }
+
+func TestResolvedSessionDuration(t *testing.T) {
+	tests := []struct {
+		name   string
+		probed float64
+		hint   float64
+		want   float64
+	}{
+		{name: "probe wins", probed: 120.5, hint: 300, want: 120.5},
+		{name: "hint fills missing probe", hint: 300, want: 300},
+		{name: "negative hint rejected", hint: -1, want: 0},
+		{name: "oversized hint rejected", hint: 8 * 24 * 60 * 60, want: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := resolvedSessionDuration(tt.probed, tt.hint); got != tt.want {
+				t.Fatalf("resolvedSessionDuration(%v, %v)=%v, want %v", tt.probed, tt.hint, got, tt.want)
+			}
+		})
+	}
+}

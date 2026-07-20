@@ -232,6 +232,12 @@ func TestLocalMediaHandlerGetPlayback(t *testing.T) {
 	if resp.HLSStartURL == "" || !resp.HLSAvailable {
 		t.Fatalf("expected HLS response, got %+v", resp)
 	}
+	if !strings.Contains(resp.HLSStartURL, "durationHint=120") {
+		t.Fatalf("HLSStartURL = %q, want duration hint", resp.HLSStartURL)
+	}
+	if resp.DurationSeconds != 120 {
+		t.Fatalf("DurationSeconds = %v, want 120", resp.DurationSeconds)
+	}
 }
 
 func TestLocalMediaHandlerGetPlaybackRejectsUnplayableProbe(t *testing.T) {

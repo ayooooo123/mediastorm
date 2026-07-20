@@ -1236,7 +1236,7 @@ func (m *HLSManager) buildLocalWebDAVURLFromPath(path string) (string, bool) {
 }
 
 // CreateSession starts a new HLS transcoding session
-func (m *HLSManager) CreateSession(ctx context.Context, path string, originalPath string, hasDV bool, dvProfile string, hasHDR bool, forceAAC bool, startOffset float64, transcodingOffset float64, audioTrackIndex int, subtitleTrackIndex int, profileID string, profileName string, clientIP string, castMode bool, prequeueType string, playbackTarget string) (*HLSSession, error) {
+func (m *HLSManager) CreateSession(ctx context.Context, path string, originalPath string, hasDV bool, dvProfile string, hasHDR bool, forceAAC bool, startOffset float64, transcodingOffset float64, audioTrackIndex int, subtitleTrackIndex int, profileID string, profileName string, clientIP string, castMode bool, prequeueType string, playbackTarget string, durationHint float64) (*HLSSession, error) {
 	sessionID := generateSessionID()
 	outputDir := filepath.Join(m.baseDir, sessionID)
 
@@ -1268,6 +1268,12 @@ func (m *HLSManager) CreateSession(ctx context.Context, path string, originalPat
 	// Unified probe: extract duration, color metadata, audio/subtitle streams in a single ffprobe call
 	// This replaces 4 separate ffprobe invocations with 1, significantly reducing playback start time
 	var duration float64
+	metadataDuration := durationHint
+	if durationProvider, ok := m.streamer.(streaming.DurationProvider); ok {
+		if providerDuration, durationErr := durationProvider.GetDuration(ctx, path); durationErr == nil && providerDuration > 0 {
+			metadataDuration = providerDuration
+		}
+	}
 	var probeData *UnifiedProbeResult
 	if m.ffprobePath != "" && (m.streamer != nil || isExternalURL) {
 		log.Printf("[hls] running unified probe for session %s path=%q", sessionID, path)
@@ -1296,6 +1302,7 @@ func (m *HLSManager) CreateSession(ctx context.Context, path string, originalPat
 			log.Printf("[hls] failed unified probe for session %s: %v", sessionID, probeErr)
 		}
 	}
+	duration = resolvedSessionDuration(duration, metadataDuration)
 
 	if math.IsNaN(startOffset) || math.IsInf(startOffset, 0) || startOffset < 0 {
 		startOffset = 0
@@ -1382,6 +1389,17 @@ func (m *HLSManager) CreateSession(ctx context.Context, path string, originalPat
 	// The actual start offset is stored in session.StartOffset for the frontend to use
 	// The frontend should seek to the start offset after loading the HLS stream
 	return session, nil
+}
+
+func resolvedSessionDuration(probedDuration, durationHint float64) float64 {
+	if probedDuration > 0 && !math.IsNaN(probedDuration) && !math.IsInf(probedDuration, 0) {
+		return probedDuration
+	}
+	const maxDurationHint = 7 * 24 * 60 * 60
+	if durationHint <= 0 || durationHint > maxDurationHint || math.IsNaN(durationHint) || math.IsInf(durationHint, 0) {
+		return 0
+	}
+	return durationHint
 }
 
 // CreateYouTubeSession starts an HLS session from separate YouTube video/audio URLs.

@@ -83,7 +83,7 @@ const remoteItemColumns = `id, library_id, external_item_id, external_media_id, 
 	title, year, overview, certification, season_number, episode_number, episode_title, external_ids,
 	poster_url, backdrop_url, episode_image_url, file_name, version_label, container, video_codec,
 	audio_codec, width, height, hdr_format, size_bytes, stream_path, provider_data, last_seen_sync_id,
-	is_missing, created_at, updated_at`
+	is_missing, created_at, updated_at, duration_seconds`
 
 func scanRemoteItem(row interface{ Scan(...interface{}) error }) (*models.RemoteMediaItem, error) {
 	var v models.RemoteMediaItem
@@ -92,7 +92,7 @@ func scanRemoteItem(row interface{ Scan(...interface{}) error }) (*models.Remote
 		&v.Title, &v.Year, &v.Overview, &v.Certification, &v.SeasonNumber, &v.EpisodeNumber, &v.EpisodeTitle,
 		&externalIDs, &v.PosterURL, &v.BackdropURL, &v.EpisodeImageURL, &v.FileName, &v.VersionLabel,
 		&v.Container, &v.VideoCodec, &v.AudioCodec, &v.Width, &v.Height, &v.HDRFormat, &v.SizeBytes,
-		&v.StreamPath, &providerData, &v.LastSeenSyncID, &v.IsMissing, &v.CreatedAt, &v.UpdatedAt)
+		&v.StreamPath, &providerData, &v.LastSeenSyncID, &v.IsMissing, &v.CreatedAt, &v.UpdatedAt, &v.DurationSeconds)
 	if err != nil {
 		return nil, err
 	}
@@ -137,7 +137,7 @@ func (r *pgRemoteMediaRepo) UpsertItem(ctx context.Context, v *models.RemoteMedi
 	externalIDs, _ := json.Marshal(v.ExternalIDs)
 	providerData, _ := json.Marshal(v.ProviderData)
 	_, err := r.pool.Exec(ctx, `INSERT INTO remote_media_items (`+remoteItemColumns+`) VALUES
-		($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32)
+		($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)
 		ON CONFLICT (library_id, external_item_id, external_media_id) DO UPDATE SET id=EXCLUDED.id, group_key=EXCLUDED.group_key,
 		library_type=EXCLUDED.library_type, title=EXCLUDED.title, year=EXCLUDED.year, overview=EXCLUDED.overview,
 		certification=EXCLUDED.certification, season_number=EXCLUDED.season_number, episode_number=EXCLUDED.episode_number,
@@ -146,12 +146,13 @@ func (r *pgRemoteMediaRepo) UpsertItem(ctx context.Context, v *models.RemoteMedi
 		version_label=EXCLUDED.version_label, container=EXCLUDED.container, video_codec=EXCLUDED.video_codec,
 		audio_codec=EXCLUDED.audio_codec, width=EXCLUDED.width, height=EXCLUDED.height, hdr_format=EXCLUDED.hdr_format,
 		size_bytes=EXCLUDED.size_bytes, stream_path=EXCLUDED.stream_path, provider_data=EXCLUDED.provider_data,
-		last_seen_sync_id=EXCLUDED.last_seen_sync_id, is_missing=FALSE, updated_at=EXCLUDED.updated_at`,
+		last_seen_sync_id=EXCLUDED.last_seen_sync_id, is_missing=FALSE, updated_at=EXCLUDED.updated_at,
+		duration_seconds=EXCLUDED.duration_seconds`,
 		v.ID, v.LibraryID, v.ExternalItemID, v.ExternalMediaID, v.GroupKey, v.LibraryType, v.Title, v.Year,
 		v.Overview, v.Certification, v.SeasonNumber, v.EpisodeNumber, v.EpisodeTitle, externalIDs, v.PosterURL,
 		v.BackdropURL, v.EpisodeImageURL, v.FileName, v.VersionLabel, v.Container, v.VideoCodec, v.AudioCodec,
 		v.Width, v.Height, v.HDRFormat, v.SizeBytes, v.StreamPath, providerData, v.LastSeenSyncID, v.IsMissing,
-		v.CreatedAt, v.UpdatedAt)
+		v.CreatedAt, v.UpdatedAt, v.DurationSeconds)
 	return err
 }
 

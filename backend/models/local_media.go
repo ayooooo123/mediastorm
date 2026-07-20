@@ -249,25 +249,26 @@ type LocalMediaDirectoryListing struct {
 }
 
 type LocalMediaPlaybackResponse struct {
-	ItemID       string            `json:"itemId"`
-	FileName     string            `json:"fileName"`
-	DisplayName  string            `json:"displayName"`
-	TitleID      string            `json:"titleId,omitempty"`
-	Title        string            `json:"title,omitempty"`
-	SeriesTitle  string            `json:"seriesTitle,omitempty"`
-	EpisodeTitle string            `json:"episodeTitle,omitempty"`
-	Year         int               `json:"year,omitempty"`
-	PosterURL    string            `json:"posterUrl,omitempty"`
-	BackdropURL  string            `json:"backdropUrl,omitempty"`
-	EpisodeImage string            `json:"episodeImageUrl,omitempty"`
-	ExternalIDs  map[string]string `json:"externalIds,omitempty"`
-	StreamPath   string            `json:"streamPath"`
-	StreamURL    string            `json:"streamUrl"`
-	HLSStartURL  string            `json:"hlsStartUrl,omitempty"`
-	DirectStream bool              `json:"directStream"`
-	HLSAvailable bool              `json:"hlsAvailable"`
-	SourceType   string            `json:"sourceType"`
-	SourceName   string            `json:"sourceName"`
+	ItemID          string            `json:"itemId"`
+	FileName        string            `json:"fileName"`
+	DisplayName     string            `json:"displayName"`
+	TitleID         string            `json:"titleId,omitempty"`
+	Title           string            `json:"title,omitempty"`
+	SeriesTitle     string            `json:"seriesTitle,omitempty"`
+	EpisodeTitle    string            `json:"episodeTitle,omitempty"`
+	Year            int               `json:"year,omitempty"`
+	DurationSeconds float64           `json:"durationSeconds,omitempty"`
+	PosterURL       string            `json:"posterUrl,omitempty"`
+	BackdropURL     string            `json:"backdropUrl,omitempty"`
+	EpisodeImage    string            `json:"episodeImageUrl,omitempty"`
+	ExternalIDs     map[string]string `json:"externalIds,omitempty"`
+	StreamPath      string            `json:"streamPath"`
+	StreamURL       string            `json:"streamUrl"`
+	HLSStartURL     string            `json:"hlsStartUrl,omitempty"`
+	DirectStream    bool              `json:"directStream"`
+	HLSAvailable    bool              `json:"hlsAvailable"`
+	SourceType      string            `json:"sourceType"`
+	SourceName      string            `json:"sourceName"`
 }
 
 const (
@@ -334,6 +335,7 @@ type RemoteMediaItem struct {
 	Width           int                    `json:"width,omitempty"`
 	Height          int                    `json:"height,omitempty"`
 	HDRFormat       string                 `json:"hdrFormat,omitempty"`
+	DurationSeconds float64                `json:"durationSeconds,omitempty"`
 	SizeBytes       int64                  `json:"sizeBytes,omitempty"`
 	StreamPath      string                 `json:"streamPath"`
 	ProviderData    map[string]string      `json:"-"`

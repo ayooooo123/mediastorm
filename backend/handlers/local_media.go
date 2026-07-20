@@ -487,25 +487,29 @@ func (h *LocalMediaHandler) GetPlayback(w http.ResponseWriter, r *http.Request) 
 			query.Set(key, value)
 		}
 	}
+	if probe.DurationSeconds > 0 {
+		query.Set("durationHint", strconv.FormatFloat(probe.DurationSeconds, 'f', -1, 64))
+	}
 
 	resp := models.LocalMediaPlaybackResponse{
-		ItemID:       item.ID,
-		FileName:     item.FileName,
-		DisplayName:  displayName,
-		TitleID:      titleID,
-		Title:        title,
-		SeriesTitle:  seriesTitle,
-		EpisodeTitle: item.EpisodeTitle,
-		Year:         year,
-		PosterURL:    posterURL,
-		BackdropURL:  backdropURL,
-		EpisodeImage: episodeImageURL,
-		ExternalIDs:  externalIDs,
-		StreamPath:   streamPath,
-		StreamURL:    "/api/video/stream?" + query.Encode(),
-		DirectStream: true,
-		SourceType:   models.MediaSourceLocal,
-		SourceName:   "Local",
+		ItemID:          item.ID,
+		FileName:        item.FileName,
+		DisplayName:     displayName,
+		TitleID:         titleID,
+		Title:           title,
+		SeriesTitle:     seriesTitle,
+		EpisodeTitle:    item.EpisodeTitle,
+		Year:            year,
+		DurationSeconds: probe.DurationSeconds,
+		PosterURL:       posterURL,
+		BackdropURL:     backdropURL,
+		EpisodeImage:    episodeImageURL,
+		ExternalIDs:     externalIDs,
+		StreamPath:      streamPath,
+		StreamURL:       "/api/video/stream?" + query.Encode(),
+		DirectStream:    true,
+		SourceType:      models.MediaSourceLocal,
+		SourceName:      "Local",
 	}
 	if h.transmuxEnabled {
 		resp.HLSAvailable = true
