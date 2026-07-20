@@ -1594,6 +1594,10 @@ func (h *VideoHandler) streamWithTransmuxProvider(w http.ResponseWriter, r *http
 
 // buildWebDAVURL constructs a WebDAV URL for ffprobe seekable access (usenet paths)
 func (h *VideoHandler) buildWebDAVURL(cleanPath string) string {
+	if isRemoteMediaProviderPath(cleanPath) {
+		return ""
+	}
+
 	h.webdavMu.RLock()
 	base := h.webdavBaseURL
 	prefix := h.webdavPrefix

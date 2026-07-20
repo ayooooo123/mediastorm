@@ -91,6 +91,20 @@ func TestBuildWebDAVURLEncodesPath(t *testing.T) {
 	}
 }
 
+func TestBuildWebDAVURLSkipsRemoteMedia(t *testing.T) {
+	h := &VideoHandler{}
+	h.webdavBaseURL = "http://user:pass@127.0.0.1:7777"
+	h.webdavPrefix = "/webdav"
+
+	for _, path := range []string{"plexmedia:item-123", "jellyfinmedia:item-456"} {
+		t.Run(path, func(t *testing.T) {
+			if got := h.buildWebDAVURL(path); got != "" {
+				t.Fatalf("buildWebDAVURL(%q) = %q, want empty", path, got)
+			}
+		})
+	}
+}
+
 func TestCropdetectRegex(t *testing.T) {
 	tests := []struct {
 		name  string

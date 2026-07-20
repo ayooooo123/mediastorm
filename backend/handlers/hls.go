@@ -1175,6 +1175,9 @@ func (m *HLSManager) buildLocalWebDAVURL(session *HLSSession) (string, bool) {
 	if session == nil {
 		return "", false
 	}
+	if isRemoteMediaProviderPath(session.Path) || isRemoteMediaProviderPath(session.OriginalPath) {
+		return "", false
+	}
 
 	m.localAccessMu.RLock()
 	base := m.localWebDAVBaseURL
@@ -1206,6 +1209,10 @@ func (m *HLSManager) buildLocalWebDAVURL(session *HLSSession) (string, bool) {
 // buildLocalWebDAVURLFromPath builds a WebDAV URL from just a path (no session required).
 // This is used for probing usenet content where we don't have a session yet.
 func (m *HLSManager) buildLocalWebDAVURLFromPath(path string) (string, bool) {
+	if isRemoteMediaProviderPath(path) {
+		return "", false
+	}
+
 	m.localAccessMu.RLock()
 	base := m.localWebDAVBaseURL
 	prefix := m.localWebDAVPrefix

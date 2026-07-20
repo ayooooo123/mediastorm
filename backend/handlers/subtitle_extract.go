@@ -106,6 +106,10 @@ func (m *SubtitleExtractManager) ConfigureLocalWebDAVAccess(baseURL, prefix, use
 
 // buildWebDAVURL constructs a WebDAV URL for the given path
 func (m *SubtitleExtractManager) buildWebDAVURL(cleanPath string) string {
+	if isRemoteMediaProviderPath(cleanPath) {
+		return ""
+	}
+
 	m.webdavMu.RLock()
 	base := m.webdavBase
 	prefix := m.webdavPrefix
