@@ -124,6 +124,10 @@ func (c *tmdbClient) doGET(ctx context.Context, endpoint string, v any) error {
 	backoff := 300 * time.Millisecond
 
 	for attempt := 0; attempt < 3; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
 		// Rate limiting — compute wait outside the lock to avoid blocking other goroutines
 		c.throttleMu.Lock()
 		wait := c.minInterval - time.Since(c.lastRequest)
@@ -135,7 +139,9 @@ func (c *tmdbClient) doGET(ctx context.Context, endpoint string, v any) error {
 		}
 		c.throttleMu.Unlock()
 		if wait > 0 {
-			time.Sleep(wait)
+			if err := sleepWithContext(ctx, wait); err != nil {
+				return err
+			}
 		}
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -147,7 +153,12 @@ func (c *tmdbClient) doGET(ctx context.Context, endpoint string, v any) error {
 		if err != nil {
 			lastErr = err
 			log.Printf("[tmdb] http error (attempt %d/3): %v", attempt+1, err)
-			time.Sleep(backoff)
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
+			if err := sleepWithContext(ctx, backoff); err != nil {
+				return err
+			}
 			backoff *= 2
 			continue
 		}
@@ -159,10 +170,14 @@ func (c *tmdbClient) doGET(ctx context.Context, endpoint string, v any) error {
 			lastErr = fmt.Errorf("tmdb request failed: %s", resp.Status)
 			if ra := resp.Header.Get("Retry-After"); ra != "" {
 				if secs, err := strconv.Atoi(ra); err == nil {
-					time.Sleep(time.Duration(secs) * time.Second)
+					if err := sleepWithContext(ctx, time.Duration(secs)*time.Second); err != nil {
+						return err
+					}
 				}
 			} else {
-				time.Sleep(backoff)
+				if err := sleepWithContext(ctx, backoff); err != nil {
+					return err
+				}
 				backoff *= 2
 			}
 			continue
@@ -182,6 +197,20 @@ func (c *tmdbClient) doGET(ctx context.Context, endpoint string, v any) error {
 	}
 
 	return lastErr
+}
+
+func sleepWithContext(ctx context.Context, duration time.Duration) error {
+	if duration <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (c *tmdbClient) isConfigured() bool {

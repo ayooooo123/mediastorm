@@ -8787,15 +8787,42 @@ func (s *Service) resolveTMDBMovieByTitleYear(ctx context.Context, title string,
 	if s == nil || s.tmdb == nil || !s.tmdb.isConfigured() {
 		return 0
 	}
+	cacheID := cacheKey(
+		"tmdb", "resolve", "movie", "title-year", "v1",
+		s.tmdb.language,
+		strings.ToLower(strings.TrimSpace(title)),
+		strconv.Itoa(year),
+	)
+	if s.idCache != nil {
+		var cached cachedTMDBMovieTitleYearResolution
+		if ok, _ := s.idCache.get(cacheID, &cached); ok && cached.TMDBID > 0 {
+			return cached.TMDBID
+		}
+	}
+	if s.cache != nil {
+		var cached cachedTMDBMovieTitleYearResolution
+		if ok, _ := s.cache.getWithMaxAge(cacheID, &cached, tmdbMovieTitleYearFailureTTL); ok && cached.Failed {
+			return 0
+		}
+	}
 	results, err := s.tmdb.searchTitles(ctx, title, "movie", 5, false)
 	if err != nil {
 		log.Printf("[metadata] tmdb movie title/year fallback search error title=%q year=%d err=%v", title, year, err)
+		if s.cache != nil {
+			_ = s.cache.set(cacheID, cachedTMDBMovieTitleYearResolution{Failed: true})
+		}
 		return 0
 	}
 	selected, ok := selectTMDBMovieSearchResult(title, year, results)
 	if !ok {
 		log.Printf("[metadata] tmdb movie title/year fallback found no exact match title=%q year=%d results=%d", title, year, len(results))
+		if s.cache != nil {
+			_ = s.cache.set(cacheID, cachedTMDBMovieTitleYearResolution{Failed: true})
+		}
 		return 0
+	}
+	if s.idCache != nil {
+		_ = s.idCache.set(cacheID, cachedTMDBMovieTitleYearResolution{TMDBID: selected.Title.TMDBID})
 	}
 	return selected.Title.TMDBID
 }
@@ -9054,6 +9081,13 @@ type CuratedItem struct {
 	MediaType string `json:"mediaType"`
 }
 
+const tmdbMovieTitleYearFailureTTL = 10 * time.Minute
+
+type cachedTMDBMovieTitleYearResolution struct {
+	TMDBID int64 `json:"tmdbId,omitempty"`
+	Failed bool  `json:"failed,omitempty"`
+}
+
 // curatedItemMediaType normalizes a curated item's media type to "movie" or "series".
 func curatedItemMediaType(mediaType string) string {
 	switch strings.ToLower(strings.TrimSpace(mediaType)) {
@@ -9064,10 +9098,45 @@ func curatedItemMediaType(mediaType string) string {
 	}
 }
 
+func (s *Service) curatedListCacheID(items []CuratedItem) string {
+	identities := make([]string, len(items))
+	for i, item := range items {
+		mediaType := curatedItemMediaType(item.MediaType)
+		switch {
+		case strings.TrimSpace(item.IMDBID) != "":
+			identities[i] = "imdb:" + strings.TrimSpace(item.IMDBID)
+		case item.TMDBID > 0:
+			identities[i] = fmt.Sprintf("tmdb:%s:%d", mediaType, item.TMDBID)
+		case item.TVDBID > 0:
+			identities[i] = fmt.Sprintf("tvdb:%s:%d", mediaType, item.TVDBID)
+		default:
+			identities[i] = fmt.Sprintf("title:%s:%d", strings.ToLower(strings.TrimSpace(item.Title)), item.Year)
+		}
+	}
+	sort.Strings(identities)
+	return cacheKey("curated", "v8", strings.Join(identities, ","), s.client.language)
+}
+
+func (s *Service) cachedCuratedList(ctx context.Context, cacheID, label string) ([]models.TrendingItem, bool) {
+	var cached []models.TrendingItem
+	if ok, _ := s.cache.get(cacheID, &cached); !ok || len(cached) == 0 {
+		return nil, false
+	}
+	log.Printf("[metadata] curated list cache hit for %q (%d items)", label, len(cached))
+	s.enrichShelfArtwork(ctx, cached, customListShelfArtworkLimit)
+	ensureTrendingMovieReleaseStatuses(cached)
+	return cached, true
+}
+
 // GetCuratedList enriches a caller-provided list of curated items (identified by
 // IMDB ID) and returns them as TrendingItems, using the same concurrent enrichment
 // pipeline as custom MDBList lists.
 func (s *Service) GetCuratedList(ctx context.Context, items []CuratedItem, label string) ([]models.TrendingItem, error) {
+	rawCacheID := s.curatedListCacheID(items)
+	if cached, ok := s.cachedCuratedList(ctx, rawCacheID, label); ok {
+		return cached, nil
+	}
+
 	// Convert CuratedItems into mdblistItems for the shared enrichment pipeline.
 	// Items may arrive identified only by TMDB ID (e.g. Letterboxd RSS) or TVDB
 	// ID (e.g. Simkl); thread those IDs through and resolve a stable IMDB ID
@@ -9125,11 +9194,10 @@ func (s *Service) GetCuratedList(ctx context.Context, items []CuratedItem, label
 	sortedIdentities := strings.Join(identities, ",")
 	cacheID := cacheKey("curated", "v8", sortedIdentities, s.client.language)
 
-	var cached []models.TrendingItem
-	if ok, _ := s.cache.get(cacheID, &cached); ok && len(cached) > 0 {
-		log.Printf("[metadata] curated list cache hit for %q (%d items)", label, len(cached))
-		s.enrichShelfArtwork(ctx, cached, customListShelfArtworkLimit)
-		ensureTrendingMovieReleaseStatuses(cached)
+	if cached, ok := s.cachedCuratedList(ctx, cacheID, label); ok {
+		if rawCacheID != cacheID {
+			_ = s.cache.set(rawCacheID, cached)
+		}
 		return cached, nil
 	}
 
@@ -9159,6 +9227,9 @@ func (s *Service) GetCuratedList(ctx context.Context, items []CuratedItem, label
 	// Cache results
 	if len(results) > 0 {
 		_ = s.cache.set(cacheID, results)
+		if rawCacheID != cacheID {
+			_ = s.cache.set(rawCacheID, results)
+		}
 		log.Printf("[metadata] cached %d enriched items for curated list %q", len(results), label)
 	}
 

@@ -2,6 +2,7 @@ package metadata
 
 import (
 	"context"
+	"errors"
 	"image"
 	"image/color"
 	"image/png"
@@ -11,9 +12,38 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	xdraw "golang.org/x/image/draw"
 )
+
+type failingRoundTripper struct {
+	calls int
+}
+
+func (rt *failingRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	rt.calls++
+	return nil, errors.New("temporary network failure")
+}
+
+func TestDoGETStopsRetryBackoffWhenContextCanceled(t *testing.T) {
+	rt := &failingRoundTripper{}
+	c := newTMDBClient("test-key", "en", &http.Client{Transport: rt}, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	started := time.Now()
+	err := c.doGET(ctx, "https://api.themoviedb.org/test", &struct{}{})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("doGET error = %v, want context deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > 200*time.Millisecond {
+		t.Fatalf("doGET took %v after cancellation, want under 200ms", elapsed)
+	}
+	if rt.calls != 1 {
+		t.Fatalf("network calls = %d, want 1", rt.calls)
+	}
+}
 
 // countingRoundTripper returns a canned response for every request and counts calls.
 type countingRoundTripper struct {
