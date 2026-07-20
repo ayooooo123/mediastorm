@@ -50,6 +50,9 @@ services:
   mediastorm:
     image: godver3/mediastorm:latest
     container_name: mediastorm
+    # Defaults to root for backward compatibility. Set PUID and PGID in your
+    # shell or .env file to opt into running as a specific host user.
+    user: "${PUID:-0}:${PGID:-0}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -74,6 +77,17 @@ volumes:
 ```
 
 The cache folder will contain settings.json and stream metadata. All user data (accounts, watch history, playback progress, etc.) is stored in PostgreSQL.
+
+The container runs as root by default for backward compatibility. On Linux, you can opt into running it as the user that owns the cache folder without building a custom image:
+
+```bash
+export PUID="$(id -u)"
+export PGID="$(id -g)"
+sudo chown -R "$PUID:$PGID" /path/to/your/cache
+docker compose up -d
+```
+
+You can also put `PUID` and `PGID` in a `.env` file beside `docker-compose.yml`. These values are read by Docker Compose to populate the service's `user:` field; passing them only through the container's `environment:` section does not change its user. The image does not change ownership automatically, so the selected identity must have read and write access to the cache folder and any other writable host paths mounted into the container.
 
 2. Start the containers:
 

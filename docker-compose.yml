@@ -18,6 +18,9 @@ services:
   mediastorm:
     image: godver3/mediastorm:latest
     container_name: mediastorm
+    # Defaults to root for backward compatibility. Set PUID and PGID in your
+    # shell or .env file to opt into running as a specific host user.
+    user: "${PUID:-0}:${PGID:-0}"
     depends_on:
       postgres:
         condition: service_healthy
