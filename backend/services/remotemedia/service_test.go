@@ -1,12 +1,69 @@
 package remotemedia
 
 import (
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"novastream/models"
 	"novastream/services/jellyfin"
 	"novastream/services/plex"
 )
+
+func TestPlexServerResolverCollapsesConcurrentLoads(t *testing.T) {
+	resolver := &plexServerResolver{}
+	var loads atomic.Int32
+	load := func(string) ([]plex.PlexResource, error) {
+		loads.Add(1)
+		time.Sleep(10 * time.Millisecond)
+		return []plex.PlexResource{{ClientIdentifier: "server-1", Name: "Den"}}, nil
+	}
+
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			server, err := resolver.resolve("account-1", "token-1", "server-1", load)
+			if err != nil || server.ClientIdentifier != "server-1" {
+				t.Errorf("resolve() server=%#v err=%v", server, err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if got := loads.Load(); got != 1 {
+		t.Fatalf("resource loads=%d, want 1", got)
+	}
+}
+
+func TestPlexServerResolverRefreshesForChangedTokenAndExpiry(t *testing.T) {
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	resolver := &plexServerResolver{now: func() time.Time { return now }}
+	loads := 0
+	load := func(string) ([]plex.PlexResource, error) {
+		loads++
+		return []plex.PlexResource{{ClientIdentifier: "server-1"}}, nil
+	}
+
+	for _, token := range []string{"token-1", "token-1", "token-2"} {
+		if _, err := resolver.resolve("account-1", token, "server-1", load); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if loads != 2 {
+		t.Fatalf("loads after token change=%d, want 2", loads)
+	}
+
+	now = now.Add(plexServerCacheTTL)
+	if _, err := resolver.resolve("account-1", "token-2", "server-1", load); err != nil {
+		t.Fatal(err)
+	}
+	if loads != 3 {
+		t.Fatalf("loads after expiry=%d, want 3", loads)
+	}
+}
 
 func TestNormalizeJellyfinEpisodeVersions(t *testing.T) {
 	library := &models.RemoteMediaLibrary{ID: "lib", Type: models.LocalMediaLibraryTypeShow, Provider: models.MediaSourceJellyfin}

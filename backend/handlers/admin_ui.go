@@ -10701,6 +10701,29 @@ func (h *AdminUIHandler) ListLocalMediaGroups(w http.ResponseWriter, r *http.Req
 	_ = json.NewEncoder(w).Encode(groups)
 }
 
+// GetRemoteMediaArtwork serves Plex/Jellyfin artwork under the admin/account
+// cookie-authenticated route. The regular /api artwork route uses app session
+// authentication and is not accessible to an admin page's plain <img> tag.
+func (h *AdminUIHandler) GetRemoteMediaArtwork(w http.ResponseWriter, r *http.Request) {
+	if !h.requireLocalMediaAdmin(w, r) {
+		return
+	}
+	if h.remoteMediaService == nil {
+		http.NotFound(w, r)
+		return
+	}
+	resp, err := h.remoteMediaService.OpenArtwork(
+		r.Context(),
+		strings.TrimSpace(mux.Vars(r)["itemID"]),
+		strings.TrimSpace(mux.Vars(r)["kind"]),
+	)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	remotemedia.CopyArtwork(w, resp)
+}
+
 func (h *AdminUIHandler) DiscoverRemoteMediaLibraries(w http.ResponseWriter, r *http.Request) {
 	if !h.requireLocalMediaAdmin(w, r) {
 		return
