@@ -81,6 +81,11 @@ func TestExtractTokenRestrictsQueryTokensToMediaRoutes(t *testing.T) {
 		t.Fatalf("media query token = %q, want media-token", got)
 	}
 
+	artworkReq := httptest.NewRequest("GET", "/api/library/items/item-1/artwork/poster?token=art-token", nil)
+	if got := extractToken(artworkReq); got != "art-token" {
+		t.Fatalf("artwork query token = %q, want art-token", got)
+	}
+
 	settingsReq := httptest.NewRequest("GET", "/api/settings?token=leaked-token", nil)
 	if got := extractToken(settingsReq); got != "" {
 		t.Fatalf("general API accepted query token %q", got)

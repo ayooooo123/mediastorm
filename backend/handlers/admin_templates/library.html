@@ -1276,6 +1276,14 @@ function buildCurrentItemsMap(items, groups) {
   return map;
 }
 
+function libraryArtworkUrl(url) {
+  if (!url) return '';
+  if (url.startsWith('/api/library/items/') && url.includes('/artwork/')) {
+    return basePath + url;
+  }
+  return url;
+}
+
 function renderSummaryPills(library) {
   if (!library) return '';
   const unmatchedCount = Math.max(0, (library.lastScanDiscovered || 0) - (library.lastScanMatched || 0) - (library.lastScanLowConfidence || 0));
@@ -1298,7 +1306,7 @@ function setQuickFilter(filter) {
 function renderItem(item, options = {}) {
   const meta = item.metadata || {};
   const probe = item.probe || {};
-  const poster = (meta.textPoster && meta.textPoster.url) || (meta.poster && meta.poster.url) || '';
+  const poster = libraryArtworkUrl((meta.textPoster && meta.textPoster.url) || (meta.poster && meta.poster.url) || '');
   const badgeClass = item.isMissing ? 'offline' : matchStatusClass(item.matchStatus);
   const expanded = expandedItems.has(item.id);
   const forceCollapsible = options.forceCollapsible === true;
@@ -1341,7 +1349,7 @@ function renderItem(item, options = {}) {
 function renderPosterItem(item) {
   const meta = item.metadata || {};
   const probe = item.probe || {};
-  const poster = (meta.textPoster && meta.textPoster.url) || (meta.poster && meta.poster.url) || '';
+  const poster = libraryArtworkUrl((meta.textPoster && meta.textPoster.url) || (meta.poster && meta.poster.url) || '');
   const badgeClass = item.isMissing ? 'offline' : matchStatusClass(item.matchStatus);
   const title = meta.name || item.matchedName || item.detectedTitle || item.fileName;
   const year = meta.year || item.matchedYear || item.detectedYear || '';
@@ -1374,7 +1382,7 @@ function renderPosterItem(item) {
 }
 
 function renderGroupedItem(group) {
-  const poster = (group.textPoster && group.textPoster.url) || (group.poster && group.poster.url) || '';
+  const poster = libraryArtworkUrl((group.textPoster && group.textPoster.url) || (group.poster && group.poster.url) || '');
   const expanded = expandedGroups.has(group.id);
   const badgeClass = matchStatusClass(group.matchStatus);
   const title = group.title || 'Untitled';
@@ -1422,7 +1430,7 @@ function renderGroupedItem(group) {
 }
 
 function renderGroupedPosterItem(group) {
-  const poster = (group.textPoster && group.textPoster.url) || (group.poster && group.poster.url) || '';
+  const poster = libraryArtworkUrl((group.textPoster && group.textPoster.url) || (group.poster && group.poster.url) || '');
   const title = group.title || 'Untitled';
   const canBulkRematch = group.groupType === 'show' && group.itemCount > 1;
   const metaBits = [];

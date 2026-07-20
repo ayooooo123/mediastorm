@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -38,6 +39,58 @@ type Service struct {
 	cfg      *config.Manager
 	plex     *plex.Client
 	jellyfin *jellyfin.Client
+	servers  plexServerResolver
+}
+
+const plexServerCacheTTL = 5 * time.Minute
+
+type plexServerCacheEntry struct {
+	server    plex.PlexResource
+	authToken string
+	expiresAt time.Time
+}
+
+// plexServerResolver prevents artwork and playback requests from each fetching
+// the Plex resource list independently. Keeping the load under the mutex also
+// collapses a burst of poster requests into one plex.tv request.
+type plexServerResolver struct {
+	mu      sync.Mutex
+	entries map[string]plexServerCacheEntry
+	now     func() time.Time
+}
+
+func (r *plexServerResolver) resolve(accountID, authToken, serverID string, load func(string) ([]plex.PlexResource, error)) (plex.PlexResource, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	now := time.Now()
+	if r.now != nil {
+		now = r.now()
+	}
+	key := accountID + "\x00" + serverID
+	if cached, ok := r.entries[key]; ok && cached.authToken == authToken && now.Before(cached.expiresAt) {
+		return cached.server, nil
+	}
+
+	servers, err := load(authToken)
+	if err != nil {
+		return plex.PlexResource{}, err
+	}
+	if r.entries == nil {
+		r.entries = make(map[string]plexServerCacheEntry)
+	}
+	for _, server := range servers {
+		serverKey := accountID + "\x00" + server.ClientIdentifier
+		r.entries[serverKey] = plexServerCacheEntry{
+			server:    server,
+			authToken: authToken,
+			expiresAt: now.Add(plexServerCacheTTL),
+		}
+	}
+	if cached, ok := r.entries[key]; ok {
+		return cached.server, nil
+	}
+	return plex.PlexResource{}, errors.New("Plex server unavailable")
 }
 
 func NewService(store *datastore.DataStore, cfg *config.Manager, plexClient *plex.Client, jellyfinClient *jellyfin.Client) (*Service, error) {
@@ -232,20 +285,15 @@ func (s *Service) fetch(ctx context.Context, library *models.RemoteMediaLibrary)
 	if account == nil {
 		return nil, errors.New("Plex account missing")
 	}
-	servers, err := s.plex.GetAccessibleServers(account.AuthToken)
+	server, err := s.servers.resolve(library.AccountID, account.AuthToken, library.ServerID, s.plex.GetAccessibleServers)
 	if err != nil {
 		return nil, err
 	}
-	for _, server := range servers {
-		if server.ClientIdentifier == library.ServerID {
-			items, err := s.plex.GetServerLibraryItems(server, library.ExternalLibraryID, string(library.Type))
-			if err != nil {
-				return nil, err
-			}
-			return normalizePlex(library, items), nil
-		}
+	items, err := s.plex.GetServerLibraryItems(server, library.ExternalLibraryID, string(library.Type))
+	if err != nil {
+		return nil, err
 	}
-	return nil, errors.New("Plex server unavailable")
+	return normalizePlex(library, items), nil
 }
 
 func normalizeJellyfin(library *models.RemoteMediaLibrary, source []jellyfin.JellyfinItem) []models.RemoteMediaItem {
@@ -605,16 +653,11 @@ func (s *Service) openStream(ctx context.Context, library *models.RemoteMediaLib
 	if account == nil {
 		return nil, ErrNotFound
 	}
-	servers, err := s.plex.GetAccessibleServers(account.AuthToken)
+	server, err := s.servers.resolve(library.AccountID, account.AuthToken, library.ServerID, s.plex.GetAccessibleServers)
 	if err != nil {
 		return nil, err
 	}
-	for _, server := range servers {
-		if server.ClientIdentifier == library.ServerID {
-			return s.plex.OpenServerPath(ctx, server, item.ProviderData["partKey"], method, rangeHeader)
-		}
-	}
-	return nil, ErrNotFound
+	return s.plex.OpenServerPath(ctx, server, item.ProviderData["partKey"], method, rangeHeader)
 }
 
 func (s *Service) OpenArtwork(ctx context.Context, itemID, kind string) (*http.Response, error) {
@@ -653,16 +696,11 @@ func (s *Service) OpenArtwork(ctx context.Context, itemID, kind string) (*http.R
 	if kind == "backdrop" {
 		path = item.ProviderData["backdropPath"]
 	}
-	servers, err := s.plex.GetAccessibleServers(account.AuthToken)
+	server, err := s.servers.resolve(library.AccountID, account.AuthToken, library.ServerID, s.plex.GetAccessibleServers)
 	if err != nil {
 		return nil, err
 	}
-	for _, server := range servers {
-		if server.ClientIdentifier == library.ServerID {
-			return s.plex.OpenServerPath(ctx, server, path, http.MethodGet, "")
-		}
-	}
-	return nil, ErrNotFound
+	return s.plex.OpenServerPath(ctx, server, path, http.MethodGet, "")
 }
 
 func CopyArtwork(w http.ResponseWriter, resp *http.Response) {
