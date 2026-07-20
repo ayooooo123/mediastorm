@@ -1054,8 +1054,14 @@ func (h *VideoHandler) streamViaProvider(w http.ResponseWriter, r *http.Request,
 			pipelineStarvationTimeout,
 			pipelineStarvationCheckInterval,
 			func(blockedFor time.Duration) bool {
-				log.Printf("[stream-health] upstream read blocked in provider stream: path=%q blockedFor=%v streamID=%s",
-					cleanPath, blockedFor.Round(time.Millisecond), streamID)
+				marked := tracker.MarkPlaybackMigration(streamID, "backend-starvation")
+				if marked {
+					log.Printf("[stream-migration] upstream starvation detected in provider stream: path=%q blockedFor=%v streamID=%s",
+						cleanPath, blockedFor.Round(time.Millisecond), streamID)
+				} else {
+					log.Printf("[stream-health] upstream read blocked in provider stream without playback metadata: path=%q blockedFor=%v streamID=%s",
+						cleanPath, blockedFor.Round(time.Millisecond), streamID)
+				}
 				return true
 			},
 		)
@@ -1126,6 +1132,7 @@ func (h *VideoHandler) streamViaProvider(w http.ResponseWriter, r *http.Request,
 					window := now.Sub(throughputLogAt)
 					if providerWindowBytes > 0 {
 						logStreamThroughput("provider-read", cleanPath, providerWindowBytes, providerWindowRead, window)
+						tracker.ObserveUpstreamThroughput(streamID, providerWindowBytes, providerWindowRead)
 					}
 					if clientWindowBytes > 0 {
 						logStreamThroughput("client-write", cleanPath, clientWindowBytes, clientWindowWrite, window)
@@ -5486,8 +5493,14 @@ func (h *VideoHandler) proxyExternalURL(w http.ResponseWriter, r *http.Request, 
 		pipelineStarvationTimeout,
 		pipelineStarvationCheckInterval,
 		func(blockedFor time.Duration) bool {
-			log.Printf("[stream-health] upstream read blocked in external proxy: host=%q path=%q blockedFor=%v streamID=%s",
-				parsedURL.Host, parsedURL.Path, blockedFor.Round(time.Millisecond), streamID)
+			marked := tracker.MarkPlaybackMigration(streamID, "backend-starvation")
+			if marked {
+				log.Printf("[stream-migration] upstream starvation detected in external proxy: host=%q path=%q blockedFor=%v streamID=%s",
+					parsedURL.Host, parsedURL.Path, blockedFor.Round(time.Millisecond), streamID)
+			} else {
+				log.Printf("[stream-health] upstream read blocked in external proxy without playback metadata: host=%q path=%q blockedFor=%v streamID=%s",
+					parsedURL.Host, parsedURL.Path, blockedFor.Round(time.Millisecond), streamID)
+			}
 			return true
 		},
 	)
@@ -5567,6 +5580,7 @@ func (h *VideoHandler) proxyExternalURL(w http.ResponseWriter, r *http.Request, 
 				window := now.Sub(throughputLogAt)
 				if upstreamWindowBytes > 0 {
 					logStreamThroughput("external-read", throughputPath, upstreamWindowBytes, upstreamWindowRead, window)
+					tracker.ObserveUpstreamThroughput(streamID, upstreamWindowBytes, upstreamWindowRead)
 				}
 				if clientWindowBytes > 0 {
 					logStreamThroughput("client-write", throughputPath, clientWindowBytes, clientWindowWrite, window)

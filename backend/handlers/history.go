@@ -576,6 +576,10 @@ func (h *HistoryHandler) UpdatePlaybackProgress(w http.ResponseWriter, r *http.R
 	}
 	allowedToContinue := !GetStreamTracker().ShouldStopPlayback(userID, update)
 	progress.AllowedToContinue = &allowedToContinue
+	// Bind the release's required bitrate to the exact active source. Provider
+	// read windows use this to prepare a qualified replacement before the native
+	// buffer is exhausted; client-write pacing is intentionally not used.
+	GetStreamTracker().ObservePlaybackBandwidth(userID, update)
 	if reason, migrate := GetStreamTracker().ShouldMigratePlayback(userID, update); migrate {
 		progress.MigrationRequested = true
 		progress.MigrationReason = reason

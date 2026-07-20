@@ -7,8 +7,12 @@ import (
 )
 
 const (
-	pipelineStarvationTimeout       = 8 * time.Second
-	pipelineStarvationCheckInterval = time.Second
+	// A blocked upstream read is useful before the native player exhausts its
+	// buffer. Migration is still gated by the player's buffer telemetry, so this
+	// can be deliberately shorter than the user-visible stall threshold without
+	// turning a transient provider pause into an unnecessary handoff.
+	pipelineStarvationTimeout       = 3 * time.Second
+	pipelineStarvationCheckInterval = 500 * time.Millisecond
 )
 
 // pipelineBlockWatch measures one blocking pipeline operation. Separate watches
