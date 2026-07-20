@@ -43,7 +43,7 @@ type DebridURLRefresher interface {
 	GetDirectURL(ctx context.Context, path string) (string, error)
 }
 
-// WarmEntry represents a pre-warmed continue watching item
+// WarmEntry represents a pre-warmed playable title.
 type WarmEntry struct {
 	TitleID          string                   `json:"titleId"`
 	TitleName        string                   `json:"titleName"`
@@ -79,7 +79,93 @@ const prewarmStableReResolveMinDays = 1
 const prewarmStableReResolveMaxDays = 30
 const prewarmRenewalLead = 8 * time.Minute
 
-// Service manages pre-warming of continue watching items
+const (
+	PrewarmShelfSelectionsConfigKey = "shelfSelections"
+	PrewarmItemScopeAll             = "all"
+	PrewarmItemScopeDisplayed       = "displayed"
+)
+
+// ShelfSelection controls which home shelf is warmed by a scheduled task.
+// Continue Watching uses PlayedWithinDays; all other shelves use ItemScope.
+type ShelfSelection struct {
+	ID               string `json:"id"`
+	ItemScope        string `json:"itemScope,omitempty"`
+	PlayedWithinDays int    `json:"playedWithinDays,omitempty"`
+}
+
+// ShelfItem is the common playable-title shape returned by a home shelf.
+type ShelfItem struct {
+	TitleID     string
+	TitleName   string
+	MediaType   string
+	Year        int
+	ImdbID      string
+	ExternalIDs map[string]string
+}
+
+// ShelfProvider resolves playable items from a profile's effective home shelf.
+type ShelfProvider interface {
+	ListPrewarmShelfItems(ctx context.Context, userID, shelfID, itemScope string) ([]ShelfItem, error)
+}
+
+// ParseShelfSelections parses and normalizes the scheduled-task shelf config.
+// Tasks created before shelf selection existed retain the legacy behavior.
+func ParseShelfSelections(taskConfig map[string]string) ([]ShelfSelection, error) {
+	raw := ""
+	if taskConfig != nil {
+		raw = strings.TrimSpace(taskConfig[PrewarmShelfSelectionsConfigKey])
+	}
+	if raw == "" {
+		return []ShelfSelection{{ID: "continue-watching", PlayedWithinDays: 14}}, nil
+	}
+
+	var selections []ShelfSelection
+	if err := json.Unmarshal([]byte(raw), &selections); err != nil {
+		return nil, fmt.Errorf("invalid pre-warm shelf selections: %w", err)
+	}
+	if len(selections) == 0 {
+		return nil, errors.New("pre-warm requires at least one home shelf")
+	}
+	if len(selections) > 100 {
+		return nil, errors.New("pre-warm supports at most 100 home shelves")
+	}
+
+	seen := make(map[string]bool, len(selections))
+	for i := range selections {
+		selection := &selections[i]
+		selection.ID = strings.TrimSpace(selection.ID)
+		if selection.ID == "" {
+			return nil, errors.New("pre-warm shelf id is required")
+		}
+		if seen[selection.ID] {
+			return nil, fmt.Errorf("pre-warm shelf %q is selected more than once", selection.ID)
+		}
+		seen[selection.ID] = true
+
+		if selection.ID == "continue-watching" {
+			if selection.PlayedWithinDays == 0 {
+				selection.PlayedWithinDays = 14
+			}
+			if selection.PlayedWithinDays < 1 || selection.PlayedWithinDays > 3650 {
+				return nil, errors.New("continue-watching played-within days must be between 1 and 3650")
+			}
+			selection.ItemScope = ""
+			continue
+		}
+
+		selection.ItemScope = strings.ToLower(strings.TrimSpace(selection.ItemScope))
+		if selection.ItemScope == "" {
+			selection.ItemScope = PrewarmItemScopeAll
+		}
+		if selection.ItemScope != PrewarmItemScopeAll && selection.ItemScope != PrewarmItemScopeDisplayed {
+			return nil, fmt.Errorf("pre-warm shelf %q item scope must be all or displayed", selection.ID)
+		}
+		selection.PlayedWithinDays = 0
+	}
+	return selections, nil
+}
+
+// Service manages pre-warming of configured home-shelf items.
 type Service struct {
 	mu      sync.RWMutex
 	entries map[string]*WarmEntry // key: "titleID:userID:settingsScopeKey"
@@ -92,6 +178,7 @@ type Service struct {
 
 	historySvc      HistoryProvider
 	usersSvc        UsersProvider
+	shelfProvider   ShelfProvider
 	clientsSvc      ClientsProvider
 	prequeueStore   *playback.PrequeueStore
 	debridStreaming DebridURLRefresher
@@ -159,6 +246,11 @@ func (s *Service) SetHistoryService(svc HistoryProvider) {
 // SetUsersService sets the users provider
 func (s *Service) SetUsersService(svc UsersProvider) {
 	s.usersSvc = svc
+}
+
+// SetShelfProvider sets the home-shelf resolver used by configured prewarm tasks.
+func (s *Service) SetShelfProvider(provider ShelfProvider) {
+	s.shelfProvider = provider
 }
 
 // SetClientsService sets the clients provider used for client-scoped prewarm.
@@ -614,10 +706,24 @@ func (s *Service) Stop() {
 	}
 }
 
-// RunOnce performs a single prewarm cycle: syncs continue watching items for all profiles
+// RunOnce performs a legacy-compatible prewarm cycle.
 func (s *Service) RunOnce(ctx context.Context) (SyncResult, error) {
+	return s.RunOnceWithConfig(ctx, nil)
+}
+
+// RunOnceWithConfig performs a prewarm cycle for the configured home shelves.
+func (s *Service) RunOnceWithConfig(ctx context.Context, taskConfig map[string]string) (SyncResult, error) {
 	if s.historySvc == nil || s.usersSvc == nil || s.workerFn == nil {
 		return SyncResult{}, fmt.Errorf("prewarm service not fully configured")
+	}
+	selections, err := ParseShelfSelections(taskConfig)
+	if err != nil {
+		return SyncResult{}, err
+	}
+	for _, selection := range selections {
+		if selection.ID != "continue-watching" && s.shelfProvider == nil {
+			return SyncResult{}, fmt.Errorf("prewarm home shelf provider is not configured for %q", selection.ID)
+		}
 	}
 
 	var result SyncResult
@@ -630,9 +736,7 @@ func (s *Service) RunOnce(ctx context.Context) (SyncResult, error) {
 	}
 
 	maxAge := s.getMaxAge()
-	activityCutoff := time.Now().UTC().Add(-continueWatchingPrewarmMaxAge)
-
-	// Track which entries are still valid (in continue watching)
+	// Track which entries are still selected by at least one configured shelf.
 	activeKeys := make(map[string]bool)
 
 	// Track which keys have been processed in this cycle to avoid duplicates
@@ -646,63 +750,90 @@ func (s *Service) RunOnce(ctx context.Context) (SyncResult, error) {
 			continue
 		}
 
-		resolveCount := 0
+		continueByID := make(map[string]models.SeriesWatchState, len(states))
+		continueByIMDB := make(map[string]models.SeriesWatchState, len(states))
 		for _, state := range states {
-			if !isRecentContinueWatchingActivity(state, activityCutoff) {
-				result.Skipped++
-				continue
+			continueByID[state.SeriesID] = state
+			if imdbID := continueWatchingIMDBID(state); imdbID != "" {
+				continueByIMDB[imdbID] = state
+			}
+		}
+
+		resolveCount := 0
+		for _, selection := range selections {
+			candidates := make([]models.SeriesWatchState, 0)
+			if selection.ID == "continue-watching" {
+				activityCutoff := time.Now().UTC().Add(-time.Duration(selection.PlayedWithinDays) * 24 * time.Hour)
+				for _, state := range states {
+					if !isRecentContinueWatchingActivity(state, activityCutoff) {
+						result.Skipped++
+						continue
+					}
+					candidates = append(candidates, state)
+				}
+			} else {
+				shelfItems, shelfErr := s.shelfProvider.ListPrewarmShelfItems(ctx, user.ID, selection.ID, selection.ItemScope)
+				if shelfErr != nil {
+					return result, fmt.Errorf("load pre-warm shelf %q for profile %s: %w", selection.ID, user.Name, shelfErr)
+				}
+				for _, item := range shelfItems {
+					state, ok := shelfItemWatchState(item, continueByID, continueByIMDB)
+					if !ok {
+						result.Skipped++
+						continue
+					}
+					candidates = append(candidates, state)
+				}
 			}
 
-			profileScopeKey := s.scopeKey(user.ID, "", state.SeriesID)
-			key := entryKey(state.SeriesID, user.ID, profileScopeKey)
-			activeKeys[key] = true
-			activeKeys[entryKey(state.SeriesID, user.ID)] = true
+			for _, state := range candidates {
 
-			// Skip if we already processed this title+user in this cycle
-			if processedKeys[key] {
-				result.Skipped++
-				continue
-			}
-			processedKeys[key] = true
+				profileScopeKey := s.scopeKey(user.ID, "", state.SeriesID)
+				key := entryKey(state.SeriesID, user.ID, profileScopeKey)
+				activeKeys[key] = true
+				activeKeys[entryKey(state.SeriesID, user.ID)] = true
 
-			// Determine target episode
-			var targetEpisode *models.EpisodeReference
-			mediaType := "movie"
-
-			if state.NextEpisode != nil && state.NextEpisode.SeasonNumber > 0 {
-				targetEpisode = state.NextEpisode
-				mediaType = "series"
-			} else if state.LastWatched.SeasonNumber > 0 {
-				// Has episode info but no next episode — it's a series that's been fully watched
-				// Skip fully watched series
-				continue
-			}
-
-			// Get IMDB ID from external IDs
-			imdbID := ""
-			if state.ExternalIDs != nil {
-				imdbID = state.ExternalIDs["imdbId"]
-			}
-
-			if err := s.warmContinueWatchingScope(ctx, state, user, mediaType, imdbID, targetEpisode, profileScopeKey, "", maxAge, &resolveCount, &result); err != nil {
-				return result, err
-			}
-
-			if s.clientsSvc == nil {
-				continue
-			}
-			seenScopes := map[string]bool{profileScopeKey: true}
-			for _, client := range s.clientsSvc.ListByUser(user.ID) {
-				clientScopeKey := s.scopeKey(user.ID, client.ID, state.SeriesID)
-				if seenScopes[clientScopeKey] {
+				// A title may appear on multiple selected shelves; resolve it once.
+				if processedKeys[key] {
+					result.Skipped++
 					continue
 				}
-				seenScopes[clientScopeKey] = true
-				clientKey := entryKey(state.SeriesID, user.ID, clientScopeKey)
-				activeKeys[clientKey] = true
-				processedKeys[clientKey] = true
-				if err := s.warmContinueWatchingScope(ctx, state, user, mediaType, imdbID, targetEpisode, clientScopeKey, client.ID, maxAge, &resolveCount, &result); err != nil {
+				processedKeys[key] = true
+
+				// Determine target episode.
+				var targetEpisode *models.EpisodeReference
+				mediaType := "movie"
+
+				if state.NextEpisode != nil && state.NextEpisode.SeasonNumber > 0 {
+					targetEpisode = state.NextEpisode
+					mediaType = "series"
+				} else if state.LastWatched.SeasonNumber > 0 {
+					// Has episode info but no next episode — it's a series that's been fully watched.
+					continue
+				}
+
+				imdbID := continueWatchingIMDBID(state)
+
+				if err := s.warmContinueWatchingScope(ctx, state, user, mediaType, imdbID, targetEpisode, profileScopeKey, "", maxAge, &resolveCount, &result); err != nil {
 					return result, err
+				}
+
+				if s.clientsSvc == nil {
+					continue
+				}
+				seenScopes := map[string]bool{profileScopeKey: true}
+				for _, client := range s.clientsSvc.ListByUser(user.ID) {
+					clientScopeKey := s.scopeKey(user.ID, client.ID, state.SeriesID)
+					if seenScopes[clientScopeKey] {
+						continue
+					}
+					seenScopes[clientScopeKey] = true
+					clientKey := entryKey(state.SeriesID, user.ID, clientScopeKey)
+					activeKeys[clientKey] = true
+					processedKeys[clientKey] = true
+					if err := s.warmContinueWatchingScope(ctx, state, user, mediaType, imdbID, targetEpisode, clientScopeKey, client.ID, maxAge, &resolveCount, &result); err != nil {
+						return result, err
+					}
 				}
 			}
 		}
@@ -715,7 +846,7 @@ func (s *Service) RunOnce(ctx context.Context) (SyncResult, error) {
 	}
 	s.mu.Unlock()
 
-	// Remove entries that are no longer in continue watching (but keep ad-hoc adopted ones)
+	// Remove entries that are no longer selected (but keep ad-hoc adopted ones).
 	s.mu.Lock()
 	for key := range s.entries {
 		if !activeKeys[key] && !s.isAdoptedEntry(s.entries[key]) {
@@ -739,6 +870,59 @@ func (s *Service) RunOnce(ctx context.Context) (SyncResult, error) {
 		result.Warmed, result.Skipped, result.Failed, result.Removed, reResolved, pruned)
 
 	return result, nil
+}
+
+func continueWatchingIMDBID(state models.SeriesWatchState) string {
+	if state.ExternalIDs == nil {
+		return ""
+	}
+	if imdbID := strings.TrimSpace(state.ExternalIDs["imdbId"]); imdbID != "" {
+		return imdbID
+	}
+	return strings.TrimSpace(state.ExternalIDs["imdb"])
+}
+
+func shelfItemWatchState(item ShelfItem, continueByID, continueByIMDB map[string]models.SeriesWatchState) (models.SeriesWatchState, bool) {
+	item.TitleID = strings.TrimSpace(item.TitleID)
+	item.TitleName = strings.TrimSpace(item.TitleName)
+	if item.TitleID == "" || item.TitleName == "" {
+		return models.SeriesWatchState{}, false
+	}
+	if state, ok := continueByID[item.TitleID]; ok {
+		return state, true
+	}
+	imdbID := strings.TrimSpace(item.ImdbID)
+	if imdbID == "" && item.ExternalIDs != nil {
+		imdbID = strings.TrimSpace(item.ExternalIDs["imdbId"])
+		if imdbID == "" {
+			imdbID = strings.TrimSpace(item.ExternalIDs["imdb"])
+		}
+	}
+	if imdbID != "" {
+		if state, ok := continueByIMDB[imdbID]; ok {
+			return state, true
+		}
+	}
+
+	mediaType := strings.ToLower(strings.TrimSpace(item.MediaType))
+	state := models.SeriesWatchState{
+		SeriesID:    item.TitleID,
+		SeriesTitle: item.TitleName,
+		Year:        item.Year,
+		ExternalIDs: item.ExternalIDs,
+	}
+	if state.ExternalIDs == nil {
+		state.ExternalIDs = map[string]string{}
+	}
+	if imdbID != "" {
+		state.ExternalIDs["imdbId"] = imdbID
+	}
+	if mediaType == "series" || mediaType == "tv" || mediaType == "show" {
+		state.NextEpisode = &models.EpisodeReference{SeasonNumber: 1, EpisodeNumber: 1}
+	} else if mediaType != "movie" {
+		return models.SeriesWatchState{}, false
+	}
+	return state, true
 }
 
 // RefreshURLs refreshes debrid URLs for all warm entries to keep them alive

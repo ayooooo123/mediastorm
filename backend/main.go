@@ -1262,6 +1262,7 @@ func main() {
 	}
 	prewarmService.SetHistoryService(historyService)
 	prewarmService.SetUsersService(userService)
+	prewarmService.SetShelfProvider(startupHandler)
 	prewarmService.SetClientsService(clientsService)
 	prewarmService.SetPrequeueStore(prequeueHandler.GetStore())
 	prewarmService.SetDebridStreaming(debridStreamingProvider)

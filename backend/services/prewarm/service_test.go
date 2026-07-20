@@ -31,6 +31,106 @@ func (m *mockUsersProvider) ListAll() []models.User {
 	return m.users
 }
 
+type mockShelfProvider struct {
+	items      map[string][]ShelfItem
+	lastUserID string
+	lastID     string
+	lastScope  string
+}
+
+func (m *mockShelfProvider) ListPrewarmShelfItems(_ context.Context, userID, shelfID, itemScope string) ([]ShelfItem, error) {
+	m.lastUserID = userID
+	m.lastID = shelfID
+	m.lastScope = itemScope
+	return m.items[shelfID], nil
+}
+
+func TestParseShelfSelectionsLegacyAndNormalization(t *testing.T) {
+	legacy, err := ParseShelfSelections(nil)
+	if err != nil {
+		t.Fatalf("ParseShelfSelections legacy: %v", err)
+	}
+	if len(legacy) != 1 || legacy[0].ID != "continue-watching" || legacy[0].PlayedWithinDays != 14 {
+		t.Fatalf("unexpected legacy selections: %+v", legacy)
+	}
+
+	got, err := ParseShelfSelections(map[string]string{
+		PrewarmShelfSelectionsConfigKey: `[{"id":"continue-watching","playedWithinDays":30},{"id":"watchlist"},{"id":"trending-tv","itemScope":"displayed"}]`,
+	})
+	if err != nil {
+		t.Fatalf("ParseShelfSelections configured: %v", err)
+	}
+	if len(got) != 3 || got[0].PlayedWithinDays != 30 || got[1].ItemScope != PrewarmItemScopeAll || got[2].ItemScope != PrewarmItemScopeDisplayed {
+		t.Fatalf("unexpected configured selections: %+v", got)
+	}
+}
+
+func TestParseShelfSelectionsRejectsInvalidConfig(t *testing.T) {
+	tests := []string{
+		`[]`,
+		`[{"id":"watchlist","itemScope":"visible"}]`,
+		`[{"id":"continue-watching","playedWithinDays":3651}]`,
+		`[{"id":"watchlist"},{"id":"watchlist"}]`,
+	}
+	for _, raw := range tests {
+		if _, err := ParseShelfSelections(map[string]string{PrewarmShelfSelectionsConfigKey: raw}); err == nil {
+			t.Errorf("expected %s to be rejected", raw)
+		}
+	}
+}
+
+func TestRunOnceWithConfigWarmsSelectedShelf(t *testing.T) {
+	store := playback.NewPrequeueStore(30 * time.Minute)
+	provider := &mockShelfProvider{items: map[string][]ShelfItem{
+		"watchlist": {{TitleID: "movie-1", TitleName: "Selected Movie", MediaType: "movie", Year: 2025, ImdbID: "tt123"}},
+	}}
+	workerCalls := 0
+	svc := NewService(nil, "")
+	svc.SetHistoryService(&mockHistoryProvider{continueWatching: map[string][]models.SeriesWatchState{"user1": {}}})
+	svc.SetUsersService(&mockUsersProvider{users: []models.User{{ID: "user1", Name: "Alice"}}})
+	svc.SetShelfProvider(provider)
+	svc.SetPrequeueStore(store)
+	svc.SetWorkerFunc(readyWorkerFn(store, &workerCalls, nil))
+
+	result, err := svc.RunOnceWithConfig(context.Background(), map[string]string{
+		PrewarmShelfSelectionsConfigKey: `[{"id":"watchlist","itemScope":"displayed"}]`,
+	})
+	if err != nil {
+		t.Fatalf("RunOnceWithConfig: %v", err)
+	}
+	if result.Warmed != 1 || workerCalls != 1 {
+		t.Fatalf("result=%+v workerCalls=%d, want one warm", result, workerCalls)
+	}
+	if provider.lastUserID != "user1" || provider.lastID != "watchlist" || provider.lastScope != PrewarmItemScopeDisplayed {
+		t.Fatalf("unexpected provider call: user=%q shelf=%q scope=%q", provider.lastUserID, provider.lastID, provider.lastScope)
+	}
+}
+
+func TestRunOnceWithConfigUsesContinueWatchingPlayedWithinDays(t *testing.T) {
+	store := playback.NewPrequeueStore(30 * time.Minute)
+	workerCalls := 0
+	svc := NewService(nil, "")
+	svc.SetHistoryService(&mockHistoryProvider{continueWatching: map[string][]models.SeriesWatchState{
+		"user1": {{
+			SeriesID: "series-1", SeriesTitle: "Returning Show", UpdatedAt: time.Now().UTC().Add(-20 * 24 * time.Hour),
+			NextEpisode: &models.EpisodeReference{SeasonNumber: 2, EpisodeNumber: 1},
+		}},
+	}})
+	svc.SetUsersService(&mockUsersProvider{users: []models.User{{ID: "user1", Name: "Alice"}}})
+	svc.SetPrequeueStore(store)
+	svc.SetWorkerFunc(readyWorkerFn(store, &workerCalls, nil))
+
+	result, err := svc.RunOnceWithConfig(context.Background(), map[string]string{
+		PrewarmShelfSelectionsConfigKey: `[{"id":"continue-watching","playedWithinDays":30}]`,
+	})
+	if err != nil {
+		t.Fatalf("RunOnceWithConfig: %v", err)
+	}
+	if result.Warmed != 1 || workerCalls != 1 {
+		t.Fatalf("result=%+v workerCalls=%d, want item inside configured 30-day window warmed", result, workerCalls)
+	}
+}
+
 type mockDebridRefresher struct {
 	calls []string
 	err   error

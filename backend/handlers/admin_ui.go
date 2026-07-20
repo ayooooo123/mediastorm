@@ -9809,6 +9809,12 @@ func (h *AdminUIHandler) TestDebridProvider(w http.ResponseWriter, r *http.Reque
 // ToolsPage serves the tools page
 func (h *AdminUIHandler) ToolsPage(w http.ResponseWriter, r *http.Request) {
 	isAdmin, accountID, basePath, username := h.getPageRoleInfo(r)
+	mgr := config.NewManager(h.settingsPath)
+	settings, err := mgr.Load()
+	if err != nil {
+		http.Error(w, "Failed to load settings", http.StatusInternalServerError)
+		return
+	}
 	usersList := h.getScopedUsers(isAdmin, accountID)
 
 	data := AdminPageData{
@@ -9818,6 +9824,7 @@ func (h *AdminUIHandler) ToolsPage(w http.ResponseWriter, r *http.Request) {
 		IsAdmin:        isAdmin,
 		AccountID:      accountID,
 		Username:       username,
+		Settings:       settings,
 		Users:          usersList,
 		Version:        GetBackendVersion(),
 		BuildID:        GetBackendBuildID(),
