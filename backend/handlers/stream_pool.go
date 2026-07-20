@@ -499,6 +499,24 @@ dataReady:
 	}
 	streamID, bytesCounter, activityCounter := tracker.StartStreamWithAccount(r, path, expectedLen, reqStart, 0, accountID)
 	defer tracker.EndStream(streamID)
+	var upstreamWaitWatch pipelineBlockWatch
+	stopUpstreamWaitWatch := monitorPipelineStarvation(
+		ctx,
+		&upstreamWaitWatch,
+		pipelineStarvationTimeout,
+		pipelineStarvationCheckInterval,
+		func(blockedFor time.Duration) bool {
+			marked := tracker.MarkPlaybackMigration(streamID, "backend-starvation")
+			if marked {
+				log.Printf("[stream-migration] stream-pool reader starved waiting for upstream data: path=%q blockedFor=%v streamID=%s",
+					path, blockedFor.Round(time.Millisecond), streamID)
+			}
+			// Metadata-less probes cannot receive a playback signal, but should
+			// still be reported at most once for this individual wait.
+			return true
+		},
+	)
+	defer stopUpstreamWaitWatch()
 
 	// Stream data from slot buffer to client.
 	// IMPORTANT: Write data immediately without checking ctx.Done() first.
@@ -550,9 +568,11 @@ dataReady:
 			slot.lastAccess = time.Now()
 			slot.mu.Unlock()
 			waitForDataStart := time.Now()
+			upstreamWaitWatch.begin()
 
 			select {
 			case <-ch:
+				upstreamWaitWatch.end()
 				if waited := time.Since(waitForDataStart); waited >= 200*time.Millisecond {
 					slot.mu.Lock()
 					currentEnd := slot.startByte + int64(len(slot.data))
@@ -564,6 +584,7 @@ dataReady:
 				}
 				continue
 			case <-ctx.Done():
+				upstreamWaitWatch.end()
 				return true, nil
 			}
 		}
@@ -945,10 +966,10 @@ func (s *poolSlot) backgroundReader(resp *streaming.Response) {
 			if atomic.LoadInt32(&s.readers) == 0 {
 				return false
 			}
-			// Keep this as transport diagnostics only. A single range read can
-			// recover while another is active, so it cannot safely own a shared
-			// playback migration signal. Actual player buffer pressure and terminal
-			// source failures drive migration.
+			// Keep this shared slot watch as transport diagnostics only. A single
+			// range can stall while another is healthy, so the request-level watch
+			// in serve owns the source-scoped migration signal only when that exact
+			// player reader has caught up and is waiting for upstream data.
 			log.Printf("[stream-health] upstream read blocked in stream pool: path=%q blockedFor=%v readers=%d",
 				s.path, blockedFor.Round(time.Millisecond), atomic.LoadInt32(&s.readers))
 			return true

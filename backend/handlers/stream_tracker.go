@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"log"
 	"math"
 	"net/http"
 	"path/filepath"
@@ -80,6 +81,12 @@ type TrackedStream struct {
 	lastSampleBytes int64
 	lastSampleNanos int64
 	throughputBps   int64
+	// Upstream health is kept separate from dashboard/client throughput. The
+	// proxy handlers feed only time spent inside provider Read calls, so native
+	// player backpressure cannot manufacture a low-throughput signal.
+	requiredBps                   int64
+	upstreamHealthLowSamples      int32
+	upstreamHealthLastSignalNanos int64
 }
 
 // throughputSampleInterval is the minimum window between throughput samples.
@@ -153,12 +160,16 @@ func sampleThroughput(bytesNow int64, lastBytes, lastNanos, outBps *int64) int64
 // on open, even when no dashboard was connected to drive sampling.
 const throughputSamplerInterval = 5 * time.Second
 
-// Client-write throughput is deliberately dashboard-only. HTTP writes are paced
-// by the native player's demand and buffer backpressure, so comparing their
-// completion rate with the media bitrate can manufacture migration signals even
-// while the CDN and playback are healthy. Upstream stalls remain diagnostic;
-// player-reported buffer pressure and terminal source failures are authoritative.
-const migrationPreparationBufferRunway = 15.0
+const (
+	// Client-write throughput is deliberately dashboard-only. HTTP writes are
+	// paced by the native player's demand and buffer backpressure. Provider Read
+	// service rate, by contrast, directly measures whether the source can keep up.
+	upstreamHealthMinRequiredBps     = int64(1_000_000)
+	upstreamHealthHeadroom           = 1.25
+	upstreamHealthLowSamples         = int32(2)
+	upstreamHealthSignalCooldown     = 30 * time.Second
+	migrationPreparationBufferRunway = 15.0
+)
 
 // SampleThroughput refreshes the throughput EWMA for every active direct stream.
 // Work is proportional to the number of active streams (a few atomics + one
@@ -565,6 +576,97 @@ func (t *StreamTracker) MarkPlaybackMigrationForPath(path, reason string) int {
 	return marked
 }
 
+// ObservePlaybackBandwidth binds the active release's estimated average bitrate
+// to matching direct streams. SourcePath keeps an older range request from
+// inheriting the replacement source's requirement during a handoff.
+func (t *StreamTracker) ObservePlaybackBandwidth(userID string, update models.PlaybackProgressUpdate) int {
+	if update.RequiredMbps == nil || *update.RequiredMbps <= 0 || math.IsNaN(*update.RequiredMbps) || math.IsInf(*update.RequiredMbps, 0) {
+		return 0
+	}
+	required := int64(*update.RequiredMbps * 1_000_000)
+	if required < upstreamHealthMinRequiredBps {
+		return 0
+	}
+	targetKey := playbackControlKey(userID, update.MediaType, update.ItemID)
+
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	matched := 0
+	for _, stream := range t.streams {
+		matchesPlayback := false
+		for _, key := range streamPlaybackControlKeys(stream) {
+			if key == targetKey {
+				matchesPlayback = true
+				break
+			}
+		}
+		if !matchesPlayback {
+			continue
+		}
+		if update.SourcePath != "" && normalizeStreamFailurePath(stream.Path) != normalizeStreamFailurePath(update.SourcePath) {
+			continue
+		}
+
+		previous := atomic.SwapInt64(&stream.requiredBps, required)
+		materialChange := previous <= 0 || math.Abs(float64(previous-required))/float64(required) > 0.10
+		if materialChange {
+			atomic.StoreInt32(&stream.upstreamHealthLowSamples, 0)
+			atomic.StoreInt64(&stream.upstreamHealthLastSignalNanos, 0)
+		}
+		matched++
+	}
+	return matched
+}
+
+// ObserveUpstreamThroughput compares one provider-read service window with the
+// active release bitrate. activeReadDuration excludes time spent writing to a
+// backpressured client, so only a source that cannot serve bytes fast enough can
+// arm this predictive signal. Two consecutive deficient windows are required.
+func (t *StreamTracker) ObserveUpstreamThroughput(streamID string, bytes int64, activeReadDuration time.Duration) bool {
+	if bytes <= 0 || activeReadDuration <= 0 {
+		return false
+	}
+
+	t.mu.RLock()
+	stream := t.streams[streamID]
+	t.mu.RUnlock()
+	if stream == nil {
+		return false
+	}
+	required := atomic.LoadInt64(&stream.requiredBps)
+	if required < upstreamHealthMinRequiredBps {
+		atomic.StoreInt32(&stream.upstreamHealthLowSamples, 0)
+		return false
+	}
+
+	actual := int64(float64(bytes) * 8 * float64(time.Second) / float64(activeReadDuration))
+	threshold := int64(float64(required) * upstreamHealthHeadroom)
+	if actual >= threshold {
+		atomic.StoreInt32(&stream.upstreamHealthLowSamples, 0)
+		return false
+	}
+	if atomic.AddInt32(&stream.upstreamHealthLowSamples, 1) < upstreamHealthLowSamples {
+		return false
+	}
+
+	nowNanos := time.Now().UnixNano()
+	lastSignal := atomic.LoadInt64(&stream.upstreamHealthLastSignalNanos)
+	if lastSignal > 0 && time.Duration(nowNanos-lastSignal) < upstreamHealthSignalCooldown {
+		return false
+	}
+	if !atomic.CompareAndSwapInt64(&stream.upstreamHealthLastSignalNanos, lastSignal, nowNanos) {
+		return false
+	}
+	atomic.StoreInt32(&stream.upstreamHealthLowSamples, 0)
+	if !t.MarkPlaybackMigration(streamID, "backend-low-throughput") {
+		return false
+	}
+	log.Printf("[stream-migration] sustained upstream underflow detected: streamID=%s actual=%.1fMbps required=%.1fMbps threshold=%.0f%% samples=%d",
+		streamID, float64(actual)/1_000_000, float64(required)/1_000_000,
+		upstreamHealthHeadroom*100, upstreamHealthLowSamples)
+	return true
+}
+
 // ShouldMigratePlayback consumes transient recommendations only after the player
 // confirms buffer pressure. Terminal source/provider failures are immediately
 // actionable because the current request cannot recover normally.
@@ -593,8 +695,9 @@ func (t *StreamTracker) ShouldMigratePlayback(userID string, update models.Playb
 }
 
 // ShouldPreparePlaybackMigration exposes a pending transient recommendation
-// without consuming it once the current buffer runway is shrinking. This keeps
-// compatibility with signals issued by an older running backend during rollout.
+// without consuming it once the current buffer runway is shrinking. When a
+// native player cannot report runway, confirmed upstream health evidence still
+// prepares an alternative; the actual handoff remains gated by buffering.
 func (t *StreamTracker) ShouldPreparePlaybackMigration(userID string, update models.PlaybackProgressUpdate) (string, bool) {
 	if update.IsPaused || update.Position <= 3 {
 		return "", false
@@ -609,7 +712,7 @@ func (t *StreamTracker) ShouldPreparePlaybackMigration(userID string, update mod
 	if !ok || !signal.expiresAt.After(time.Now()) {
 		return "", false
 	}
-	if !update.IsBuffering && (update.BufferAhead == nil || *update.BufferAhead > migrationPreparationBufferRunway) {
+	if !update.IsBuffering && update.BufferAhead != nil && *update.BufferAhead > migrationPreparationBufferRunway {
 		return "", false
 	}
 	return signal.reason, true

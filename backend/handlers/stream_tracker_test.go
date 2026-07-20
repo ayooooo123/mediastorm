@@ -140,6 +140,83 @@ func TestPredictiveMigrationWaitsForBufferPressure(t *testing.T) {
 	}
 }
 
+func TestUpstreamThroughputArmsPredictiveMigrationAfterSustainedUnderflow(t *testing.T) {
+	tracker := newTestTracker()
+	path := "/webdav/nzbs/up/up.mkv"
+	req := httptest.NewRequest(http.MethodGet, "/video/stream?profileId=p1&mediaType=movie&itemId=tmdb:movie:14160", nil)
+	id, _, _ := tracker.StartStreamWithAccount(req, path, 1000, 0, 0, "acct1")
+	requiredMbps := 40.0
+	if matched := tracker.ObservePlaybackBandwidth("p1", models.PlaybackProgressUpdate{
+		MediaType:    "movie",
+		ItemID:       "tmdb:movie:14160",
+		SourcePath:   path,
+		RequiredMbps: &requiredMbps,
+	}); matched != 1 {
+		t.Fatalf("matched streams = %d, want 1", matched)
+	}
+
+	// 10 MiB served over four seconds is about 21 Mbps, well below the
+	// 50 Mbps requirement including migration headroom.
+	if tracker.ObserveUpstreamThroughput(id, 10*1024*1024, 4*time.Second) {
+		t.Fatal("single low window should not arm migration")
+	}
+	if !tracker.ObserveUpstreamThroughput(id, 10*1024*1024, 4*time.Second) {
+		t.Fatal("second consecutive low window should arm migration")
+	}
+
+	runway := 10.0
+	if reason, prepare := tracker.ShouldPreparePlaybackMigration("p1", models.PlaybackProgressUpdate{
+		MediaType:   "movie",
+		ItemID:      "tmdb:movie:14160",
+		Position:    40,
+		SourcePath:  path,
+		BufferAhead: &runway,
+	}); !prepare || reason != "backend-low-throughput" {
+		t.Fatalf("predictive signal did not request preparation: prepare=%v reason=%q", prepare, reason)
+	}
+
+	if reason, migrate := tracker.ShouldMigratePlayback("p1", models.PlaybackProgressUpdate{
+		MediaType:   "movie",
+		ItemID:      "tmdb:movie:14160",
+		Position:    41,
+		SourcePath:  path,
+		IsBuffering: true,
+	}); !migrate || reason != "backend-low-throughput" {
+		t.Fatalf("buffering did not consume predictive signal: migrate=%v reason=%q", migrate, reason)
+	}
+}
+
+func TestUpstreamThroughputHealthyWindowResetsUnderflowAndBandwidthIsSourceScoped(t *testing.T) {
+	tracker := newTestTracker()
+	requestURL := "/video/stream?profileId=p1&mediaType=movie&itemId=tmdb:movie:14160"
+	oldPath := "/webdav/nzbs/up/old.mkv"
+	newPath := "/debrid/torbox/new/file/0/new.mkv"
+	oldID, _, _ := tracker.StartStreamWithAccount(httptest.NewRequest(http.MethodGet, requestURL, nil), oldPath, 1000, 0, 0, "acct1")
+	newID, _, _ := tracker.StartStreamWithAccount(httptest.NewRequest(http.MethodGet, requestURL, nil), newPath, 1000, 0, 0, "acct1")
+	requiredMbps := 20.0
+	if matched := tracker.ObservePlaybackBandwidth("p1", models.PlaybackProgressUpdate{
+		MediaType:    "movie",
+		ItemID:       "tmdb:movie:14160",
+		SourcePath:   newPath,
+		RequiredMbps: &requiredMbps,
+	}); matched != 1 {
+		t.Fatalf("matched streams = %d, want only replacement source", matched)
+	}
+	if tracker.ObserveUpstreamThroughput(oldID, 1024, 5*time.Second) {
+		t.Fatal("old source inherited replacement bitrate")
+	}
+
+	if tracker.ObserveUpstreamThroughput(newID, 5*1024*1024, 4*time.Second) {
+		t.Fatal("first low window should not signal")
+	}
+	if tracker.ObserveUpstreamThroughput(newID, 20*1024*1024, time.Second) {
+		t.Fatal("healthy source window should reset rather than signal")
+	}
+	if tracker.ObserveUpstreamThroughput(newID, 5*1024*1024, 4*time.Second) {
+		t.Fatal("low window after a healthy reset should again be the first sample")
+	}
+}
+
 func TestPlaybackMigrationForPathTriggersOnBuffering(t *testing.T) {
 	tracker := newTestTracker()
 	req := httptest.NewRequest(http.MethodGet, "/video/stream?profileId=p1&mediaType=movie&itemId=tmdb:movie:14160", nil)
@@ -306,6 +383,32 @@ func TestPlaybackMigrationPreparationDoesNotConsumeSignal(t *testing.T) {
 	})
 	if !migrate || reason != "backend-low-throughput" {
 		t.Fatalf("preparation consumed signal: migrate=%v reason=%q", migrate, reason)
+	}
+}
+
+func TestPlaybackMigrationPreparesWhenNativeBufferRunwayIsUnavailable(t *testing.T) {
+	tracker := newTestTracker()
+	path := "/webdav/nzbs/up/up.mkv"
+	req := httptest.NewRequest(http.MethodGet, "/video/stream?profileId=p1&mediaType=movie&itemId=tmdb:movie:14160", nil)
+	id, _, _ := tracker.StartStreamWithAccount(req, path, 1000, 0, 0, "acct1")
+	if !tracker.MarkPlaybackMigration(id, "backend-starvation") {
+		t.Fatal("expected starvation signal")
+	}
+	if reason, prepare := tracker.ShouldPreparePlaybackMigration("p1", models.PlaybackProgressUpdate{
+		MediaType:  "movie",
+		ItemID:     "tmdb:movie:14160",
+		Position:   40,
+		SourcePath: path,
+	}); !prepare || reason != "backend-starvation" {
+		t.Fatalf("unknown native runway did not prepare: prepare=%v reason=%q", prepare, reason)
+	}
+	if reason, migrate := tracker.ShouldMigratePlayback("p1", models.PlaybackProgressUpdate{
+		MediaType:  "movie",
+		ItemID:     "tmdb:movie:14160",
+		Position:   41,
+		SourcePath: path,
+	}); migrate {
+		t.Fatalf("preparation without buffer pressure migrated immediately: reason=%q", reason)
 	}
 }
 
