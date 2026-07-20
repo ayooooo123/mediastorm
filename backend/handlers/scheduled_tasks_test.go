@@ -14,6 +14,7 @@ import (
 
 	"novastream/config"
 	"novastream/models"
+	"novastream/services/prewarm"
 	"novastream/services/scheduler"
 )
 
@@ -82,6 +83,34 @@ func TestValidateScheduledTaskProfileIDRejectsLegacyDefaultFallback(t *testing.T
 	err := validateScheduledTaskProfileID(models.DefaultUserID, users)
 	if err == nil {
 		t.Fatal("expected missing legacy default profile to be rejected")
+	}
+}
+
+func TestValidateScheduledTaskConfigNormalizesPrewarmShelfSelections(t *testing.T) {
+	taskConfig := map[string]string{
+		prewarm.PrewarmShelfSelectionsConfigKey: `[{"id":"continue-watching","playedWithinDays":21},{"id":"watchlist"}]`,
+	}
+	if err := validateScheduledTaskConfig(config.ScheduledTaskTypePrewarm, taskConfig, nil); err != nil {
+		t.Fatalf("validateScheduledTaskConfig: %v", err)
+	}
+	selections, err := prewarm.ParseShelfSelections(taskConfig)
+	if err != nil {
+		t.Fatalf("ParseShelfSelections normalized config: %v", err)
+	}
+	if len(selections) != 2 || selections[0].PlayedWithinDays != 21 || selections[1].ItemScope != prewarm.PrewarmItemScopeAll {
+		t.Fatalf("unexpected selections: %+v", selections)
+	}
+	if taskConfig["stableReresolveDays"] != "7" {
+		t.Fatalf("stableReresolveDays=%q, want 7", taskConfig["stableReresolveDays"])
+	}
+}
+
+func TestValidateScheduledTaskConfigRejectsEmptyPrewarmShelfSelections(t *testing.T) {
+	err := validateScheduledTaskConfig(config.ScheduledTaskTypePrewarm, map[string]string{
+		prewarm.PrewarmShelfSelectionsConfigKey: `[]`,
+	}, nil)
+	if err == nil {
+		t.Fatal("expected empty shelf selection to be rejected")
 	}
 }
 

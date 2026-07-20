@@ -15,6 +15,7 @@ import (
 
 	"novastream/config"
 	"novastream/models"
+	"novastream/services/prewarm"
 	"novastream/services/scheduler"
 )
 
@@ -64,6 +65,15 @@ func validateScheduledTaskConfig(taskType config.ScheduledTaskType, taskConfig m
 			return errors.New("Pre-warm stable re-resolve days must be between 1 and 30")
 		}
 		taskConfig["stableReresolveDays"] = strconv.Itoa(days)
+		selections, err := prewarm.ParseShelfSelections(taskConfig)
+		if err != nil {
+			return err
+		}
+		encodedSelections, err := json.Marshal(selections)
+		if err != nil {
+			return errors.New("failed to encode pre-warm shelf selections")
+		}
+		taskConfig[prewarm.PrewarmShelfSelectionsConfigKey] = string(encodedSelections)
 	case config.ScheduledTaskTypePlexWatchlistSync:
 		return requireProfile("plexAccountId", "Plex watchlist sync requires plexAccountId and profileId in config")
 	case config.ScheduledTaskTypeTraktListSync:

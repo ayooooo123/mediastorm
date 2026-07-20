@@ -3969,13 +3969,13 @@ func (s *Service) traktHistoryItemToUpdate(item trakt.HistoryItem, watched *bool
 	return update
 }
 
-// executePrewarm runs the prewarm task to pre-resolve continue watching items
+// executePrewarm runs the prewarm task to pre-resolve configured home-shelf items.
 func (s *Service) executePrewarm(task config.ScheduledTask) (SyncResult, error) {
 	if s.prewarmService == nil {
 		return SyncResult{}, errors.New("prewarm service not configured")
 	}
 
-	prewarmResult, err := s.prewarmService.RunOnce(s.ctx)
+	prewarmResult, err := s.prewarmService.RunOnceWithConfig(s.ctx, task.Config)
 	if err != nil {
 		return SyncResult{}, fmt.Errorf("prewarm failed: %w", err)
 	}

@@ -576,7 +576,7 @@
                             <option value="jellyfin_history_sync">Jellyfin Watch History Sync</option>
                             <option value="local_media_scan">Local Media Library Scan</option>
                             <option value="backup">System Backup</option>
-                            <option value="prewarm">Pre-warm Continue Watching</option>
+                            <option value="prewarm">Pre-warm Home Shelves</option>
                         </select>
                     </div>
 
@@ -589,7 +589,7 @@
                     <div id="prewarmConfig" style="display: none;">
                         <div style="padding: 1rem; background: var(--bg-secondary); border-radius: 8px; margin-bottom: 1rem;">
                             <p style="margin: 0; color: var(--text-secondary); font-size: 0.9rem;">
-                                Pre-resolves continue watching items for all profiles so playback starts instantly.
+                                Pre-resolves selected home-shelf items for all profiles so playback starts instantly.
                                 Runs every 15 minutes and re-resolves entries based on dynamic TTL (tighter near air date, relaxed for catalog content).
                             </p>
                         </div>
@@ -597,6 +597,27 @@
                             <label class="form-label">Stable Re-resolve Interval (days)</label>
                             <input type="number" class="form-input" id="newPrewarmStableReresolveDays" min="1" max="30" step="1" value="7">
                             <small class="text-muted">After the release window settles, re-resolve warmed entries every 1-30 days. Default is 7 days.</small>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Home Shelves</label>
+                            <small class="text-muted" style="display:block; margin-bottom:0.5rem;">Choose at least one playable shelf. Continue Watching uses recent-play activity; other shelves can warm everything or only cards currently displayed on Home.</small>
+                            <div data-prewarm-shelf-picker="new" style="display:grid; gap:0.5rem;">
+                                {{range .Settings.HomeShelves.Shelves}}{{if .Enabled}}
+                                <div data-prewarm-shelf-row data-shelf-id="{{.ID}}" data-shelf-type="{{.Type}}" style="display:flex; flex-wrap:wrap; align-items:center; gap:0.6rem; padding:0.65rem; border:1px solid var(--border); border-radius:6px;">
+                                    <label style="display:flex; align-items:center; gap:0.5rem; flex:1; min-width:12rem;">
+                                        <input type="checkbox" data-prewarm-shelf-toggle {{if eq .ID "continue-watching"}}checked{{end}} onchange="updatePrewarmShelfRow(this.closest('[data-prewarm-shelf-row]'))">
+                                        <span>{{.Name}}</span>
+                                    </label>
+                                    <label data-prewarm-continue-config style="display:none; align-items:center; gap:0.4rem; font-size:0.85rem; color:var(--text-muted);">
+                                        Played within <input type="number" class="form-input" data-prewarm-played-days min="1" max="3650" step="1" value="14" style="width:5.5rem;"> days
+                                    </label>
+                                    <select class="form-select" data-prewarm-item-scope style="width:auto; min-width:11rem;">
+                                        <option value="all">All items</option>
+                                        <option value="displayed">Displayed items only</option>
+                                    </select>
+                                </div>
+                                {{end}}{{end}}
+                            </div>
                         </div>
                     </div>
 
@@ -937,7 +958,7 @@
                             <option value="jellyfin_history_sync">Jellyfin Watch History Sync</option>
                             <option value="local_media_scan">Local Media Library Scan</option>
                             <option value="backup">System Backup</option>
-                            <option value="prewarm">Pre-warm Continue Watching</option>
+                            <option value="prewarm">Pre-warm Home Shelves</option>
                         </select>
                         <small class="text-muted">Task type cannot be changed</small>
                     </div>
@@ -950,7 +971,7 @@
                     <div id="editPrewarmConfig" style="display: none;">
                         <div style="padding: 1rem; background: var(--bg-secondary); border-radius: 8px; margin-bottom: 1rem;">
                             <p style="margin: 0; color: var(--text-secondary); font-size: 0.9rem;">
-                                Pre-resolves continue watching items for all profiles so playback starts instantly.
+                                Pre-resolves selected home-shelf items for all profiles so playback starts instantly.
                                 Runs every 15 minutes and re-resolves entries based on dynamic TTL (tighter near air date, relaxed for catalog content).
                             </p>
                         </div>
@@ -958,6 +979,27 @@
                             <label class="form-label">Stable Re-resolve Interval (days)</label>
                             <input type="number" class="form-input" id="editPrewarmStableReresolveDays" min="1" max="30" step="1" value="7">
                             <small class="text-muted">After the release window settles, re-resolve warmed entries every 1-30 days. Default is 7 days.</small>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Home Shelves</label>
+                            <small class="text-muted" style="display:block; margin-bottom:0.5rem;">Choose at least one playable shelf. Continue Watching uses recent-play activity; other shelves can warm everything or only cards currently displayed on Home.</small>
+                            <div data-prewarm-shelf-picker="edit" style="display:grid; gap:0.5rem;">
+                                {{range .Settings.HomeShelves.Shelves}}{{if .Enabled}}
+                                <div data-prewarm-shelf-row data-shelf-id="{{.ID}}" data-shelf-type="{{.Type}}" style="display:flex; flex-wrap:wrap; align-items:center; gap:0.6rem; padding:0.65rem; border:1px solid var(--border); border-radius:6px;">
+                                    <label style="display:flex; align-items:center; gap:0.5rem; flex:1; min-width:12rem;">
+                                        <input type="checkbox" data-prewarm-shelf-toggle onchange="updatePrewarmShelfRow(this.closest('[data-prewarm-shelf-row]'))">
+                                        <span>{{.Name}}</span>
+                                    </label>
+                                    <label data-prewarm-continue-config style="display:none; align-items:center; gap:0.4rem; font-size:0.85rem; color:var(--text-muted);">
+                                        Played within <input type="number" class="form-input" data-prewarm-played-days min="1" max="3650" step="1" value="14" style="width:5.5rem;"> days
+                                    </label>
+                                    <select class="form-select" data-prewarm-item-scope style="width:auto; min-width:11rem;">
+                                        <option value="all">All items</option>
+                                        <option value="displayed">Displayed items only</option>
+                                    </select>
+                                </div>
+                                {{end}}{{end}}
+                            </div>
                         </div>
                     </div>
 
@@ -4785,6 +4827,7 @@
             let profileName = 'Unknown';
             let listTypeLabel = '';
             const prewarmStableDays = getPrewarmStableReresolveDays(task.config);
+            const prewarmShelfSummary = task.type === 'prewarm' ? getPrewarmShelfSummary(task.config) : '';
             if (task.config) {
                 if (task.type === 'plex_watchlist_sync') {
                     const plexAccount = plexAccounts.find(a => a.id === task.config.plexAccountId);
@@ -4881,7 +4924,9 @@
                             </div>
                             ` : task.type === 'prewarm' ? `
                             <div style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; color: var(--text-muted);">
-                                <span>Stable re-resolve:</span>
+                                <span>Shelves:</span>
+                                <strong>${escapeHtml(prewarmShelfSummary)}</strong>
+                                <span>· Stable re-resolve:</span>
                                 <strong>${prewarmStableDays} day${prewarmStableDays === 1 ? '' : 's'}</strong>
                             </div>
                             ` : ''}
@@ -4890,7 +4935,7 @@
                             <span class="status-badge ${statusClass}" style="font-size: 0.75rem;">${statusLabel}</span>
                             <span class="text-muted" style="font-size: 0.8125rem;">Last: ${lastRunLabel}</span>
                             ${task.enabled ? `<span class="text-muted" style="font-size: 0.8125rem;">Next: ${getNextRunLabel(task)}</span>` : ''}
-                            ${task.itemsImported > 0 && task.type !== 'backup' ? `<span class="text-muted" style="font-size: 0.8125rem;">${task.itemsImported} items synced</span>` : ''}
+                            ${task.itemsImported > 0 && task.type !== 'backup' ? `<span class="text-muted" style="font-size: 0.8125rem;">${task.itemsImported} items ${task.type === 'prewarm' ? 'warmed' : 'synced'}</span>` : ''}
                             ${task.dryRunDetails ? `<button class="btn btn-sm" onclick="showDryRunResults('${task.id}')" style="padding: 0.15rem 0.5rem; font-size: 0.75rem; background: rgba(99, 102, 241, 0.2); color: var(--accent);">View Dry Run Results</button>` : ''}
                             ${task.lastError ? `<span style="color: var(--danger); font-size: 0.8125rem;">${escapeHtml(task.lastError)}</span>` : ''}
                         </div>
@@ -5010,6 +5055,102 @@
         return String(parsed);
     }
 
+    function isPrewarmableShelfRow(row) {
+        const id = row?.dataset.shelfId || '';
+        const type = (row?.dataset.shelfType || '').toLowerCase();
+        return ['continue-watching', 'watchlist', 'top-ten', 'trending-movies', 'trending-tv', 'my-recommended', 'recommended'].includes(id) ||
+            ['mdblist', 'trakt', 'simkl', 'letterboxd', 'genre', 'decade'].includes(type);
+    }
+
+    function updatePrewarmShelfRow(row) {
+        if (!row) return;
+        const enabled = !!row.querySelector('[data-prewarm-shelf-toggle]')?.checked;
+        const isContinueWatching = row.dataset.shelfId === 'continue-watching';
+        const continueConfig = row.querySelector('[data-prewarm-continue-config]');
+        const scope = row.querySelector('[data-prewarm-item-scope]');
+        if (continueConfig) continueConfig.style.display = isContinueWatching && enabled ? 'flex' : 'none';
+        if (scope) {
+            scope.style.display = isContinueWatching ? 'none' : 'block';
+            scope.disabled = !enabled;
+        }
+        row.style.opacity = enabled ? '1' : '0.65';
+    }
+
+    function prewarmShelfRows(prefix) {
+        const picker = document.querySelector(`[data-prewarm-shelf-picker="${prefix}"]`);
+        if (!picker) return [];
+        return Array.from(picker.querySelectorAll('[data-prewarm-shelf-row]')).filter(row => {
+            const supported = isPrewarmableShelfRow(row);
+            row.style.display = supported ? 'flex' : 'none';
+            return supported;
+        });
+    }
+
+    function setPrewarmShelfSelections(prefix, config) {
+        let selections = [{ id: 'continue-watching', playedWithinDays: 14 }];
+        if (config?.shelfSelections) {
+            try {
+                const parsed = JSON.parse(config.shelfSelections);
+                if (Array.isArray(parsed) && parsed.length > 0) selections = parsed;
+            } catch (_) {
+                // Keep the legacy Continue Watching default for malformed old data.
+            }
+        }
+        const byId = new Map(selections.map(selection => [selection.id, selection]));
+        prewarmShelfRows(prefix).forEach(row => {
+            const selection = byId.get(row.dataset.shelfId);
+            const toggle = row.querySelector('[data-prewarm-shelf-toggle]');
+            const days = row.querySelector('[data-prewarm-played-days]');
+            const scope = row.querySelector('[data-prewarm-item-scope]');
+            if (toggle) toggle.checked = !!selection;
+            if (days) days.value = String(selection?.playedWithinDays || 14);
+            if (scope) scope.value = selection?.itemScope === 'displayed' ? 'displayed' : 'all';
+            updatePrewarmShelfRow(row);
+        });
+    }
+
+    function readPrewarmShelfSelections(prefix) {
+        const selections = [];
+        for (const row of prewarmShelfRows(prefix)) {
+            if (!row.querySelector('[data-prewarm-shelf-toggle]')?.checked) continue;
+            const id = row.dataset.shelfId;
+            if (id === 'continue-watching') {
+                const playedWithinDays = parseInt(row.querySelector('[data-prewarm-played-days]')?.value, 10);
+                if (!Number.isFinite(playedWithinDays) || playedWithinDays < 1 || playedWithinDays > 3650) {
+                    showToast('Continue Watching played-within days must be between 1 and 3650', 'error');
+                    return null;
+                }
+                selections.push({ id, playedWithinDays });
+            } else {
+                const itemScope = row.querySelector('[data-prewarm-item-scope]')?.value === 'displayed' ? 'displayed' : 'all';
+                selections.push({ id, itemScope });
+            }
+        }
+        if (selections.length === 0) {
+            showToast('Select at least one home shelf to pre-warm', 'error');
+            return null;
+        }
+        return JSON.stringify(selections);
+    }
+
+    function getPrewarmShelfSummary(config) {
+        let selections;
+        try {
+            selections = JSON.parse(config?.shelfSelections || '[]');
+        } catch (_) {
+            selections = [];
+        }
+        if (!Array.isArray(selections) || selections.length === 0) {
+            return 'Continue Watching · 14 days';
+        }
+        const labels = new Map(prewarmShelfRows('new').map(row => [row.dataset.shelfId, row.querySelector('span')?.textContent?.trim() || row.dataset.shelfId]));
+        return selections.map(selection => {
+            const label = labels.get(selection.id) || selection.id;
+            if (selection.id === 'continue-watching') return `${label} · ${selection.playedWithinDays || 14} days`;
+            return `${label} · ${selection.itemScope === 'displayed' ? 'displayed' : 'all'}`;
+        }).join(', ');
+    }
+
     function formatRelativeTime(dateString) {
         const date = new Date(dateString);
         const now = new Date();
@@ -5084,6 +5225,7 @@
     function showAddScheduledTaskModal() {
         const stableDaysInput = document.getElementById('newPrewarmStableReresolveDays');
         if (stableDaysInput) stableDaysInput.value = '7';
+        setPrewarmShelfSelections('new', null);
 
         // Populate Plex accounts dropdown
         const plexSelect = document.getElementById('newTaskPlexAccount');
@@ -5445,7 +5587,10 @@
         } else if (taskType === 'prewarm') {
             const stableDays = readPrewarmStableReresolveDays('newPrewarmStableReresolveDays');
             if (stableDays === null) return;
+            const shelfSelections = readPrewarmShelfSelections('new');
+            if (shelfSelections === null) return;
             config.stableReresolveDays = stableDays;
+            config.shelfSelections = shelfSelections;
         }
 
         // Add sync options for sync-type tasks (but not history sync types which have their own controls)
@@ -5737,6 +5882,7 @@
         if (task.type === 'prewarm') {
             document.getElementById('editPrewarmConfig').style.display = 'block';
             document.getElementById('editPrewarmStableReresolveDays').value = getPrewarmStableReresolveDays(task.config);
+            setPrewarmShelfSelections('edit', task.config);
         }
 
         // Update sync direction labels based on task type
@@ -5958,7 +6104,10 @@
         } else if (taskType === 'prewarm') {
             const stableDays = readPrewarmStableReresolveDays('editPrewarmStableReresolveDays');
             if (stableDays === null) return;
+            const shelfSelections = readPrewarmShelfSelections('edit');
+            if (shelfSelections === null) return;
             config.stableReresolveDays = stableDays;
+            config.shelfSelections = shelfSelections;
         }
 
         // Add sync options for sync-type tasks (but not history sync types which have their own controls)
