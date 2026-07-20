@@ -502,6 +502,20 @@ func (p *hlsTestProvider) Stream(ctx context.Context, req streaming.Request) (*s
 	}, nil
 }
 
+type remoteProbeTestProvider struct {
+	lastRequest streaming.Request
+}
+
+func (p *remoteProbeTestProvider) Stream(_ context.Context, req streaming.Request) (*streaming.Response, error) {
+	p.lastRequest = req
+	return &streaming.Response{
+		Body:          io.NopCloser(strings.NewReader("remote media bytes")),
+		Headers:       make(http.Header),
+		Status:        http.StatusPartialContent,
+		ContentLength: 18,
+	}, nil
+}
+
 // --- HLSManager HTTP handler tests ---
 
 func TestHLSManager_KeepAlive_SessionNotFound(t *testing.T) {
@@ -1018,6 +1032,56 @@ func TestHLSManager_BuildLocalWebDAVURLFromPath(t *testing.T) {
 	}
 	if !strings.Contains(url, "/test/path.mkv") {
 		t.Errorf("URL should contain path, got %q", url)
+	}
+}
+
+func TestHLSManager_BuildLocalWebDAVURLFromPathSkipsRemoteMedia(t *testing.T) {
+	tmpDir := t.TempDir()
+	manager := NewHLSManager(tmpDir, "", "", nil)
+	defer manager.Shutdown()
+	manager.ConfigureLocalWebDAVAccess("http://localhost:7777", "/webdav", "", "")
+
+	for _, path := range []string{
+		"plexmedia:item-123",
+		"/plexmedia:item-123",
+		"jellyfinmedia:item-456",
+		"/jellyfinmedia:item-456",
+	} {
+		t.Run(path, func(t *testing.T) {
+			if url, ok := manager.buildLocalWebDAVURLFromPath(path); ok || url != "" {
+				t.Fatalf("buildLocalWebDAVURLFromPath(%q) = %q, %v; want empty, false", path, url, ok)
+			}
+		})
+	}
+}
+
+func TestHLSManager_ProbeRemoteMediaUsesProviderPipe(t *testing.T) {
+	ffprobePath := filepath.Join(t.TempDir(), "ffprobe")
+	ffprobeScript := `#!/bin/sh
+cat >/dev/null
+printf '%s' '{"format":{"duration":"12.5","start_time":"0"},"streams":[{"index":0,"codec_type":"video","codec_name":"h264"},{"index":1,"codec_type":"audio","codec_name":"aac"}]}'
+`
+	if err := os.WriteFile(ffprobePath, []byte(ffprobeScript), 0o755); err != nil {
+		t.Fatalf("write fake ffprobe: %v", err)
+	}
+
+	provider := &remoteProbeTestProvider{}
+	manager := NewHLSManager(t.TempDir(), "", ffprobePath, provider)
+	defer manager.Shutdown()
+	manager.ConfigureLocalWebDAVAccess("http://localhost:7777", "/webdav", "", "")
+
+	result, err := manager.probeAllMetadata(context.Background(), "plexmedia:item-123")
+	if err != nil {
+		t.Fatalf("probeAllMetadata: %v", err)
+	}
+	if result == nil || result.Duration != 12.5 {
+		t.Fatalf("probe result = %#v, want duration 12.5", result)
+	}
+	if provider.lastRequest.Path != "plexmedia:item-123" {
+		t.Fatalf("provider path = %q, want plexmedia:item-123", provider.lastRequest.Path)
+	}
+	if provider.lastRequest.RangeHeader != "bytes=0-16777215" {
+		t.Fatalf("provider range = %q, want 16 MiB probe range", provider.lastRequest.RangeHeader)
 	}
 }
 

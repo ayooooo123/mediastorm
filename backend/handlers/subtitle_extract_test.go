@@ -9,6 +9,20 @@ import (
 	"time"
 )
 
+func TestSubtitleBuildWebDAVURLSkipsRemoteMedia(t *testing.T) {
+	manager := NewSubtitleExtractManager(t.TempDir(), "", "", nil)
+	defer manager.Shutdown()
+	manager.ConfigureLocalWebDAVAccess("http://localhost:7777", "/webdav", "", "")
+
+	for _, path := range []string{"plexmedia:item-123", "jellyfinmedia:item-456"} {
+		t.Run(path, func(t *testing.T) {
+			if got := manager.buildWebDAVURL(path); got != "" {
+				t.Fatalf("buildWebDAVURL(%q) = %q, want empty", path, got)
+			}
+		})
+	}
+}
+
 func TestServeSubtitles_StripsLingeringHEscapesForASS(t *testing.T) {
 	tmpDir := t.TempDir()
 	outputPath := filepath.Join(tmpDir, "subtitles.ass")
