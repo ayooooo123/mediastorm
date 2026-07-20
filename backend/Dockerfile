@@ -87,7 +87,7 @@ FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bb
 # Install ca-certificates, download tools, Python for title parsing, and
 # software Vulkan so libplacebo DV5 thumbnails do not require GPU passthrough.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates gosu wget xz-utils python3 python3-venv python3-pip \
+    ca-certificates wget xz-utils python3 python3-venv python3-pip \
     libvulkan1 mesa-vulkan-drivers \
     && rm -rf /var/lib/apt/lists/*
 
@@ -154,19 +154,10 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
     && chmod +x /usr/local/bin/deno \
     && apt-get purge -y unzip && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 
-ARG MEDIASTORM_UID=10001
-ARG MEDIASTORM_GID=10001
-RUN groupadd --gid "${MEDIASTORM_GID}" mediastorm \
-	&& useradd --uid "${MEDIASTORM_UID}" --gid mediastorm --home-dir /app --no-create-home --shell /usr/sbin/nologin mediastorm \
-	&& mkdir -p /app /root/cache \
-	&& chown mediastorm:mediastorm /app /root/cache \
-	&& chmod 0711 /root \
-	&& ln -s /root/cache /app/cache
-
-WORKDIR /app
+WORKDIR /root/
 
 # Copy the binary from builder stage
-COPY --from=builder --chown=mediastorm:mediastorm /app/mediastorm .
+COPY --from=builder /app/mediastorm .
 
 # Copy the exported Expo web app. The backend serves it from /watch.
 COPY --from=web-builder /frontend/dist /opt/strmr-web
@@ -178,24 +169,10 @@ COPY --from=iroh-builder /iroh/iroh-direct-spike /opt/iroh/iroh-direct-spike
 ENV MEDIASTORM_IROH_DIRECT_DIR=/opt/iroh
 
 # Copy version file
-COPY --chown=root:root --chmod=0444 backend/version.txt /app/version.txt
+COPY backend/version.txt /app/version.txt
 
 # Copy Python scripts to root (title parsing, subtitle search, credits detection)
-COPY --chown=root:root --chmod=0555 backend/parse_title.py backend/parse_title_batch.py backend/search_subtitles.py backend/download_subtitle.py backend/detect_credits.py /
-
-# Preserve the long-standing /root/cache volume contract. The entrypoint fixes
-# ownership on a legacy root-owned mount, then immediately drops privileges for
-# the application process.
-COPY --chown=root:root --chmod=0755 backend/docker-entrypoint.sh /usr/local/bin/mediastorm-entrypoint
-
-# Fail the image build if a future source-mode change makes a required runtime
-# asset inaccessible after privileges are dropped.
-RUN gosu mediastorm test -x /app/mediastorm \
-	&& gosu mediastorm test -r /app/version.txt \
-	&& gosu mediastorm test -x /search_subtitles.py \
-	&& gosu mediastorm test -x /download_subtitle.py \
-	&& gosu mediastorm test -x /detect_credits.py \
-	&& gosu mediastorm test -w /root/cache
+COPY backend/parse_title.py backend/parse_title_batch.py backend/search_subtitles.py backend/download_subtitle.py backend/detect_credits.py /
 
 # Expose port
 EXPOSE 7777
@@ -204,7 +181,5 @@ EXPOSE 7777
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD wget -qO- http://localhost:7777/health > /dev/null || exit 1
 
-# Run the application. The entrypoint starts as root only for the cache-volume
-# ownership migration; mediastorm itself always runs as the non-root user.
-ENTRYPOINT ["mediastorm-entrypoint"]
+# Run the application
 CMD ["./mediastorm"]
