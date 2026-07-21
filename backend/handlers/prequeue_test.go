@@ -7,12 +7,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/gorilla/mux"
 
+	"novastream/config"
 	"novastream/models"
 	"novastream/services/playback"
 )
@@ -858,6 +860,34 @@ func TestValidateReadyEntryForReuse(t *testing.T) {
 		}
 		if !called {
 			t.Fatal("expected validator to be called")
+		}
+	})
+
+	t.Run("allows configured private usenet engine host", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodHead {
+				t.Fatalf("method = %s, want HEAD", r.Method)
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		manager := config.NewManager(filepath.Join(t.TempDir(), "settings.json"))
+		settings := config.DefaultSettings()
+		settings.UsenetEngines = []config.UsenetEngineSettings{{
+			Name:          "Local engine",
+			Enabled:       true,
+			BaseURL:       server.URL,
+			WebDAVBaseURL: server.URL,
+		}}
+		if err := manager.Save(settings); err != nil {
+			t.Fatalf("save settings: %v", err)
+		}
+
+		configuredHandler := &PrequeueHandler{configManager: manager}
+		entry := &playback.PrequeueEntry{StreamPath: server.URL + "/webdav/file.mkv"}
+		if err := configuredHandler.validateReadyEntryForReuse(context.Background(), entry); err != nil {
+			t.Fatalf("configured private host was rejected: %v", err)
 		}
 	})
 }
