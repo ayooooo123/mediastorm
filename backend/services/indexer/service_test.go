@@ -14,9 +14,44 @@ import (
 
 	"novastream/config"
 	"novastream/internal/httpheaders"
+	"novastream/internal/providerbreaker"
 	"novastream/models"
 	"novastream/services/debrid"
 )
+
+func TestSearchTorznabRateLimitSkipsProviderAndAllowsFallback(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = w.Write([]byte(`<rss><channel></channel></rss>`))
+	}))
+	defer server.Close()
+
+	svc := &Service{httpc: server.Client(), providerBreaker: providerbreaker.New()}
+	ninja := config.IndexerConfig{Name: "Ninja", URL: server.URL}
+	if _, err := svc.searchTorznab(context.Background(), ninja, SearchOptions{Query: "test"}); err == nil {
+		t.Fatal("first Ninja search returned nil error for 429")
+	}
+	if _, err := svc.searchTorznab(context.Background(), ninja, SearchOptions{Query: "test again"}); err == nil {
+		t.Fatal("second Ninja search was not blocked")
+	}
+	if requests != 1 {
+		t.Fatalf("Ninja HTTP requests = %d, want 1", requests)
+	}
+
+	geek := config.IndexerConfig{Name: "NZBGeek", URL: server.URL}
+	if _, err := svc.searchTorznab(context.Background(), geek, SearchOptions{Query: "fallback"}); err != nil {
+		t.Fatalf("fallback search failed: %v", err)
+	}
+	if requests != 2 {
+		t.Fatalf("total HTTP requests = %d, want 2", requests)
+	}
+}
 
 type stubDebridSearchService struct {
 	results []models.NZBResult

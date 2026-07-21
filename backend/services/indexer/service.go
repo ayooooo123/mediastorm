@@ -27,6 +27,7 @@ import (
 	"novastream/internal/dnscache"
 	"novastream/internal/httpheaders"
 	"novastream/internal/mediaresolve"
+	"novastream/internal/providerbreaker"
 	"novastream/models"
 	"novastream/services/debrid"
 	"novastream/utils/filter"
@@ -159,6 +160,7 @@ type Service struct {
 	searchCount        atomic.Int64 // top-level Search calls (manual search)
 	searchSplitCount   atomic.Int64 // top-level SearchSplit calls (prequeue)
 	usenetAPICallCount atomic.Int64 // individual usenet/torznab indexer API calls
+	providerBreaker    *providerbreaker.Breaker
 }
 
 type searchCacheEntry struct {
@@ -183,10 +185,11 @@ func NewService(cfg *config.Manager, metadataSvc metadataSearchService, debridSv
 			Timeout:   20 * time.Second,
 			Transport: transport,
 		},
-		debrid:         debridSvc,
-		debridPlayback: debrid.NewPlaybackService(cfg, nil),
-		metadata:       metadataSvc,
-		searchCache:    make(map[string]searchCacheEntry),
+		debrid:          debridSvc,
+		debridPlayback:  debrid.NewPlaybackService(cfg, nil),
+		metadata:        metadataSvc,
+		searchCache:     make(map[string]searchCacheEntry),
+		providerBreaker: providerbreaker.Shared(),
 	}
 }
 
@@ -2856,6 +2859,15 @@ type torznabAttr struct {
 }
 
 func (s *Service) searchTorznab(ctx context.Context, idx config.IndexerConfig, opts SearchOptions) ([]models.NZBResult, error) {
+	breaker := s.providerBreaker
+	if breaker == nil {
+		breaker = providerbreaker.Shared()
+	}
+	allowed, blockedUntil, probe := breaker.Allow(idx.Name)
+	if !allowed {
+		return nil, fmt.Errorf("indexer %s is cooling down after rate limiting until %s", idx.Name, blockedUntil.Format(time.RFC3339))
+	}
+
 	apiCallNum := s.usenetAPICallCount.Add(1)
 	log.Printf("[search-stats] usenet API call #%d to indexer=%q (query=%q)", apiCallNum, idx.Name, opts.Query)
 
@@ -2914,14 +2926,22 @@ func (s *Service) searchTorznab(ctx context.Context, idx config.IndexerConfig, o
 
 	resp, err := apiusage.Do(s.httpc, idx.Name, "Newznab search", req)
 	if err != nil {
+		breaker.ReleaseProbe(idx.Name, probe)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		if resp.StatusCode == http.StatusTooManyRequests {
+			until := breaker.RecordRateLimit(idx.Name, providerbreaker.RetryHint(resp.Header, time.Now()))
+			log.Printf("[provider-breaker] opened provider=%q after search 429 until=%s", idx.Name, until.Format(time.RFC3339))
+		} else {
+			breaker.ReleaseProbe(idx.Name, probe)
+		}
 		return nil, fmt.Errorf("torznab %s search failed: %s: %s", idx.Name, resp.Status, strings.TrimSpace(string(body)))
 	}
+	breaker.RecordSuccess(idx.Name, probe)
 
 	buf, err := io.ReadAll(resp.Body)
 	if err != nil {

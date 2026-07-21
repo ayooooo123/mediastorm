@@ -31,6 +31,7 @@ import (
 	"novastream/internal/integration"
 	"novastream/internal/mediaresolve"
 	metapb "novastream/internal/nzb/metadata/proto"
+	"novastream/internal/providerbreaker"
 	"novastream/internal/requestsecurity"
 	"novastream/models"
 	"novastream/services/debrid"
@@ -73,6 +74,7 @@ type Service struct {
 	// Grep logs for [search-stats] to see totals during playback.
 	nzbFetchCount   atomic.Int64 // NZB file downloads from indexers
 	nzbProcessCount atomic.Int64 // NZB files sent for immediate processing
+	providerBreaker *providerbreaker.Breaker
 }
 
 type externalUsenetJob struct {
@@ -176,15 +178,16 @@ func NewService(cfg *config.Manager, usenetSvc usenetHealthService, nzbSystem *i
 			Timeout:   60 * time.Second,
 			Transport: transport,
 		},
-		usenet:         usenetSvc,
-		debrid:         debrid.NewPlaybackService(cfg, nil),
-		nzbSystem:      nzbSystem,
-		metadataSvc:    metadataSvc,
-		externalJobs:   make(map[int64]*externalUsenetJob),
-		externalByKey:  make(map[string]int64),
-		externalClaims: make(map[string]chan struct{}),
-		externalReady:  make(map[string]*externalResolvedResult),
-		externalDone:   make(map[int64]*externalResolvedResult),
+		usenet:          usenetSvc,
+		debrid:          debrid.NewPlaybackService(cfg, nil),
+		nzbSystem:       nzbSystem,
+		metadataSvc:     metadataSvc,
+		externalJobs:    make(map[int64]*externalUsenetJob),
+		externalByKey:   make(map[string]int64),
+		externalClaims:  make(map[string]chan struct{}),
+		externalReady:   make(map[string]*externalResolvedResult),
+		externalDone:    make(map[int64]*externalResolvedResult),
+		providerBreaker: providerbreaker.Shared(),
 	}
 	service.externalNextID.Store(externalQueueIDBase)
 	return service
@@ -1995,6 +1998,16 @@ func externalUsenetEnabledForProfile(settings config.Settings, profileID string)
 }
 
 func (s *Service) fetchNZB(ctx context.Context, downloadURL string, candidate models.NZBResult) ([]byte, string, error) {
+	breaker := s.providerBreaker
+	if breaker == nil {
+		breaker = providerbreaker.Shared()
+	}
+	provider := strings.TrimSpace(candidate.Indexer)
+	allowed, blockedUntil, probe := breaker.Allow(provider)
+	if !allowed {
+		return nil, "", fmt.Errorf("indexer %s is cooling down after rate limiting until %s", provider, blockedUntil.Format(time.RFC3339))
+	}
+
 	fetchNum := s.nzbFetchCount.Add(1)
 	log.Printf("[search-stats] NZB fetch #%d started (title=%q, indexer=%q)", fetchNum, strings.TrimSpace(candidate.Title), strings.TrimSpace(candidate.Indexer))
 	log.Printf("[playback] fetching nzb url=%q title=%q", safeURLForLog(downloadURL), strings.TrimSpace(candidate.Title))
@@ -2014,6 +2027,7 @@ func (s *Service) fetchNZB(ctx context.Context, downloadURL string, candidate mo
 	log.Printf("[playback] sending http request...")
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
+		breaker.ReleaseProbe(provider, probe)
 		return nil, "", fmt.Errorf("download nzb: %w", err)
 	}
 	defer resp.Body.Close()
@@ -2022,8 +2036,15 @@ func (s *Service) fetchNZB(ctx context.Context, downloadURL string, candidate mo
 
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		if resp.StatusCode == http.StatusTooManyRequests {
+			until := breaker.RecordRateLimit(provider, providerbreaker.RetryHint(resp.Header, time.Now()))
+			log.Printf("[provider-breaker] opened provider=%q after NZB download 429 until=%s", provider, until.Format(time.RFC3339))
+		} else {
+			breaker.ReleaseProbe(provider, probe)
+		}
 		return nil, "", fmt.Errorf("download nzb failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
+	breaker.RecordSuccess(provider, probe)
 
 	log.Printf("[playback] reading nzb body...")
 

@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestMigrateGlobalLiveProxyToDefaultSource(t *testing.T) {
 	settings := DefaultSettings()
@@ -28,6 +31,36 @@ func TestMigrateGlobalLiveProxyToDefaultSource(t *testing.T) {
 	}
 	if MigrateGlobalLiveProxyToDefaultSource(&settings) {
 		t.Fatal("second migration reported a change")
+	}
+}
+
+func TestMigratePrewarmContinueWatchingOnly(t *testing.T) {
+	raw := map[string]interface{}{
+		"scheduledTasks": map[string]interface{}{
+			"tasks": []interface{}{
+				map[string]interface{}{
+					"type": "prewarm",
+					"config": map[string]interface{}{
+						"shelfSelections":     `[{"id":"watchlist","itemScope":"all"}]`,
+						"stableReresolveDays": "7",
+					},
+				},
+			},
+		},
+	}
+
+	MigrateRawSettings(raw)
+	tasks := raw["scheduledTasks"].(map[string]interface{})["tasks"].([]interface{})
+	configMap := tasks[0].(map[string]interface{})["config"].(map[string]interface{})
+	var selections []map[string]interface{}
+	if err := json.Unmarshal([]byte(configMap["shelfSelections"].(string)), &selections); err != nil {
+		t.Fatalf("decode migrated shelf selections: %v", err)
+	}
+	if len(selections) != 1 || selections[0]["id"] != "continue-watching" || selections[0]["playedWithinDays"] != float64(14) {
+		t.Fatalf("migrated selections = %#v, want Continue Watching/14 days", selections)
+	}
+	if configMap["stableReresolveDays"] != "7" {
+		t.Fatalf("stableReresolveDays = %#v, want preserved", configMap["stableReresolveDays"])
 	}
 }
 

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"log"
 	"strings"
 )
@@ -17,7 +18,43 @@ func MigrateRawSettings(raw map[string]interface{}) {
 	migratePrioritizeHdrToPreferredTerms(raw)
 	migrateRemoveHdrRankingCriterion(raw)
 	migratePrewarmFrequencyClear(raw)
+	migratePrewarmContinueWatchingOnly(raw)
 	migrateGeminiAISettings(raw)
+}
+
+// migratePrewarmContinueWatchingOnly temporarily removes speculative home
+// shelves from every prewarm task. This is intentionally idempotent and can be
+// relaxed when provider-aware request budgets are available.
+func migratePrewarmContinueWatchingOnly(raw map[string]interface{}) {
+	tasksMap, ok := raw["scheduledTasks"].(map[string]interface{})
+	if !ok {
+		return
+	}
+	tasksList, ok := tasksMap["tasks"].([]interface{})
+	if !ok {
+		return
+	}
+
+	selectionBytes, _ := json.Marshal([]map[string]interface{}{
+		{"id": "continue-watching", "playedWithinDays": 14},
+	})
+	wanted := string(selectionBytes)
+
+	for _, item := range tasksList {
+		task, ok := item.(map[string]interface{})
+		if !ok || task["type"] != "prewarm" {
+			continue
+		}
+		configMap, ok := task["config"].(map[string]interface{})
+		if !ok {
+			configMap = make(map[string]interface{})
+			task["config"] = configMap
+		}
+		if current, _ := configMap["shelfSelections"].(string); current == wanted {
+			continue
+		}
+		configMap["shelfSelections"] = wanted
+	}
 }
 
 // MigrateGlobalLiveProxyToDefaultSource moves the currently unsupported

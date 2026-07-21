@@ -279,7 +279,7 @@ func (h *PrequeueHandler) validateReadyEntryForReuse(ctx context.Context, entry 
 
 	validator := h.externalURLValidator
 	if validator == nil {
-		validator = defaultExternalURLValidator
+		validator = h.ValidateExternalURL
 	}
 
 	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
