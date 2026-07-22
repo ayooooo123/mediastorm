@@ -420,6 +420,9 @@ func (s *Service) ListGroups(ctx context.Context, libraryID string, query models
 
 	groups := buildLocalMediaGroups(filtered)
 	groups = filterLocalMediaGroupsByRating(groups, query.MaxMovieRating, query.MaxTVRating)
+	groups = filterLocalMediaGroupsByMediaType(groups, query.MediaType)
+	alphabetBuckets := localMediaAlphabetBuckets(groups)
+	groups = filterLocalMediaGroupsByAlphabet(groups, query.Alphabet)
 	sortLocalMediaGroups(groups, query.Sort, query.Dir)
 
 	total := len(groups)
@@ -434,10 +437,11 @@ func (s *Service) ListGroups(ctx context.Context, libraryID string, query models
 
 	if query.IncludeCards {
 		return &models.LocalMediaGroupListResult{
-			Groups: trimLocalMediaGroupsToCards(pageGroups),
-			Total:  total,
-			Limit:  query.Limit,
-			Offset: query.Offset,
+			Groups:          trimLocalMediaGroupsToCards(pageGroups),
+			Total:           total,
+			Limit:           query.Limit,
+			Offset:          query.Offset,
+			AlphabetBuckets: alphabetBuckets,
 		}, nil
 	}
 
@@ -448,11 +452,79 @@ func (s *Service) ListGroups(ctx context.Context, libraryID string, query models
 	pageGroups = buildLocalMediaGroups(pageItems)
 
 	return &models.LocalMediaGroupListResult{
-		Groups: pageGroups,
-		Total:  total,
-		Limit:  query.Limit,
-		Offset: query.Offset,
+		Groups:          pageGroups,
+		Total:           total,
+		Limit:           query.Limit,
+		Offset:          query.Offset,
+		AlphabetBuckets: alphabetBuckets,
 	}, nil
+}
+
+func filterLocalMediaGroupsByAlphabet(groups []models.LocalMediaItemGroup, alphabet string) []models.LocalMediaItemGroup {
+	alphabet = strings.ToUpper(strings.TrimSpace(alphabet))
+	if alphabet == "" {
+		return groups
+	}
+	filtered := groups[:0]
+	for _, group := range groups {
+		if localMediaAlphabetBucket(group.Title) == alphabet {
+			filtered = append(filtered, group)
+		}
+	}
+	return filtered
+}
+
+func localMediaAlphabetBuckets(groups []models.LocalMediaItemGroup) []string {
+	set := make(map[string]struct{})
+	for _, group := range groups {
+		set[localMediaAlphabetBucket(group.Title)] = struct{}{}
+	}
+	buckets := make([]string, 0, len(set))
+	for bucket := range set {
+		buckets = append(buckets, bucket)
+	}
+	sort.Slice(buckets, func(i, j int) bool {
+		if buckets[i] == "#" {
+			return true
+		}
+		if buckets[j] == "#" {
+			return false
+		}
+		return buckets[i] < buckets[j]
+	})
+	return buckets
+}
+
+func localMediaAlphabetBucket(name string) string {
+	name = strings.ToUpper(strings.TrimSpace(name))
+	for _, article := range []string{"THE ", "AN ", "A "} {
+		if strings.HasPrefix(name, article) {
+			name = strings.TrimSpace(name[len(article):])
+			break
+		}
+	}
+	if name == "" || name[0] < 'A' || name[0] > 'Z' {
+		return "#"
+	}
+	return name[:1]
+}
+
+func filterLocalMediaGroupsByMediaType(groups []models.LocalMediaItemGroup, mediaType string) []models.LocalMediaItemGroup {
+	mediaType = strings.ToLower(strings.TrimSpace(mediaType))
+	if mediaType == "" || mediaType == "all" {
+		return groups
+	}
+	want := models.LocalMediaLibraryTypeMovie
+	if mediaType == "series" || mediaType == "tv" || mediaType == "show" {
+		want = models.LocalMediaLibraryTypeShow
+	}
+	filtered := groups[:0]
+	for _, group := range groups {
+		if group.LibraryType == want {
+			filtered = append(filtered, group)
+		}
+	}
+	return filtered
 }
 
 func trimLocalMediaGroupsToCards(groups []models.LocalMediaItemGroup) []models.LocalMediaItemGroup {

@@ -112,6 +112,8 @@ type LocalMediaItemListQuery struct {
 	Sort           string `json:"sort"`
 	Dir            string `json:"dir"`
 	Query          string `json:"query"`
+	MediaType      string `json:"mediaType"`
+	Alphabet       string `json:"alphabet"`
 	Limit          int    `json:"limit"`
 	Offset         int    `json:"offset"`
 	IncludeMissing bool   `json:"includeMissing"`
@@ -189,10 +191,11 @@ type LocalMediaItemGroup struct {
 }
 
 type LocalMediaGroupListResult struct {
-	Groups []LocalMediaItemGroup `json:"groups"`
-	Total  int                   `json:"total"`
-	Limit  int                   `json:"limit"`
-	Offset int                   `json:"offset"`
+	Groups          []LocalMediaItemGroup `json:"groups"`
+	Total           int                   `json:"total"`
+	Limit           int                   `json:"limit"`
+	Offset          int                   `json:"offset"`
+	AlphabetBuckets []string              `json:"alphabetBuckets,omitempty"`
 }
 
 type LocalMediaMatchQuery struct {

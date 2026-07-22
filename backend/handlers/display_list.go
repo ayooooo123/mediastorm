@@ -29,10 +29,12 @@ type DisplayListHandler struct {
 }
 
 type DisplayListResponse struct {
-	Source string      `json:"source"`
-	ListID string      `json:"listId,omitempty"`
-	Items  interface{} `json:"items"`
-	Total  int         `json:"total"`
+	Source          string      `json:"source"`
+	ListID          string      `json:"listId,omitempty"`
+	Items           interface{} `json:"items"`
+	Total           int         `json:"total"`
+	Genres          []string    `json:"genres,omitempty"`
+	AlphabetBuckets []string    `json:"alphabetBuckets,omitempty"`
 }
 
 func NewDisplayListHandler(watchlist watchlistService, customLists customListsService, users userService) *DisplayListHandler {
@@ -196,6 +198,19 @@ func (h *DisplayListHandler) Get(w http.ResponseWriter, r *http.Request) {
 		)
 		items = filterWatchlistItemsByUnreleasedVisibility(items, policy)
 	}
+	items, genres, alphabet := queryWatchlistItems(items, parseDisplayListQuery(r))
+	total := len(items)
+	limit, offset := parseLimitOffset(r)
+	if offset >= len(items) {
+		items = []models.WatchlistItem{}
+	} else {
+		if offset > 0 {
+			items = items[offset:]
+		}
+		if limit > 0 && limit < len(items) {
+			items = items[:limit]
+		}
+	}
 
 	if items == nil {
 		items = []models.WatchlistItem{}
@@ -203,10 +218,12 @@ func (h *DisplayListHandler) Get(w http.ResponseWriter, r *http.Request) {
 	logDisplayListWatchlistArtworkTrace(userID, source, items)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(DisplayListResponse{
-		Source: source,
-		ListID: listID,
-		Items:  items,
-		Total:  len(items),
+		Source:          source,
+		ListID:          listID,
+		Items:           items,
+		Total:           total,
+		Genres:          genres,
+		AlphabetBuckets: alphabet,
 	})
 }
 
@@ -300,6 +317,13 @@ func (h *DisplayListHandler) filterHiddenPayload(userID string, payload map[stri
 	userID = strings.TrimSpace(userID)
 	if userID == "" {
 		return payload
+	}
+	// Preserve the source's pre-pagination total before replacing `total` with
+	// the visible count from this response page. Clients need this value to know
+	// that another page exists even when the current page has hidden items (or
+	// simply contains fewer records than the full source).
+	if total, ok := payload["total"]; ok {
+		payload["sourceTotal"] = total
 	}
 	for _, key := range []string{"items", "movies", "series"} {
 		rawItems, ok := payload[key].([]interface{})

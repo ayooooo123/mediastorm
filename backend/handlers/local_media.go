@@ -146,6 +146,8 @@ func (h *LocalMediaHandler) ListGroups(w http.ResponseWriter, r *http.Request) {
 		Sort:           r.URL.Query().Get("sort"),
 		Dir:            r.URL.Query().Get("dir"),
 		Query:          r.URL.Query().Get("query"),
+		MediaType:      r.URL.Query().Get("mediaType"),
+		Alphabet:       r.URL.Query().Get("alphabet"),
 		Limit:          limit,
 		Offset:         offset,
 		IncludeCards:   strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include")), "cards"),

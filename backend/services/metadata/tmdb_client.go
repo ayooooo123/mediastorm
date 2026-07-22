@@ -3371,14 +3371,14 @@ func (c *tmdbClient) searchByTitle(ctx context.Context, title string, year int, 
 }
 
 // discoverByGenre fetches movies or TV shows for a given genre from TMDB discover API
-func (c *tmdbClient) discoverByGenre(ctx context.Context, mediaType string, genreID int64, page int) ([]models.Title, int, error) {
-	return c.discoverTitles(ctx, mediaType, fmt.Sprintf("&with_genres=%d", genreID), fmt.Sprintf("genre genreId=%d", genreID), page)
+func (c *tmdbClient) discoverByGenre(ctx context.Context, mediaType string, genreID int64, page int, sortBy, direction string) ([]models.Title, int, error) {
+	return c.discoverTitles(ctx, mediaType, fmt.Sprintf("&with_genres=%d", genreID), fmt.Sprintf("genre genreId=%d", genreID), page, sortBy, direction)
 }
 
 // discoverByDecade fetches movies or TV shows released within a decade (e.g. 1980 → 1980-1989)
 // from the TMDB discover API. A vote-count floor keeps current-popularity spikes on obscure
 // titles from drowning out the well-known releases of older decades.
-func (c *tmdbClient) discoverByDecade(ctx context.Context, mediaType string, decadeStart int, page int) ([]models.Title, int, error) {
+func (c *tmdbClient) discoverByDecade(ctx context.Context, mediaType string, decadeStart int, page int, sortBy, direction string) ([]models.Title, int, error) {
 	apiMediaType := strings.ToLower(strings.TrimSpace(mediaType))
 	dateField := "primary_release_date"
 	minVotes := 300
@@ -3387,12 +3387,12 @@ func (c *tmdbClient) discoverByDecade(ctx context.Context, mediaType string, dec
 		minVotes = 50
 	}
 	filter := fmt.Sprintf("&%s.gte=%d-01-01&%s.lte=%d-12-31&vote_count.gte=%d", dateField, decadeStart, dateField, decadeStart+9, minVotes)
-	return c.discoverTitles(ctx, mediaType, filter, fmt.Sprintf("decade decade=%d", decadeStart), page)
+	return c.discoverTitles(ctx, mediaType, filter, fmt.Sprintf("decade decade=%d", decadeStart), page, sortBy, direction)
 }
 
 // discoverTitles runs a TMDB discover query with the given extra filter params
 // (already URL-encoded, starting with "&") sorted by popularity.
-func (c *tmdbClient) discoverTitles(ctx context.Context, mediaType, filterQuery, logLabel string, page int) ([]models.Title, int, error) {
+func (c *tmdbClient) discoverTitles(ctx context.Context, mediaType, filterQuery, logLabel string, page int, sortBy, direction string) ([]models.Title, int, error) {
 	start := time.Now()
 	if !c.isConfigured() {
 		return nil, 0, errors.New("tmdb api key not configured")
@@ -3404,8 +3404,9 @@ func (c *tmdbClient) discoverTitles(ctx context.Context, mediaType, filterQuery,
 		apiMediaType = "tv"
 	}
 
-	endpoint := fmt.Sprintf("%s/discover/%s?api_key=%s%s&sort_by=popularity.desc&page=%d",
-		tmdbBaseURL, apiMediaType, c.apiKey, filterQuery, page)
+	tmdbSort := tmdbDiscoverSort(apiMediaType, sortBy, direction)
+	endpoint := fmt.Sprintf("%s/discover/%s?api_key=%s%s&sort_by=%s&page=%d",
+		tmdbBaseURL, apiMediaType, c.apiKey, filterQuery, url.QueryEscape(tmdbSort), page)
 	if lang := strings.TrimSpace(c.language); lang != "" {
 		endpoint = endpoint + "&language=" + normalizeLanguage(lang)
 		if originalLanguage := tmdbOriginalLanguageFilter(lang); originalLanguage != "" {
@@ -3475,6 +3476,28 @@ func (c *tmdbClient) discoverTitles(ctx context.Context, mediaType, filterQuery,
 	}
 
 	return titles, payload.TotalResults, nil
+}
+
+func tmdbDiscoverSort(apiMediaType, sortBy, direction string) string {
+	if direction != "asc" && direction != "desc" {
+		direction = "desc"
+	}
+	switch strings.ToLower(strings.TrimSpace(sortBy)) {
+	case "name":
+		if apiMediaType == "tv" {
+			return "name." + direction
+		}
+		return "title." + direction
+	case "year":
+		if apiMediaType == "tv" {
+			return "first_air_date." + direction
+		}
+		return "primary_release_date." + direction
+	case "rating":
+		return "vote_average." + direction
+	default:
+		return "popularity.desc"
+	}
 }
 
 func tmdbOriginalLanguageFilter(lang string) string {
