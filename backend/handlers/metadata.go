@@ -299,6 +299,8 @@ type DiscoverNewResponse struct {
 	Items           []models.TrendingItem `json:"items"`
 	Total           int                   `json:"total"`
 	UnfilteredTotal int                   `json:"unfilteredTotal,omitempty"` // Pre-filter total (only set when hideUnreleased is used)
+	Genres          []string              `json:"genres,omitempty"`
+	AlphabetBuckets []string              `json:"alphabetBuckets,omitempty"`
 }
 
 type TopTenResponse struct {
@@ -309,7 +311,9 @@ type TopTenResponse struct {
 
 func parseShelfLoadOptions(r *http.Request) metadatapkg.ShelfLoadOptions {
 	opts := metadatapkg.ShelfLoadOptions{
-		Lite: strings.ToLower(strings.TrimSpace(r.URL.Query().Get("lite"))) == "true",
+		Lite:          strings.ToLower(strings.TrimSpace(r.URL.Query().Get("lite"))) == "true",
+		SortBy:        strings.ToLower(strings.TrimSpace(r.URL.Query().Get("sortBy"))),
+		SortDirection: strings.ToLower(strings.TrimSpace(r.URL.Query().Get("sortDirection"))),
 	}
 	if artworkLimitStr := r.URL.Query().Get("artworkLimit"); artworkLimitStr != "" {
 		if parsed, err := strconv.Atoi(artworkLimitStr); err == nil && parsed > 0 {
@@ -395,6 +399,15 @@ func (h *MetadataHandler) DiscoverNew(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Apply the shared query before pagination.
+	enrichTrendingRatings(items, service)
+	genres := displayListGenres(items)
+	query := parseDisplayListQuery(r)
+	alphabet := displayListAlphabetBuckets(items, query)
+	if query.Active() {
+		items = query.Apply(items)
+	}
+
 	// Apply pagination
 	total := len(items)
 	if offset > 0 {
@@ -408,11 +421,8 @@ func (h *MetadataHandler) DiscoverNew(w http.ResponseWriter, r *http.Request) {
 		items = items[:limit]
 	}
 
-	// Enrich with MDBList ratings for sort-by-rating support
-	enrichTrendingRatings(items, service)
-
 	w.Header().Set("Content-Type", "application/json")
-	resp := DiscoverNewResponse{Items: items, Total: total}
+	resp := DiscoverNewResponse{Items: items, Total: total, Genres: genres, AlphabetBuckets: alphabet}
 	if hideUnreleased || hideWatched {
 		resp.UnfilteredTotal = unfilteredTotal
 	}
@@ -1022,6 +1032,8 @@ type CustomListResponse struct {
 	Items           []models.TrendingItem `json:"items"`
 	Total           int                   `json:"total"`
 	UnfilteredTotal int                   `json:"unfilteredTotal,omitempty"` // Pre-filter total (only set when hideUnreleased is used)
+	Genres          []string              `json:"genres,omitempty"`
+	AlphabetBuckets []string              `json:"alphabetBuckets,omitempty"`
 }
 
 // filterUnreleasedItems removes items that haven't been released yet.
@@ -1141,6 +1153,7 @@ func (h *MetadataHandler) CustomList(w http.ResponseWriter, r *http.Request) {
 	hideUnreleased := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("hideUnreleased"))) == "true"
 	hideWatched := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("hideWatched"))) == "true"
 	lite := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("lite"))) == "true"
+	query := parseDisplayListQuery(r)
 
 	// Parse optional pagination parameters (0 = no limit/offset)
 	limit := 0
@@ -1177,9 +1190,15 @@ func (h *MetadataHandler) CustomList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Build options — filtering + pagination handled inside the service
+	serviceLimit, serviceOffset := limit, offset
+	if query.RequiresIndex() {
+		// Query the complete enriched list so filtering and sorting happen before
+		// pagination. GetCustomList caches this full-list representation.
+		serviceLimit, serviceOffset = 0, 0
+	}
 	opts := metadatapkg.CustomListOptions{
-		Limit:          limit,
-		Offset:         offset,
+		Limit:          serviceLimit,
+		Offset:         serviceOffset,
 		HideUnreleased: hideUnreleased,
 		HideWatched:    hideWatched,
 		Lite:           lite,
@@ -1221,12 +1240,31 @@ func (h *MetadataHandler) CustomList(w http.ResponseWriter, r *http.Request) {
 		items = filtered
 	}
 
-	// Enrich with MDBList ratings for sort-by-rating support
+	if query.Active() && userID != "" && h.HistoryService != nil {
+		wh, whErr := h.HistoryService.ListWatchHistory(userID)
+		if whErr == nil {
+			cw, _ := h.HistoryService.ListSeriesStates(userID)
+			pp, _ := h.HistoryService.ListPlaybackProgress(userID)
+			enrichTrendingItems(items, buildWatchStateIndex(wh, cw, pp))
+		}
+	}
+
+	// Attach cached ratings before query sorting. Existing enrichment warms
+	// missing ratings asynchronously.
 	enrichTrendingRatings(items, service)
+	genres := displayListGenres(items)
+	alphabet := displayListAlphabetBuckets(items, query)
+	if query.Active() {
+		items = query.Apply(items)
+		filteredTotal = len(items)
+	}
+	if query.RequiresIndex() {
+		items = paginateTrendingItems(items, offset, limit)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
-	resp := CustomListResponse{Items: items, Total: filteredTotal}
-	if hideUnreleased || hideWatched || visibilityFiltered {
+	resp := CustomListResponse{Items: items, Total: filteredTotal, Genres: genres, AlphabetBuckets: alphabet}
+	if hideUnreleased || hideWatched || visibilityFiltered || query.Active() {
 		resp.UnfilteredTotal = unfilteredTotal
 	}
 	json.NewEncoder(w).Encode(resp)
@@ -1251,6 +1289,8 @@ type TraktShelfResponse struct {
 	Items           []models.TrendingItem `json:"items"`
 	Total           int                   `json:"total"`
 	UnfilteredTotal int                   `json:"unfilteredTotal,omitempty"`
+	Genres          []string              `json:"genres,omitempty"`
+	AlphabetBuckets []string              `json:"alphabetBuckets,omitempty"`
 }
 
 // TraktList returns enriched Trakt watchlist/custom-list items for use in home shelves.
@@ -1313,6 +1353,7 @@ func (h *MetadataHandler) TraktList(w http.ResponseWriter, r *http.Request) {
 
 	hideUnreleased := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("hideUnreleased"))) == "true"
 	hideWatched := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("hideWatched"))) == "true"
+	query := parseDisplayListQuery(r)
 	limit := 0
 	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
 		if parsed, err := strconv.Atoi(limitStr); err == nil && parsed > 0 {
@@ -1393,6 +1434,7 @@ func (h *MetadataHandler) TraktList(w http.ResponseWriter, r *http.Request) {
 		items = filterWatchedItems(items, userID, h.HistoryService)
 	}
 	items = h.filterTrendingByKids(r.Context(), userID, service, items)
+	items, genres, alphabet := h.queryTrendingList(userID, service, items, query)
 	filteredTotal := len(items)
 
 	if offset > 0 && offset < len(items) {
@@ -1404,12 +1446,12 @@ func (h *MetadataHandler) TraktList(w http.ResponseWriter, r *http.Request) {
 		items = items[:limit]
 	}
 
-	enrichTrendingRatings(items, service)
-
 	w.Header().Set("Content-Type", "application/json")
 	resp := TraktShelfResponse{
-		Items: items,
-		Total: filteredTotal,
+		Items:           items,
+		Total:           filteredTotal,
+		Genres:          genres,
+		AlphabetBuckets: alphabet,
 	}
 	if hideUnreleased || hideWatched {
 		resp.UnfilteredTotal = unfilteredTotal
@@ -1714,6 +1756,11 @@ func (h *MetadataHandler) LetterboxdList(w http.ResponseWriter, r *http.Request)
 	limit, offset := parseLimitOffset(r)
 
 	maxItems := maxShelfSourceItems(limit, offset)
+	if parseDisplayListQuery(r).RequiresIndex() {
+		// Querying must see the complete upstream list before pagination. Both
+		// Letterboxd adapters stop naturally at the end of the list.
+		maxItems = 10000
+	}
 	var curated []metadatapkg.CuratedItem
 	sourceTotal := 0
 	switch {
@@ -1837,6 +1884,8 @@ func (h *MetadataHandler) buildShelfFromCurated(w http.ResponseWriter, r *http.R
 		items = filterWatchedItems(items, userID, h.HistoryService)
 	}
 	items = h.filterTrendingByKids(r.Context(), userID, service, items)
+	query := parseDisplayListQuery(r)
+	items, genres, alphabet := h.queryTrendingList(userID, service, items, query)
 	filteredTotal := len(items)
 
 	if offset > 0 && offset < len(items) {
@@ -1848,10 +1897,8 @@ func (h *MetadataHandler) buildShelfFromCurated(w http.ResponseWriter, r *http.R
 		items = items[:limit]
 	}
 
-	enrichTrendingRatings(items, service)
-
 	w.Header().Set("Content-Type", "application/json")
-	resp := &CustomListResponse{Items: items, Total: filteredTotal}
+	resp := &CustomListResponse{Items: items, Total: filteredTotal, Genres: genres, AlphabetBuckets: alphabet}
 	if hideUnreleased || hideWatched {
 		resp.UnfilteredTotal = unfilteredTotal
 	}

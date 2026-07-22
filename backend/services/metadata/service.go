@@ -1360,8 +1360,10 @@ func seriesDetailsCacheKey(lang string, tvdbID int64, seasonType string) string 
 
 // ShelfLoadOptions configures fast shelf rendering for list-style endpoints.
 type ShelfLoadOptions struct {
-	Lite         bool
-	ArtworkLimit int
+	Lite          bool
+	ArtworkLimit  int
+	SortBy        string
+	SortDirection string
 }
 
 func shelfLoadArtworkLimit(opts ShelfLoadOptions) int {
@@ -5608,9 +5610,9 @@ func (s *Service) DiscoverByGenreWithOptions(ctx context.Context, mediaType stri
 	}
 	return s.discoverShelfWithOptions(ctx, mediaType, limit, offset, opts,
 		fmt.Sprintf("genre genreId=%d", genreID),
-		[]string{"genre", "v2", fmt.Sprintf("%d", genreID)},
+		[]string{"genre", "v3", fmt.Sprintf("%d", genreID), opts.SortBy, opts.SortDirection},
 		func(normalizedType string, page int) ([]models.Title, int, error) {
-			return s.tmdb.discoverByGenre(ctx, normalizedType, genreID, page)
+			return s.tmdb.discoverByGenre(ctx, normalizedType, genreID, page, opts.SortBy, opts.SortDirection)
 		})
 }
 
@@ -5625,9 +5627,9 @@ func (s *Service) DiscoverByDecadeWithOptions(ctx context.Context, mediaType str
 	}
 	return s.discoverShelfWithOptions(ctx, mediaType, limit, offset, opts,
 		fmt.Sprintf("decade decade=%d", decadeStart),
-		[]string{"decade", fmt.Sprintf("%d", decadeStart), "v3"},
+		[]string{"decade", fmt.Sprintf("%d", decadeStart), "v4", opts.SortBy, opts.SortDirection},
 		func(normalizedType string, page int) ([]models.Title, int, error) {
-			return s.tmdb.discoverByDecade(ctx, normalizedType, decadeStart, page)
+			return s.tmdb.discoverByDecade(ctx, normalizedType, decadeStart, page, opts.SortBy, opts.SortDirection)
 		})
 }
 

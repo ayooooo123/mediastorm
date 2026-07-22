@@ -718,6 +718,29 @@ func TestListGroupsIncludeCardsOmitsNestedItemsAndSeasons(t *testing.T) {
 	}
 }
 
+func TestFilterLocalMediaGroupsByMediaType(t *testing.T) {
+	groups := []models.LocalMediaItemGroup{
+		{Title: "Movie", LibraryType: models.LocalMediaLibraryTypeMovie},
+		{Title: "Show", LibraryType: models.LocalMediaLibraryTypeShow},
+	}
+	filtered := filterLocalMediaGroupsByMediaType(groups, "series")
+	if len(filtered) != 1 || filtered[0].Title != "Show" {
+		t.Fatalf("unexpected filtered groups: %#v", filtered)
+	}
+}
+
+func TestFilterLocalMediaGroupsByAlphabetNormalizesArticles(t *testing.T) {
+	groups := []models.LocalMediaItemGroup{{Title: "The Zebra"}, {Title: "Alpha"}, {Title: "1917"}}
+	filtered := filterLocalMediaGroupsByAlphabet(groups, "Z")
+	if len(filtered) != 1 || filtered[0].Title != "The Zebra" {
+		t.Fatalf("unexpected filtered groups: %#v", filtered)
+	}
+	buckets := localMediaAlphabetBuckets(groups)
+	if len(buckets) != 3 || buckets[0] != "#" || buckets[1] != "A" || buckets[2] != "Z" {
+		t.Fatalf("unexpected buckets: %#v", buckets)
+	}
+}
+
 func TestUpdateItemMatchRefreshesLibrarySummary(t *testing.T) {
 	now := time.Now().UTC()
 	repo := &fakeLocalMediaRepo{

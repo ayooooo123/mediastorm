@@ -439,6 +439,29 @@ func (s *Service) ListGroups(ctx context.Context, libraryID string, query models
 		}
 		groups = filtered
 	}
+	if mediaType := strings.ToLower(strings.TrimSpace(query.MediaType)); mediaType != "" && mediaType != "all" {
+		want := models.LocalMediaLibraryTypeMovie
+		if mediaType == "series" || mediaType == "tv" || mediaType == "show" {
+			want = models.LocalMediaLibraryTypeShow
+		}
+		filtered := groups[:0]
+		for _, group := range groups {
+			if group.LibraryType == want {
+				filtered = append(filtered, group)
+			}
+		}
+		groups = filtered
+	}
+	alphabetBuckets := remoteMediaAlphabetBuckets(groups)
+	if alphabet := strings.ToUpper(strings.TrimSpace(query.Alphabet)); alphabet != "" {
+		filtered := groups[:0]
+		for _, group := range groups {
+			if remoteMediaAlphabetBucket(group.Title) == alphabet {
+				filtered = append(filtered, group)
+			}
+		}
+		groups = filtered
+	}
 	sort.SliceStable(groups, func(i, j int) bool { return strings.ToLower(groups[i].Title) < strings.ToLower(groups[j].Title) })
 	total := len(groups)
 	limit := query.Limit
@@ -456,7 +479,42 @@ func (s *Service) ListGroups(ctx context.Context, libraryID string, query models
 	if offset > total {
 		offset = total
 	}
-	return &models.LocalMediaGroupListResult{Groups: groups[offset:end], Total: total, Limit: limit, Offset: offset}, nil
+	return &models.LocalMediaGroupListResult{Groups: groups[offset:end], Total: total, Limit: limit, Offset: offset, AlphabetBuckets: alphabetBuckets}, nil
+}
+
+func remoteMediaAlphabetBuckets(groups []models.LocalMediaItemGroup) []string {
+	set := make(map[string]struct{})
+	for _, group := range groups {
+		set[remoteMediaAlphabetBucket(group.Title)] = struct{}{}
+	}
+	buckets := make([]string, 0, len(set))
+	for bucket := range set {
+		buckets = append(buckets, bucket)
+	}
+	sort.Slice(buckets, func(i, j int) bool {
+		if buckets[i] == "#" {
+			return true
+		}
+		if buckets[j] == "#" {
+			return false
+		}
+		return buckets[i] < buckets[j]
+	})
+	return buckets
+}
+
+func remoteMediaAlphabetBucket(name string) string {
+	name = strings.ToUpper(strings.TrimSpace(name))
+	for _, article := range []string{"THE ", "AN ", "A "} {
+		if strings.HasPrefix(name, article) {
+			name = strings.TrimSpace(name[len(article):])
+			break
+		}
+	}
+	if name == "" || name[0] < 'A' || name[0] > 'Z' {
+		return "#"
+	}
+	return name[:1]
 }
 
 func groupItems(library *models.RemoteMediaLibrary, items []models.RemoteMediaItem, cards bool) []models.LocalMediaItemGroup {
