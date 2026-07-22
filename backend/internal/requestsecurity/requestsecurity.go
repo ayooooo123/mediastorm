@@ -118,8 +118,8 @@ func isTrustedProxy(ip net.IP) bool {
 }
 
 // RestrictedHostPolicy permits private-network destinations for explicitly
-// configured provider hosts. Public destinations should return false.
-type RestrictedHostPolicy func(hostname string) bool
+// configured host and port pairs. Public destinations should return false.
+type RestrictedHostPolicy func(hostname, port string) bool
 
 // URLForLog returns only the scheme and authority of a URL. Paths, user info,
 // query strings, and fragments often carry provider tokens or signed media
@@ -150,7 +150,7 @@ func ValidateOutboundURL(ctx context.Context, rawURL string, allowRestricted Res
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return fmt.Errorf("unsupported outbound URL scheme")
 	}
-	_, err = resolveAllowedIPs(ctx, parsed.Hostname(), allowRestricted)
+	_, err = resolveAllowedIPs(ctx, parsed.Hostname(), effectiveURLPort(parsed), allowRestricted)
 	return err
 }
 
@@ -182,7 +182,7 @@ func NewSafeHTTPClient(timeout time.Duration, maxRedirects int, allowRestricted 
 		if err != nil {
 			return nil, fmt.Errorf("invalid outbound address: %w", err)
 		}
-		ips, err := resolveAllowedIPs(ctx, host, allowRestricted)
+		ips, err := resolveAllowedIPs(ctx, host, port, allowRestricted)
 		if err != nil {
 			return nil, err
 		}
@@ -209,9 +209,9 @@ func NewSafeHTTPClient(timeout time.Duration, maxRedirects int, allowRestricted 
 	}
 }
 
-func resolveAllowedIPs(ctx context.Context, hostname string, allowRestricted RestrictedHostPolicy) ([]net.IP, error) {
+func resolveAllowedIPs(ctx context.Context, hostname, port string, allowRestricted RestrictedHostPolicy) ([]net.IP, error) {
 	hostname = strings.Trim(strings.TrimSpace(hostname), "[]")
-	allow := allowRestricted != nil && allowRestricted(hostname)
+	allow := allowRestricted != nil && allowRestricted(hostname, port)
 	var ips []net.IP
 	if parsed := net.ParseIP(hostname); parsed != nil {
 		ips = []net.IP{parsed}
@@ -237,6 +237,23 @@ func resolveAllowedIPs(ctx context.Context, hostname string, allowRestricted Res
 		return nil, fmt.Errorf("outbound host resolves to a restricted address")
 	}
 	return allowed, nil
+}
+
+func effectiveURLPort(parsed *url.URL) string {
+	if parsed == nil {
+		return ""
+	}
+	if port := parsed.Port(); port != "" {
+		return port
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http":
+		return "80"
+	case "https":
+		return "443"
+	default:
+		return ""
+	}
 }
 
 func isRestrictedIP(ip net.IP) bool {

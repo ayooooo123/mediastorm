@@ -52,10 +52,52 @@ type Settings struct {
 }
 
 type ServerSettings struct {
-	Host           string `json:"host"`
-	Port           int    `json:"port"`
-	BasePath       string `json:"basePath,omitempty"`       // URL path prefix for reverse proxy (e.g. "/mediastorm")
-	HomepageAPIKey string `json:"homepageApiKey,omitempty"` // API key for Homepage dashboard integration
+	Host                       string   `json:"host"`
+	Port                       int      `json:"port"`
+	BasePath                   string   `json:"basePath,omitempty"`                   // URL path prefix for reverse proxy (e.g. "/mediastorm")
+	HomepageAPIKey             string   `json:"homepageApiKey,omitempty"`             // API key for Homepage dashboard integration
+	AllowedPrivateMediaOrigins []string `json:"allowedPrivateMediaOrigins,omitempty"` // Explicit private origins permitted for server-side media requests
+}
+
+// NormalizeAllowedPrivateMediaOrigins validates and reduces private media URL
+// exceptions to origins so paths, query parameters, and fragments are never
+// persisted as part of the outbound-request policy.
+func (s *ServerSettings) NormalizeAllowedPrivateMediaOrigins() error {
+	seen := make(map[string]struct{}, len(s.AllowedPrivateMediaOrigins))
+	normalized := make([]string, 0, len(s.AllowedPrivateMediaOrigins))
+	for _, raw := range s.AllowedPrivateMediaOrigins {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		parsed, err := url.Parse(raw)
+		if err != nil || parsed.Hostname() == "" {
+			return fmt.Errorf("invalid allowed private media origin %q", raw)
+		}
+		parsed.Scheme = strings.ToLower(parsed.Scheme)
+		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+			return fmt.Errorf("invalid allowed private media origin %q: only http and https are permitted", raw)
+		}
+		if parsed.User != nil {
+			return fmt.Errorf("invalid allowed private media origin %q: credentials are not permitted", raw)
+		}
+		hostname := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+		host := hostname
+		if strings.Contains(hostname, ":") {
+			host = "[" + hostname + "]"
+		}
+		if port := parsed.Port(); port != "" {
+			host += ":" + port
+		}
+		origin := parsed.Scheme + "://" + host
+		if _, ok := seen[origin]; ok {
+			continue
+		}
+		seen[origin] = struct{}{}
+		normalized = append(normalized, origin)
+	}
+	s.AllowedPrivateMediaOrigins = normalized
+	return nil
 }
 
 type UsenetSettings struct {
@@ -2440,6 +2482,9 @@ func (m *Manager) Save(s Settings) error {
 	s.Metadata.NormalizeAISettings()
 	s.Metadata.NormalizeLanguages()
 	s.Playback.NormalizeAllowedTrackLanguages()
+	if err := s.Server.NormalizeAllowedPrivateMediaOrigins(); err != nil {
+		return err
+	}
 	s.UsenetEngines = normalizeEnabledUsenetEngines(s.UsenetEngines)
 	if s.Playback.Thumbnails.Workers < 1 {
 		s.Playback.Thumbnails.Workers = 1

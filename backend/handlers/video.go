@@ -5626,7 +5626,8 @@ func (h *VideoHandler) proxyExternalURL(w http.ResponseWriter, r *http.Request, 
 }
 
 // configuredExternalHostPolicy permits private destinations only when their
-// hostname is explicitly present in enabled provider configuration.
+// host and port are explicitly present in enabled provider configuration or
+// the server's advanced private-media origin allowlist.
 func (h *VideoHandler) configuredExternalHostPolicy() requestsecurity.RestrictedHostPolicy {
 	return configuredProviderHostPolicy(h.configManager)
 }
@@ -5647,44 +5648,67 @@ func configuredProviderHostPolicy(configManager ConfigProvider) requestsecurity.
 	allowed := make(map[string]struct{})
 	if configManager != nil {
 		if settings, err := configManager.Load(); err == nil {
-			addURLHost := func(raw string) {
+			addURLOrigin := func(raw string) {
 				parsed, err := url.Parse(strings.TrimSpace(raw))
-				if err == nil && parsed.Hostname() != "" {
-					allowed[strings.ToLower(parsed.Hostname())] = struct{}{}
+				if err != nil || parsed == nil {
+					return
 				}
+				scheme := strings.ToLower(parsed.Scheme)
+				if parsed.Hostname() != "" && (scheme == "http" || scheme == "https") {
+					port := parsed.Port()
+					if port == "" {
+						switch scheme {
+						case "http":
+							port = "80"
+						case "https":
+							port = "443"
+						}
+					}
+					if port != "" {
+						allowed[privateMediaEndpointKey(parsed.Hostname(), port)] = struct{}{}
+					}
+				}
+			}
+			for _, origin := range settings.Server.AllowedPrivateMediaOrigins {
+				addURLOrigin(origin)
 			}
 			for _, engine := range settings.UsenetEngines {
 				if engine.Enabled {
-					addURLHost(engine.BaseURL)
-					addURLHost(engine.WebDAVBaseURL)
+					addURLOrigin(engine.BaseURL)
+					addURLOrigin(engine.WebDAVBaseURL)
 				}
 			}
 			for _, indexer := range settings.Indexers {
 				if indexer.Enabled {
-					addURLHost(indexer.URL)
+					addURLOrigin(indexer.URL)
 				}
 			}
 			for _, scraper := range settings.TorrentScrapers {
 				if scraper.Enabled {
-					addURLHost(scraper.URL)
+					addURLOrigin(scraper.URL)
 				}
 			}
-			addURLHost(settings.Live.PlaylistURL)
-			addURLHost(settings.Live.ManifestURL)
-			addURLHost(settings.Live.XtreamHost)
+			addURLOrigin(settings.Live.PlaylistURL)
+			addURLOrigin(settings.Live.ManifestURL)
+			addURLOrigin(settings.Live.XtreamHost)
 			for _, source := range append(settings.Live.Sources, settings.Live.PlaylistSources...) {
 				if source.Enabled == nil || *source.Enabled {
-					addURLHost(source.PlaylistURL)
-					addURLHost(source.ManifestURL)
-					addURLHost(source.XtreamHost)
+					addURLOrigin(source.PlaylistURL)
+					addURLOrigin(source.ManifestURL)
+					addURLOrigin(source.XtreamHost)
 				}
 			}
 		}
 	}
-	return func(hostname string) bool {
-		_, ok := allowed[strings.ToLower(strings.TrimSpace(hostname))]
+	return func(hostname, port string) bool {
+		_, ok := allowed[privateMediaEndpointKey(hostname, port)]
 		return ok
 	}
+}
+
+func privateMediaEndpointKey(hostname, port string) string {
+	hostname = strings.ToLower(strings.TrimSuffix(strings.Trim(strings.TrimSpace(hostname), "[]"), "."))
+	return net.JoinHostPort(hostname, strings.TrimSpace(port))
 }
 
 func (h *VideoHandler) applyExternalUsenetWebDAVAuth(req *http.Request) {

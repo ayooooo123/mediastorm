@@ -227,6 +227,12 @@ var SettingsSchema = map[string]interface{}{
 			"host":     map[string]interface{}{"type": "text", "label": "Host", "description": "Server bind address (leave empty to bind all interfaces)", "order": 0},
 			"port":     map[string]interface{}{"type": "number", "label": "Port", "description": "Server port (default: 7777)", "order": 1},
 			"basePath": map[string]interface{}{"type": "text", "label": "Base Path", "description": "URL path prefix for reverse proxy (e.g. /mediastorm). Requires restart.", "placeholder": "/mediastorm", "order": 2},
+			"allowedPrivateMediaOrigins": map[string]interface{}{
+				"type":        "tags",
+				"label":       "Allowed Private Media Origins (Advanced)",
+				"description": "Allow server-side playback requests to specific private or loopback media origins, for example http://localhost:8080. Add only origins you trust; paths and query parameters are ignored.",
+				"order":       3,
+			},
 		},
 	},
 	"network": map[string]interface{}{
