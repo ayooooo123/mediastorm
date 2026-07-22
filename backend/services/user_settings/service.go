@@ -294,6 +294,18 @@ func (s *Service) GetWithDefaults(userID string, defaults models.UserSettings) (
 		if settings.Display.DisableMobileTopCarousel == nil {
 			settings.Display.DisableMobileTopCarousel = defaults.Display.DisableMobileTopCarousel
 		}
+		if settings.Display.HideContinueWatchingHeroMetadata == nil {
+			settings.Display.HideContinueWatchingHeroMetadata = defaults.Display.HideContinueWatchingHeroMetadata
+		}
+		if settings.Display.MoveDetailsRatingsToMetadata == nil {
+			settings.Display.MoveDetailsRatingsToMetadata = defaults.Display.MoveDetailsRatingsToMetadata
+		}
+		if settings.Display.HideDetailsPoster == nil {
+			settings.Display.HideDetailsPoster = defaults.Display.HideDetailsPoster
+		}
+		if settings.Display.HideTVDrawerRail == nil {
+			settings.Display.HideTVDrawerRail = defaults.Display.HideTVDrawerRail
+		}
 		if settings.Display.EnableAnimations == nil {
 			settings.Display.EnableAnimations = defaults.Display.EnableAnimations
 		}
@@ -655,6 +667,10 @@ func isSettingsEmpty(s models.UserSettings) bool {
 		s.Display.IncludeUnreleasedShowsInSearch != nil ||
 		s.Display.BypassFilteringForAIOStreamsOnly != nil ||
 		s.Display.DisableMobileTopCarousel != nil ||
+		s.Display.HideContinueWatchingHeroMetadata != nil ||
+		s.Display.MoveDetailsRatingsToMetadata != nil ||
+		s.Display.HideDetailsPoster != nil ||
+		s.Display.HideTVDrawerRail != nil ||
 		s.Display.EnableAnimations != nil ||
 		s.Display.EnableHeroArtPanning != nil ||
 		s.Display.EnableHeroArtRotation != nil ||

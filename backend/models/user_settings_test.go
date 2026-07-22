@@ -38,6 +38,22 @@ func TestDefaultUserSettingsEnablesApplicationAnimations(t *testing.T) {
 	}
 }
 
+func TestDefaultUserSettingsKeepsTVDisplayOptionsDisabled(t *testing.T) {
+	settings := DefaultUserSettings()
+
+	options := map[string]*bool{
+		"hideContinueWatchingHeroMetadata": settings.Display.HideContinueWatchingHeroMetadata,
+		"moveDetailsRatingsToMetadata":     settings.Display.MoveDetailsRatingsToMetadata,
+		"hideDetailsPoster":                settings.Display.HideDetailsPoster,
+		"hideTvDrawerRail":                 settings.Display.HideTVDrawerRail,
+	}
+	for name, option := range options {
+		if option == nil || *option {
+			t.Fatalf("%s should be explicitly disabled by default", name)
+		}
+	}
+}
+
 func TestEnsureDefaultHomeShelvesDisablesExperimentalTonightShelf(t *testing.T) {
 	shelves := DefaultHomeShelfConfigs()
 	for i := range shelves {

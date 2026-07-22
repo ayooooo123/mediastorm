@@ -179,6 +179,10 @@ func globalToUserSettings(g config.Settings) models.UserSettings {
 			IncludeUnreleasedShowsInSearch:   models.BoolPtr(g.Display.IncludeUnreleasedShowsInSearch),
 			BypassFilteringForAIOStreamsOnly: models.BoolPtr(g.Display.BypassFilteringForAIOStreamsOnly),
 			DisableMobileTopCarousel:         models.BoolPtr(g.Display.DisableMobileTopCarousel),
+			HideContinueWatchingHeroMetadata: models.BoolPtr(g.Display.HideContinueWatchingHeroMetadata),
+			MoveDetailsRatingsToMetadata:     models.BoolPtr(g.Display.MoveDetailsRatingsToMetadata),
+			HideDetailsPoster:                models.BoolPtr(g.Display.HideDetailsPoster),
+			HideTVDrawerRail:                 models.BoolPtr(g.Display.HideTVDrawerRail),
 			EnableAnimations:                 models.BoolPtr(g.Display.EnableAnimations),
 			EnableHeroArtPanning:             models.BoolPtr(g.Display.EnableHeroArtPanning),
 			EnableHeroArtRotation:            models.BoolPtr(g.Display.EnableHeroArtRotation),
@@ -447,6 +451,18 @@ func mergeWithGlobal(us models.UserSettings, g config.Settings) models.UserSetti
 	}
 	if eff.Display.DisableMobileTopCarousel == nil {
 		eff.Display.DisableMobileTopCarousel = models.BoolPtr(g.Display.DisableMobileTopCarousel)
+	}
+	if eff.Display.HideContinueWatchingHeroMetadata == nil {
+		eff.Display.HideContinueWatchingHeroMetadata = models.BoolPtr(g.Display.HideContinueWatchingHeroMetadata)
+	}
+	if eff.Display.MoveDetailsRatingsToMetadata == nil {
+		eff.Display.MoveDetailsRatingsToMetadata = models.BoolPtr(g.Display.MoveDetailsRatingsToMetadata)
+	}
+	if eff.Display.HideDetailsPoster == nil {
+		eff.Display.HideDetailsPoster = models.BoolPtr(g.Display.HideDetailsPoster)
+	}
+	if eff.Display.HideTVDrawerRail == nil {
+		eff.Display.HideTVDrawerRail = models.BoolPtr(g.Display.HideTVDrawerRail)
 	}
 	if eff.Display.EnableAnimations == nil {
 		eff.Display.EnableAnimations = models.BoolPtr(g.Display.EnableAnimations)
@@ -877,6 +893,22 @@ func stripDisplay(d *models.DisplaySettings, g config.DisplaySettings) bool {
 		d.DisableMobileTopCarousel = nil
 		changed = true
 	}
+	if d.HideContinueWatchingHeroMetadata != nil && *d.HideContinueWatchingHeroMetadata == g.HideContinueWatchingHeroMetadata {
+		d.HideContinueWatchingHeroMetadata = nil
+		changed = true
+	}
+	if d.MoveDetailsRatingsToMetadata != nil && *d.MoveDetailsRatingsToMetadata == g.MoveDetailsRatingsToMetadata {
+		d.MoveDetailsRatingsToMetadata = nil
+		changed = true
+	}
+	if d.HideDetailsPoster != nil && *d.HideDetailsPoster == g.HideDetailsPoster {
+		d.HideDetailsPoster = nil
+		changed = true
+	}
+	if d.HideTVDrawerRail != nil && *d.HideTVDrawerRail == g.HideTVDrawerRail {
+		d.HideTVDrawerRail = nil
+		changed = true
+	}
 	if d.EnableAnimations != nil && *d.EnableAnimations == g.EnableAnimations {
 		d.EnableAnimations = nil
 		changed = true
@@ -1215,6 +1247,22 @@ func stripClientSettings(cs *models.ClientFilterSettings, eff models.UserSetting
 	}
 	if cs.DisableMobileTopCarousel != nil && eff.Display.DisableMobileTopCarousel != nil && *cs.DisableMobileTopCarousel == *eff.Display.DisableMobileTopCarousel {
 		cs.DisableMobileTopCarousel = nil
+		changed = true
+	}
+	if cs.HideContinueWatchingHeroMetadata != nil && eff.Display.HideContinueWatchingHeroMetadata != nil && *cs.HideContinueWatchingHeroMetadata == *eff.Display.HideContinueWatchingHeroMetadata {
+		cs.HideContinueWatchingHeroMetadata = nil
+		changed = true
+	}
+	if cs.MoveDetailsRatingsToMetadata != nil && eff.Display.MoveDetailsRatingsToMetadata != nil && *cs.MoveDetailsRatingsToMetadata == *eff.Display.MoveDetailsRatingsToMetadata {
+		cs.MoveDetailsRatingsToMetadata = nil
+		changed = true
+	}
+	if cs.HideDetailsPoster != nil && eff.Display.HideDetailsPoster != nil && *cs.HideDetailsPoster == *eff.Display.HideDetailsPoster {
+		cs.HideDetailsPoster = nil
+		changed = true
+	}
+	if cs.HideTVDrawerRail != nil && eff.Display.HideTVDrawerRail != nil && *cs.HideTVDrawerRail == *eff.Display.HideTVDrawerRail {
+		cs.HideTVDrawerRail = nil
 		changed = true
 	}
 	if cs.EnableAnimations != nil && eff.Display.EnableAnimations != nil && *cs.EnableAnimations == *eff.Display.EnableAnimations {
