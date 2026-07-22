@@ -1,11 +1,40 @@
 package jellyfin
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 )
+
+func TestReportPlayback(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/Sessions/Playing/Progress" {
+			t.Fatalf("request=%s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("X-Emby-Token"); got != "token" {
+			t.Fatalf("token header=%q", got)
+		}
+		var report PlaybackReport
+		if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
+			t.Fatalf("decode report: %v", err)
+		}
+		if report.ItemID != "item-1" || report.PlaySessionID != "session-1" || report.PositionTicks != 120_000_000 {
+			t.Fatalf("unexpected report: %#v", report)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client := NewClient()
+	err := client.ReportPlayback(context.Background(), server.URL, "token", "progress", PlaybackReport{
+		ItemID: "item-1", PlaySessionID: "session-1", PositionTicks: 120_000_000,
+	})
+	if err != nil {
+		t.Fatalf("ReportPlayback() error = %v", err)
+	}
+}
 
 func TestAuthenticate(t *testing.T) {
 	t.Run("successful auth", func(t *testing.T) {

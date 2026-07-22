@@ -300,6 +300,10 @@ func normalizeJellyfin(library *models.RemoteMediaLibrary, source []jellyfin.Jel
 	now := time.Now().UTC()
 	result := []models.RemoteMediaItem{}
 	for _, item := range source {
+		createdAt := now
+		if item.DateCreated != nil && !item.DateCreated.IsZero() {
+			createdAt = item.DateCreated.UTC()
+		}
 		groupKey := item.ID
 		title := item.Name
 		episodeTitle := ""
@@ -321,7 +325,7 @@ func normalizeJellyfin(library *models.RemoteMediaLibrary, source []jellyfin.Jel
 			v := models.RemoteMediaItem{ID: stableItemID(library.ID, item.ID, media.ID), ExternalItemID: item.ID, ExternalMediaID: media.ID, GroupKey: groupKey,
 				LibraryType: library.Type, Title: title, Year: item.Year, Overview: item.Overview, Certification: item.OfficialRating,
 				SeasonNumber: item.SeasonNum, EpisodeNumber: item.EpisodeNum, EpisodeTitle: episodeTitle, ExternalIDs: exts,
-				FileName: filepath.Base(media.Path), Container: media.Container, DurationSeconds: float64(durationTicks) / 10_000_000, SizeBytes: media.Size, CreatedAt: now, UpdatedAt: now,
+				FileName: filepath.Base(media.Path), Container: media.Container, DurationSeconds: float64(durationTicks) / 10_000_000, SizeBytes: media.Size, CreatedAt: createdAt, UpdatedAt: now,
 				ProviderData: map[string]string{"itemId": item.ID, "mediaSourceId": media.ID}}
 			for _, stream := range media.MediaStreams {
 				if stream.Type == "Video" {
@@ -346,6 +350,10 @@ func normalizePlex(library *models.RemoteMediaLibrary, source []plex.PlexLibrary
 	now := time.Now().UTC()
 	result := []models.RemoteMediaItem{}
 	for _, item := range source {
+		createdAt := now
+		if item.AddedAt > 0 {
+			createdAt = time.Unix(item.AddedAt, 0).UTC()
+		}
 		groupKey := item.RatingKey
 		title := item.Title
 		episodeTitle := ""
@@ -366,7 +374,7 @@ func normalizePlex(library *models.RemoteMediaLibrary, source []plex.PlexLibrary
 					LibraryType: library.Type, Title: title, Year: item.Year, Overview: item.Summary, Certification: item.ContentRating,
 					SeasonNumber: item.ParentIndex, EpisodeNumber: item.Index, EpisodeTitle: episodeTitle, ExternalIDs: exts,
 					FileName: filepath.Base(part.File), Container: part.Container, VideoCodec: media.VideoCodec, AudioCodec: media.AudioCodec,
-					Width: media.Width, Height: media.Height, HDRFormat: media.VideoDynamicRange, DurationSeconds: float64(item.Duration) / 1000, SizeBytes: part.Size, CreatedAt: now, UpdatedAt: now,
+					Width: media.Width, Height: media.Height, HDRFormat: media.VideoDynamicRange, DurationSeconds: float64(item.Duration) / 1000, SizeBytes: part.Size, CreatedAt: createdAt, UpdatedAt: now,
 					ProviderData: map[string]string{"partKey": part.Key, "posterPath": posterPath, "backdropPath": backdropPath}}
 				v.VersionLabel = versionLabel(v.Height, v.VideoCodec, v.HDRFormat, media.VideoResolution)
 				v.StreamPath = "plexmedia:" + v.ID
@@ -462,7 +470,7 @@ func (s *Service) ListGroups(ctx context.Context, libraryID string, query models
 		}
 		groups = filtered
 	}
-	sort.SliceStable(groups, func(i, j int) bool { return strings.ToLower(groups[i].Title) < strings.ToLower(groups[j].Title) })
+	sortRemoteMediaGroups(groups, query.Sort, query.Dir)
 	total := len(groups)
 	limit := query.Limit
 	if limit <= 0 || limit > 200 {
@@ -533,6 +541,8 @@ func groupItems(library *models.RemoteMediaLibrary, items []models.RemoteMediaIt
 		}
 		g.ItemCount++
 		g.TotalSizeBytes += item.SizeBytes
+		g.LatestCreatedAt = latestRemoteTime(g.LatestCreatedAt, item.CreatedAt)
+		g.LatestUpdatedAt = latestRemoteTime(g.LatestUpdatedAt, item.UpdatedAt)
 		if cards {
 			continue
 		}
@@ -574,6 +584,66 @@ func groupItems(library *models.RemoteMediaLibrary, items []models.RemoteMediaIt
 		result = append(result, *byKey[key])
 	}
 	return result
+}
+
+func sortRemoteMediaGroups(groups []models.LocalMediaItemGroup, sortBy, dir string) {
+	sortMode := strings.TrimSpace(sortBy)
+	// An omitted sort preserves the library's historical default (title A-Z),
+	// even though clients send their current direction alongside it.
+	desc := sortMode != "" && dir == "desc"
+	sort.SliceStable(groups, func(i, j int) bool {
+		a, b := groups[i], groups[j]
+		cmp := 0
+		switch sortMode {
+		case "created":
+			cmp = compareRemoteTime(a.LatestCreatedAt, b.LatestCreatedAt)
+		case "year":
+			if a.Year < b.Year {
+				cmp = -1
+			} else if a.Year > b.Year {
+				cmp = 1
+			}
+		default:
+			cmp = strings.Compare(strings.ToLower(a.Title), strings.ToLower(b.Title))
+		}
+		if cmp == 0 {
+			cmp = strings.Compare(strings.ToLower(a.Title), strings.ToLower(b.Title))
+		}
+		if cmp == 0 {
+			cmp = strings.Compare(a.ID, b.ID)
+		}
+		if desc {
+			return cmp > 0
+		}
+		return cmp < 0
+	})
+}
+
+func latestRemoteTime(current *time.Time, candidate time.Time) *time.Time {
+	if candidate.IsZero() || (current != nil && !candidate.After(*current)) {
+		return current
+	}
+	value := candidate
+	return &value
+}
+
+func compareRemoteTime(a, b *time.Time) int {
+	if a == nil && b == nil {
+		return 0
+	}
+	if a == nil {
+		return -1
+	}
+	if b == nil {
+		return 1
+	}
+	if a.Before(*b) {
+		return -1
+	}
+	if a.After(*b) {
+		return 1
+	}
+	return 0
 }
 
 func applyExternalIDs(g *models.LocalMediaItemGroup, ids *models.LocalMediaExternalIDs) {

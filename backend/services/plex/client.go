@@ -808,6 +808,7 @@ type PlexLibraryItem struct {
 	Summary              string      `json:"summary,omitempty"`
 	ContentRating        string      `json:"contentRating,omitempty"`
 	Duration             int64       `json:"duration,omitempty"`
+	AddedAt              int64       `json:"addedAt,omitempty"`
 	Thumb                string      `json:"thumb,omitempty"`
 	Art                  string      `json:"art,omitempty"`
 	GrandparentThumb     string      `json:"grandparentThumb,omitempty"`
@@ -1000,6 +1001,43 @@ func (c *Client) OpenServerPath(ctx context.Context, server PlexResource, path, 
 		req.Header.Set("Range", rangeHeader)
 	}
 	return c.streamClient.Do(req)
+}
+
+// ReportTimeline registers a direct-play session with Plex Media Server.
+func (c *Client) ReportTimeline(
+	ctx context.Context,
+	server PlexResource,
+	ratingKey, sessionID, state string,
+	position, duration time.Duration,
+) error {
+	base, err := PreferredConnection(server)
+	if err != nil {
+		return err
+	}
+	params := url.Values{
+		"key":       {"/library/metadata/" + ratingKey},
+		"ratingKey": {ratingKey},
+		"state":     {state},
+		"time":      {strconv.FormatInt(position.Milliseconds(), 10)},
+		"duration":  {strconv.FormatInt(duration.Milliseconds(), 10)},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/:/timeline?"+params.Encode(), nil)
+	if err != nil {
+		return err
+	}
+	c.setPlexHeaders(req)
+	req.Header.Set("X-Plex-Token", server.AccessToken)
+	req.Header.Set("X-Plex-Session-Identifier", sessionID)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("Plex timeline failed: %s", resp.Status)
+	}
+	return nil
 }
 
 func (c *Client) serverJSON(ctx context.Context, server PlexResource, endpoint string, params url.Values, out interface{}) error {

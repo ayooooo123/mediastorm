@@ -496,6 +496,37 @@ func TestUpdatePlaybackProgressLiveAccumulatesWithoutWatchedHistoryOrScrobble(t 
 	}
 }
 
+func TestUpdatePlaybackProgressEndedStopsRealtimeSession(t *testing.T) {
+	for _, position := range []float64{50, 95} {
+		svc, err := NewService(t.TempDir())
+		if err != nil {
+			t.Fatalf("NewService() error = %v", err)
+		}
+		scrobbler := newCaptureRealTimeScrobbler()
+		svc.SetTraktRealTimeScrobbler(scrobbler)
+
+		_, err = svc.UpdatePlaybackProgress("user", models.PlaybackProgressUpdate{
+			MediaType:     "movie",
+			ItemID:        "movie-1",
+			MovieName:     "Movie",
+			Position:      position,
+			Duration:      100,
+			PlaybackEnded: true,
+		})
+		if err != nil {
+			t.Fatalf("UpdatePlaybackProgress(%.0f) error = %v", position, err)
+		}
+		select {
+		case update := <-scrobbler.stopCalls:
+			if !update.PlaybackEnded {
+				t.Fatalf("stop update missing PlaybackEnded at %.0f%%", position)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for stop at %.0f%%", position)
+		}
+	}
+}
+
 func TestContinueWatchingWithoutMetadata(t *testing.T) {
 	dir := t.TempDir()
 	svc, err := NewService(dir)
