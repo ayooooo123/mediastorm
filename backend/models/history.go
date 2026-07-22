@@ -112,6 +112,7 @@ type PlaybackProgressUpdate struct {
 	Timestamp      time.Time         `json:"timestamp"`                       // When this update was sent
 	IsPaused       bool              `json:"isPaused"`                        // Whether playback is currently paused
 	IsBuffering    bool              `json:"isBuffering"`                     // Whether the player is currently stalled/buffering (not paused)
+	PlaybackEnded  bool              `json:"playbackEnded,omitempty"`         // Whether this is the final heartbeat for the playback session
 	BufferAhead    *float64          `json:"bufferAheadSeconds,omitempty"`    // Player-reported playable buffer runway, when available
 	RequiredMbps   *float64          `json:"requiredBandwidthMbps,omitempty"` // Estimated average bandwidth required by the active release
 	SourcePath     string            `json:"sourcePath,omitempty"`            // Active source path, used to isolate migration signals across replacements

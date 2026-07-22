@@ -1,6 +1,7 @@
 package jellyfin
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,20 @@ import (
 
 	"novastream/internal/apiusage"
 )
+
+type PlaybackReport struct {
+	ItemID        string `json:"ItemId"`
+	MediaSourceID string `json:"MediaSourceId,omitempty"`
+	PlaySessionID string `json:"PlaySessionId"`
+	PositionTicks int64  `json:"PositionTicks"`
+	IsPaused      bool   `json:"IsPaused"`
+	IsMuted       bool   `json:"IsMuted"`
+	CanSeek       bool   `json:"CanSeek"`
+	PlayMethod    string `json:"PlayMethod"`
+	RepeatMode    string `json:"RepeatMode"`
+	PlaybackOrder string `json:"PlaybackOrder"`
+	EventName     string `json:"EventName,omitempty"`
+}
 
 // Client handles Jellyfin API interactions.
 type Client struct {
@@ -39,6 +54,7 @@ type JellyfinItem struct {
 	SeasonNum         int                   `json:"ParentIndexNumber,omitempty"`
 	EpisodeNum        int                   `json:"IndexNumber,omitempty"`
 	DatePlayed        *time.Time            `json:"LastPlayedDate,omitempty"`
+	DateCreated       *time.Time            `json:"DateCreated,omitempty"`
 	Overview          string                `json:"Overview,omitempty"`
 	OfficialRating    string                `json:"OfficialRating,omitempty"`
 	RunTimeTicks      int64                 `json:"RunTimeTicks,omitempty"`
@@ -164,7 +180,7 @@ func (c *Client) GetLibraries(serverURL, token, userID string) ([]JellyfinLibrar
 func (c *Client) GetLibraryItems(serverURL, token, userID, libraryID, collectionType string) ([]JellyfinItem, error) {
 	params := url.Values{
 		"ParentId": {libraryID}, "Recursive": {"true"},
-		"Fields":       {"ProviderIds,Overview,OfficialRating,MediaSources,MediaStreams,ImageTags,BackdropImageTags,RunTimeTicks"},
+		"Fields":       {"ProviderIds,Overview,OfficialRating,MediaSources,MediaStreams,ImageTags,BackdropImageTags,RunTimeTicks,DateCreated"},
 		"EnableImages": {"true"}, "EnableTotalRecordCount": {"true"},
 	}
 	if strings.EqualFold(collectionType, "tvshows") {
@@ -211,6 +227,39 @@ func (c *Client) OpenStream(ctx context.Context, serverURL, token, itemID, media
 		req.Header.Set("Range", rangeHeader)
 	}
 	return c.streamClient.Do(req)
+}
+
+// ReportPlayback updates Jellyfin's active-session dashboard for a direct-play item.
+func (c *Client) ReportPlayback(ctx context.Context, serverURL, token, event string, report PlaybackReport) error {
+	path := "/Sessions/Playing/Progress"
+	switch event {
+	case "start":
+		path = "/Sessions/Playing"
+	case "stop":
+		path = "/Sessions/Playing/Stopped"
+	}
+	body, err := json.Marshal(report)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(serverURL, "/")+path, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", authHeader(token))
+	req.Header.Set("X-Emby-Token", token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("Jellyfin playback report failed: %s", resp.Status)
+	}
+	return nil
 }
 
 func (c *Client) OpenImage(ctx context.Context, serverURL, token, itemID, kind string) (*http.Response, error) {

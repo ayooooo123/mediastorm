@@ -573,9 +573,7 @@ func main() {
 
 	// Wire up multi-scrobblers that fan out to all enabled providers
 	multiScrobbler := history.NewMultiScrobbler(traktScrobbler, mdblistScrobbler, simklScrobbler)
-	multiRTScrobbler := history.NewMultiRealTimeScrobbler(scrobbleTracker, mdblistRTScrobbler, simklRTScrobbler)
 	historyService.SetTraktScrobbler(multiScrobbler)
-	historyService.SetTraktRealTimeScrobbler(multiRTScrobbler)
 
 	// Wire up history service to metadata handler for hideWatched filtering
 	metadataHandler.SetHistoryService(historyService)
@@ -628,6 +626,14 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to initialise remote media service: %v", err)
 	}
+	remotePlaybackReporter := remotemedia.NewPlaybackReporter(remoteMediaService)
+	multiRTScrobbler := history.NewMultiRealTimeScrobbler(
+		scrobbleTracker,
+		mdblistRTScrobbler,
+		simklRTScrobbler,
+		remotePlaybackReporter,
+	)
+	historyService.SetTraktRealTimeScrobbler(multiRTScrobbler)
 	remoteMediaProvider := remotemedia.NewProvider(remoteMediaService)
 
 	// Startup handler bundles multiple API calls for low-power devices

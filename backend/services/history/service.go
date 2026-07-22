@@ -4697,7 +4697,11 @@ func (s *Service) UpdatePlaybackProgress(userID string, update models.PlaybackPr
 		// Local watched-history sync below writes the Trakt watched event. Clear
 		// any active realtime session so we don't also create a scrobble event.
 		if rtScrobbler != nil && allowRealtimeScrobble {
-			rtScrobbler.ClearSession(userID, update)
+			if update.PlaybackEnded {
+				rtScrobbler.StopSession(userID, update, percentWatched)
+			} else {
+				rtScrobbler.ClearSession(userID, update)
+			}
 		}
 
 		s.mu.Unlock() // Unlock before calling other methods
@@ -4708,8 +4712,12 @@ func (s *Service) UpdatePlaybackProgress(userID string, update models.PlaybackPr
 			fmt.Printf("Warning: failed to auto-mark as watched: %v\n", err)
 		}
 	} else if rtScrobbler != nil && allowRealtimeScrobble {
-		// Below 90%: report real-time progress (start/pause/refresh)
-		go rtScrobbler.HandleProgressUpdate(userID, update, percentWatched)
+		if update.PlaybackEnded {
+			go rtScrobbler.StopSession(userID, update, percentWatched)
+		} else {
+			// Below 90%: report real-time progress (start/pause/refresh)
+			go rtScrobbler.HandleProgressUpdate(userID, update, percentWatched)
+		}
 	}
 
 	return progress, nil

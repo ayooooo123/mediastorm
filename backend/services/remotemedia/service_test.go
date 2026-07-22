@@ -66,10 +66,11 @@ func TestPlexServerResolverRefreshesForChangedTokenAndExpiry(t *testing.T) {
 }
 
 func TestNormalizeJellyfinEpisodeVersions(t *testing.T) {
+	dateCreated := time.Date(2024, 5, 6, 7, 8, 9, 0, time.UTC)
 	library := &models.RemoteMediaLibrary{ID: "lib", Type: models.LocalMediaLibraryTypeShow, Provider: models.MediaSourceJellyfin}
 	items := normalizeJellyfin(library, []jellyfin.JellyfinItem{{
 		ID: "episode-1", Name: "Pilot", Type: "Episode", SeriesID: "series-1", SeriesName: "Example Show",
-		SeasonNum: 1, EpisodeNum: 1, ProviderIDs: map[string]string{"tvdb": "42"},
+		SeasonNum: 1, EpisodeNum: 1, DateCreated: &dateCreated, ProviderIDs: map[string]string{"tvdb": "42"},
 		MediaSources: []jellyfin.JellyfinMediaSource{{ID: "source-4k", Path: "/media/pilot.mkv", Container: "mkv", Size: 100, RunTimeTicks: 1_205_000_000,
 			MediaStreams: []jellyfin.JellyfinMediaStream{{Type: "Video", Codec: "hevc", Width: 3840, Height: 2160, VideoRange: "HDR10"}}}},
 	}})
@@ -89,11 +90,15 @@ func TestNormalizeJellyfinEpisodeVersions(t *testing.T) {
 	if item.DurationSeconds != 120.5 {
 		t.Fatalf("DurationSeconds=%v, want 120.5", item.DurationSeconds)
 	}
+	if !item.CreatedAt.Equal(dateCreated) {
+		t.Fatalf("CreatedAt=%v, want Jellyfin DateCreated %v", item.CreatedAt, dateCreated)
+	}
 }
 
 func TestNormalizePlexMovieParts(t *testing.T) {
+	addedAt := time.Date(2023, 4, 5, 6, 7, 8, 0, time.UTC)
 	library := &models.RemoteMediaLibrary{ID: "lib", Type: models.LocalMediaLibraryTypeMovie, Provider: models.MediaSourcePlex}
-	items := normalizePlex(library, []plex.PlexLibraryItem{{RatingKey: "10", Title: "Example Movie", Type: "movie", Year: 2025, Duration: 120500,
+	items := normalizePlex(library, []plex.PlexLibraryItem{{RatingKey: "10", Title: "Example Movie", Type: "movie", Year: 2025, Duration: 120500, AddedAt: addedAt.Unix(),
 		Guid: []plex.PlexGuid{{ID: "tmdb://123"}}, Media: []plex.PlexMedia{{VideoCodec: "h264", Height: 1080,
 			Part: []plex.PlexPart{{ID: 7, Key: "/library/parts/7/file.mkv", File: "/movies/file.mkv", Size: 99}}}},
 	}})
@@ -105,6 +110,58 @@ func TestNormalizePlexMovieParts(t *testing.T) {
 	}
 	if items[0].DurationSeconds != 120.5 {
 		t.Fatalf("DurationSeconds=%v, want 120.5", items[0].DurationSeconds)
+	}
+	if !items[0].CreatedAt.Equal(addedAt) {
+		t.Fatalf("CreatedAt=%v, want Plex AddedAt %v", items[0].CreatedAt, addedAt)
+	}
+}
+
+func TestSortRemoteMediaGroupsByDateAdded(t *testing.T) {
+	oldest := time.Date(2022, 1, 1, 0, 0, 0, 0, time.UTC)
+	newest := oldest.Add(24 * time.Hour)
+	groups := []models.LocalMediaItemGroup{
+		{ID: "old", Title: "Alpha", LatestCreatedAt: &oldest},
+		{ID: "new", Title: "Zulu", LatestCreatedAt: &newest},
+	}
+
+	sortRemoteMediaGroups(groups, "created", "desc")
+	if groups[0].ID != "new" {
+		t.Fatalf("descending first group=%q, want new", groups[0].ID)
+	}
+	sortRemoteMediaGroups(groups, "created", "asc")
+	if groups[0].ID != "old" {
+		t.Fatalf("ascending first group=%q, want old", groups[0].ID)
+	}
+}
+
+func TestRemotePlaybackSourceAndState(t *testing.T) {
+	tests := []struct {
+		path     string
+		provider string
+		itemID   string
+	}{
+		{"plexmedia:item-1", models.MediaSourcePlex, "item-1"},
+		{"jellyfinmedia:item-2/stream", models.MediaSourceJellyfin, "item-2"},
+		{"/movies/file.mkv", "", ""},
+	}
+	for _, tc := range tests {
+		provider, itemID := remotePlaybackSource(tc.path)
+		if provider != tc.provider || itemID != tc.itemID {
+			t.Fatalf("remotePlaybackSource(%q)=(%q,%q), want (%q,%q)", tc.path, provider, itemID, tc.provider, tc.itemID)
+		}
+	}
+
+	if got := remotePlaybackState(models.PlaybackProgressUpdate{}, false); got != "playing" {
+		t.Fatalf("playing state=%q", got)
+	}
+	if got := remotePlaybackState(models.PlaybackProgressUpdate{IsBuffering: true, IsPaused: true}, false); got != "buffering" {
+		t.Fatalf("buffering state=%q", got)
+	}
+	if got := remotePlaybackState(models.PlaybackProgressUpdate{IsPaused: true}, false); got != "paused" {
+		t.Fatalf("paused state=%q", got)
+	}
+	if got := remotePlaybackState(models.PlaybackProgressUpdate{PlaybackEnded: true}, false); got != "stopped" {
+		t.Fatalf("ended state=%q", got)
 	}
 }
 
