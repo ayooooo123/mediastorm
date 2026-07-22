@@ -394,7 +394,7 @@ func Register(
 
 	// EPG (Electronic Program Guide) endpoints
 	if epgHandler != nil {
-		protected.HandleFunc("/live/epg/now", epgHandler.GetNowPlaying).Methods(http.MethodGet)
+		protected.HandleFunc("/live/epg/now", epgHandler.GetNowPlaying).Methods(http.MethodGet, http.MethodPost)
 		protected.HandleFunc("/live/epg/now", epgHandler.Options).Methods(http.MethodOptions)
 		protected.HandleFunc("/live/epg/schedule", epgHandler.GetSchedule).Methods(http.MethodGet)
 		protected.HandleFunc("/live/epg/schedule", epgHandler.Options).Methods(http.MethodOptions)
