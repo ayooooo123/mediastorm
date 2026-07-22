@@ -3,6 +3,9 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -12,6 +15,12 @@ import (
 	"novastream/models"
 	"novastream/services/epg"
 )
+
+const maxEPGNowRequestBodySize = 1024 * 1024
+
+type epgNowRequest struct {
+	Channels []string `json:"channels"`
+}
 
 // EPGHandler handles EPG-related HTTP requests.
 type EPGHandler struct {
@@ -81,8 +90,52 @@ func applyOffsetToProgram(p models.EPGProgram, offset time.Duration) models.EPGP
 	return p
 }
 
+func parseEPGNowChannelIDs(w http.ResponseWriter, r *http.Request) ([]string, error) {
+	var channelIDs []string
+	if r.Method == http.MethodPost {
+		r.Body = http.MaxBytesReader(w, r.Body, maxEPGNowRequestBodySize)
+		decoder := json.NewDecoder(r.Body)
+		var request epgNowRequest
+		if err := decoder.Decode(&request); err != nil {
+			return nil, fmt.Errorf("decode request: %w", err)
+		}
+		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+			if err == nil {
+				return nil, errors.New("request body must contain one JSON object")
+			}
+			return nil, fmt.Errorf("decode request: %w", err)
+		}
+		channelIDs = request.Channels
+	} else {
+		channelsParam := r.URL.Query().Get("channels")
+		if channelsParam != "" {
+			channelIDs = strings.Split(channelsParam, ",")
+		}
+	}
+
+	seen := make(map[string]struct{}, len(channelIDs))
+	normalized := make([]string, 0, len(channelIDs))
+	for _, channelID := range channelIDs {
+		channelID = strings.TrimSpace(channelID)
+		if channelID == "" {
+			continue
+		}
+		if _, exists := seen[channelID]; exists {
+			continue
+		}
+		seen[channelID] = struct{}{}
+		normalized = append(normalized, channelID)
+	}
+	if len(normalized) == 0 {
+		return nil, errors.New("missing channels")
+	}
+
+	return normalized, nil
+}
+
 // GetNowPlaying returns current and next programs for specified channels.
 // GET /api/live/epg/now?channels=ch1,ch2,ch3
+// POST /api/live/epg/now with {"channels":["ch1","ch2","ch3"]}
 func (h *EPGHandler) GetNowPlaying(w http.ResponseWriter, r *http.Request) {
 	if h.epgService == nil {
 		http.Error(w, `{"error":"EPG service not available"}`, http.StatusServiceUnavailable)
@@ -94,15 +147,10 @@ func (h *EPGHandler) GetNowPlaying(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	channelsParam := r.URL.Query().Get("channels")
-	if channelsParam == "" {
-		http.Error(w, `{"error":"missing channels parameter"}`, http.StatusBadRequest)
+	channelIDs, err := parseEPGNowChannelIDs(w, r)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
 		return
-	}
-
-	channelIDs := strings.Split(channelsParam, ",")
-	for i := range channelIDs {
-		channelIDs[i] = strings.TrimSpace(channelIDs[i])
 	}
 
 	offset := h.getEPGTimeOffset(r)
