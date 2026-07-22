@@ -863,6 +863,12 @@ func (h *SettingsHandler) PutSettings(w http.ResponseWriter, r *http.Request) {
 	// This prevents non-master users from accidentally overwriting secrets when they
 	// save settings that were returned with redacted values.
 	preserveRedactedFields(&s, &oldSettings)
+	if err := s.Server.NormalizeAllowedPrivateMediaOrigins(); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
 
 	if err := expandProwlarrSources(r.Context(), &s); err != nil {
 		w.Header().Set("Content-Type", "application/json")

@@ -46,9 +46,12 @@ func TestValidateOutboundURLRejectsRestrictedDestinations(t *testing.T) {
 }
 
 func TestValidateOutboundURLAllowsConfiguredRestrictedHost(t *testing.T) {
-	policy := func(hostname string) bool { return hostname == "127.0.0.1" }
+	policy := func(hostname, port string) bool { return hostname == "127.0.0.1" && port == "8080" }
 	if err := ValidateOutboundURL(context.Background(), "http://127.0.0.1:8080/media", policy); err != nil {
 		t.Fatalf("configured provider URL rejected: %v", err)
+	}
+	if err := ValidateOutboundURL(context.Background(), "http://127.0.0.1:7777/api/settings", policy); err == nil {
+		t.Fatal("configured host on a different port was allowed")
 	}
 }
 
