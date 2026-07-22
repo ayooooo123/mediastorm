@@ -1575,9 +1575,9 @@
         {
             key: 'display',
             label: 'Display',
-            description: 'Badge Icon Style, navigation tabs, unreleased visibility, filtering bypass, episode privacy, appearance',
+            description: 'Badge Icon Style, navigation tabs, TV home/details layout, unreleased visibility, filtering bypass, episode privacy, appearance',
             detailSection: 'Display',
-            detailFields: ['Badge Icon Style', 'Navigation Tabs', 'Include Unreleased Movies in Lists', 'Include Unreleased Shows in Lists', 'Include Unreleased Movies in Search', 'Include Unreleased Shows in Search', 'Bypass Filtering for AIOStreams Only', 'Blur Unwatched Episode Thumbnails', 'Blur Unwatched Episode Overview', 'appearance', 'Show Parsed Metadata Badges', 'Badge Visibility'],
+            detailFields: ['Badge Icon Style', 'Navigation Tabs', 'Include Unreleased Movies in Lists', 'Include Unreleased Shows in Lists', 'Include Unreleased Movies in Search', 'Include Unreleased Shows in Search', 'Bypass Filtering for AIOStreams Only', 'Hide Continue Watching Hero Details', 'Move Details Ratings Up', 'Hide Details Poster', 'Hide TV Drawer Rail', 'Blur Unwatched Episode Thumbnails', 'Blur Unwatched Episode Overview', 'appearance', 'Show Parsed Metadata Badges', 'Badge Visibility'],
             userPaths: [
                 'display.watchStateIconStyle',
                 'display.navigationTabVisibility',
@@ -1586,6 +1586,10 @@
                 'display.includeUnreleasedMoviesInSearch',
                 'display.includeUnreleasedShowsInSearch',
                 'display.bypassFilteringForAioStreamsOnly',
+                'display.hideContinueWatchingHeroMetadata',
+                'display.moveDetailsRatingsToMetadata',
+                'display.hideDetailsPoster',
+                'display.hideTvDrawerRail',
                 'display.blurUnwatchedEpisodeThumbnails',
                 'display.blurUnwatchedEpisodeThumbnailsIncludeCurrent',
                 'display.blurUnwatchedEpisodeOverviews',
@@ -1601,6 +1605,10 @@
                 'includeUnreleasedMoviesInSearch',
                 'includeUnreleasedShowsInSearch',
                 'bypassFilteringForAioStreamsOnly',
+                'hideContinueWatchingHeroMetadata',
+                'moveDetailsRatingsToMetadata',
+                'hideDetailsPoster',
+                'hideTvDrawerRail',
                 'blurUnwatchedEpisodeThumbnails',
                 'blurUnwatchedEpisodeThumbnailsIncludeCurrent',
                 'blurUnwatchedEpisodeOverviews',
@@ -2445,7 +2453,7 @@
 
     // Map filtering field paths to client settings keys
     const clientFilterFields = ['maxSizeMovieGb', 'maxSizeEpisodeGb', 'maxResolution', 'hdrDvPolicy', 'requiredTerms', 'filterOutTerms', 'preferredTerms', 'nonPreferredTerms', 'downloadPreferredTerms', 'unknownTrackPolicy', 'splitByService'];
-    const clientDisplayFields = ['bypassFilteringForAioStreamsOnly', 'navigationTabVisibility', 'includeUnreleasedMoviesInLists', 'includeUnreleasedShowsInLists', 'includeUnreleasedMoviesInSearch', 'includeUnreleasedShowsInSearch', 'enableAnimations', 'enableHeroArtPanning', 'enableHeroArtRotation', 'blurUnwatchedEpisodeThumbnails', 'blurUnwatchedEpisodeThumbnailsIncludeCurrent', 'blurUnwatchedEpisodeOverviews', 'blurUnwatchedEpisodeOverviewsIncludeCurrent', 'appearance.fontScale', 'appearance.accentColor', 'appearance.textColor', 'appearance.secondaryTextColor', 'appearance.backgroundColor', 'appearance.modalBackgroundColor', 'appearance.buttonStyle', 'appearance.buttonRadius', 'appearance.highContrast', 'appearance.reduceOverlays'];
+    const clientDisplayFields = ['bypassFilteringForAioStreamsOnly', 'navigationTabVisibility', 'includeUnreleasedMoviesInLists', 'includeUnreleasedShowsInLists', 'includeUnreleasedMoviesInSearch', 'includeUnreleasedShowsInSearch', 'enableAnimations', 'enableHeroArtPanning', 'enableHeroArtRotation', 'hideContinueWatchingHeroMetadata', 'moveDetailsRatingsToMetadata', 'hideDetailsPoster', 'hideTvDrawerRail', 'blurUnwatchedEpisodeThumbnails', 'blurUnwatchedEpisodeThumbnailsIncludeCurrent', 'blurUnwatchedEpisodeOverviews', 'blurUnwatchedEpisodeOverviewsIncludeCurrent', 'appearance.fontScale', 'appearance.accentColor', 'appearance.textColor', 'appearance.secondaryTextColor', 'appearance.backgroundColor', 'appearance.modalBackgroundColor', 'appearance.buttonStyle', 'appearance.buttonRadius', 'appearance.highContrast', 'appearance.reduceOverlays'];
     const clientPlaybackFields = [
         'preferredPlayer',
         'preferredAudioLanguage',

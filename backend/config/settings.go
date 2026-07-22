@@ -1016,6 +1016,14 @@ type DisplaySettings struct {
 	CleanPosters bool `json:"cleanPosters,omitempty"`
 	// DisableMobileTopCarousel hides the top hero carousel on mobile home.
 	DisableMobileTopCarousel bool `json:"disableMobileTopCarousel,omitempty"`
+	// HideContinueWatchingHeroMetadata hides year and overview text from the TV home hero for Continue Watching.
+	HideContinueWatchingHeroMetadata bool `json:"hideContinueWatchingHeroMetadata,omitempty"`
+	// MoveDetailsRatingsToMetadata moves TV Details ratings from beneath the poster to the title metadata area.
+	MoveDetailsRatingsToMetadata bool `json:"moveDetailsRatingsToMetadata,omitempty"`
+	// HideDetailsPoster hides the poster on the TV Details page.
+	HideDetailsPoster bool `json:"hideDetailsPoster,omitempty"`
+	// HideTVDrawerRail fully hides the collapsed TV navigation drawer instead of leaving its icon rail visible.
+	HideTVDrawerRail bool `json:"hideTvDrawerRail,omitempty"`
 	// EnableAnimations controls application UI motion such as animated scrolling and transitions.
 	EnableAnimations bool `json:"enableAnimations"`
 	// EnableHeroArtPanning animates TV hero artwork with a slow pan/zoom effect.

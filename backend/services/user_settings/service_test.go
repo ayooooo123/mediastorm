@@ -217,6 +217,44 @@ func TestGetWithDefaults_DisplayAppLanguageFallsBackToGlobal(t *testing.T) {
 	}
 }
 
+func TestGetWithDefaults_TVDisplayOptionsInheritAndOverride(t *testing.T) {
+	dir := t.TempDir()
+	svc, err := NewService(dir)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	if err := svc.Update("user1", models.UserSettings{
+		Display: models.DisplaySettings{HideDetailsPoster: models.BoolPtr(false)},
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	defaults := models.UserSettings{Display: models.DisplaySettings{
+		HideContinueWatchingHeroMetadata: models.BoolPtr(true),
+		MoveDetailsRatingsToMetadata:     models.BoolPtr(true),
+		HideDetailsPoster:                models.BoolPtr(true),
+		HideTVDrawerRail:                 models.BoolPtr(true),
+	}}
+
+	got, err := svc.GetWithDefaults("user1", defaults)
+	if err != nil {
+		t.Fatalf("GetWithDefaults: %v", err)
+	}
+	if got.Display.HideContinueWatchingHeroMetadata == nil || !*got.Display.HideContinueWatchingHeroMetadata {
+		t.Fatal("expected Continue Watching hero option to inherit global true")
+	}
+	if got.Display.MoveDetailsRatingsToMetadata == nil || !*got.Display.MoveDetailsRatingsToMetadata {
+		t.Fatal("expected ratings location option to inherit global true")
+	}
+	if got.Display.HideDetailsPoster == nil || *got.Display.HideDetailsPoster {
+		t.Fatal("expected profile poster override to preserve false")
+	}
+	if got.Display.HideTVDrawerRail == nil || !*got.Display.HideTVDrawerRail {
+		t.Fatal("expected TV drawer rail option to inherit global true")
+	}
+}
+
 func TestGetWithDefaults_DisplayAppearanceBackgroundColorFallsBackToGlobal(t *testing.T) {
 	dir := t.TempDir()
 	svc, err := NewService(dir)
