@@ -28,6 +28,7 @@ func TestAdminSettingsSaveCommitsPendingTextArrayInputs(t *testing.T) {
 		`data-text-array-kind="tags"`,
 		`data-text-array-kind="weighted-tags"`,
 		"function commitPendingTextArrayInputs()",
+		"if (committedPendingTextArrays) renderSettings();",
 	} {
 		if !strings.Contains(source, marker) {
 			t.Fatalf("settings template missing pending text-array marker %q", marker)
