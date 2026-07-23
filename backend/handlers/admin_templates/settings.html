@@ -3290,14 +3290,16 @@
         return true;
     }
     function commitPendingTextArrayInputs() {
+        let committed = false;
         document.querySelectorAll('input[data-text-array-kind]').forEach(input => {
-            commitTextArrayInput(
+            committed = commitTextArrayInput(
                 input,
                 input.dataset.basePath || '',
                 input.dataset.fieldKey || '',
                 input.dataset.textArrayKind
-            );
+            ) || committed;
         });
+        return committed;
     }
     function addTag(basePath, fieldKey, tag) {
         const fullPath = basePath ? basePath+'.'+fieldKey : fieldKey;
@@ -9510,7 +9512,7 @@
 
     async function saveAllSettings() {
         try {
-            commitPendingTextArrayInputs();
+            const committedPendingTextArrays = commitPendingTextArrayInputs();
 
             if (selectedClientId && clientSettings !== null) {
                 // Save client-specific settings
@@ -9523,6 +9525,7 @@
                 if (response.ok) {
                     originalClientSettings = JSON.parse(JSON.stringify(clientSettings));
                     showToast('Client settings saved successfully');
+                    if (committedPendingTextArrays) renderSettings();
                     // Update client override indicator
                     const hasOverrides = Object.keys(clientSettings).some(k => clientSettings[k] !== undefined && clientSettings[k] !== null);
                     const clientInList = clientsForUser.find(c => c.id === selectedClientId);
@@ -9571,6 +9574,7 @@
                 if (response.ok) {
                     originalSettings = JSON.parse(JSON.stringify(currentSettings));
                     showToast('Settings saved successfully');
+                    if (committedPendingTextArrays) renderSettings();
                     // Check if any profiles have overrides and offer to propagate
                     await promptPropagateIfNeeded(changedGroups);
                 } else {
