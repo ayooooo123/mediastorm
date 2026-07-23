@@ -91,3 +91,55 @@ func TestHLSManagerObservePlaybackActivityRejectsInactiveIdentity(t *testing.T) 
 	case <-time.After(25 * time.Millisecond):
 	}
 }
+
+func TestStreamTrackerObservePlaybackActivityUsesStablePlaybackIdentity(t *testing.T) {
+	observer := &capturePlaybackActivityObserver{calls: make(chan models.PlaybackProgressUpdate, 2)}
+	metadata := StreamMediaMetadata{
+		MediaType: "movie",
+		ItemID:    "tmdb:1",
+		MovieName: "Active Movie",
+	}
+	tracker := &StreamTracker{
+		streams: map[string]*TrackedStream{
+			"range-1": {
+				ID:            "range-1",
+				ProfileID:     "profile",
+				Path:          "/movie.mkv",
+				LastActivity:  time.Now(),
+				MediaMetadata: metadata,
+			},
+		},
+		playbackObserver: observer,
+	}
+	update := models.PlaybackProgressUpdate{
+		MediaType: "movie",
+		ItemID:    "tmdb:1",
+	}
+
+	if matched := tracker.ObservePlaybackActivity("profile", update, 10); matched != 1 {
+		t.Fatalf("first ObservePlaybackActivity() matched %d streams, want 1", matched)
+	}
+	first := <-observer.calls
+
+	tracker.mu.Lock()
+	tracker.streams["range-2"] = &TrackedStream{
+		ID:            "range-2",
+		ProfileID:     "profile",
+		Path:          "/movie.mkv",
+		LastActivity:  time.Now().Add(time.Second),
+		MediaMetadata: metadata,
+	}
+	tracker.mu.Unlock()
+
+	if matched := tracker.ObservePlaybackActivity("profile", update, 20); matched != 1 {
+		t.Fatalf("second ObservePlaybackActivity() matched %d streams, want 1", matched)
+	}
+	second := <-observer.calls
+
+	if first.PlaybackSessionID != second.PlaybackSessionID {
+		t.Fatalf("range connections produced different playback IDs: %q and %q", first.PlaybackSessionID, second.PlaybackSessionID)
+	}
+	if first.PlaybackSessionID != "direct:profile|movie:tmdb:1" {
+		t.Fatalf("PlaybackSessionID = %q", first.PlaybackSessionID)
+	}
+}

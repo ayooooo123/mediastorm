@@ -181,7 +181,7 @@ func TestDiscordDeliveryEmbedsPublicPoster(t *testing.T) {
 		TitleTemplate: defaultTitleTemplate,
 		BodyTemplate:  defaultBodyTemplate,
 	}, models.NotificationEvent{
-		Type:       models.NotificationEventWatchPlaying,
+		Type:       models.NotificationEventWatchStarted,
 		Title:      "Example",
 		MediaType:  "movie",
 		PosterURL:  "https://image.tmdb.org/t/p/w500/example.jpg",
@@ -305,7 +305,6 @@ func TestPlaybackNotificationsAreEdgeTriggered(t *testing.T) {
 		URL: server.URL, Enabled: true,
 		Events: []string{
 			models.NotificationEventWatchStarted,
-			models.NotificationEventWatchPlaying,
 			models.NotificationEventWatchResumed,
 			models.NotificationEventWatchWatched,
 		},
@@ -326,7 +325,6 @@ func TestPlaybackNotificationsAreEdgeTriggered(t *testing.T) {
 
 	want := []string{
 		models.NotificationEventWatchStarted,
-		models.NotificationEventWatchPlaying,
 		models.NotificationEventWatchResumed,
 		models.NotificationEventWatchWatched,
 	}

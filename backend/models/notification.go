@@ -7,7 +7,6 @@ const (
 	NotificationChannelWebhook = "webhook"
 
 	NotificationEventWatchStarted = "watch.started"
-	NotificationEventWatchPlaying = "watch.playing"
 	NotificationEventWatchResumed = "watch.resumed"
 	NotificationEventWatchWatched = "watch.watched"
 	NotificationEventRelease      = "release.available"

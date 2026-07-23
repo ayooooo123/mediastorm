@@ -272,7 +272,10 @@ func (t *StreamTracker) ObservePlaybackActivity(userID string, update models.Pla
 		}
 	}
 	if best != nil {
-		update.PlaybackSessionID = "direct:" + best.ID
+		// Native players open multiple short-lived byte-range connections for a
+		// single playback. Key notifications like the consolidated Active
+		// Streams row, not by an individual transport connection.
+		update.PlaybackSessionID = "direct:" + trackedStreamSlotKey(best)
 		update = enrichPlaybackUpdateFromStream(update, best.MediaMetadata)
 	}
 	t.mu.RUnlock()

@@ -27,6 +27,20 @@ func TestNotificationsTemplateDoesNotRedeclareBasePath(t *testing.T) {
 	}
 }
 
+func TestNotificationsTemplateOmitsRedundantPlayingEvent(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/notifications.html")
+	if err != nil {
+		t.Fatalf("read notifications template: %v", err)
+	}
+	source := string(templateBytes)
+	if strings.Contains(source, `value="watch.playing"`) {
+		t.Fatal("notifications template still exposes the redundant playing event")
+	}
+	if strings.Contains(source, "Now playing") {
+		t.Fatal("notifications template still labels a playing notification")
+	}
+}
+
 func TestNotificationListDisablesCaching(t *testing.T) {
 	handler := &AdminUIHandler{}
 	recorder := httptest.NewRecorder()
