@@ -1521,6 +1521,9 @@
                 Use these when sharing diagnostic details for support. Database snapshots are de-identified before upload.
             </p>
             <div class="troubleshooting-actions">
+                <select id="share-logs-client" class="form-select" style="width: min(420px, 100%);">
+                    <option value="">Backend logs only</option>
+                </select>
                 <button class="btn btn-secondary" id="share-logs-btn" onclick="shareLogsPackage()">
                     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
@@ -2203,6 +2206,7 @@
         const status = document.getElementById('troubleshooting-upload-status');
         if (!btn) return;
 
+        const clientId = document.getElementById('share-logs-client')?.value || '';
         const originalHtml = btn.innerHTML;
         btn.disabled = true;
         btn.innerHTML = '<span class="spinner-small"></span> Sharing...';
@@ -2213,7 +2217,7 @@
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'same-origin',
-                body: '{}'
+                body: JSON.stringify({ clientId })
             });
             const result = await response.json();
             if (!response.ok || !result.url) {
@@ -2231,6 +2235,37 @@
             btn.disabled = false;
             btn.innerHTML = originalHtml;
         }
+    }
+
+    async function loadShareLogsClients() {
+        const select = document.getElementById('share-logs-client');
+        if (!select) return;
+
+        try {
+            const response = await fetch(basePath + '/api/logs?source=frontend&lines=1', {
+                credentials: 'same-origin'
+            });
+            if (!response.ok) return;
+            const result = await response.json();
+            const clients = Array.isArray(result.frontendClients) ? result.frontendClients : [];
+            clients.forEach((client, index) => {
+                const option = document.createElement('option');
+                option.value = client.clientId;
+                const deviceLabel = client.deviceName || client.name || client.deviceType || 'Unknown device';
+                option.textContent = [
+                    deviceLabel,
+                    client.profileName || '',
+                    client.deviceType !== deviceLabel ? client.deviceType || '' : '',
+                    client.os || '',
+                    `seen ${formatRelativeTime(client.lastSeenAt || client.uploadedAt)}`,
+                    `logs ${formatRelativeTime(client.uploadedAt)}`,
+                    client.clientId.slice(0, 8)
+                ].filter(Boolean).join(' • ');
+                option.title = `Client ID: ${client.clientId}\nApp version: ${client.appVersion || 'unknown'}\nLast seen: ${client.lastSeenAt ? new Date(client.lastSeenAt).toLocaleString() : 'unknown'}\nLogs uploaded: ${client.uploadedAt ? new Date(client.uploadedAt).toLocaleString() : 'unknown'}`;
+                option.selected = index === 0;
+                select.appendChild(option);
+            });
+        } catch (_) {}
     }
 
     // ========== Plex State ==========
@@ -2275,7 +2310,7 @@
         // Load profiles first so client dropdowns are populated
         await loadUserProfiles();
         // Then load everything else in parallel
-        await Promise.all([loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadJellyfinAccounts(), loadLocalMediaLibraries(), loadBackendVersionInfo(), loadUpdateStatus(false), loadClients(), loadScheduledTasks(), loadWorkers()]);
+        await Promise.all([loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadJellyfinAccounts(), loadLocalMediaLibraries(), loadBackendVersionInfo(), loadUpdateStatus(false), loadClients(), loadScheduledTasks(), loadWorkers(), loadShareLogsClients()]);
     });
 
     async function loadLocalMediaLibraries() {

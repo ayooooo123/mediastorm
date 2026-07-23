@@ -25,7 +25,7 @@ import (
 )
 
 const (
-	maxLogLines   = 1000
+	maxLogLines   = 10_000
 	maxUploadSize = 10 << 20 // 10 MB limit for frontend logs
 	logRedacted   = "<redacted>"
 )
@@ -120,6 +120,11 @@ type LogsHandler struct {
 	frontendLogsDir string
 	frontendLogsMu  sync.RWMutex
 	dataStore       *datastore.DataStore
+	clients         logClientActivityService
+}
+
+type logClientActivityService interface {
+	UpdateLastSeen(id string) error
 }
 
 type submitLogsRequest struct {
@@ -148,12 +153,16 @@ type frontendLogSnapshot struct {
 }
 
 type frontendLogSummary struct {
-	ClientID   string    `json:"clientId"`
-	DeviceType string    `json:"deviceType,omitempty"`
-	OS         string    `json:"os,omitempty"`
-	AppVersion string    `json:"appVersion,omitempty"`
-	UploadedAt time.Time `json:"uploadedAt"`
-	LogCount   int       `json:"logCount"`
+	ClientID    string     `json:"clientId"`
+	Name        string     `json:"name,omitempty"`
+	DeviceName  string     `json:"deviceName,omitempty"`
+	DeviceType  string     `json:"deviceType,omitempty"`
+	OS          string     `json:"os,omitempty"`
+	AppVersion  string     `json:"appVersion,omitempty"`
+	ProfileName string     `json:"profileName,omitempty"`
+	LastSeenAt  *time.Time `json:"lastSeenAt,omitempty"`
+	UploadedAt  time.Time  `json:"uploadedAt"`
+	LogCount    int        `json:"logCount"`
 }
 
 type logEntry struct {
@@ -208,6 +217,10 @@ func NewLogsHandler(logger *log.Logger, logFile string) *LogsHandler {
 
 func (h *LogsHandler) SetDataStore(store *datastore.DataStore) {
 	h.dataStore = store
+}
+
+func (h *LogsHandler) SetClientsService(service logClientActivityService) {
+	h.clients = service
 }
 
 func (h *LogsHandler) Submit(w http.ResponseWriter, r *http.Request) {
@@ -280,6 +293,11 @@ func (h *LogsHandler) UploadFrontendLogs(w http.ResponseWriter, r *http.Request)
 		h.logger.Printf("[logs] Failed to store frontend logs for client %s: %v", clientID, err)
 		h.respondError(w, fmt.Sprintf("failed to store frontend logs: %v", err), http.StatusInternalServerError)
 		return
+	}
+	if h.clients != nil {
+		if err := h.clients.UpdateLastSeen(clientID); err != nil {
+			h.logger.Printf("[logs] Failed to update last seen for client %s: %v", clientID, err)
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -604,9 +622,10 @@ func (h *LogsHandler) buildCombinedLogPackage(frontendLogs string, snapshot *fro
 
 	combined.WriteString("═══════════════════════════════════════════════════════════════════════\n")
 	combined.WriteString("                          FRONTEND LOGS\n")
-	combined.WriteString(fmt.Sprintf("                     (last %d entries)\n", maxLogLines))
+	combined.WriteString(fmt.Sprintf("                     (last %d lines)\n", maxLogLines))
 	combined.WriteString("═══════════════════════════════════════════════════════════════════════\n\n")
 
+	frontendLogs = lastNLogLines(frontendLogs, maxLogLines)
 	if strings.TrimSpace(frontendLogs) == "" {
 		combined.WriteString("[No frontend logs provided]\n")
 	} else {
@@ -916,15 +935,28 @@ func (h *LogsHandler) readFrontendLogEntries(limit int, clientID string) ([]logE
 		}
 
 		lines := strings.Split(snapshot.FrontendLogs, "\n")
+		var currentTimestamp time.Time
+		var currentTimestampLabel string
 		for _, rawLine := range lines {
 			if strings.TrimSpace(rawLine) == "" {
 				continue
 			}
+			lineTimestamp := parseLogTimestamp(rawLine, time.Time{})
+			hasOwnTimestamp := !lineTimestamp.IsZero()
+			if hasOwnTimestamp {
+				currentTimestamp = lineTimestamp
+				currentTimestampLabel = visibleLogTimestamp(rawLine, lineTimestamp)
+			} else if !currentTimestamp.IsZero() {
+				lineTimestamp = currentTimestamp
+			} else {
+				lineTimestamp = snapshot.UploadedAt
+				currentTimestampLabel = snapshot.UploadedAt.UTC().Format(time.RFC3339Nano)
+			}
 			entries = append(entries, logEntry{
 				Origin:    "frontend",
 				ClientID:  snapshot.ClientID,
-				Timestamp: parseLogTimestamp(rawLine, snapshot.UploadedAt),
-				Line:      decorateFrontendLogLine(snapshot, rawLine),
+				Timestamp: lineTimestamp,
+				Line:      decorateFrontendLogLine(snapshot, rawLine, currentTimestampLabel, hasOwnTimestamp),
 			})
 		}
 	}
@@ -956,18 +988,29 @@ func (h *LogsHandler) readFrontendLogEntries(limit int, clientID string) ([]logE
 }
 
 func (h *LogsHandler) readAggregatedFrontendLogs(limit int, clientID string) (string, []frontendLogSummary, error) {
+	clientID = strings.TrimSpace(clientID)
+	if clientID == "" {
+		return "", nil, nil
+	}
+	includeAllClients := clientID == "*"
+
 	summaries, err := h.ListFrontendLogSummaries()
 	if err != nil {
 		return "", nil, err
 	}
-	if clientID != "" {
-		filtered := make([]frontendLogSummary, 0, len(summaries))
+	if !includeAllClients {
+		filtered := make([]frontendLogSummary, 0, 1)
 		for _, summary := range summaries {
 			if summary.ClientID == clientID {
 				filtered = append(filtered, summary)
 			}
 		}
+		if len(filtered) == 0 {
+			return "", nil, fmt.Errorf("frontend logs not found for client %q", clientID)
+		}
 		summaries = filtered
+	} else {
+		clientID = ""
 	}
 
 	entries, err := h.readFrontendLogEntries(limit, clientID)
@@ -983,7 +1026,18 @@ func (h *LogsHandler) readAggregatedFrontendLogs(limit int, clientID string) (st
 	return strings.Join(lines, "\n"), summaries, nil
 }
 
-func decorateFrontendLogLine(snapshot *frontendLogSnapshot, rawLine string) string {
+func lastNLogLines(logs string, limit int) string {
+	if limit <= 0 || strings.TrimSpace(logs) == "" {
+		return ""
+	}
+	lines := strings.Split(strings.TrimRight(logs, "\r\n"), "\n")
+	if len(lines) > limit {
+		lines = lines[len(lines)-limit:]
+	}
+	return strings.Join(lines, "\n")
+}
+
+func decorateFrontendLogLine(snapshot *frontendLogSnapshot, rawLine, timestampLabel string, hasOwnTimestamp bool) string {
 	tag := fmt.Sprintf("frontend:%s", truncateLogIdentifier(snapshot.ClientID))
 	if snapshot.DeviceType != "" {
 		tag = fmt.Sprintf("%s:%s", tag, strings.ReplaceAll(strings.ToLower(snapshot.DeviceType), " ", "-"))
@@ -992,6 +1046,9 @@ func decorateFrontendLogLine(snapshot *frontendLogSnapshot, rawLine string) stri
 	trimmed := strings.TrimSpace(rawLine)
 	if trimmed == "" {
 		return fmt.Sprintf("[%s]", tag)
+	}
+	if !hasOwnTimestamp {
+		return fmt.Sprintf("[%s] %s [CONT ] %s", tag, timestampLabel, trimmed)
 	}
 
 	if strings.HasPrefix(trimmed, "[") {
@@ -1003,6 +1060,36 @@ func decorateFrontendLogLine(snapshot *frontendLogSnapshot, rawLine string) stri
 	return fmt.Sprintf("[%s] %s", tag, trimmed)
 }
 
+func visibleLogTimestamp(line string, parsed time.Time) string {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return parsed.UTC().Format(time.RFC3339Nano)
+	}
+	if strings.HasPrefix(line, "[") {
+		if end := strings.Index(line, "]"); end > 1 {
+			candidate := strings.TrimSpace(line[1:end])
+			if !parseLogTimestamp(candidate, time.Time{}).IsZero() {
+				return candidate
+			}
+		}
+	}
+	if fields := strings.Fields(line); len(fields) > 0 {
+		candidate := strings.Trim(fields[0], "[]")
+		if _, err := time.Parse(time.RFC3339Nano, candidate); err == nil {
+			return candidate
+		}
+	}
+	if len(line) >= 19 {
+		candidate := line[:19]
+		for _, layout := range []string{"2006/01/02 15:04:05", "2006-01-02 15:04:05"} {
+			if _, err := time.Parse(layout, candidate); err == nil {
+				return candidate
+			}
+		}
+	}
+	return parsed.UTC().Format(time.RFC3339Nano)
+}
+
 func parseLogTimestamp(line string, fallback time.Time) time.Time {
 	line = strings.TrimSpace(line)
 	if line == "" {
@@ -1010,6 +1097,9 @@ func parseLogTimestamp(line string, fallback time.Time) time.Time {
 	}
 
 	candidates := []string{}
+	if fields := strings.Fields(line); len(fields) > 0 {
+		candidates = append(candidates, strings.Trim(fields[0], "[]"))
+	}
 	if strings.HasPrefix(line, "[") {
 		if end := strings.Index(line, "]"); end > 1 {
 			candidates = append(candidates, line[1:end])
@@ -1070,6 +1160,7 @@ func readLastNLines(file *os.File, n int) ([]string, error) {
 			readSize = position
 		}
 		position -= readSize
+		atEndOfFile := position+readSize == stat.Size()
 
 		chunk := make([]byte, readSize)
 		_, err := file.ReadAt(chunk, position)
@@ -1089,6 +1180,9 @@ func readLastNLines(file *os.File, n int) ([]string, error) {
 		// Add complete lines in reverse order
 		for i := len(chunkLines) - 1; i > 0; i-- {
 			line := string(bytes.TrimRight(chunkLines[i], "\r"))
+			if atEndOfFile && i == len(chunkLines)-1 && line == "" {
+				continue
+			}
 			if line != "" || i == len(chunkLines)-1 {
 				lines = append([]string{line}, lines...)
 			}

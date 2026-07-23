@@ -513,6 +513,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to initialise clients: %v", err)
 	}
+	logsHandler.SetClientsService(clientsService)
 	var clientSettingsService *client_settings.Service
 	if store != nil {
 		clientSettingsService, err = client_settings.NewServiceWithStore(store)
