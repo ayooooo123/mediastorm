@@ -24,6 +24,7 @@ type StreamTracker struct {
 	migrationSignals map[string]playbackMigrationSignal
 	mu               sync.RWMutex
 	counter          uint64
+	playbackObserver PlaybackActivityObserver
 }
 
 type playbackMigrationSignal struct {
@@ -230,6 +231,102 @@ const playbackMigrationSignalDuration = 30 * time.Second
 // GetStreamTracker returns the global stream tracker
 func GetStreamTracker() *StreamTracker {
 	return globalStreamTracker
+}
+
+func (t *StreamTracker) SetPlaybackActivityObserver(observer PlaybackActivityObserver) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	t.playbackObserver = observer
+	t.mu.Unlock()
+}
+
+// ObservePlaybackActivity matches a player heartbeat to the most recently
+// active direct stream before forwarding it to the notification observer.
+func (t *StreamTracker) ObservePlaybackActivity(userID string, update models.PlaybackProgressUpdate, percentWatched float64) int {
+	if t == nil {
+		return 0
+	}
+	targetKey := playbackControlKey(userID, update.MediaType, update.ItemID)
+
+	t.mu.RLock()
+	observer := t.playbackObserver
+	var best *TrackedStream
+	for _, stream := range t.streams {
+		matches := false
+		for _, key := range streamPlaybackControlKeys(stream) {
+			if key == targetKey {
+				matches = true
+				break
+			}
+		}
+		if !matches {
+			continue
+		}
+		if update.SourcePath != "" && normalizeStreamFailurePath(stream.Path) != normalizeStreamFailurePath(update.SourcePath) {
+			continue
+		}
+		if best == nil || stream.LastActivity.After(best.LastActivity) {
+			best = stream
+		}
+	}
+	if best != nil {
+		update.PlaybackSessionID = "direct:" + best.ID
+		update = enrichPlaybackUpdateFromStream(update, best.MediaMetadata)
+	}
+	t.mu.RUnlock()
+	if observer == nil || best == nil {
+		return 0
+	}
+	go observer.HandlePlaybackUpdate(userID, update, percentWatched)
+	return 1
+}
+
+func enrichPlaybackUpdateFromStream(update models.PlaybackProgressUpdate, meta StreamMediaMetadata) models.PlaybackProgressUpdate {
+	if update.MediaType == "" {
+		update.MediaType = meta.MediaType
+	}
+	if update.ItemID == "" {
+		update.ItemID = meta.ItemID
+	}
+	if update.MovieName == "" {
+		update.MovieName = firstStreamValue(meta.MovieName, meta.Title)
+	}
+	if update.SeriesName == "" {
+		update.SeriesName = firstStreamValue(meta.SeriesName, meta.Title)
+	}
+	if update.EpisodeName == "" {
+		update.EpisodeName = meta.EpisodeName
+	}
+	if update.SeriesID == "" {
+		update.SeriesID = meta.SeriesID
+	}
+	if update.SeasonNumber == 0 {
+		update.SeasonNumber = meta.SeasonNumber
+	}
+	if update.EpisodeNumber == 0 {
+		update.EpisodeNumber = meta.EpisodeNumber
+	}
+	if update.Year == 0 {
+		update.Year = meta.Year
+	}
+	if update.PosterURL == "" {
+		update.PosterURL = meta.PosterURL
+	}
+	if len(update.ExternalIDs) == 0 && len(meta.ExternalIDs) > 0 {
+		update.ExternalIDs = meta.ExternalIDs
+	}
+	return update
+}
+
+func firstStreamValue(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // StartStream registers a new stream and returns its ID, a bytes counter, and an activity timestamp counter.

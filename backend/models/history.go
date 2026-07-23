@@ -129,6 +129,10 @@ type PlaybackProgressUpdate struct {
 	// Movie-specific fields
 	MovieName string `json:"movieName,omitempty"`
 	Year      int    `json:"year,omitempty"`
+
+	// PlaybackSessionID is assigned internally after a player heartbeat is
+	// matched to an Active Streams session. It is never accepted from clients.
+	PlaybackSessionID string `json:"-"`
 }
 
 // PlaybackProgress stores the current playback progress for a media item.

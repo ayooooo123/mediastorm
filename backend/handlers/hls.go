@@ -801,6 +801,7 @@ type HLSManager struct {
 	localWebDAVBaseURL string
 	localWebDAVPrefix  string
 	configManager      ConfigProvider
+	playbackObserver   PlaybackActivityObserver
 	// Global probe cache - shared between prequeue (ProbeVideoFull) and HLS (probeAllMetadata)
 	probeCache   map[string]*cachedProbeEntry
 	probeCacheMu sync.RWMutex
@@ -808,6 +809,83 @@ type HLSManager struct {
 	// Hardware-accelerated encode capabilities, detected once on first transcode.
 	hwAccelOnce sync.Once
 	hwAccel     HWAccelCaps
+}
+
+// PlaybackActivityObserver receives player updates only after they have been
+// matched to a currently active stream.
+type PlaybackActivityObserver interface {
+	HandlePlaybackUpdate(userID string, update models.PlaybackProgressUpdate, percentWatched float64)
+}
+
+func (m *HLSManager) SetPlaybackActivityObserver(observer PlaybackActivityObserver) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.playbackObserver = observer
+	m.mu.Unlock()
+}
+
+// ObservePlaybackActivity matches a player heartbeat to the most recently
+// active HLS session before forwarding it to the notification observer.
+func (m *HLSManager) ObservePlaybackActivity(userID string, update models.PlaybackProgressUpdate, percentWatched float64) int {
+	if m == nil {
+		return 0
+	}
+	target := streamMediaIdentity(StreamMediaMetadata{
+		MediaType:     update.MediaType,
+		ItemID:        update.ItemID,
+		SeasonNumber:  update.SeasonNumber,
+		EpisodeNumber: update.EpisodeNumber,
+		SeriesID:      update.SeriesID,
+		ExternalIDs:   update.ExternalIDs,
+	})
+	if target.MediaType == "" || target.ID == "" {
+		return 0
+	}
+	targetKeys := make(map[string]struct{}, len(target.CandidateKeys)+1)
+	targetKeys[target.Key] = struct{}{}
+	for _, key := range target.CandidateKeys {
+		targetKeys[key] = struct{}{}
+	}
+
+	m.mu.RLock()
+	observer := m.playbackObserver
+	candidates := make([]*HLSSession, 0, len(m.sessions))
+	for _, session := range m.sessions {
+		candidates = append(candidates, session)
+	}
+	m.mu.RUnlock()
+	if observer == nil {
+		return 0
+	}
+
+	var best *HLSSession
+	var bestActivity time.Time
+	for _, session := range candidates {
+		session.mu.RLock()
+		matches := (userID == "" || session.ProfileID == "" || session.ProfileID == userID) &&
+			streamMetadataMatchesIdentity(session.MediaMetadata, target, targetKeys)
+		activity := session.LastSegmentRequest
+		session.mu.RUnlock()
+		if matches && (best == nil || activity.After(bestActivity)) {
+			best = session
+			bestActivity = activity
+		}
+	}
+	if best == nil {
+		return 0
+	}
+
+	best.mu.RLock()
+	update.PlaybackSessionID = "hls:" + best.ID
+	update = enrichPlaybackUpdateFromStream(update, best.MediaMetadata)
+	if update.Duration <= 0 {
+		update.Duration = best.Duration
+	}
+	best.mu.RUnlock()
+	go observer.HandlePlaybackUpdate(userID, update, percentWatched)
+	return 1
 }
 
 // UpdateSharePlaybackProgress records live dashboard-only progress for

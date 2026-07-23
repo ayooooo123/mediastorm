@@ -48,6 +48,7 @@ func (h *AdminUIHandler) NotificationsPage(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *AdminUIHandler) ListNotificationChannels(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store, max-age=0")
 	if h.notificationService == nil {
 		http.Error(w, "Notifications unavailable", http.StatusServiceUnavailable)
 		return
