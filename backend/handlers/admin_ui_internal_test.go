@@ -10,6 +10,37 @@ import (
 	"novastream/config"
 )
 
+func TestAdminSettingsSaveCommitsPendingTextArrayInputs(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/settings.html")
+	if err != nil {
+		t.Fatalf("read settings template: %v", err)
+	}
+	source := string(templateBytes)
+
+	for _, marker := range []string{
+		`data-text-array-kind="tags"`,
+		`data-text-array-kind="weighted-tags"`,
+		"function commitPendingTextArrayInputs()",
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("settings template missing pending text-array marker %q", marker)
+		}
+	}
+
+	for _, saveFunction := range []string{"saveSection", "saveAllSettings"} {
+		start := strings.Index(source, "async function "+saveFunction+"(")
+		if start < 0 {
+			t.Fatalf("settings template missing %s", saveFunction)
+		}
+		body := source[start:]
+		commit := strings.Index(body, "commitPendingTextArrayInputs();")
+		serialize := strings.Index(body, "JSON.stringify(")
+		if commit < 0 || serialize < 0 || commit > serialize {
+			t.Fatalf("%s must commit pending text-array inputs before serializing settings", saveFunction)
+		}
+	}
+}
+
 func TestUsenetEngineStatusProbeJobIDUsesGUIDForNZBDav(t *testing.T) {
 	for _, engineType := range []string{"nzbdav", "nzbdavex"} {
 		t.Run(engineType, func(t *testing.T) {

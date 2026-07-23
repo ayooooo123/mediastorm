@@ -3038,7 +3038,7 @@
             case 'tags':
                 const tags = Array.isArray(value) ? value : [];
                 const tagsHtml = tags.map((tag, idx) => '<span class="tag" title="'+escapeHtml(tag).replace(/"/g, '&quot;')+'"><span class="tag-text">'+escapeHtml(tag)+'</span><span class="tag-remove" onclick="removeTagByIndex(\''+basePath+'\', \''+fieldKey+'\', '+idx+')">&times;</span></span>').join('');
-                return '<div class="tags-input'+invalidClass+'" id="'+id+'_container">'+tagsHtml+'<input type="text" placeholder="Add tag..." enterkeyhint="done" onkeydown="handleTagInput(event, \''+basePath+'\', \''+fieldKey+'\')"></div>';
+                return '<div class="tags-input'+invalidClass+'" id="'+id+'_container">'+tagsHtml+'<input type="text" placeholder="Add tag..." enterkeyhint="done" data-text-array-kind="tags" data-base-path="'+escapeHtml(basePath || '').replace(/"/g, '&quot;')+'" data-field-key="'+escapeHtml(fieldKey).replace(/"/g, '&quot;')+'" onkeydown="handleTagInput(event, \''+basePath+'\', \''+fieldKey+'\')"></div>';
             case 'weighted-tags':
                 const wtags = Array.isArray(value) ? value : [];
                 const wtagsHtml = wtags.map((raw, idx) => {
@@ -3059,7 +3059,7 @@
                 return '<div class="weighted-tags-container'+invalidClass+'" id="'+id+'_container">' +
                     restrictedFilesQuickAdd +
                     wtagsHtml +
-                    '<div class="weighted-tag-add"><input type="text" placeholder="Add term (press Enter)..." enterkeyhint="done" onkeydown="handleWeightedTagInput(event, \''+basePath+'\', \''+fieldKey+'\')"></div>' +
+                    '<div class="weighted-tag-add"><input type="text" placeholder="Add term (press Enter)..." enterkeyhint="done" data-text-array-kind="weighted-tags" data-base-path="'+escapeHtml(basePath || '').replace(/"/g, '&quot;')+'" data-field-key="'+escapeHtml(fieldKey).replace(/"/g, '&quot;')+'" onkeydown="handleWeightedTagInput(event, \''+basePath+'\', \''+fieldKey+'\')"></div>' +
                     '</div>';
             case 'checkboxes':
                 const selectedValues = Array.isArray(value) ? value : [];
@@ -3266,9 +3266,38 @@
     function handleTagInput(event, basePath, fieldKey) {
         if (event.key === 'Enter' || event.key === ',') {
             event.preventDefault();
-            const tag = event.target.value.trim();
-            if (tag) { addTag(basePath, fieldKey, tag); event.target.value = ''; }
+            if (commitTextArrayInput(event.target, basePath, fieldKey, 'tags')) {
+                renderSettings();
+            }
         }
+    }
+    function commitTextArrayInput(input, basePath, fieldKey, kind) {
+        const item = String(input?.value || '').trim();
+        if (!item) return false;
+
+        const fullPath = basePath ? basePath+'.'+fieldKey : fieldKey;
+        let items = getValue(fullPath);
+        items = Array.isArray(items) ? [...items] : [];
+
+        const exists = kind === 'weighted-tags'
+            ? items.some(existing => parseWeightedTerm(existing).term.toLowerCase() === item.toLowerCase())
+            : items.includes(item);
+        input.value = '';
+        if (exists) return false;
+
+        items.push(kind === 'weighted-tags' ? formatWeightedTerm(item, 1) : item);
+        setValue(fullPath, items);
+        return true;
+    }
+    function commitPendingTextArrayInputs() {
+        document.querySelectorAll('input[data-text-array-kind]').forEach(input => {
+            commitTextArrayInput(
+                input,
+                input.dataset.basePath || '',
+                input.dataset.fieldKey || '',
+                input.dataset.textArrayKind
+            );
+        });
     }
     function addTag(basePath, fieldKey, tag) {
         const fullPath = basePath ? basePath+'.'+fieldKey : fieldKey;
@@ -3324,15 +3353,8 @@
     function handleWeightedTagInput(event, basePath, fieldKey) {
         if (event.key === 'Enter') {
             event.preventDefault();
-            const term = event.target.value.trim();
-            if (term) {
-                const fullPath = basePath ? basePath+'.'+fieldKey : fieldKey;
-                let tags = [...(getValue(fullPath) || [])];
-                const formatted = formatWeightedTerm(term, 1);
-                // Check if term already exists (ignoring weight)
-                const exists = tags.some(t => parseWeightedTerm(t).term.toLowerCase() === term.toLowerCase());
-                if (!exists) { tags.push(formatted); setValue(fullPath, tags); renderSettings(); }
-                event.target.value = '';
+            if (commitTextArrayInput(event.target, basePath, fieldKey, 'weighted-tags')) {
+                renderSettings();
             }
         }
     }
@@ -5199,6 +5221,8 @@
     // Save a specific section (still saves all, but used for UX)
     async function saveSection(sectionKey, event) {
         event.stopPropagation(); // Don't toggle section when clicking save
+
+        commitPendingTextArrayInputs();
 
         const btn = event.target.closest('.section-save-btn');
         if (!btn) return;
@@ -9486,6 +9510,8 @@
 
     async function saveAllSettings() {
         try {
+            commitPendingTextArrayInputs();
+
             if (selectedClientId && clientSettings !== null) {
                 // Save client-specific settings
                 const response = await fetch(basePath + '/api/clients/' + encodeURIComponent(selectedClientId) + '/settings', {
