@@ -1,6 +1,12 @@
 # syntax=docker/dockerfile:1.7
 # mediastorm Backend Dockerfile
 
+# Which stage provides the /watch web bundle: web-builder (full Expo export,
+# needs the frontend repo at ./frontend) or web-stub (empty bundle, single-repo
+# CI test builds). Must be declared before the first FROM so the web-dist
+# alias below can resolve it.
+ARG WEB_APP_STAGE=web-builder
+
 # Web app build stage. The exported Expo bundle is static and architecture
 # independent, so build it once on the native builder platform instead of
 # running npm ci separately for each target platform in multi-arch buildx jobs.
@@ -35,6 +41,16 @@ COPY frontend/types ./types
 COPY frontend/utils ./utils
 COPY frontend/web_icons ./web_icons
 RUN npm run web:export
+
+# Empty web bundle used by single-repo CI builds (no frontend checkout needed;
+# the backend serves a friendly placeholder at /watch when the dist is empty).
+# Select with: docker build --build-arg WEB_APP_STAGE=web-stub
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS web-stub
+RUN mkdir -p /frontend/dist
+
+# Alias resolving to the selected web stage; BuildKit only builds the stage
+# this actually references, so web-stub builds skip the Expo export entirely.
+FROM ${WEB_APP_STAGE} AS web-dist
 
 # Build stage
 FROM golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651 AS builder
@@ -167,7 +183,7 @@ WORKDIR /app
 COPY --from=builder --chown=root:root --chmod=0755 /app/mediastorm .
 
 # Copy the exported Expo web app. The backend serves it from /watch.
-COPY --from=web-builder /frontend/dist /opt/strmr-web
+COPY --from=web-dist /frontend/dist /opt/strmr-web
 ENV STRMR_WEB_APP_DIR=/opt/strmr-web
 
 # Copy the iroh remote-access bridge binary. MEDIASTORM_IROH_DIRECT_DIR points the
