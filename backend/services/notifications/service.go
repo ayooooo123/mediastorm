@@ -29,7 +29,6 @@ const (
 
 var validEvents = map[string]bool{
 	models.NotificationEventWatchStarted: true,
-	models.NotificationEventWatchPlaying: true,
 	models.NotificationEventWatchResumed: true,
 	models.NotificationEventWatchWatched: true,
 	models.NotificationEventRelease:      true,
@@ -41,11 +40,10 @@ type delivery struct {
 }
 
 type playbackSession struct {
-	seen       bool
-	activeSeen bool
-	paused     bool
-	watched    bool
-	updatedAt  time.Time
+	seen      bool
+	paused    bool
+	watched   bool
+	updatedAt time.Time
 }
 
 // Service owns profile notification configuration, formatting, and delivery.
@@ -196,7 +194,7 @@ func (s *Service) TestChannel(ctx context.Context, profileID, id string) error {
 	}
 	event := models.NotificationEvent{
 		ID:         uuid.NewString(),
-		Type:       models.NotificationEventWatchPlaying,
+		Type:       models.NotificationEventWatchStarted,
 		ProfileID:  channel.ProfileID,
 		Title:      "Notification test",
 		MediaType:  "movie",
@@ -234,10 +232,7 @@ func (s *Service) HandlePlaybackUpdate(userID string, update models.PlaybackProg
 		eventTypes = append(eventTypes, models.NotificationEventWatchStarted)
 		state.seen = true
 	}
-	if active && !state.activeSeen {
-		eventTypes = append(eventTypes, models.NotificationEventWatchPlaying)
-		state.activeSeen = true
-	} else if active && state.paused {
+	if active && state.paused {
 		eventTypes = append(eventTypes, models.NotificationEventWatchResumed)
 	}
 	if percent >= 90 && !state.watched {
@@ -710,8 +705,6 @@ func eventLabel(event string) string {
 	switch event {
 	case models.NotificationEventWatchStarted:
 		return "Started watching"
-	case models.NotificationEventWatchPlaying:
-		return "Now playing"
 	case models.NotificationEventWatchResumed:
 		return "Resumed"
 	case models.NotificationEventWatchWatched:

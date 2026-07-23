@@ -61,11 +61,10 @@
                 <label class="form-label">Watch status events</label>
                 <div class="checkbox-grid">
                     <label><input type="checkbox" name="watch-event" value="watch.started"> Start</label>
-                    <label><input type="checkbox" name="watch-event" value="watch.playing"> Play</label>
                     <label><input type="checkbox" name="watch-event" value="watch.resumed"> Resume</label>
                     <label><input type="checkbox" name="watch-event" value="watch.watched"> Watched</label>
                 </div>
-                <div class="form-help">Start is the first heartbeat in a session. Play is the first actively-playing heartbeat. Resume is emitted after pause or buffering.</div>
+                <div class="form-help">Start is the first heartbeat in a session. Resume is emitted when playback continues after pause or buffering.</div>
             </div>
 
             <div id="release-settings" class="form-grid" hidden>
@@ -165,7 +164,7 @@
 const profileId = {{json .Profile.ID}};
 const notificationsBasePath = {{json .BasePath}};
 let channels = [];
-let previewWatchEvent = 'watch.playing';
+let previewWatchEvent = 'watch.started';
 
 function escapeHtml(value) {
     const div = document.createElement('div');
@@ -196,9 +195,10 @@ function renderChannels() {
         return;
     }
     container.innerHTML = channels.map(channel => {
-        const eventLabels = (channel.events || []).map(event => ({
+        const eventLabels = (channel.events || [])
+            .filter(event => event !== 'watch.playing')
+            .map(event => ({
             'watch.started': 'Start',
-            'watch.playing': 'Play',
             'watch.resumed': 'Resume',
             'watch.watched': 'Watched',
             'release.available': 'Released / aired'
@@ -264,11 +264,10 @@ function previewValues() {
     const isRelease = selectedCategory() === 'release';
     const watchEvents = {
         'watch.started': {label: 'Started watching', percent: '1'},
-        'watch.playing': {label: 'Now playing', percent: '42'},
         'watch.resumed': {label: 'Resumed', percent: '42'},
         'watch.watched': {label: 'Watched', percent: '100'}
     };
-    const watchEvent = watchEvents[previewWatchEvent] || watchEvents['watch.playing'];
+    const watchEvent = watchEvents[previewWatchEvent] || watchEvents['watch.started'];
     return {
         event: isRelease ? 'release.available' : previewWatchEvent,
         eventLabel: isRelease ? 'Now available' : watchEvent.label,
@@ -363,7 +362,7 @@ function editChannel(id) {
     document.querySelectorAll('input[name="watch-event"]').forEach(input => {
         input.checked = (channel.events || []).includes(input.value);
     });
-    previewWatchEvent = (channel.events || []).find(event => event.startsWith('watch.')) || 'watch.playing';
+    previewWatchEvent = (channel.events || []).find(event => event.startsWith('watch.') && event !== 'watch.playing') || 'watch.started';
     updateCategoryVisibility();
     document.getElementById('form-title').textContent = 'Edit destination';
     document.getElementById('cancel-edit').style.display = '';
@@ -384,7 +383,7 @@ function resetForm() {
     document.querySelectorAll('input[name="watch-event"]').forEach(input => {
         input.checked = false;
     });
-    previewWatchEvent = 'watch.playing';
+    previewWatchEvent = 'watch.started';
     updateCategoryVisibility();
     document.getElementById('form-title').textContent = 'Add destination';
     document.getElementById('cancel-edit').style.display = 'none';
@@ -435,7 +434,7 @@ document.querySelectorAll('input[name="watch-event"]').forEach(input => {
             previewWatchEvent = event.target.value;
         } else if (previewWatchEvent === event.target.value) {
             const selected = document.querySelector('input[name="watch-event"]:checked');
-            previewWatchEvent = selected ? selected.value : 'watch.playing';
+            previewWatchEvent = selected ? selected.value : 'watch.started';
         }
         updatePreview();
     });
