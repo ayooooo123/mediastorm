@@ -84,16 +84,15 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 # Final stage
 FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
 
-# Install ca-certificates, download tools, Python for title parsing, and
-# software Vulkan so libplacebo DV5 thumbnails do not require GPU passthrough.
+# Install ca-certificates, download tools, Python for title parsing, and Vulkan
+# drivers. Mesa's Lavapipe remains available as a thumbnail-only software
+# fallback, while real GPU ICDs can be selected when devices are passed through.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates wget xz-utils python3 python3-venv python3-pip \
     libvulkan1 mesa-vulkan-drivers \
     && rm -rf /var/lib/apt/lists/*
 
 RUN ln -sf "$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' | head -n 1)" /usr/share/vulkan/icd.d/lavapipe_icd.json
-ENV LIBGL_ALWAYS_SOFTWARE=1
-ENV VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lavapipe_icd.json
 
 # Create Python virtual environment and install dependencies
 RUN python3 -m venv /.venv && \
@@ -123,7 +122,9 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
 # as the high-quality software fallback for HDR10/DV profile 7/8.
 RUN ffmpeg -hide_banner -filters | grep -Eq '(^|[[:space:]])libplacebo([[:space:]]|$)' \
     && ffmpeg -hide_banner -filters | grep -Eq '(^|[[:space:]])zscale([[:space:]]|$)'
-RUN ffmpeg -hide_banner -loglevel error \
+RUN LIBGL_ALWAYS_SOFTWARE=1 \
+    VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lavapipe_icd.json \
+    ffmpeg -hide_banner -loglevel error \
         -f lavfi -i color=c=black:s=16x16:d=0.1 \
         -frames:v 1 \
         -vf "libplacebo=w=16:h=16:colorspace=bt709:color_primaries=bt709:color_trc=bt709,format=yuv420p" \

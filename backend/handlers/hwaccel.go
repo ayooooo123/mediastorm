@@ -101,7 +101,9 @@ func detectHWAccel(ffmpegPath, pref string) HWAccelCaps {
 	// filter is compiled in — so each is verified with a null filter-graph run.
 	// libplacebo is preferred: it is the only filter that applies the Dolby
 	// Vision RPU correctly (other paths mishandle DV Profile 5's IPT base layer).
-	caps.Tonemap = detectTonemap(ffmpegPath, filters)
+	// An explicit "none" preference disables GPU tone mapping as well as GPU
+	// encoding. CPU zscale remains available for HDR10/DV7/DV8 fallback.
+	caps.Tonemap = detectTonemap(ffmpegPath, filters, pref != string(HWNone))
 
 	if pref == string(HWNone) {
 		return caps
@@ -142,11 +144,11 @@ func detectHWAccel(ffmpegPath, pref string) HWAccelCaps {
 }
 
 // detectTonemap returns the best verified tone-mapping implementation.
-func detectTonemap(ffmpegPath string, filters map[string]bool) string {
-	if filters["libplacebo"] && libplaceboUsable(ffmpegPath) {
+func detectTonemap(ffmpegPath string, filters map[string]bool, allowGPU bool) string {
+	if allowGPU && filters["libplacebo"] && libplaceboUsable(ffmpegPath) {
 		return "libplacebo"
 	}
-	if filters["tonemap_opencl"] && openclTonemapUsable(ffmpegPath) {
+	if allowGPU && filters["tonemap_opencl"] && openclTonemapUsable(ffmpegPath) {
 		return "opencl"
 	}
 	if filters["zscale"] {
@@ -156,12 +158,19 @@ func detectTonemap(ffmpegPath string, filters map[string]bool) string {
 }
 
 // libplaceboUsable verifies a Vulkan device initializes and the libplacebo
-// filter runs (the runtime libvulkan may be absent even when compiled in).
+// filter runs on a real GPU. Mesa's Lavapipe/llvmpipe software Vulkan device
+// can pass a tiny functional probe but is far too slow for real-time 4K HLS.
 func libplaceboUsable(ffmpegPath string) bool {
-	return runFilterProbe(ffmpegPath,
+	if softwareVulkanForcedByEnvironment() {
+		return false
+	}
+
+	ok, output := runFilterProbeWithOutput(ffmpegPath,
 		[]string{"-init_hw_device", "vulkan=vk", "-filter_hw_device", "vk"},
 		"color=c=black:s=128x128:d=0.1",
-		"libplacebo=format=yuv420p")
+		"libplacebo=format=yuv420p",
+		"verbose")
+	return ok && !vulkanProbeUsesSoftwareRenderer(output)
 }
 
 // openclTonemapUsable verifies an OpenCL device initializes and tonemap_opencl runs.
@@ -175,14 +184,44 @@ func openclTonemapUsable(ffmpegPath string) bool {
 // runFilterProbe runs a tiny null-output transcode to confirm a filter graph
 // (and any hardware device it needs) is usable on this host.
 func runFilterProbe(ffmpegPath string, globalArgs []string, lavfiSrc, filter string) bool {
+	ok, _ := runFilterProbeWithOutput(ffmpegPath, globalArgs, lavfiSrc, filter, "error")
+	return ok
+}
+
+func runFilterProbeWithOutput(ffmpegPath string, globalArgs []string, lavfiSrc, filter, logLevel string) (bool, string) {
 	if strings.TrimSpace(ffmpegPath) == "" {
-		return false
+		return false, ""
 	}
-	args := append([]string{"-hide_banner", "-loglevel", "error"}, globalArgs...)
+	args := append([]string{"-hide_banner", "-loglevel", logLevel}, globalArgs...)
 	args = append(args, "-f", "lavfi", "-i", lavfiSrc, "-vf", filter, "-frames:v", "1", "-f", "null", "-")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return exec.CommandContext(ctx, ffmpegPath, args...).Run() == nil
+	output, err := exec.CommandContext(ctx, ffmpegPath, args...).CombinedOutput()
+	return err == nil, string(output)
+}
+
+func softwareVulkanForcedByEnvironment() bool {
+	icd := strings.ToLower(os.Getenv("VK_ICD_FILENAMES"))
+	if strings.Contains(icd, "lavapipe") || strings.Contains(icd, "lvp_icd") {
+		return true
+	}
+	return strings.TrimSpace(os.Getenv("LIBGL_ALWAYS_SOFTWARE")) == "1"
+}
+
+func vulkanProbeUsesSoftwareRenderer(output string) bool {
+	lower := strings.ToLower(output)
+	for _, marker := range []string{
+		"lavapipe",
+		"llvmpipe",
+		"software rasterizer",
+		"device type: cpu",
+		"device_type: cpu",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // hwEncoderUsable reports whether the given backend's H.264 encoder exists and
@@ -333,6 +372,7 @@ func buildVideoEncodePlan(caps HWAccelCaps, tonemapNeeded bool) videoEncodePlan 
 			// downloaded back to system memory so the encoder stage is independent.
 			plan.GlobalArgs = append(plan.GlobalArgs, "-init_hw_device", "opencl=ocl", "-filter_hw_device", "ocl")
 			filters = append(filters,
+				"setparams=range=tv:color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc",
 				"format=p010le",
 				"hwupload",
 				"tonemap_opencl=tonemap=hable:desat=0:t=bt709:m=bt709:p=bt709:format=nv12",
@@ -340,6 +380,10 @@ func buildVideoEncodePlan(caps HWAccelCaps, tonemapNeeded bool) videoEncodePlan 
 				"format=nv12")
 		default: // zscale (CPU, libzimg). Hable operator, 100-nit ref, BT.709 SDR.
 			filters = append(filters,
+				// Some DV8 files omit container-level color metadata even though
+				// their base layer is HDR10. Without explicit input properties,
+				// zscale aborts with "no path between colorspaces".
+				"setparams=range=tv:color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc",
 				"zscale=t=linear:npl=100",
 				"format=gbrpf32le",
 				"zscale=p=bt709",

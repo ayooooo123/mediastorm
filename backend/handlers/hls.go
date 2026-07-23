@@ -353,6 +353,7 @@ type HLSSession struct {
 	Cancel              context.CancelFunc
 	mu                  sync.RWMutex
 	Completed           bool
+	Stopped             bool // Explicit cleanup was requested; no recovery restart is allowed.
 	HasDV               bool
 	DVProfile           string
 	DVDisabled          bool    // Set to true if DV metadata parsing fails and we fallback to non-DV
@@ -2216,6 +2217,11 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 
 	// Cache forceAAC for recovery restarts
 	session.mu.Lock()
+	if session.Stopped {
+		session.mu.Unlock()
+		log.Printf("[hls] session %s: transcoding start skipped because the session was stopped", session.ID)
+		return nil
+	}
 	session.forceAAC = forceAAC
 	session.mu.Unlock()
 
@@ -3453,6 +3459,14 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 		// Either superseded by a new FFmpeg (currentPid != 0) or reset during seek (currentPid == 0)
 		log.Printf("[hls] session %s: FFmpeg (pid=%d) superseded (current pid=%d), skipping completion handling",
 			session.ID, thisPid, currentPid)
+		return nil
+	}
+
+	session.mu.RLock()
+	stopped := session.Stopped
+	session.mu.RUnlock()
+	if stopped {
+		log.Printf("[hls] session %s: FFmpeg stopped by explicit cleanup, skipping recovery", session.ID)
 		return nil
 	}
 
@@ -5197,6 +5211,12 @@ func (m *HLSManager) CleanupSession(sessionID string) {
 	}
 	delete(m.sessions, sessionID)
 	m.mu.Unlock()
+
+	// Mark the session before killing FFmpeg so the transcoding goroutine cannot
+	// interpret the forced exit as a recoverable premature completion.
+	session.mu.Lock()
+	session.Stopped = true
+	session.mu.Unlock()
 
 	// Log session summary
 	session.mu.RLock()
