@@ -143,16 +143,35 @@ func TestWebPlaybackHandlerServesStandalonePlayer(t *testing.T) {
 		"WEB_PLAYER_STALE_PAUSE_MS",
 		"recoverWebPlayerHlsSession('hls-network-error'",
 		"recover hls session via seek",
+		"let position = progressPositionForSend(options);",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("expected playback template to contain HLS recovery hook %q", want)
 		}
+	}
+	if strings.Contains(body, "let position = isEnded ? duration") {
+		t.Fatal("playback template must not turn a premature media ended event into 100% progress")
 	}
 	if strings.Contains(body, `id="profileSelect"`) || strings.Contains(body, `class="profile-select"`) {
 		t.Fatalf("playback page should not render a profile selector")
 	}
 	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
 		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+}
+
+func TestAdminPlaybackTemplateDoesNotForceEndedProgressToDuration(t *testing.T) {
+	body, err := adminTemplates.ReadFile("admin_templates/playback.html")
+	if err != nil {
+		t.Fatalf("read admin playback template: %v", err)
+	}
+
+	rendered := string(body)
+	if strings.Contains(rendered, "let position = isEnded ? duration") {
+		t.Fatal("admin playback template must not turn a premature media ended event into 100% progress")
+	}
+	if !strings.Contains(rendered, "let position = currentWebPlayerAbsoluteTime();") {
+		t.Fatal("admin playback template must report the actual playhead on ended events")
 	}
 }
 

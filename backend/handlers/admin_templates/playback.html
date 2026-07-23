@@ -3662,6 +3662,9 @@
             updateWebPlayerControls();
             renderWebPlayerSubtitles();
             showWebPlayerControls();
+            // MSE/HLS playback can emit `ended` when the currently appended
+            // media runs out before the title does. Retain the actual playhead
+            // instead of manufacturing 100% progress.
             sendWebPlayerProgress({ force: true, isPaused: true, ended: true });
         });
         video.addEventListener('seeked', renderWebPlayerSubtitles);
@@ -3789,7 +3792,7 @@
         const isEnded = Boolean(options.ended);
         const isPaused = options.isPaused !== undefined ? Boolean(options.isPaused) : Boolean(video.paused);
         const isBuffering = !isPaused && !isEnded && Boolean(webPlayerVideoBuffering);
-        let position = isEnded ? duration : currentWebPlayerAbsoluteTime();
+        let position = currentWebPlayerAbsoluteTime();
         if (!Number.isFinite(position) || position < 0) return Promise.resolve(null);
         position = Math.max(0, Math.min(position, duration));
 
@@ -3833,7 +3836,7 @@
                 webPlayerLastProgressPaused = isPaused;
                 webPlayerLastProgressBuffering = isBuffering;
                 const percentWatched = Number(result?.percentWatched ?? (duration > 0 ? (position / duration) * 100 : 0));
-                if (percentWatched >= 90 || isEnded) {
+                if (percentWatched >= 90) {
                     webPlayerProgressCompleted = true;
                     stopWebPlayerProgressTracking();
                 }
