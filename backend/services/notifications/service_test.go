@@ -340,6 +340,55 @@ func TestPlaybackNotificationsAreEdgeTriggered(t *testing.T) {
 	}
 }
 
+func TestPlaybackNotificationsWaitForActivePlaybackBeforeStarting(t *testing.T) {
+	received := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Event string `json:"event"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		received <- payload.Event
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	repo := newMemoryRepo()
+	repo.channels["channel"] = models.NotificationChannel{
+		ID: "channel", ProfileID: "profile", Type: models.NotificationChannelWebhook,
+		URL: server.URL, Enabled: true,
+		Events:        []string{models.NotificationEventWatchStarted, models.NotificationEventWatchResumed},
+		TitleTemplate: defaultTitleTemplate, BodyTemplate: defaultBodyTemplate,
+	}
+	service := New(repo)
+	defer service.Close()
+
+	update := models.PlaybackProgressUpdate{
+		MediaType: "movie", ItemID: "tmdb:1", MovieName: "Movie", IsPaused: true,
+	}
+	service.HandlePlaybackUpdate("profile", update, 1)
+	select {
+	case event := <-received:
+		t.Fatalf("paused initial heartbeat emitted %q", event)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	update.IsPaused = false
+	service.HandlePlaybackUpdate("profile", update, 2)
+	select {
+	case event := <-received:
+		if event != models.NotificationEventWatchStarted {
+			t.Fatalf("first active heartbeat emitted %q", event)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for started event")
+	}
+	select {
+	case event := <-received:
+		t.Fatalf("first active heartbeat also emitted %q", event)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 func TestPlaybackNotificationsTrackActiveStreamSessionsIndependently(t *testing.T) {
 	service := New(newMemoryRepo())
 	defer service.Close()

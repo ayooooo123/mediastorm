@@ -1676,6 +1676,7 @@
         startSubtitleRenderLoop(video);
         showControls();
         sendWebPlayerProgress({ force: true, isPaused: false });
+        sendWebPlayerHLSState({ paused: false });
       });
       video.addEventListener('pause', () => {
         if (!webPlayerPausedAt) webPlayerPausedAt = Date.now();
@@ -1684,6 +1685,7 @@
         renderSubtitles();
         showControls();
         sendWebPlayerProgress({ force: true, isPaused: true });
+        sendWebPlayerHLSState({ paused: true });
       });
       video.addEventListener('ended', () => {
         stopSubtitleRenderLoop();
@@ -1693,6 +1695,7 @@
         // runs out even though the full title has not finished. Report the
         // actual playhead; a genuine ending is already at the media duration.
         sendWebPlayerProgress({ force: true, isPaused: true, ended: true });
+        sendWebPlayerHLSState({ paused: true });
       });
       // Buffering/stall detection: surface a live "Buffering" state to the
       // admin dashboard. 'waiting'/'stalled' fire when the player runs dry;
@@ -1701,11 +1704,13 @@
         if (video.paused || webPlayerBuffering) return;
         webPlayerBuffering = true;
         sendWebPlayerProgress({ force: true });
+        sendWebPlayerHLSState();
       };
       const clearBuffering = () => {
         if (!webPlayerBuffering) return;
         webPlayerBuffering = false;
         sendWebPlayerProgress({ force: true });
+        sendWebPlayerHLSState();
       };
       video.addEventListener('waiting', markBuffering);
       video.addEventListener('stalled', markBuffering);
@@ -2340,16 +2345,32 @@
       if (keepaliveTimer) clearInterval(keepaliveTimer);
       keepaliveTimer = setInterval(() => {
         if (!hlsSessionId) return;
-        const position = progressPositionForSend({ force: true });
-        const query = position > 0 ? `?time=${position.toFixed(2)}` : '';
-        fetch(apiUrl(`/video/hls/${encodeURIComponent(hlsSessionId)}/keepalive${query}`), {
-          method: 'POST',
-          credentials: 'same-origin',
-        })
-          .then((response) => response.ok ? response.json().catch(() => null) : null)
+        sendWebPlayerHLSState()
           .then(applyActualStartOffsetCorrection)
           .catch(() => {});
       }, 20000);
+    }
+
+    async function sendWebPlayerHLSState(options = {}) {
+      if (!hlsSessionId) return null;
+      try {
+        const video = document.getElementById('webPlayer');
+        const params = new URLSearchParams({
+          time: progressPositionForSend({ force: true }).toFixed(2),
+          paused: String(options.paused ?? Boolean(video?.paused)),
+          buffering: String(options.buffering ?? Boolean(webPlayerBuffering)),
+          ended: String(Boolean(options.ended)),
+        });
+        const response = await fetch(apiUrl(`/video/hls/${encodeURIComponent(hlsSessionId)}/keepalive?${params}`), {
+          method: 'POST',
+          credentials: 'same-origin',
+          keepalive: Boolean(options.keepalive),
+        });
+        if (!response.ok) return null;
+        return response.json().catch(() => null);
+      } catch {
+        return null;
+      }
     }
 
     function startProgressTracking() {
