@@ -163,7 +163,7 @@
 
 <script>
 const profileId = {{json .Profile.ID}};
-const basePath = {{json .BasePath}};
+const notificationsBasePath = {{json .BasePath}};
 let channels = [];
 let previewWatchEvent = 'watch.playing';
 
@@ -175,7 +175,10 @@ function escapeHtml(value) {
 
 async function loadChannels() {
     try {
-        const response = await fetch(basePath + '/api/notifications?profileId=' + encodeURIComponent(profileId));
+        const response = await fetch(
+            notificationsBasePath + '/api/notifications?profileId=' + encodeURIComponent(profileId),
+            {cache: 'no-store'}
+        );
         if (!response.ok) throw new Error(await response.text());
         const payload = await response.json();
         channels = payload.channels || [];
@@ -219,7 +222,7 @@ function renderChannels() {
                 </div>
                 <div class="notification-actions">
                     <button class="btn btn-secondary btn-sm" onclick="editChannel('${channel.id}')">Edit</button>
-                    <button class="btn btn-secondary btn-sm" onclick="testChannel('${channel.id}')">Test</button>
+                    <button class="btn btn-secondary btn-sm" onclick="testChannel('${channel.id}', this)">Test</button>
                     <button class="btn btn-danger btn-sm" onclick="deleteChannel('${channel.id}')">Delete</button>
                 </div>
             </div>`;
@@ -327,7 +330,7 @@ async function saveChannel(event) {
         includePoster: document.getElementById('include-poster').checked
     };
     try {
-        const response = await fetch(basePath + '/api/notifications', {
+        const response = await fetch(notificationsBasePath + '/api/notifications', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(payload)
@@ -387,14 +390,23 @@ function resetForm() {
     document.getElementById('cancel-edit').style.display = 'none';
 }
 
-async function testChannel(id) {
+async function testChannel(id, button) {
+    button.disabled = true;
+    button.textContent = 'Sending…';
     try {
-        const response = await fetch(basePath + '/api/notifications/test?profileId=' +
+        const response = await fetch(notificationsBasePath + '/api/notifications/test?profileId=' +
             encodeURIComponent(profileId) + '&id=' + encodeURIComponent(id), {method: 'POST'});
         if (!response.ok) throw new Error(await response.text());
         showToast('Test notification sent');
+        button.textContent = 'Sent ✓';
     } catch (error) {
         showToast(error.message, 'error');
+        button.textContent = 'Failed';
+    } finally {
+        window.setTimeout(() => {
+            button.disabled = false;
+            button.textContent = 'Test';
+        }, 2000);
     }
 }
 
@@ -402,7 +414,7 @@ async function deleteChannel(id) {
     const channel = channels.find(item => item.id === id);
     if (!channel || !confirm('Delete notification destination "' + channel.name + '"?')) return;
     try {
-        const response = await fetch(basePath + '/api/notifications?profileId=' +
+        const response = await fetch(notificationsBasePath + '/api/notifications?profileId=' +
             encodeURIComponent(profileId) + '&id=' + encodeURIComponent(id), {method: 'DELETE'});
         if (!response.ok) throw new Error(await response.text());
         showToast('Notification destination deleted');

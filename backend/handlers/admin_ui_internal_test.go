@@ -17,6 +17,28 @@ func TestNotificationsTemplateLoads(t *testing.T) {
 	}
 }
 
+func TestNotificationsTemplateDoesNotRedeclareBasePath(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/notifications.html")
+	if err != nil {
+		t.Fatalf("read notifications template: %v", err)
+	}
+	if strings.Contains(string(templateBytes), "const basePath =") {
+		t.Fatal("notifications template redeclares the base template's global basePath")
+	}
+}
+
+func TestNotificationListDisablesCaching(t *testing.T) {
+	handler := &AdminUIHandler{}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/notifications?profileId=profile", nil)
+
+	handler.ListNotificationChannels(recorder, request)
+
+	if got := recorder.Header().Get("Cache-Control"); got != "no-store, max-age=0" {
+		t.Fatalf("Cache-Control = %q, want no-store, max-age=0", got)
+	}
+}
+
 func TestAdminSettingsSaveCommitsPendingTextArrayInputs(t *testing.T) {
 	templateBytes, err := adminTemplates.ReadFile("admin_templates/settings.html")
 	if err != nil {

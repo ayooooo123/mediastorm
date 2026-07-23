@@ -218,6 +218,9 @@ func (s *Service) HandlePlaybackUpdate(userID string, update models.PlaybackProg
 		return
 	}
 	key := userID + "\x00" + update.MediaType + "\x00" + update.ItemID
+	if update.PlaybackSessionID != "" {
+		key = userID + "\x00" + update.PlaybackSessionID
+	}
 	now := time.Now().UTC()
 	active := !update.IsPaused && !update.IsBuffering
 

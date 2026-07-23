@@ -660,7 +660,6 @@ func main() {
 	calendarService := calendar.New(metadataService, watchlistService, historyService, userSettingsService, userService)
 	notificationService := notifications.New(store.Notifications())
 	defer notificationService.Close()
-	historyService.SetPlaybackObserver(notificationService)
 	calendarService.SetReleaseObserver(notificationService)
 	historyService.SetWatchStateChangedHook(calendarService.Invalidate)
 	calendarHandler := handlers.NewCalendarHandler(calendarService, userService, *demoMode)
@@ -745,6 +744,9 @@ func main() {
 	videoHandler.SetPrequeueStore(prequeueHandler.GetStore())
 	localBaseURL := fmt.Sprintf("http://127.0.0.1:%d", settings.Server.Port)
 	videoHandler.SetLocalBaseURL(localBaseURL)
+	videoHandler.GetHLSManager().SetPlaybackActivityObserver(notificationService)
+	handlers.GetStreamTracker().SetPlaybackActivityObserver(notificationService)
+	historyHandler.SetActivePlaybackTrackers(videoHandler.GetHLSManager(), handlers.GetStreamTracker())
 
 	if videoHandler != nil && settings.WebDAV.Enabled {
 		videoHandler.ConfigureLocalWebDAVAccess(localBaseURL, settings.WebDAV.Prefix, settings.WebDAV.Username, settings.WebDAV.Password)

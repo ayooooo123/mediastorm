@@ -156,6 +156,48 @@ func TestSaveAndListChannelPreservesAndMasksWebhookURL(t *testing.T) {
 	}
 }
 
+func TestDiscordDeliveryEmbedsPublicPoster(t *testing.T) {
+	var received struct {
+		Embeds []struct {
+			Thumbnail struct {
+				URL string `json:"url"`
+			} `json:"thumbnail"`
+		} `json:"embeds"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Errorf("decode Discord payload: %v", err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	service := New(newMemoryRepo())
+	defer service.Close()
+	err := service.deliver(context.Background(), models.NotificationChannel{
+		Type:          models.NotificationChannelDiscord,
+		URL:           server.URL,
+		IncludePoster: true,
+		TitleTemplate: defaultTitleTemplate,
+		BodyTemplate:  defaultBodyTemplate,
+	}, models.NotificationEvent{
+		Type:       models.NotificationEventWatchPlaying,
+		Title:      "Example",
+		MediaType:  "movie",
+		PosterURL:  "https://image.tmdb.org/t/p/w500/example.jpg",
+		OccurredAt: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("deliver Discord notification: %v", err)
+	}
+	if len(received.Embeds) != 1 {
+		t.Fatalf("Discord embeds = %d, want 1", len(received.Embeds))
+	}
+	if got := received.Embeds[0].Thumbnail.URL; got != "https://image.tmdb.org/t/p/w500/example.jpg" {
+		t.Fatalf("Discord thumbnail URL = %q", got)
+	}
+}
+
 func TestReleaseDeliveryDeduplicatesOverlappingSources(t *testing.T) {
 	received := make(chan string, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -297,6 +339,28 @@ func TestPlaybackNotificationsAreEdgeTriggered(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatalf("timed out waiting for event %q", expected)
 		}
+	}
+}
+
+func TestPlaybackNotificationsTrackActiveStreamSessionsIndependently(t *testing.T) {
+	service := New(newMemoryRepo())
+	defer service.Close()
+
+	update := models.PlaybackProgressUpdate{
+		MediaType:         "movie",
+		ItemID:            "tmdb:1",
+		MovieName:         "Movie",
+		PlaybackSessionID: "hls:first",
+	}
+	service.HandlePlaybackUpdate("profile", update, 1)
+	update.PlaybackSessionID = "hls:second"
+	service.HandlePlaybackUpdate("profile", update, 1)
+
+	service.sessionMu.Lock()
+	sessionCount := len(service.sessions)
+	service.sessionMu.Unlock()
+	if sessionCount != 2 {
+		t.Fatalf("playback session count = %d, want 2", sessionCount)
 	}
 }
 
