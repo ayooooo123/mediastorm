@@ -611,6 +611,8 @@ func (s *Service) observeReleases(userID string, visibleItems []models.CalendarI
 			ctx, movies, series, windowStart, cutoff, trendingState,
 			0, requirements.TrendingLimit, "top-trending",
 		)...)
+		monitorItems = append(monitorItems,
+			collectTrendingReleaseStatuses(movies, series, requirements.TrendingLimit, "top-trending")...)
 	}
 
 	observer.ObserveCalendar(userID, append(visibleItems, monitorItems...))
@@ -1089,6 +1091,51 @@ func (s *Service) collectFromTrending(
 		})...)
 	}
 
+	return items
+}
+
+// collectTrendingReleaseStatuses supplies stable availability observations for
+// notification monitoring. Unlike calendar release entries, these snapshots
+// include titles that first enter Trending after they are already available.
+func collectTrendingReleaseStatuses(
+	trendingMovies, trendingSeries []models.TrendingItem,
+	limit int,
+	source string,
+) []models.CalendarItem {
+	selectedMovies := sliceTrendingItems(trendingMovies, 0, limit)
+	selectedSeries := sliceTrendingItems(trendingSeries, 0, limit)
+	items := make([]models.CalendarItem, 0, len(selectedMovies)+len(selectedSeries))
+	appendStatus := func(item models.TrendingItem, rank int) {
+		title := item.Title
+		status := strings.ToLower(strings.TrimSpace(title.Status))
+		if title.MediaType == "movie" {
+			status = models.MovieReleaseStatus(title)
+		} else if status != models.SeriesReleaseStatusReleased {
+			status = models.SeriesReleaseStatusUnreleased
+		}
+		posterURL := ""
+		if title.Poster != nil {
+			posterURL = title.Poster.URL
+		}
+		items = append(items, models.CalendarItem{
+			Title:         title.Name,
+			MediaType:     title.MediaType,
+			Year:          title.Year,
+			ReleaseType:   "availability",
+			ReleaseStatus: status,
+			PosterURL:     posterURL,
+			TextPosterURL: calendarTextPosterURL(&title),
+			ExternalIDs:   buildExternalIDs(title.IMDBID, title.TMDBID, title.TVDBID),
+			Source:        source,
+			SourceRank:    rank,
+		})
+	}
+	for i, item := range selectedMovies {
+		appendStatus(item, i+1)
+	}
+	for i, item := range selectedSeries {
+		appendStatus(item, i+1)
+	}
 	return items
 }
 
