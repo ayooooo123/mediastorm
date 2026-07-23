@@ -2274,11 +2274,13 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 					hlsStreamData["is_paused"] = true
 				}
 			}
-			if matchedProgress != nil {
-				hlsStreamData["last_updated"] = matchedProgress.UpdatedAt
-			}
-			if session.ViaShareLink && !session.ShareUpdatedAt.IsZero() {
-				hlsStreamData["last_updated"] = session.ShareUpdatedAt
+			if updatedAt, ok := dashboardProgressUpdatedAt(
+				matchedProgress,
+				heartbeatFresh,
+				session.ShareUpdatedAt,
+				shareHeartbeatFresh,
+			); ok {
+				hlsStreamData["last_updated"] = updatedAt
 			}
 			streams = append(streams, hlsStreamData)
 			session.mu.RUnlock()
@@ -2390,11 +2392,13 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 				streamData["is_paused"] = true
 			}
 		}
-		if matchedProgress != nil {
-			streamData["last_updated"] = matchedProgress.UpdatedAt
-		}
-		if stream.ViaShareLink && !stream.ShareUpdatedAt.IsZero() {
-			streamData["last_updated"] = stream.ShareUpdatedAt
+		if updatedAt, ok := dashboardProgressUpdatedAt(
+			matchedProgress,
+			heartbeatFresh,
+			stream.ShareUpdatedAt,
+			shareHeartbeatFresh,
+		); ok {
+			streamData["last_updated"] = updatedAt
 		}
 		streams = append(streams, streamData)
 	}
@@ -2431,6 +2435,25 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 		"globalVODLimit":    globalVODLimit,
 		"globalVODCurrent":  globalVODCurrent,
 	})
+}
+
+// dashboardProgressUpdatedAt returns an interpolation anchor only for a fresh
+// playback heartbeat. A stale progress row may belong to an earlier viewing
+// session; exposing that old timestamp makes the dashboard add the entire gap
+// to the resume position and can immediately display 100%.
+func dashboardProgressUpdatedAt(
+	progress *models.PlaybackProgress,
+	progressFresh bool,
+	shareUpdatedAt time.Time,
+	shareFresh bool,
+) (time.Time, bool) {
+	if shareFresh && !shareUpdatedAt.IsZero() {
+		return shareUpdatedAt, true
+	}
+	if progressFresh && progress != nil && !progress.UpdatedAt.IsZero() {
+		return progress.UpdatedAt, true
+	}
+	return time.Time{}, false
 }
 
 // mergeDashboardStreamRows collapses dashboard stream entries that represent the

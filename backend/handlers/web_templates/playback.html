@@ -1689,6 +1689,9 @@
         stopSubtitleRenderLoop();
         updateControls();
         renderSubtitles();
+        // MSE/HLS playback can emit `ended` when the currently appended media
+        // runs out even though the full title has not finished. Report the
+        // actual playhead; a genuine ending is already at the media duration.
         sendWebPlayerProgress({ force: true, isPaused: true, ended: true });
       });
       // Buffering/stall detection: surface a live "Buffering" state to the
@@ -2375,7 +2378,7 @@
       const isEnded = Boolean(options.ended);
       const isPaused = options.isPaused !== undefined ? Boolean(options.isPaused) : Boolean(video.paused);
       const isBuffering = !isPaused && !isEnded && Boolean(webPlayerBuffering);
-      let position = isEnded ? duration : progressPositionForSend(options);
+      let position = progressPositionForSend(options);
       if (!Number.isFinite(position) || position < 0) return Promise.resolve(null);
       position = Math.max(0, Math.min(position, duration));
       if (position <= 0) return Promise.resolve(null);
@@ -2419,7 +2422,7 @@
       const isEnded = Boolean(options.ended);
       const isPaused = options.isPaused !== undefined ? Boolean(options.isPaused) : Boolean(video.paused);
       const isBuffering = !isPaused && !isEnded && Boolean(webPlayerBuffering);
-      let position = isEnded ? duration : progressPositionForSend(options);
+      let position = progressPositionForSend(options);
       if (!Number.isFinite(position) || position < 0) return Promise.resolve(null);
       position = Math.max(0, Math.min(position, duration));
       if (position <= 0) return Promise.resolve(null);
@@ -2455,7 +2458,7 @@
         lastProgressPaused = isPaused;
         lastProgressBuffering = isBuffering;
         const percentWatched = Number(result?.percentWatched ?? (duration > 0 ? (position / duration) * 100 : 0));
-        if (!playbackMeta.isLive && (percentWatched >= 90 || isEnded)) {
+        if (!playbackMeta.isLive && percentWatched >= 90) {
           progressCompleted = true;
           stopProgressTracking();
         }
