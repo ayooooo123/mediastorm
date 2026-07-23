@@ -34,6 +34,8 @@ var validEvents = map[string]bool{
 	models.NotificationEventRelease:      true,
 }
 
+const trendingReleaseBaselineKey = "__baseline__:trending-releases"
+
 type delivery struct {
 	channel models.NotificationChannel
 	event   models.NotificationEvent
@@ -298,6 +300,9 @@ func (s *Service) ObserveCalendar(profileID string, items []models.CalendarItem)
 	for _, observation := range observations {
 		observationsByKey[observation.ItemKey] = observation
 	}
+	requirements := s.ReleaseRequirements(profileID)
+	trendingBaseline, hasTrendingBaseline := observationsByKey[trendingReleaseBaselineKey]
+	trendingBaselineEstablished := hasTrendingBaseline && trendingBaseline.Status == "established"
 	for _, item := range items {
 		if item.Source != "watchlist" && item.Source != "top-trending" && item.Source != "trending" {
 			continue
@@ -323,7 +328,9 @@ func (s *Service) ObserveCalendar(profileID string, items []models.CalendarItem)
 			OccurredAt:    time.Now().UTC(),
 		}
 		status := "upcoming"
-		if item.AirDate != "" && item.AirDate <= today {
+		if item.ReleaseStatus == "released" {
+			status = "released"
+		} else if item.ReleaseStatus == "" && item.AirDate != "" && item.AirDate <= today {
 			status = "released"
 		}
 		observation := &models.NotificationObservation{
@@ -338,8 +345,24 @@ func (s *Service) ObserveCalendar(profileID string, items []models.CalendarItem)
 			continue
 		}
 		observationsByKey[key] = *observation
-		if hadPrevious && previous.Status != status && status == "released" {
+		becameReleased := hadPrevious && previous.Status != status && status == "released"
+		enteredTrendingReleased := !hadPrevious && status == "released" && trendingBaselineEstablished &&
+			(item.Source == "top-trending" || item.Source == "trending")
+		if becameReleased || enteredTrendingReleased {
 			s.Notify(event)
+		}
+	}
+	if requirements.TrendingLimit > 0 && !trendingBaselineEstablished {
+		baseline := models.NotificationObservation{
+			ProfileID: profileID,
+			ItemKey:   trendingReleaseBaselineKey,
+			Status:    "established",
+			UpdatedAt: time.Now().UTC(),
+		}
+		if err := s.repo.UpsertObservation(ctx, &baseline); err != nil {
+			log.Printf("[notifications] save trending release baseline profile=%s: %v", profileID, err)
+		} else {
+			observationsByKey[trendingReleaseBaselineKey] = baseline
 		}
 	}
 
@@ -665,6 +688,13 @@ func releaseEventIdentities(event models.NotificationEvent) []string {
 	for _, identity := range identities {
 		result = append(result, strings.Join([]string{
 			event.MediaType, identity, event.ReleaseType, event.ReleaseDate,
+			strconv.Itoa(event.SeasonNumber), strconv.Itoa(event.EpisodeNumber),
+		}, "|"))
+		// Also claim a short-lived media-level identity so an availability
+		// status snapshot and its detailed calendar release cannot notify twice
+		// during the same transition.
+		result = append(result, strings.Join([]string{
+			event.MediaType, identity, "available",
 			strconv.Itoa(event.SeasonNumber), strconv.Itoa(event.EpisodeNumber),
 		}, "|"))
 	}

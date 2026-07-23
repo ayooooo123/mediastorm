@@ -1037,6 +1037,52 @@ func TestGetForHomeShelf_UsesLiteCacheNotFullCache(t *testing.T) {
 	t.Fatal("expected lite cache to populate asynchronously for home shelf")
 }
 
+func TestCollectTrendingReleaseStatusesIncludesAlreadyReleasedEntries(t *testing.T) {
+	movies := []models.TrendingItem{
+		{
+			Title: models.Title{
+				Name: "Direct Release", MediaType: "movie", Year: time.Now().Year() - 1,
+				TMDBID: 101, Status: models.MovieReleaseStatusReleased,
+			},
+		},
+		{
+			Title: models.Title{
+				Name: "Upcoming Release", MediaType: "movie", Year: time.Now().Year() + 1,
+				TMDBID: 102, Status: models.MovieReleaseStatusUpcoming,
+			},
+		},
+	}
+	series := []models.TrendingItem{
+		{
+			Title: models.Title{
+				Name: "Started Series", MediaType: "series", Year: time.Now().Year(),
+				TVDBID: 201, Status: models.SeriesReleaseStatusReleased,
+			},
+		},
+	}
+
+	items := collectTrendingReleaseStatuses(movies, series, 20, "top-trending")
+	if len(items) != 3 {
+		t.Fatalf("release status snapshots = %d, want 3", len(items))
+	}
+	statuses := make(map[string]string, len(items))
+	for _, item := range items {
+		statuses[item.Title] = item.ReleaseStatus
+		if item.ReleaseType != "availability" || item.Source != "top-trending" || item.SourceRank < 1 {
+			t.Fatalf("invalid release snapshot: %+v", item)
+		}
+	}
+	if statuses["Direct Release"] != models.MovieReleaseStatusReleased {
+		t.Fatalf("direct release status = %q", statuses["Direct Release"])
+	}
+	if statuses["Upcoming Release"] != models.MovieReleaseStatusUpcoming {
+		t.Fatalf("upcoming release status = %q", statuses["Upcoming Release"])
+	}
+	if statuses["Started Series"] != models.SeriesReleaseStatusReleased {
+		t.Fatalf("started series status = %q", statuses["Started Series"])
+	}
+}
+
 func TestGetForHomeShelf_ReturnsRecentlyAiredWindowFromLiteCache(t *testing.T) {
 	meta, wl, hist, us, users := defaultMocks()
 	meta.series[100] = &models.SeriesDetails{

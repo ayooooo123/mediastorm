@@ -234,6 +234,10 @@ func TestReleaseDeliveryDeduplicatesOverlappingSources(t *testing.T) {
 	base.ID = "trending-tmdb-only"
 	base.ExternalIDs = map[string]string{"tmdb": "1"}
 	service.Notify(base)
+	base.ID = "trending-availability"
+	base.ReleaseType = "availability"
+	base.ReleaseDate = ""
+	service.Notify(base)
 
 	select {
 	case <-received:
@@ -453,5 +457,71 @@ func TestObserveCalendarReleasesDurableDueObservation(t *testing.T) {
 	observation := repo.observations[observationID("profile", "due")]
 	if observation.Status != "released" {
 		t.Fatalf("status = %q", observation.Status)
+	}
+}
+
+func TestObserveCalendarNotifiesWhenReleasedItemEntersTrendingAfterBaseline(t *testing.T) {
+	received := make(chan models.NotificationEvent, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Data models.NotificationEvent `json:"data"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		received <- payload.Data
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	repo := newMemoryRepo()
+	repo.channels["channel"] = models.NotificationChannel{
+		ID: "channel", ProfileID: "profile", Type: models.NotificationChannelWebhook,
+		URL: server.URL, Enabled: true, Events: []string{models.NotificationEventRelease},
+		NotifyTrending: true, TrendingLimit: 20,
+		TitleTemplate: defaultTitleTemplate, BodyTemplate: defaultBodyTemplate,
+	}
+	service := New(repo)
+	defer service.Close()
+
+	existing := models.CalendarItem{
+		Title: "Existing Release", MediaType: "movie", Year: 2026,
+		ReleaseType: "availability", ReleaseStatus: "released",
+		Source: "top-trending", SourceRank: 1,
+		ExternalIDs: map[string]string{"tmdb": "1"},
+	}
+	service.ObserveCalendar("profile", []models.CalendarItem{existing})
+	select {
+	case event := <-received:
+		t.Fatalf("initial trending baseline emitted %q", event.Title)
+	case <-time.After(100 * time.Millisecond):
+	}
+	baseline := repo.observations[observationID("profile", trendingReleaseBaselineKey)]
+	if baseline.Status != "established" {
+		t.Fatalf("trending baseline status = %q", baseline.Status)
+	}
+
+	newRelease := models.CalendarItem{
+		Title: "Direct-to-Streaming Release", MediaType: "movie", Year: 2026,
+		ReleaseType: "availability", ReleaseStatus: "released",
+		Source: "top-trending", SourceRank: 2,
+		ExternalIDs: map[string]string{"tmdb": "2"},
+	}
+	service.ObserveCalendar("profile", []models.CalendarItem{existing, newRelease})
+	select {
+	case event := <-received:
+		if event.Title != newRelease.Title {
+			t.Fatalf("released trending event = %q, want %q", event.Title, newRelease.Title)
+		}
+		if event.Source != "top-trending" || event.SourceRank != 2 {
+			t.Fatalf("released trending source = %q rank %d", event.Source, event.SourceRank)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for newly entered released trending item")
+	}
+
+	service.ObserveCalendar("profile", []models.CalendarItem{existing, newRelease})
+	select {
+	case event := <-received:
+		t.Fatalf("unchanged trending snapshot emitted duplicate %q", event.Title)
+	case <-time.After(100 * time.Millisecond):
 	}
 }
