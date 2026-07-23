@@ -2212,6 +2212,19 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 				percent = session.SharePercent
 				duration = session.ShareDuration
 			}
+			// HLS keepalives are the live playback source of truth. History and
+			// share progress remain useful as fallback metadata for older clients.
+			playbackStatePresent := !session.PlaybackUpdatedAt.IsZero()
+			playbackStateFresh := playbackStatePresent && now.Sub(session.PlaybackUpdatedAt) <= heartbeatEndedThreshold
+			if playbackStatePresent {
+				position = session.PlaybackPosition
+				if session.Duration > 0 {
+					duration = session.Duration
+				}
+				if duration > 0 {
+					percent = (position / duration) * 100
+				}
+			}
 
 			hlsStreamData := map[string]interface{}{
 				"id":               session.ID,
@@ -2252,7 +2265,13 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 			// interpolation instead of freezing at the last reported position.
 			shareHeartbeatFresh := session.ViaShareLink && !session.ShareUpdatedAt.IsZero() && now.Sub(session.ShareUpdatedAt) <= heartbeatEndedThreshold
 			heartbeatFresh := matchedProgress != nil && now.Sub(matchedProgress.UpdatedAt) <= heartbeatEndedThreshold
-			if heartbeatFresh {
+			if playbackStateFresh {
+				if session.PlaybackPaused || session.PlaybackEnded {
+					hlsStreamData["is_paused"] = true
+				} else if session.PlaybackBuffering {
+					hlsStreamData["is_buffering"] = true
+				}
+			} else if heartbeatFresh {
 				if matchedProgress.IsPaused {
 					hlsStreamData["is_paused"] = true
 				} else if matchedProgress.IsBuffering {
@@ -2274,13 +2293,17 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 					hlsStreamData["is_paused"] = true
 				}
 			}
-			if updatedAt, ok := dashboardProgressUpdatedAt(
-				matchedProgress,
-				heartbeatFresh,
-				session.ShareUpdatedAt,
-				shareHeartbeatFresh,
-			); ok {
-				hlsStreamData["last_updated"] = updatedAt
+			if playbackStateFresh {
+				hlsStreamData["last_updated"] = session.PlaybackUpdatedAt
+			} else {
+				if updatedAt, ok := dashboardProgressUpdatedAt(
+					matchedProgress,
+					heartbeatFresh,
+					session.ShareUpdatedAt,
+					shareHeartbeatFresh,
+				); ok {
+					hlsStreamData["last_updated"] = updatedAt
+				}
 			}
 			streams = append(streams, hlsStreamData)
 			session.mu.RUnlock()

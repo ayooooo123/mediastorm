@@ -746,7 +746,7 @@ func main() {
 	videoHandler.SetLocalBaseURL(localBaseURL)
 	videoHandler.GetHLSManager().SetPlaybackActivityObserver(notificationService)
 	handlers.GetStreamTracker().SetPlaybackActivityObserver(notificationService)
-	historyHandler.SetActivePlaybackTrackers(videoHandler.GetHLSManager(), handlers.GetStreamTracker())
+	historyHandler.SetActivePlaybackTrackers(handlers.GetStreamTracker())
 
 	if videoHandler != nil && settings.WebDAV.Enabled {
 		videoHandler.ConfigureLocalWebDAVAccess(localBaseURL, settings.WebDAV.Prefix, settings.WebDAV.Username, settings.WebDAV.Password)

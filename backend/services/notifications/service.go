@@ -228,11 +228,10 @@ func (s *Service) HandlePlaybackUpdate(userID string, update models.PlaybackProg
 		state = playbackSession{}
 	}
 	var eventTypes []string
-	if !state.seen {
+	if active && !state.seen {
 		eventTypes = append(eventTypes, models.NotificationEventWatchStarted)
 		state.seen = true
-	}
-	if active && state.paused {
+	} else if active && state.paused {
 		eventTypes = append(eventTypes, models.NotificationEventWatchResumed)
 	}
 	if percent >= 90 && !state.watched {

@@ -376,6 +376,14 @@ type HLSSession struct {
 	SharePaused    bool
 	ShareBuffering bool
 
+	// Live player state reported by HLS keepalives. This is the authoritative
+	// source shared by Active Streams and playback notifications.
+	PlaybackPosition  float64
+	PlaybackUpdatedAt time.Time
+	PlaybackPaused    bool
+	PlaybackBuffering bool
+	PlaybackEnded     bool
+
 	// Track selection (-1 means use default)
 	AudioTrackIndex    int // Selected audio stream index (ffprobe index), -1 = all/default
 	SubtitleTrackIndex int // Selected subtitle track index, -1 = none
@@ -824,68 +832,6 @@ func (m *HLSManager) SetPlaybackActivityObserver(observer PlaybackActivityObserv
 	m.mu.Lock()
 	m.playbackObserver = observer
 	m.mu.Unlock()
-}
-
-// ObservePlaybackActivity matches a player heartbeat to the most recently
-// active HLS session before forwarding it to the notification observer.
-func (m *HLSManager) ObservePlaybackActivity(userID string, update models.PlaybackProgressUpdate, percentWatched float64) int {
-	if m == nil {
-		return 0
-	}
-	target := streamMediaIdentity(StreamMediaMetadata{
-		MediaType:     update.MediaType,
-		ItemID:        update.ItemID,
-		SeasonNumber:  update.SeasonNumber,
-		EpisodeNumber: update.EpisodeNumber,
-		SeriesID:      update.SeriesID,
-		ExternalIDs:   update.ExternalIDs,
-	})
-	if target.MediaType == "" || target.ID == "" {
-		return 0
-	}
-	targetKeys := make(map[string]struct{}, len(target.CandidateKeys)+1)
-	targetKeys[target.Key] = struct{}{}
-	for _, key := range target.CandidateKeys {
-		targetKeys[key] = struct{}{}
-	}
-
-	m.mu.RLock()
-	observer := m.playbackObserver
-	candidates := make([]*HLSSession, 0, len(m.sessions))
-	for _, session := range m.sessions {
-		candidates = append(candidates, session)
-	}
-	m.mu.RUnlock()
-	if observer == nil {
-		return 0
-	}
-
-	var best *HLSSession
-	var bestActivity time.Time
-	for _, session := range candidates {
-		session.mu.RLock()
-		matches := (userID == "" || session.ProfileID == "" || session.ProfileID == userID) &&
-			streamMetadataMatchesIdentity(session.MediaMetadata, target, targetKeys)
-		activity := session.LastSegmentRequest
-		session.mu.RUnlock()
-		if matches && (best == nil || activity.After(bestActivity)) {
-			best = session
-			bestActivity = activity
-		}
-	}
-	if best == nil {
-		return 0
-	}
-
-	best.mu.RLock()
-	update.PlaybackSessionID = "hls:" + best.ID
-	update = enrichPlaybackUpdateFromStream(update, best.MediaMetadata)
-	if update.Duration <= 0 {
-		update.Duration = best.Duration
-	}
-	best.mu.RUnlock()
-	go observer.HandlePlaybackUpdate(userID, update, percentWatched)
-	return 1
 }
 
 // UpdateSharePlaybackProgress records live dashboard-only progress for
@@ -3859,12 +3805,19 @@ func (m *HLSManager) KeepAlive(w http.ResponseWriter, r *http.Request, sessionID
 		return
 	}
 
+	now := time.Now()
 	session.mu.Lock()
-	session.LastSegmentRequest = time.Now()
+	session.LastSegmentRequest = now
+	playbackPosition := session.PlaybackPosition
+	hasPlaybackPosition := false
 
 	// If frontend reports playback time, use it to update playback tracking for rate limiting and cleanup
 	if timeStr := r.URL.Query().Get("time"); timeStr != "" {
 		if playbackTime, err := strconv.ParseFloat(timeStr, 64); err == nil && playbackTime >= 0 {
+			playbackPosition = playbackTime
+			hasPlaybackPosition = true
+			session.PlaybackPosition = playbackTime
+			session.PlaybackUpdatedAt = now
 			// For warm starts, the frontend reports absolute media time but HLS segments start from 0
 			// Adjust for StartOffset to get the actual HLS segment number
 			hlsTime := playbackTime - session.StartOffset
@@ -3883,6 +3836,18 @@ func (m *HLSManager) KeepAlive(w http.ResponseWriter, r *http.Request, sessionID
 				session.LastPlaybackSegment = segmentNum
 			}
 		}
+	}
+	if paused, ok := parseOptionalBoolQuery(r, "paused"); ok {
+		session.PlaybackPaused = paused
+		session.PlaybackUpdatedAt = now
+	}
+	if buffering, ok := parseOptionalBoolQuery(r, "buffering"); ok {
+		session.PlaybackBuffering = buffering
+		session.PlaybackUpdatedAt = now
+	}
+	if ended, ok := parseOptionalBoolQuery(r, "ended"); ok {
+		session.PlaybackEnded = ended
+		session.PlaybackUpdatedAt = now
 	}
 
 	// If frontend reports buffer start time, use it for safe segment cleanup
@@ -3904,7 +3869,36 @@ func (m *HLSManager) KeepAlive(w http.ResponseWriter, r *http.Request, sessionID
 	actualStartOffset := session.ActualStartOffset
 	keyframeDelta := actualStartOffset - startOffset
 	duration := session.Duration
+	profileID := session.ProfileID
+	metadata := session.MediaMetadata
+	paused := session.PlaybackPaused
+	buffering := session.PlaybackBuffering
+	ended := session.PlaybackEnded
 	session.mu.Unlock()
+
+	if hasPlaybackPosition {
+		m.mu.RLock()
+		observer := m.playbackObserver
+		m.mu.RUnlock()
+		if observer != nil && metadata.MediaType != "live" {
+			update := enrichPlaybackUpdateFromStream(models.PlaybackProgressUpdate{
+				MediaType:         metadata.MediaType,
+				ItemID:            metadata.ItemID,
+				Position:          playbackPosition,
+				Duration:          duration,
+				Timestamp:         now,
+				IsPaused:          paused,
+				IsBuffering:       buffering,
+				PlaybackEnded:     ended,
+				PlaybackSessionID: "hls:" + sessionID,
+			}, metadata)
+			percent := 0.0
+			if duration > 0 {
+				percent = (playbackPosition / duration) * 100
+			}
+			go observer.HandlePlaybackUpdate(profileID, update, percent)
+		}
+	}
 
 	log.Printf("[hls] session %s: keepalive received, extended idle timeout", sessionID)
 
@@ -3932,6 +3926,18 @@ func (m *HLSManager) KeepAlive(w http.ResponseWriter, r *http.Request, sessionID
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(response)
+}
+
+func parseOptionalBoolQuery(r *http.Request, key string) (bool, bool) {
+	raw := strings.TrimSpace(r.URL.Query().Get(key))
+	if raw == "" {
+		return false, false
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, false
+	}
+	return value, true
 }
 
 // SeekResponse contains the response data for a seek request

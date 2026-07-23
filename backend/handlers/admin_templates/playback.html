@@ -3623,11 +3623,13 @@
             if (video.paused || webPlayerVideoBuffering) return;
             webPlayerVideoBuffering = true;
             sendWebPlayerProgress({ force: true });
+            sendWebPlayerHLSState();
         };
         const clearWebPlayerBuffering = () => {
             if (!webPlayerVideoBuffering) return;
             webPlayerVideoBuffering = false;
             sendWebPlayerProgress({ force: true });
+            sendWebPlayerHLSState();
         };
         video.addEventListener('waiting', markWebPlayerBuffering);
         video.addEventListener('stalled', markWebPlayerBuffering);
@@ -3651,12 +3653,14 @@
             renderWebPlayerSubtitles();
             showWebPlayerControls();
             sendWebPlayerProgress({ force: true, isPaused: false });
+            sendWebPlayerHLSState({ paused: false });
         });
         video.addEventListener('pause', () => {
             updateWebPlayerControls();
             renderWebPlayerSubtitles();
             showWebPlayerControls();
             sendWebPlayerProgress({ force: true, isPaused: true });
+            sendWebPlayerHLSState({ paused: true });
         });
         video.addEventListener('ended', () => {
             updateWebPlayerControls();
@@ -3666,6 +3670,7 @@
             // media runs out before the title does. Retain the actual playhead
             // instead of manufacturing 100% progress.
             sendWebPlayerProgress({ force: true, isPaused: true, ended: true });
+            sendWebPlayerHLSState({ paused: true });
         });
         video.addEventListener('seeked', renderWebPlayerSubtitles);
         video.addEventListener('loadedmetadata', renderWebPlayerSubtitles);
@@ -4740,15 +4745,31 @@
     async function refreshWebPlayerActualStartOffset(reason) {
         if (!hlsSessionId || webPlayerSeekInProgress) return;
         try {
-            const currentTime = currentWebPlayerAbsoluteTime();
-            const response = await fetch(apiUrl(`/api/video/hls/${encodeURIComponent(hlsSessionId)}/keepalive?time=${currentTime.toFixed(2)}`), {
-                method: 'POST',
-                credentials: 'same-origin',
-            });
-            if (!response.ok) return;
-            const data = await response.json().catch(() => null);
+            const data = await sendWebPlayerHLSState();
             applyWebPlayerActualStartOffsetCorrection(data, reason);
         } catch {}
+    }
+
+    async function sendWebPlayerHLSState(options = {}) {
+        if (!hlsSessionId) return null;
+        try {
+            const video = document.getElementById('webPlayer');
+            const params = new URLSearchParams({
+                time: currentWebPlayerAbsoluteTime().toFixed(2),
+                paused: String(options.paused ?? Boolean(video?.paused)),
+                buffering: String(options.buffering ?? Boolean(webPlayerVideoBuffering)),
+                ended: String(Boolean(options.ended)),
+            });
+            const response = await fetch(apiUrl(`/api/video/hls/${encodeURIComponent(hlsSessionId)}/keepalive?${params}`), {
+                method: 'POST',
+                credentials: 'same-origin',
+                keepalive: Boolean(options.keepalive),
+            });
+            if (!response.ok) return null;
+            return response.json().catch(() => null);
+        } catch {
+            return null;
+        }
     }
 
     function applyWebPlayerActualStartOffsetCorrection(data, reason) {
@@ -5244,12 +5265,7 @@
         if (keepaliveTimer) clearInterval(keepaliveTimer);
         keepaliveTimer = setInterval(() => {
             if (!hlsSessionId) return;
-            const currentTime = currentWebPlayerAbsoluteTime();
-            fetch(apiUrl(`/api/video/hls/${encodeURIComponent(hlsSessionId)}/keepalive?time=${currentTime.toFixed(2)}`), {
-                method: 'POST',
-                credentials: 'same-origin',
-            })
-                .then((response) => response.ok ? response.json().catch(() => null) : null)
+            sendWebPlayerHLSState()
                 .then((data) => {
                     applyWebPlayerActualStartOffsetCorrection(data, 'keepalive');
                 })
