@@ -994,6 +994,13 @@ func TestStopHLSSession_CleanupRemovesSession(t *testing.T) {
 		t.Error("session should be removed after cleanup")
 	}
 
+	session.mu.RLock()
+	stopped := session.Stopped
+	session.mu.RUnlock()
+	if !stopped {
+		t.Error("session should be marked stopped to prevent recovery restart")
+	}
+
 	// Verify output directory is removed
 	if _, err := os.Stat(outputDir); !os.IsNotExist(err) {
 		t.Error("output directory should be removed after cleanup")

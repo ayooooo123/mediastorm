@@ -37,6 +37,9 @@ func TestBuildVideoEncodePlanCPUTonemap(t *testing.T) {
 	if !strings.HasSuffix(plan.Filter, "format=yuv420p") {
 		t.Fatalf("tonemap output should be yuv420p, got %q", plan.Filter)
 	}
+	if !strings.HasPrefix(plan.Filter, "setparams=range=tv:color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc,") {
+		t.Fatalf("tone map must normalize missing HDR input metadata before zscale, got %q", plan.Filter)
+	}
 }
 
 func TestBuildVideoEncodePlanTonemapWithoutSupportFallsBack(t *testing.T) {
@@ -142,6 +145,48 @@ func TestDetectHWAccelMissingBinary(t *testing.T) {
 	caps := detectHWAccel("", "auto")
 	if caps.Encode != HWNone {
 		t.Fatalf("missing ffmpeg must yield HWNone, got %v", caps.Encode)
+	}
+}
+
+func TestSoftwareVulkanForcedByEnvironment(t *testing.T) {
+	t.Run("lavapipe ICD", func(t *testing.T) {
+		t.Setenv("VK_ICD_FILENAMES", "/usr/share/vulkan/icd.d/lavapipe_icd.json")
+		t.Setenv("LIBGL_ALWAYS_SOFTWARE", "")
+		if !softwareVulkanForcedByEnvironment() {
+			t.Fatal("expected Lavapipe ICD to be treated as software Vulkan")
+		}
+	})
+
+	t.Run("lvp ICD", func(t *testing.T) {
+		t.Setenv("VK_ICD_FILENAMES", "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json")
+		t.Setenv("LIBGL_ALWAYS_SOFTWARE", "")
+		if !softwareVulkanForcedByEnvironment() {
+			t.Fatal("expected lvp ICD to be treated as software Vulkan")
+		}
+	})
+
+	t.Run("hardware ICD", func(t *testing.T) {
+		t.Setenv("VK_ICD_FILENAMES", "/usr/share/vulkan/icd.d/nvidia_icd.json")
+		t.Setenv("LIBGL_ALWAYS_SOFTWARE", "")
+		if softwareVulkanForcedByEnvironment() {
+			t.Fatal("hardware ICD must not be treated as software Vulkan")
+		}
+	})
+}
+
+func TestVulkanProbeUsesSoftwareRenderer(t *testing.T) {
+	for _, output := range []string{
+		"Device 0: llvmpipe (LLVM 15.0.6, 256 bits)",
+		"selected device: lavapipe",
+		"renderer: Software Rasterizer",
+		"device type: CPU",
+	} {
+		if !vulkanProbeUsesSoftwareRenderer(output) {
+			t.Fatalf("expected software renderer detection for %q", output)
+		}
+	}
+	if vulkanProbeUsesSoftwareRenderer("Device 0: NVIDIA GeForce RTX 4070, device type: discrete") {
+		t.Fatal("hardware Vulkan renderer must remain eligible")
 	}
 }
 
