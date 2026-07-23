@@ -10,6 +10,13 @@ import (
 	"novastream/config"
 )
 
+func TestNotificationsTemplateLoads(t *testing.T) {
+	handler := NewAdminUIHandler("", "", nil, nil, nil, nil)
+	if handler.notificationsTemplate == nil {
+		t.Fatal("notifications template failed to load")
+	}
+}
+
 func TestAdminSettingsSaveCommitsPendingTextArrayInputs(t *testing.T) {
 	templateBytes, err := adminTemplates.ReadFile("admin_templates/settings.html")
 	if err != nil {

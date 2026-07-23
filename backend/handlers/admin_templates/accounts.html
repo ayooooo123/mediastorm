@@ -305,6 +305,7 @@ function renderProfiles() {
                 <div class="profile-actions">
                     <button class="btn btn-secondary btn-sm" onclick="showEditProfileModal('${p.id}')">Edit</button>
                     <a class="btn btn-secondary btn-sm" href="${basePath}/settings?profileId=${p.id}">Settings</a>
+                    <a class="btn btn-secondary btn-sm" href="${basePath}/notifications?profileId=${p.id}">Notifications</a>
                     ${isAdmin ? `<button class="btn btn-secondary btn-sm" onclick="showProfileStreamsModal('${p.id}', '${escapeHtml(p.name)}', '${p.accountId}')">Streams</button>` : ''}
                     ${isAdmin ? `<button class="btn ${p.allowShareLinks ? 'btn-primary' : 'btn-secondary'} btn-sm" onclick="toggleProfileShareLinks('${p.id}', '${escapeHtml(p.name)}', ${p.allowShareLinks ? 'true' : 'false'})">Share Links: ${p.allowShareLinks ? '✓ On' : 'Off'}</button>` : ''}
                     ${isAdmin ? `<button class="btn btn-secondary btn-sm" onclick="showReassignModal('${p.id}')">Reassign</button>` : ''}

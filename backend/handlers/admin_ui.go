@@ -49,6 +49,7 @@ import (
 	"novastream/services/invitations"
 	"novastream/services/localmedia"
 	"novastream/services/metadata"
+	"novastream/services/notifications"
 	"novastream/services/plex"
 	"novastream/services/remoteaccess"
 	"novastream/services/remotemedia"
@@ -1415,6 +1416,7 @@ type AdminUIHandler struct {
 	prequeueTemplate      *template.Template
 	recordingsTemplate    *template.Template
 	onboardingTemplate    *template.Template
+	notificationsTemplate *template.Template
 	settingsPath          string
 	logFile               string
 	hlsManager            *HLSManager
@@ -1440,6 +1442,7 @@ type AdminUIHandler struct {
 	clientSettingsService clientSettingsService
 	logsHandler           *LogsHandler
 	resolvedNZBService    resolvedNZBService
+	notificationService   *notifications.Service
 	serverBasePath        string // server-level base path from config (e.g. "/mediastorm")
 }
 
@@ -1539,6 +1542,10 @@ func (h *AdminUIHandler) SetResolvedNZBService(svc resolvedNZBService) {
 // SetCalendarService sets the calendar service for the calendar admin page
 func (h *AdminUIHandler) SetCalendarService(cs *calendar.Service) {
 	h.calendarService = cs
+}
+
+func (h *AdminUIHandler) SetNotificationService(service *notifications.Service) {
+	h.notificationService = service
 }
 
 // NewAdminUIHandler creates a new admin UI handler
@@ -1702,38 +1709,39 @@ func NewAdminUIHandler(settingsPath, logFile string, hlsManager *HLSManager, use
 	}
 
 	return &AdminUIHandler{
-		settingsTemplate:     createPageTemplate("settings.html"),
-		statusTemplate:       createPageTemplate("status.html"),
-		historyTemplate:      createPageTemplate("history.html"),
-		toolsTemplate:        createPageTemplate("tools.html"),
-		hiddenItemsTemplate:  createPageTemplate("hidden_items.html"),
-		resolvedNZBTemplate:  createPageTemplate("resolved_nzbs.html"),
-		badStreamsTemplate:   createPageTemplate("bad_streams.html"),
-		shareLinksTemplate:   createPageTemplate("share_links.html"),
-		searchTemplate:       createPageTemplate("search.html"),
-		playbackTemplate:     createPageTemplate("playback.html"),
-		loginTemplate:        loginTmpl,
-		registerTemplate:     registerTmpl,
-		accountsTemplate:     createPageTemplate("accounts.html"),
-		libraryTemplate:      createPageTemplate("library.html"),
-		kidsSettingsTemplate: createPageTemplate("kids_settings.html"),
-		backupTemplate:       createPageTemplate("backup.html"),
-		calendarTemplate:     createPageTemplate("calendar.html"),
-		performanceTemplate:  createPageTemplate("performance.html"),
-		logsTemplate:         createPageTemplate("logs.html"),
-		connectionsTemplate:  createPageTemplate("connections.html"),
-		prequeueTemplate:     createPageTemplate("prequeue.html"),
-		recordingsTemplate:   createPageTemplate("recordings.html"),
-		onboardingTemplate:   createPageTemplate("onboarding.html"),
-		settingsPath:         settingsPath,
-		logFile:              logFile,
-		hlsManager:           hlsManager,
-		usersService:         usersService,
-		userSettingsService:  userSettingsService,
-		configManager:        configManager,
-		plexClient:           plex.NewClient(plex.GenerateClientID()),
-		traktClient:          trakt.NewClient("", ""), // Will be updated with credentials from settings
-		serverBasePath:       serverBasePath,
+		settingsTemplate:      createPageTemplate("settings.html"),
+		statusTemplate:        createPageTemplate("status.html"),
+		historyTemplate:       createPageTemplate("history.html"),
+		toolsTemplate:         createPageTemplate("tools.html"),
+		hiddenItemsTemplate:   createPageTemplate("hidden_items.html"),
+		resolvedNZBTemplate:   createPageTemplate("resolved_nzbs.html"),
+		badStreamsTemplate:    createPageTemplate("bad_streams.html"),
+		shareLinksTemplate:    createPageTemplate("share_links.html"),
+		searchTemplate:        createPageTemplate("search.html"),
+		playbackTemplate:      createPageTemplate("playback.html"),
+		loginTemplate:         loginTmpl,
+		registerTemplate:      registerTmpl,
+		accountsTemplate:      createPageTemplate("accounts.html"),
+		libraryTemplate:       createPageTemplate("library.html"),
+		kidsSettingsTemplate:  createPageTemplate("kids_settings.html"),
+		backupTemplate:        createPageTemplate("backup.html"),
+		calendarTemplate:      createPageTemplate("calendar.html"),
+		performanceTemplate:   createPageTemplate("performance.html"),
+		logsTemplate:          createPageTemplate("logs.html"),
+		connectionsTemplate:   createPageTemplate("connections.html"),
+		prequeueTemplate:      createPageTemplate("prequeue.html"),
+		recordingsTemplate:    createPageTemplate("recordings.html"),
+		onboardingTemplate:    createPageTemplate("onboarding.html"),
+		notificationsTemplate: createPageTemplate("notifications.html"),
+		settingsPath:          settingsPath,
+		logFile:               logFile,
+		hlsManager:            hlsManager,
+		usersService:          usersService,
+		userSettingsService:   userSettingsService,
+		configManager:         configManager,
+		plexClient:            plex.NewClient(plex.GenerateClientID()),
+		traktClient:           trakt.NewClient("", ""), // Will be updated with credentials from settings
+		serverBasePath:        serverBasePath,
 	}
 }
 

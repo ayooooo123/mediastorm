@@ -389,6 +389,9 @@ func TestBuildUserCalendar_TrendingMovies(t *testing.T) {
 	if items[0].Source != "top-trending" {
 		t.Errorf("expected source 'top-trending', got %q", items[0].Source)
 	}
+	if items[0].SourceRank != 1 {
+		t.Errorf("expected source rank 1, got %d", items[0].SourceRank)
+	}
 	if items[0].ReleaseType != "theatrical" {
 		t.Errorf("expected releaseType 'theatrical', got %q", items[0].ReleaseType)
 	}
@@ -421,6 +424,9 @@ func TestBuildUserCalendar_TrendingSeries(t *testing.T) {
 	}
 	if items[0].Source != "top-trending" {
 		t.Errorf("expected source 'top-trending', got %q", items[0].Source)
+	}
+	if items[0].SourceRank != 1 {
+		t.Errorf("expected source rank 1, got %d", items[0].SourceRank)
 	}
 	if items[0].EpisodeTitle != "New Ep" {
 		t.Errorf("expected episode title 'New Ep', got %q", items[0].EpisodeTitle)

@@ -1,0 +1,434 @@
+{{define "notifications"}}
+{{template "base" .}}
+{{end}}
+
+{{define "title"}}Notifications - mediastorm{{end}}
+
+{{define "content"}}
+<div class="page-header">
+    <div>
+        <h1>Notifications</h1>
+        <p>Configure notification destinations for <strong>{{.Profile.Name}}</strong>.</p>
+    </div>
+</div>
+
+<div style="margin-bottom: 1rem;">
+    <a class="btn btn-secondary btn-sm" href="{{.BasePath}}/accounts">← Back to Profiles</a>
+</div>
+
+<div class="card" style="margin-bottom: 1.5rem;">
+    <div class="card-header">
+        <h2 id="form-title">Add destination</h2>
+    </div>
+    <div class="card-body">
+        <form id="notification-form" onsubmit="saveChannel(event)">
+            <input type="hidden" id="channel-id">
+            <div class="form-grid">
+                <div class="form-group">
+                    <label class="form-label" for="channel-name">Name</label>
+                    <input class="form-input" id="channel-name" required placeholder="Family Discord">
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="channel-type">Service</label>
+                    <select class="form-input" id="channel-type">
+                        <option value="discord">Discord webhook</option>
+                        <option value="webhook">Generic webhook</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label" for="channel-url">Webhook URL</label>
+                <input class="form-input" id="channel-url" type="url" placeholder="https://..." autocomplete="off">
+                <div id="url-help" class="form-help">Required for new destinations. Leave blank while editing to retain the existing URL.</div>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Notification events</label>
+                <div class="choice-grid">
+                    <label class="choice-card">
+                        <input type="radio" name="notification-category" value="watch" checked onchange="updateCategoryVisibility()">
+                        <span><strong>Watch Status</strong><small>Notify when playback starts, plays, resumes, or is watched.</small></span>
+                    </label>
+                    <label class="choice-card">
+                        <input type="radio" name="notification-category" value="release" onchange="updateCategoryVisibility()">
+                        <span><strong>Release Status</strong><small>Notify when watchlist or trending content becomes available.</small></span>
+                    </label>
+                </div>
+            </div>
+
+            <div id="watch-settings" class="form-group">
+                <label class="form-label">Watch status events</label>
+                <div class="checkbox-grid">
+                    <label><input type="checkbox" name="watch-event" value="watch.started"> Start</label>
+                    <label><input type="checkbox" name="watch-event" value="watch.playing"> Play</label>
+                    <label><input type="checkbox" name="watch-event" value="watch.resumed"> Resume</label>
+                    <label><input type="checkbox" name="watch-event" value="watch.watched"> Watched</label>
+                </div>
+                <div class="form-help">Start is the first heartbeat in a session. Play is the first actively-playing heartbeat. Resume is emitted after pause or buffering.</div>
+            </div>
+
+            <div id="release-settings" class="form-grid" hidden>
+                <div class="form-group">
+                    <label class="form-label">Release sources</label>
+                    <label class="check-row"><input type="checkbox" id="notify-watchlist" checked onchange="updateTrendingVisibility()"> Watchlist</label>
+                    <label class="check-row"><input type="checkbox" id="notify-trending" onchange="updateTrendingVisibility()"> Trending</label>
+                </div>
+                <div class="form-group" id="trending-settings" hidden>
+                    <label class="form-label" for="trending-limit">Top trending items</label>
+                    <input class="form-input" id="trending-limit" type="number" min="1" max="100" value="20">
+                    <div class="form-help">Applied independently to trending movies and shows.</div>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="check-row"><input type="checkbox" id="include-poster" checked> Include item poster when available</label>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label" for="title-template">Title template</label>
+                <input class="form-input" id="title-template" value="{{"{{"}}eventLabel{{"}}"}}: {{"{{"}}title{{"}}"}}">
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="body-template">Body template</label>
+                <textarea class="form-input" id="body-template" rows="3">{{"{{"}}mediaLabel{{"}}"}}{{"{{"}}progressLabel{{"}}"}}{{"{{"}}releaseLabel{{"}}"}}</textarea>
+                <div class="form-help template-help">
+                    Available: <code>{{"{{"}}eventLabel{{"}}"}}</code>, <code>{{"{{"}}title{{"}}"}}</code>,
+                    <code>{{"{{"}}year{{"}}"}}</code>, <code>{{"{{"}}mediaLabel{{"}}"}}</code>,
+                    <code>{{"{{"}}episode{{"}}"}}</code><span id="watch-template-fields">,
+                    <code>{{"{{"}}percent{{"}}"}}</code></span><span id="release-template-fields" hidden>,
+                    <code>{{"{{"}}releaseType{{"}}"}}</code>, <code>{{"{{"}}releaseDate{{"}}"}}</code>,
+                    <code>{{"{{"}}source{{"}}"}}</code>, <code>{{"{{"}}rank{{"}}"}}</code></span>.
+                </div>
+                <div class="notification-preview" aria-live="polite">
+                    <div class="preview-label" id="preview-label">Preview</div>
+                    <div class="preview-content">
+                        <div class="preview-poster" id="preview-poster">Poster</div>
+                        <div class="preview-copy">
+                            <div class="preview-title" id="preview-title"></div>
+                            <div class="preview-body" id="preview-body"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+                <button class="btn btn-primary" type="submit">Save destination</button>
+                <button class="btn btn-secondary" id="cancel-edit" type="button" onclick="resetForm()" style="display:none;">Cancel edit</button>
+                <label class="check-row" style="margin-left: auto;"><input type="checkbox" id="channel-enabled" checked> Enabled</label>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header"><h2>Destinations</h2></div>
+    <div class="card-body" id="channels-list">
+        <div class="spinner"></div>
+    </div>
+</div>
+
+<style>
+[hidden] { display: none !important; }
+.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.checkbox-grid { display: flex; flex-wrap: wrap; gap: 0.75rem 1.25rem; }
+.checkbox-grid label, .check-row { display: inline-flex; align-items: center; gap: 0.4rem; color: var(--text-secondary); }
+.choice-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; }
+.choice-card { display: flex; align-items: flex-start; gap: 0.65rem; padding: 0.85rem; border: 1px solid var(--border); border-radius: 0.5rem; cursor: pointer; }
+.choice-card:has(input:checked) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.choice-card input { margin-top: 0.2rem; }
+.choice-card span { display: flex; flex-direction: column; gap: 0.25rem; }
+.choice-card small { color: var(--text-muted); line-height: 1.35; }
+.form-help { color: var(--text-muted); font-size: 0.78rem; margin-top: 0.35rem; }
+.template-help code { color: var(--accent); }
+.notification-preview { margin-top: 0.9rem; padding: 0.9rem; border: 1px solid var(--border); border-radius: 0.5rem; background: var(--bg-tertiary); }
+.preview-label { color: var(--text-muted); font-size: 0.72rem; font-weight: 600; letter-spacing: 0.04em; margin-bottom: 0.65rem; text-transform: uppercase; }
+.preview-content { display: flex; gap: 0.85rem; align-items: flex-start; }
+.preview-poster { display: flex; width: 52px; aspect-ratio: 2 / 3; flex: 0 0 auto; align-items: center; justify-content: center; border-radius: 0.3rem; background: var(--border); color: var(--text-muted); font-size: 0.65rem; }
+.preview-copy { min-width: 0; padding-top: 0.15rem; }
+.preview-title { color: var(--text-primary); font-weight: 600; overflow-wrap: anywhere; }
+.preview-body { color: var(--text-secondary); font-size: 0.85rem; line-height: 1.45; margin-top: 0.3rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.notification-row { display: flex; gap: 1rem; align-items: flex-start; padding: 1rem 0; border-bottom: 1px solid var(--border); }
+.notification-row:last-child { border-bottom: 0; }
+.notification-main { flex: 1; min-width: 0; }
+.notification-title { font-weight: 600; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+.notification-meta { color: var(--text-muted); font-size: 0.8rem; margin-top: 0.35rem; overflow-wrap: anywhere; }
+.notification-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+@media (max-width: 700px) {
+    .form-grid, .choice-grid { grid-template-columns: 1fr; }
+    .notification-row { flex-direction: column; }
+    .notification-actions { width: 100%; }
+}
+</style>
+
+<script>
+const profileId = {{json .Profile.ID}};
+const basePath = {{json .BasePath}};
+let channels = [];
+let previewWatchEvent = 'watch.playing';
+
+function escapeHtml(value) {
+    const div = document.createElement('div');
+    div.textContent = value == null ? '' : String(value);
+    return div.innerHTML;
+}
+
+async function loadChannels() {
+    try {
+        const response = await fetch(basePath + '/api/notifications?profileId=' + encodeURIComponent(profileId));
+        if (!response.ok) throw new Error(await response.text());
+        const payload = await response.json();
+        channels = payload.channels || [];
+        renderChannels();
+    } catch (error) {
+        document.getElementById('channels-list').innerHTML =
+            '<p style="color:var(--danger)">Failed to load notifications: ' + escapeHtml(error.message) + '</p>';
+    }
+}
+
+function renderChannels() {
+    const container = document.getElementById('channels-list');
+    if (!channels.length) {
+        container.innerHTML = '<p style="color:var(--text-muted)">No notification destinations configured.</p>';
+        return;
+    }
+    container.innerHTML = channels.map(channel => {
+        const eventLabels = (channel.events || []).map(event => ({
+            'watch.started': 'Start',
+            'watch.playing': 'Play',
+            'watch.resumed': 'Resume',
+            'watch.watched': 'Watched',
+            'release.available': 'Released / aired'
+        })[event] || event);
+        const sources = [];
+        if (channel.notifyWatchlist) sources.push('watchlist');
+        if (channel.notifyTrending) sources.push('top ' + channel.trendingLimit + ' trending');
+        const notificationType = (channel.events || []).includes('release.available') ? 'Release status' : 'Watch status';
+        return `
+            <div class="notification-row">
+                <div class="notification-main">
+                    <div class="notification-title">
+                        ${escapeHtml(channel.name)}
+                        <span class="status-badge">${channel.type === 'discord' ? 'Discord' : 'Webhook'}</span>
+                        <span class="status-badge">${notificationType}</span>
+                        <span class="status-badge ${channel.enabled ? 'success' : 'warning'}">${channel.enabled ? 'Enabled' : 'Disabled'}</span>
+                    </div>
+                    <div class="notification-meta">${escapeHtml(eventLabels.join(', '))}</div>
+                    ${sources.length ? `<div class="notification-meta">Releases: ${escapeHtml(sources.join(', '))}</div>` : ''}
+                    <div class="notification-meta">URL: ${channel.urlConfigured ? 'configured' : 'missing'} · Poster: ${channel.includePoster ? 'included' : 'omitted'}</div>
+                </div>
+                <div class="notification-actions">
+                    <button class="btn btn-secondary btn-sm" onclick="editChannel('${channel.id}')">Edit</button>
+                    <button class="btn btn-secondary btn-sm" onclick="testChannel('${channel.id}')">Test</button>
+                    <button class="btn btn-danger btn-sm" onclick="deleteChannel('${channel.id}')">Delete</button>
+                </div>
+            </div>`;
+    }).join('');
+}
+
+function selectedCategory() {
+    return document.querySelector('input[name="notification-category"]:checked').value;
+}
+
+function selectedEvents() {
+    if (selectedCategory() === 'release') return ['release.available'];
+    return Array.from(document.querySelectorAll('input[name="watch-event"]:checked')).map(input => input.value);
+}
+
+function updateCategoryVisibility() {
+    const isRelease = selectedCategory() === 'release';
+    document.getElementById('watch-settings').hidden = isRelease;
+    document.getElementById('release-settings').hidden = !isRelease;
+    document.querySelectorAll('input[name="watch-event"]').forEach(input => {
+        input.disabled = isRelease;
+    });
+    document.getElementById('notify-watchlist').disabled = !isRelease;
+    document.getElementById('notify-trending').disabled = !isRelease;
+    document.getElementById('watch-template-fields').hidden = isRelease;
+    document.getElementById('release-template-fields').hidden = !isRelease;
+    updateTrendingVisibility();
+    updatePreview();
+}
+
+function updateTrendingVisibility() {
+    const showTrending = selectedCategory() === 'release' &&
+        document.getElementById('notify-trending').checked;
+    document.getElementById('trending-settings').hidden = !showTrending;
+    document.getElementById('trending-limit').disabled = !showTrending;
+}
+
+function previewValues() {
+    const isRelease = selectedCategory() === 'release';
+    const watchEvents = {
+        'watch.started': {label: 'Started watching', percent: '1'},
+        'watch.playing': {label: 'Now playing', percent: '42'},
+        'watch.resumed': {label: 'Resumed', percent: '42'},
+        'watch.watched': {label: 'Watched', percent: '100'}
+    };
+    const watchEvent = watchEvents[previewWatchEvent] || watchEvents['watch.playing'];
+    return {
+        event: isRelease ? 'release.available' : previewWatchEvent,
+        eventLabel: isRelease ? 'Now available' : watchEvent.label,
+        title: 'Example Movie',
+        year: '2026',
+        mediaType: 'movie',
+        mediaLabel: 'Movie',
+        seriesTitle: '',
+        episodeTitle: '',
+        episode: '',
+        season: '',
+        episodeNumber: '',
+        percent: isRelease ? '0' : watchEvent.percent,
+        progressLabel: isRelease ? '' : ' · ' + watchEvent.percent + '%',
+        releaseType: isRelease ? 'digital' : '',
+        releaseDate: isRelease ? '2026-07-23' : '',
+        releaseLabel: isRelease ? ' · digital · 2026-07-23' : '',
+        source: isRelease ? (document.getElementById('notify-trending').checked ? 'top-trending' : 'watchlist') : '',
+        rank: isRelease && document.getElementById('notify-trending').checked ? '1' : '',
+        posterUrl: ''
+    };
+}
+
+function renderPreviewTemplate(template, values) {
+    return Object.keys(values).sort().reduce(
+        (result, key) => result.split('\u007b\u007b' + key + '\u007d\u007d').join(values[key]),
+        template
+    ).trim();
+}
+
+function updatePreview() {
+    const values = previewValues();
+    document.getElementById('preview-label').textContent =
+        'Preview · ' + values.eventLabel;
+    document.getElementById('preview-title').textContent =
+        renderPreviewTemplate(document.getElementById('title-template').value, values) || '(No title)';
+    document.getElementById('preview-body').textContent =
+        renderPreviewTemplate(document.getElementById('body-template').value, values) || '(No message)';
+    document.getElementById('preview-poster').hidden =
+        !document.getElementById('include-poster').checked;
+}
+
+async function saveChannel(event) {
+    event.preventDefault();
+    const isRelease = selectedCategory() === 'release';
+    const payload = {
+        id: document.getElementById('channel-id').value,
+        profileId,
+        name: document.getElementById('channel-name').value,
+        type: document.getElementById('channel-type').value,
+        url: document.getElementById('channel-url').value,
+        enabled: document.getElementById('channel-enabled').checked,
+        events: selectedEvents(),
+        notifyWatchlist: isRelease && document.getElementById('notify-watchlist').checked,
+        notifyTrending: isRelease && document.getElementById('notify-trending').checked,
+        trendingLimit: Number(document.getElementById('trending-limit').value),
+        titleTemplate: document.getElementById('title-template').value,
+        bodyTemplate: document.getElementById('body-template').value,
+        includePoster: document.getElementById('include-poster').checked
+    };
+    try {
+        const response = await fetch(basePath + '/api/notifications', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload)
+        });
+        if (!response.ok) throw new Error(await response.text());
+        showToast('Notification destination saved');
+        resetForm();
+        await loadChannels();
+    } catch (error) {
+        showToast(error.message, 'error');
+    }
+}
+
+function editChannel(id) {
+    const channel = channels.find(item => item.id === id);
+    if (!channel) return;
+    document.getElementById('channel-id').value = channel.id;
+    document.getElementById('channel-name').value = channel.name;
+    document.getElementById('channel-type').value = channel.type;
+    document.getElementById('channel-url').value = '';
+    document.getElementById('channel-enabled').checked = channel.enabled;
+    document.getElementById('notify-watchlist').checked = channel.notifyWatchlist;
+    document.getElementById('notify-trending').checked = channel.notifyTrending;
+    document.getElementById('trending-limit').value = channel.trendingLimit;
+    document.getElementById('title-template').value = channel.titleTemplate;
+    document.getElementById('body-template').value = channel.bodyTemplate;
+    document.getElementById('include-poster').checked = channel.includePoster;
+    const isRelease = (channel.events || []).includes('release.available');
+    document.querySelector(`input[name="notification-category"][value="${isRelease ? 'release' : 'watch'}"]`).checked = true;
+    document.querySelectorAll('input[name="watch-event"]').forEach(input => {
+        input.checked = (channel.events || []).includes(input.value);
+    });
+    previewWatchEvent = (channel.events || []).find(event => event.startsWith('watch.')) || 'watch.playing';
+    updateCategoryVisibility();
+    document.getElementById('form-title').textContent = 'Edit destination';
+    document.getElementById('cancel-edit').style.display = '';
+    window.scrollTo({top: 0, behavior: 'smooth'});
+}
+
+function resetForm() {
+    document.getElementById('notification-form').reset();
+    document.getElementById('channel-id').value = '';
+    document.getElementById('trending-limit').value = 20;
+    document.getElementById('title-template').value = '\u007b\u007beventLabel\u007d\u007d: \u007b\u007btitle\u007d\u007d';
+    document.getElementById('body-template').value = '\u007b\u007bmediaLabel\u007d\u007d\u007b\u007bprogressLabel\u007d\u007d\u007b\u007breleaseLabel\u007d\u007d';
+    document.getElementById('notify-watchlist').checked = true;
+    document.getElementById('notify-trending').checked = false;
+    document.getElementById('include-poster').checked = true;
+    document.getElementById('channel-enabled').checked = true;
+    document.querySelector('input[name="notification-category"][value="watch"]').checked = true;
+    document.querySelectorAll('input[name="watch-event"]').forEach(input => {
+        input.checked = false;
+    });
+    previewWatchEvent = 'watch.playing';
+    updateCategoryVisibility();
+    document.getElementById('form-title').textContent = 'Add destination';
+    document.getElementById('cancel-edit').style.display = 'none';
+}
+
+async function testChannel(id) {
+    try {
+        const response = await fetch(basePath + '/api/notifications/test?profileId=' +
+            encodeURIComponent(profileId) + '&id=' + encodeURIComponent(id), {method: 'POST'});
+        if (!response.ok) throw new Error(await response.text());
+        showToast('Test notification sent');
+    } catch (error) {
+        showToast(error.message, 'error');
+    }
+}
+
+async function deleteChannel(id) {
+    const channel = channels.find(item => item.id === id);
+    if (!channel || !confirm('Delete notification destination "' + channel.name + '"?')) return;
+    try {
+        const response = await fetch(basePath + '/api/notifications?profileId=' +
+            encodeURIComponent(profileId) + '&id=' + encodeURIComponent(id), {method: 'DELETE'});
+        if (!response.ok) throw new Error(await response.text());
+        showToast('Notification destination deleted');
+        await loadChannels();
+    } catch (error) {
+        showToast(error.message, 'error');
+    }
+}
+
+document.getElementById('title-template').addEventListener('input', updatePreview);
+document.getElementById('body-template').addEventListener('input', updatePreview);
+document.getElementById('include-poster').addEventListener('change', updatePreview);
+document.getElementById('notify-watchlist').addEventListener('change', updatePreview);
+document.getElementById('notify-trending').addEventListener('change', updatePreview);
+document.querySelectorAll('input[name="watch-event"]').forEach(input => {
+    input.addEventListener('change', event => {
+        if (event.target.checked) {
+            previewWatchEvent = event.target.value;
+        } else if (previewWatchEvent === event.target.value) {
+            const selected = document.querySelector('input[name="watch-event"]:checked');
+            previewWatchEvent = selected ? selected.value : 'watch.playing';
+        }
+        updatePreview();
+    });
+});
+updateCategoryVisibility();
+loadChannels();
+</script>
+{{end}}

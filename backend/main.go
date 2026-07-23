@@ -50,6 +50,7 @@ import (
 	"novastream/services/localmedia"
 	"novastream/services/mdblist"
 	"novastream/services/metadata"
+	"novastream/services/notifications"
 	"novastream/services/playback"
 	"novastream/services/plex"
 	"novastream/services/prewarm"
@@ -657,6 +658,10 @@ func main() {
 
 	// Calendar service provides upcoming content from watchlist, history, and MDBList
 	calendarService := calendar.New(metadataService, watchlistService, historyService, userSettingsService, userService)
+	notificationService := notifications.New(store.Notifications())
+	defer notificationService.Close()
+	historyService.SetPlaybackObserver(notificationService)
+	calendarService.SetReleaseObserver(notificationService)
 	historyService.SetWatchStateChangedHook(calendarService.Invalidate)
 	calendarHandler := handlers.NewCalendarHandler(calendarService, userService, *demoMode)
 	startupHandler.SetCalendar(calendarService)
@@ -926,6 +931,7 @@ func main() {
 	adminUIHandler.SetClientsService(clientsService)
 	adminUIHandler.SetClientSettingsService(clientSettingsService)
 	adminUIHandler.SetCalendarService(calendarService)
+	adminUIHandler.SetNotificationService(notificationService)
 	adminUIHandler.SetLocalMediaService(localMediaService)
 	adminUIHandler.SetRemoteMediaService(remoteMediaService)
 
@@ -950,6 +956,7 @@ func main() {
 	r.HandleFunc("/admin/search", adminUIHandler.RequireAuth(adminUIHandler.SearchPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/playback", adminUIHandler.RequireAuth(adminUIHandler.PlaybackPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/accounts", adminUIHandler.RequireAuth(adminUIHandler.AccountsPage)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/notifications", adminUIHandler.RequireAuth(adminUIHandler.NotificationsPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/library", adminUIHandler.RequireAuth(adminUIHandler.LibraryPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/kids-settings", adminUIHandler.RequireAuth(adminUIHandler.KidsSettingsPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/schedule", adminUIHandler.RequireAuth(adminUIHandler.CalendarPage)).Methods(http.MethodGet)
@@ -1048,6 +1055,10 @@ func main() {
 	r.HandleFunc("/admin/api/profiles/pin", adminUIHandler.RequireAuth(adminUIHandler.ClearProfilePin)).Methods(http.MethodDelete)
 	r.HandleFunc("/admin/api/profiles/color", adminUIHandler.RequireAuth(adminUIHandler.SetProfileColor)).Methods(http.MethodPut)
 	r.HandleFunc("/admin/api/profiles/kids", adminUIHandler.RequireAuth(adminUIHandler.SetKidsProfile)).Methods(http.MethodPut)
+	r.HandleFunc("/admin/api/notifications", adminUIHandler.RequireAuth(adminUIHandler.ListNotificationChannels)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/api/notifications", adminUIHandler.RequireAuth(adminUIHandler.SaveNotificationChannel)).Methods(http.MethodPost)
+	r.HandleFunc("/admin/api/notifications", adminUIHandler.RequireAuth(adminUIHandler.DeleteNotificationChannel)).Methods(http.MethodDelete)
+	r.HandleFunc("/admin/api/notifications/test", adminUIHandler.RequireAuth(adminUIHandler.TestNotificationChannel)).Methods(http.MethodPost)
 	// Content discovery endpoints (for admin kids-settings preview)
 	r.HandleFunc("/admin/api/discover/new", adminUIHandler.RequireAuth(metadataHandler.DiscoverNew)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/lists/custom", adminUIHandler.RequireAuth(metadataHandler.CustomList)).Methods(http.MethodGet)
@@ -1323,6 +1334,7 @@ func main() {
 	r.HandleFunc("/account/playback", adminUIHandler.RequireAuth(adminUIHandler.PlaybackPage)).Methods(http.MethodGet)
 	r.HandleFunc("/account/library", adminUIHandler.RequireAuth(adminUIHandler.LibraryPage)).Methods(http.MethodGet)
 	r.HandleFunc("/account/accounts", adminUIHandler.RequireAuth(adminUIHandler.AccountsPage)).Methods(http.MethodGet) // Shows as "Profiles" for non-admin
+	r.HandleFunc("/account/notifications", adminUIHandler.RequireAuth(adminUIHandler.NotificationsPage)).Methods(http.MethodGet)
 	r.HandleFunc("/account/kids-settings", adminUIHandler.RequireAuth(adminUIHandler.KidsSettingsPage)).Methods(http.MethodGet)
 	r.HandleFunc("/account/schedule", adminUIHandler.RequireAuth(adminUIHandler.CalendarPage)).Methods(http.MethodGet)
 	r.HandleFunc("/account/calendar", adminUIHandler.RequireAuth(adminUIHandler.CalendarPage)).Methods(http.MethodGet)
@@ -1388,6 +1400,10 @@ func main() {
 	r.HandleFunc("/account/api/profiles/pin", adminUIHandler.RequireAuth(adminUIHandler.SetProfilePin)).Methods(http.MethodPut)
 	r.HandleFunc("/account/api/profiles/pin", adminUIHandler.RequireAuth(adminUIHandler.ClearProfilePin)).Methods(http.MethodDelete)
 	r.HandleFunc("/account/api/profiles/kids", adminUIHandler.RequireAuth(adminUIHandler.SetKidsProfile)).Methods(http.MethodPut)
+	r.HandleFunc("/account/api/notifications", adminUIHandler.RequireAuth(adminUIHandler.ListNotificationChannels)).Methods(http.MethodGet)
+	r.HandleFunc("/account/api/notifications", adminUIHandler.RequireAuth(adminUIHandler.SaveNotificationChannel)).Methods(http.MethodPost)
+	r.HandleFunc("/account/api/notifications", adminUIHandler.RequireAuth(adminUIHandler.DeleteNotificationChannel)).Methods(http.MethodDelete)
+	r.HandleFunc("/account/api/notifications/test", adminUIHandler.RequireAuth(adminUIHandler.TestNotificationChannel)).Methods(http.MethodPost)
 	// Content discovery endpoints (for account kids-settings preview)
 	r.HandleFunc("/account/api/discover/new", adminUIHandler.RequireAuth(metadataHandler.DiscoverNew)).Methods(http.MethodGet)
 	r.HandleFunc("/account/api/lists/custom", adminUIHandler.RequireAuth(metadataHandler.CustomList)).Methods(http.MethodGet)
