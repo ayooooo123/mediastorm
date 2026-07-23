@@ -116,6 +116,7 @@ type PlaybackProgressUpdate struct {
 	BufferAhead    *float64          `json:"bufferAheadSeconds,omitempty"`    // Player-reported playable buffer runway, when available
 	RequiredMbps   *float64          `json:"requiredBandwidthMbps,omitempty"` // Estimated average bandwidth required by the active release
 	SourcePath     string            `json:"sourcePath,omitempty"`            // Active source path, used to isolate migration signals across replacements
+	PosterURL      string            `json:"posterUrl,omitempty"`             // Optional artwork for backend-owned notifications
 	ExternalIDs    map[string]string `json:"externalIds,omitempty"`
 
 	// Episode-specific fields

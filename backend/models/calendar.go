@@ -28,6 +28,7 @@ type CalendarItem struct {
 	Year            int               `json:"year,omitempty"`
 	ExternalIDs     map[string]string `json:"externalIds,omitempty"` // imdb, tvdb, tmdb
 	Source          string            `json:"source"`                // "watchlist" | "history" | "trending" | "top-trending" | "mdblist"
+	SourceRank      int               `json:"sourceRank,omitempty"`  // 1-based rank within a trending source
 }
 
 // CalendarResponse is the API response for the calendar endpoint.

@@ -29,6 +29,18 @@ type UserRepository interface {
 	Count(ctx context.Context) (int64, error)
 }
 
+// NotificationRepository manages profile notification destinations and release observations.
+type NotificationRepository interface {
+	GetChannel(ctx context.Context, id string) (*models.NotificationChannel, error)
+	ListChannels(ctx context.Context, profileID string) ([]models.NotificationChannel, error)
+	CreateChannel(ctx context.Context, channel *models.NotificationChannel) error
+	UpdateChannel(ctx context.Context, channel *models.NotificationChannel) error
+	DeleteChannel(ctx context.Context, profileID, id string) error
+	GetObservation(ctx context.Context, profileID, itemKey string) (*models.NotificationObservation, error)
+	ListObservations(ctx context.Context, profileID string) ([]models.NotificationObservation, error)
+	UpsertObservation(ctx context.Context, observation *models.NotificationObservation) error
+}
+
 // SessionRepository manages session persistence.
 type SessionRepository interface {
 	Get(ctx context.Context, token string) (*models.Session, error)

@@ -67,6 +67,11 @@ type TraktRealTimeScrobbler interface {
 	ClearSession(userID string, update models.PlaybackProgressUpdate)
 }
 
+// PlaybackObserver receives normalized player heartbeats after they are persisted.
+type PlaybackObserver interface {
+	HandlePlaybackUpdate(userID string, update models.PlaybackProgressUpdate, percentWatched float64)
+}
+
 // cachedSeriesMetadata holds cached series details with expiration.
 type cachedSeriesMetadata struct {
 	details   *models.SeriesDetails
@@ -122,6 +127,7 @@ type Service struct {
 	continueWatchingTTL    time.Duration
 	changeMu               sync.RWMutex
 	watchStateChanged      func(userID string)
+	playbackObserver       PlaybackObserver
 }
 
 type continueWatchingRevisionStats struct {
@@ -216,6 +222,23 @@ func (s *Service) SetWatchStateChangedHook(fn func(userID string)) {
 	s.changeMu.Lock()
 	defer s.changeMu.Unlock()
 	s.watchStateChanged = fn
+}
+
+// SetPlaybackObserver registers a non-critical observer for notification-style
+// playback events. Delivery is invoked asynchronously and cannot block progress.
+func (s *Service) SetPlaybackObserver(observer PlaybackObserver) {
+	s.changeMu.Lock()
+	defer s.changeMu.Unlock()
+	s.playbackObserver = observer
+}
+
+func (s *Service) notifyPlaybackUpdate(userID string, update models.PlaybackProgressUpdate, percentWatched float64) {
+	s.changeMu.RLock()
+	observer := s.playbackObserver
+	s.changeMu.RUnlock()
+	if observer != nil {
+		go observer.HandlePlaybackUpdate(userID, update, percentWatched)
+	}
 }
 
 func (s *Service) invalidateContinueWatchingLocked(userID string) {
@@ -4720,6 +4743,7 @@ func (s *Service) UpdatePlaybackProgress(userID string, update models.PlaybackPr
 		}
 	}
 
+	s.notifyPlaybackUpdate(userID, update, percentWatched)
 	return progress, nil
 }
 
