@@ -91,6 +91,31 @@ func TestPrequeueStoreDoesNotValidateNonReadyEntry(t *testing.T) {
 	}
 }
 
+func TestPrequeueStoreWorkerCannotOverwriteAdoptedEntry(t *testing.T) {
+	store := NewPrequeueStore(time.Hour)
+	entry, created := store.Create("movie:1", "Example", "default", "movie", 2024, nil, "details")
+	if !created {
+		t.Fatal("Create returned created=false")
+	}
+	store.Update(entry.ID, func(e *PrequeueEntry) {
+		e.Status = PrequeueStatusReady
+		e.StreamPath = "/debrid/manual-selection.mkv"
+		e.MigrationAdopted = true
+	})
+
+	if updated := store.UpdateWorker(entry.ID, func(e *PrequeueEntry) {
+		e.Status = PrequeueStatusFailed
+		e.StreamPath = "/downloads/stale-worker.mkv"
+	}); updated {
+		t.Fatal("UpdateWorker returned true for an adopted entry")
+	}
+
+	got, ok := store.Get(entry.ID)
+	if !ok || got.StreamPath != "/debrid/manual-selection.mkv" || got.Status != PrequeueStatusReady {
+		t.Fatalf("adopted entry was overwritten: %#v", got)
+	}
+}
+
 func TestPrequeueEntryToResponseIncludesServiceType(t *testing.T) {
 	entry := &PrequeueEntry{
 		ID:          "pq_test",

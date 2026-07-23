@@ -1033,6 +1033,7 @@ func (h *PrequeueHandler) AdoptMigration(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	}
+	h.store.CancelWork(prequeueID)
 
 	updated := h.store.Update(prequeueID, func(e *playback.PrequeueEntry) {
 		e.Status = playback.PrequeueStatusReady
@@ -1371,9 +1372,12 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 	log.Printf("[prequeue] TIMING: worker started for %s (title=%q)", prequeueID, titleName)
 
 	// Update status to searching
-	h.store.Update(prequeueID, func(e *playback.PrequeueEntry) {
+	if !h.store.UpdateWorker(prequeueID, func(e *playback.PrequeueEntry) {
 		e.Status = playback.PrequeueStatusSearching
-	})
+	}) {
+		log.Printf("[prequeue] Worker stopped before search because entry %s was replaced", prequeueID)
+		return
+	}
 
 	// Create episode resolver for TV shows to enable accurate pack size filtering
 	// Also lookup absolute episode number, daily show info, and anime detection if not provided
@@ -1394,7 +1398,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 			year = seriesMeta.Year
 			log.Printf("[prequeue] Populated year %d from series metadata", year)
 		}
-		h.store.Update(prequeueID, func(e *playback.PrequeueEntry) {
+		h.store.UpdateWorker(prequeueID, func(e *playback.PrequeueEntry) {
 			e.TargetEpisode = targetEpisode
 			e.Year = year
 		})
@@ -1516,7 +1520,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 	log.Printf("[prequeue] TIMING: scored search complete, %d passed candidate(s) selected from %d total result(s), badStreams=%d (elapsed: %v)", len(allResults), len(scoredResults), badStreamCount, time.Since(workerStart))
 
 	// Update status to resolving
-	h.store.Update(prequeueID, func(e *playback.PrequeueEntry) {
+	h.store.UpdateWorker(prequeueID, func(e *playback.PrequeueEntry) {
 		e.Status = playback.PrequeueStatusResolving
 	})
 
@@ -1755,7 +1759,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 	log.Printf("[prequeue] TIMING: resolution complete (resolve took: %v, total elapsed: %v)", time.Since(resolveStart), time.Since(workerStart))
 
 	// Update with resolution
-	h.store.Update(prequeueID, func(e *playback.PrequeueEntry) {
+	h.store.UpdateWorker(prequeueID, func(e *playback.PrequeueEntry) {
 		e.Status = playback.PrequeueStatusProbing
 		e.StreamPath = resolution.WebDAVPath
 		if selectedResult != nil {
@@ -1988,7 +1992,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 		}
 
 		// Store selected tracks and duration
-		h.store.Update(prequeueID, func(e *playback.PrequeueEntry) {
+		h.store.UpdateWorker(prequeueID, func(e *playback.PrequeueEntry) {
 			e.SelectedAudioTrack = selectedAudioTrack
 			e.SelectedSubtitleTrack = selectedSubtitleTrack
 			if duration > 0 {
@@ -2031,7 +2035,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 				}
 			}
 
-			h.store.Update(prequeueID, func(e *playback.PrequeueEntry) {
+			h.store.UpdateWorker(prequeueID, func(e *playback.PrequeueEntry) {
 				e.AudioTracks = audioTracks
 				e.SubtitleTracks = subtitleTracks
 			})
@@ -2046,7 +2050,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 
 		// Always store HDR detection results so the frontend can display correct badges,
 		// regardless of whether HLS is needed (native clients skip HLS but still need HDR info)
-		h.store.Update(prequeueID, func(e *playback.PrequeueEntry) {
+		h.store.UpdateWorker(prequeueID, func(e *playback.PrequeueEntry) {
 			e.HasDolbyVision = hasDV
 			e.HasHDR10 = hasHDR10
 			e.DolbyVisionProfile = dvProfile
@@ -2098,7 +2102,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 				if err != nil {
 					log.Printf("[prequeue] HLS session creation failed (non-fatal): %v", err)
 				} else if hlsResult != nil {
-					h.store.Update(prequeueID, func(e *playback.PrequeueEntry) {
+					h.store.UpdateWorker(prequeueID, func(e *playback.PrequeueEntry) {
 						e.HLSSessionID = hlsResult.SessionID
 						e.HLSPlaylistURL = hlsResult.PlaylistURL
 					})
@@ -2110,7 +2114,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 	}
 
 	// Mark as ready
-	h.store.Update(prequeueID, func(e *playback.PrequeueEntry) {
+	h.store.UpdateWorker(prequeueID, func(e *playback.PrequeueEntry) {
 		e.Status = playback.PrequeueStatusReady
 	})
 	if h.prewarmSvc != nil {
@@ -2159,7 +2163,7 @@ func (h *PrequeueHandler) waitForPlaybackQueue(ctx context.Context, prequeueID s
 			return nil, err
 		}
 		if status != nil {
-			h.store.Update(prequeueID, func(e *playback.PrequeueEntry) {
+			h.store.UpdateWorker(prequeueID, func(e *playback.PrequeueEntry) {
 				e.HealthStatus = status.HealthStatus
 				if status.FileSize > 0 {
 					e.FileSize = status.FileSize
@@ -2184,7 +2188,7 @@ func (h *PrequeueHandler) waitForPlaybackQueue(ctx context.Context, prequeueID s
 // failPrequeue marks a prequeue as failed
 func (h *PrequeueHandler) failPrequeue(prequeueID, errMsg string) {
 	log.Printf("[prequeue] Prequeue %s failed: %s", prequeueID, errMsg)
-	h.store.Update(prequeueID, func(e *playback.PrequeueEntry) {
+	h.store.UpdateWorker(prequeueID, func(e *playback.PrequeueEntry) {
 		e.Status = playback.PrequeueStatusFailed
 		e.Error = errMsg
 	})

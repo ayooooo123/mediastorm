@@ -643,6 +643,8 @@ func TestAdoptMigrationReplacesPrequeueStream(t *testing.T) {
 		e.SelectedResultIndex = 0
 		e.MigrationCandidates = []models.NZBResult{oldResult}
 	})
+	workerCancelled := false
+	store.SetCancelFunc(entry.ID, func() { workerCancelled = true })
 
 	newResult := models.NZBResult{
 		Title:       "Better.Release.2024.2160p",
@@ -679,6 +681,9 @@ func TestAdoptMigrationReplacesPrequeueStream(t *testing.T) {
 	handler.AdoptMigration(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !workerCancelled {
+		t.Fatal("active prequeue worker was not cancelled before adopting migration")
 	}
 
 	var resp playback.PrequeueStatusResponse
