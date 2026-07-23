@@ -436,10 +436,24 @@
             : 'No frontend logs uploaded yet.';
 
         if (selectedClient) {
-            clientFilterMeta.innerHTML = `<strong>Client:</strong> ${selectedClient.clientId} ${selectedClient.deviceType || ''} ${selectedClient.os || ''}`.trim();
+            const label = selectedClient.deviceName || selectedClient.name || selectedClient.deviceType || selectedClient.clientId;
+            clientFilterMeta.innerHTML = `<strong>Client:</strong> ${label} • ${selectedClient.profileName || 'Unknown profile'} • seen ${formatRelativeTime(selectedClient.lastSeenAt || selectedClient.uploadedAt)}`;
         } else {
             clientFilterMeta.textContent = '';
         }
+    }
+
+    function formatRelativeTime(dateString) {
+        if (!dateString) return 'unknown';
+        const timestamp = new Date(dateString).getTime();
+        if (!Number.isFinite(timestamp)) return 'unknown';
+        const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+        if (seconds < 60) return `${seconds}s ago`;
+        const minutes = Math.floor(seconds / 60);
+        if (minutes < 60) return `${minutes}m ago`;
+        const hours = Math.floor(minutes / 60);
+        if (hours < 24) return `${hours}h ago`;
+        return `${Math.floor(hours / 24)}d ago`;
     }
 
     function updateClientFilterOptions(selectedClientId) {
@@ -450,12 +464,17 @@
         frontendClients.forEach(client => {
             const option = document.createElement('option');
             option.value = client.clientId;
+            const deviceLabel = client.deviceName || client.name || client.deviceType || 'Unknown device';
             option.textContent = [
-                client.deviceType || 'Unknown device',
+                deviceLabel,
+                client.profileName || '',
+                client.deviceType !== deviceLabel ? client.deviceType || '' : '',
                 client.os || '',
-                client.clientId,
-                client.uploadedAt ? new Date(client.uploadedAt).toLocaleString() : ''
+                `seen ${formatRelativeTime(client.lastSeenAt || client.uploadedAt)}`,
+                `logs ${formatRelativeTime(client.uploadedAt)}`,
+                client.clientId.slice(0, 8)
             ].filter(Boolean).join(' • ');
+            option.title = `Client ID: ${client.clientId}\nApp version: ${client.appVersion || 'unknown'}\nLast seen: ${client.lastSeenAt ? new Date(client.lastSeenAt).toLocaleString() : 'unknown'}\nLogs uploaded: ${client.uploadedAt ? new Date(client.uploadedAt).toLocaleString() : 'unknown'}`;
             option.selected = client.clientId === currentValue;
             select.appendChild(option);
         });
@@ -504,7 +523,7 @@
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'same-origin',
-                body: JSON.stringify({ clientId })
+                body: JSON.stringify({ clientId: clientId || '*' })
             });
 
             const data = await response.json();

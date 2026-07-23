@@ -12622,6 +12622,14 @@ func (h *AdminUIHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 
 	frontendClients := []frontendLogSummary(nil)
 	frontendClients, _ = h.logsHandler.ListFrontendLogSummaries()
+	if h.clientsService != nil {
+		clients := h.clientsService.List()
+		users := []models.User(nil)
+		if h.usersService != nil {
+			users = h.usersService.List()
+		}
+		frontendClients = enrichFrontendLogSummaries(frontendClients, clients, users)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -12630,6 +12638,39 @@ func (h *AdminUIHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 		"entries":         entries,
 		"frontendClients": frontendClients,
 	})
+}
+
+func enrichFrontendLogSummaries(summaries []frontendLogSummary, clients []models.Client, users []models.User) []frontendLogSummary {
+	clientsByID := make(map[string]models.Client, len(clients))
+	for _, client := range clients {
+		clientsByID[client.ID] = client
+	}
+	profileNamesByID := make(map[string]string, len(users))
+	for _, user := range users {
+		profileNamesByID[user.ID] = user.Name
+	}
+
+	for i := range summaries {
+		client, ok := clientsByID[summaries[i].ClientID]
+		if !ok {
+			continue
+		}
+		summaries[i].Name = client.Name
+		summaries[i].DeviceName = client.DeviceName
+		if client.DeviceType != "" {
+			summaries[i].DeviceType = client.DeviceType
+		}
+		if client.OS != "" {
+			summaries[i].OS = client.OS
+		}
+		if client.AppVersion != "" {
+			summaries[i].AppVersion = client.AppVersion
+		}
+		summaries[i].ProfileName = profileNamesByID[client.UserID]
+		lastSeenAt := client.LastSeenAt
+		summaries[i].LastSeenAt = &lastSeenAt
+	}
+	return summaries
 }
 
 func (h *AdminUIHandler) SubmitLogsPackage(w http.ResponseWriter, r *http.Request) {

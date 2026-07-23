@@ -12,9 +12,19 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"novastream/models"
 )
+
+type fakeLogClientActivityService struct {
+	lastSeenIDs []string
+}
+
+func (s *fakeLogClientActivityService) UpdateLastSeen(id string) error {
+	s.lastSeenIDs = append(s.lastSeenIDs, id)
+	return nil
+}
 
 func TestLogsHandler_TryPasteService_DirectURL(t *testing.T) {
 	// Mock server that returns a direct URL
@@ -386,6 +396,8 @@ func TestLogsHandler_UploadFrontendLogs_AndListSnapshots(t *testing.T) {
 	}
 
 	h := NewLogsHandler(log.New(os.Stdout, "", 0), logFile)
+	activity := &fakeLogClientActivityService{}
+	h.SetClientsService(activity)
 
 	body := `{"frontendLogs":"one\ntwo","deviceType":"Android TV","os":"Android","appVersion":"1.2.3"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/logs/frontend", strings.NewReader(body))
@@ -412,6 +424,9 @@ func TestLogsHandler_UploadFrontendLogs_AndListSnapshots(t *testing.T) {
 	}
 	if summaries[0].LogCount != 2 {
 		t.Fatalf("expected log count 2, got %d", summaries[0].LogCount)
+	}
+	if len(activity.lastSeenIDs) != 1 || activity.lastSeenIDs[0] != "client-123" {
+		t.Fatalf("expected frontend upload to refresh client last seen, got %#v", activity.lastSeenIDs)
 	}
 
 	snapshot, err := h.GetFrontendLogSnapshot("client-123")
@@ -632,6 +647,193 @@ func TestLogsHandler_ReadCombinedLogEntries_FilterByClient(t *testing.T) {
 	}
 	if !strings.Contains(entries[0].Line, "client-b") {
 		t.Fatalf("expected filtered frontend entry to contain client-b, got %s", entries[0].Line)
+	}
+}
+
+func TestLogsHandler_ReadFrontendLogEntries_PreservesMultilineTimestampAndOrder(t *testing.T) {
+	tempDir := t.TempDir()
+	h := NewLogsHandler(log.New(os.Stdout, "", 0), filepath.Join(tempDir, "backend.log"))
+
+	frontendLogs := strings.Join([]string{
+		`2026-07-22T22:55:43.123Z [LOG  ] [RouteTrace] {`,
+		`  "pathname": "/",`,
+		`  "platform": "ios"`,
+		`}`,
+		`2026-07-22T22:55:44.456Z [INFO ] next event`,
+	}, "\n")
+	body, err := json.Marshal(uploadFrontendLogsRequest{FrontendLogs: frontendLogs})
+	if err != nil {
+		t.Fatalf("failed to marshal frontend logs: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/logs/frontend", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Client-ID", "iphone-client")
+	rec := httptest.NewRecorder()
+	h.UploadFrontendLogs(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected upload status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	entries, err := h.readFrontendLogEntries(100, "iphone-client")
+	if err != nil {
+		t.Fatalf("unexpected frontend log read error: %v", err)
+	}
+	if len(entries) != 5 {
+		t.Fatalf("expected 5 frontend lines, got %d", len(entries))
+	}
+	for i := 1; i <= 3; i++ {
+		if !entries[i].Timestamp.Equal(entries[0].Timestamp) {
+			t.Fatalf("continuation %d timestamp %s did not match parent %s", i, entries[i].Timestamp, entries[0].Timestamp)
+		}
+		if !strings.Contains(entries[i].Line, "2026-07-22T22:55:43.123Z [CONT ]") {
+			t.Fatalf("continuation %d missing visible parent timestamp: %q", i, entries[i].Line)
+		}
+	}
+	if !strings.Contains(entries[1].Line, `"pathname": "/"`) || !strings.Contains(entries[2].Line, `"platform": "ios"`) || !strings.HasSuffix(entries[3].Line, "}") {
+		t.Fatalf("multiline entry order was not preserved: %#v", entries)
+	}
+	if !entries[4].Timestamp.After(entries[0].Timestamp) || !strings.Contains(entries[4].Line, "next event") {
+		t.Fatalf("expected later event after multiline entry, got %#v", entries[4])
+	}
+}
+
+func TestVisibleLogTimestamp_PreservesLegacyLocalTimeWithoutInventingZone(t *testing.T) {
+	line := `2026/07/22 16:55:43 [LOG  ] legacy event`
+	parsed := parseLogTimestamp(line, time.Time{})
+	if parsed.IsZero() {
+		t.Fatal("expected legacy timestamp to parse")
+	}
+	if got := visibleLogTimestamp(line, parsed); got != "2026/07/22 16:55:43" {
+		t.Fatalf("expected legacy local timestamp to remain zone-less, got %q", got)
+	}
+}
+
+func TestLogsHandler_ReadAggregatedFrontendLogs_Selection(t *testing.T) {
+	tempDir := t.TempDir()
+	h := NewLogsHandler(log.New(os.Stdout, "", 0), filepath.Join(tempDir, "backend.log"))
+
+	for _, tc := range []struct {
+		clientID string
+		line     string
+	}{
+		{clientID: "client-a", line: "frontend line a"},
+		{clientID: "client-b", line: "frontend line b"},
+	} {
+		reqBody, err := json.Marshal(uploadFrontendLogsRequest{FrontendLogs: tc.line})
+		if err != nil {
+			t.Fatalf("failed to marshal frontend logs: %v", err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/logs/frontend", bytes.NewReader(reqBody))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Client-ID", tc.clientID)
+		rec := httptest.NewRecorder()
+		h.UploadFrontendLogs(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected upload status %d for %s, got %d", http.StatusOK, tc.clientID, rec.Code)
+		}
+	}
+
+	selected, summaries, err := h.readAggregatedFrontendLogs(maxLogLines, "client-b")
+	if err != nil {
+		t.Fatalf("unexpected selected-client error: %v", err)
+	}
+	if len(summaries) != 1 || summaries[0].ClientID != "client-b" {
+		t.Fatalf("expected only client-b summary, got %#v", summaries)
+	}
+	if !strings.Contains(selected, "frontend line b") || strings.Contains(selected, "frontend line a") {
+		t.Fatalf("expected only client-b logs, got %q", selected)
+	}
+
+	backendOnly, summaries, err := h.readAggregatedFrontendLogs(maxLogLines, "")
+	if err != nil {
+		t.Fatalf("unexpected backend-only error: %v", err)
+	}
+	if backendOnly != "" || len(summaries) != 0 {
+		t.Fatalf("expected no frontend logs for backend-only package, got %q and %#v", backendOnly, summaries)
+	}
+
+	all, summaries, err := h.readAggregatedFrontendLogs(maxLogLines, "*")
+	if err != nil {
+		t.Fatalf("unexpected all-clients error: %v", err)
+	}
+	if len(summaries) != 2 || !strings.Contains(all, "frontend line a") || !strings.Contains(all, "frontend line b") {
+		t.Fatalf("expected both frontend clients, got %q and %#v", all, summaries)
+	}
+
+	if _, _, err := h.readAggregatedFrontendLogs(maxLogLines, "missing-client"); err == nil {
+		t.Fatal("expected an error for an unknown frontend client")
+	}
+}
+
+func TestEnrichFrontendLogSummaries_AddsClientIdentityAndLastSeen(t *testing.T) {
+	lastSeen := time.Date(2026, time.July, 22, 22, 55, 44, 0, time.UTC)
+	summaries := []frontendLogSummary{{
+		ClientID:   "iphone-client",
+		DeviceType: "iPhone",
+		UploadedAt: lastSeen.Add(-time.Minute),
+	}}
+	clients := []models.Client{{
+		ID:         "iphone-client",
+		UserID:     "profile-godver3",
+		Name:       "iPhone - iOS",
+		DeviceName: "iPhone 15 Pro Max",
+		DeviceType: "iPhone",
+		OS:         "iOS",
+		AppVersion: "1.5.0+20260722",
+		LastSeenAt: lastSeen,
+	}}
+	users := []models.User{{ID: "profile-godver3", Name: "godver3"}}
+
+	got := enrichFrontendLogSummaries(summaries, clients, users)
+	if len(got) != 1 {
+		t.Fatalf("expected one summary, got %d", len(got))
+	}
+	if got[0].DeviceName != "iPhone 15 Pro Max" || got[0].Name != "iPhone - iOS" {
+		t.Fatalf("expected friendly client identity, got %#v", got[0])
+	}
+	if got[0].ProfileName != "godver3" {
+		t.Fatalf("expected profile name godver3, got %q", got[0].ProfileName)
+	}
+	if got[0].AppVersion != "1.5.0+20260722" {
+		t.Fatalf("expected registered app build, got %q", got[0].AppVersion)
+	}
+	if got[0].LastSeenAt == nil || !got[0].LastSeenAt.Equal(lastSeen) {
+		t.Fatalf("expected last seen %s, got %v", lastSeen, got[0].LastSeenAt)
+	}
+}
+
+func TestLogsHandler_LogPackagesUseLastTenThousandLines(t *testing.T) {
+	tempDir := t.TempDir()
+	logFile := filepath.Join(tempDir, "backend.log")
+
+	var content strings.Builder
+	for i := 1; i <= maxLogLines+5; i++ {
+		content.WriteString(fmt.Sprintf("line-%05d\n", i))
+	}
+	if err := os.WriteFile(logFile, []byte(content.String()), 0o644); err != nil {
+		t.Fatalf("failed to create backend log: %v", err)
+	}
+
+	h := NewLogsHandler(log.New(os.Stdout, "", 0), logFile)
+	backendLogs, err := h.readBackendLogs()
+	if err != nil {
+		t.Fatalf("unexpected backend log error: %v", err)
+	}
+	backendLines := strings.Split(backendLogs, "\n")
+	if len(backendLines) != maxLogLines {
+		t.Fatalf("expected %d backend lines, got %d", maxLogLines, len(backendLines))
+	}
+	if backendLines[0] != "line-00006" || backendLines[len(backendLines)-1] != "line-10005" {
+		t.Fatalf("unexpected backend line range: %q through %q", backendLines[0], backendLines[len(backendLines)-1])
+	}
+
+	frontendLogs := lastNLogLines(content.String(), maxLogLines)
+	frontendLines := strings.Split(frontendLogs, "\n")
+	if len(frontendLines) != maxLogLines {
+		t.Fatalf("expected %d frontend lines, got %d", maxLogLines, len(frontendLines))
+	}
+	if frontendLines[0] != "line-00006" || frontendLines[len(frontendLines)-1] != "line-10005" {
+		t.Fatalf("unexpected frontend line range: %q through %q", frontendLines[0], frontendLines[len(frontendLines)-1])
 	}
 }
 
