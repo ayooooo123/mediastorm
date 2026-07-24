@@ -657,6 +657,104 @@ func TestHLSManager_ServePlaylist_CastUsesTransportStreamSegments(t *testing.T) 
 	}
 }
 
+func TestHLSManager_ServePlaylist_CastTimelineStaysAnchoredAfterTranscodingJump(t *testing.T) {
+	tmpDir := t.TempDir()
+	manager := NewHLSManager(tmpDir, "", "", nil)
+	defer manager.Shutdown()
+
+	sessionID := "cast-stable-timeline-session"
+	outputDir := filepath.Join(tmpDir, sessionID)
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	playlist := "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:200\n#EXT-X-PLAYLIST-TYPE:EVENT\n#EXTINF:2.000000,\nsegment200.ts\n"
+	if err := os.WriteFile(filepath.Join(outputDir, "stream.m3u8"), []byte(playlist), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	session := &HLSSession{
+		ID:                 sessionID,
+		OutputDir:          outputDir,
+		CreatedAt:          time.Now(),
+		LastAccess:         time.Now(),
+		Duration:           1000,
+		StartOffset:        100,
+		TranscodingOffset:  500,
+		SegmentStartNumber: 200,
+		CastMode:           true,
+		forceAAC:           true,
+	}
+	manager.mu.Lock()
+	manager.sessions[sessionID] = session
+	manager.mu.Unlock()
+
+	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/video/hls/%s/stream.m3u8", sessionID), nil)
+	rr := httptest.NewRecorder()
+	manager.ServePlaylist(rr, req, sessionID)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusOK, rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "#EXT-X-MEDIA-SEQUENCE:0") {
+		t.Fatalf("cast playlist rebased its media sequence after a jump: %s", body)
+	}
+	if !strings.Contains(body, "segment0.ts") || !strings.Contains(body, "segment449.ts") {
+		t.Fatalf("cast playlist did not retain the full 900-second logical timeline: %s", body)
+	}
+	if strings.Contains(body, "segment450.ts") {
+		t.Fatalf("cast playlist extended beyond the stable logical timeline: %s", body)
+	}
+}
+
+func TestCastSegmentRestartPlanUsesStableTimelineCoordinates(t *testing.T) {
+	session := &HLSSession{
+		Duration:           1000,
+		StartOffset:        100,
+		TranscodingOffset:  500,
+		SegmentStartNumber: 200,
+		CastMode:           true,
+	}
+
+	plan, ok := castSegmentRestartPlan(session, 50, 230)
+	if !ok {
+		t.Fatal("expected a missing backward segment to require an on-demand restart")
+	}
+	if plan.SegmentStartNumber != 50 {
+		t.Fatalf("segment start number = %d, want 50", plan.SegmentStartNumber)
+	}
+	if plan.TranscodingOffset != 200 {
+		t.Fatalf("transcoding offset = %.3f, want 200", plan.TranscodingOffset)
+	}
+	if plan.OutputTimestampOffset != 100 {
+		t.Fatalf("output timestamp offset = %.3f, want 100", plan.OutputTimestampOffset)
+	}
+}
+
+func TestHLSManager_DeleteOldSegmentsRetainsCastTimeline(t *testing.T) {
+	outputDir := t.TempDir()
+	segmentPath := filepath.Join(outputDir, "segment0.ts")
+	if err := os.WriteFile(segmentPath, []byte("segment"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := &HLSManager{}
+	session := &HLSSession{
+		ID:                      "cast-retain-segments",
+		OutputDir:               outputDir,
+		CastMode:                true,
+		EarliestBufferedSegment: 10,
+		LastSegmentServed:       10,
+	}
+
+	manager.deleteOldSegments(session, "segment10.ts")
+
+	if _, err := os.Stat(segmentPath); err != nil {
+		t.Fatalf("cast segment was deleted even though backward seeking requires a stable timeline: %v", err)
+	}
+}
+
 func TestHLSManager_ServeSegment_NotFound(t *testing.T) {
 	tmpDir := t.TempDir()
 	manager := NewHLSManager(tmpDir, "", "", nil)

@@ -415,6 +415,7 @@ type HLSSession struct {
 	forceAAC           bool // Cached forceAAC setting for recovery restarts
 	SeekInProgress     bool // Set to true during user-initiated seek to prevent recovery logic
 	SeekGeneration     int  // Increments on each seek so regenerated segment URLs are cache-distinct
+	SegmentStartNumber int  // Logical HLS sequence number used by the current FFmpeg run
 
 	// Fatal error tracking (unplayable streams)
 	FatalError string // Set when stream is determined to be unplayable (persistent bitstream errors)
@@ -528,7 +529,55 @@ const (
 	hlsBufferPauseThreshold = 30 // ~2 minutes of buffer ahead (30 * 4s segments)
 	// Resume when buffer drops to this level
 	hlsBufferResumeThreshold = 20 // ~80 seconds of buffer ahead
+
+	// Requests close to the current Cast transcode head can wait for sequential
+	// generation. Larger jumps restart FFmpeg at the requested logical segment.
+	castOnDemandLeadSegments = 3
 )
+
+type castSegmentRestart struct {
+	SegmentStartNumber    int
+	TranscodingOffset     float64
+	OutputTimestampOffset float64
+}
+
+func castSegmentRestartPlan(session *HLSSession, requestedSegment, highestAvailable int) (castSegmentRestart, bool) {
+	if session == nil || !session.CastMode || requestedSegment < 0 {
+		return castSegmentRestart{}, false
+	}
+
+	session.mu.RLock()
+	startOffset := session.StartOffset
+	duration := session.Duration
+	currentStart := session.SegmentStartNumber
+	completed := session.Completed
+	session.mu.RUnlock()
+
+	// Let the current FFmpeg run satisfy nearby requests. This covers startup
+	// requests and the receiver's normal small amount of read-ahead.
+	if !completed &&
+		requestedSegment >= currentStart &&
+		requestedSegment <= currentStart+castOnDemandLeadSegments {
+		return castSegmentRestart{}, false
+	}
+	if !completed &&
+		requestedSegment > highestAvailable &&
+		requestedSegment <= highestAvailable+castOnDemandLeadSegments {
+		return castSegmentRestart{}, false
+	}
+
+	timelineOffset := float64(requestedSegment) * hlsSegmentDuration
+	transcodingOffset := startOffset + timelineOffset
+	if duration > 0 && transcodingOffset >= duration {
+		return castSegmentRestart{}, false
+	}
+
+	return castSegmentRestart{
+		SegmentStartNumber:    requestedSegment,
+		TranscodingOffset:     transcodingOffset,
+		OutputTimestampOffset: timelineOffset,
+	}, true
+}
 
 func isTextSubtitleCodec(codec string) bool {
 	switch strings.ToLower(strings.TrimSpace(codec)) {
@@ -2504,7 +2553,9 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 	// will be transcoded and whether a same-pass subtitle is being muxed, because both change the
 	// seek strategy needed to keep the subtitle aligned with the video.
 	videoWillTranscode := hlsWebVideoWillTranscode(session.PlaybackTarget, session.ProbeData)
-	if session.CastMode && castVideoMustTranscode(session.ProbeData) {
+	if session.CastMode {
+		// Stable Cast timelines require deterministic two-second keyframe
+		// boundaries so logical segment N always maps to the same media time.
 		videoWillTranscode = true
 	}
 	_, subtitleRenditionWanted := selectedTextSubtitleStream(subtitleStreams, session.SubtitleTrackIndex)
@@ -2538,7 +2589,10 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 	// Force INPUT seeking when muxing a same-pass subtitle so the single -ss before -i applies to
 	// BOTH the video and the subtitle output. OUTPUT seeking only seeks the first output, which
 	// would leave the subtitle starting at the beginning of the file and wildly out of sync.
-	useOutputSeeking := session.TranscodingOffset > 0 && session.TranscodingOffset < outputSeekThreshold && !subtitleRenditionWanted
+	useOutputSeeking := session.TranscodingOffset > 0 &&
+		session.TranscodingOffset < outputSeekThreshold &&
+		!subtitleRenditionWanted &&
+		!session.CastMode
 
 	// For INPUT seeking, add -ss before -i.
 	// -noaccurate_seek keeps a copied video keyframe-friendly for normal playback. When web
@@ -2546,9 +2600,9 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 	// video, audio, and the same-pass WebVTT all share the requested timestamp anchor instead of the
 	// earlier keyframe.
 	if session.TranscodingOffset > 0 && !useOutputSeeking {
-		if videoWillTranscode && subtitleRenditionWanted {
+		if videoWillTranscode && (subtitleRenditionWanted || session.CastMode) {
 			args = append(args, "-ss", fmt.Sprintf("%.3f", session.TranscodingOffset))
-			log.Printf("[hls] session %s: using INPUT seeking to %.3fs (accurate; web video+subtitle)", session.ID, session.TranscodingOffset)
+			log.Printf("[hls] session %s: using accurate INPUT seeking to %.3fs", session.ID, session.TranscodingOffset)
 		} else {
 			args = append(args, "-noaccurate_seek", "-ss", fmt.Sprintf("%.3f", session.TranscodingOffset))
 			log.Printf("[hls] session %s: using INPUT seeking to %.3fs with -noaccurate_seek", session.ID, session.TranscodingOffset)
@@ -2588,6 +2642,14 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 	// This ensures A/V sync when transcoding TrueHD/DTS audio (which have variable timing)
 	// and helps maintain subtitle sync across seek operations
 	args = append(args, "-start_at_zero")
+	session.mu.RLock()
+	castSegmentStartNumber := session.SegmentStartNumber
+	session.mu.RUnlock()
+	if session.CastMode && castSegmentStartNumber > 0 {
+		// FFmpeg rebases a seeked run to zero. Offset its output timestamps back
+		// into the receiver's stable HLS timeline.
+		args = append(args, "-output_ts_offset", fmt.Sprintf("%.3f", float64(castSegmentStartNumber)*hlsSegmentDuration))
+	}
 
 	args = append(args,
 		"-map", "0:v:0", // Map primary video stream
@@ -2708,13 +2770,13 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 		videoCodec = session.ProbeData.VideoCodec
 		needsVideoTranscode = IsIncompatibleVideoCodec(videoCodec)
 	}
-	if session.CastMode && castVideoMustTranscode(session.ProbeData) {
+	if session.CastMode {
 		needsVideoTranscode = true
 		pixFmt, profile := "", ""
 		if session.ProbeData != nil {
 			pixFmt, profile = session.ProbeData.VideoPixFmt, session.ProbeData.VideoProfile
 		}
-		log.Printf("[hls] session %s: cast receiver needs legacy-envelope H.264; transcoding codec=%q pix_fmt=%q profile=%q",
+		log.Printf("[hls] session %s: cast stable timeline requires deterministic H.264 segments; transcoding codec=%q pix_fmt=%q profile=%q",
 			session.ID, videoCodec, pixFmt, profile)
 	}
 	if session.PlaybackTarget == "web" && !isBrowserCopyCompatibleVideo(session.ProbeData) {
@@ -2942,9 +3004,13 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 	segmentStartNum := "0"
 	session.mu.RLock()
 	isRecovery := session.RecoveryAttempts > 0
+	configuredSegmentStart := session.SegmentStartNumber
 	session.mu.RUnlock()
 
-	if isRecovery {
+	if session.CastMode && configuredSegmentStart > 0 {
+		segmentStartNum = strconv.Itoa(configuredSegmentStart)
+		log.Printf("[hls] session %s: stable cast timeline - starting from logical segment %s", session.ID, segmentStartNum)
+	} else if isRecovery {
 		// Find highest existing segment and start from the next one
 		highestSegment := m.findHighestSegmentNumber(session)
 		if highestSegment >= 0 {
@@ -2958,6 +3024,10 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 	args = append(args, "-max_muxing_queue_size", "1024")
 
 	// HLS output settings
+	hlsInitTime := "1"
+	if session.CastMode {
+		hlsInitTime = fmt.Sprintf("%.0f", hlsSegmentDuration)
+	}
 	if needsFmp4 {
 		// Use fMP4 segments for Dolby Vision and HDR10
 		// iOS AVPlayer requires fMP4 for proper HEVC/HDR playback
@@ -2966,7 +3036,7 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 		// Use hls_init_time for shorter first segment (faster initial playback)
 		args = append(args,
 			"-f", "hls",
-			"-hls_init_time", "1", // First segment is 1s for faster startup
+			"-hls_init_time", hlsInitTime,
 			"-hls_time", "2", // Subsequent segments are 2s
 			"-hls_list_size", "0",
 			"-hls_playlist_type", "event",
@@ -2987,7 +3057,7 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 		// Use hls_init_time for shorter first segment (faster initial playback)
 		args = append(args,
 			"-f", "hls",
-			"-hls_init_time", "1", // First segment is 1s for faster startup
+			"-hls_init_time", hlsInitTime,
 			"-hls_time", "2", // Subsequent segments are 2s
 			"-hls_list_size", "0",
 			"-hls_playlist_type", "event",
@@ -4372,7 +4442,13 @@ func (m *HLSManager) ServePlaylist(w http.ResponseWriter, r *http.Request, sessi
 	session.mu.RLock()
 	seekGeneration := session.SeekGeneration
 	tonemappedToSDR := session.TonemappedToSDR
+	castMode := session.CastMode
+	sessionDuration := session.Duration
 	session.mu.RUnlock()
+
+	if castMode && sessionDuration > 0 {
+		playlistContent = buildStableCastPlaylist(session)
+	}
 
 	// Build header tags to inject after #EXTM3U
 	var headerTags []string
@@ -4493,6 +4569,41 @@ func playlistHasMediaSegment(content []byte) bool {
 		}
 	}
 	return false
+}
+
+func buildStableCastPlaylist(session *HLSSession) string {
+	session.mu.RLock()
+	duration := session.Duration
+	startOffset := session.StartOffset
+	session.mu.RUnlock()
+
+	effectiveDuration := duration - startOffset
+	if effectiveDuration < 0 {
+		effectiveDuration = 0
+	}
+	totalSegments := int(math.Ceil(effectiveDuration / hlsSegmentDuration))
+
+	var playlist strings.Builder
+	playlist.WriteString("#EXTM3U\n")
+	playlist.WriteString("#EXT-X-VERSION:3\n")
+	playlist.WriteString(fmt.Sprintf("#EXT-X-TARGETDURATION:%d\n", int(math.Ceil(hlsSegmentDuration))))
+	playlist.WriteString("#EXT-X-MEDIA-SEQUENCE:0\n")
+	playlist.WriteString("#EXT-X-PLAYLIST-TYPE:VOD\n")
+	playlist.WriteString("#EXT-X-INDEPENDENT-SEGMENTS\n")
+
+	for segmentNum := 0; segmentNum < totalSegments; segmentNum++ {
+		segmentDuration := hlsSegmentDuration
+		segmentEnd := float64(segmentNum+1) * hlsSegmentDuration
+		if segmentEnd > effectiveDuration {
+			segmentDuration = effectiveDuration - float64(segmentNum)*hlsSegmentDuration
+		}
+		if segmentDuration < 0.1 {
+			continue
+		}
+		playlist.WriteString(fmt.Sprintf("#EXTINF:%.6f,\nsegment%d.ts\n", segmentDuration, segmentNum))
+	}
+	playlist.WriteString("#EXT-X-ENDLIST\n")
+	return playlist.String()
 }
 
 func (m *HLSManager) ServeMasterPlaylist(w http.ResponseWriter, r *http.Request, sessionID string) {
@@ -4637,6 +4748,82 @@ func (m *HLSManager) ServeSubtitlePlaylist(w http.ResponseWriter, r *http.Reques
 	_, _ = w.Write([]byte(playlistContent))
 }
 
+func (m *HLSManager) restartCastTranscodingForSegment(session *HLSSession, requestedSegment int) {
+	highestAvailable := m.findHighestSegmentNumber(session)
+	plan, shouldRestart := castSegmentRestartPlan(session, requestedSegment, highestAvailable)
+	if !shouldRestart {
+		return
+	}
+
+	segmentPath := filepath.Join(session.OutputDir, fmt.Sprintf("segment%d.ts", requestedSegment))
+	if _, err := os.Stat(segmentPath); err == nil {
+		return
+	}
+
+	session.mu.Lock()
+	// Another segment request may already have moved the active run close
+	// enough to satisfy this request sequentially.
+	if !session.Completed &&
+		requestedSegment >= session.SegmentStartNumber &&
+		requestedSegment <= session.SegmentStartNumber+castOnDemandLeadSegments {
+		session.mu.Unlock()
+		return
+	}
+
+	log.Printf("[hls] session %s: stable Cast timeline jump to segment %d (media %.3fs, source %.3fs, highest available=%d)",
+		session.ID, plan.SegmentStartNumber, plan.OutputTimestampOffset, plan.TranscodingOffset, highestAvailable)
+
+	session.SeekInProgress = true
+	if session.Cancel != nil {
+		session.Cancel()
+	}
+	session.FFmpegCmd = nil
+	session.FFmpegPID = 0
+	session.Completed = false
+	session.FinalSegmentCount = -1
+	session.TranscodingOffset = plan.TranscodingOffset
+	session.SegmentStartNumber = plan.SegmentStartNumber
+	session.CreatedAt = time.Now()
+	session.LastSegmentRequest = time.Now()
+	session.RecoveryAttempts = 0
+	cachedForceAAC := session.forceAAC
+	youtubeVideoURL := session.YouTubeVideoURL
+	youtubeAudioURL := session.YouTubeAudioURL
+	youtubeProxyURL := session.YouTubeProxyURL
+	session.mu.Unlock()
+
+	// Let the cancelled process release its output files before the replacement
+	// process writes the same stable playlist.
+	time.Sleep(25 * time.Millisecond)
+
+	newCtx, newCancel := context.WithCancel(context.Background())
+	session.mu.Lock()
+	session.Cancel = newCancel
+	session.SeekInProgress = false
+	session.mu.Unlock()
+
+	go func(segmentStart int) {
+		var err error
+		if youtubeVideoURL != "" && youtubeAudioURL != "" {
+			err = m.startYouTubeTranscoding(newCtx, session, youtubeVideoURL, youtubeAudioURL, youtubeProxyURL)
+		} else {
+			err = m.startTranscoding(newCtx, session, cachedForceAAC)
+		}
+		if err == nil || errors.Is(err, context.Canceled) {
+			return
+		}
+
+		log.Printf("[hls] session %s: stable Cast segment restart failed: %v", session.ID, err)
+		session.mu.Lock()
+		if session.SegmentStartNumber == segmentStart {
+			session.Completed = true
+			session.FatalError = err.Error()
+			session.FatalErrorTime = time.Now()
+		}
+		session.mu.Unlock()
+	}(plan.SegmentStartNumber)
+}
+
 // ServeSegment serves an HLS segment file
 func (m *HLSManager) ServeSegment(w http.ResponseWriter, r *http.Request, sessionID, segmentName string) {
 	requestStart := time.Now()
@@ -4682,12 +4869,22 @@ func (m *HLSManager) ServeSegment(w http.ResponseWriter, r *http.Request, sessio
 	}
 
 	segmentPath := filepath.Join(session.OutputDir, segmentName)
+	if session.CastMode {
+		if _, err := os.Stat(segmentPath); os.IsNotExist(err) {
+			m.restartCastTranscodingForSegment(session, segmentNum)
+		}
+	}
 
-	// Wait for segment to be created (up to 30 seconds for slow transcoding)
+	// Wait for segment to be created. Stable Cast jumps may need to establish a
+	// fresh upstream request and FFmpeg process before producing the target.
 	waitStart := time.Now()
 	segmentReady := false
 	var segmentSize int64
-	for i := 0; i < 300; i++ {
+	waitAttempts := 300
+	if session.CastMode {
+		waitAttempts = 1200 // 30 seconds at 25ms per attempt
+	}
+	for i := 0; i < waitAttempts; i++ {
 		if stat, err := os.Stat(segmentPath); err == nil {
 			segmentSize = stat.Size()
 			segmentReady = true
@@ -5389,6 +5586,7 @@ func (m *HLSManager) Shutdown() {
 // deleteOldSegments removes old segment files to save disk space, only deleting segments the player no longer needs
 func (m *HLSManager) deleteOldSegments(session *HLSSession, justServedSegment string) {
 	session.mu.RLock()
+	castMode := session.CastMode
 	outputDir := session.OutputDir
 	// TESTING: hasDV/hasHDR unused since we always use .m4s
 	_ = session.HasDV
@@ -5397,6 +5595,12 @@ func (m *HLSManager) deleteOldSegments(session *HLSSession, justServedSegment st
 	earliestBuffered := session.EarliestBufferedSegment
 	lastServedSegment := session.LastSegmentServed
 	session.mu.RUnlock()
+	if castMode {
+		// A Cast receiver can seek anywhere in the fixed VOD playlist without
+		// consulting the sender first, so every generated logical segment must
+		// remain available for backward seeking.
+		return
+	}
 
 	// Use the minimum of EarliestBufferedSegment (from frontend) and LastSegmentServed (from backend)
 	// This ensures we don't delete segments that:

@@ -3336,11 +3336,12 @@ func (h *VideoHandler) StartHLSSession(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	response := map[string]interface{}{
-		"sessionId":         session.ID,
-		"playlistUrl":       h.hlsManager.buildSessionPlaylistURL(session),
-		"startOffset":       session.StartOffset,
-		"actualStartOffset": actualStartOffset,
-		"keyframeDelta":     keyframeDelta,
+		"sessionId":          session.ID,
+		"playlistUrl":        h.hlsManager.buildSessionPlaylistURL(session),
+		"startOffset":        session.StartOffset,
+		"actualStartOffset":  actualStartOffset,
+		"keyframeDelta":      keyframeDelta,
+		"stableCastTimeline": castMode && session.Duration > 0,
 	}
 
 	// Include duration if it was successfully probed
