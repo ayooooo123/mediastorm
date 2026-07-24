@@ -168,3 +168,16 @@ func TestFFmpegTokenSetParsesNames(t *testing.T) {
 		t.Fatalf("expected empty set for missing binary, got %v", set)
 	}
 }
+
+func TestBuildVideoEncodePlanLegacyCastLimits(t *testing.T) {
+	plan := buildVideoEncodePlanWithLimits(HWAccelCaps{Encode: HWNone}, false, 1920, 1080, 30)
+	if !strings.Contains(plan.Filter, "scale=w='min(1920,iw)':h='min(1080,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2") {
+		t.Fatalf("expected legacy Cast width and height limits, got %q", plan.Filter)
+	}
+	if !strings.Contains(plan.Filter, "fps='min(source_fps,30)'") {
+		t.Fatalf("expected legacy Cast frame-rate limit, got %q", plan.Filter)
+	}
+	if !strings.Contains(strings.Join(plan.EncoderArgs, " "), "-level:v 4.1") {
+		t.Fatalf("expected legacy Cast H.264 level cap, got %v", plan.EncoderArgs)
+	}
+}

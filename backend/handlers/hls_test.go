@@ -611,6 +611,52 @@ func TestHLSManager_ServePlaylist_WaitsForFirstSegment(t *testing.T) {
 	}
 }
 
+func TestHLSManager_ServePlaylist_CastUsesTransportStreamSegments(t *testing.T) {
+	tmpDir := t.TempDir()
+	manager := NewHLSManager(tmpDir, "", "", nil)
+	defer manager.Shutdown()
+
+	sessionID := "cast-hdr-playlist-session"
+	outputDir := filepath.Join(tmpDir, sessionID)
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	playlist := "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:EVENT\n#EXTINF:4.000000,\nsegment0.ts\n"
+	if err := os.WriteFile(filepath.Join(outputDir, "stream.m3u8"), []byte(playlist), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	session := &HLSSession{
+		ID:         sessionID,
+		OutputDir:  outputDir,
+		CreatedAt:  time.Now(),
+		LastAccess: time.Now(),
+		Duration:   8,
+		HasHDR:     true,
+		CastMode:   true,
+		forceAAC:   true,
+	}
+	manager.mu.Lock()
+	manager.sessions[sessionID] = session
+	manager.mu.Unlock()
+
+	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/video/hls/%s/stream.m3u8", sessionID), nil)
+	rr := httptest.NewRecorder()
+	manager.ServePlaylist(rr, req, sessionID)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusOK, rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	if strings.Contains(body, ".m4s") {
+		t.Fatalf("cast playlist advertised fMP4 segments even though cast output is MPEG-TS: %s", body)
+	}
+	if !strings.Contains(body, "segment1.ts") {
+		t.Fatalf("cast playlist did not extend using MPEG-TS segments: %s", body)
+	}
+}
+
 func TestHLSManager_ServeSegment_NotFound(t *testing.T) {
 	tmpDir := t.TempDir()
 	manager := NewHLSManager(tmpDir, "", "", nil)
@@ -736,6 +782,105 @@ func TestIsBrowserCopyCompatibleVideo(t *testing.T) {
 				t.Fatalf("isBrowserCopyCompatibleVideo() = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestLegacyCastCompatibilityEnvelope(t *testing.T) {
+	tests := []struct {
+		name  string
+		probe *UnifiedProbeResult
+		want  bool
+	}{
+		{
+			name: "1080p30 level 4.1",
+			probe: &UnifiedProbeResult{
+				VideoCodec: "h264", VideoPixFmt: "yuv420p", VideoProfile: "High",
+				VideoWidth: 1920, VideoHeight: 1080, VideoLevel: 41, AvgFrameRate: "30000/1001",
+			},
+			want: true,
+		},
+		{
+			name: "1080p60 exceeds the legacy receiver envelope",
+			probe: &UnifiedProbeResult{
+				VideoCodec: "h264", VideoPixFmt: "yuv420p", VideoProfile: "High",
+				VideoWidth: 1920, VideoHeight: 1080, VideoLevel: 42, AvgFrameRate: "60000/1001",
+			},
+			want: false,
+		},
+		{
+			name:  "missing probe data is unsafe",
+			probe: nil,
+			want:  false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isLegacyCastCopyCompatibleVideo(tc.probe); got != tc.want {
+				t.Fatalf("isLegacyCastCopyCompatibleVideo() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAppendAACTranscodeArgs_LegacyCastUsesStereoAACLC(t *testing.T) {
+	args := appendAACTranscodeArgs(nil, ":0", true)
+	joined := strings.Join(args, " ")
+
+	for _, required := range []string{
+		"-c:a:0 aac",
+		"-profile:a:0 aac_low",
+		"-ac:a:0 2",
+		"-channel_layout:a:0 stereo",
+		"-ar:a:0 48000",
+	} {
+		if !strings.Contains(joined, required) {
+			t.Fatalf("legacy cast audio args missing %q: %s", required, joined)
+		}
+	}
+	if strings.Contains(joined, "5.1") || strings.Contains(joined, "-ac:a:0 6") {
+		t.Fatalf("legacy cast audio args retained surround output: %s", joined)
+	}
+}
+
+func TestParseUnifiedProbeOutputRetainsLegacyCastVideoLimits(t *testing.T) {
+	manager := &HLSManager{}
+	probe, err := manager.parseUnifiedProbeOutput([]byte(`{
+		"format":{"duration":"120.0"},
+		"streams":[{
+			"index":0,"codec_type":"video","codec_name":"h264","pix_fmt":"yuv420p",
+			"profile":"High","width":1920,"height":1080,"level":41,"avg_frame_rate":"30000/1001"
+		}]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if probe.VideoWidth != 1920 || probe.VideoHeight != 1080 || probe.VideoLevel != 41 {
+		t.Fatalf("video limits were not retained: %+v", probe)
+	}
+}
+
+func TestProbeCacheConversionRoundTripRetainsCastFields(t *testing.T) {
+	handler := &VideoHandler{}
+	full := &VideoFullResult{
+		VideoCodec:   "h264",
+		VideoPixFmt:  "yuv420p",
+		VideoProfile: "high",
+		VideoWidth:   1920,
+		VideoHeight:  1080,
+		VideoLevel:   41,
+		AvgFrameRate: "24000/1001",
+		Duration:     7200,
+	}
+
+	cached := handler.videoFullToUnifiedProbe(full)
+	if cached.VideoWidth != 1920 || cached.VideoHeight != 1080 || cached.VideoLevel != 41 {
+		t.Fatalf("VideoFullResult -> UnifiedProbeResult dropped Cast fields: %+v", cached)
+	}
+
+	roundTripped := handler.unifiedProbeToVideoFull(cached)
+	if roundTripped.VideoWidth != 1920 || roundTripped.VideoHeight != 1080 || roundTripped.VideoLevel != 41 {
+		t.Fatalf("UnifiedProbeResult -> VideoFullResult dropped Cast fields: %+v", roundTripped)
 	}
 }
 
