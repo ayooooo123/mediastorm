@@ -1,10 +1,44 @@
 package handlers
 
 import (
+	"net/url"
 	"testing"
 
 	"novastream/models"
 )
+
+func TestCappedDisplayListQueryLimitsDiscoveryResults(t *testing.T) {
+	query := url.Values{"limit": {"5000"}, "offset": {"450"}}
+	capped := cappedDisplayListQuery(query)
+
+	if got := capped.Get("limit"); got != "50" {
+		t.Fatalf("limit = %q, want 50", got)
+	}
+	if got := query.Get("limit"); got != "5000" {
+		t.Fatalf("input query was mutated: limit = %q", got)
+	}
+}
+
+func TestCapDisplayListPayloadCapsItemsAndReportedTotals(t *testing.T) {
+	items := make([]interface{}, 100)
+	payload := map[string]interface{}{
+		"items":           items,
+		"total":           float64(12_000),
+		"sourceTotal":     float64(12_000),
+		"unfilteredTotal": float64(15_000),
+	}
+
+	capDisplayListPayload(payload, url.Values{"offset": {"450"}})
+
+	if got := len(payload["items"].([]interface{})); got != 50 {
+		t.Fatalf("items length = %d, want 50", got)
+	}
+	for _, key := range []string{"total", "sourceTotal", "unfilteredTotal"} {
+		if got := payload[key]; got != float64(maxDiscoveryListItems) {
+			t.Fatalf("%s = %v, want %d", key, got, maxDiscoveryListItems)
+		}
+	}
+}
 
 type paginationHiddenItemsService struct{}
 
