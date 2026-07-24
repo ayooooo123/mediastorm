@@ -524,6 +524,31 @@ func (s *HealthService) checkHealth(ctx context.Context, result models.NZBResult
 					// Don't check content-length for 405 - it's the error body size, not the file size
 					if resp.StatusCode == http.StatusMethodNotAllowed {
 						log.Printf("[debrid-health] pre-resolved stream %s: HEAD not supported (405), falling through to ffprobe", result.Title)
+						placeholder, getStatus, getFinalURL, probeErr := probePreResolvedPlaceholderRedirect(ctx, encodedStreamURL, healthCheckTimeout)
+						if probeErr != nil {
+							log.Printf("[debrid-health] placeholder redirect probe failed for pre-resolved stream %s: %v", result.Title, probeErr)
+						} else {
+							log.Printf("[debrid-health] pre-resolved stream %s: ranged GET status=%d final-url=%q placeholder=%t",
+								result.Title, getStatus, safeURLForLog(getFinalURL), placeholder)
+							if placeholder {
+								return &DebridHealthCheck{
+									Healthy:      false,
+									Status:       "not_cached",
+									Cached:       false,
+									Provider:     result.Attributes["tracker"],
+									ErrorMessage: "stream redirected to an unavailable-content placeholder",
+								}, nil
+							}
+							if getStatus >= 400 {
+								return &DebridHealthCheck{
+									Healthy:      false,
+									Status:       "not_cached",
+									Cached:       false,
+									Provider:     result.Attributes["tracker"],
+									ErrorMessage: fmt.Sprintf("stream returned HTTP %d", getStatus),
+								}, nil
+							}
+						}
 					} else if resp.StatusCode >= 500 && isInternetArchiveDirectStream(result, streamURL) {
 						log.Printf("[debrid-health] pre-resolved Internet Archive stream %s returned HEAD HTTP %d - trying ranged GET fallback", result.Title, resp.StatusCode)
 						if ok, status, contentLength, contentType := probePreResolvedRange(ctx, encodedStreamURL); ok {
@@ -840,6 +865,33 @@ func probePreResolvedRange(ctx context.Context, streamURL string) (ok bool, stat
 		return false, resp.StatusCode, contentLength, contentType
 	}
 	return true, resp.StatusCode, contentLength, contentType
+}
+
+func probePreResolvedPlaceholderRedirect(ctx context.Context, streamURL string, timeout time.Duration) (placeholder bool, status int, finalURL string, err error) {
+	probeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, streamURL, nil)
+	if err != nil {
+		return false, 0, "", err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; mediastorm/1.0)")
+	req.Header.Set("Range", "bytes=0-4095")
+	req.Header.Set("Accept-Encoding", "identity")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false, 0, "", err
+	}
+	defer resp.Body.Close()
+
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if readErr != nil {
+		return false, resp.StatusCode, resp.Request.URL.String(), readErr
+	}
+
+	finalURL = resp.Request.URL.String()
+	return IsKnownPlaceholderResponse(finalURL, body), resp.StatusCode, finalURL, nil
 }
 
 func (s *HealthService) checkProviderHealth(ctx context.Context, client Provider, result models.NZBResult, infoHash, torrentURL string, verifyUncached bool) (*DebridHealthCheck, error) {
