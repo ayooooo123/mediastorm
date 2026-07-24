@@ -1,8 +1,13 @@
 package handlers
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
+
+	"novastream/config"
 )
 
 func joinArgs(args []string) string { return strings.Join(args, " ") }
@@ -79,10 +84,17 @@ func TestBuildVideoEncodePlanOpenCLTonemap(t *testing.T) {
 	}
 }
 
+func TestBuildVideoEncodePlanPreservesHLGInputTransfer(t *testing.T) {
+	plan := buildVideoEncodePlan(HWAccelCaps{Encode: HWNone, Tonemap: "zscale"}, true, "arib-std-b67")
+	if !strings.HasPrefix(plan.Filter, "setparams=range=tv:color_primaries=bt2020:color_trc=arib-std-b67:colorspace=bt2020nc,") {
+		t.Fatalf("HLG tone map must retain its input transfer, got %q", plan.Filter)
+	}
+}
+
 func TestBuildVideoEncodePlanVAAPIForcesCPUTonemap(t *testing.T) {
 	// VAAPI encode + a GPU tonemap pref must not init a second filter device;
 	// tone mapping is forced onto the CPU (zscale) to avoid the conflict.
-	plan := buildVideoEncodePlan(HWAccelCaps{Encode: HWVAAPI, EncodeDevice: "/dev/dri/renderD128", Tonemap: "libplacebo"}, true)
+	plan := buildVideoEncodePlan(HWAccelCaps{Encode: HWVAAPI, EncodeDevice: "/dev/dri/renderD128", Tonemap: "libplacebo", Zscale: true}, true)
 	if strings.Contains(joinArgs(plan.GlobalArgs), "vulkan") {
 		t.Fatalf("vaapi must not also init a vulkan filter device, got %v", plan.GlobalArgs)
 	}
@@ -92,7 +104,7 @@ func TestBuildVideoEncodePlanVAAPIForcesCPUTonemap(t *testing.T) {
 }
 
 func TestBuildVideoEncodePlanVAAPIUploads(t *testing.T) {
-	plan := buildVideoEncodePlan(HWAccelCaps{Encode: HWVAAPI, EncodeDevice: "/dev/dri/renderD128", Tonemap: "zscale"}, true)
+	plan := buildVideoEncodePlan(HWAccelCaps{Encode: HWVAAPI, EncodeDevice: "/dev/dri/renderD128", Tonemap: "zscale", Zscale: true}, true)
 	if !strings.Contains(joinArgs(plan.GlobalArgs), "-vaapi_device /dev/dri/renderD128") {
 		t.Fatalf("expected vaapi device init, got %v", plan.GlobalArgs)
 	}
@@ -211,5 +223,82 @@ func TestFFmpegTokenSetParsesNames(t *testing.T) {
 	// rather than panicking.
 	if set := ffmpegTokenSet("/nonexistent/ffmpeg", "-encoders"); len(set) != 0 {
 		t.Fatalf("expected empty set for missing binary, got %v", set)
+	}
+}
+
+type mutableHWAccelConfigProvider struct {
+	settings config.Settings
+}
+
+func (p *mutableHWAccelConfigProvider) Load() (config.Settings, error) {
+	return p.settings, nil
+}
+
+func TestHWAccelCacheRefreshesWhenPreferenceChanges(t *testing.T) {
+	provider := &mutableHWAccelConfigProvider{settings: config.DefaultSettings()}
+	provider.settings.Transmux.HardwareAcceleration = "auto"
+	manager := NewHLSManager(t.TempDir(), "", "", nil)
+	manager.SetConfigManager(provider)
+
+	_ = manager.hwAccelCaps()
+	if manager.hwAccelPref != "auto" {
+		t.Fatalf("cached preference = %q, want auto", manager.hwAccelPref)
+	}
+
+	provider.settings.Transmux.HardwareAcceleration = "none"
+	_ = manager.hwAccelCaps()
+	if manager.hwAccelPref != "none" {
+		t.Fatalf("cached preference = %q, want none after settings change", manager.hwAccelPref)
+	}
+}
+
+func TestMarkHWAccelFailedQuarantinesHardware(t *testing.T) {
+	provider := &mutableHWAccelConfigProvider{settings: config.DefaultSettings()}
+	provider.settings.Transmux.HardwareAcceleration = "auto"
+	manager := NewHLSManager(t.TempDir(), "", "", nil)
+	manager.SetConfigManager(provider)
+	manager.hwAccel = HWAccelCaps{Encode: HWNVENC, Tonemap: "libplacebo"}
+	manager.hwAccelPref = "auto"
+	manager.hwAccelReady = true
+
+	manager.markHWAccelFailed(HWNVENC)
+	status := manager.HardwareAccelerationStatus()
+	if status.EffectiveEncoder != "libx264" || status.HardwareEncode {
+		t.Fatalf("status after failure = %+v, want software fallback", status)
+	}
+	if status.RetryAfter == "" {
+		t.Fatal("expected failed hardware path to have a retry time")
+	}
+}
+
+func TestShouldFallbackHardwareEncode(t *testing.T) {
+	hardwarePlan := videoEncodePlan{HardwareEncode: true, Kind: HWNVENC}
+	commandErr := errors.New("ffmpeg failed")
+	if !shouldFallbackHardwareEncode(commandErr, nil, false, hardwarePlan, 0, false) {
+		t.Fatal("expected early hardware failure to retry in software")
+	}
+	for name, got := range map[string]bool{
+		"no command error": shouldFallbackHardwareEncode(nil, nil, false, hardwarePlan, 0, false),
+		"context canceled": shouldFallbackHardwareEncode(commandErr, context.Canceled, false, hardwarePlan, 0, false),
+		"idle timeout":     shouldFallbackHardwareEncode(commandErr, nil, true, hardwarePlan, 0, false),
+		"segment produced": shouldFallbackHardwareEncode(commandErr, nil, false, hardwarePlan, 1, false),
+		"already retried":  shouldFallbackHardwareEncode(commandErr, nil, false, hardwarePlan, 0, true),
+		"software plan":    shouldFallbackHardwareEncode(commandErr, nil, false, videoEncodePlan{}, 0, false),
+	} {
+		if got {
+			t.Fatalf("%s unexpectedly requested a hardware fallback", name)
+		}
+	}
+}
+
+func TestHardwareAccelerationStatusReportsRetryDeadline(t *testing.T) {
+	manager := NewHLSManager(t.TempDir(), "", "", nil)
+	manager.hwAccel = HWAccelCaps{Encode: HWNone, Tonemap: "zscale"}
+	manager.hwAccelPref = "auto"
+	manager.hwAccelReady = true
+	manager.hwAccelRetryAfter = time.Now().Add(time.Minute)
+	status := manager.HardwareAccelerationStatus()
+	if status.EffectiveEncoder != "libx264" || status.RetryAfter == "" {
+		t.Fatalf("unexpected status: %+v", status)
 	}
 }

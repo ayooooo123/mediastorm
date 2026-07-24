@@ -2433,6 +2433,30 @@ func TestAdminUIHandler_YTDLPCookies(t *testing.T) {
 	})
 }
 
+func TestHardwareAccelerationSchemaIsVisibleUnderServerSettings(t *testing.T) {
+	section, ok := handlers.SettingsSchema["transmux"].(map[string]interface{})
+	if !ok {
+		t.Fatal("transmux settings schema is missing")
+	}
+	if section["group"] != "server" {
+		t.Fatalf("transmux group = %v, want server", section["group"])
+	}
+	if hidden, _ := section["hidden"].(bool); hidden {
+		t.Fatal("hardware acceleration section must be visible")
+	}
+	fields, ok := section["fields"].(map[string]interface{})
+	if !ok {
+		t.Fatal("transmux fields schema is missing")
+	}
+	field, ok := fields["hardwareAcceleration"].(map[string]interface{})
+	if !ok {
+		t.Fatal("hardwareAcceleration field is missing")
+	}
+	if field["type"] != "select" || field["globalOnly"] != true {
+		t.Fatalf("unexpected hardwareAcceleration schema: %+v", field)
+	}
+}
+
 // multipartWriter creates a multipart form with a file field
 func multipartWriter(t *testing.T, body *bytes.Buffer, fieldName, fileName, content string) *multipart.Writer {
 	t.Helper()

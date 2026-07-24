@@ -223,7 +223,7 @@ var SettingsSchema = map[string]interface{}{
 		"icon":        "server",
 		"group":       "server",
 		"order":       0,
-		"description": "Changing host or port requires a container restart to take effect. Only modify these if you know what you're doing.",
+		"description": "Changing host, port, or base path requires a container restart to take effect. Other server settings apply when saved.",
 		"fields": map[string]interface{}{
 			"host":     map[string]interface{}{"type": "text", "label": "Host", "description": "Server bind address (leave empty to bind all interfaces)", "order": 0},
 			"port":     map[string]interface{}{"type": "number", "label": "Port", "description": "Server port (default: 7777)", "order": 1},
@@ -1156,17 +1156,31 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"transmux": map[string]interface{}{
-		"label":  "Transmux Settings",
-		"icon":   "film",
-		"group":  "services",
-		"order":  99,
-		"hidden": true,
+		"label":       "Web Player Hardware Acceleration",
+		"icon":        "film",
+		"group":       "server",
+		"order":       2,
+		"description": "Controls server-side FFmpeg encoding for the browser player. Changes apply to the next web playback session.",
 		"fields": map[string]interface{}{
-			"enabled":              map[string]interface{}{"type": "boolean", "label": "Enabled", "description": "Enable video transmuxing for HLS streaming"},
-			"ffmpegPath":           map[string]interface{}{"type": "text", "label": "FFmpeg Path", "description": "Path to ffmpeg binary"},
-			"ffprobePath":          map[string]interface{}{"type": "text", "label": "FFprobe Path", "description": "Path to ffprobe binary"},
-			"hlsTempDirectory":     map[string]interface{}{"type": "text", "label": "HLS Temp Directory", "description": "Directory for HLS segment storage (default: /tmp/novastream-hls)"},
-			"hardwareAcceleration": map[string]interface{}{"type": "select", "label": "Hardware Acceleration", "options": []string{"auto", "none", "nvenc", "qsv", "vaapi", "videotoolbox"}, "description": "GPU-accelerated H.264 encoding and HDR/DV tone mapping for web playback. 'auto' probes for a working encoder. Docker requires device passthrough (e.g. --device /dev/dri for vaapi/qsv, NVIDIA container runtime for nvenc)."},
+			"enabled":          map[string]interface{}{"type": "boolean", "label": "Enabled", "description": "Enable video transmuxing for HLS streaming", "hidden": true},
+			"ffmpegPath":       map[string]interface{}{"type": "text", "label": "FFmpeg Path", "description": "Path to ffmpeg binary", "hidden": true},
+			"ffprobePath":      map[string]interface{}{"type": "text", "label": "FFprobe Path", "description": "Path to ffprobe binary", "hidden": true},
+			"hlsTempDirectory": map[string]interface{}{"type": "text", "label": "HLS Temp Directory", "description": "Directory for HLS segment storage (default: /tmp/novastream-hls)", "hidden": true},
+			"hardwareAcceleration": map[string]interface{}{
+				"type":  "select",
+				"label": "Web Player Encoder",
+				"options": []map[string]string{
+					{"value": "auto", "label": "Auto Detect"},
+					{"value": "none", "label": "Software (libx264)"},
+					{"value": "nvenc", "label": "NVIDIA NVENC"},
+					{"value": "qsv", "label": "Intel Quick Sync"},
+					{"value": "vaapi", "label": "VAAPI"},
+					{"value": "videotoolbox", "label": "Apple VideoToolbox"},
+				},
+				"description": "Selects server-side H.264 encoding for playback.html. Auto Detect probes real encodes and falls back to software. Docker requires device passthrough such as /dev/dri for Quick Sync/VAAPI or the NVIDIA container runtime for NVENC.",
+				"order":       0,
+				"globalOnly":  true,
+			},
 		},
 	},
 	"subtitles": map[string]interface{}{
@@ -1743,6 +1757,18 @@ func NewAdminUIHandler(settingsPath, logFile string, hlsManager *HLSManager, use
 		traktClient:           trakt.NewClient("", ""), // Will be updated with credentials from settings
 		serverBasePath:        serverBasePath,
 	}
+}
+
+func (h *AdminUIHandler) GetHardwareAccelerationStatus(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if h.hlsManager == nil {
+		_ = json.NewEncoder(w).Encode(HWAccelStatus{
+			Configured:       "auto",
+			EffectiveEncoder: "unavailable",
+		})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(h.hlsManager.HardwareAccelerationStatus())
 }
 
 // AdminPageData holds data for admin page templates

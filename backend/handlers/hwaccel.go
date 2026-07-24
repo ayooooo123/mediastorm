@@ -41,6 +41,16 @@ type HWAccelCaps struct {
 	//   "zscale"     — CPU (libzimg), reliable fallback, HDR10/HLG only.
 	//   ""           — no tone mapping available (naive transcode).
 	Tonemap string
+	// Zscale reports whether the CPU tone-map fallback is compiled in.
+	Zscale bool
+}
+
+type HWAccelStatus struct {
+	Configured       string `json:"configured"`
+	EffectiveEncoder string `json:"effectiveEncoder"`
+	HardwareEncode   bool   `json:"hardwareEncode"`
+	ToneMapper       string `json:"toneMapper,omitempty"`
+	RetryAfter       string `json:"retryAfter,omitempty"`
 }
 
 // videoEncodePlan is the concrete set of ffmpeg arguments for one transcode,
@@ -59,22 +69,98 @@ type videoEncodePlan struct {
 	HardwareEncode bool
 	// Kind is the encode backend used (for logging).
 	Kind HWAccelKind
+	// Tonemap is the selected tone-mapping implementation, if any.
+	Tonemap string
 }
 
-// hwAccelOnce guards lazy detection on the manager.
+const hwAccelFailureRetryDelay = 5 * time.Minute
+
+// hwAccelCaps lazily detects hardware support and caches it by configured
+// preference. Changing the setting therefore takes effect on the next web
+// transcode without restarting the server.
 func (m *HLSManager) hwAccelCaps() HWAccelCaps {
-	m.hwAccelOnce.Do(func() {
-		pref := "auto"
-		if m.configManager != nil {
-			if settings, err := m.configManager.Load(); err == nil {
-				if p := strings.ToLower(strings.TrimSpace(settings.Transmux.HardwareAcceleration)); p != "" {
-					pref = p
-				}
+	pref := "auto"
+	if m.configManager != nil {
+		if settings, err := m.configManager.Load(); err == nil {
+			if p := strings.ToLower(strings.TrimSpace(settings.Transmux.HardwareAcceleration)); p != "" {
+				pref = p
 			}
 		}
-		m.hwAccel = detectHWAccel(m.ffmpegPath, pref)
-	})
+	}
+
+	m.hwAccelMu.Lock()
+	defer m.hwAccelMu.Unlock()
+	if m.hwAccelReady && m.hwAccelPref == pref &&
+		(m.hwAccelRetryAfter.IsZero() || time.Now().Before(m.hwAccelRetryAfter)) {
+		return m.hwAccel
+	}
+
+	m.hwAccel = detectHWAccel(m.ffmpegPath, pref)
+	m.hwAccelPref = pref
+	m.hwAccelReady = true
+	m.hwAccelRetryAfter = time.Time{}
 	return m.hwAccel
+}
+
+// markHWAccelFailed moves subsequent sessions to software encoding after a
+// real media graph fails on the selected hardware path. Auto detection is
+// retried later in case the failure was a transient driver/session-limit issue.
+func (m *HLSManager) markHWAccelFailed(kind HWAccelKind) {
+	if kind == HWNone {
+		return
+	}
+	m.hwAccelMu.Lock()
+	defer m.hwAccelMu.Unlock()
+	if !m.hwAccelReady || m.hwAccel.Encode != kind {
+		return
+	}
+	m.hwAccel = detectHWAccel(m.ffmpegPath, string(HWNone))
+	m.hwAccelPref = currentHWAccelPreference(m.configManager)
+	m.hwAccelReady = true
+	m.hwAccelRetryAfter = time.Now().Add(hwAccelFailureRetryDelay)
+}
+
+func currentHWAccelPreference(provider ConfigProvider) string {
+	pref := "auto"
+	if provider == nil {
+		return pref
+	}
+	settings, err := provider.Load()
+	if err != nil {
+		return pref
+	}
+	if value := strings.ToLower(strings.TrimSpace(settings.Transmux.HardwareAcceleration)); value != "" {
+		return value
+	}
+	return pref
+}
+
+func (m *HLSManager) HardwareAccelerationStatus() HWAccelStatus {
+	caps := m.hwAccelCaps()
+	status := HWAccelStatus{
+		Configured:       currentHWAccelPreference(m.configManager),
+		EffectiveEncoder: string(caps.Encode),
+		HardwareEncode:   caps.Encode != HWNone,
+		ToneMapper:       caps.Tonemap,
+	}
+	if caps.Encode == HWNone {
+		status.EffectiveEncoder = "libx264"
+	}
+	m.hwAccelMu.Lock()
+	if !m.hwAccelRetryAfter.IsZero() && time.Now().Before(m.hwAccelRetryAfter) {
+		status.RetryAfter = m.hwAccelRetryAfter.UTC().Format(time.RFC3339)
+	}
+	m.hwAccelMu.Unlock()
+	return status
+}
+
+func shouldFallbackHardwareEncode(commandErr, contextErr error, idleTriggered bool, plan videoEncodePlan, actualSegments int, attempted bool) bool {
+	return commandErr != nil &&
+		contextErr == nil &&
+		!idleTriggered &&
+		plan.HardwareEncode &&
+		actualSegments == 0 &&
+		!attempted
 }
 
 // detectHWAccel probes the ffmpeg binary and host devices to pick the best
@@ -90,6 +176,7 @@ func detectHWAccel(ffmpegPath, pref string) HWAccelCaps {
 
 	encoders := ffmpegEncoderSet(ffmpegPath)
 	filters := ffmpegFilterSet(ffmpegPath)
+	caps.Zscale = filters["zscale"]
 
 	pref = strings.ToLower(strings.TrimSpace(pref))
 	if pref == "" {
@@ -340,7 +427,9 @@ func looksLikeCapabilityFlags(s string) bool {
 
 // buildVideoEncodePlan assembles the ffmpeg arguments for a web transcode given
 // the detected capabilities and whether the source is HDR/DV (tonemapNeeded).
-func buildVideoEncodePlan(caps HWAccelCaps, tonemapNeeded bool) videoEncodePlan {
+// sourceTransfer is optional for compatibility with callers that have no probe
+// metadata; those sources conservatively default to PQ.
+func buildVideoEncodePlan(caps HWAccelCaps, tonemapNeeded bool, sourceTransfer ...string) videoEncodePlan {
 	plan := videoEncodePlan{Kind: caps.Encode}
 
 	// VAAPI/QSV encoders need their own filter hardware device for the hwupload
@@ -350,15 +439,20 @@ func buildVideoEncodePlan(caps HWAccelCaps, tonemapNeeded bool) videoEncodePlan 
 	// memory frames (NVENC / VideoToolbox / libx264).
 	tonemapImpl := caps.Tonemap
 	if caps.Encode == HWVAAPI || caps.Encode == HWQSV {
-		if caps.Tonemap == "" {
-			tonemapImpl = ""
-		} else {
+		if caps.Zscale {
 			tonemapImpl = "zscale"
+		} else {
+			tonemapImpl = ""
 		}
 	}
-
 	var filters []string
 	if tonemapNeeded && tonemapImpl != "" {
+		plan.Tonemap = tonemapImpl
+		inputTransfer := "smpte2084"
+		if len(sourceTransfer) > 0 && strings.EqualFold(strings.TrimSpace(sourceTransfer[0]), "arib-std-b67") {
+			inputTransfer = "arib-std-b67"
+		}
+		inputColorParams := "setparams=range=tv:color_primaries=bt2020:color_trc=" + inputTransfer + ":colorspace=bt2020nc"
 		plan.Tonemapped = true
 		switch tonemapImpl {
 		case "libplacebo":
@@ -372,7 +466,7 @@ func buildVideoEncodePlan(caps HWAccelCaps, tonemapNeeded bool) videoEncodePlan 
 			// downloaded back to system memory so the encoder stage is independent.
 			plan.GlobalArgs = append(plan.GlobalArgs, "-init_hw_device", "opencl=ocl", "-filter_hw_device", "ocl")
 			filters = append(filters,
-				"setparams=range=tv:color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc",
+				inputColorParams,
 				"format=p010le",
 				"hwupload",
 				"tonemap_opencl=tonemap=hable:desat=0:t=bt709:m=bt709:p=bt709:format=nv12",
@@ -383,7 +477,7 @@ func buildVideoEncodePlan(caps HWAccelCaps, tonemapNeeded bool) videoEncodePlan 
 				// Some DV8 files omit container-level color metadata even though
 				// their base layer is HDR10. Without explicit input properties,
 				// zscale aborts with "no path between colorspaces".
-				"setparams=range=tv:color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc",
+				inputColorParams,
 				"zscale=t=linear:npl=100",
 				"format=gbrpf32le",
 				"zscale=p=bt709",
