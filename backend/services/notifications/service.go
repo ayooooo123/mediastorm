@@ -251,6 +251,10 @@ func (s *Service) HandlePlaybackUpdate(userID string, update models.PlaybackProg
 	s.sessionMu.Unlock()
 
 	for _, eventType := range eventTypes {
+		eventPercent := percent
+		if eventType == models.NotificationEventWatchWatched {
+			eventPercent = 0
+		}
 		s.Notify(models.NotificationEvent{
 			ID:            uuid.NewString(),
 			Type:          eventType,
@@ -264,7 +268,7 @@ func (s *Service) HandlePlaybackUpdate(userID string, update models.PlaybackProg
 			EpisodeNumber: update.EpisodeNumber,
 			Position:      update.Position,
 			Duration:      update.Duration,
-			Percent:       percent,
+			Percent:       eventPercent,
 			PosterURL:     update.PosterURL,
 			ExternalIDs:   update.ExternalIDs,
 			OccurredAt:    now,
@@ -577,9 +581,11 @@ func templateValues(event models.NotificationEvent) map[string]string {
 	if episode != "" {
 		mediaLabel += " · " + episode
 	}
+	percent := ""
 	progressLabel := ""
-	if event.Percent > 0 {
-		progressLabel = fmt.Sprintf(" · %.0f%%", event.Percent)
+	if event.Type != models.NotificationEventWatchWatched && event.Percent > 0 {
+		percent = strconv.FormatFloat(event.Percent, 'f', 0, 64)
+		progressLabel = " · " + percent + "%"
 	}
 	releaseLabel := ""
 	if event.ReleaseType != "" || event.ReleaseDate != "" {
@@ -597,7 +603,7 @@ func templateValues(event models.NotificationEvent) map[string]string {
 		"episode":       episode,
 		"season":        optionalInt(event.SeasonNumber),
 		"episodeNumber": optionalInt(event.EpisodeNumber),
-		"percent":       strconv.FormatFloat(event.Percent, 'f', 0, 64),
+		"percent":       percent,
 		"progressLabel": progressLabel,
 		"releaseType":   event.ReleaseType,
 		"releaseDate":   event.ReleaseDate,

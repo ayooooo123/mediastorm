@@ -120,6 +120,24 @@ func TestFormatRendersSupportedSections(t *testing.T) {
 	}
 }
 
+func TestFormatOmitsProgressForWatchedEvent(t *testing.T) {
+	title, body := Format(models.NotificationChannel{
+		TitleTemplate: "{{eventLabel}}: {{title}} {{percent}}",
+		BodyTemplate:  "{{mediaLabel}}{{progressLabel}}",
+	}, models.NotificationEvent{
+		Type:      models.NotificationEventWatchWatched,
+		Title:     "Spirit: Stallion of the Cimarron",
+		MediaType: "movie",
+		Percent:   90,
+	})
+	if title != "Watched: Spirit: Stallion of the Cimarron" {
+		t.Fatalf("title = %q", title)
+	}
+	if body != "Movie" {
+		t.Fatalf("body = %q", body)
+	}
+}
+
 func TestSaveAndListChannelPreservesAndMasksWebhookURL(t *testing.T) {
 	repo := newMemoryRepo()
 	service := New(repo)
