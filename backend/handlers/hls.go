@@ -460,7 +460,12 @@ type HLSSession struct {
 	// TonemappedToSDR is set when an HDR/DV source was tone mapped down to SDR
 	// H.264 during transcode. The HLS playlist must then advertise SDR rather
 	// than PQ video range.
-	TonemappedToSDR bool
+	TonemappedToSDR           bool
+	VideoEncoder              string
+	ToneMapper                string
+	HardwareEncode            bool
+	HardwareFallbackAttempted bool
+	forceSoftwareEncode       bool
 
 	// YouTube HLS sessions are assembled from separate direct video/audio URLs.
 	YouTubeVideoURL string
@@ -815,9 +820,13 @@ type HLSManager struct {
 	probeCache   map[string]*cachedProbeEntry
 	probeCacheMu sync.RWMutex
 
-	// Hardware-accelerated encode capabilities, detected once on first transcode.
-	hwAccelOnce sync.Once
-	hwAccel     HWAccelCaps
+	// Hardware-accelerated encode capabilities. The cache is keyed by the
+	// configured preference so WebUI changes apply to the next web session.
+	hwAccelMu         sync.Mutex
+	hwAccel           HWAccelCaps
+	hwAccelPref       string
+	hwAccelReady      bool
+	hwAccelRetryAfter time.Time
 }
 
 // PlaybackActivityObserver receives player updates only after they have been
@@ -2461,14 +2470,32 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 	var webEncodePlan videoEncodePlan
 	useWebEncodePlan := videoWillTranscode && session.PlaybackTarget == "web"
 	if useWebEncodePlan {
+		session.mu.RLock()
+		forceSoftwareEncode := session.forceSoftwareEncode
+		session.mu.RUnlock()
 		caps := m.hwAccelCaps()
+		if forceSoftwareEncode {
+			caps = detectHWAccel(m.ffmpegPath, string(HWNone))
+		}
 		tonemapNeeded := session.HasDV || session.HasHDR
-		webEncodePlan = buildVideoEncodePlan(caps, tonemapNeeded)
+		sourceTransfer := ""
+		if session.ProbeData != nil {
+			sourceTransfer = session.ProbeData.ColorTransfer
+		}
+		webEncodePlan = buildVideoEncodePlan(caps, tonemapNeeded, sourceTransfer)
 		if len(webEncodePlan.GlobalArgs) > 0 {
 			args = append(args, webEncodePlan.GlobalArgs...)
 		}
 		log.Printf("[hls] session %s: web encode plan kind=%s hwEncode=%v tonemapped=%v filter=%q",
 			session.ID, webEncodePlan.Kind, webEncodePlan.HardwareEncode, webEncodePlan.Tonemapped, webEncodePlan.Filter)
+		session.mu.Lock()
+		session.VideoEncoder = string(webEncodePlan.Kind)
+		if webEncodePlan.Kind == HWNone {
+			session.VideoEncoder = "libx264"
+		}
+		session.ToneMapper = webEncodePlan.Tonemap
+		session.HardwareEncode = webEncodePlan.HardwareEncode
+		session.mu.Unlock()
 	}
 
 	// Force INPUT seeking when muxing a same-pass subtitle so the single -ss before -i applies to
@@ -3633,10 +3660,44 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 		completionPercent = float64(actualSegments) / float64(expectedSegments) * 100
 	}
 
+	session.mu.RLock()
+	idleTriggered := session.IdleTimeoutTriggered
+	hardwareFallbackAttempted := session.HardwareFallbackAttempted
+	session.mu.RUnlock()
+
+	// A tiny probe can succeed while the real graph fails because of source
+	// dimensions/pixel format, device loss, or exhausted driver sessions. If
+	// hardware fails before producing any media, retry this session once with a
+	// fully software encode/tone-map plan and temporarily quarantine the
+	// hardware choice for subsequent sessions.
+	if useWebEncodePlan && shouldFallbackHardwareEncode(
+		err, ctx.Err(), idleTriggered, webEncodePlan, actualSegments, hardwareFallbackAttempted,
+	) {
+		log.Printf("[hls] session %s: hardware encoder %s failed before producing a segment; retrying with software encoding",
+			session.ID, webEncodePlan.Kind)
+		m.markHWAccelFailed(webEncodePlan.Kind)
+		files, _ := filepath.Glob(filepath.Join(session.OutputDir, "*"))
+		for _, file := range files {
+			_ = os.Remove(file)
+		}
+		session.mu.Lock()
+		session.FFmpegCmd = nil
+		session.FFmpegPID = 0
+		session.Completed = false
+		session.FinalSegmentCount = -1
+		session.SegmentsCreated = 0
+		session.TonemappedToSDR = false
+		session.HardwareFallbackAttempted = true
+		session.forceSoftwareEncode = true
+		session.CreatedAt = time.Now()
+		session.LastSegmentRequest = time.Now()
+		session.mu.Unlock()
+		return m.startTranscoding(ctx, session, cachedForceAAC)
+	}
+
 	session.mu.Lock()
 	session.Completed = true
 	session.FinalSegmentCount = highestSegment // Track actual highest segment created
-	idleTriggered := session.IdleTimeoutTriggered
 	session.mu.Unlock()
 
 	if err != nil && ctx.Err() == nil && !idleTriggered {
@@ -4230,18 +4291,22 @@ func (m *HLSManager) clearSessionSegments(session *HLSSession) error {
 
 // HLSSessionStatus represents the status of an HLS session for frontend polling
 type HLSSessionStatus struct {
-	SessionID           string  `json:"sessionId"`
-	Status              string  `json:"status"` // "active", "completed", "error"
-	FatalError          string  `json:"fatalError,omitempty"`
-	FatalErrorTime      int64   `json:"fatalErrorTime,omitempty"` // Unix timestamp
-	Duration            float64 `json:"duration,omitempty"`
-	SegmentsCreated     int     `json:"segmentsCreated"`
-	MaxSegmentRequested int     `json:"maxSegmentRequested"` // Highest segment requested by player
-	Paused              bool    `json:"paused"`              // True if FFmpeg is paused (rate limited)
-	BitstreamErrors     int     `json:"bitstreamErrors"`
-	HDRMetadataDisabled bool    `json:"hdrMetadataDisabled"`
-	DVDisabled          bool    `json:"dvDisabled"`
-	RecoveryAttempts    int     `json:"recoveryAttempts"`
+	SessionID                 string  `json:"sessionId"`
+	Status                    string  `json:"status"` // "active", "completed", "error"
+	FatalError                string  `json:"fatalError,omitempty"`
+	FatalErrorTime            int64   `json:"fatalErrorTime,omitempty"` // Unix timestamp
+	Duration                  float64 `json:"duration,omitempty"`
+	SegmentsCreated           int     `json:"segmentsCreated"`
+	MaxSegmentRequested       int     `json:"maxSegmentRequested"` // Highest segment requested by player
+	Paused                    bool    `json:"paused"`              // True if FFmpeg is paused (rate limited)
+	BitstreamErrors           int     `json:"bitstreamErrors"`
+	HDRMetadataDisabled       bool    `json:"hdrMetadataDisabled"`
+	DVDisabled                bool    `json:"dvDisabled"`
+	RecoveryAttempts          int     `json:"recoveryAttempts"`
+	VideoEncoder              string  `json:"videoEncoder,omitempty"`
+	ToneMapper                string  `json:"toneMapper,omitempty"`
+	HardwareEncode            bool    `json:"hardwareEncode"`
+	HardwareFallbackAttempted bool    `json:"hardwareFallbackAttempted"`
 }
 
 // GetSessionStatus returns the current status of an HLS session
@@ -4254,15 +4319,19 @@ func (m *HLSManager) GetSessionStatus(w http.ResponseWriter, r *http.Request, se
 
 	session.mu.RLock()
 	status := HLSSessionStatus{
-		SessionID:           session.ID,
-		Duration:            session.Duration,
-		SegmentsCreated:     session.SegmentsCreated,
-		MaxSegmentRequested: session.MaxSegmentRequested,
-		Paused:              session.Paused,
-		BitstreamErrors:     session.BitstreamErrors,
-		HDRMetadataDisabled: session.HDRMetadataDisabled,
-		DVDisabled:          session.DVDisabled,
-		RecoveryAttempts:    session.RecoveryAttempts,
+		SessionID:                 session.ID,
+		Duration:                  session.Duration,
+		SegmentsCreated:           session.SegmentsCreated,
+		MaxSegmentRequested:       session.MaxSegmentRequested,
+		Paused:                    session.Paused,
+		BitstreamErrors:           session.BitstreamErrors,
+		HDRMetadataDisabled:       session.HDRMetadataDisabled,
+		DVDisabled:                session.DVDisabled,
+		RecoveryAttempts:          session.RecoveryAttempts,
+		VideoEncoder:              session.VideoEncoder,
+		ToneMapper:                session.ToneMapper,
+		HardwareEncode:            session.HardwareEncode,
+		HardwareFallbackAttempted: session.HardwareFallbackAttempted,
 	}
 
 	if session.FatalError != "" {

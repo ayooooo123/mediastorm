@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -120,6 +121,28 @@ func TestSettingsHandler_PutSettings(t *testing.T) {
 	}
 	if len(saved.Usenet) != 1 || saved.Usenet[0].Username != payload.Usenet[0].Username || saved.Server.Port != payload.Server.Port {
 		t.Fatalf("settings not persisted: %+v", saved)
+	}
+}
+
+func TestSettingsHandlerPutSettingsRejectsInvalidHardwareAcceleration(t *testing.T) {
+	mgr := config.NewManager(filepath.Join(t.TempDir(), "settings.json"))
+	handler := NewSettingsHandler(mgr)
+	payload := config.DefaultSettings()
+	payload.Transmux.HardwareAcceleration = "cuda"
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPut, "/api/settings", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.PutSettings(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "hardware acceleration must be one of") {
+		t.Fatalf("unexpected response: %s", rec.Body.String())
 	}
 }
 

@@ -763,3 +763,31 @@ func containsString(values []string, needle string) bool {
 	}
 	return false
 }
+
+func TestNormalizeHardwareAcceleration(t *testing.T) {
+	for _, test := range []struct {
+		input string
+		want  string
+	}{
+		{input: "", want: "auto"},
+		{input: " AUTO ", want: "auto"},
+		{input: "NVENC", want: "nvenc"},
+		{input: "qsv", want: "qsv"},
+		{input: "vaapi", want: "vaapi"},
+		{input: "VideoToolbox", want: "videotoolbox"},
+		{input: "none", want: "none"},
+	} {
+		settings := TransmuxSettings{HardwareAcceleration: test.input}
+		if err := settings.NormalizeHardwareAcceleration(); err != nil {
+			t.Fatalf("NormalizeHardwareAcceleration(%q): %v", test.input, err)
+		}
+		if settings.HardwareAcceleration != test.want {
+			t.Fatalf("NormalizeHardwareAcceleration(%q) = %q, want %q", test.input, settings.HardwareAcceleration, test.want)
+		}
+	}
+
+	settings := TransmuxSettings{HardwareAcceleration: "cuda"}
+	if err := settings.NormalizeHardwareAcceleration(); err == nil {
+		t.Fatal("expected unsupported hardware acceleration value to fail")
+	}
+}

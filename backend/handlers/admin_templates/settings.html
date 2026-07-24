@@ -397,6 +397,7 @@
     let letterboxdListsData = []; // Imported Letterboxd lists (MDBList external lists)
     let mediaLibrariesData = []; // Configured local, Plex, and Jellyfin libraries
     let hasDefaultPassword = false; // Whether admin has default password
+    let hardwareAccelerationStatus = null;
     let userOverrides = {{json .UserOverrides}}; // Map of userId -> hasOverrides
     const isAdmin = {{json .IsAdmin}};
     const settingsDebugSessionId = 'settings-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
@@ -3223,6 +3224,21 @@
     }
 
     function renderAdditionalFieldHint(sectionKey, fieldKey, item) {
+        if (sectionKey === 'transmux' && fieldKey === 'hardwareAcceleration') {
+            if (!hardwareAccelerationStatus) {
+                return '<p class="form-hint">Effective encoder: detecting…</p>';
+            }
+            const configured = escapeHtml(hardwareAccelerationStatus.configured || 'auto');
+            const effective = escapeHtml(hardwareAccelerationStatus.effectiveEncoder || 'unknown');
+            const toneMapper = hardwareAccelerationStatus.toneMapper
+                ? ' · Tone mapper: ' + escapeHtml(hardwareAccelerationStatus.toneMapper)
+                : '';
+            const fallback = hardwareAccelerationStatus.retryAfter
+                ? ' · Hardware failed a real playback graph; software fallback is active temporarily.'
+                : '';
+            return '<p class="form-hint"><strong>Detected:</strong> configured ' + configured +
+                ' · Effective encoder: ' + effective + toneMapper + fallback + '</p>';
+        }
         if (sectionKey === 'usenetEngines' && fieldKey === 'webdavBaseUrl') {
             const engineType = String(item?.type || '').toLowerCase();
             if (engineType === 'altmount' || engineType === 'decypharr') {
@@ -3238,6 +3254,20 @@
             return '<p class="form-hint">Leave empty to inherit global.</p>';
         }
         return '';
+    }
+
+    async function loadHardwareAccelerationStatus() {
+        if (!isAdmin) return;
+        try {
+            const response = await fetch(basePath + '/api/hardware-acceleration/status', {
+                credentials: 'same-origin',
+            });
+            if (!response.ok) return;
+            hardwareAccelerationStatus = await response.json();
+            if (!selectedUserId && !selectedClientId) renderSettings();
+        } catch (e) {
+            console.warn('Failed to load hardware acceleration status:', e);
+        }
     }
     // Detect when an API-key field has had a full URL/query string pasted into it
     // instead of the bare key. Newznab/debrid keys are plain tokens; if the value
@@ -5278,6 +5308,7 @@
                     originalSettings = JSON.parse(JSON.stringify(currentSettings));
                     btn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>';
                     showToast('Settings saved successfully');
+                    void loadHardwareAccelerationStatus();
                     setTimeout(() => renderSettings(), 500);
                     // Check if any profiles have overrides
                     await promptPropagateIfNeeded(changedGroups);
@@ -9574,6 +9605,7 @@
                 if (response.ok) {
                     originalSettings = JSON.parse(JSON.stringify(currentSettings));
                     showToast('Settings saved successfully');
+                    void loadHardwareAccelerationStatus();
                     if (committedPendingTextArrays) renderSettings();
                     // Check if any profiles have overrides and offer to propagate
                     await promptPropagateIfNeeded(changedGroups);
@@ -9602,6 +9634,7 @@
         const urlProfileId = new URLSearchParams(window.location.search).get('profileId');
 
         if (isAdmin) {
+            void loadHardwareAccelerationStatus();
             await Promise.all([loadProfiles(), loadAccounts(), loadTraktAccounts(), loadSimklAccounts(), loadLetterboxdLists(), loadMediaLibraries(), checkDefaultPassword()]);
             const selector = document.getElementById('userSelector');
             // Pre-select from query param if provided
