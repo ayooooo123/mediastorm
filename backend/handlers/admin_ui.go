@@ -49,6 +49,7 @@ import (
 	"novastream/services/invitations"
 	"novastream/services/localmedia"
 	"novastream/services/metadata"
+	"novastream/services/notifications"
 	"novastream/services/plex"
 	"novastream/services/remoteaccess"
 	"novastream/services/remotemedia"
@@ -222,7 +223,7 @@ var SettingsSchema = map[string]interface{}{
 		"icon":        "server",
 		"group":       "server",
 		"order":       0,
-		"description": "Changing host or port requires a container restart to take effect. Only modify these if you know what you're doing.",
+		"description": "Changing host, port, or base path requires a container restart to take effect. Other server settings apply when saved.",
 		"fields": map[string]interface{}{
 			"host":     map[string]interface{}{"type": "text", "label": "Host", "description": "Server bind address (leave empty to bind all interfaces)", "order": 0},
 			"port":     map[string]interface{}{"type": "number", "label": "Port", "description": "Server port (default: 7777)", "order": 1},
@@ -1155,17 +1156,31 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"transmux": map[string]interface{}{
-		"label":  "Transmux Settings",
-		"icon":   "film",
-		"group":  "services",
-		"order":  99,
-		"hidden": true,
+		"label":       "Web Player Hardware Acceleration",
+		"icon":        "film",
+		"group":       "server",
+		"order":       2,
+		"description": "Controls server-side FFmpeg encoding for the browser player. Changes apply to the next web playback session.",
 		"fields": map[string]interface{}{
-			"enabled":              map[string]interface{}{"type": "boolean", "label": "Enabled", "description": "Enable video transmuxing for HLS streaming"},
-			"ffmpegPath":           map[string]interface{}{"type": "text", "label": "FFmpeg Path", "description": "Path to ffmpeg binary"},
-			"ffprobePath":          map[string]interface{}{"type": "text", "label": "FFprobe Path", "description": "Path to ffprobe binary"},
-			"hlsTempDirectory":     map[string]interface{}{"type": "text", "label": "HLS Temp Directory", "description": "Directory for HLS segment storage (default: /tmp/novastream-hls)"},
-			"hardwareAcceleration": map[string]interface{}{"type": "select", "label": "Hardware Acceleration", "options": []string{"auto", "none", "nvenc", "qsv", "vaapi", "videotoolbox"}, "description": "GPU-accelerated H.264 encoding and HDR/DV tone mapping for web playback. 'auto' probes for a working encoder. Docker requires device passthrough (e.g. --device /dev/dri for vaapi/qsv, NVIDIA container runtime for nvenc)."},
+			"enabled":          map[string]interface{}{"type": "boolean", "label": "Enabled", "description": "Enable video transmuxing for HLS streaming", "hidden": true},
+			"ffmpegPath":       map[string]interface{}{"type": "text", "label": "FFmpeg Path", "description": "Path to ffmpeg binary", "hidden": true},
+			"ffprobePath":      map[string]interface{}{"type": "text", "label": "FFprobe Path", "description": "Path to ffprobe binary", "hidden": true},
+			"hlsTempDirectory": map[string]interface{}{"type": "text", "label": "HLS Temp Directory", "description": "Directory for HLS segment storage (default: /tmp/novastream-hls)", "hidden": true},
+			"hardwareAcceleration": map[string]interface{}{
+				"type":  "select",
+				"label": "Web Player Encoder",
+				"options": []map[string]string{
+					{"value": "auto", "label": "Auto Detect"},
+					{"value": "none", "label": "Software (libx264)"},
+					{"value": "nvenc", "label": "NVIDIA NVENC"},
+					{"value": "qsv", "label": "Intel Quick Sync"},
+					{"value": "vaapi", "label": "VAAPI"},
+					{"value": "videotoolbox", "label": "Apple VideoToolbox"},
+				},
+				"description": "Selects server-side H.264 encoding for playback.html. Auto Detect probes real encodes and falls back to software. Docker requires device passthrough such as /dev/dri for Quick Sync/VAAPI or the NVIDIA container runtime for NVENC.",
+				"order":       0,
+				"globalOnly":  true,
+			},
 		},
 	},
 	"subtitles": map[string]interface{}{
@@ -1415,6 +1430,7 @@ type AdminUIHandler struct {
 	prequeueTemplate      *template.Template
 	recordingsTemplate    *template.Template
 	onboardingTemplate    *template.Template
+	notificationsTemplate *template.Template
 	settingsPath          string
 	logFile               string
 	hlsManager            *HLSManager
@@ -1440,6 +1456,7 @@ type AdminUIHandler struct {
 	clientSettingsService clientSettingsService
 	logsHandler           *LogsHandler
 	resolvedNZBService    resolvedNZBService
+	notificationService   *notifications.Service
 	serverBasePath        string // server-level base path from config (e.g. "/mediastorm")
 }
 
@@ -1539,6 +1556,10 @@ func (h *AdminUIHandler) SetResolvedNZBService(svc resolvedNZBService) {
 // SetCalendarService sets the calendar service for the calendar admin page
 func (h *AdminUIHandler) SetCalendarService(cs *calendar.Service) {
 	h.calendarService = cs
+}
+
+func (h *AdminUIHandler) SetNotificationService(service *notifications.Service) {
+	h.notificationService = service
 }
 
 // NewAdminUIHandler creates a new admin UI handler
@@ -1702,39 +1723,52 @@ func NewAdminUIHandler(settingsPath, logFile string, hlsManager *HLSManager, use
 	}
 
 	return &AdminUIHandler{
-		settingsTemplate:     createPageTemplate("settings.html"),
-		statusTemplate:       createPageTemplate("status.html"),
-		historyTemplate:      createPageTemplate("history.html"),
-		toolsTemplate:        createPageTemplate("tools.html"),
-		hiddenItemsTemplate:  createPageTemplate("hidden_items.html"),
-		resolvedNZBTemplate:  createPageTemplate("resolved_nzbs.html"),
-		badStreamsTemplate:   createPageTemplate("bad_streams.html"),
-		shareLinksTemplate:   createPageTemplate("share_links.html"),
-		searchTemplate:       createPageTemplate("search.html"),
-		playbackTemplate:     createPageTemplate("playback.html"),
-		loginTemplate:        loginTmpl,
-		registerTemplate:     registerTmpl,
-		accountsTemplate:     createPageTemplate("accounts.html"),
-		libraryTemplate:      createPageTemplate("library.html"),
-		kidsSettingsTemplate: createPageTemplate("kids_settings.html"),
-		backupTemplate:       createPageTemplate("backup.html"),
-		calendarTemplate:     createPageTemplate("calendar.html"),
-		performanceTemplate:  createPageTemplate("performance.html"),
-		logsTemplate:         createPageTemplate("logs.html"),
-		connectionsTemplate:  createPageTemplate("connections.html"),
-		prequeueTemplate:     createPageTemplate("prequeue.html"),
-		recordingsTemplate:   createPageTemplate("recordings.html"),
-		onboardingTemplate:   createPageTemplate("onboarding.html"),
-		settingsPath:         settingsPath,
-		logFile:              logFile,
-		hlsManager:           hlsManager,
-		usersService:         usersService,
-		userSettingsService:  userSettingsService,
-		configManager:        configManager,
-		plexClient:           plex.NewClient(plex.GenerateClientID()),
-		traktClient:          trakt.NewClient("", ""), // Will be updated with credentials from settings
-		serverBasePath:       serverBasePath,
+		settingsTemplate:      createPageTemplate("settings.html"),
+		statusTemplate:        createPageTemplate("status.html"),
+		historyTemplate:       createPageTemplate("history.html"),
+		toolsTemplate:         createPageTemplate("tools.html"),
+		hiddenItemsTemplate:   createPageTemplate("hidden_items.html"),
+		resolvedNZBTemplate:   createPageTemplate("resolved_nzbs.html"),
+		badStreamsTemplate:    createPageTemplate("bad_streams.html"),
+		shareLinksTemplate:    createPageTemplate("share_links.html"),
+		searchTemplate:        createPageTemplate("search.html"),
+		playbackTemplate:      createPageTemplate("playback.html"),
+		loginTemplate:         loginTmpl,
+		registerTemplate:      registerTmpl,
+		accountsTemplate:      createPageTemplate("accounts.html"),
+		libraryTemplate:       createPageTemplate("library.html"),
+		kidsSettingsTemplate:  createPageTemplate("kids_settings.html"),
+		backupTemplate:        createPageTemplate("backup.html"),
+		calendarTemplate:      createPageTemplate("calendar.html"),
+		performanceTemplate:   createPageTemplate("performance.html"),
+		logsTemplate:          createPageTemplate("logs.html"),
+		connectionsTemplate:   createPageTemplate("connections.html"),
+		prequeueTemplate:      createPageTemplate("prequeue.html"),
+		recordingsTemplate:    createPageTemplate("recordings.html"),
+		onboardingTemplate:    createPageTemplate("onboarding.html"),
+		notificationsTemplate: createPageTemplate("notifications.html"),
+		settingsPath:          settingsPath,
+		logFile:               logFile,
+		hlsManager:            hlsManager,
+		usersService:          usersService,
+		userSettingsService:   userSettingsService,
+		configManager:         configManager,
+		plexClient:            plex.NewClient(plex.GenerateClientID()),
+		traktClient:           trakt.NewClient("", ""), // Will be updated with credentials from settings
+		serverBasePath:        serverBasePath,
 	}
+}
+
+func (h *AdminUIHandler) GetHardwareAccelerationStatus(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if h.hlsManager == nil {
+		_ = json.NewEncoder(w).Encode(HWAccelStatus{
+			Configured:       "auto",
+			EffectiveEncoder: "unavailable",
+		})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(h.hlsManager.HardwareAccelerationStatus())
 }
 
 // AdminPageData holds data for admin page templates
@@ -2204,6 +2238,19 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 				percent = session.SharePercent
 				duration = session.ShareDuration
 			}
+			// HLS keepalives are the live playback source of truth. History and
+			// share progress remain useful as fallback metadata for older clients.
+			playbackStatePresent := !session.PlaybackUpdatedAt.IsZero()
+			playbackStateFresh := playbackStatePresent && now.Sub(session.PlaybackUpdatedAt) <= heartbeatEndedThreshold
+			if playbackStatePresent {
+				position = session.PlaybackPosition
+				if session.Duration > 0 {
+					duration = session.Duration
+				}
+				if duration > 0 {
+					percent = (position / duration) * 100
+				}
+			}
 
 			hlsStreamData := map[string]interface{}{
 				"id":               session.ID,
@@ -2244,7 +2291,13 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 			// interpolation instead of freezing at the last reported position.
 			shareHeartbeatFresh := session.ViaShareLink && !session.ShareUpdatedAt.IsZero() && now.Sub(session.ShareUpdatedAt) <= heartbeatEndedThreshold
 			heartbeatFresh := matchedProgress != nil && now.Sub(matchedProgress.UpdatedAt) <= heartbeatEndedThreshold
-			if heartbeatFresh {
+			if playbackStateFresh {
+				if session.PlaybackPaused || session.PlaybackEnded {
+					hlsStreamData["is_paused"] = true
+				} else if session.PlaybackBuffering {
+					hlsStreamData["is_buffering"] = true
+				}
+			} else if heartbeatFresh {
 				if matchedProgress.IsPaused {
 					hlsStreamData["is_paused"] = true
 				} else if matchedProgress.IsBuffering {
@@ -2266,11 +2319,17 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 					hlsStreamData["is_paused"] = true
 				}
 			}
-			if matchedProgress != nil {
-				hlsStreamData["last_updated"] = matchedProgress.UpdatedAt
-			}
-			if session.ViaShareLink && !session.ShareUpdatedAt.IsZero() {
-				hlsStreamData["last_updated"] = session.ShareUpdatedAt
+			if playbackStateFresh {
+				hlsStreamData["last_updated"] = session.PlaybackUpdatedAt
+			} else {
+				if updatedAt, ok := dashboardProgressUpdatedAt(
+					matchedProgress,
+					heartbeatFresh,
+					session.ShareUpdatedAt,
+					shareHeartbeatFresh,
+				); ok {
+					hlsStreamData["last_updated"] = updatedAt
+				}
 			}
 			streams = append(streams, hlsStreamData)
 			session.mu.RUnlock()
@@ -2382,11 +2441,13 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 				streamData["is_paused"] = true
 			}
 		}
-		if matchedProgress != nil {
-			streamData["last_updated"] = matchedProgress.UpdatedAt
-		}
-		if stream.ViaShareLink && !stream.ShareUpdatedAt.IsZero() {
-			streamData["last_updated"] = stream.ShareUpdatedAt
+		if updatedAt, ok := dashboardProgressUpdatedAt(
+			matchedProgress,
+			heartbeatFresh,
+			stream.ShareUpdatedAt,
+			shareHeartbeatFresh,
+		); ok {
+			streamData["last_updated"] = updatedAt
 		}
 		streams = append(streams, streamData)
 	}
@@ -2423,6 +2484,25 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 		"globalVODLimit":    globalVODLimit,
 		"globalVODCurrent":  globalVODCurrent,
 	})
+}
+
+// dashboardProgressUpdatedAt returns an interpolation anchor only for a fresh
+// playback heartbeat. A stale progress row may belong to an earlier viewing
+// session; exposing that old timestamp makes the dashboard add the entire gap
+// to the resume position and can immediately display 100%.
+func dashboardProgressUpdatedAt(
+	progress *models.PlaybackProgress,
+	progressFresh bool,
+	shareUpdatedAt time.Time,
+	shareFresh bool,
+) (time.Time, bool) {
+	if shareFresh && !shareUpdatedAt.IsZero() {
+		return shareUpdatedAt, true
+	}
+	if progressFresh && progress != nil && !progress.UpdatedAt.IsZero() {
+		return progress.UpdatedAt, true
+	}
+	return time.Time{}, false
 }
 
 // mergeDashboardStreamRows collapses dashboard stream entries that represent the
@@ -12622,6 +12702,14 @@ func (h *AdminUIHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 
 	frontendClients := []frontendLogSummary(nil)
 	frontendClients, _ = h.logsHandler.ListFrontendLogSummaries()
+	if h.clientsService != nil {
+		clients := h.clientsService.List()
+		users := []models.User(nil)
+		if h.usersService != nil {
+			users = h.usersService.List()
+		}
+		frontendClients = enrichFrontendLogSummaries(frontendClients, clients, users)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -12630,6 +12718,39 @@ func (h *AdminUIHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 		"entries":         entries,
 		"frontendClients": frontendClients,
 	})
+}
+
+func enrichFrontendLogSummaries(summaries []frontendLogSummary, clients []models.Client, users []models.User) []frontendLogSummary {
+	clientsByID := make(map[string]models.Client, len(clients))
+	for _, client := range clients {
+		clientsByID[client.ID] = client
+	}
+	profileNamesByID := make(map[string]string, len(users))
+	for _, user := range users {
+		profileNamesByID[user.ID] = user.Name
+	}
+
+	for i := range summaries {
+		client, ok := clientsByID[summaries[i].ClientID]
+		if !ok {
+			continue
+		}
+		summaries[i].Name = client.Name
+		summaries[i].DeviceName = client.DeviceName
+		if client.DeviceType != "" {
+			summaries[i].DeviceType = client.DeviceType
+		}
+		if client.OS != "" {
+			summaries[i].OS = client.OS
+		}
+		if client.AppVersion != "" {
+			summaries[i].AppVersion = client.AppVersion
+		}
+		summaries[i].ProfileName = profileNamesByID[client.UserID]
+		lastSeenAt := client.LastSeenAt
+		summaries[i].LastSeenAt = &lastSeenAt
+	}
+	return summaries
 }
 
 func (h *AdminUIHandler) SubmitLogsPackage(w http.ResponseWriter, r *http.Request) {

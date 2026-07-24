@@ -51,11 +51,16 @@ type continueWatchingPrequeueStore interface {
 	GetByTitleUser(titleID, userID string) (*playback.PrequeueEntry, bool)
 }
 
+type activePlaybackTracker interface {
+	ObservePlaybackActivity(userID string, update models.PlaybackProgressUpdate, percentWatched float64) int
+}
+
 type HistoryHandler struct {
-	Service       historyService
-	Users         userService
-	DemoMode      bool
-	PrequeueStore continueWatchingPrequeueStore
+	Service                historyService
+	Users                  userService
+	DemoMode               bool
+	PrequeueStore          continueWatchingPrequeueStore
+	ActivePlaybackTrackers []activePlaybackTracker
 }
 
 type hideContinueWatchingRequest struct {
@@ -76,6 +81,10 @@ func NewHistoryHandler(service historyService, users userService, demoMode bool)
 
 func (h *HistoryHandler) SetPrequeueStore(store continueWatchingPrequeueStore) {
 	h.PrequeueStore = store
+}
+
+func (h *HistoryHandler) SetActivePlaybackTrackers(trackers ...activePlaybackTracker) {
+	h.ActivePlaybackTrackers = trackers
 }
 
 func (h *HistoryHandler) ListContinueWatching(w http.ResponseWriter, r *http.Request) {
@@ -580,6 +589,11 @@ func (h *HistoryHandler) UpdatePlaybackProgress(w http.ResponseWriter, r *http.R
 	// read windows use this to prepare a qualified replacement before the native
 	// buffer is exhausted; client-write pacing is intentionally not used.
 	GetStreamTracker().ObservePlaybackBandwidth(userID, update)
+	for _, tracker := range h.ActivePlaybackTrackers {
+		if tracker != nil && tracker.ObservePlaybackActivity(userID, update, progress.PercentWatched) > 0 {
+			break
+		}
+	}
 	if reason, migrate := GetStreamTracker().ShouldMigratePlayback(userID, update); migrate {
 		progress.MigrationRequested = true
 		progress.MigrationReason = reason

@@ -108,6 +108,9 @@ func (ds *DataStore) MediaFiles() MediaFileRepository    { return &pgMediaFileRe
 func (ds *DataStore) LocalMedia() LocalMediaRepository   { return &pgLocalMediaRepo{pool: ds.pool} }
 func (ds *DataStore) RemoteMedia() RemoteMediaRepository { return &pgRemoteMediaRepo{pool: ds.pool} }
 func (ds *DataStore) Recordings() RecordingRepository    { return &pgRecordingRepo{pool: ds.pool} }
+func (ds *DataStore) Notifications() NotificationRepository {
+	return &pgNotificationRepo{pool: ds.pool}
+}
 
 // --- Transaction support ---
 
@@ -164,3 +167,6 @@ func (t *Tx) MediaFiles() MediaFileRepository    { return &pgMediaFileRepo{pool:
 func (t *Tx) LocalMedia() LocalMediaRepository   { return &pgLocalMediaRepo{pool: t.tx} }
 func (t *Tx) RemoteMedia() RemoteMediaRepository { return &pgRemoteMediaRepo{pool: t.tx} }
 func (t *Tx) Recordings() RecordingRepository    { return &pgRecordingRepo{pool: t.tx} }
+func (t *Tx) Notifications() NotificationRepository {
+	return &pgNotificationRepo{pool: t.tx}
+}

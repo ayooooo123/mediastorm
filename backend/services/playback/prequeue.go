@@ -755,6 +755,58 @@ func (s *PrequeueStore) Update(id string, updateFn func(*PrequeueEntry)) bool {
 	return true
 }
 
+// UpdateWorker applies a background-worker update unless an explicit source
+// replacement has taken ownership of the entry. This prevents a cancelled
+// prequeue worker from overwriting a manual selection or migration while it is
+// unwinding.
+func (s *PrequeueStore) UpdateWorker(id string, updateFn func(*PrequeueEntry)) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entry, exists := s.entries[id]
+	if !exists || entry.MigrationAdopted {
+		return false
+	}
+
+	oldValidationKey := streamPathValidationKey(id, entry.StreamPath)
+	updateFn(entry)
+	if streamPathValidationKey(id, entry.StreamPath) != oldValidationKey {
+		delete(s.streamPathValidated, oldValidationKey)
+	}
+
+	if entry.Status == PrequeueStatusReady {
+		if strings.TrimSpace(entry.StreamPath) != "" {
+			if s.streamPathValidated == nil {
+				s.streamPathValidated = make(map[string]time.Time)
+			}
+			s.streamPathValidated[streamPathValidationKey(id, entry.StreamPath)] = time.Now()
+		}
+		dynTTL := entry.DynamicTTL()
+		if dynTTL <= 0 {
+			dynTTL = s.defaultTTL
+		}
+		defaultExpiry := time.Now().Add(dynTTL)
+		if entry.ExpiresAt.Before(defaultExpiry) {
+			entry.ExpiresAt = defaultExpiry
+		}
+		s.saveToDisk()
+	}
+
+	return true
+}
+
+// CancelWork stops any active resolver attached to an entry without removing
+// the entry itself. The caller can then replace its payload in place.
+func (s *PrequeueStore) CancelWork(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if entry, exists := s.entries[id]; exists && entry.cancelFunc != nil {
+		entry.cancelFunc()
+		entry.cancelFunc = nil
+	}
+}
+
 // SetCancelFunc sets the cancel function for an entry
 func (s *PrequeueStore) SetCancelFunc(id string, cancelFunc context.CancelFunc) {
 	s.mu.Lock()

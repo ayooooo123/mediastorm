@@ -1,0 +1,160 @@
+package datastore
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+
+	"github.com/jackc/pgx/v5"
+
+	"novastream/models"
+)
+
+type pgNotificationRepo struct {
+	pool DB
+}
+
+func scanNotificationChannel(row pgx.Row) (*models.NotificationChannel, error) {
+	var channel models.NotificationChannel
+	var eventsJSON []byte
+	err := row.Scan(
+		&channel.ID, &channel.ProfileID, &channel.Name, &channel.Type, &channel.URL,
+		&channel.Enabled, &eventsJSON, &channel.NotifyWatchlist, &channel.NotifyTrending,
+		&channel.TrendingLimit, &channel.TitleTemplate, &channel.BodyTemplate,
+		&channel.IncludePoster, &channel.CreatedAt, &channel.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(eventsJSON, &channel.Events); err != nil {
+		return nil, fmt.Errorf("decode notification events: %w", err)
+	}
+	channel.URLConfigured = channel.URL != ""
+	return &channel, nil
+}
+
+func (r *pgNotificationRepo) GetChannel(ctx context.Context, id string) (*models.NotificationChannel, error) {
+	return scanNotificationChannel(r.pool.QueryRow(ctx, `
+		SELECT id, profile_id, name, type, url, enabled, events, notify_watchlist,
+		       notify_trending, trending_limit, title_template, body_template,
+		       include_poster, created_at, updated_at
+		FROM notification_channels WHERE id = $1`, id))
+}
+
+func (r *pgNotificationRepo) ListChannels(ctx context.Context, profileID string) ([]models.NotificationChannel, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, profile_id, name, type, url, enabled, events, notify_watchlist,
+		       notify_trending, trending_limit, title_template, body_template,
+		       include_poster, created_at, updated_at
+		FROM notification_channels WHERE profile_id = $1 ORDER BY created_at`, profileID)
+	if err != nil {
+		return nil, fmt.Errorf("list notification channels: %w", err)
+	}
+	defer rows.Close()
+	channels := make([]models.NotificationChannel, 0)
+	for rows.Next() {
+		channel, err := scanNotificationChannel(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan notification channel: %w", err)
+		}
+		channels = append(channels, *channel)
+	}
+	return channels, rows.Err()
+}
+
+func (r *pgNotificationRepo) CreateChannel(ctx context.Context, channel *models.NotificationChannel) error {
+	eventsJSON, _ := json.Marshal(channel.Events)
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO notification_channels (
+			id, profile_id, name, type, url, enabled, events, notify_watchlist,
+			notify_trending, trending_limit, title_template, body_template,
+			include_poster, created_at, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+		channel.ID, channel.ProfileID, channel.Name, channel.Type, channel.URL,
+		channel.Enabled, eventsJSON, channel.NotifyWatchlist, channel.NotifyTrending,
+		channel.TrendingLimit, channel.TitleTemplate, channel.BodyTemplate,
+		channel.IncludePoster, channel.CreatedAt, channel.UpdatedAt)
+	return err
+}
+
+func (r *pgNotificationRepo) UpdateChannel(ctx context.Context, channel *models.NotificationChannel) error {
+	eventsJSON, _ := json.Marshal(channel.Events)
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE notification_channels SET
+			name=$3, type=$4, url=$5, enabled=$6, events=$7, notify_watchlist=$8,
+			notify_trending=$9, trending_limit=$10, title_template=$11,
+			body_template=$12, include_poster=$13, updated_at=$14
+		WHERE id=$1 AND profile_id=$2`,
+		channel.ID, channel.ProfileID, channel.Name, channel.Type, channel.URL,
+		channel.Enabled, eventsJSON, channel.NotifyWatchlist, channel.NotifyTrending,
+		channel.TrendingLimit, channel.TitleTemplate, channel.BodyTemplate,
+		channel.IncludePoster, channel.UpdatedAt)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
+func (r *pgNotificationRepo) DeleteChannel(ctx context.Context, profileID, id string) error {
+	_, err := r.pool.Exec(ctx, `DELETE FROM notification_channels WHERE profile_id=$1 AND id=$2`, profileID, id)
+	return err
+}
+
+func (r *pgNotificationRepo) GetObservation(ctx context.Context, profileID, itemKey string) (*models.NotificationObservation, error) {
+	var observation models.NotificationObservation
+	var eventJSON []byte
+	err := r.pool.QueryRow(ctx, `
+		SELECT profile_id, item_key, status, event, updated_at
+		FROM notification_observations WHERE profile_id=$1 AND item_key=$2`,
+		profileID, itemKey).Scan(
+		&observation.ProfileID, &observation.ItemKey, &observation.Status, &eventJSON, &observation.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err == nil {
+		err = json.Unmarshal(eventJSON, &observation.Event)
+	}
+	return &observation, err
+}
+
+func (r *pgNotificationRepo) ListObservations(ctx context.Context, profileID string) ([]models.NotificationObservation, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT profile_id, item_key, status, event, updated_at
+		FROM notification_observations WHERE profile_id=$1`, profileID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var observations []models.NotificationObservation
+	for rows.Next() {
+		var observation models.NotificationObservation
+		var eventJSON []byte
+		if err := rows.Scan(&observation.ProfileID, &observation.ItemKey, &observation.Status,
+			&eventJSON, &observation.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(eventJSON, &observation.Event); err != nil {
+			return nil, err
+		}
+		observations = append(observations, observation)
+	}
+	return observations, rows.Err()
+}
+
+func (r *pgNotificationRepo) UpsertObservation(ctx context.Context, observation *models.NotificationObservation) error {
+	eventJSON, _ := json.Marshal(observation.Event)
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO notification_observations (profile_id, item_key, status, event, updated_at)
+		VALUES ($1,$2,$3,$4,$5)
+		ON CONFLICT (profile_id, item_key) DO UPDATE SET status=$3, event=$4, updated_at=$5`,
+		observation.ProfileID, observation.ItemKey, observation.Status, eventJSON, observation.UpdatedAt)
+	return err
+}

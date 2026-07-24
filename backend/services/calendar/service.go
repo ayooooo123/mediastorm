@@ -121,6 +121,7 @@ type Service struct {
 	stopCh          chan struct{}
 	maxDays         int // how far ahead to look (default 90)
 	refreshInterval time.Duration
+	releaseObserver ReleaseObserver
 
 	// Status tracking
 	statusMu      sync.RWMutex
@@ -131,6 +132,17 @@ type Service struct {
 	nextRefreshAt time.Time
 	lastError     string
 	refreshNow    chan struct{} // trigger immediate refresh
+}
+
+// ReleaseObserver receives complete calendar snapshots after a successful build.
+type ReleaseObserver interface {
+	ObserveCalendar(profileID string, items []models.CalendarItem)
+	ReleaseRequirements(profileID string) ReleaseRequirements
+}
+
+type ReleaseRequirements struct {
+	Watchlist     bool
+	TrendingLimit int
 }
 
 // New creates a new calendar service.
@@ -153,6 +165,12 @@ func New(
 		users:        users,
 		maxDays:      90,
 	}
+}
+
+func (s *Service) SetReleaseObserver(observer ReleaseObserver) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.releaseObserver = observer
 }
 
 // StartBackgroundRefresh begins async population on startup and periodic refresh.
@@ -538,6 +556,7 @@ func (s *Service) buildAndCacheUserCalendar(userID string, force bool) *userCale
 
 	s.mu.Lock()
 	s.cache[userID] = uc
+	observer := s.releaseObserver
 	completeCh := s.building[userID]
 	delete(s.building, userID)
 	s.mu.Unlock()
@@ -545,9 +564,58 @@ func (s *Service) buildAndCacheUserCalendar(userID string, force bool) *userCale
 	if completeCh != nil {
 		close(completeCh)
 	}
+	if observer != nil {
+		snapshot := append([]models.CalendarItem(nil), items...)
+		go s.observeReleases(userID, snapshot, observer)
+	}
 	log.Printf("[calendar] build complete user=%s items=%d elapsed=%s", userID, len(items), time.Since(start).Round(time.Millisecond))
 
 	return uc
+}
+
+func (s *Service) observeReleases(userID string, visibleItems []models.CalendarItem, observer ReleaseObserver) {
+	requirements := observer.ReleaseRequirements(userID)
+	if !requirements.Watchlist && requirements.TrendingLimit <= 0 {
+		observer.ObserveCalendar(userID, visibleItems)
+		return
+	}
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	windowStart := todayStart.AddDate(0, 0, -recentlyAiredDaysWindow)
+	cutoff := todayStart.AddDate(0, 0, s.maxDays)
+	monitorItems := make([]models.CalendarItem, 0)
+
+	if requirements.Watchlist {
+		watchlistState := newBuildState()
+		watchlistItems, err := s.watchlist.List(userID)
+		if err != nil {
+			log.Printf("[calendar] notification watchlist error user=%s: %v", userID, err)
+		} else {
+			monitorItems = append(monitorItems,
+				s.collectSeriesFromWatchlist(ctx, watchlistItems, windowStart, cutoff, watchlistState)...)
+			monitorItems = append(monitorItems,
+				s.collectMoviesFromWatchlist(ctx, watchlistItems, windowStart, cutoff, watchlistState)...)
+		}
+	}
+
+	if requirements.TrendingLimit > 0 {
+		trendingState := newBuildState()
+		sources := models.CalendarSettings{
+			Trending:    models.BoolPtr(true),
+			TopTrending: models.BoolPtr(true),
+		}
+		movies, series := s.loadTrendingInputs(ctx, sources)
+		monitorItems = append(monitorItems, s.collectFromTrending(
+			ctx, movies, series, windowStart, cutoff, trendingState,
+			0, requirements.TrendingLimit, "top-trending",
+		)...)
+		monitorItems = append(monitorItems,
+			collectTrendingReleaseStatuses(movies, series, requirements.TrendingLimit, "top-trending")...)
+	}
+
+	observer.ObserveCalendar(userID, append(visibleItems, monitorItems...))
 }
 
 func (s *Service) buildAndCacheLiteUserCalendar(userID string, force bool) *userCalendar {
@@ -971,7 +1039,11 @@ func (s *Service) collectFromTrending(
 	if trendingMovies != nil {
 		selectedMovies := sliceTrendingItems(trendingMovies, offset, limit)
 		for i := range selectedMovies {
-			items = append(items, collectMovieReleases(&selectedMovies[i].Title, source, windowStart, cutoff, state)...)
+			releases := collectMovieReleases(&selectedMovies[i].Title, source, windowStart, cutoff, state)
+			for j := range releases {
+				releases[j].SourceRank = offset + i + 1
+			}
+			items = append(items, releases...)
 		}
 	}
 
@@ -980,23 +1052,27 @@ func (s *Service) collectFromTrending(
 	// fetching details for ended series that won't have future episodes.
 	if trendingSeries != nil {
 		selectedSeries := sliceTrendingItems(trendingSeries, offset, limit)
-		var eligible []models.TrendingItem
-		for _, ts := range selectedSeries {
+		type rankedTrending struct {
+			item models.TrendingItem
+			rank int
+		}
+		var eligible []rankedTrending
+		for i, ts := range selectedSeries {
 			status := strings.ToLower(ts.Title.Status)
 			if status != "continuing" && status != "upcoming" {
 				continue
 			}
-			eligible = append(eligible, ts)
+			eligible = append(eligible, rankedTrending{item: ts, rank: offset + i + 1})
 		}
 		items = append(items, s.parallelCollect(calendarMetadataConcurrency, len(eligible), func(idx int) []models.CalendarItem {
-			ts := eligible[idx]
+			ts := eligible[idx].item
 			posterURL := ""
 			if ts.Title.Poster != nil {
 				posterURL = ts.Title.Poster.URL
 			}
 			textPosterURL := calendarTextPosterURL(&ts.Title)
 			extIDs := buildExternalIDs(ts.Title.IMDBID, ts.Title.TMDBID, ts.Title.TVDBID)
-			return s.fetchUpcomingEpisodes(
+			episodes := s.fetchUpcomingEpisodes(
 				ctx,
 				ts.Title.Name,
 				ts.Title.Year,
@@ -1008,9 +1084,58 @@ func (s *Service) collectFromTrending(
 				cutoff,
 				state,
 			)
+			for i := range episodes {
+				episodes[i].SourceRank = eligible[idx].rank
+			}
+			return episodes
 		})...)
 	}
 
+	return items
+}
+
+// collectTrendingReleaseStatuses supplies stable availability observations for
+// notification monitoring. Unlike calendar release entries, these snapshots
+// include titles that first enter Trending after they are already available.
+func collectTrendingReleaseStatuses(
+	trendingMovies, trendingSeries []models.TrendingItem,
+	limit int,
+	source string,
+) []models.CalendarItem {
+	selectedMovies := sliceTrendingItems(trendingMovies, 0, limit)
+	selectedSeries := sliceTrendingItems(trendingSeries, 0, limit)
+	items := make([]models.CalendarItem, 0, len(selectedMovies)+len(selectedSeries))
+	appendStatus := func(item models.TrendingItem, rank int) {
+		title := item.Title
+		status := strings.ToLower(strings.TrimSpace(title.Status))
+		if title.MediaType == "movie" {
+			status = models.MovieReleaseStatus(title)
+		} else if status != models.SeriesReleaseStatusReleased {
+			status = models.SeriesReleaseStatusUnreleased
+		}
+		posterURL := ""
+		if title.Poster != nil {
+			posterURL = title.Poster.URL
+		}
+		items = append(items, models.CalendarItem{
+			Title:         title.Name,
+			MediaType:     title.MediaType,
+			Year:          title.Year,
+			ReleaseType:   "availability",
+			ReleaseStatus: status,
+			PosterURL:     posterURL,
+			TextPosterURL: calendarTextPosterURL(&title),
+			ExternalIDs:   buildExternalIDs(title.IMDBID, title.TMDBID, title.TVDBID),
+			Source:        source,
+			SourceRank:    rank,
+		})
+	}
+	for i, item := range selectedMovies {
+		appendStatus(item, i+1)
+	}
+	for i, item := range selectedSeries {
+		appendStatus(item, i+1)
+	}
 	return items
 }
 

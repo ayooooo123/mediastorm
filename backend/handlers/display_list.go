@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 
 	"novastream/models"
@@ -36,6 +37,8 @@ type DisplayListResponse struct {
 	Genres          []string    `json:"genres,omitempty"`
 	AlphabetBuckets []string    `json:"alphabetBuckets,omitempty"`
 }
+
+const maxDiscoveryListItems = 500
 
 func NewDisplayListHandler(watchlist watchlistService, customLists customListsService, users userService) *DisplayListHandler {
 	return &DisplayListHandler{
@@ -280,6 +283,7 @@ func (h *DisplayListHandler) delegateMetadata(
 	handler func(http.ResponseWriter, *http.Request),
 	query url.Values,
 ) {
+	query = cappedDisplayListQuery(query)
 	delegated := r.Clone(r.Context())
 	delegatedURL := *r.URL
 	delegatedURL.RawQuery = query.Encode()
@@ -308,9 +312,65 @@ func (h *DisplayListHandler) delegateMetadata(
 	if h.HiddenItemsService != nil {
 		normalised = h.filterHiddenPayload(query.Get("userId"), normalised)
 	}
+	capDisplayListPayload(normalised, query)
 	logDisplayListPayloadArtworkTrace(query.Get("userId"), source, normalised)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(normalised)
+}
+
+func cappedDisplayListQuery(query url.Values) url.Values {
+	capped := make(url.Values, len(query))
+	for key, values := range query {
+		capped[key] = append([]string(nil), values...)
+	}
+	offset := 0
+	if parsed, err := strconv.Atoi(capped.Get("offset")); err == nil && parsed > 0 {
+		offset = parsed
+	}
+	remaining := maxDiscoveryListItems - offset
+	if remaining < 0 {
+		remaining = 0
+	}
+	limit, err := strconv.Atoi(capped.Get("limit"))
+	if err != nil || limit <= 0 || limit > remaining {
+		forwardedLimit := remaining
+		if forwardedLimit == 0 {
+			// Metadata handlers treat zero as unlimited. Ask for the smallest
+			// possible page and discard it below when the cap is exhausted.
+			forwardedLimit = 1
+		}
+		capped.Set("limit", strconv.Itoa(forwardedLimit))
+	}
+	return capped
+}
+
+func capDisplayListPayload(payload map[string]interface{}, query url.Values) {
+	offset := 0
+	if parsed, err := strconv.Atoi(query.Get("offset")); err == nil && parsed > 0 {
+		offset = parsed
+	}
+	remaining := maxDiscoveryListItems - offset
+	if remaining < 0 {
+		remaining = 0
+	}
+
+	for _, key := range []string{"items", "movies", "series"} {
+		if items, ok := payload[key].([]interface{}); ok && len(items) > remaining {
+			payload[key] = items[:remaining]
+		}
+	}
+	for _, key := range []string{"total", "sourceTotal", "unfilteredTotal"} {
+		switch value := payload[key].(type) {
+		case float64:
+			if value > maxDiscoveryListItems {
+				payload[key] = float64(maxDiscoveryListItems)
+			}
+		case int:
+			if value > maxDiscoveryListItems {
+				payload[key] = maxDiscoveryListItems
+			}
+		}
+	}
 }
 
 func (h *DisplayListHandler) filterHiddenPayload(userID string, payload map[string]interface{}) map[string]interface{} {
