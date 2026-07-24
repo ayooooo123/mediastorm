@@ -748,6 +748,19 @@ func shouldPreferRequestedTranscodingOffset(playbackTarget string, probe *Unifie
 	return probe == nil && strings.EqualFold(strings.TrimSpace(playbackTarget), "web") && trackIndex >= 0
 }
 
+func initialTranscodingOffset(startOffset, probedOffset float64, castMode bool) float64 {
+	if castMode {
+		// Stable Cast segment numbers are calculated from StartOffset. The Cast
+		// path accurately transcodes rather than copying keyframe pre-roll, so
+		// segment zero must begin at that exact same anchor.
+		return startOffset
+	}
+	if probedOffset > 0 {
+		return probedOffset
+	}
+	return startOffset
+}
+
 func sanitizeHLSLanguage(language string) string {
 	trimmed := strings.TrimSpace(language)
 	if trimmed == "" {
@@ -1460,10 +1473,7 @@ func (m *HLSManager) CreateSession(ctx context.Context, path string, originalPat
 	now := time.Now()
 	// Use provided transcodingOffset if valid, otherwise default to startOffset
 	// transcodingOffset may differ from startOffset when probed keyframe position is used
-	actualTranscodingOffset := startOffset
-	if transcodingOffset > 0 {
-		actualTranscodingOffset = transcodingOffset
-	}
+	actualTranscodingOffset := initialTranscodingOffset(startOffset, transcodingOffset, castMode)
 	if startOffset > 0 && shouldPreferRequestedTranscodingOffset(normalizedPlaybackTarget, probeData, subtitleStreamsForSeek, subtitleTrackIndex) {
 		actualTranscodingOffset = startOffset
 		log.Printf("[hls] session %s: using requested start %.3fs instead of probed keyframe %.3fs for accurate web subtitle seek",

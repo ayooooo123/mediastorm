@@ -1120,6 +1120,15 @@ func TestShouldPreferRequestedTranscodingOffset_NilProbeWebSubtitleFallback(t *t
 	}
 }
 
+func TestInitialTranscodingOffset_CastUsesRequestedTimelineAnchor(t *testing.T) {
+	if got := initialTranscodingOffset(100, 96, true); got != 100 {
+		t.Fatalf("initialTranscodingOffset(100, 96, cast=true) = %.3f, want 100", got)
+	}
+	if got := initialTranscodingOffset(100, 96, false); got != 96 {
+		t.Fatalf("initialTranscodingOffset(100, 96, cast=false) = %.3f, want 96", got)
+	}
+}
+
 func TestHLSManager_ServeSubtitlePlaylist(t *testing.T) {
 	tmpDir := t.TempDir()
 	manager := NewHLSManager(tmpDir, "", "", nil)
