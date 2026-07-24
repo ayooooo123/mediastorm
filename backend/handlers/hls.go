@@ -568,6 +568,90 @@ func isBrowserCopyCompatibleVideo(probe *UnifiedProbeResult) bool {
 	return true
 }
 
+func parseVideoFrameRate(value string) (float64, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" || value == "0/0" {
+		return 0, false
+	}
+	numeratorText, denominatorText, hasDenominator := strings.Cut(value, "/")
+	numerator, err := strconv.ParseFloat(numeratorText, 64)
+	if err != nil || numerator <= 0 {
+		return 0, false
+	}
+	if !hasDenominator {
+		return numerator, true
+	}
+	denominator, err := strconv.ParseFloat(denominatorText, 64)
+	if err != nil || denominator <= 0 {
+		return 0, false
+	}
+	return numerator / denominator, true
+}
+
+const (
+	legacyCastMaxWidth    = 1920
+	legacyCastMaxHeight   = 1080
+	legacyCastMaxLevel    = 41
+	legacyCastHDMaxWidth  = 1280
+	legacyCastHDMaxHeight = 720
+	legacyCastMaxFPSHD    = 60
+	legacyCastMaxFPSFull  = 30
+)
+
+// isLegacyCastCopyCompatibleVideo enforces the first/second-generation
+// Chromecast H.264 envelope: Level 4.1, up to 720p60 or 1080p30.
+func isLegacyCastCopyCompatibleVideo(probe *UnifiedProbeResult) bool {
+	if !isBrowserCopyCompatibleVideo(probe) || probe.VideoWidth <= 0 || probe.VideoHeight <= 0 || probe.VideoLevel <= 0 {
+		return false
+	}
+	if probe.VideoWidth > legacyCastMaxWidth || probe.VideoHeight > legacyCastMaxHeight || probe.VideoLevel > legacyCastMaxLevel {
+		return false
+	}
+	frameRate, ok := parseVideoFrameRate(probe.AvgFrameRate)
+	if !ok {
+		return false
+	}
+	maxFrameRate := float64(legacyCastMaxFPSHD)
+	if probe.VideoWidth > legacyCastHDMaxWidth || probe.VideoHeight > legacyCastHDMaxHeight {
+		maxFrameRate = float64(legacyCastMaxFPSFull)
+	}
+	return frameRate <= maxFrameRate+0.01
+}
+
+func castVideoMustTranscode(probe *UnifiedProbeResult) bool {
+	return !isLegacyCastCopyCompatibleVideo(probe)
+}
+
+func legacyCastEncodeLimits(probe *UnifiedProbeResult) (maxWidth, maxHeight, maxFPS int) {
+	maxWidth, maxHeight, maxFPS = legacyCastMaxWidth, legacyCastMaxHeight, legacyCastMaxFPSFull
+	if probe != nil && probe.VideoWidth > 0 && probe.VideoWidth <= legacyCastHDMaxWidth &&
+		probe.VideoHeight > 0 && probe.VideoHeight <= legacyCastHDMaxHeight {
+		maxWidth = legacyCastHDMaxWidth
+		maxHeight = legacyCastHDMaxHeight
+		maxFPS = legacyCastMaxFPSHD
+	}
+	return maxWidth, maxHeight, maxFPS
+}
+
+func appendAACTranscodeArgs(args []string, streamSpecifier string, legacyCast bool) []string {
+	option := func(name string) string { return name + streamSpecifier }
+	channels, layout := "6", "5.1"
+	if legacyCast {
+		channels, layout = "2", "stereo"
+	}
+	args = append(args,
+		option("-c:a"), "aac",
+		option("-ac:a"), channels,
+		option("-ar:a"), "48000",
+		option("-channel_layout:a"), layout,
+		option("-b:a"), "192k",
+	)
+	if legacyCast {
+		args = append(args, option("-profile:a"), "aac_low")
+	}
+	return args
+}
+
 func hlsWebVideoWillTranscode(playbackTarget string, probe *UnifiedProbeResult) bool {
 	if probe != nil && IsIncompatibleVideoCodec(probe.VideoCodec) {
 		return true
@@ -2189,6 +2273,10 @@ func (m *HLSManager) fixDVCodecTag(session *HLSSession) error {
 // startTranscoding begins FFmpeg HLS transcoding
 func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, forceAAC bool) error {
 	startTime := time.Now()
+	if session.CastMode {
+		// Cast output must not depend on receiver/TV Dolby passthrough support.
+		forceAAC = true
+	}
 
 	// Cache forceAAC for recovery restarts
 	session.mu.Lock()
@@ -2416,6 +2504,9 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 	// will be transcoded and whether a same-pass subtitle is being muxed, because both change the
 	// seek strategy needed to keep the subtitle aligned with the video.
 	videoWillTranscode := hlsWebVideoWillTranscode(session.PlaybackTarget, session.ProbeData)
+	if session.CastMode && castVideoMustTranscode(session.ProbeData) {
+		videoWillTranscode = true
+	}
 	_, subtitleRenditionWanted := selectedTextSubtitleStream(subtitleStreams, session.SubtitleTrackIndex)
 	subtitleRenditionWanted = session.PlaybackTarget == "web" && subtitleRenditionWanted
 	forceVideoTranscodeForWebSubtitleSeek := shouldForceWebSubtitleVideoTranscode(session.PlaybackTarget, subtitleStreams, session.SubtitleTrackIndex, session.TranscodingOffset)
@@ -2423,17 +2514,20 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 		videoWillTranscode = true
 	}
 
-	// Build the web video encode plan up-front so any hardware-device
+	// Build the video encode plan up-front so any hardware-device
 	// initialization (-vaapi_device / -init_hw_device) can be injected as a
 	// global option BEFORE -i. The plan picks a GPU H.264 encoder when one is
-	// detected and working, and tone maps HDR/DV down to SDR for the browser.
-	// Only the web player path is affected; native/live transcodes are untouched.
+	// detected and working, and tone maps HDR/DV down to SDR for web and Cast.
 	var webEncodePlan videoEncodePlan
-	useWebEncodePlan := videoWillTranscode && session.PlaybackTarget == "web"
+	useWebEncodePlan := videoWillTranscode && (session.PlaybackTarget == "web" || session.CastMode)
 	if useWebEncodePlan {
 		caps := m.hwAccelCaps()
 		tonemapNeeded := session.HasDV || session.HasHDR
-		webEncodePlan = buildVideoEncodePlan(caps, tonemapNeeded)
+		castMaxWidth, castMaxHeight, castMaxFPS := 0, 0, 0
+		if session.CastMode {
+			castMaxWidth, castMaxHeight, castMaxFPS = legacyCastEncodeLimits(session.ProbeData)
+		}
+		webEncodePlan = buildVideoEncodePlanWithLimits(caps, tonemapNeeded, castMaxWidth, castMaxHeight, castMaxFPS)
 		if len(webEncodePlan.GlobalArgs) > 0 {
 			args = append(args, webEncodePlan.GlobalArgs...)
 		}
@@ -2614,6 +2708,15 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 		videoCodec = session.ProbeData.VideoCodec
 		needsVideoTranscode = IsIncompatibleVideoCodec(videoCodec)
 	}
+	if session.CastMode && castVideoMustTranscode(session.ProbeData) {
+		needsVideoTranscode = true
+		pixFmt, profile := "", ""
+		if session.ProbeData != nil {
+			pixFmt, profile = session.ProbeData.VideoPixFmt, session.ProbeData.VideoProfile
+		}
+		log.Printf("[hls] session %s: cast receiver needs legacy-envelope H.264; transcoding codec=%q pix_fmt=%q profile=%q",
+			session.ID, videoCodec, pixFmt, profile)
+	}
 	if session.PlaybackTarget == "web" && !isBrowserCopyCompatibleVideo(session.ProbeData) {
 		needsVideoTranscode = true
 		if session.ProbeData != nil {
@@ -2686,7 +2789,11 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 	// - HDR10: iOS AVPlayer can't properly decode HEVC in MPEG-TS segments
 	var segmentExt string
 	needsFmp4 := session.HasDV || session.HasHDR
-	if session.HasDV && !session.DVDisabled {
+	if session.CastMode {
+		needsFmp4 = false
+		segmentExt = ".ts"
+		log.Printf("[hls] session %s: using MPEG-TS segments for cast compatibility", session.ID)
+	} else if session.HasDV && !session.DVDisabled {
 		segmentExt = ".m4s"
 		if needsVideoTranscode {
 			log.Printf("[hls] session %s: using fMP4 H.264 output for web-compatible Dolby Vision/HDR source; skipping HEVC DV tag and hevc_metadata filter", session.ID)
@@ -2756,9 +2863,8 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 					// async=1000 allows up to 1000 samples of drift correction per second
 					// Note: -start_at_zero (set earlier) normalizes all stream timestamps for proper A/V sync
 					log.Printf("[hls] session %s: transcoding selected %s track to AAC", session.ID, audioStreams[i].Codec)
-					args = append(args,
-						"-af", "aresample=async=1000",
-						"-c:a", "aac", "-ac", "6", "-ar", "48000", "-channel_layout", "5.1", "-b:a", "192k")
+					args = append(args, "-af", "aresample=async=1000")
+					args = appendAACTranscodeArgs(args, "", session.CastMode)
 					audioCodecHandled = true
 				}
 				break
@@ -2771,18 +2877,18 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 			// Transcode first audio to AAC, copy others
 			// Must specify channel_layout for iOS AVPlayer compatibility
 			// Use aresample filter with async for proper A/V sync during transcoding
-			args = append(args,
-				"-af", "aresample=async=1000",
-				"-c:a:0", "aac", "-ac:a:0", "6", "-ar:a:0", "48000", "-channel_layout:a:0", "5.1", "-b:a:0", "192k",
-				"-c:a:1", "copy")
+			args = append(args, "-af", "aresample=async=1000")
+			args = appendAACTranscodeArgs(args, ":0", session.CastMode)
+			if !session.CastMode {
+				args = append(args, "-c:a:1", "copy")
+			}
 		} else if hasTrueHD && !hasCompatibleAudio {
 			// If only TrueHD exists, we must transcode it
 			// Must specify channel_layout for iOS AVPlayer compatibility (otherwise shows "media may be damaged")
 			// TrueHD has variable timing - use aresample filter with async to maintain A/V sync
 			log.Printf("[hls] session %s: transcoding TrueHD to AAC (no compatible alternative)", session.ID)
-			args = append(args,
-				"-af", "aresample=async=1000",
-				"-c:a", "aac", "-ac", "6", "-ar", "48000", "-channel_layout", "5.1", "-b:a", "192k")
+			args = append(args, "-af", "aresample=async=1000")
+			args = appendAACTranscodeArgs(args, "", session.CastMode)
 		} else {
 			// Copy compatible audio
 			args = append(args, "-c:a", "copy")
@@ -4324,7 +4430,7 @@ func (m *HLSManager) ServePlaylist(w http.ResponseWriter, r *http.Request, sessi
 		lines := strings.Split(playlistContent, "\n")
 		// Determine segment extension based on actual session format
 		segmentExt := ".m4s"
-		if session.forceAAC && !session.HasDV && !session.HasHDR {
+		if session.CastMode || (session.forceAAC && !session.HasDV && !session.HasHDR) {
 			segmentExt = ".ts" // Cast sessions use MPEG-TS for Chromecast compatibility
 		}
 		for _, line := range lines {

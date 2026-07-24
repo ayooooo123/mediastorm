@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"runtime"
@@ -302,6 +303,10 @@ func looksLikeCapabilityFlags(s string) bool {
 // buildVideoEncodePlan assembles the ffmpeg arguments for a web transcode given
 // the detected capabilities and whether the source is HDR/DV (tonemapNeeded).
 func buildVideoEncodePlan(caps HWAccelCaps, tonemapNeeded bool) videoEncodePlan {
+	return buildVideoEncodePlanWithLimits(caps, tonemapNeeded, 0, 0, 0)
+}
+
+func buildVideoEncodePlanWithLimits(caps HWAccelCaps, tonemapNeeded bool, maxWidth, maxHeight, maxFPS int) videoEncodePlan {
 	plan := videoEncodePlan{Kind: caps.Encode}
 
 	// VAAPI/QSV encoders need their own filter hardware device for the hwupload
@@ -319,6 +324,20 @@ func buildVideoEncodePlan(caps HWAccelCaps, tonemapNeeded bool) videoEncodePlan 
 	}
 
 	var filters []string
+	if maxWidth > 0 && maxHeight > 0 {
+		// Fit inside the receiver's decode box before tone mapping and hardware
+		// upload. The min() bounds prevent upscaling; the aspect-ratio and
+		// divisibility options keep the output valid for 4:2:0 H.264 encoders.
+		filters = append(filters, fmt.Sprintf(
+			"scale=w='min(%d,iw)':h='min(%d,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
+			maxWidth,
+			maxHeight,
+		))
+	}
+	if maxFPS > 0 {
+		// Cap high-frame-rate input without duplicating lower-rate frames.
+		filters = append(filters, fmt.Sprintf("fps='min(source_fps,%d)'", maxFPS))
+	}
 	if tonemapNeeded && tonemapImpl != "" {
 		plan.Tonemapped = true
 		switch tonemapImpl {
@@ -410,6 +429,9 @@ func buildVideoEncodePlan(caps HWAccelCaps, tonemapNeeded bool) videoEncodePlan 
 			"-level", "4.1",
 			"-pix_fmt", "yuv420p",
 		}
+	}
+	if maxFPS > 0 {
+		plan.EncoderArgs = append(plan.EncoderArgs, "-level:v", "4.1")
 	}
 
 	if len(filters) > 0 {

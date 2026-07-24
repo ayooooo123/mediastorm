@@ -537,6 +537,9 @@ type VideoFullResult struct {
 	VideoCodec   string // e.g., "h264", "hevc", "mpeg4" - used to detect incompatible codecs
 	VideoPixFmt  string // e.g., "yuv420p", "yuv420p10le" - used for browser compatibility
 	VideoProfile string // e.g., "High", "High 10" - used for browser compatibility
+	VideoWidth   int    // Primary video stream width in pixels
+	VideoHeight  int    // Primary video stream height in pixels
+	VideoLevel   int    // H.264 level as reported by ffprobe (for example, 41)
 	AvgFrameRate string // e.g., "24000/1001" from primary video stream
 	// Audio codec detection
 	HasTrueHD          bool // Audio requires transcoding (TrueHD, DTS-HD, etc.)
