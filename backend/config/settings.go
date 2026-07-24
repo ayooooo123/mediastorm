@@ -302,6 +302,30 @@ type TransmuxSettings struct {
 	HardwareAcceleration string `json:"hardwareAcceleration,omitempty"`
 }
 
+var validHardwareAccelerationValues = map[string]struct{}{
+	"auto":         {},
+	"none":         {},
+	"nvenc":        {},
+	"qsv":          {},
+	"vaapi":        {},
+	"videotoolbox": {},
+}
+
+// NormalizeHardwareAcceleration validates and normalizes the server-wide web
+// transcode encoder preference. An empty value preserves backwards
+// compatibility and is persisted as "auto" once settings are next saved.
+func (s *TransmuxSettings) NormalizeHardwareAcceleration() error {
+	value := strings.ToLower(strings.TrimSpace(s.HardwareAcceleration))
+	if value == "" {
+		value = "auto"
+	}
+	if _, ok := validHardwareAccelerationValues[value]; !ok {
+		return fmt.Errorf("hardware acceleration must be one of auto, none, nvenc, qsv, vaapi, or videotoolbox")
+	}
+	s.HardwareAcceleration = value
+	return nil
+}
+
 // WebDAVSettings defines WebDAV server configuration
 type WebDAVSettings struct {
 	Enabled  bool   `json:"enabled"`
@@ -1535,7 +1559,7 @@ func DefaultSettings() Settings {
 		Import:    ImportSettings{QueueProcessingIntervalSeconds: 1, RarMaxWorkers: 40, RarMaxCacheSizeMB: 128, RarEnableMemoryPreload: true, RarMaxMemoryGB: 8},
 		SABnzbd:   SABnzbdSettings{Enabled: &sabnzbdEnabled, FallbackHost: "", FallbackAPIKey: ""},
 		AltMount:  nil,
-		Transmux:  TransmuxSettings{Enabled: true, FFmpegPath: "ffmpeg", FFprobePath: "ffprobe", HLSTempDirectory: "/tmp/novastream-hls"},
+		Transmux:  TransmuxSettings{Enabled: true, FFmpegPath: "ffmpeg", FFprobePath: "ffprobe", HLSTempDirectory: "/tmp/novastream-hls", HardwareAcceleration: "auto"},
 		Playback:  PlaybackSettings{PreferredPlayer: "native", PreferredAudioLanguage: "eng", PauseWhenAppInactive: false, UseLoadingScreen: false, SubtitleSize: 1.0, SubtitleUseCropDetectPosition: true, SubtitleColor: "#FFFFFF", SubtitleOpacity: 1.0, SubtitleBold: false, SubtitleOutlineEnabled: false, SubtitleOutlineColor: "#000000", SubtitleOutlineWeight: 0.35, SubtitleBackgroundEnabled: true, SubtitleBackgroundColor: "#000000", SubtitleBackgroundOpacity: 0.6, SeekForwardSeconds: 30, SeekBackwardSeconds: 10, StreamMigrationEnabled: true, CreditsDetectionEnabled: false, MatchFrameRate: false, Thumbnails: PlaybackThumbnailSettings{Enabled: false, Workers: 1}},
 		Live:      LiveSettings{Mode: "m3u", PlaylistURL: "", MaxStreams: 0, PlaylistCacheTTLHours: 24},
 		HomeShelves: HomeShelvesSettings{

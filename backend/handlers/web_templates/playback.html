@@ -1676,6 +1676,7 @@
         startSubtitleRenderLoop(video);
         showControls();
         sendWebPlayerProgress({ force: true, isPaused: false });
+        sendWebPlayerHLSState({ paused: false });
       });
       video.addEventListener('pause', () => {
         if (!webPlayerPausedAt) webPlayerPausedAt = Date.now();
@@ -1684,12 +1685,17 @@
         renderSubtitles();
         showControls();
         sendWebPlayerProgress({ force: true, isPaused: true });
+        sendWebPlayerHLSState({ paused: true });
       });
       video.addEventListener('ended', () => {
         stopSubtitleRenderLoop();
         updateControls();
         renderSubtitles();
+        // MSE/HLS playback can emit `ended` when the currently appended media
+        // runs out even though the full title has not finished. Report the
+        // actual playhead; a genuine ending is already at the media duration.
         sendWebPlayerProgress({ force: true, isPaused: true, ended: true });
+        sendWebPlayerHLSState({ paused: true });
       });
       // Buffering/stall detection: surface a live "Buffering" state to the
       // admin dashboard. 'waiting'/'stalled' fire when the player runs dry;
@@ -1698,11 +1704,13 @@
         if (video.paused || webPlayerBuffering) return;
         webPlayerBuffering = true;
         sendWebPlayerProgress({ force: true });
+        sendWebPlayerHLSState();
       };
       const clearBuffering = () => {
         if (!webPlayerBuffering) return;
         webPlayerBuffering = false;
         sendWebPlayerProgress({ force: true });
+        sendWebPlayerHLSState();
       };
       video.addEventListener('waiting', markBuffering);
       video.addEventListener('stalled', markBuffering);
@@ -2337,16 +2345,32 @@
       if (keepaliveTimer) clearInterval(keepaliveTimer);
       keepaliveTimer = setInterval(() => {
         if (!hlsSessionId) return;
-        const position = progressPositionForSend({ force: true });
-        const query = position > 0 ? `?time=${position.toFixed(2)}` : '';
-        fetch(apiUrl(`/video/hls/${encodeURIComponent(hlsSessionId)}/keepalive${query}`), {
-          method: 'POST',
-          credentials: 'same-origin',
-        })
-          .then((response) => response.ok ? response.json().catch(() => null) : null)
+        sendWebPlayerHLSState()
           .then(applyActualStartOffsetCorrection)
           .catch(() => {});
       }, 20000);
+    }
+
+    async function sendWebPlayerHLSState(options = {}) {
+      if (!hlsSessionId) return null;
+      try {
+        const video = document.getElementById('webPlayer');
+        const params = new URLSearchParams({
+          time: progressPositionForSend({ force: true }).toFixed(2),
+          paused: String(options.paused ?? Boolean(video?.paused)),
+          buffering: String(options.buffering ?? Boolean(webPlayerBuffering)),
+          ended: String(Boolean(options.ended)),
+        });
+        const response = await fetch(apiUrl(`/video/hls/${encodeURIComponent(hlsSessionId)}/keepalive?${params}`), {
+          method: 'POST',
+          credentials: 'same-origin',
+          keepalive: Boolean(options.keepalive),
+        });
+        if (!response.ok) return null;
+        return response.json().catch(() => null);
+      } catch {
+        return null;
+      }
     }
 
     function startProgressTracking() {
@@ -2375,7 +2399,7 @@
       const isEnded = Boolean(options.ended);
       const isPaused = options.isPaused !== undefined ? Boolean(options.isPaused) : Boolean(video.paused);
       const isBuffering = !isPaused && !isEnded && Boolean(webPlayerBuffering);
-      let position = isEnded ? duration : progressPositionForSend(options);
+      let position = progressPositionForSend(options);
       if (!Number.isFinite(position) || position < 0) return Promise.resolve(null);
       position = Math.max(0, Math.min(position, duration));
       if (position <= 0) return Promise.resolve(null);
@@ -2419,7 +2443,7 @@
       const isEnded = Boolean(options.ended);
       const isPaused = options.isPaused !== undefined ? Boolean(options.isPaused) : Boolean(video.paused);
       const isBuffering = !isPaused && !isEnded && Boolean(webPlayerBuffering);
-      let position = isEnded ? duration : progressPositionForSend(options);
+      let position = progressPositionForSend(options);
       if (!Number.isFinite(position) || position < 0) return Promise.resolve(null);
       position = Math.max(0, Math.min(position, duration));
       if (position <= 0) return Promise.resolve(null);
@@ -2455,7 +2479,7 @@
         lastProgressPaused = isPaused;
         lastProgressBuffering = isBuffering;
         const percentWatched = Number(result?.percentWatched ?? (duration > 0 ? (position / duration) * 100 : 0));
-        if (!playbackMeta.isLive && (percentWatched >= 90 || isEnded)) {
+        if (!playbackMeta.isLive && percentWatched >= 90) {
           progressCompleted = true;
           stopProgressTracking();
         }

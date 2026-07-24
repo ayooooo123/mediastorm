@@ -50,6 +50,7 @@ import (
 	"novastream/services/localmedia"
 	"novastream/services/mdblist"
 	"novastream/services/metadata"
+	"novastream/services/notifications"
 	"novastream/services/playback"
 	"novastream/services/plex"
 	"novastream/services/prewarm"
@@ -513,6 +514,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to initialise clients: %v", err)
 	}
+	logsHandler.SetClientsService(clientsService)
 	var clientSettingsService *client_settings.Service
 	if store != nil {
 		clientSettingsService, err = client_settings.NewServiceWithStore(store)
@@ -656,6 +658,9 @@ func main() {
 
 	// Calendar service provides upcoming content from watchlist, history, and MDBList
 	calendarService := calendar.New(metadataService, watchlistService, historyService, userSettingsService, userService)
+	notificationService := notifications.New(store.Notifications())
+	defer notificationService.Close()
+	calendarService.SetReleaseObserver(notificationService)
 	historyService.SetWatchStateChangedHook(calendarService.Invalidate)
 	calendarHandler := handlers.NewCalendarHandler(calendarService, userService, *demoMode)
 	startupHandler.SetCalendar(calendarService)
@@ -739,6 +744,9 @@ func main() {
 	videoHandler.SetPrequeueStore(prequeueHandler.GetStore())
 	localBaseURL := fmt.Sprintf("http://127.0.0.1:%d", settings.Server.Port)
 	videoHandler.SetLocalBaseURL(localBaseURL)
+	videoHandler.GetHLSManager().SetPlaybackActivityObserver(notificationService)
+	handlers.GetStreamTracker().SetPlaybackActivityObserver(notificationService)
+	historyHandler.SetActivePlaybackTrackers(handlers.GetStreamTracker())
 
 	if videoHandler != nil && settings.WebDAV.Enabled {
 		videoHandler.ConfigureLocalWebDAVAccess(localBaseURL, settings.WebDAV.Prefix, settings.WebDAV.Username, settings.WebDAV.Password)
@@ -925,6 +933,7 @@ func main() {
 	adminUIHandler.SetClientsService(clientsService)
 	adminUIHandler.SetClientSettingsService(clientSettingsService)
 	adminUIHandler.SetCalendarService(calendarService)
+	adminUIHandler.SetNotificationService(notificationService)
 	adminUIHandler.SetLocalMediaService(localMediaService)
 	adminUIHandler.SetRemoteMediaService(remoteMediaService)
 
@@ -949,6 +958,7 @@ func main() {
 	r.HandleFunc("/admin/search", adminUIHandler.RequireAuth(adminUIHandler.SearchPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/playback", adminUIHandler.RequireAuth(adminUIHandler.PlaybackPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/accounts", adminUIHandler.RequireAuth(adminUIHandler.AccountsPage)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/notifications", adminUIHandler.RequireAuth(adminUIHandler.NotificationsPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/library", adminUIHandler.RequireAuth(adminUIHandler.LibraryPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/kids-settings", adminUIHandler.RequireAuth(adminUIHandler.KidsSettingsPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/schedule", adminUIHandler.RequireAuth(adminUIHandler.CalendarPage)).Methods(http.MethodGet)
@@ -957,6 +967,7 @@ func main() {
 	r.HandleFunc("/admin/api/calendar", adminUIHandler.RequireAuth(adminUIHandler.GetCalendarData)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/schema", adminUIHandler.RequireAuth(adminUIHandler.GetSchema)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/status", adminUIHandler.RequireAuth(adminUIHandler.GetStatus)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/api/hardware-acceleration/status", adminUIHandler.RequireMasterAuth(adminUIHandler.GetHardwareAccelerationStatus)).Methods(http.MethodGet)
 	updatesHandler := handlers.NewUpdatesHandler()
 	r.HandleFunc("/admin/api/updates/status", adminUIHandler.RequireAuth(updatesHandler.Status)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/onboarding/status", adminUIHandler.RequireMasterAuth(adminUIHandler.GetOnboardingStatus)).Methods(http.MethodGet)
@@ -1047,6 +1058,10 @@ func main() {
 	r.HandleFunc("/admin/api/profiles/pin", adminUIHandler.RequireAuth(adminUIHandler.ClearProfilePin)).Methods(http.MethodDelete)
 	r.HandleFunc("/admin/api/profiles/color", adminUIHandler.RequireAuth(adminUIHandler.SetProfileColor)).Methods(http.MethodPut)
 	r.HandleFunc("/admin/api/profiles/kids", adminUIHandler.RequireAuth(adminUIHandler.SetKidsProfile)).Methods(http.MethodPut)
+	r.HandleFunc("/admin/api/notifications", adminUIHandler.RequireAuth(adminUIHandler.ListNotificationChannels)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/api/notifications", adminUIHandler.RequireAuth(adminUIHandler.SaveNotificationChannel)).Methods(http.MethodPost)
+	r.HandleFunc("/admin/api/notifications", adminUIHandler.RequireAuth(adminUIHandler.DeleteNotificationChannel)).Methods(http.MethodDelete)
+	r.HandleFunc("/admin/api/notifications/test", adminUIHandler.RequireAuth(adminUIHandler.TestNotificationChannel)).Methods(http.MethodPost)
 	// Content discovery endpoints (for admin kids-settings preview)
 	r.HandleFunc("/admin/api/discover/new", adminUIHandler.RequireAuth(metadataHandler.DiscoverNew)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/lists/custom", adminUIHandler.RequireAuth(metadataHandler.CustomList)).Methods(http.MethodGet)
@@ -1073,7 +1088,7 @@ func main() {
 	r.HandleFunc("/admin/api/live/stremio/streams", adminUIHandler.RequireAuth(liveHandler.GetStremioStreamOptions)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/live/stream", adminUIHandler.RequireAuth(liveHandler.StreamChannel)).Methods(http.MethodGet, http.MethodHead)
 	r.HandleFunc("/admin/api/live/hls/start", adminUIHandler.RequireAuth(videoHandler.StartLiveHLSSession)).Methods(http.MethodGet, http.MethodOptions)
-	r.HandleFunc("/admin/api/live/epg/now", adminUIHandler.RequireAuth(epgHandler.GetNowPlaying)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/api/live/epg/now", adminUIHandler.RequireAuth(epgHandler.GetNowPlaying)).Methods(http.MethodGet, http.MethodPost)
 	r.HandleFunc("/admin/api/live/epg/schedule", adminUIHandler.RequireAuth(epgHandler.GetSchedule)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/live/epg/schedule/batch", adminUIHandler.RequireAuth(epgHandler.GetScheduleMultiple)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/live/recordings", adminUIHandler.RequireAuth(recordingsHandler.List)).Methods(http.MethodGet)
@@ -1322,6 +1337,7 @@ func main() {
 	r.HandleFunc("/account/playback", adminUIHandler.RequireAuth(adminUIHandler.PlaybackPage)).Methods(http.MethodGet)
 	r.HandleFunc("/account/library", adminUIHandler.RequireAuth(adminUIHandler.LibraryPage)).Methods(http.MethodGet)
 	r.HandleFunc("/account/accounts", adminUIHandler.RequireAuth(adminUIHandler.AccountsPage)).Methods(http.MethodGet) // Shows as "Profiles" for non-admin
+	r.HandleFunc("/account/notifications", adminUIHandler.RequireAuth(adminUIHandler.NotificationsPage)).Methods(http.MethodGet)
 	r.HandleFunc("/account/kids-settings", adminUIHandler.RequireAuth(adminUIHandler.KidsSettingsPage)).Methods(http.MethodGet)
 	r.HandleFunc("/account/schedule", adminUIHandler.RequireAuth(adminUIHandler.CalendarPage)).Methods(http.MethodGet)
 	r.HandleFunc("/account/calendar", adminUIHandler.RequireAuth(adminUIHandler.CalendarPage)).Methods(http.MethodGet)
@@ -1334,7 +1350,7 @@ func main() {
 	r.HandleFunc("/account/api/streams/sse", adminUIHandler.RequireAuth(adminUIHandler.GetStreamsSSE)).Methods(http.MethodGet)
 	r.HandleFunc("/account/api/streams/{streamID}/terminate", adminUIHandler.RequireAuth(adminUIHandler.TerminateStream)).Methods(http.MethodPost)
 	r.HandleFunc("/account/api/dashboard/stats", adminUIHandler.RequireAuth(adminUIHandler.GetDashboardStats)).Methods(http.MethodGet)
-	r.HandleFunc("/account/api/live/epg/now", adminUIHandler.RequireAuth(epgHandler.GetNowPlaying)).Methods(http.MethodGet)
+	r.HandleFunc("/account/api/live/epg/now", adminUIHandler.RequireAuth(epgHandler.GetNowPlaying)).Methods(http.MethodGet, http.MethodPost)
 	r.HandleFunc("/account/api/live/epg/schedule", adminUIHandler.RequireAuth(epgHandler.GetSchedule)).Methods(http.MethodGet)
 	r.HandleFunc("/account/api/live/epg/schedule/batch", adminUIHandler.RequireAuth(epgHandler.GetScheduleMultiple)).Methods(http.MethodGet)
 	r.HandleFunc("/account/api/live/recordings", adminUIHandler.RequireAuth(recordingsHandler.List)).Methods(http.MethodGet)
@@ -1387,6 +1403,10 @@ func main() {
 	r.HandleFunc("/account/api/profiles/pin", adminUIHandler.RequireAuth(adminUIHandler.SetProfilePin)).Methods(http.MethodPut)
 	r.HandleFunc("/account/api/profiles/pin", adminUIHandler.RequireAuth(adminUIHandler.ClearProfilePin)).Methods(http.MethodDelete)
 	r.HandleFunc("/account/api/profiles/kids", adminUIHandler.RequireAuth(adminUIHandler.SetKidsProfile)).Methods(http.MethodPut)
+	r.HandleFunc("/account/api/notifications", adminUIHandler.RequireAuth(adminUIHandler.ListNotificationChannels)).Methods(http.MethodGet)
+	r.HandleFunc("/account/api/notifications", adminUIHandler.RequireAuth(adminUIHandler.SaveNotificationChannel)).Methods(http.MethodPost)
+	r.HandleFunc("/account/api/notifications", adminUIHandler.RequireAuth(adminUIHandler.DeleteNotificationChannel)).Methods(http.MethodDelete)
+	r.HandleFunc("/account/api/notifications/test", adminUIHandler.RequireAuth(adminUIHandler.TestNotificationChannel)).Methods(http.MethodPost)
 	// Content discovery endpoints (for account kids-settings preview)
 	r.HandleFunc("/account/api/discover/new", adminUIHandler.RequireAuth(metadataHandler.DiscoverNew)).Methods(http.MethodGet)
 	r.HandleFunc("/account/api/lists/custom", adminUIHandler.RequireAuth(metadataHandler.CustomList)).Methods(http.MethodGet)

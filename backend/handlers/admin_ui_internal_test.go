@@ -10,6 +10,81 @@ import (
 	"novastream/config"
 )
 
+func TestNotificationsTemplateLoads(t *testing.T) {
+	handler := NewAdminUIHandler("", "", nil, nil, nil, nil)
+	if handler.notificationsTemplate == nil {
+		t.Fatal("notifications template failed to load")
+	}
+}
+
+func TestNotificationsTemplateDoesNotRedeclareBasePath(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/notifications.html")
+	if err != nil {
+		t.Fatalf("read notifications template: %v", err)
+	}
+	if strings.Contains(string(templateBytes), "const basePath =") {
+		t.Fatal("notifications template redeclares the base template's global basePath")
+	}
+}
+
+func TestNotificationsTemplateOmitsRedundantPlayingEvent(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/notifications.html")
+	if err != nil {
+		t.Fatalf("read notifications template: %v", err)
+	}
+	source := string(templateBytes)
+	if strings.Contains(source, `value="watch.playing"`) {
+		t.Fatal("notifications template still exposes the redundant playing event")
+	}
+	if strings.Contains(source, "Now playing") {
+		t.Fatal("notifications template still labels a playing notification")
+	}
+}
+
+func TestNotificationListDisablesCaching(t *testing.T) {
+	handler := &AdminUIHandler{}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/notifications?profileId=profile", nil)
+
+	handler.ListNotificationChannels(recorder, request)
+
+	if got := recorder.Header().Get("Cache-Control"); got != "no-store, max-age=0" {
+		t.Fatalf("Cache-Control = %q, want no-store, max-age=0", got)
+	}
+}
+
+func TestAdminSettingsSaveCommitsPendingTextArrayInputs(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/settings.html")
+	if err != nil {
+		t.Fatalf("read settings template: %v", err)
+	}
+	source := string(templateBytes)
+
+	for _, marker := range []string{
+		`data-text-array-kind="tags"`,
+		`data-text-array-kind="weighted-tags"`,
+		"function commitPendingTextArrayInputs()",
+		"if (committedPendingTextArrays) renderSettings();",
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("settings template missing pending text-array marker %q", marker)
+		}
+	}
+
+	for _, saveFunction := range []string{"saveSection", "saveAllSettings"} {
+		start := strings.Index(source, "async function "+saveFunction+"(")
+		if start < 0 {
+			t.Fatalf("settings template missing %s", saveFunction)
+		}
+		body := source[start:]
+		commit := strings.Index(body, "commitPendingTextArrayInputs();")
+		serialize := strings.Index(body, "JSON.stringify(")
+		if commit < 0 || serialize < 0 || commit > serialize {
+			t.Fatalf("%s must commit pending text-array inputs before serializing settings", saveFunction)
+		}
+	}
+}
+
 func TestUsenetEngineStatusProbeJobIDUsesGUIDForNZBDav(t *testing.T) {
 	for _, engineType := range []string{"nzbdav", "nzbdavex"} {
 		t.Run(engineType, func(t *testing.T) {

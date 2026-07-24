@@ -397,6 +397,7 @@
     let letterboxdListsData = []; // Imported Letterboxd lists (MDBList external lists)
     let mediaLibrariesData = []; // Configured local, Plex, and Jellyfin libraries
     let hasDefaultPassword = false; // Whether admin has default password
+    let hardwareAccelerationStatus = null;
     let userOverrides = {{json .UserOverrides}}; // Map of userId -> hasOverrides
     const isAdmin = {{json .IsAdmin}};
     const settingsDebugSessionId = 'settings-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
@@ -3038,7 +3039,7 @@
             case 'tags':
                 const tags = Array.isArray(value) ? value : [];
                 const tagsHtml = tags.map((tag, idx) => '<span class="tag" title="'+escapeHtml(tag).replace(/"/g, '&quot;')+'"><span class="tag-text">'+escapeHtml(tag)+'</span><span class="tag-remove" onclick="removeTagByIndex(\''+basePath+'\', \''+fieldKey+'\', '+idx+')">&times;</span></span>').join('');
-                return '<div class="tags-input'+invalidClass+'" id="'+id+'_container">'+tagsHtml+'<input type="text" placeholder="Add tag..." enterkeyhint="done" onkeydown="handleTagInput(event, \''+basePath+'\', \''+fieldKey+'\')"></div>';
+                return '<div class="tags-input'+invalidClass+'" id="'+id+'_container">'+tagsHtml+'<input type="text" placeholder="Add tag..." enterkeyhint="done" data-text-array-kind="tags" data-base-path="'+escapeHtml(basePath || '').replace(/"/g, '&quot;')+'" data-field-key="'+escapeHtml(fieldKey).replace(/"/g, '&quot;')+'" onkeydown="handleTagInput(event, \''+basePath+'\', \''+fieldKey+'\')"></div>';
             case 'weighted-tags':
                 const wtags = Array.isArray(value) ? value : [];
                 const wtagsHtml = wtags.map((raw, idx) => {
@@ -3059,7 +3060,7 @@
                 return '<div class="weighted-tags-container'+invalidClass+'" id="'+id+'_container">' +
                     restrictedFilesQuickAdd +
                     wtagsHtml +
-                    '<div class="weighted-tag-add"><input type="text" placeholder="Add term (press Enter)..." enterkeyhint="done" onkeydown="handleWeightedTagInput(event, \''+basePath+'\', \''+fieldKey+'\')"></div>' +
+                    '<div class="weighted-tag-add"><input type="text" placeholder="Add term (press Enter)..." enterkeyhint="done" data-text-array-kind="weighted-tags" data-base-path="'+escapeHtml(basePath || '').replace(/"/g, '&quot;')+'" data-field-key="'+escapeHtml(fieldKey).replace(/"/g, '&quot;')+'" onkeydown="handleWeightedTagInput(event, \''+basePath+'\', \''+fieldKey+'\')"></div>' +
                     '</div>';
             case 'checkboxes':
                 const selectedValues = Array.isArray(value) ? value : [];
@@ -3223,6 +3224,21 @@
     }
 
     function renderAdditionalFieldHint(sectionKey, fieldKey, item) {
+        if (sectionKey === 'transmux' && fieldKey === 'hardwareAcceleration') {
+            if (!hardwareAccelerationStatus) {
+                return '<p class="form-hint">Effective encoder: detecting…</p>';
+            }
+            const configured = escapeHtml(hardwareAccelerationStatus.configured || 'auto');
+            const effective = escapeHtml(hardwareAccelerationStatus.effectiveEncoder || 'unknown');
+            const toneMapper = hardwareAccelerationStatus.toneMapper
+                ? ' · Tone mapper: ' + escapeHtml(hardwareAccelerationStatus.toneMapper)
+                : '';
+            const fallback = hardwareAccelerationStatus.retryAfter
+                ? ' · Hardware failed a real playback graph; software fallback is active temporarily.'
+                : '';
+            return '<p class="form-hint"><strong>Detected:</strong> configured ' + configured +
+                ' · Effective encoder: ' + effective + toneMapper + fallback + '</p>';
+        }
         if (sectionKey === 'usenetEngines' && fieldKey === 'webdavBaseUrl') {
             const engineType = String(item?.type || '').toLowerCase();
             if (engineType === 'altmount' || engineType === 'decypharr') {
@@ -3238,6 +3254,20 @@
             return '<p class="form-hint">Leave empty to inherit global.</p>';
         }
         return '';
+    }
+
+    async function loadHardwareAccelerationStatus() {
+        if (!isAdmin) return;
+        try {
+            const response = await fetch(basePath + '/api/hardware-acceleration/status', {
+                credentials: 'same-origin',
+            });
+            if (!response.ok) return;
+            hardwareAccelerationStatus = await response.json();
+            if (!selectedUserId && !selectedClientId) renderSettings();
+        } catch (e) {
+            console.warn('Failed to load hardware acceleration status:', e);
+        }
     }
     // Detect when an API-key field has had a full URL/query string pasted into it
     // instead of the bare key. Newznab/debrid keys are plain tokens; if the value
@@ -3266,9 +3296,40 @@
     function handleTagInput(event, basePath, fieldKey) {
         if (event.key === 'Enter' || event.key === ',') {
             event.preventDefault();
-            const tag = event.target.value.trim();
-            if (tag) { addTag(basePath, fieldKey, tag); event.target.value = ''; }
+            if (commitTextArrayInput(event.target, basePath, fieldKey, 'tags')) {
+                renderSettings();
+            }
         }
+    }
+    function commitTextArrayInput(input, basePath, fieldKey, kind) {
+        const item = String(input?.value || '').trim();
+        if (!item) return false;
+
+        const fullPath = basePath ? basePath+'.'+fieldKey : fieldKey;
+        let items = getValue(fullPath);
+        items = Array.isArray(items) ? [...items] : [];
+
+        const exists = kind === 'weighted-tags'
+            ? items.some(existing => parseWeightedTerm(existing).term.toLowerCase() === item.toLowerCase())
+            : items.includes(item);
+        input.value = '';
+        if (exists) return false;
+
+        items.push(kind === 'weighted-tags' ? formatWeightedTerm(item, 1) : item);
+        setValue(fullPath, items);
+        return true;
+    }
+    function commitPendingTextArrayInputs() {
+        let committed = false;
+        document.querySelectorAll('input[data-text-array-kind]').forEach(input => {
+            committed = commitTextArrayInput(
+                input,
+                input.dataset.basePath || '',
+                input.dataset.fieldKey || '',
+                input.dataset.textArrayKind
+            ) || committed;
+        });
+        return committed;
     }
     function addTag(basePath, fieldKey, tag) {
         const fullPath = basePath ? basePath+'.'+fieldKey : fieldKey;
@@ -3324,15 +3385,8 @@
     function handleWeightedTagInput(event, basePath, fieldKey) {
         if (event.key === 'Enter') {
             event.preventDefault();
-            const term = event.target.value.trim();
-            if (term) {
-                const fullPath = basePath ? basePath+'.'+fieldKey : fieldKey;
-                let tags = [...(getValue(fullPath) || [])];
-                const formatted = formatWeightedTerm(term, 1);
-                // Check if term already exists (ignoring weight)
-                const exists = tags.some(t => parseWeightedTerm(t).term.toLowerCase() === term.toLowerCase());
-                if (!exists) { tags.push(formatted); setValue(fullPath, tags); renderSettings(); }
-                event.target.value = '';
+            if (commitTextArrayInput(event.target, basePath, fieldKey, 'weighted-tags')) {
+                renderSettings();
             }
         }
     }
@@ -5200,6 +5254,8 @@
     async function saveSection(sectionKey, event) {
         event.stopPropagation(); // Don't toggle section when clicking save
 
+        commitPendingTextArrayInputs();
+
         const btn = event.target.closest('.section-save-btn');
         if (!btn) return;
 
@@ -5252,6 +5308,7 @@
                     originalSettings = JSON.parse(JSON.stringify(currentSettings));
                     btn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>';
                     showToast('Settings saved successfully');
+                    void loadHardwareAccelerationStatus();
                     setTimeout(() => renderSettings(), 500);
                     // Check if any profiles have overrides
                     await promptPropagateIfNeeded(changedGroups);
@@ -9486,6 +9543,8 @@
 
     async function saveAllSettings() {
         try {
+            const committedPendingTextArrays = commitPendingTextArrayInputs();
+
             if (selectedClientId && clientSettings !== null) {
                 // Save client-specific settings
                 const response = await fetch(basePath + '/api/clients/' + encodeURIComponent(selectedClientId) + '/settings', {
@@ -9497,6 +9556,7 @@
                 if (response.ok) {
                     originalClientSettings = JSON.parse(JSON.stringify(clientSettings));
                     showToast('Client settings saved successfully');
+                    if (committedPendingTextArrays) renderSettings();
                     // Update client override indicator
                     const hasOverrides = Object.keys(clientSettings).some(k => clientSettings[k] !== undefined && clientSettings[k] !== null);
                     const clientInList = clientsForUser.find(c => c.id === selectedClientId);
@@ -9545,6 +9605,8 @@
                 if (response.ok) {
                     originalSettings = JSON.parse(JSON.stringify(currentSettings));
                     showToast('Settings saved successfully');
+                    void loadHardwareAccelerationStatus();
+                    if (committedPendingTextArrays) renderSettings();
                     // Check if any profiles have overrides and offer to propagate
                     await promptPropagateIfNeeded(changedGroups);
                 } else {
@@ -9572,6 +9634,7 @@
         const urlProfileId = new URLSearchParams(window.location.search).get('profileId');
 
         if (isAdmin) {
+            void loadHardwareAccelerationStatus();
             await Promise.all([loadProfiles(), loadAccounts(), loadTraktAccounts(), loadSimklAccounts(), loadLetterboxdLists(), loadMediaLibraries(), checkDefaultPassword()]);
             const selector = document.getElementById('userSelector');
             // Pre-select from query param if provided

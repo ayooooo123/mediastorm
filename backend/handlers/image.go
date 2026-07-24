@@ -88,6 +88,7 @@ func NewImageHandler(cacheDir string) *ImageHandler {
 //   - url: source image URL (required)
 //   - w: target width (optional, default: original)
 //   - q: JPEG quality 1-100 (optional, default: 80)
+//   - reject_blank: return an error for fully black or transparent images (optional)
 func (h *ImageHandler) Proxy(w http.ResponseWriter, r *http.Request) {
 	sourceURL := r.URL.Query().Get("url")
 
@@ -126,6 +127,11 @@ func (h *ImageHandler) Proxy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), status)
 		return
 	}
+	if r.URL.Query().Get("reject_blank") == "1" && isBlankProxyImageData(data) {
+		w.Header().Set("Cache-Control", "no-store")
+		http.Error(w, "image is blank", http.StatusUnprocessableEntity)
+		return
+	}
 
 	w.Header().Set("Content-Type", "image/jpeg")
 	w.Header().Set("Cache-Control", "public, max-age=2592000") // 30 days
@@ -135,6 +141,31 @@ func (h *ImageHandler) Proxy(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Cache", "MISS")
 	}
 	w.Write(data)
+}
+
+// isBlankProxyImageData reports whether every decoded pixel is effectively
+// transparent or black. A small RGB tolerance accounts for JPEG compression
+// around an otherwise solid-black source image.
+func isBlankProxyImageData(data []byte) bool {
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return false
+	}
+
+	const (
+		alphaThreshold = uint32(8 * 0x101)
+		blackThreshold = uint32(8 * 0x101)
+	)
+	bounds := img.Bounds()
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			r, g, b, a := img.At(x, y).RGBA()
+			if a > alphaThreshold && (r > blackThreshold || g > blackThreshold || b > blackThreshold) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func validateProxyImageURL(sourceURL string) error {

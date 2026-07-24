@@ -8,11 +8,12 @@ type CalendarItem struct {
 	MediaType       string            `json:"mediaType"` // "movie" | "series"
 	SeasonNumber    int               `json:"seasonNumber,omitempty"`
 	EpisodeNumber   int               `json:"episodeNumber,omitempty"`
-	AirDate         string            `json:"airDate"`               // YYYY-MM-DD
-	AirTime         string            `json:"airTime,omitempty"`     // HH:MM local air time (from TVDB airsTime)
-	AirTimezone     string            `json:"airTimezone,omitempty"` // IANA timezone for air time
-	Network         string            `json:"network,omitempty"`     // Network name (e.g. "HBO")
-	ReleaseType     string            `json:"releaseType,omitempty"` // For movies: "theatrical", "digital", "physical", etc.
+	AirDate         string            `json:"airDate"`                 // YYYY-MM-DD
+	AirTime         string            `json:"airTime,omitempty"`       // HH:MM local air time (from TVDB airsTime)
+	AirTimezone     string            `json:"airTimezone,omitempty"`   // IANA timezone for air time
+	Network         string            `json:"network,omitempty"`       // Network name (e.g. "HBO")
+	ReleaseType     string            `json:"releaseType,omitempty"`   // For movies: "theatrical", "digital", "physical", etc.
+	ReleaseStatus   string            `json:"releaseStatus,omitempty"` // Stable availability state used by release notifications.
 	PosterURL       string            `json:"posterUrl,omitempty"`
 	TextPosterURL   string            `json:"textPosterUrl,omitempty"` // Poster with title text when PosterURL is textless
 	BackdropURL     string            `json:"backdropUrl,omitempty"`
@@ -28,6 +29,7 @@ type CalendarItem struct {
 	Year            int               `json:"year,omitempty"`
 	ExternalIDs     map[string]string `json:"externalIds,omitempty"` // imdb, tvdb, tmdb
 	Source          string            `json:"source"`                // "watchlist" | "history" | "trending" | "top-trending" | "mdblist"
+	SourceRank      int               `json:"sourceRank,omitempty"`  // 1-based rank within a trending source
 }
 
 // CalendarResponse is the API response for the calendar endpoint.

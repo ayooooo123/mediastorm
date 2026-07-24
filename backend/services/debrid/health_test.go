@@ -326,3 +326,44 @@ func TestPreResolvedNonArchiveHead500IsUnavailable(t *testing.T) {
 		t.Fatalf("expected non-archive stream to be rejected, got %#v", health)
 	}
 }
+
+func TestPreResolvedHead405RejectsElfHostedSlatePlaylist(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodHead:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		case http.MethodGet:
+			if got := r.Header.Get("Range"); got != "bytes=0-4095" {
+				t.Fatalf("Range header = %q, want bytes=0-4095", got)
+			}
+			w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+			_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:120.960,\nhttps://slate.elfhosted.com/cache/test/seg.ts\n#EXT-X-ENDLIST\n"))
+		default:
+			t.Fatalf("unexpected method: %s", r.Method)
+		}
+	}))
+	defer server.Close()
+
+	hs := NewHealthService(config.NewManager(t.TempDir() + "/settings.json"))
+	hs.SetFFProbePath("/path/that/must/not/run")
+	health, err := hs.CheckHealth(context.Background(), models.NZBResult{
+		Title:       "Uncached Comet stream",
+		Link:        server.URL + "/playback/test",
+		ServiceType: models.ServiceTypeDebrid,
+		Attributes: map[string]string{
+			"preresolved": "true",
+			"stream_url":  server.URL + "/playback/test",
+			"scraper":     "comet",
+			"tracker":     "Comet",
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("CheckHealth returned error: %v", err)
+	}
+	if health.Healthy || health.Cached || health.Status != "not_cached" {
+		t.Fatalf("expected slate stream to be rejected, got %#v", health)
+	}
+	if health.ErrorMessage != "stream redirected to an unavailable-content placeholder" {
+		t.Fatalf("unexpected error message: %q", health.ErrorMessage)
+	}
+}
