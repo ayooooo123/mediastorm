@@ -289,7 +289,7 @@ func (s *Service) HandlePlaybackUpdate(userID string, update models.PlaybackProg
 			Position:      update.Position,
 			Duration:      update.Duration,
 			Percent:       eventPercent,
-			PosterURL:     update.PosterURL,
+			PosterURL:     firstNonEmpty(update.NotificationImageURL, update.PosterURL),
 			ExternalIDs:   update.ExternalIDs,
 			OccurredAt:    now,
 		})
@@ -347,7 +347,7 @@ func (s *Service) ObserveCalendar(profileID string, items []models.CalendarItem)
 			ReleaseDate:   item.AirDate,
 			Source:        item.Source,
 			SourceRank:    item.SourceRank,
-			PosterURL:     firstNonEmpty(item.TextPosterURL, item.PosterURL),
+			PosterURL:     notificationReleaseArtwork(item),
 			ExternalIDs:   item.ExternalIDs,
 			OccurredAt:    time.Now().UTC(),
 		}
@@ -834,6 +834,18 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func notificationReleaseArtwork(item models.CalendarItem) string {
+	if item.MediaType == "episode" || item.MediaType == "series" || item.MediaType == "show" || item.MediaType == "tv" {
+		candidates := []string{item.TextBackdropURL, item.BackdropURL}
+		candidates = append(candidates, item.BackdropURLs...)
+		candidates = append(candidates, item.TextPosterURL, item.PosterURL)
+		return firstNonEmpty(candidates...)
+	}
+	candidates := []string{item.TextPosterURL, item.PosterURL, item.TextBackdropURL, item.BackdropURL}
+	candidates = append(candidates, item.BackdropURLs...)
+	return firstNonEmpty(candidates...)
 }
 
 func optionalInt(value int) string {
