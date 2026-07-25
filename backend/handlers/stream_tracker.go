@@ -317,6 +317,9 @@ func enrichPlaybackUpdateFromStream(update models.PlaybackProgressUpdate, meta S
 	if update.PosterURL == "" {
 		update.PosterURL = meta.PosterURL
 	}
+	if update.NotificationImageURL == "" {
+		update.NotificationImageURL = meta.NotificationImageURL
+	}
 	if len(update.ExternalIDs) == 0 && len(meta.ExternalIDs) > 0 {
 		update.ExternalIDs = meta.ExternalIDs
 	}

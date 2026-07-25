@@ -104,20 +104,21 @@ type WatchHistoryUpdate struct {
 
 // PlaybackProgressUpdate represents a playback progress update from the player.
 type PlaybackProgressUpdate struct {
-	MediaType      string            `json:"mediaType"`                       // "movie" | "episode" | "live"
-	ItemID         string            `json:"itemId"`                          // The media ID
-	Position       float64           `json:"position"`                        // Current playback position in seconds
-	Duration       float64           `json:"duration"`                        // Total duration in seconds
-	PercentWatched float64           `json:"percentWatched"`                  // Override: set directly when duration is unknown (e.g. Trakt import)
-	Timestamp      time.Time         `json:"timestamp"`                       // When this update was sent
-	IsPaused       bool              `json:"isPaused"`                        // Whether playback is currently paused
-	IsBuffering    bool              `json:"isBuffering"`                     // Whether the player is currently stalled/buffering (not paused)
-	PlaybackEnded  bool              `json:"playbackEnded,omitempty"`         // Whether this is the final heartbeat for the playback session
-	BufferAhead    *float64          `json:"bufferAheadSeconds,omitempty"`    // Player-reported playable buffer runway, when available
-	RequiredMbps   *float64          `json:"requiredBandwidthMbps,omitempty"` // Estimated average bandwidth required by the active release
-	SourcePath     string            `json:"sourcePath,omitempty"`            // Active source path, used to isolate migration signals across replacements
-	PosterURL      string            `json:"posterUrl,omitempty"`             // Optional artwork for backend-owned notifications
-	ExternalIDs    map[string]string `json:"externalIds,omitempty"`
+	MediaType            string            `json:"mediaType"`                       // "movie" | "episode" | "live"
+	ItemID               string            `json:"itemId"`                          // The media ID
+	Position             float64           `json:"position"`                        // Current playback position in seconds
+	Duration             float64           `json:"duration"`                        // Total duration in seconds
+	PercentWatched       float64           `json:"percentWatched"`                  // Override: set directly when duration is unknown (e.g. Trakt import)
+	Timestamp            time.Time         `json:"timestamp"`                       // When this update was sent
+	IsPaused             bool              `json:"isPaused"`                        // Whether playback is currently paused
+	IsBuffering          bool              `json:"isBuffering"`                     // Whether the player is currently stalled/buffering (not paused)
+	PlaybackEnded        bool              `json:"playbackEnded,omitempty"`         // Whether this is the final heartbeat for the playback session
+	BufferAhead          *float64          `json:"bufferAheadSeconds,omitempty"`    // Player-reported playable buffer runway, when available
+	RequiredMbps         *float64          `json:"requiredBandwidthMbps,omitempty"` // Estimated average bandwidth required by the active release
+	SourcePath           string            `json:"sourcePath,omitempty"`            // Active source path, used to isolate migration signals across replacements
+	PosterURL            string            `json:"posterUrl,omitempty"`             // Canonical portrait artwork associated with playback
+	NotificationImageURL string            `json:"notificationImageUrl,omitempty"`  // Orientation-selected artwork for backend-owned notifications
+	ExternalIDs          map[string]string `json:"externalIds,omitempty"`
 
 	// Episode-specific fields
 	SeasonNumber  int    `json:"seasonNumber,omitempty"`

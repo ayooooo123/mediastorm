@@ -168,6 +168,50 @@ func TestFormatCapitalizesReleaseTypes(t *testing.T) {
 	}
 }
 
+func TestNotificationReleaseArtworkUsesOrientationByMediaType(t *testing.T) {
+	item := models.CalendarItem{
+		PosterURL:       "https://image.example/poster.jpg",
+		TextPosterURL:   "https://image.example/text-poster.jpg",
+		BackdropURL:     "https://image.example/backdrop.jpg",
+		TextBackdropURL: "https://image.example/text-backdrop.jpg",
+		BackdropURLs:    []string{"https://image.example/alternate-backdrop.jpg"},
+	}
+
+	item.MediaType = "movie"
+	if got := notificationReleaseArtwork(item); got != item.TextPosterURL {
+		t.Fatalf("movie artwork = %q, want portrait %q", got, item.TextPosterURL)
+	}
+
+	item.MediaType = "episode"
+	if got := notificationReleaseArtwork(item); got != item.TextBackdropURL {
+		t.Fatalf("episode artwork = %q, want landscape %q", got, item.TextBackdropURL)
+	}
+
+	item.MediaType = "series"
+	item.TextBackdropURL = ""
+	if got := notificationReleaseArtwork(item); got != item.BackdropURL {
+		t.Fatalf("series artwork = %q, want landscape fallback %q", got, item.BackdropURL)
+	}
+}
+
+func TestNotificationReleaseArtworkFallsBackAcrossOrientations(t *testing.T) {
+	movie := models.CalendarItem{
+		MediaType:   "movie",
+		BackdropURL: "https://image.example/backdrop.jpg",
+	}
+	if got := notificationReleaseArtwork(movie); got != movie.BackdropURL {
+		t.Fatalf("movie fallback artwork = %q, want %q", got, movie.BackdropURL)
+	}
+
+	episode := models.CalendarItem{
+		MediaType: "episode",
+		PosterURL: "https://image.example/poster.jpg",
+	}
+	if got := notificationReleaseArtwork(episode); got != episode.PosterURL {
+		t.Fatalf("episode fallback artwork = %q, want %q", got, episode.PosterURL)
+	}
+}
+
 func TestSaveAndListChannelPreservesAndMasksWebhookURL(t *testing.T) {
 	repo := newMemoryRepo()
 	service := New(repo)
@@ -447,6 +491,45 @@ func TestPlaybackNotificationsAreEdgeTriggered(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatalf("timed out waiting for event %q", expected)
 		}
+	}
+}
+
+func TestPlaybackNotificationPrefersOrientationSelectedArtwork(t *testing.T) {
+	received := make(chan models.NotificationEvent, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Data models.NotificationEvent `json:"data"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		received <- payload.Data
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	repo := newMemoryRepo()
+	repo.channels["channel"] = models.NotificationChannel{
+		ID: "channel", ProfileID: "profile", Type: models.NotificationChannelWebhook,
+		URL: server.URL, Enabled: true, IncludePoster: true,
+		Events: []string{models.NotificationEventWatchStarted},
+	}
+	service := New(repo)
+	defer service.Close()
+
+	service.HandlePlaybackUpdate("profile", models.PlaybackProgressUpdate{
+		MediaType:            "episode",
+		ItemID:               "episode:1",
+		SeriesName:           "Show",
+		PosterURL:            "https://image.example/poster.jpg",
+		NotificationImageURL: "https://image.example/backdrop.jpg",
+	}, 1)
+
+	select {
+	case event := <-received:
+		if event.PosterURL != "https://image.example/backdrop.jpg" {
+			t.Fatalf("notification artwork = %q, want orientation-selected backdrop", event.PosterURL)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for playback notification")
 	}
 }
 
