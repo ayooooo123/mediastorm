@@ -6,8 +6,11 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"sync/atomic"
 	"testing"
 
 	"novastream/config"
@@ -119,6 +122,113 @@ func TestProxyExternalURLUsesConfiguredUsenetWebDAVAuth(t *testing.T) {
 	}
 	if !sawAuth {
 		t.Fatal("upstream did not receive auth")
+	}
+}
+
+func TestProxyExternalURLCachesFinalRedirectAndReusesConnection(t *testing.T) {
+	var finalRequests atomic.Int32
+	var finalConnections atomic.Int32
+	finalServer := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		finalRequests.Add(1)
+		if got := r.Header.Get("Range"); got != "bytes=0-1023" {
+			t.Errorf("Range = %q, want bytes=0-1023", got)
+		}
+		w.Header().Set("Content-Type", "video/x-matroska")
+		w.Header().Set("Content-Length", "5")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = io.WriteString(w, "video")
+	}))
+	finalServer.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			finalConnections.Add(1)
+		}
+	}
+	finalServer.Start()
+	defer finalServer.Close()
+
+	var redirectRequests atomic.Int32
+	redirectServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirectRequests.Add(1)
+		http.Redirect(w, r, finalServer.URL+"/movie.mkv", http.StatusFound)
+	}))
+	defer redirectServer.Close()
+
+	handler := NewVideoHandler(false, "", "")
+	settings := config.DefaultSettings()
+	settings.Server.AllowedPrivateMediaOrigins = []string{redirectServer.URL, finalServer.URL}
+	handler.SetConfigManager(staticVideoConfigProvider{settings: settings})
+
+	for range 2 {
+		req := httptest.NewRequest(http.MethodGet, "/video/stream", nil)
+		req.Header.Set("Range", "bytes=0-1023")
+		rec := httptest.NewRecorder()
+		handled, err := handler.proxyExternalURL(rec, req, redirectServer.URL+"/playback/token")
+		if err != nil {
+			t.Fatalf("proxyExternalURL: %v", err)
+		}
+		if !handled {
+			t.Fatal("handled = false")
+		}
+		if rec.Code != http.StatusPartialContent {
+			t.Fatalf("status = %d, want 206", rec.Code)
+		}
+	}
+
+	if got := redirectRequests.Load(); got != 1 {
+		t.Fatalf("redirect requests = %d, want 1", got)
+	}
+	if got := finalRequests.Load(); got != 2 {
+		t.Fatalf("final requests = %d, want 2", got)
+	}
+	if got := finalConnections.Load(); got != 1 {
+		t.Fatalf("final connections = %d, want 1 reused connection", got)
+	}
+}
+
+func TestProxyExternalURLStartupExperimentServesRepeatedRangeFromPrefixSpool(t *testing.T) {
+	payload := bytes.Repeat([]byte("matroska"), 256)
+	var upstreamRequests atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamRequests.Add(1)
+		w.Header().Set("Content-Type", "video/x-matroska")
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes 0-%d/%d", len(payload)-1, len(payload)))
+		w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(payload)
+	}))
+	defer upstream.Close()
+
+	handler := NewVideoHandler(false, "", "")
+	settings := config.DefaultSettings()
+	settings.Server.AllowedPrivateMediaOrigins = []string{upstream.URL}
+	handler.SetConfigManager(staticVideoConfigProvider{settings: settings})
+
+	firstReq := httptest.NewRequest(http.MethodGet, "/video/stream?_startupExperiment=1", nil)
+	firstReq.Header.Set("Range", "bytes=0-")
+	firstRec := httptest.NewRecorder()
+	if handled, err := handler.proxyExternalURL(firstRec, firstReq, upstream.URL+"/movie.mkv"); err != nil || !handled {
+		t.Fatalf("first proxyExternalURL: handled=%t err=%v", handled, err)
+	}
+
+	secondReq := httptest.NewRequest(http.MethodGet, "/video/stream?_startupExperiment=1", nil)
+	secondReq.Header.Set("Range", "bytes=337-")
+	secondRec := httptest.NewRecorder()
+	if handled, err := handler.proxyExternalURL(secondRec, secondReq, upstream.URL+"/movie.mkv"); err != nil || !handled {
+		t.Fatalf("second proxyExternalURL: handled=%t err=%v", handled, err)
+	}
+
+	if got := upstreamRequests.Load(); got != 1 {
+		t.Fatalf("upstream requests = %d, want 1", got)
+	}
+	if got := secondRec.Header().Get("X-Strmr-Startup-Spool"); got != "hit" {
+		t.Fatalf("X-Strmr-Startup-Spool = %q, want hit", got)
+	}
+	if got := secondRec.Header().Get("Content-Range"); got != fmt.Sprintf("bytes 337-%d/%d", len(payload)-1, len(payload)) {
+		t.Fatalf("Content-Range = %q", got)
+	}
+	if !bytes.Equal(secondRec.Body.Bytes(), payload[337:]) {
+		t.Fatal("spooled proxy response mismatch")
 	}
 }
 

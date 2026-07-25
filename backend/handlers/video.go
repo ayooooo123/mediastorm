@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"os"
 	"os/exec"
@@ -115,6 +117,16 @@ type VideoHandler struct {
 	prequeueStore *playback.PrequeueStore
 	prewarmSvc    PrewarmService
 
+	// External playback URLs commonly redirect through an addon before reaching
+	// the debrid CDN. Keep one hardened client alive for connection reuse and
+	// remember short-lived final redirects so FFmpeg range requests do not pay
+	// the addon/redirect latency repeatedly.
+	externalProxyHTTPClient *http.Client
+	externalRedirectMu      sync.Mutex
+	externalRedirects       map[string]cachedExternalRedirect
+	externalProxyRequestSeq uint64
+	externalPrefixSpool     externalPrefixSpool
+
 	// Subtitle extraction for non-HLS streams
 	subtitleExtractManager *SubtitleExtractManager
 
@@ -158,6 +170,154 @@ type VideoHandler struct {
 	// User/account services for stream limit enforcement
 	usersSvc    UsersProvider
 	accountsSvc AccountsProvider
+}
+
+const (
+	externalRedirectCacheTTL    = 15 * time.Minute
+	externalPrefixSpoolTTL      = 60 * time.Second
+	externalPrefixSpoolMaxBytes = 4 * 1024 * 1024
+)
+
+type cachedExternalRedirect struct {
+	url    string
+	expiry time.Time
+}
+
+// externalPrefixSpool mirrors the beginning of an external stream while it is
+// sent to FFmpeg. Startup demuxing often reopens overlapping ranges near the
+// beginning of a Matroska file; those reads can be answered from this bounded
+// snapshot instead of paying for another CDN connection.
+type externalPrefixSpoolEntry struct {
+	data               []byte
+	totalSize          int64
+	contentType        string
+	etag               string
+	lastModified       string
+	contentDisposition string
+	expiry             time.Time
+}
+
+type externalPrefixSpool struct {
+	mu      sync.Mutex
+	entries map[string]*externalPrefixSpoolEntry
+}
+
+type externalPrefixSpoolHit struct {
+	data               []byte
+	start              int64
+	end                int64
+	totalSize          int64
+	contentType        string
+	etag               string
+	lastModified       string
+	contentDisposition string
+}
+
+func (s *externalPrefixSpool) append(
+	key string,
+	offset int64,
+	data []byte,
+	totalSize int64,
+	header http.Header,
+) {
+	if key == "" || len(data) == 0 || offset < 0 || offset >= externalPrefixSpoolMaxBytes {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.entries == nil {
+		s.entries = make(map[string]*externalPrefixSpoolEntry)
+	}
+	now := time.Now()
+	entry := s.entries[key]
+	if entry == nil || now.After(entry.expiry) {
+		if offset != 0 {
+			return
+		}
+		entry = &externalPrefixSpoolEntry{}
+		s.entries[key] = entry
+	}
+	if offset != int64(len(entry.data)) {
+		return
+	}
+	remaining := externalPrefixSpoolMaxBytes - offset
+	if int64(len(data)) > remaining {
+		data = data[:remaining]
+	}
+	entry.data = append(entry.data, data...)
+	entry.totalSize = totalSize
+	entry.contentType = header.Get("Content-Type")
+	entry.etag = header.Get("ETag")
+	entry.lastModified = header.Get("Last-Modified")
+	entry.contentDisposition = header.Get("Content-Disposition")
+	entry.expiry = now.Add(externalPrefixSpoolTTL)
+}
+
+func (s *externalPrefixSpool) get(key, rangeHeader string) (externalPrefixSpoolHit, bool) {
+	start, requestedEnd, hasEnd, ok := parseSingleByteRange(rangeHeader)
+	if !ok {
+		return externalPrefixSpoolHit{}, false
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry := s.entries[key]
+	if entry == nil || time.Now().After(entry.expiry) || start >= int64(len(entry.data)) {
+		return externalPrefixSpoolHit{}, false
+	}
+	end := int64(len(entry.data)) - 1
+	if hasEnd && requestedEnd < end {
+		end = requestedEnd
+	}
+	if end < start {
+		return externalPrefixSpoolHit{}, false
+	}
+	data := append([]byte(nil), entry.data[start:end+1]...)
+	return externalPrefixSpoolHit{
+		data:               data,
+		start:              start,
+		end:                end,
+		totalSize:          entry.totalSize,
+		contentType:        entry.contentType,
+		etag:               entry.etag,
+		lastModified:       entry.lastModified,
+		contentDisposition: entry.contentDisposition,
+	}, true
+}
+
+func parseSingleByteRange(header string) (start, end int64, hasEnd, ok bool) {
+	if !strings.HasPrefix(header, "bytes=") || strings.Contains(header, ",") {
+		return 0, 0, false, false
+	}
+	parts := strings.SplitN(strings.TrimPrefix(header, "bytes="), "-", 2)
+	if len(parts) != 2 || parts[0] == "" {
+		return 0, 0, false, false
+	}
+	start, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || start < 0 {
+		return 0, 0, false, false
+	}
+	if parts[1] == "" {
+		return start, 0, false, true
+	}
+	end, err = strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || end < start {
+		return 0, 0, false, false
+	}
+	return start, end, true, true
+}
+
+func externalResponseTotalSize(contentRange, contentLength string) int64 {
+	if slash := strings.LastIndex(contentRange, "/"); slash >= 0 {
+		if total, err := strconv.ParseInt(contentRange[slash+1:], 10, 64); err == nil && total > 0 {
+			return total
+		}
+	}
+	if total, err := strconv.ParseInt(contentLength, 10, 64); err == nil && total > 0 {
+		return total
+	}
+	return 0
 }
 
 // UsersProvider interface for resolving profile → account
@@ -352,7 +512,15 @@ func newVideoHandler(transmuxEnabled bool, ffmpegPath, ffprobePath, hlsTempDir s
 		subtitleExtractManager: subtitleMgr,
 		metadataCache:          make(map[string]*cachedMetadataEntry),
 		streamPool:             newStreamPool(defaultStreamFailureRegistry),
+		externalRedirects:      make(map[string]cachedExternalRedirect),
 	}
+	h.externalProxyHTTPClient = requestsecurity.NewSafeHTTPClientWithPolicyProvider(
+		30*time.Minute,
+		10,
+		func() requestsecurity.RestrictedHostPolicy {
+			return h.configuredExternalHostPolicy()
+		},
+	)
 	if resolvedFFmpeg != "" {
 		h.thumbnailManager = NewThumbnailManager(filepath.Join(os.TempDir(), "strmr-thumbnails"), resolvedFFmpeg)
 	}
@@ -361,6 +529,38 @@ func newVideoHandler(transmuxEnabled bool, ffmpegPath, ffprobePath, hlsTempDir s
 	go h.runMetadataCacheCleanup()
 
 	return h
+}
+
+func (h *VideoHandler) cachedExternalRedirectURL(origin string) (string, bool) {
+	h.externalRedirectMu.Lock()
+	defer h.externalRedirectMu.Unlock()
+	entry, ok := h.externalRedirects[origin]
+	if !ok {
+		return origin, false
+	}
+	if time.Now().After(entry.expiry) {
+		delete(h.externalRedirects, origin)
+		return origin, false
+	}
+	return entry.url, true
+}
+
+func (h *VideoHandler) rememberExternalRedirect(origin, final string) {
+	if origin == "" || final == "" || origin == final {
+		return
+	}
+	h.externalRedirectMu.Lock()
+	h.externalRedirects[origin] = cachedExternalRedirect{
+		url:    final,
+		expiry: time.Now().Add(externalRedirectCacheTTL),
+	}
+	h.externalRedirectMu.Unlock()
+}
+
+func (h *VideoHandler) forgetExternalRedirect(origin string) {
+	h.externalRedirectMu.Lock()
+	delete(h.externalRedirects, origin)
+	h.externalRedirectMu.Unlock()
 }
 
 // SetUserSettingsService sets the user settings service for policy checks
@@ -5349,57 +5549,257 @@ func (h *VideoHandler) proxyExternalURL(w http.ResponseWriter, r *http.Request, 
 
 	videoTracef("[video] external proxy: final URL host=%s", parsedURL.Host)
 	allowRestricted := h.configuredExternalHostPolicy()
+	requestStartedAt := time.Now()
+	startupExperiment := strings.TrimSpace(r.URL.Query().Get("_startupExperiment")) == "1"
+	requestID := atomic.AddUint64(&h.externalProxyRequestSeq, 1)
 	if err := requestsecurity.ValidateOutboundURL(r.Context(), cleanURL, allowRestricted); err != nil {
 		http.Error(w, "external URL is not allowed", http.StatusBadRequest)
 		return true, fmt.Errorf("validate external URL: %w", err)
 	}
+	validatedAt := time.Now()
 
-	// Create request to external URL
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
 	defer cancel()
 
-	proxyReq, err := http.NewRequestWithContext(ctx, r.Method, cleanURL, nil)
+	rangeHeader := r.Header.Get("Range")
+	if startupExperiment && r.Method == http.MethodGet {
+		if hit, ok := h.externalPrefixSpool.get(cleanURL, rangeHeader); ok {
+			h.writeCommonHeaders(w)
+			if hit.contentType != "" {
+				w.Header().Set("Content-Type", hit.contentType)
+			}
+			if hit.etag != "" {
+				w.Header().Set("ETag", hit.etag)
+			}
+			if hit.lastModified != "" {
+				w.Header().Set("Last-Modified", hit.lastModified)
+			}
+			if hit.contentDisposition != "" {
+				w.Header().Set("Content-Disposition", hit.contentDisposition)
+			}
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("Content-Length", strconv.Itoa(len(hit.data)))
+			total := "*"
+			if hit.totalSize > 0 {
+				total = strconv.FormatInt(hit.totalSize, 10)
+			}
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%s", hit.start, hit.end, total))
+			w.Header().Set("X-Strmr-Startup-Spool", "hit")
+			w.WriteHeader(http.StatusPartialContent)
+			_, writeErr := w.Write(hit.data)
+			log.Printf(
+				"[video-startup] request=%d range=%q stage=prefix-spool-hit bytes=%d cachedEnd=%d total=%s elapsed=%s",
+				requestID,
+				rangeHeader,
+				len(hit.data),
+				hit.end,
+				total,
+				time.Since(requestStartedAt).Round(time.Millisecond),
+			)
+			if writeErr != nil && !isClientGone(writeErr) {
+				return true, writeErr
+			}
+			return true, nil
+		}
+	}
+	upstreamURL, usedRedirectCache := h.cachedExternalRedirectURL(cleanURL)
+	if err := requestsecurity.ValidateOutboundURL(ctx, upstreamURL, allowRestricted); err != nil {
+		h.forgetExternalRedirect(cleanURL)
+		upstreamURL = cleanURL
+		usedRedirectCache = false
+	}
+
+	var traceMu sync.Mutex
+	var dnsStartedAt time.Time
+	var dnsDuration time.Duration
+	var connectStartedAt time.Time
+	var connectDuration time.Duration
+	var tlsStartedAt time.Time
+	var tlsDuration time.Duration
+	var gotConnAt time.Time
+	var connectionReused bool
+	var firstResponseByteAt time.Time
+	trace := &httptrace.ClientTrace{
+		DNSStart: func(httptrace.DNSStartInfo) {
+			traceMu.Lock()
+			dnsStartedAt = time.Now()
+			traceMu.Unlock()
+		},
+		DNSDone: func(httptrace.DNSDoneInfo) {
+			traceMu.Lock()
+			if !dnsStartedAt.IsZero() {
+				dnsDuration = time.Since(dnsStartedAt)
+			}
+			traceMu.Unlock()
+		},
+		ConnectStart: func(_, _ string) {
+			traceMu.Lock()
+			connectStartedAt = time.Now()
+			traceMu.Unlock()
+		},
+		ConnectDone: func(_, _ string, _ error) {
+			traceMu.Lock()
+			if !connectStartedAt.IsZero() {
+				connectDuration = time.Since(connectStartedAt)
+			}
+			traceMu.Unlock()
+		},
+		TLSHandshakeStart: func() {
+			traceMu.Lock()
+			tlsStartedAt = time.Now()
+			traceMu.Unlock()
+		},
+		TLSHandshakeDone: func(tls.ConnectionState, error) {
+			traceMu.Lock()
+			if !tlsStartedAt.IsZero() {
+				tlsDuration = time.Since(tlsStartedAt)
+			}
+			traceMu.Unlock()
+		},
+		GotConn: func(info httptrace.GotConnInfo) {
+			traceMu.Lock()
+			gotConnAt = time.Now()
+			connectionReused = info.Reused
+			traceMu.Unlock()
+		},
+		GotFirstResponseByte: func() {
+			traceMu.Lock()
+			firstResponseByteAt = time.Now()
+			traceMu.Unlock()
+		},
+	}
+
+	buildProxyRequest := func(target string) (*http.Request, error) {
+		proxyReq, requestErr := http.NewRequestWithContext(
+			httptrace.WithClientTrace(ctx, trace),
+			r.Method,
+			target,
+			nil,
+		)
+		if requestErr != nil {
+			return nil, requestErr
+		}
+		if rangeHeader != "" {
+			proxyReq.Header.Set("Range", rangeHeader)
+		}
+		proxyReq.Header.Set("User-Agent", "VLC/3.0.18 LibVLC/3.0.18")
+		proxyReq.Header.Set("Accept", "*/*")
+		proxyReq.Header.Set("Accept-Encoding", "identity")
+		if legacyHasAuth {
+			proxyReq.SetBasicAuth(legacyUsername, legacyPassword)
+		} else {
+			h.applyExternalUsenetWebDAVAuth(proxyReq)
+		}
+		return proxyReq, nil
+	}
+
+	proxyReq, err := buildProxyRequest(upstreamURL)
 	if err != nil {
 		http.Error(w, "failed to create proxy request", http.StatusInternalServerError)
 		return true, fmt.Errorf("create proxy request: %w", err)
 	}
+	videoTracef("[video] external proxy request: method=%s host=%s path=%s range=%q redirectCache=%t",
+		proxyReq.Method, proxyReq.URL.Host, proxyReq.URL.Path, rangeHeader, usedRedirectCache)
 
-	// Forward range header for seeking support
-	rangeHeader := r.Header.Get("Range")
-	if rangeHeader != "" {
-		proxyReq.Header.Set("Range", rangeHeader)
-		videoTracef("[video] external proxy: forwarding range header: %s", rangeHeader)
+	resp, err := h.externalProxyHTTPClient.Do(proxyReq)
+	if err != nil && usedRedirectCache {
+		// A cached signed CDN URL may expire. Retry through the stable addon URL
+		// once and refresh the redirect without surfacing a playback error.
+		h.forgetExternalRedirect(cleanURL)
+		usedRedirectCache = false
+		proxyReq, err = buildProxyRequest(cleanURL)
+		if err == nil {
+			resp, err = h.externalProxyHTTPClient.Do(proxyReq)
+		}
 	}
-
-	// Add minimal headers - some servers are picky about extra headers
-	// Using a simple user agent that looks like a video player
-	proxyReq.Header.Set("User-Agent", "VLC/3.0.18 LibVLC/3.0.18")
-	proxyReq.Header.Set("Accept", "*/*")
-	proxyReq.Header.Set("Accept-Encoding", "identity") // Don't accept compression for video streaming
-	if legacyHasAuth {
-		proxyReq.SetBasicAuth(legacyUsername, legacyPassword)
-	} else {
-		h.applyExternalUsenetWebDAVAuth(proxyReq)
-	}
-
-	// Log request details for debugging
-	videoTracef("[video] external proxy request: method=%s host=%s path=%s", proxyReq.Method, proxyReq.URL.Host, proxyReq.URL.Path)
-
-	// Make the request
-	externalProxyHTTPClient := requestsecurity.NewSafeHTTPClient(30*time.Minute, 10, allowRestricted)
-	resp, err := externalProxyHTTPClient.Do(proxyReq)
 	if err != nil {
+		if startupExperiment {
+			log.Printf("[video-startup] request=%d range=%q failed after=%s redirectCache=%t err=%v",
+				requestID, rangeHeader, time.Since(requestStartedAt).Round(time.Millisecond), usedRedirectCache, err)
+		}
 		log.Printf("[video] external proxy request failed: %v", err)
 		http.Error(w, "failed to fetch external stream", http.StatusBadGateway)
 		return true, fmt.Errorf("external request: %w", err)
 	}
+	if usedRedirectCache && shouldForceReresolveForStatus(resp.StatusCode) {
+		_ = resp.Body.Close()
+		h.forgetExternalRedirect(cleanURL)
+		usedRedirectCache = false
+		proxyReq, err = buildProxyRequest(cleanURL)
+		if err == nil {
+			resp, err = h.externalProxyHTTPClient.Do(proxyReq)
+		}
+		if err != nil {
+			if startupExperiment {
+				log.Printf("[video-startup] request=%d range=%q redirect refresh failed after=%s err=%v",
+					requestID, rangeHeader, time.Since(requestStartedAt).Round(time.Millisecond), err)
+			}
+			http.Error(w, "failed to refresh external stream", http.StatusBadGateway)
+			return true, fmt.Errorf("refresh external request: %w", err)
+		}
+	}
 	defer resp.Body.Close()
+	headersAt := time.Now()
+	finalURL := resp.Request.URL.String()
+	if finalURL != cleanURL {
+		h.rememberExternalRedirect(cleanURL, finalURL)
+	}
+	startupTimingLogged := false
+	logStartupTiming := func(stage string) {
+		if !startupExperiment || startupTimingLogged {
+			return
+		}
+		startupTimingLogged = true
+		traceMu.Lock()
+		traceDNSDuration := dnsDuration
+		traceConnectDuration := connectDuration
+		traceTLSDuration := tlsDuration
+		traceGotConnAt := gotConnAt
+		traceConnectionReused := connectionReused
+		traceFirstResponseByteAt := firstResponseByteAt
+		traceMu.Unlock()
+		gotConnElapsed := time.Duration(0)
+		if !traceGotConnAt.IsZero() {
+			gotConnElapsed = traceGotConnAt.Sub(requestStartedAt)
+		}
+		firstResponseByteElapsed := time.Duration(0)
+		if !traceFirstResponseByteAt.IsZero() {
+			firstResponseByteElapsed = traceFirstResponseByteAt.Sub(requestStartedAt)
+		}
+		log.Printf(
+			"[video-startup] request=%d range=%q stage=%s status=%d redirectCache=%t origin=%q final=%q validate=%s gotConn=%s reused=%t dns=%s connect=%s tls=%s headers=%s firstResponseByte=%s total=%s",
+			requestID,
+			rangeHeader,
+			stage,
+			resp.StatusCode,
+			usedRedirectCache,
+			parsedURL.Host,
+			resp.Request.URL.Host,
+			validatedAt.Sub(requestStartedAt).Round(time.Millisecond),
+			gotConnElapsed.Round(time.Millisecond),
+			traceConnectionReused,
+			traceDNSDuration.Round(time.Millisecond),
+			traceConnectDuration.Round(time.Millisecond),
+			traceTLSDuration.Round(time.Millisecond),
+			headersAt.Sub(requestStartedAt).Round(time.Millisecond),
+			firstResponseByteElapsed.Round(time.Millisecond),
+			time.Since(requestStartedAt).Round(time.Millisecond),
+		)
+	}
 
 	// Log response details
 	contentLength := resp.Header.Get("Content-Length")
 	contentRange := resp.Header.Get("Content-Range")
 	acceptRanges := resp.Header.Get("Accept-Ranges")
 	location := resp.Header.Get("Location")
+	responseTotalSize := externalResponseTotalSize(contentRange, contentLength)
+	rangeStart, _, _, rangeOK := parseSingleByteRange(rangeHeader)
+	spoolPrefix := startupExperiment &&
+		r.Method == http.MethodGet &&
+		rangeOK &&
+		rangeStart == 0 &&
+		(resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusPartialContent)
+	var spoolReadOffset int64
 	videoTracef("[video] external proxy response: status=%d content-length=%s content-range=%q accept-ranges=%q location=%q",
 		resp.StatusCode, contentLength, contentRange, acceptRanges, location)
 
@@ -5482,6 +5882,7 @@ func (h *VideoHandler) proxyExternalURL(w http.ResponseWriter, r *http.Request, 
 
 	// For HEAD requests, we're done
 	if r.Method == http.MethodHead {
+		logStartupTiming("headers")
 		return true, nil
 	}
 
@@ -5554,6 +5955,10 @@ func (h *VideoHandler) proxyExternalURL(w http.ResponseWriter, r *http.Request, 
 		upstreamWindowRead += time.Since(readStart)
 		if n > 0 {
 			upstreamWindowBytes += int64(n)
+			if spoolPrefix {
+				h.externalPrefixSpool.append(cleanURL, spoolReadOffset, buf[:n], responseTotalSize, resp.Header)
+				spoolReadOffset += int64(n)
+			}
 			// Slow client writes are normal backpressure when the player has buffered
 			// ahead. Do not turn them into migration signals; player buffer telemetry
 			// determines whether a transient upstream stall is actually harmful.
@@ -5570,6 +5975,9 @@ func (h *VideoHandler) proxyExternalURL(w http.ResponseWriter, r *http.Request, 
 			}
 
 			total += int64(written)
+			if total > 0 {
+				logStartupTiming("first-client-byte")
+			}
 			clientWindowBytes += int64(written)
 			// Update stream tracking bytes and activity counters
 			if bytesCounter != nil {
@@ -5610,6 +6018,7 @@ func (h *VideoHandler) proxyExternalURL(w http.ResponseWriter, r *http.Request, 
 		}
 		if readErr != nil {
 			if readErr != io.EOF {
+				logStartupTiming("upstream-read-error")
 				log.Printf("[video] external proxy read error: host=%q total=%d err=%v", parsedURL.Host, total, readErr)
 				return true, readErr
 			}
@@ -5618,6 +6027,7 @@ func (h *VideoHandler) proxyExternalURL(w http.ResponseWriter, r *http.Request, 
 				flusher.Flush()
 			}
 			videoTracef("[video] external proxy complete: host=%q total=%d", parsedURL.Host, total)
+			logStartupTiming("eof")
 			break
 		}
 	}
