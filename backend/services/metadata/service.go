@@ -5599,6 +5599,74 @@ func (s *Service) Similar(ctx context.Context, mediaType string, tmdbID int64) (
 	return titles, nil
 }
 
+// ErrInvalidTMDBList identifies invalid source-builder input.
+var ErrInvalidTMDBList = errors.New("invalid tmdb list")
+
+// SearchTMDBSources resolves names, numeric IDs, and TMDB URLs to selectable
+// source records for the admin shelf builder.
+func (s *Service) SearchTMDBSources(ctx context.Context, sourceType, query string) ([]TMDBSourceResult, error) {
+	sourceType = normalizeTMDBShelfSourceType(sourceType)
+	if _, ok := tmdbShelfSourceTypes[sourceType]; !ok {
+		return nil, fmt.Errorf("%w: unsupported source type %q", ErrInvalidTMDBList, sourceType)
+	}
+	if s.tmdb == nil || !s.tmdb.isConfigured() {
+		return nil, errors.New("tmdb client not configured")
+	}
+	results, err := s.tmdb.searchShelfSources(ctx, sourceType, query)
+	if err != nil {
+		return nil, fmt.Errorf("search tmdb sources: %w", err)
+	}
+	return results, nil
+}
+
+// GetTMDBList builds a shelf from one of the source types exposed by TMDB's
+// source builder: public list, company, network, collection, person/director
+// credits, or a custom discover query.
+func (s *Service) GetTMDBList(ctx context.Context, opts TMDBListOptions) ([]models.TrendingItem, int, error) {
+	opts.SourceType = normalizeTMDBShelfSourceType(opts.SourceType)
+	if _, ok := tmdbShelfSourceTypes[opts.SourceType]; !ok {
+		return nil, 0, fmt.Errorf("%w: unsupported source type %q", ErrInvalidTMDBList, opts.SourceType)
+	}
+	if opts.SourceType != TMDBSourceCustomDiscover && parseTMDBSourceID(opts.SourceID) <= 0 {
+		return nil, 0, fmt.Errorf("%w: source ID required", ErrInvalidTMDBList)
+	}
+	if _, err := parseTMDBDiscoverQuery(opts.DiscoverQuery); err != nil {
+		return nil, 0, fmt.Errorf("%w: %v", ErrInvalidTMDBList, err)
+	}
+	if s.tmdb == nil || !s.tmdb.isConfigured() {
+		return nil, 0, errors.New("tmdb client not configured")
+	}
+
+	type tmdbListCache struct {
+		Titles []models.Title `json:"titles"`
+		Total  int            `json:"total"`
+	}
+	cacheID := cacheKey(
+		"tmdb", "shelf", "v5", opts.SourceType, opts.SourceID, opts.MediaType,
+		opts.Sort, opts.DiscoverQuery, strconv.Itoa(opts.Limit), strconv.Itoa(opts.Offset),
+		s.client.language,
+	)
+	var cached tmdbListCache
+	if ok, _ := s.cache.get(cacheID, &cached); !ok {
+		titles, total, err := s.tmdb.fetchShelfTitles(ctx, opts)
+		if err != nil {
+			return nil, 0, err
+		}
+		cached = tmdbListCache{Titles: titles, Total: total}
+		if err := s.cache.set(cacheID, cached); err != nil {
+			log.Printf("[metadata] failed to cache tmdb shelf: %v", err)
+		}
+	}
+
+	items := make([]models.TrendingItem, 0, len(cached.Titles))
+	for index, title := range cached.Titles {
+		items = append(items, models.TrendingItem{Rank: opts.Offset + index + 1, Title: title})
+	}
+	s.enrichShelfArtwork(ctx, items, opts.ArtworkLimit)
+	ensureTrendingMovieReleaseStatuses(items)
+	return items, cached.Total, nil
+}
+
 // DiscoverByGenre returns TMDB discover results for a specific genre.
 func (s *Service) DiscoverByGenre(ctx context.Context, mediaType string, genreID int64, limit, offset int) ([]models.TrendingItem, int, error) {
 	return s.DiscoverByGenreWithOptions(ctx, mediaType, genreID, limit, offset, ShelfLoadOptions{})

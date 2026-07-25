@@ -997,6 +997,7 @@ func main() {
 	// Search and metadata endpoints (for admin search page)
 	r.HandleFunc("/admin/api/users", adminUIHandler.RequireAuth(usersHandler.List)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/search", adminUIHandler.RequireAuth(metadataHandler.Search)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/api/lists/tmdb/sources", adminUIHandler.RequireAuth(metadataHandler.TMDBSources)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/metadata/series/details", adminUIHandler.RequireAuth(metadataHandler.SeriesDetails)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/metadata/movie/details", adminUIHandler.RequireAuth(metadataHandler.MovieDetails)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/users/{userID}/details-shell", adminUIHandler.RequireAuth(detailsBundleHandler.GetDetailsShell)).Methods(http.MethodGet)

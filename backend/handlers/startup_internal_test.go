@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"net/http/httptest"
 	"testing"
 
 	"novastream/models"
@@ -26,6 +27,28 @@ func TestStartupDiscoverShelfRequestsArtworkForVisibleItems(t *testing.T) {
 			}
 			if got := query.Get("lite"); got != "true" {
 				t.Fatalf("lite = %q, want true", got)
+			}
+		})
+	}
+}
+
+func TestWatchSupportsNativeTMDBShelves(t *testing.T) {
+	tests := []struct {
+		name    string
+		url     string
+		header  string
+		support bool
+	}{
+		{name: "legacy Watch", url: "/startup", support: false},
+		{name: "query capability", url: "/startup?nativeTMDBShelves=true", support: true},
+		{name: "feature header", url: "/startup", header: "calendar-v2, tmdb-shelves", support: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest("GET", test.url, nil)
+			request.Header.Set("X-Mediastorm-Features", test.header)
+			if got := watchSupportsNativeTMDBShelves(request); got != test.support {
+				t.Fatalf("watchSupportsNativeTMDBShelves() = %v, want %v", got, test.support)
 			}
 		})
 	}
