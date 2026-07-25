@@ -16,6 +16,7 @@ func TestPrewarmDisplayListQuerySupportsPlayableHomeShelves(t *testing.T) {
 		{shelf: models.ShelfConfig{ID: "trending-tv"}, want: "trending"},
 		{shelf: models.ShelfConfig{ID: "my-recommended"}, want: "personalized"},
 		{shelf: models.ShelfConfig{ID: "custom-1", Type: "mdblist", ListURL: "https://mdblist.com/lists/example/list/json"}, want: "mdblist"},
+		{shelf: models.ShelfConfig{ID: "tmdb-company", Type: "tmdb", TMDBSourceType: "production-company", TMDBSourceID: "420", TMDBMediaType: "movie", Sort: "popularity.desc", TMDBDiscoverQuery: "genres=28"}, want: "tmdb-list"},
 	}
 	for _, tt := range tests {
 		query, ok := prewarmDisplayListQuery(tt.shelf)
@@ -25,6 +26,14 @@ func TestPrewarmDisplayListQuerySupportsPlayableHomeShelves(t *testing.T) {
 		if got := query.Get("source"); got != tt.want {
 			t.Fatalf("source=%q, want %q for shelf %+v", got, tt.want, tt.shelf)
 		}
+	}
+	tmdbQuery, ok := prewarmDisplayListQuery(models.ShelfConfig{
+		ID: "tmdb-company", Type: "tmdb", TMDBSourceType: "production-company",
+		TMDBSourceID: "420", TMDBMediaType: "movie", Sort: "popularity.desc",
+		TMDBDiscoverQuery: "genres=28",
+	})
+	if !ok || tmdbQuery.Get("sourceId") != "420" || tmdbQuery.Get("discoverQuery") != "genres=28" || tmdbQuery.Get("limit") != "20" {
+		t.Fatalf("unexpected TMDB prewarm query: %v", tmdbQuery)
 	}
 	if _, ok := prewarmDisplayListQuery(models.ShelfConfig{ID: "calendar"}); ok {
 		t.Fatal("calendar navigation shelf should not be prewarmable")
