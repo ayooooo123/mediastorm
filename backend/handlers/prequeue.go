@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -30,6 +31,8 @@ import (
 
 	"github.com/gorilla/mux"
 )
+
+var seriesDisplayLabelRE = regexp.MustCompile(`(?i)\s*[•·]\s*S\d{1,4}E\d{1,5}\b.*$`)
 
 // SeriesDetailsProvider provides series metadata for episode counting
 type SeriesDetailsProvider interface {
@@ -782,6 +785,9 @@ func (h *PrequeueHandler) Prequeue(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "titleName is required", http.StatusBadRequest)
 		return
 	}
+	if mediaType == "series" || mediaType == "tv" || mediaType == "show" {
+		titleName = normalizePrequeueSeriesTitle(titleName)
+	}
 
 	// Canonicalize the title ID so the same show resolves to one prequeue key
 	// regardless of which shelf (Continue Watching vs Top Ten/Trending, etc.) it
@@ -951,6 +957,15 @@ func (h *PrequeueHandler) Prequeue(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+func normalizePrequeueSeriesTitle(title string) string {
+	trimmed := strings.TrimSpace(title)
+	cleaned := strings.TrimSpace(seriesDisplayLabelRE.ReplaceAllString(trimmed, ""))
+	if cleaned != "" {
+		return cleaned
+	}
+	return trimmed
 }
 
 // GetStatus returns the status of a prequeue request
