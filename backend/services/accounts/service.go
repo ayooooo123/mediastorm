@@ -2,8 +2,6 @@ package accounts
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -50,9 +48,9 @@ type Service struct {
 	bootstrapCredentialPath string
 }
 
-// InitialMasterPassword returns the randomly generated password only for the
-// process that created the first master account. Existing installations return
-// an empty string.
+// InitialMasterPassword returns the bootstrap password only for the process
+// that created the first master account. Existing installations return an
+// empty string.
 func (s *Service) InitialMasterPassword() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -467,14 +465,10 @@ func (s *Service) ensureMasterAccount() error {
 
 	initialPassword := strings.TrimSpace(os.Getenv(initialMasterPasswordEnv))
 	if initialPassword == "" {
-		randomBytes := make([]byte, 24)
-		if _, err := rand.Read(randomBytes); err != nil {
-			return fmt.Errorf("generate initial master password: %w", err)
-		}
-		initialPassword = base64.RawURLEncoding.EncodeToString(randomBytes)
+		initialPassword = DefaultMasterPassword
 	}
 
-	// Create the first master account with an installation-specific password.
+	// Create the first master account with the default bootstrap password.
 	hash, err := bcrypt.GenerateFromPassword([]byte(initialPassword), bcrypt.DefaultCost)
 	if err != nil {
 		return fmt.Errorf("hash default password: %w", err)

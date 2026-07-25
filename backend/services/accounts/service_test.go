@@ -42,18 +42,18 @@ func TestNewService_InitializesMasterAccount(t *testing.T) {
 	}
 }
 
-func TestNewService_GeneratesUniqueInitialMasterPassword(t *testing.T) {
+func TestNewService_UsesDefaultInitialMasterPassword(t *testing.T) {
 	t.Setenv(initialMasterPasswordEnv, "")
 	svc, err := NewService(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewService failed: %v", err)
 	}
 	password := svc.InitialMasterPassword()
-	if password == "" || password == DefaultMasterPassword {
-		t.Fatalf("initial password was not installation-specific")
+	if password != DefaultMasterPassword {
+		t.Fatalf("initial password = %q, want %q", password, DefaultMasterPassword)
 	}
-	if _, err := svc.Authenticate(models.MasterAccountUsername, password); err != nil {
-		t.Fatalf("generated initial password did not authenticate: %v", err)
+	if _, err := svc.Authenticate(models.MasterAccountUsername, DefaultMasterPassword); err != nil {
+		t.Fatalf("default initial password did not authenticate: %v", err)
 	}
 }
 

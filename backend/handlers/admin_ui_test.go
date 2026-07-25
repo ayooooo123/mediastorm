@@ -110,6 +110,41 @@ func setupAdminUIHandler(t *testing.T) (*handlers.AdminUIHandler, string) {
 	return handler, tmpDir
 }
 
+func TestAdminLoginPageShowsFirstLoginCredentials(t *testing.T) {
+	handler, _ := setupAdminUIHandler(t)
+	req := httptest.NewRequest(http.MethodGet, "/admin/login", nil)
+	rec := httptest.NewRecorder()
+
+	handler.LoginPage(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "<code>admin</code> /") ||
+		!strings.Contains(body, "change the password immediately") {
+		t.Fatal("expected login page to show the first-login credentials and password-change guidance")
+	}
+}
+
+func TestAdminLoginSubmitAcceptsFirstLoginCredentials(t *testing.T) {
+	handler, _ := setupAdminUIHandler(t)
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/admin/login",
+		strings.NewReader("username=admin&password=admin"),
+	)
+	req.RemoteAddr = "127.0.0.1:4321"
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+
+	handler.LoginSubmit(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected first login to redirect with status 303, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 // createAuthenticatedRequest creates a request with valid session token
 func createAuthenticatedRequest(t *testing.T, method, url string, body []byte, sessionsService *sessions.Service, accountID string, isMaster bool) *http.Request {
 	t.Helper()
