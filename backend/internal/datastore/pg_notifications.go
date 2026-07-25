@@ -18,10 +18,11 @@ type pgNotificationRepo struct {
 func scanNotificationChannel(row pgx.Row) (*models.NotificationChannel, error) {
 	var channel models.NotificationChannel
 	var eventsJSON []byte
+	var releaseTypesJSON []byte
 	err := row.Scan(
 		&channel.ID, &channel.ProfileID, &channel.Name, &channel.Type, &channel.URL,
 		&channel.Enabled, &eventsJSON, &channel.NotifyWatchlist, &channel.NotifyTrending,
-		&channel.TrendingLimit, &channel.TitleTemplate, &channel.BodyTemplate,
+		&channel.TrendingLimit, &releaseTypesJSON, &channel.TitleTemplate, &channel.BodyTemplate,
 		&channel.IncludePoster, &channel.CreatedAt, &channel.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -33,6 +34,9 @@ func scanNotificationChannel(row pgx.Row) (*models.NotificationChannel, error) {
 	if err := json.Unmarshal(eventsJSON, &channel.Events); err != nil {
 		return nil, fmt.Errorf("decode notification events: %w", err)
 	}
+	if err := json.Unmarshal(releaseTypesJSON, &channel.ReleaseTypes); err != nil {
+		return nil, fmt.Errorf("decode notification release types: %w", err)
+	}
 	channel.URLConfigured = channel.URL != ""
 	return &channel, nil
 }
@@ -40,7 +44,7 @@ func scanNotificationChannel(row pgx.Row) (*models.NotificationChannel, error) {
 func (r *pgNotificationRepo) GetChannel(ctx context.Context, id string) (*models.NotificationChannel, error) {
 	return scanNotificationChannel(r.pool.QueryRow(ctx, `
 		SELECT id, profile_id, name, type, url, enabled, events, notify_watchlist,
-		       notify_trending, trending_limit, title_template, body_template,
+		       notify_trending, trending_limit, release_types, title_template, body_template,
 		       include_poster, created_at, updated_at
 		FROM notification_channels WHERE id = $1`, id))
 }
@@ -48,7 +52,7 @@ func (r *pgNotificationRepo) GetChannel(ctx context.Context, id string) (*models
 func (r *pgNotificationRepo) ListChannels(ctx context.Context, profileID string) ([]models.NotificationChannel, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, profile_id, name, type, url, enabled, events, notify_watchlist,
-		       notify_trending, trending_limit, title_template, body_template,
+		       notify_trending, trending_limit, release_types, title_template, body_template,
 		       include_poster, created_at, updated_at
 		FROM notification_channels WHERE profile_id = $1 ORDER BY created_at`, profileID)
 	if err != nil {
@@ -68,30 +72,32 @@ func (r *pgNotificationRepo) ListChannels(ctx context.Context, profileID string)
 
 func (r *pgNotificationRepo) CreateChannel(ctx context.Context, channel *models.NotificationChannel) error {
 	eventsJSON, _ := json.Marshal(channel.Events)
+	releaseTypesJSON, _ := json.Marshal(channel.ReleaseTypes)
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO notification_channels (
 			id, profile_id, name, type, url, enabled, events, notify_watchlist,
-			notify_trending, trending_limit, title_template, body_template,
+			notify_trending, trending_limit, release_types, title_template, body_template,
 			include_poster, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
 		channel.ID, channel.ProfileID, channel.Name, channel.Type, channel.URL,
 		channel.Enabled, eventsJSON, channel.NotifyWatchlist, channel.NotifyTrending,
-		channel.TrendingLimit, channel.TitleTemplate, channel.BodyTemplate,
+		channel.TrendingLimit, releaseTypesJSON, channel.TitleTemplate, channel.BodyTemplate,
 		channel.IncludePoster, channel.CreatedAt, channel.UpdatedAt)
 	return err
 }
 
 func (r *pgNotificationRepo) UpdateChannel(ctx context.Context, channel *models.NotificationChannel) error {
 	eventsJSON, _ := json.Marshal(channel.Events)
+	releaseTypesJSON, _ := json.Marshal(channel.ReleaseTypes)
 	tag, err := r.pool.Exec(ctx, `
 		UPDATE notification_channels SET
 			name=$3, type=$4, url=$5, enabled=$6, events=$7, notify_watchlist=$8,
-			notify_trending=$9, trending_limit=$10, title_template=$11,
-			body_template=$12, include_poster=$13, updated_at=$14
+			notify_trending=$9, trending_limit=$10, release_types=$11, title_template=$12,
+			body_template=$13, include_poster=$14, updated_at=$15
 		WHERE id=$1 AND profile_id=$2`,
 		channel.ID, channel.ProfileID, channel.Name, channel.Type, channel.URL,
 		channel.Enabled, eventsJSON, channel.NotifyWatchlist, channel.NotifyTrending,
-		channel.TrendingLimit, channel.TitleTemplate, channel.BodyTemplate,
+		channel.TrendingLimit, releaseTypesJSON, channel.TitleTemplate, channel.BodyTemplate,
 		channel.IncludePoster, channel.UpdatedAt)
 	if err != nil {
 		return err

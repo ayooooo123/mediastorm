@@ -27,11 +27,22 @@ const (
 	defaultBodyTemplate  = "{{mediaLabel}}{{progressLabel}}{{releaseLabel}}"
 )
 
+var defaultReleaseTypes = []string{"digital", "physical"}
+
 var validEvents = map[string]bool{
 	models.NotificationEventWatchStarted: true,
 	models.NotificationEventWatchResumed: true,
 	models.NotificationEventWatchWatched: true,
 	models.NotificationEventRelease:      true,
+}
+
+var validReleaseTypes = map[string]string{
+	"digital":           "digital",
+	"physical":          "physical",
+	"theatrical":        "theatrical",
+	"theatricallimited": "theatricalLimited",
+	"premiere":          "premiere",
+	"tv":                "tv",
 }
 
 const trendingReleaseBaselineKey = "__baseline__:trending-releases"
@@ -127,9 +138,18 @@ func (s *Service) SaveChannel(ctx context.Context, channel models.NotificationCh
 		if !channel.NotifyWatchlist && !channel.NotifyTrending {
 			return models.NotificationChannel{}, errors.New("select at least one release source")
 		}
+		if channel.ReleaseTypes == nil {
+			channel.ReleaseTypes = append([]string(nil), defaultReleaseTypes...)
+		} else {
+			channel.ReleaseTypes = normalizeReleaseTypes(channel.ReleaseTypes)
+			if len(channel.ReleaseTypes) == 0 {
+				return models.NotificationChannel{}, errors.New("select at least one release type")
+			}
+		}
 	} else {
 		channel.NotifyWatchlist = false
 		channel.NotifyTrending = false
+		channel.ReleaseTypes = []string{}
 	}
 	if channel.TrendingLimit < 1 {
 		channel.TrendingLimit = 20
@@ -589,7 +609,7 @@ func templateValues(event models.NotificationEvent) map[string]string {
 	}
 	releaseLabel := ""
 	if event.ReleaseType != "" || event.ReleaseDate != "" {
-		releaseLabel = " · " + strings.TrimSpace(strings.Join(nonEmpty(event.ReleaseType, event.ReleaseDate), " · "))
+		releaseLabel = " · " + strings.TrimSpace(strings.Join(nonEmpty(releaseTypeLabel(event.ReleaseType), event.ReleaseDate), " · "))
 	}
 	return map[string]string{
 		"event":         event.Type,
@@ -605,7 +625,7 @@ func templateValues(event models.NotificationEvent) map[string]string {
 		"episodeNumber": optionalInt(event.EpisodeNumber),
 		"percent":       percent,
 		"progressLabel": progressLabel,
-		"releaseType":   event.ReleaseType,
+		"releaseType":   releaseTypeLabel(event.ReleaseType),
 		"releaseDate":   event.ReleaseDate,
 		"releaseLabel":  releaseLabel,
 		"source":        event.Source,
@@ -661,9 +681,51 @@ func normalizeEvents(events []string) []string {
 	return result
 }
 
+func normalizeReleaseTypes(releaseTypes []string) []string {
+	seen := make(map[string]bool)
+	result := make([]string, 0, len(releaseTypes))
+	for _, releaseType := range releaseTypes {
+		canonical := validReleaseTypes[strings.ToLower(strings.TrimSpace(releaseType))]
+		if canonical != "" && !seen[canonical] {
+			seen[canonical] = true
+			result = append(result, canonical)
+		}
+	}
+	sort.Strings(result)
+	return result
+}
+
+func releaseTypeLabel(releaseType string) string {
+	switch strings.ToLower(strings.TrimSpace(releaseType)) {
+	case "digital":
+		return "Digital"
+	case "physical":
+		return "Physical"
+	case "theatrical":
+		return "Theatrical"
+	case "theatricallimited":
+		return "Limited Theatrical"
+	case "premiere":
+		return "Premiere"
+	case "tv":
+		return "TV"
+	case "availability":
+		return "Available"
+	default:
+		return strings.TrimSpace(releaseType)
+	}
+}
+
 func channelAcceptsRelease(channel models.NotificationChannel, event models.NotificationEvent) bool {
 	if event.Type != models.NotificationEventRelease {
 		return true
+	}
+	releaseTypes := channel.ReleaseTypes
+	if releaseTypes == nil {
+		releaseTypes = defaultReleaseTypes
+	}
+	if !contains(releaseTypes, event.ReleaseType) {
+		return false
 	}
 	if event.Source == "watchlist" {
 		return channel.NotifyWatchlist
