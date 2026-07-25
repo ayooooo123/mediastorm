@@ -70,6 +70,23 @@
             font-size: 0.875rem;
         }
 
+        .first-login-help {
+            background: rgba(59, 130, 246, 0.08);
+            border: 1px solid rgba(59, 130, 246, 0.2);
+            border-radius: var(--radius);
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+            line-height: 1.45;
+            margin-bottom: 1rem;
+            padding: 0.75rem;
+            text-align: center;
+        }
+
+        .first-login-help code {
+            color: var(--text-primary);
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        }
+
         .login-body {
             padding: 0 2rem 2rem;
         }
@@ -292,6 +309,11 @@
         <div class="login-body">
         <div class="login-header">
             <p>Sign in to your account</p>
+        </div>
+
+        <div class="first-login-help">
+            First installation? Sign in with <code>admin</code> /
+            <code>admin</code>, then change the password immediately.
         </div>
 
         {{if .Error}}

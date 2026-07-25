@@ -95,7 +95,9 @@ You can also put `PUID` and `PGID` in a `.env` file beside `docker-compose.yml`.
 docker compose up -d
 ```
 
-The backend will be available at `http://localhost:7777`. The default login is `admin`/`admin` for both the frontend app and the admin web UI.
+The backend will be available at `http://localhost:7777`. The first-login
+credentials are `admin` / `admin` for both the frontend app and the admin web
+UI. Change the admin password immediately after signing in.
 
 **Upgrading from a previous version:** On first startup with the new compose file, mediastorm will automatically migrate your existing JSON data into PostgreSQL. Your original JSON files are preserved with a `.migrated` suffix in the cache directory.
 
