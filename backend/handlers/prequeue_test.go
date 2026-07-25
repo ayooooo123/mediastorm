@@ -19,6 +19,20 @@ import (
 	"novastream/services/playback"
 )
 
+func TestNormalizePrequeueSeriesTitle(t *testing.T) {
+	tests := map[string]string{
+		"Legion • S02E01 – Chapter 9":          "Legion",
+		"One Piece • S23E1162 – Episode Title": "One Piece",
+		"Formula 1": "Formula 1",
+	}
+
+	for input, want := range tests {
+		if got := normalizePrequeueSeriesTitle(input); got != want {
+			t.Errorf("normalizePrequeueSeriesTitle(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 type prequeueRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f prequeueRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {

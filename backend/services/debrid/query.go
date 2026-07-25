@@ -22,6 +22,7 @@ var (
 	reSeasonEpisodeWords = regexp.MustCompile(`(?i)\bseason\s+(\d{1,2})\s*(?:episode|ep)\s*(\d{1,3})\b`)
 	reYear               = regexp.MustCompile(`\b(19|20)\d{2}\b`)
 	reEpisodeLabelCode   = regexp.MustCompile(`(?i)\bS\d{1,4}E\d{1,5}\b`)
+	reDecorativeEpisode  = regexp.MustCompile(`(?i)[•·]\s*S\d{1,4}E\d{1,5}\b`)
 	stopTokens           = map[string]struct{}{
 		"1080p":  {},
 		"2160p":  {},
@@ -97,7 +98,11 @@ func ParseQuery(raw string) ParsedQuery {
 			parsed.HasSeasonMatch = true
 			candidate = removeSubstring(candidate, match[0])
 		}
-	} else if match := reSeasonEpisode.FindStringSubmatch(lower); len(match) == 3 {
+	} else if matches := reSeasonEpisode.FindAllStringSubmatch(lower, -1); len(matches) > 0 {
+		match := matches[0]
+		if len(matches) > 1 && reDecorativeEpisode.MatchString(candidate) {
+			match = matches[len(matches)-1]
+		}
 		if season, err := strconv.Atoi(match[1]); err == nil {
 			parsed.Season = season
 		}

@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -30,6 +31,7 @@ var (
 	// episode-scoped external ID. Persisting them creates rows that can never be
 	// matched, updated, or deleted by ID (e.g. title-string episode keys).
 	ErrEpisodeNotAddressable = errors.New("episode updates require an episode number, an sNNeNN item id, or an episode-scoped external id")
+	seriesDisplayLabelRE     = regexp.MustCompile(`(?i)\s*[•·]\s*S\d{1,4}E\d{1,5}\b.*$`)
 )
 
 const (
@@ -4083,6 +4085,7 @@ func normalizeStorageExternalIDs(mediaType, itemID, seriesID string, externalIDs
 }
 
 func normalizeWatchHistoryUpdate(update models.WatchHistoryUpdate) models.WatchHistoryUpdate {
+	update.SeriesName = normalizeSeriesName(update.SeriesName)
 	normalizedExternalIDs := normalizeStorageExternalIDs(update.MediaType, update.ItemID, update.SeriesID, update.ExternalIDs)
 	externalIDs := storageIdentityExternalIDs(update.MediaType, update.ItemID, update.SeriesID, normalizedExternalIDs)
 	identity := mediaidentity.Resolve(mediaidentity.Input{
@@ -4105,6 +4108,7 @@ func normalizeWatchHistoryUpdate(update models.WatchHistoryUpdate) models.WatchH
 }
 
 func normalizeWatchHistoryItem(item models.WatchHistoryItem) models.WatchHistoryItem {
+	item.SeriesName = normalizeSeriesName(item.SeriesName)
 	normalizedExternalIDs := normalizeStorageExternalIDs(item.MediaType, item.ItemID, item.SeriesID, item.ExternalIDs)
 	externalIDs := storageIdentityExternalIDs(item.MediaType, item.ItemID, item.SeriesID, normalizedExternalIDs)
 	identity := mediaidentity.Resolve(mediaidentity.Input{
@@ -4128,6 +4132,7 @@ func normalizeWatchHistoryItem(item models.WatchHistoryItem) models.WatchHistory
 }
 
 func normalizePlaybackProgressUpdate(update models.PlaybackProgressUpdate) models.PlaybackProgressUpdate {
+	update.SeriesName = normalizeSeriesName(update.SeriesName)
 	if isLiveProgressUpdate(update) {
 		update.MediaType = "live"
 		update.ItemID = mediaidentity.SanitizeID(update.ItemID)
@@ -4156,6 +4161,7 @@ func normalizePlaybackProgressUpdate(update models.PlaybackProgressUpdate) model
 }
 
 func normalizePlaybackProgressItem(progress models.PlaybackProgress) models.PlaybackProgress {
+	progress.SeriesName = normalizeSeriesName(progress.SeriesName)
 	if strings.EqualFold(strings.TrimSpace(progress.MediaType), "live") {
 		progress.MediaType = "live"
 		progress.ItemID = mediaidentity.SanitizeID(progress.ItemID)
@@ -4183,6 +4189,15 @@ func normalizePlaybackProgressItem(progress models.PlaybackProgress) models.Play
 		progress.EpisodeNumber = identity.EpisodeNumber
 	}
 	return progress
+}
+
+func normalizeSeriesName(name string) string {
+	trimmed := strings.TrimSpace(name)
+	cleaned := strings.TrimSpace(seriesDisplayLabelRE.ReplaceAllString(trimmed, ""))
+	if cleaned != "" {
+		return cleaned
+	}
+	return trimmed
 }
 
 // mayMatchMediaIdentity is a cheap pre-filter so full identity resolution is

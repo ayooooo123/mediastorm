@@ -12,6 +12,20 @@ import (
 	"novastream/models"
 )
 
+func TestNormalizeSeriesName(t *testing.T) {
+	tests := map[string]string{
+		"Legion • S02E01 – Chapter 9": "Legion",
+		"One Piece • S23E1162 – A Gargantuan Wave of Emotion - The Dreamlike Scenery of Elbaph": "One Piece",
+		"IT: Welcome to Derry": "IT: Welcome to Derry",
+	}
+
+	for input, want := range tests {
+		if got := normalizeSeriesName(input); got != want {
+			t.Errorf("normalizeSeriesName(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 // Mock metadata service for testing
 type mockMetadataService struct {
 	seriesDetails *models.SeriesDetails
