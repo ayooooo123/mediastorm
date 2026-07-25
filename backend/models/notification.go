@@ -25,6 +25,7 @@ type NotificationChannel struct {
 	NotifyWatchlist bool      `json:"notifyWatchlist"`
 	NotifyTrending  bool      `json:"notifyTrending"`
 	TrendingLimit   int       `json:"trendingLimit"`
+	ReleaseTypes    []string  `json:"releaseTypes"`
 	TitleTemplate   string    `json:"titleTemplate"`
 	BodyTemplate    string    `json:"bodyTemplate"`
 	IncludePoster   bool      `json:"includePoster"`

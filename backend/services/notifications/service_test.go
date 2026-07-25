@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -138,6 +139,35 @@ func TestFormatOmitsProgressForWatchedEvent(t *testing.T) {
 	}
 }
 
+func TestFormatCapitalizesReleaseTypes(t *testing.T) {
+	tests := []struct {
+		releaseType string
+		want        string
+	}{
+		{releaseType: "digital", want: "Digital"},
+		{releaseType: "physical", want: "Physical"},
+		{releaseType: "theatrical", want: "Theatrical"},
+		{releaseType: "theatricalLimited", want: "Limited Theatrical"},
+		{releaseType: "premiere", want: "Premiere"},
+		{releaseType: "tv", want: "TV"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.releaseType, func(t *testing.T) {
+			_, body := Format(models.NotificationChannel{
+				BodyTemplate: "{{releaseType}}{{releaseLabel}}",
+			}, models.NotificationEvent{
+				Type:        models.NotificationEventRelease,
+				ReleaseType: tt.releaseType,
+				ReleaseDate: "2026-07-25",
+			})
+			want := tt.want + " · " + tt.want + " · 2026-07-25"
+			if body != want {
+				t.Fatalf("body = %q, want %q", body, want)
+			}
+		})
+	}
+}
+
 func TestSaveAndListChannelPreservesAndMasksWebhookURL(t *testing.T) {
 	repo := newMemoryRepo()
 	service := New(repo)
@@ -171,6 +201,64 @@ func TestSaveAndListChannelPreservesAndMasksWebhookURL(t *testing.T) {
 	}
 	if len(listed) != 1 || listed[0].URL != "" || !listed[0].URLConfigured {
 		t.Fatalf("listed channel = %#v", listed)
+	}
+}
+
+func TestSaveReleaseChannelDefaultsToDigitalAndPhysical(t *testing.T) {
+	repo := newMemoryRepo()
+	service := New(repo)
+	defer service.Close()
+
+	saved, err := service.SaveChannel(context.Background(), models.NotificationChannel{
+		ProfileID: "profile", Name: "Releases", Type: models.NotificationChannelWebhook,
+		URL: "https://example.com/hook", Enabled: true,
+		Events:          []string{models.NotificationEventRelease},
+		NotifyWatchlist: true,
+	})
+	if err != nil {
+		t.Fatalf("save channel: %v", err)
+	}
+	if got, want := strings.Join(saved.ReleaseTypes, ","), "digital,physical"; got != want {
+		t.Fatalf("release types = %q, want %q", got, want)
+	}
+}
+
+func TestSaveReleaseChannelRequiresReleaseTypeWhenExplicitlyEmpty(t *testing.T) {
+	service := New(newMemoryRepo())
+	defer service.Close()
+
+	_, err := service.SaveChannel(context.Background(), models.NotificationChannel{
+		ProfileID: "profile", Name: "Releases", Type: models.NotificationChannelWebhook,
+		URL:             "https://example.com/hook",
+		Events:          []string{models.NotificationEventRelease},
+		NotifyWatchlist: true,
+		ReleaseTypes:    []string{},
+	})
+	if err == nil {
+		t.Fatal("expected empty release types to be rejected")
+	}
+}
+
+func TestChannelAcceptsOnlySelectedReleaseTypes(t *testing.T) {
+	channel := models.NotificationChannel{
+		NotifyWatchlist: true,
+		ReleaseTypes:    []string{"digital", "physical"},
+	}
+	event := models.NotificationEvent{
+		Type:   models.NotificationEventRelease,
+		Source: "watchlist",
+	}
+	for _, releaseType := range []string{"digital", "physical"} {
+		event.ReleaseType = releaseType
+		if !channelAcceptsRelease(channel, event) {
+			t.Fatalf("expected %q to be accepted", releaseType)
+		}
+	}
+	for _, releaseType := range []string{"tv", "theatrical", "availability", ""} {
+		event.ReleaseType = releaseType
+		if channelAcceptsRelease(channel, event) {
+			t.Fatalf("expected %q to be rejected", releaseType)
+		}
 	}
 }
 
@@ -449,14 +537,16 @@ func TestObserveCalendarReleasesDurableDueObservation(t *testing.T) {
 	repo.channels["channel"] = models.NotificationChannel{
 		ID: "channel", ProfileID: "profile", Type: models.NotificationChannelWebhook,
 		URL: server.URL, Enabled: true, Events: []string{models.NotificationEventRelease},
-		NotifyWatchlist: true, TitleTemplate: defaultTitleTemplate, BodyTemplate: defaultBodyTemplate,
+		NotifyWatchlist: true, ReleaseTypes: []string{"digital"},
+		TitleTemplate: defaultTitleTemplate, BodyTemplate: defaultBodyTemplate,
 	}
 	repo.observations[observationID("profile", "due")] = models.NotificationObservation{
 		ProfileID: "profile", ItemKey: "due", Status: "upcoming",
 		Event: models.NotificationEvent{
 			ID: "release", Type: models.NotificationEventRelease, ProfileID: "profile",
-			Title: "Due Movie", MediaType: "movie", ReleaseDate: time.Now().Add(-24 * time.Hour).Format("2006-01-02"),
-			Source: "watchlist", OccurredAt: time.Now().UTC(),
+			Title: "Due Movie", MediaType: "movie", ReleaseType: "digital",
+			ReleaseDate: time.Now().Add(-24 * time.Hour).Format("2006-01-02"),
+			Source:      "watchlist", OccurredAt: time.Now().UTC(),
 		},
 	}
 	service := New(repo)
@@ -478,7 +568,7 @@ func TestObserveCalendarReleasesDurableDueObservation(t *testing.T) {
 	}
 }
 
-func TestObserveCalendarNotifiesWhenReleasedItemEntersTrendingAfterBaseline(t *testing.T) {
+func TestObserveCalendarDoesNotNotifyUnclassifiedAvailabilityWhenReleaseTypesAreSelected(t *testing.T) {
 	received := make(chan models.NotificationEvent, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload struct {
@@ -494,7 +584,7 @@ func TestObserveCalendarNotifiesWhenReleasedItemEntersTrendingAfterBaseline(t *t
 	repo.channels["channel"] = models.NotificationChannel{
 		ID: "channel", ProfileID: "profile", Type: models.NotificationChannelWebhook,
 		URL: server.URL, Enabled: true, Events: []string{models.NotificationEventRelease},
-		NotifyTrending: true, TrendingLimit: 20,
+		NotifyTrending: true, TrendingLimit: 20, ReleaseTypes: []string{"digital", "physical"},
 		TitleTemplate: defaultTitleTemplate, BodyTemplate: defaultBodyTemplate,
 	}
 	service := New(repo)
@@ -526,14 +616,8 @@ func TestObserveCalendarNotifiesWhenReleasedItemEntersTrendingAfterBaseline(t *t
 	service.ObserveCalendar("profile", []models.CalendarItem{existing, newRelease})
 	select {
 	case event := <-received:
-		if event.Title != newRelease.Title {
-			t.Fatalf("released trending event = %q, want %q", event.Title, newRelease.Title)
-		}
-		if event.Source != "top-trending" || event.SourceRank != 2 {
-			t.Fatalf("released trending source = %q rank %d", event.Source, event.SourceRank)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for newly entered released trending item")
+		t.Fatalf("unclassified availability emitted %q", event.Title)
+	case <-time.After(150 * time.Millisecond):
 	}
 
 	service.ObserveCalendar("profile", []models.CalendarItem{existing, newRelease})
