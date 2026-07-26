@@ -518,8 +518,9 @@ func titleUserKey(titleID, userID, settingsScopeKey string) string {
 	return fmt.Sprintf("%s:%s:%s", titleID, userID, normalizeSettingsScopeKey(settingsScopeKey))
 }
 
-// Create creates a new prequeue entry and returns its ID
-// If an entry already exists for this title+user, it's cancelled and replaced
+// Create creates a new prequeue entry and returns its ID.
+// A request for the same episode replaces existing work, while a different
+// episode remains independently addressable by its prequeue ID.
 // reason should be "details" (details page prequeue) or "next_episode" (auto-queue for next episode)
 func (s *PrequeueStore) Create(titleID, titleName, userID, mediaType string, year int, targetEpisode *models.EpisodeReference, reason string) (*PrequeueEntry, bool) {
 	return s.CreateScoped(titleID, titleName, userID, mediaType, year, targetEpisode, reason, DefaultPrequeueSettingsScopeKey)
@@ -533,21 +534,26 @@ func (s *PrequeueStore) CreateScoped(titleID, titleName, userID, mediaType strin
 	settingsScopeKey = normalizeSettingsScopeKey(settingsScopeKey)
 	key := titleUserKey(titleID, userID, settingsScopeKey)
 
-	// Check if there's an existing entry for this title+user
+	// Same-episode requests supersede prior work. Different episodes can be
+	// consumed concurrently (for example, a Cast-held next episode while the
+	// scheduled prewarmer resolves the latest episode), so keep the old entry
+	// addressable by ID and move only the secondary index to the new request.
 	if existingID, exists := s.byTitleUser[key]; exists {
 		if existing, ok := s.entries[existingID]; ok {
-			// Cancel the existing prequeue
-			if existing.cancelFunc != nil {
-				existing.cancelFunc()
-			}
-			// Remove old entry from memory and DB
-			delete(s.entries, existingID)
-			if s.useDB() {
-				if err := s.store.Prequeue().Delete(context.Background(), existingID); err != nil {
-					log.Printf("[prequeue] Warning: failed to delete old DB entry %s: %v", existingID, err)
+			if EpisodeReferencesMatch(existing.TargetEpisode, targetEpisode) {
+				if existing.cancelFunc != nil {
+					existing.cancelFunc()
 				}
+				delete(s.entries, existingID)
+				if s.useDB() {
+					if err := s.store.Prequeue().Delete(context.Background(), existingID); err != nil {
+						log.Printf("[prequeue] Warning: failed to delete old DB entry %s: %v", existingID, err)
+					}
+				}
+				log.Printf("[prequeue] Replaced existing prequeue %s for title=%s user=%s scope=%s", existingID, titleID, userID, settingsScopeKey)
+			} else {
+				log.Printf("[prequeue] Preserved different-episode prequeue %s for title=%s user=%s scope=%s", existingID, titleID, userID, settingsScopeKey)
 			}
-			log.Printf("[prequeue] Replaced existing prequeue %s for title=%s user=%s scope=%s", existingID, titleID, userID, settingsScopeKey)
 		}
 	}
 
