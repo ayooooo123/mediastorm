@@ -30,6 +30,7 @@ import (
 // size on low-power devices. Full lists are fetched on demand (e.g. explore page).
 const defaultStartupShelfLimit = 20
 const startupExploreCollageItemCount = 4
+const startupTMDBShelfLimit = 25
 
 // startupTrendingTimeout limits how long the startup handler waits for trending
 // data. On cold start, Trending() can take 20-30s enriching metadata from TMDB.
@@ -1091,7 +1092,7 @@ func startupCustomShelfFetchLimit(shelf models.ShelfConfig, homeShelfLimit int) 
 	shelfType := strings.ToLower(strings.TrimSpace(shelf.Type))
 	if shelf.Limit > 0 {
 		if shelfType == "tmdb" {
-			return minInt(shelf.Limit, homeShelfLimit)
+			return minInt(shelf.Limit, startupTMDBShelfLimit)
 		}
 		if shelf.Limit >= homeShelfLimit {
 			return maxInt(shelf.Limit, homeShelfLimit+startupExploreCollageItemCount)
@@ -1100,7 +1101,7 @@ func startupCustomShelfFetchLimit(shelf models.ShelfConfig, homeShelfLimit int) 
 	}
 	switch shelfType {
 	case "tmdb":
-		return homeShelfLimit
+		return startupTMDBShelfLimit
 	case "genre", "decade":
 		return maxInt(homeShelfLimit, 50)
 	default:
