@@ -32,7 +32,7 @@ func TestPrewarmDisplayListQuerySupportsPlayableHomeShelves(t *testing.T) {
 		TMDBSourceID: "420", TMDBMediaType: "movie", Sort: "popularity.desc",
 		TMDBDiscoverQuery: "genres=28",
 	})
-	if !ok || tmdbQuery.Get("sourceId") != "420" || tmdbQuery.Get("discoverQuery") != "genres=28" || tmdbQuery.Get("limit") != "20" {
+	if !ok || tmdbQuery.Get("sourceId") != "420" || tmdbQuery.Get("discoverQuery") != "genres=28" || tmdbQuery.Get("limit") != "25" {
 		t.Fatalf("unexpected TMDB prewarm query: %v", tmdbQuery)
 	}
 	if _, ok := prewarmDisplayListQuery(models.ShelfConfig{ID: "calendar"}); ok {

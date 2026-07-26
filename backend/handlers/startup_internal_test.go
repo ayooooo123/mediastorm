@@ -32,6 +32,39 @@ func TestStartupDiscoverShelfRequestsArtworkForVisibleItems(t *testing.T) {
 	}
 }
 
+func TestStartupTMDBShelfFetchLimitPreservesOtherOverflow(t *testing.T) {
+	tests := []struct {
+		name        string
+		shelfLimit  int
+		wantLimit   string
+		wantArtwork string
+	}{
+		{name: "default", wantLimit: "25", wantArtwork: "24"},
+		{name: "smaller explicit limit", shelfLimit: 10, wantLimit: "10", wantArtwork: "10"},
+		{name: "larger explicit limit", shelfLimit: 500, wantLimit: "25", wantArtwork: "24"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			query, ok := startupDisplayListQueryForShelf(models.ShelfConfig{
+				ID:             "tmdb-company",
+				Type:           "tmdb",
+				TMDBSourceType: "production-company",
+				TMDBSourceID:   "420",
+				Limit:          test.shelfLimit,
+			}, defaultStartupShelfLimit, false, "")
+			if !ok {
+				t.Fatal("expected startup TMDB shelf query")
+			}
+			if got := query.Get("limit"); got != test.wantLimit {
+				t.Fatalf("limit = %q, want %q", got, test.wantLimit)
+			}
+			if got := query.Get("artworkLimit"); got != test.wantArtwork {
+				t.Fatalf("artworkLimit = %q, want %q", got, test.wantArtwork)
+			}
+		})
+	}
+}
+
 func TestWatchSupportsNativeTMDBShelves(t *testing.T) {
 	tests := []struct {
 		name    string
