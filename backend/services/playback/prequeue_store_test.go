@@ -116,6 +116,53 @@ func TestPrequeueStoreWorkerCannotOverwriteAdoptedEntry(t *testing.T) {
 	}
 }
 
+func TestPrequeueStorePreservesDifferentEpisodeEntriesByID(t *testing.T) {
+	store := NewPrequeueStore(time.Hour)
+	castEpisode := &models.EpisodeReference{SeasonNumber: 6, EpisodeNumber: 2}
+	held, created := store.Create("tmdb:tv:60625", "Rick and Morty", "user-1", "series", 2013, castEpisode, "next_episode")
+	if !created {
+		t.Fatal("Cast Create returned created=false")
+	}
+	store.Update(held.ID, func(e *PrequeueEntry) {
+		e.Status = PrequeueStatusReady
+		e.StreamPath = "/debrid/realdebrid/cast-episode.mkv"
+	})
+
+	prewarmEpisode := &models.EpisodeReference{SeasonNumber: 9, EpisodeNumber: 10}
+	newest, created := store.Create("tmdb:tv:60625", "Rick and Morty", "user-1", "series", 2013, prewarmEpisode, "next_episode")
+	if !created {
+		t.Fatal("prewarm Create returned created=false")
+	}
+
+	if got, ok := store.Get(held.ID); !ok || got == nil || got.ID != held.ID {
+		t.Fatalf("held Cast entry lookup returned (%v, %t), want entry %s", got, ok, held.ID)
+	}
+	if got, ok := store.GetByTitleUser("tmdb:tv:60625", "user-1"); !ok || got == nil || got.ID != newest.ID {
+		t.Fatalf("title/user lookup returned (%v, %t), want newest entry %s", got, ok, newest.ID)
+	}
+}
+
+func TestPrequeueStoreReplacesSameEpisodeEntry(t *testing.T) {
+	store := NewPrequeueStore(time.Hour)
+	episode := &models.EpisodeReference{SeasonNumber: 6, EpisodeNumber: 2}
+	first, created := store.Create("tmdb:tv:60625", "Rick and Morty", "user-1", "series", 2013, episode, "next_episode")
+	if !created {
+		t.Fatal("first Create returned created=false")
+	}
+
+	replacement, created := store.Create("tmdb:tv:60625", "Rick and Morty", "user-1", "series", 2013, episode, "next_episode")
+	if !created {
+		t.Fatal("replacement Create returned created=false")
+	}
+
+	if got, ok := store.Get(first.ID); ok || got != nil {
+		t.Fatalf("replaced entry lookup returned (%v, %t), want nil false", got, ok)
+	}
+	if got, ok := store.GetByTitleUser("tmdb:tv:60625", "user-1"); !ok || got == nil || got.ID != replacement.ID {
+		t.Fatalf("title/user lookup returned (%v, %t), want replacement %s", got, ok, replacement.ID)
+	}
+}
+
 func TestPrequeueEntryToResponseIncludesServiceType(t *testing.T) {
 	entry := &PrequeueEntry{
 		ID:          "pq_test",
