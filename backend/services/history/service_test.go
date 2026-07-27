@@ -34,6 +34,14 @@ type mockMetadataService struct {
 	err           error
 }
 
+type liteFailingMetadataService struct {
+	*mockMetadataService
+	liteErr       error
+	liteCalls     int
+	fullCalls     int
+	lastFullQuery models.SeriesDetailsQuery
+}
+
 type captureRealTimeScrobbler struct {
 	handleCalls chan models.PlaybackProgressUpdate
 	stopCalls   chan models.PlaybackProgressUpdate
@@ -83,6 +91,100 @@ func (m *mockMetadataService) SeriesDetails(ctx context.Context, req models.Seri
 
 func (m *mockMetadataService) SeriesDetailsLite(ctx context.Context, req models.SeriesDetailsQuery) (*models.SeriesDetails, error) {
 	return m.SeriesDetails(ctx, req)
+}
+
+func (m *liteFailingMetadataService) SeriesDetails(ctx context.Context, req models.SeriesDetailsQuery) (*models.SeriesDetails, error) {
+	m.fullCalls++
+	m.lastFullQuery = req
+	return m.mockMetadataService.SeriesDetails(ctx, req)
+}
+
+func (m *liteFailingMetadataService) SeriesDetailsLite(context.Context, models.SeriesDetailsQuery) (*models.SeriesDetails, error) {
+	m.liteCalls++
+	return nil, m.liteErr
+}
+
+func TestListContinueWatchingFallsBackToFullDetailsForTMDBOnlySeries(t *testing.T) {
+	dir := t.TempDir()
+	svc, err := NewService(dir)
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	mockMeta := &liteFailingMetadataService{
+		liteErr: fmt.Errorf("tmdb series 107124 has no tvdb external id"),
+		mockMetadataService: &mockMetadataService{
+			seriesDetails: &models.SeriesDetails{
+				Title: models.Title{
+					ID:       "tmdb:tv:107124",
+					Name:     "Animaniacs",
+					Year:     2020,
+					TMDBID:   107124,
+					IMDBID:   "tt6951546",
+					Overview: "The Warner siblings return.",
+					Poster:   &models.Image{URL: "https://image.tmdb.org/poster.jpg"},
+					Backdrop: &models.Image{URL: "https://image.tmdb.org/backdrop.jpg"},
+				},
+				Seasons: []models.SeriesSeason{
+					{
+						Number: 1,
+						Episodes: []models.SeriesEpisode{
+							{
+								ID:            "tmdb:episode:1984128",
+								Name:          "Jurassic Lark",
+								SeasonNumber:  1,
+								EpisodeNumber: 1,
+								Image:         &models.Image{URL: "https://image.tmdb.org/episode.jpg"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	svc.SetMetadataService(mockMeta)
+
+	_, err = svc.UpdatePlaybackProgress("default", models.PlaybackProgressUpdate{
+		MediaType:     "episode",
+		ItemID:        "tmdb:tv:107124:S01E01",
+		Position:      30,
+		Duration:      1200,
+		SeriesID:      "tmdb:tv:107124",
+		SeriesName:    "Animaniacs",
+		Year:          2020,
+		SeasonNumber:  1,
+		EpisodeNumber: 1,
+		EpisodeName:   "Jurassic Lark",
+		ExternalIDs:   map[string]string{"titleId": "tmdb:tv:107124"},
+	})
+	if err != nil {
+		t.Fatalf("UpdatePlaybackProgress() error = %v", err)
+	}
+
+	items, err := svc.ListContinueWatching("default")
+	if err != nil {
+		t.Fatalf("ListContinueWatching() error = %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 continue-watching item, got %d", len(items))
+	}
+
+	item := items[0]
+	if item.PosterURL == "" || item.BackdropURL == "" {
+		t.Fatalf("expected full-details artwork, got poster=%q backdrop=%q", item.PosterURL, item.BackdropURL)
+	}
+	if item.NextEpisode == nil || item.NextEpisode.Image == nil || item.NextEpisode.Image.URL == "" {
+		t.Fatalf("expected full-details episode artwork, got nextEpisode=%+v", item.NextEpisode)
+	}
+	if item.ExternalIDs["tmdb"] != "107124" || item.ExternalIDs["imdb"] != "tt6951546" {
+		t.Fatalf("expected enriched external IDs, got %+v", item.ExternalIDs)
+	}
+	if mockMeta.liteCalls != 1 || mockMeta.fullCalls != 1 {
+		t.Fatalf("expected one lite call and one full fallback, got lite=%d full=%d", mockMeta.liteCalls, mockMeta.fullCalls)
+	}
+	if mockMeta.lastFullQuery.TitleID != "tmdb:tv:107124" || mockMeta.lastFullQuery.TMDBID != 107124 {
+		t.Fatalf("full fallback query lost TMDB identity: %+v", mockMeta.lastFullQuery)
+	}
 }
 
 func (m *mockMetadataService) SeriesInfo(ctx context.Context, req models.SeriesDetailsQuery) (*models.Title, error) {

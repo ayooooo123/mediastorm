@@ -1839,10 +1839,17 @@ func (s *Service) getSeriesMetadataWithCache(ctx context.Context, seriesID, seri
 		}
 	}
 
-	// Fetch from metadata service (lite variant skips TMDB/MDBList enrichment for speed)
+	// Prefer the lite path for speed, but fall back to full details when the
+	// provider cannot represent a TMDB-only series in TVDB. Continue Watching
+	// still needs the full result to populate artwork and episode metadata.
 	details, err := metadataSvc.SeriesDetailsLite(ctx, query)
 	if err != nil {
-		return nil, err
+		liteErr := err
+		log.Printf("[history] series metadata lite lookup failed for %q, falling back to full details: %v", seriesID, liteErr)
+		details, err = metadataSvc.SeriesDetails(ctx, query)
+		if err != nil {
+			return nil, fmt.Errorf("series metadata lite lookup failed: %v; full lookup failed: %w", liteErr, err)
+		}
 	}
 
 	// Cache the result

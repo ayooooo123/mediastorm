@@ -1131,7 +1131,7 @@ func (s *Service) GetCachedArtworkURLs(mediaType string, tmdbID int64, tvdbID in
 	} else {
 		seriesTVDBID := tvdbID
 		if seriesTVDBID <= 0 && tmdbID > 0 {
-			resolveKey := cacheKey("tvdb", "resolve", "tmdb", fmt.Sprintf("%d", tmdbID))
+			resolveKey := seriesTVDBResolutionCacheKey(tmdbID)
 			var resolved int64
 			if ok, _ := s.cache.get(resolveKey, &resolved); ok && resolved > 0 {
 				seriesTVDBID = resolved
@@ -3211,18 +3211,27 @@ func (s *Service) resolveSeriesTVDBIDActual(ctx context.Context, req models.Seri
 
 	// Check if we have a cached TMDB→TVDB ID mapping
 	if req.TMDBID > 0 {
-		cacheID := cacheKey("tvdb", "resolve", "tmdb", fmt.Sprintf("%d", req.TMDBID))
+		cacheID := seriesTVDBResolutionCacheKey(req.TMDBID)
 		var cachedTVDBID int64
 		if ok, _ := s.cache.get(cacheID, &cachedTVDBID); ok && cachedTVDBID > 0 {
 			log.Printf("[metadata] tmdb→tvdb resolution cache hit tmdbId=%d → tvdbId=%d for series %q", req.TMDBID, cachedTVDBID, name)
 			return cachedTVDBID, nil
 		}
 		if s.tmdb != nil && s.tmdb.isConfigured() {
-			if title, err := s.tmdb.seriesDetails(ctx, req.TMDBID); err == nil && title != nil && title.TVDBID > 0 {
-				log.Printf("[metadata] resolved tvdb id %d via TMDB external_ids tmdbId=%d for series %q", title.TVDBID, req.TMDBID, name)
-				_ = s.cache.set(cacheID, title.TVDBID)
-				return title.TVDBID, nil
-			} else if err != nil {
+			title, err := s.tmdb.seriesDetails(ctx, req.TMDBID)
+			if err == nil && title != nil {
+				if title.TVDBID > 0 {
+					log.Printf("[metadata] resolved tvdb id %d via TMDB external_ids tmdbId=%d for series %q", title.TVDBID, req.TMDBID, name)
+					_ = s.cache.set(cacheID, title.TVDBID)
+					return title.TVDBID, nil
+				}
+				// A successful TMDB lookup with no TVDB external ID is authoritative:
+				// the title may deliberately have no standalone TVDB series (for
+				// example Animaniacs 2020). A name search can select an unrelated
+				// same-year title and poison the provider mapping cache.
+				return 0, fmt.Errorf("tmdb series %d has no tvdb external id", req.TMDBID)
+			}
+			if err != nil {
 				log.Printf("[metadata] TMDB external id lookup failed tmdbId=%d err=%v", req.TMDBID, err)
 			}
 		}
@@ -3263,7 +3272,7 @@ func (s *Service) resolveSeriesTVDBIDActual(ctx context.Context, req models.Seri
 						if err == nil {
 							log.Printf("[metadata] resolved tvdb id %d via tmdb match tmdbId=%d for series %q", id, req.TMDBID, name)
 							// Cache the TMDB→TVDB ID mapping
-							cacheID := cacheKey("tvdb", "resolve", "tmdb", fmt.Sprintf("%d", req.TMDBID))
+							cacheID := seriesTVDBResolutionCacheKey(req.TMDBID)
 							_ = s.cache.set(cacheID, id)
 							return id, nil
 						}
@@ -3338,18 +3347,21 @@ func (s *Service) resolveSeriesTVDBIDActual(ctx context.Context, req models.Seri
 			}
 			log.Printf("[metadata] resolved tvdb id %d with language=%q for series %q", id, result.PrimaryLanguage, name)
 
-			// Cache the name-based resolution if we have a TMDB ID (but no TMDB match in results)
-			// This avoids re-processing the same query again
-			if req.TMDBID > 0 {
-				cacheID := cacheKey("tvdb", "resolve", "tmdb", fmt.Sprintf("%d", req.TMDBID))
-				_ = s.cache.set(cacheID, id)
-			}
-
 			return id, nil
 		}
 	}
 
 	return 0, fmt.Errorf("no tvdb match found for %q", name)
+}
+
+func seriesTVDBResolutionCacheKey(tmdbID int64) string {
+	// v2 invalidates legacy name-derived mappings that could associate an
+	// authoritative TMDB title with an unrelated TVDB search result.
+	return cacheKey("tvdb", "resolve", "tmdb", "v2", fmt.Sprintf("%d", tmdbID))
+}
+
+func seriesTMDBIDMismatch(title models.Title, requestedTMDBID int64) bool {
+	return requestedTMDBID > 0 && title.TMDBID > 0 && title.TMDBID != requestedTMDBID
 }
 
 func normalizeSeriesDetailsQueryIDs(req models.SeriesDetailsQuery) models.SeriesDetailsQuery {
@@ -3493,7 +3505,7 @@ func (s *Service) tmdbSeriesDetailsFallback(ctx context.Context, req models.Seri
 	if req.TMDBID <= 0 || s.tmdb == nil || !s.tmdb.isConfigured() {
 		return nil, cause
 	}
-	cacheID := cacheKey("tmdb", "series", "details-fallback", "v1", s.client.language, strconv.FormatInt(req.TMDBID, 10))
+	cacheID := cacheKey("tmdb", "series", "details-fallback", "v2", s.client.language, strconv.FormatInt(req.TMDBID, 10))
 	var cached models.SeriesDetails
 	if ok, _ := s.cache.get(cacheID, &cached); ok && strings.TrimSpace(cached.Title.Name) != "" {
 		normalizeSeriesDetailsReleaseStatus(&cached)
@@ -3517,7 +3529,12 @@ func (s *Service) tmdbSeriesDetailsFallback(ctx context.Context, req models.Seri
 		return nil, cause
 	}
 	if details.Title.TVDBID > 0 {
-		_ = s.cache.set(cacheKey("tvdb", "resolve", "tmdb", fmt.Sprintf("%d", req.TMDBID)), details.Title.TVDBID)
+		_ = s.cache.set(seriesTVDBResolutionCacheKey(req.TMDBID), details.Title.TVDBID)
+	}
+	if images, imageErr := s.cachedFetchImages(ctx, "series", req.TMDBID); imageErr == nil && images != nil {
+		applyTMDBImagesToTitle(&details.Title, images)
+	} else if imageErr != nil {
+		log.Printf("[metadata] TMDB series fallback image enrichment failed tmdbId=%d err=%v", req.TMDBID, imageErr)
 	}
 	if details.Seasons == nil {
 		details.Seasons = []models.SeriesSeason{}
@@ -4470,6 +4487,11 @@ func (s *Service) SeriesDetailsLite(ctx context.Context, req models.SeriesDetail
 	var fullCached models.SeriesDetails
 	if ok, _ := s.cache.get(fullCacheID, &fullCached); ok && len(fullCached.Seasons) > 0 {
 		log.Printf("[metadata] series details lite full-cache hit tvdbId=%d seasons=%d", tvdbID, len(fullCached.Seasons))
+		if seriesTMDBIDMismatch(fullCached.Title, req.TMDBID) {
+			log.Printf("[metadata] lite full-cache tmdb mismatch tvdbId=%d cachedTmdbId=%d requestedTmdbId=%d; using TMDB fallback",
+				tvdbID, fullCached.Title.TMDBID, req.TMDBID)
+			return s.tmdbSeriesDetailsFallback(ctx, req, fmt.Errorf("tvdb tmdb mismatch"))
+		}
 		return &fullCached, nil
 	}
 
@@ -4482,6 +4504,11 @@ func (s *Service) SeriesDetailsLite(ctx context.Context, req models.SeriesDetail
 	if ok, _ := s.cache.get(cacheID, &cached); ok && len(cached.Seasons) > 0 {
 		normalizeSeriesDetailsReleaseStatus(&cached)
 		log.Printf("[metadata] series details lite cache hit tvdbId=%d seasons=%d", tvdbID, len(cached.Seasons))
+		if seriesTMDBIDMismatch(cached.Title, req.TMDBID) {
+			log.Printf("[metadata] lite cache tmdb mismatch tvdbId=%d cachedTmdbId=%d requestedTmdbId=%d; using TMDB fallback",
+				tvdbID, cached.Title.TMDBID, req.TMDBID)
+			return s.tmdbSeriesDetailsFallback(ctx, req, fmt.Errorf("tvdb tmdb mismatch"))
+		}
 		return &cached, nil
 	}
 
@@ -4609,6 +4636,11 @@ func (s *Service) SeriesDetailsLite(ctx context.Context, req models.SeriesDetail
 				seriesTitle.TMDBID = tmdbID
 			}
 		}
+	}
+	if seriesTMDBIDMismatch(seriesTitle, req.TMDBID) {
+		log.Printf("[metadata] lite TVDB series tmdb mismatch tvdbId=%d resolvedTmdbId=%d requestedTmdbId=%d; using TMDB fallback",
+			tvdbID, seriesTitle.TMDBID, req.TMDBID)
+		return s.tmdbSeriesDetailsFallback(ctx, req, fmt.Errorf("tvdb tmdb mismatch"))
 	}
 
 	if extended.Network != "" {
