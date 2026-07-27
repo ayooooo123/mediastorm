@@ -61,10 +61,11 @@
                 <label class="form-label">Watch status events</label>
                 <div class="checkbox-grid">
                     <label><input type="checkbox" name="watch-event" value="watch.started"> Start</label>
+                    <label><input type="checkbox" name="watch-event" value="watch.progress"> Progress</label>
                     <label><input type="checkbox" name="watch-event" value="watch.resumed"> Resume</label>
                     <label><input type="checkbox" name="watch-event" value="watch.watched"> Watched</label>
                 </div>
-                <div class="form-help">Start is the first heartbeat in a session. Resume is emitted when playback continues after pause or buffering.</div>
+                <div class="form-help">Progress (Discord only) edits one message on each whole-percentage change, changes it to Watched at completion, and deletes it when unfinished playback ends.</div>
             </div>
 
             <div id="release-settings" class="form-grid" hidden>
@@ -211,6 +212,7 @@ function renderChannels() {
             .filter(event => event !== 'watch.playing')
             .map(event => ({
             'watch.started': 'Start',
+            'watch.progress': 'Progress',
             'watch.resumed': 'Resume',
             'watch.watched': 'Watched',
             'release.available': 'Released / aired'
@@ -275,8 +277,16 @@ function updateCategoryVisibility() {
     });
     document.getElementById('watch-template-fields').hidden = isRelease;
     document.getElementById('release-template-fields').hidden = !isRelease;
+    updateProgressAvailability();
     updateTrendingVisibility();
     updatePreview();
+}
+
+function updateProgressAvailability() {
+    const progressInput = document.querySelector('input[name="watch-event"][value="watch.progress"]');
+    const isDiscord = document.getElementById('channel-type').value === 'discord';
+    progressInput.disabled = selectedCategory() === 'release' || !isDiscord;
+    if (!isDiscord) progressInput.checked = false;
 }
 
 function updateTrendingVisibility() {
@@ -290,6 +300,7 @@ function previewValues() {
     const isRelease = selectedCategory() === 'release';
     const watchEvents = {
         'watch.started': {label: 'Started watching', percent: '1'},
+        'watch.progress': {label: 'Watching', percent: '42'},
         'watch.resumed': {label: 'Resumed', percent: '42'},
         'watch.watched': {label: 'Watched', percent: '100'}
     };
@@ -461,6 +472,10 @@ async function deleteChannel(id) {
 document.getElementById('title-template').addEventListener('input', updatePreview);
 document.getElementById('body-template').addEventListener('input', updatePreview);
 document.getElementById('include-poster').addEventListener('change', updatePreview);
+document.getElementById('channel-type').addEventListener('change', () => {
+    updateProgressAvailability();
+    updatePreview();
+});
 document.getElementById('notify-watchlist').addEventListener('change', updatePreview);
 document.getElementById('notify-trending').addEventListener('change', updatePreview);
 document.querySelectorAll('input[name="watch-event"]').forEach(input => {

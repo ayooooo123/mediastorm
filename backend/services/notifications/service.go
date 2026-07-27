@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -30,10 +31,11 @@ const (
 var defaultReleaseTypes = []string{"digital", "physical"}
 
 var validEvents = map[string]bool{
-	models.NotificationEventWatchStarted: true,
-	models.NotificationEventWatchResumed: true,
-	models.NotificationEventWatchWatched: true,
-	models.NotificationEventRelease:      true,
+	models.NotificationEventWatchStarted:  true,
+	models.NotificationEventWatchProgress: true,
+	models.NotificationEventWatchResumed:  true,
+	models.NotificationEventWatchWatched:  true,
+	models.NotificationEventRelease:       true,
 }
 
 var validReleaseTypes = map[string]string{
@@ -48,16 +50,37 @@ var validReleaseTypes = map[string]string{
 const trendingReleaseBaselineKey = "__baseline__:trending-releases"
 
 type delivery struct {
-	channel models.NotificationChannel
-	event   models.NotificationEvent
+	channel   models.NotificationChannel
+	event     models.NotificationEvent
+	action    string
+	session   string
+	recordKey string
+	sequence  uint64
 }
 
 type playbackSession struct {
-	seen      bool
-	paused    bool
-	watched   bool
-	updatedAt time.Time
+	seen           bool
+	paused         bool
+	watched        bool
+	progressSent   bool
+	progressBucket int
+	profileID      string
+	playbackKey    string
+	notificationID string
+	sequence       uint64
+	persistedAt    time.Time
+	updatedAt      time.Time
 }
+
+const (
+	deliveryProgressUpsert           = "progress.upsert"
+	deliveryProgressComplete         = "progress.complete"
+	deliveryProgressDelete           = "progress.delete"
+	progressStepPercent              = 1
+	progressHeartbeatTimeout         = 2 * time.Minute
+	progressHeartbeatPersistInterval = 30 * time.Second
+	progressReapInterval             = 15 * time.Second
+)
 
 // Service owns profile notification configuration, formatting, and delivery.
 type Service struct {
@@ -71,6 +94,10 @@ type Service struct {
 	observeMu   sync.Mutex
 	deliveredMu sync.Mutex
 	delivered   map[string]time.Time
+
+	progressMessages  map[string]string
+	progressSequences map[string]uint64
+	progressUpdated   map[string]time.Time
 }
 
 func New(repo datastore.NotificationRepository) *Service {
@@ -79,10 +106,13 @@ func New(repo datastore.NotificationRepository) *Service {
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
-		deliveries: make(chan delivery, 256),
-		stop:       make(chan struct{}),
-		sessions:   make(map[string]playbackSession),
-		delivered:  make(map[string]time.Time),
+		deliveries:        make(chan delivery, 256),
+		stop:              make(chan struct{}),
+		sessions:          make(map[string]playbackSession),
+		delivered:         make(map[string]time.Time),
+		progressMessages:  make(map[string]string),
+		progressSequences: make(map[string]uint64),
+		progressUpdated:   make(map[string]time.Time),
 	}
 	go s.run()
 	return s
@@ -129,6 +159,10 @@ func (s *Service) SaveChannel(ctx context.Context, channel models.NotificationCh
 	channel.Events = normalizeEvents(channel.Events)
 	if len(channel.Events) == 0 {
 		return models.NotificationChannel{}, errors.New("select at least one event")
+	}
+	if contains(channel.Events, models.NotificationEventWatchProgress) &&
+		channel.Type != models.NotificationChannelDiscord {
+		return models.NotificationChannel{}, errors.New("progress notifications require a Discord destination")
 	}
 	hasReleaseEvents := contains(channel.Events, models.NotificationEventRelease)
 	if hasReleaseEvents && len(channel.Events) > 1 {
@@ -223,7 +257,9 @@ func (s *Service) TestChannel(ctx context.Context, profileID, id string) error {
 		Percent:    42,
 		OccurredAt: time.Now().UTC(),
 	}
-	if contains(channel.Events, models.NotificationEventRelease) {
+	if contains(channel.Events, models.NotificationEventWatchProgress) {
+		event.Type = models.NotificationEventWatchProgress
+	} else if contains(channel.Events, models.NotificationEventRelease) {
 		event.Type = models.NotificationEventRelease
 		event.ReleaseType = "digital"
 		event.ReleaseDate = event.OccurredAt.Format("2006-01-02")
@@ -241,6 +277,7 @@ func (s *Service) HandlePlaybackUpdate(userID string, update models.PlaybackProg
 	if update.PlaybackSessionID != "" {
 		key = userID + "\x00" + update.PlaybackSessionID
 	}
+	persistedPlaybackKey := notificationPlaybackKey(update)
 	now := time.Now().UTC()
 	active := !update.IsPaused && !update.IsBuffering
 
@@ -249,6 +286,14 @@ func (s *Service) HandlePlaybackUpdate(userID string, update models.PlaybackProg
 	if !state.updatedAt.IsZero() && now.Sub(state.updatedAt) > 30*time.Minute {
 		state = playbackSession{}
 	}
+	if state.notificationID == "" {
+		state.profileID = userID
+		state.playbackKey = persistedPlaybackKey
+		state.notificationID = uuid.NewString()
+	}
+	state.sequence++
+	notificationSession := key + "\x00" + state.notificationID
+	sequence := state.sequence
 	var eventTypes []string
 	if active && !state.seen {
 		eventTypes = append(eventTypes, models.NotificationEventWatchStarted)
@@ -259,6 +304,20 @@ func (s *Service) HandlePlaybackUpdate(userID string, update models.PlaybackProg
 	if percent >= 90 && !state.watched {
 		eventTypes = append(eventTypes, models.NotificationEventWatchWatched)
 		state.watched = true
+	} else if active && percent < 90 {
+		progressBucket := int(percent) / progressStepPercent
+		if !state.progressSent || progressBucket != state.progressBucket {
+			eventTypes = append(eventTypes, models.NotificationEventWatchProgress)
+			state.progressSent = true
+			state.progressBucket = progressBucket
+			if state.persistedAt.IsZero() {
+				state.persistedAt = now
+			}
+		}
+	}
+	touchPersistedHeartbeat := now.Sub(state.persistedAt) >= progressHeartbeatPersistInterval
+	if touchPersistedHeartbeat {
+		state.persistedAt = now
 	}
 	state.paused = update.IsPaused || update.IsBuffering
 	state.updatedAt = now
@@ -270,12 +329,20 @@ func (s *Service) HandlePlaybackUpdate(userID string, update models.PlaybackProg
 	s.pruneSessionsLocked(now)
 	s.sessionMu.Unlock()
 
+	if touchPersistedHeartbeat {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		if err := s.repo.TouchProgressMessages(ctx, userID, persistedPlaybackKey, now); err != nil {
+			log.Printf("[notifications] touch progress messages profile=%s: %v", userID, err)
+		}
+		cancel()
+	}
+
 	for _, eventType := range eventTypes {
 		eventPercent := percent
 		if eventType == models.NotificationEventWatchWatched {
 			eventPercent = 0
 		}
-		s.Notify(models.NotificationEvent{
+		event := models.NotificationEvent{
 			ID:            uuid.NewString(),
 			Type:          eventType,
 			ProfileID:     userID,
@@ -292,7 +359,122 @@ func (s *Service) HandlePlaybackUpdate(userID string, update models.PlaybackProg
 			PosterURL:     firstNonEmpty(update.NotificationImageURL, update.PosterURL),
 			ExternalIDs:   update.ExternalIDs,
 			OccurredAt:    now,
+		}
+		if eventType == models.NotificationEventWatchProgress || eventType == models.NotificationEventWatchWatched {
+			s.notifyPlaybackLifecycle(event, notificationSession, persistedPlaybackKey, sequence)
+		} else {
+			s.Notify(event)
+		}
+	}
+	if update.PlaybackEnded && percent < 90 {
+		s.deletePlaybackProgressNotification(userID, notificationSession, persistedPlaybackKey, sequence)
+	}
+}
+
+func (s *Service) notifyPlaybackLifecycle(event models.NotificationEvent, session, recordKey string, sequence uint64) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	channels, err := s.repo.ListChannels(ctx, event.ProfileID)
+	if err != nil {
+		log.Printf("[notifications] list playback channels profile=%s: %v", event.ProfileID, err)
+		return
+	}
+	activeProgressChannels := make(map[string]bool)
+	for _, channel := range channels {
+		if !channel.Enabled {
+			continue
+		}
+		action := deliveryProgressUpsert
+		if event.Type == models.NotificationEventWatchWatched {
+			if contains(channel.Events, models.NotificationEventWatchProgress) && channel.Type == models.NotificationChannelDiscord {
+				action = deliveryProgressComplete
+				activeProgressChannels[channel.ID] = true
+			} else if contains(channel.Events, models.NotificationEventWatchWatched) {
+				s.enqueueDelivery(delivery{channel: channel, event: event})
+				continue
+			} else {
+				continue
+			}
+			s.enqueueDelivery(delivery{channel: channel, event: event, action: action, session: session, recordKey: recordKey, sequence: sequence})
+			continue
+		}
+		if !contains(channel.Events, models.NotificationEventWatchProgress) ||
+			channel.Type != models.NotificationChannelDiscord {
+			continue
+		}
+		activeProgressChannels[channel.ID] = true
+		s.enqueueDelivery(delivery{channel: channel, event: event, action: action, session: session, recordKey: recordKey, sequence: sequence})
+	}
+	s.enqueueInactiveProgressDeletes(ctx, event.ProfileID, session, recordKey, sequence, activeProgressChannels)
+}
+
+func (s *Service) deletePlaybackProgressNotification(profileID, session, recordKey string, sequence uint64) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	channels, err := s.repo.ListChannels(ctx, profileID)
+	if err != nil {
+		log.Printf("[notifications] list playback channels profile=%s: %v", profileID, err)
+		return
+	}
+	enqueued := make(map[string]bool)
+	for _, channel := range channels {
+		if channel.Enabled && channel.Type == models.NotificationChannelDiscord &&
+			contains(channel.Events, models.NotificationEventWatchProgress) {
+			s.enqueueDelivery(delivery{channel: channel, action: deliveryProgressDelete, session: session, recordKey: recordKey, sequence: sequence})
+			enqueued[channel.ID] = true
+		}
+	}
+	s.enqueueInactiveProgressDeletes(ctx, profileID, session, recordKey, sequence, enqueued)
+}
+
+func (s *Service) enqueueInactiveProgressDeletes(
+	ctx context.Context,
+	profileID, session, recordKey string,
+	sequence uint64,
+	excludedChannels map[string]bool,
+) {
+	messages, err := s.repo.ListProgressMessagesByPlayback(ctx, profileID, recordKey)
+	if err != nil {
+		log.Printf("[notifications] list durable progress messages profile=%s: %v", profileID, err)
+		return
+	}
+	for _, message := range messages {
+		if excludedChannels[message.ChannelID] {
+			continue
+		}
+		channel, err := s.repo.GetChannel(ctx, message.ChannelID)
+		if err != nil {
+			log.Printf("[notifications] load durable progress channel=%s: %v", message.ChannelID, err)
+			continue
+		}
+		if channel == nil {
+			if err := s.repo.DeleteProgressMessage(ctx, message.ChannelID, recordKey); err != nil {
+				log.Printf("[notifications] delete orphaned progress record channel=%s: %v", message.ChannelID, err)
+			}
+			continue
+		}
+		if channel.Type != models.NotificationChannelDiscord {
+			if err := s.repo.DeleteProgressMessage(ctx, message.ChannelID, recordKey); err != nil {
+				log.Printf("[notifications] delete non-Discord progress record channel=%s: %v", message.ChannelID, err)
+			}
+			continue
+		}
+		s.enqueueDelivery(delivery{
+			channel:   *channel,
+			action:    deliveryProgressDelete,
+			session:   session,
+			recordKey: recordKey,
+			sequence:  sequence,
 		})
+	}
+}
+
+func (s *Service) enqueueDelivery(item delivery) {
+	select {
+	case s.deliveries <- item:
+	default:
+		log.Printf("[notifications] delivery queue full; dropping action=%s event=%s profile=%s",
+			item.action, item.event.Type, item.event.ProfileID)
 	}
 }
 
@@ -426,11 +608,7 @@ func (s *Service) Notify(event models.NotificationEvent) {
 		if !s.claimDelivery(channel.ID, event) {
 			continue
 		}
-		select {
-		case s.deliveries <- delivery{channel: channel, event: event}:
-		default:
-			log.Printf("[notifications] delivery queue full; dropping event=%s profile=%s", event.Type, event.ProfileID)
-		}
+		s.enqueueDelivery(delivery{channel: channel, event: event})
 	}
 }
 
@@ -497,13 +675,16 @@ func (s *Service) ReleaseRequirements(profileID string) calendar.ReleaseRequirem
 }
 
 func (s *Service) run() {
+	s.reapDurableProgressMessages(time.Now().UTC())
+	reaper := time.NewTicker(progressReapInterval)
+	defer reaper.Stop()
 	for {
 		select {
 		case item := <-s.deliveries:
 			ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 			var err error
 			for attempt := 0; attempt < 3; attempt++ {
-				err = s.deliver(ctx, item.channel, item.event)
+				err = s.deliverQueued(ctx, item)
 				if err == nil {
 					break
 				}
@@ -521,8 +702,116 @@ func (s *Service) run() {
 					item.channel.ID, item.channel.Type, item.event.Type, err)
 			}
 			cancel()
+		case now := <-reaper.C:
+			s.reapStalePlaybackSessions(now.UTC())
 		case <-s.stop:
 			return
+		}
+	}
+}
+
+func (s *Service) reapStalePlaybackSessions(now time.Time) {
+	type staleSession struct {
+		profileID string
+		session   string
+		recordKey string
+		sequence  uint64
+	}
+	var stale []staleSession
+
+	s.sessionMu.Lock()
+	for key, state := range s.sessions {
+		if state.updatedAt.IsZero() || now.Sub(state.updatedAt) < progressHeartbeatTimeout {
+			continue
+		}
+		delete(s.sessions, key)
+		if state.watched || !state.progressSent {
+			continue
+		}
+		stale = append(stale, staleSession{
+			profileID: state.profileID,
+			session:   key + "\x00" + state.notificationID,
+			recordKey: state.playbackKey,
+			sequence:  state.sequence + 1,
+		})
+	}
+	s.sessionMu.Unlock()
+
+	for _, session := range stale {
+		s.deletePlaybackProgressNotification(session.profileID, session.session, session.recordKey, session.sequence)
+	}
+}
+
+func (s *Service) reapDurableProgressMessages(now time.Time) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	messages, err := s.repo.ListProgressMessages(ctx)
+	if err != nil {
+		log.Printf("[notifications] list durable progress messages: %v", err)
+		return
+	}
+	for _, message := range messages {
+		if now.Sub(message.UpdatedAt) < progressHeartbeatTimeout {
+			continue
+		}
+		channel, err := s.repo.GetChannel(ctx, message.ChannelID)
+		if err != nil {
+			log.Printf("[notifications] load durable progress channel=%s: %v", message.ChannelID, err)
+			continue
+		}
+		if channel == nil {
+			if err := s.repo.DeleteProgressMessage(ctx, message.ChannelID, message.PlaybackKey); err != nil {
+				log.Printf("[notifications] delete orphaned progress record channel=%s: %v", message.ChannelID, err)
+			}
+			continue
+		}
+		s.enqueueDelivery(delivery{
+			channel:   *channel,
+			action:    deliveryProgressDelete,
+			session:   "startup:" + uuid.NewString(),
+			recordKey: message.PlaybackKey,
+			sequence:  1,
+		})
+	}
+}
+
+func (s *Service) deliverQueued(ctx context.Context, item delivery) error {
+	if item.action != "" {
+		key := item.channel.ID + "\x00" + item.session
+		if item.sequence <= s.progressSequences[key] {
+			return nil
+		}
+	}
+	var err error
+	switch item.action {
+	case deliveryProgressUpsert:
+		err = s.upsertDiscordProgress(ctx, item, false)
+	case deliveryProgressComplete:
+		err = s.upsertDiscordProgress(ctx, item, true)
+	case deliveryProgressDelete:
+		err = s.deleteDiscordProgress(ctx, item)
+	default:
+		return s.deliver(ctx, item.channel, item.event)
+	}
+	if err == nil {
+		key := item.channel.ID + "\x00" + item.session
+		s.progressSequences[key] = item.sequence
+		s.progressUpdated[key] = time.Now().UTC()
+		s.pruneProgressDeliveries()
+	}
+	return err
+}
+
+func (s *Service) pruneProgressDeliveries() {
+	if len(s.progressUpdated) < 256 {
+		return
+	}
+	cutoff := time.Now().UTC().Add(-time.Hour)
+	for key, updatedAt := range s.progressUpdated {
+		if updatedAt.Before(cutoff) {
+			delete(s.progressUpdated, key)
+			delete(s.progressSequences, key)
+			delete(s.progressMessages, key)
 		}
 	}
 }
@@ -531,19 +820,7 @@ func (s *Service) deliver(ctx context.Context, channel models.NotificationChanne
 	title, body := Format(channel, event)
 	var payload any
 	if channel.Type == models.NotificationChannelDiscord {
-		title = truncate(title, 256)
-		body = truncate(body, 4096)
-		embed := map[string]any{
-			"title":       title,
-			"description": body,
-			"timestamp":   event.OccurredAt.Format(time.RFC3339),
-		}
-		if channel.IncludePoster {
-			if posterURL := publicHTTPURL(event.PosterURL); posterURL != "" {
-				embed["thumbnail"] = map[string]string{"url": posterURL}
-			}
-		}
-		payload = map[string]any{"embeds": []any{embed}}
+		payload = discordPayload(channel, event)
 	} else {
 		payload = map[string]any{
 			"event":   event.Type,
@@ -574,6 +851,201 @@ func (s *Service) deliver(ctx context.Context, channel models.NotificationChanne
 		return fmt.Errorf("destination returned HTTP %d", resp.StatusCode)
 	}
 	return nil
+}
+
+func discordPayload(channel models.NotificationChannel, event models.NotificationEvent) map[string]any {
+	title, body := Format(channel, event)
+	if event.Type == models.NotificationEventWatchProgress {
+		body = strings.TrimSpace(body + "\n" + progressBar(event.Percent))
+	}
+	embed := map[string]any{
+		"title":       truncate(title, 256),
+		"description": truncate(body, 4096),
+		"timestamp":   event.OccurredAt.Format(time.RFC3339),
+	}
+	if channel.IncludePoster {
+		if posterURL := publicHTTPURL(event.PosterURL); posterURL != "" {
+			embed["thumbnail"] = map[string]string{"url": posterURL}
+		}
+	}
+	return map[string]any{"embeds": []any{embed}}
+}
+
+func progressBar(percent float64) string {
+	const width = 20
+	if percent < 0 {
+		percent = 0
+	} else if percent > 100 {
+		percent = 100
+	}
+	filled := int((percent*width + 50) / 100)
+	return strings.Repeat("▰", filled) + strings.Repeat("▱", width-filled)
+}
+
+func (s *Service) upsertDiscordProgress(ctx context.Context, item delivery, complete bool) error {
+	key := item.channel.ID + "\x00" + item.session
+	messageID := s.progressMessages[key]
+	if messageID == "" {
+		record, err := s.repo.GetProgressMessage(ctx, item.channel.ID, item.recordKey)
+		if err != nil {
+			return fmt.Errorf("load durable Discord progress message: %w", err)
+		}
+		if record != nil {
+			if time.Since(record.UpdatedAt) < progressHeartbeatTimeout {
+				messageID = record.MessageID
+				s.progressMessages[key] = messageID
+			} else {
+				if err := s.deleteDiscordWebhookMessage(ctx, item.channel.URL, record.MessageID); err != nil {
+					return err
+				}
+				if err := s.repo.DeleteProgressMessage(ctx, item.channel.ID, item.recordKey); err != nil {
+					return fmt.Errorf("delete stale Discord progress record: %w", err)
+				}
+			}
+		}
+	}
+	payload := discordPayload(item.channel, item.event)
+	bodyJSON, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	if messageID != "" {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPatch,
+			discordWebhookMessageURL(item.channel.URL, messageID, false), bytes.NewReader(bodyJSON))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("User-Agent", "mediastorm-notifications/1.0")
+		resp, err := s.httpClient.Do(req)
+		if err != nil {
+			return err
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusNotFound {
+			delete(s.progressMessages, key)
+			if err := s.repo.DeleteProgressMessage(ctx, item.channel.ID, item.recordKey); err != nil {
+				return fmt.Errorf("delete missing Discord progress record: %w", err)
+			}
+			messageID = ""
+		} else if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return fmt.Errorf("destination returned HTTP %d", resp.StatusCode)
+		} else if complete {
+			if err := s.repo.DeleteProgressMessage(ctx, item.channel.ID, item.recordKey); err != nil {
+				return fmt.Errorf("delete completed Discord progress record: %w", err)
+			}
+			delete(s.progressMessages, key)
+			return nil
+		} else {
+			if err := s.persistDiscordProgressMessage(ctx, item, messageID); err != nil {
+				return err
+			}
+			return nil
+		}
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		discordWebhookMessageURL(item.channel.URL, "", true), bytes.NewReader(bodyJSON))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "mediastorm-notifications/1.0")
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("destination returned HTTP %d", resp.StatusCode)
+	}
+	if complete {
+		return s.repo.DeleteProgressMessage(ctx, item.channel.ID, item.recordKey)
+	}
+	var response struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&response); err != nil {
+		return fmt.Errorf("decode Discord webhook response: %w", err)
+	}
+	if response.ID == "" {
+		return errors.New("Discord webhook response did not include a message ID")
+	}
+	s.progressMessages[key] = response.ID
+	return s.persistDiscordProgressMessage(ctx, item, response.ID)
+}
+
+func (s *Service) deleteDiscordProgress(ctx context.Context, item delivery) error {
+	key := item.channel.ID + "\x00" + item.session
+	messageID := s.progressMessages[key]
+	if messageID == "" {
+		record, err := s.repo.GetProgressMessage(ctx, item.channel.ID, item.recordKey)
+		if err != nil {
+			return fmt.Errorf("load durable Discord progress message: %w", err)
+		}
+		if record != nil {
+			messageID = record.MessageID
+		}
+	}
+	if messageID != "" {
+		if err := s.deleteDiscordWebhookMessage(ctx, item.channel.URL, messageID); err != nil {
+			return err
+		}
+	}
+	if err := s.repo.DeleteProgressMessage(ctx, item.channel.ID, item.recordKey); err != nil {
+		return fmt.Errorf("delete Discord progress record: %w", err)
+	}
+	delete(s.progressMessages, key)
+	return nil
+}
+
+func (s *Service) persistDiscordProgressMessage(ctx context.Context, item delivery, messageID string) error {
+	err := s.repo.UpsertProgressMessage(ctx, &models.NotificationProgressMessage{
+		ChannelID:   item.channel.ID,
+		ProfileID:   item.event.ProfileID,
+		PlaybackKey: item.recordKey,
+		MessageID:   messageID,
+		UpdatedAt:   time.Now().UTC(),
+	})
+	if err != nil {
+		return fmt.Errorf("persist Discord progress message: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) deleteDiscordWebhookMessage(ctx context.Context, webhookURL, messageID string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
+		discordWebhookMessageURL(webhookURL, messageID, false), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", "mediastorm-notifications/1.0")
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if (resp.StatusCode < 200 || resp.StatusCode >= 300) && resp.StatusCode != http.StatusNotFound {
+		return fmt.Errorf("destination returned HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func discordWebhookMessageURL(rawURL, messageID string, wait bool) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	if messageID != "" {
+		parsed.Path = strings.TrimSuffix(parsed.Path, "/") + "/messages/" + url.PathEscape(messageID)
+	}
+	query := parsed.Query()
+	query.Del("wait")
+	if wait {
+		query.Set("wait", "true")
+	}
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
 }
 
 // Format renders the two safe, non-executable notification template sections.
@@ -798,10 +1270,17 @@ func playbackTitle(update models.PlaybackProgressUpdate) string {
 	return firstNonEmpty(update.MovieName, update.ItemID)
 }
 
+func notificationPlaybackKey(update models.PlaybackProgressUpdate) string {
+	return strings.ToLower(strings.TrimSpace(update.MediaType)) + ":" +
+		url.QueryEscape(strings.TrimSpace(update.ItemID))
+}
+
 func eventLabel(event string) string {
 	switch event {
 	case models.NotificationEventWatchStarted:
 		return "Started watching"
+	case models.NotificationEventWatchProgress:
+		return "Watching"
 	case models.NotificationEventWatchResumed:
 		return "Resumed"
 	case models.NotificationEventWatchWatched:

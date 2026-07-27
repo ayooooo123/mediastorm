@@ -178,6 +178,24 @@ func TestAdminPlaybackTemplateDoesNotForceEndedProgressToDuration(t *testing.T) 
 	}
 }
 
+func TestWebPlaybackTemplateSendsFinalHeartbeatOnTeardown(t *testing.T) {
+	body, err := webTemplates.ReadFile("web_templates/playback.html")
+	if err != nil {
+		t.Fatalf("read web playback template: %v", err)
+	}
+
+	rendered := string(body)
+	for _, want := range []string{
+		"playbackEnded: Boolean(playbackEnded)",
+		"stopHlsSession({ keepalive: true });",
+		"ended: true,",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("web playback template missing final-heartbeat hook %q", want)
+		}
+	}
+}
+
 func TestWebPlaybackHandlerRedirectsWithoutValidSession(t *testing.T) {
 	handler := NewWebPlaybackHandler(fakeWebPlaybackUsers{
 		users: []models.User{{ID: "profile-1", Name: "Main"}},
