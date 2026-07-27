@@ -31,6 +31,15 @@ var streamScopedSourcePaths = map[string]string{
 	"/api/live/stream":            "url",
 }
 
+// queryTokenMediaPaths are byte-stream/media endpoints consumed by browser or
+// native media APIs that cannot reliably attach an Authorization header.
+var queryTokenMediaPaths = map[string]struct{}{
+	"/api/metadata/trailers/proxy":          {},
+	"/api/metadata/trailers/prequeue/serve": {},
+	"/api/subtitles/download":               {},
+	"/api/subtitles/translate":              {},
+}
+
 // isStreamScopedRequestAllowed reports whether a stream-scoped share session may
 // access this request. Source-bearing routes must match the captured resource.
 func isStreamScopedRequestAllowed(r *http.Request, session models.Session) bool {
@@ -247,10 +256,13 @@ func queryTokenAllowed(path string) bool {
 	if _, ok := streamScopedSourcePaths[path]; ok {
 		return true
 	}
+	if _, ok := queryTokenMediaPaths[path]; ok {
+		return true
+	}
 	if strings.HasPrefix(path, "/api/live/hls/") || path == "/api/live/stream" {
 		return true
 	}
-	if strings.HasPrefix(path, "/api/recordings/") && strings.HasSuffix(path, "/stream") {
+	if strings.HasPrefix(path, "/api/live/recordings/") && strings.HasSuffix(path, "/stream") {
 		return true
 	}
 	// Native image renderers cannot attach the API Authorization header. These
