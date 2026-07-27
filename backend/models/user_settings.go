@@ -489,6 +489,8 @@ func DefaultHomeShelfConfigs() []ShelfConfig {
 		{ID: "trending-tv", Name: "Trending TV Shows", Enabled: true, Order: 9},
 		{ID: "streaming-services", Name: "Streaming Services", Enabled: true, Order: 10},
 		{ID: "live-favorites", Name: "Favorite Channels", Enabled: false, Order: 11},
+		{ID: "popular-on-server", Name: "Popular on This Server", Enabled: false, Order: 12},
+		{ID: "recently-watched", Name: "Recently Watched", Enabled: false, Order: 13},
 	}
 }
 
