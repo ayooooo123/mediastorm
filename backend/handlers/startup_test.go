@@ -602,6 +602,67 @@ func TestStartupHandler_HonorsTrendingShelfHideUnreleased(t *testing.T) {
 		t.Fatalf("unexpected trending movies: %+v", resp.TrendingMovies)
 	}
 }
+func TestStartupHandler_ExposesTMDBShelfToWatchClient(t *testing.T) {
+	cfgManager := config.NewManager(t.TempDir() + "/settings.json")
+	settingsService := &mockUserSettingsService{
+		withDefault: models.UserSettings{
+			HomeShelves: models.HomeShelvesSettings{
+				Shelves: []models.ShelfConfig{
+					{
+						ID:                "tmdb-company-420",
+						Name:              "Marvel Studios",
+						Enabled:           true,
+						Type:              "tmdb",
+						TMDBSourceType:    "production-company",
+						TMDBSourceID:      "420",
+						TMDBSourceName:    "Marvel Studios",
+						TMDBMediaType:     "movie",
+						TMDBDiscoverQuery: "genres=28",
+						Sort:              "vote_average.desc",
+						Limit:             25,
+					},
+				},
+			},
+		},
+	}
+	h := handlers.NewStartupHandler(
+		settingsService,
+		&mockWatchlistService{},
+		&mockHistoryService{},
+		&mockMetadataServiceStartup{},
+		cfgManager,
+		&mockUserServiceStartup{exists: true},
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/users/user1/startup?includeTrendingMovies=false&includeTrendingSeries=false", nil)
+	req = mux.SetURLVars(req, map[string]string{"userID": "user1"})
+	rec := httptest.NewRecorder()
+	h.GetStartup(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp handlers.StartupResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.UserSettings == nil || len(resp.UserSettings.HomeShelves.Shelves) != 1 {
+		t.Fatalf("unexpected user settings: %+v", resp.UserSettings)
+	}
+	shelf := resp.UserSettings.HomeShelves.Shelves[0]
+	if shelf.Type != "mdblist" || shelf.ListURL == "" {
+		t.Fatalf("Watch-compatible shelf type/url = %q/%q, want mdblist/non-empty", shelf.Type, shelf.ListURL)
+	}
+	if shelf.TMDBSourceType != "production-company" || shelf.TMDBSourceID != "420" ||
+		shelf.TMDBMediaType != "movie" || shelf.TMDBDiscoverQuery != "genres=28" ||
+		shelf.Sort != "vote_average.desc" || shelf.Limit != 25 {
+		t.Fatalf("TMDB shelf fields were not preserved: %+v", shelf)
+	}
+	if settingsService.withDefault.HomeShelves.Shelves[0].Type != "tmdb" ||
+		settingsService.withDefault.HomeShelves.Shelves[0].ListURL != "" {
+		t.Fatalf("source settings were mutated: %+v", settingsService.withDefault.HomeShelves.Shelves[0])
+	}
+}
 
 func TestStartupHandler_WatchlistOverflowSkipsDisplayedDuplicates(t *testing.T) {
 	cfgManager := config.NewManager(t.TempDir() + "/settings.json")

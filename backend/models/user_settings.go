@@ -405,9 +405,14 @@ type ShelfConfig struct {
 	Name                   string                 `json:"name"`                             // Display name
 	Enabled                bool                   `json:"enabled"`                          // Whether the shelf is visible
 	Order                  int                    `json:"order"`                            // Sort order (lower numbers appear first)
-	Type                   string                 `json:"type,omitempty"`                   // "builtin" (default), "mdblist", "trakt", "simkl", "letterboxd", "genre", "decade", "collection-hub", or "library"
+	Type                   string                 `json:"type,omitempty"`                   // "builtin" (default), "mdblist", "tmdb", "trakt", "simkl", "letterboxd", "genre", "decade", "collection-hub", or "library"
 	LibraryID              string                 `json:"libraryId,omitempty"`              // Configured media library selected by a "library" shelf
 	ListURL                string                 `json:"listUrl,omitempty"`                // MDBList URL for custom lists (e.g., https://mdblist.com/lists/username/list-name/json)
+	TMDBSourceType         string                 `json:"tmdbSourceType,omitempty"`         // TMDB source builder type
+	TMDBSourceID           string                 `json:"tmdbSourceId,omitempty"`           // Numeric TMDB list/company/network/collection/person ID
+	TMDBSourceName         string                 `json:"tmdbSourceName,omitempty"`         // Resolved source name shown by the shelf editor
+	TMDBMediaType          string                 `json:"tmdbMediaType,omitempty"`          // "movie", "tv", or "all"
+	TMDBDiscoverQuery      string                 `json:"tmdbDiscoverQuery,omitempty"`      // URL-encoded custom filters shared by every TMDB source type
 	StreamingServices      []StreamingServiceLink `json:"streamingServices,omitempty"`      // Service cards for the built-in Streaming Services shelf
 	CollectionItems        []CollectionHubLink    `json:"collectionItems,omitempty"`        // Shelf cards for collection hub shelves
 	TraktAccountID         string                 `json:"traktAccountId,omitempty"`         // Trakt account ID, or "__all__" for master-account global watchlists

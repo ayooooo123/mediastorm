@@ -506,6 +506,11 @@ func shelfConfigEqualsDefault(stored, def models.ShelfConfig) bool {
 		stored.Type == def.Type &&
 		stored.LibraryID == def.LibraryID &&
 		stored.ListURL == def.ListURL &&
+		stored.TMDBSourceType == def.TMDBSourceType &&
+		stored.TMDBSourceID == def.TMDBSourceID &&
+		stored.TMDBSourceName == def.TMDBSourceName &&
+		stored.TMDBMediaType == def.TMDBMediaType &&
+		stored.TMDBDiscoverQuery == def.TMDBDiscoverQuery &&
 		stored.TraktAccountID == def.TraktAccountID &&
 		stored.TraktListType == def.TraktListType &&
 		stored.TraktListID == def.TraktListID &&

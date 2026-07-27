@@ -757,8 +757,8 @@ var SettingsSchema = map[string]interface{}{
 			"type": map[string]interface{}{
 				"type":        "select",
 				"label":       "Type",
-				"options":     []string{"builtin", "mdblist", "trakt", "library"},
-				"description": "Shelf type (builtin, custom MDBList, Trakt, or configured media library)",
+				"options":     []string{"builtin", "mdblist", "tmdb", "trakt", "simkl", "letterboxd", "genre", "decade", "collection-hub", "library"},
+				"description": "Shelf type (built-in, TMDB, external list, collection hub, or configured media library)",
 				"order":       2,
 			},
 			"libraryId": map[string]interface{}{
@@ -775,6 +775,24 @@ var SettingsSchema = map[string]interface{}{
 				"showWhen":    "type=mdblist",
 				"order":       3,
 			},
+			"tmdbSourceType": map[string]interface{}{
+				"type":        "select",
+				"label":       "TMDB Source Type",
+				"options":     []string{"public-list", "production-company", "network", "movie-collection", "person-credits", "director-credits", "custom-discover"},
+				"description": "TMDB source-builder type",
+				"showWhen":    "type=tmdb",
+				"order":       3,
+			},
+			"tmdbSourceId":   map[string]interface{}{"type": "text", "label": "TMDB Source ID", "showWhen": "type=tmdb", "order": 4},
+			"tmdbSourceName": map[string]interface{}{"type": "text", "label": "TMDB Source Name", "showWhen": "type=tmdb", "order": 5},
+			"tmdbMediaType": map[string]interface{}{
+				"type":     "select",
+				"label":    "TMDB Media Type",
+				"options":  []string{"movie", "tv", "all"},
+				"showWhen": "type=tmdb",
+				"order":    6,
+			},
+			"tmdbDiscoverQuery": map[string]interface{}{"type": "text", "label": "TMDB Custom Filters", "showWhen": "type=tmdb", "order": 7},
 			"limit": map[string]interface{}{
 				"type":        "number",
 				"label":       "Item Limit",
@@ -787,9 +805,13 @@ var SettingsSchema = map[string]interface{}{
 			"sort": map[string]interface{}{
 				"type":        "select",
 				"label":       "Sort",
-				"description": "Shelf-specific sort mode. My Upcoming supports air-date-asc, air-date-desc, recently-watched, and title.",
-				"options":     []string{"air-date-asc", "air-date-desc", "recently-watched", "title"},
-				"order":       5,
+				"description": "Shelf-specific sort mode. TMDB shelves support ascending and descending popularity, rating, release date, and title.",
+				"options": []string{
+					"air-date-asc", "air-date-desc", "recently-watched", "title",
+					"original", "popularity.desc", "popularity.asc", "vote_average.desc", "vote_average.asc",
+					"release_date.desc", "release_date.asc", "title.asc", "title.desc",
+				},
+				"order": 5,
 			},
 		},
 	},
