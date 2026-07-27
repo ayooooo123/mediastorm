@@ -5629,7 +5629,7 @@
             '}'+
             '.add-custom-list-form{margin-top:16px;padding:16px;background:rgba(255,255,255,0.03);border-radius:8px;border:1px dashed rgba(255,255,255,0.1);}'+
             '.add-custom-list-form .form-row{display:flex;gap:12px;align-items:flex-end;}'+
-            '.add-custom-list-form .form-group{flex:1;}'+
+            '.add-custom-list-form .form-group{flex:1;margin-bottom:0;}'+
             '.add-custom-list-form input{width:100%;padding:8px 12px;background:rgba(0,0,0,0.2);border:1px solid rgba(255,255,255,0.1);border-radius:6px;color:white;font-size:14px;}'+
             '.add-custom-list-form button{padding:8px 16px;background:#8a2be2;border:none;border-radius:6px;color:white;cursor:pointer;white-space:nowrap;}'+
             '.add-custom-list-form button:hover{background:#9b3ce6;}'+
@@ -5648,7 +5648,12 @@
             '.tmdb-filter-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:12px;}'+
             '.tmdb-filter-grid label{font-size:11px;color:#888;font-weight:600;}'+
             '.tmdb-filter-grid input{margin-top:4px;}'+
-            '.tmdb-source-actions{display:flex;gap:8px;align-items:flex-end;}'+
+            '.tmdb-source-actions{display:flex;gap:8px;align-items:center;align-self:flex-end;height:38px;}'+
+            '.tmdb-source-actions button,.add-custom-list-submit{height:38px;display:inline-flex;align-items:center;justify-content:center;}'+
+            '.shelves-layout-debug .add-custom-list-form::before{content:"Layout debug: cyan = fields, magenta = actions; lines mark vertical centers";display:block;margin-bottom:10px;color:#facc15;font:600 11px/1.4 monospace;}'+
+            '.shelves-layout-debug .add-custom-list-form .form-row{outline:1px dashed #facc15;}'+
+            '.shelves-layout-debug .add-custom-list-form input:not([type="hidden"]),.shelves-layout-debug .add-custom-list-form select{outline:2px solid #22d3ee;background-image:linear-gradient(to bottom,transparent calc(50% - 1px),#22d3ee 50%,transparent calc(50% + 1px));}'+
+            '.shelves-layout-debug .add-custom-list-form button{outline:2px solid #f472b6;background-image:linear-gradient(to bottom,transparent calc(50% - 1px),#f472b6 50%,transparent calc(50% + 1px));}'+
             '@media(max-width:768px){.tmdb-filter-grid{grid-template-columns:1fr;}.tmdb-source-actions{width:100%;}.tmdb-source-actions button{flex:1;}}'+
             '.streaming-services-modal{padding:1rem;overscroll-behavior:contain;}'+
             '.streaming-services-modal-content{max-width:920px;width:min(920px,100%);max-height:calc(100dvh - 2rem);}'+
@@ -5878,7 +5883,7 @@
                     '<label class="form-label" style="font-size:12px;margin-bottom:4px;">Hide Unreleased</label>'+
                     '<div style="display:flex;align-items:center;height:38px;" title="Filter out movies not yet available for home viewing, and upcoming/in-production series"><input type="checkbox" id="newShelfHideUnreleased"></div>'+
                 '</div>'+
-                '<button onclick="addCustomShelf()" style="align-self:center;height:38px;margin-top:18px;">Add</button>'+
+                '<button class="add-custom-list-submit" onclick="addCustomShelf()">Add</button>'+
             '</div>'+
             buildTMDBCustomFilterFields('newShelf', '')+
             '<p class="form-hint" id="shelfFormHint" style="margin-top:8px;font-size:11px;">Example: https://mdblist.com/lists/garycrawfordgc/top-movies-of-the-week/json<br><span style="color:#9b9b9b;">Hide Unreleased: Only show movies available for home viewing (streaming/digital/physical) and exclude upcoming series.</span></p>'+
@@ -5888,9 +5893,12 @@
 
         // Add inherited class to wrapper when inheriting from global
         const inheritedClass = (selectedUserId && isInherited) ? ' shelves-inherited' : '';
+        const layoutDebugClass = new URLSearchParams(window.location.search).get('layoutDebug') === '1'
+            ? ' shelves-layout-debug'
+            : '';
 
         return styles+
-            '<div class="shelves-wrapper'+inheritedClass+'">'+
+            '<div class="shelves-wrapper'+inheritedClass+layoutDebugClass+'">'+
             '<div style="display:flex;align-items:center;margin-bottom:8px;"><p class="form-hint" style="margin:0;">Drag to reorder. Toggle to show/hide shelves on the home screen.</p>'+inheritanceBadgeHtml+'</div>'+
             '<div class="shelves-container" id="shelvesContainer">'+rows+'</div>'+
             addCustomListForm+
