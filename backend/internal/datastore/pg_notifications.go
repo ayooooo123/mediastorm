@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -162,5 +163,77 @@ func (r *pgNotificationRepo) UpsertObservation(ctx context.Context, observation 
 		VALUES ($1,$2,$3,$4,$5)
 		ON CONFLICT (profile_id, item_key) DO UPDATE SET status=$3, event=$4, updated_at=$5`,
 		observation.ProfileID, observation.ItemKey, observation.Status, eventJSON, observation.UpdatedAt)
+	return err
+}
+
+func scanNotificationProgressMessage(row pgx.Row) (*models.NotificationProgressMessage, error) {
+	var message models.NotificationProgressMessage
+	err := row.Scan(&message.ChannelID, &message.ProfileID, &message.PlaybackKey,
+		&message.MessageID, &message.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return &message, err
+}
+
+func (r *pgNotificationRepo) GetProgressMessage(ctx context.Context, channelID, playbackKey string) (*models.NotificationProgressMessage, error) {
+	return scanNotificationProgressMessage(r.pool.QueryRow(ctx, `
+		SELECT channel_id, profile_id, playback_key, message_id, updated_at
+		FROM notification_progress_messages
+		WHERE channel_id=$1 AND playback_key=$2`, channelID, playbackKey))
+}
+
+func (r *pgNotificationRepo) ListProgressMessages(ctx context.Context) ([]models.NotificationProgressMessage, error) {
+	return r.listProgressMessages(ctx, `
+		SELECT channel_id, profile_id, playback_key, message_id, updated_at
+		FROM notification_progress_messages`)
+}
+
+func (r *pgNotificationRepo) ListProgressMessagesByPlayback(ctx context.Context, profileID, playbackKey string) ([]models.NotificationProgressMessage, error) {
+	return r.listProgressMessages(ctx, `
+		SELECT channel_id, profile_id, playback_key, message_id, updated_at
+		FROM notification_progress_messages
+		WHERE profile_id=$1 AND playback_key=$2`, profileID, playbackKey)
+}
+
+func (r *pgNotificationRepo) listProgressMessages(ctx context.Context, query string, args ...any) ([]models.NotificationProgressMessage, error) {
+	rows, err := r.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var messages []models.NotificationProgressMessage
+	for rows.Next() {
+		message, err := scanNotificationProgressMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		messages = append(messages, *message)
+	}
+	return messages, rows.Err()
+}
+
+func (r *pgNotificationRepo) UpsertProgressMessage(ctx context.Context, message *models.NotificationProgressMessage) error {
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO notification_progress_messages (
+			channel_id, profile_id, playback_key, message_id, updated_at
+		) VALUES ($1,$2,$3,$4,$5)
+		ON CONFLICT (channel_id, playback_key) DO UPDATE SET
+			profile_id=$2, message_id=$4, updated_at=$5`,
+		message.ChannelID, message.ProfileID, message.PlaybackKey, message.MessageID, message.UpdatedAt)
+	return err
+}
+
+func (r *pgNotificationRepo) TouchProgressMessages(ctx context.Context, profileID, playbackKey string, updatedAt time.Time) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE notification_progress_messages SET updated_at=$3
+		WHERE profile_id=$1 AND playback_key=$2`, profileID, playbackKey, updatedAt)
+	return err
+}
+
+func (r *pgNotificationRepo) DeleteProgressMessage(ctx context.Context, channelID, playbackKey string) error {
+	_, err := r.pool.Exec(ctx, `
+		DELETE FROM notification_progress_messages
+		WHERE channel_id=$1 AND playback_key=$2`, channelID, playbackKey)
 	return err
 }

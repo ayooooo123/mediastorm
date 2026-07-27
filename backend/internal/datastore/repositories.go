@@ -39,6 +39,12 @@ type NotificationRepository interface {
 	GetObservation(ctx context.Context, profileID, itemKey string) (*models.NotificationObservation, error)
 	ListObservations(ctx context.Context, profileID string) ([]models.NotificationObservation, error)
 	UpsertObservation(ctx context.Context, observation *models.NotificationObservation) error
+	GetProgressMessage(ctx context.Context, channelID, playbackKey string) (*models.NotificationProgressMessage, error)
+	ListProgressMessages(ctx context.Context) ([]models.NotificationProgressMessage, error)
+	ListProgressMessagesByPlayback(ctx context.Context, profileID, playbackKey string) ([]models.NotificationProgressMessage, error)
+	UpsertProgressMessage(ctx context.Context, message *models.NotificationProgressMessage) error
+	TouchProgressMessages(ctx context.Context, profileID, playbackKey string, updatedAt time.Time) error
+	DeleteProgressMessage(ctx context.Context, channelID, playbackKey string) error
 }
 
 // SessionRepository manages session persistence.

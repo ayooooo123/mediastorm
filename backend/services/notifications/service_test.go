@@ -17,12 +17,14 @@ type memoryRepo struct {
 	mu           sync.Mutex
 	channels     map[string]models.NotificationChannel
 	observations map[string]models.NotificationObservation
+	progress     map[string]models.NotificationProgressMessage
 }
 
 func newMemoryRepo() *memoryRepo {
 	return &memoryRepo{
 		channels:     make(map[string]models.NotificationChannel),
 		observations: make(map[string]models.NotificationObservation),
+		progress:     make(map[string]models.NotificationProgressMessage),
 	}
 }
 
@@ -96,6 +98,68 @@ func (r *memoryRepo) UpsertObservation(_ context.Context, observation *models.No
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.observations[observationID(observation.ProfileID, observation.ItemKey)] = *observation
+	return nil
+}
+
+func progressMessageID(channelID, playbackKey string) string {
+	return channelID + "\x00" + playbackKey
+}
+
+func (r *memoryRepo) GetProgressMessage(_ context.Context, channelID, playbackKey string) (*models.NotificationProgressMessage, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	message, ok := r.progress[progressMessageID(channelID, playbackKey)]
+	if !ok {
+		return nil, nil
+	}
+	return &message, nil
+}
+
+func (r *memoryRepo) ListProgressMessages(_ context.Context) ([]models.NotificationProgressMessage, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	messages := make([]models.NotificationProgressMessage, 0, len(r.progress))
+	for _, message := range r.progress {
+		messages = append(messages, message)
+	}
+	return messages, nil
+}
+
+func (r *memoryRepo) ListProgressMessagesByPlayback(_ context.Context, profileID, playbackKey string) ([]models.NotificationProgressMessage, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var messages []models.NotificationProgressMessage
+	for _, message := range r.progress {
+		if message.ProfileID == profileID && message.PlaybackKey == playbackKey {
+			messages = append(messages, message)
+		}
+	}
+	return messages, nil
+}
+
+func (r *memoryRepo) UpsertProgressMessage(_ context.Context, message *models.NotificationProgressMessage) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.progress[progressMessageID(message.ChannelID, message.PlaybackKey)] = *message
+	return nil
+}
+
+func (r *memoryRepo) TouchProgressMessages(_ context.Context, profileID, playbackKey string, updatedAt time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for key, message := range r.progress {
+		if message.ProfileID == profileID && message.PlaybackKey == playbackKey {
+			message.UpdatedAt = updatedAt
+			r.progress[key] = message
+		}
+	}
+	return nil
+}
+
+func (r *memoryRepo) DeleteProgressMessage(_ context.Context, channelID, playbackKey string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.progress, progressMessageID(channelID, playbackKey))
 	return nil
 }
 
@@ -601,6 +665,266 @@ func TestPlaybackNotificationsTrackActiveStreamSessionsIndependently(t *testing.
 	service.sessionMu.Unlock()
 	if sessionCount != 2 {
 		t.Fatalf("playback session count = %d, want 2", sessionCount)
+	}
+}
+
+func TestDiscordProgressNotificationEditsThenCompletesOneMessage(t *testing.T) {
+	type request struct {
+		method string
+		path   string
+		query  string
+		title  string
+		body   string
+	}
+	received := make(chan request, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Embeds []struct {
+				Title       string `json:"title"`
+				Description string `json:"description"`
+			} `json:"embeds"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		item := request{method: r.Method, path: r.URL.Path, query: r.URL.RawQuery}
+		if len(payload.Embeds) > 0 {
+			item.title = payload.Embeds[0].Title
+			item.body = payload.Embeds[0].Description
+		}
+		received <- item
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			_, _ = w.Write([]byte(`{"id":"discord-message-1"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	repo := newMemoryRepo()
+	repo.channels["channel"] = models.NotificationChannel{
+		ID: "channel", ProfileID: "profile", Type: models.NotificationChannelDiscord,
+		URL: server.URL + "/api/webhooks/1/token", Enabled: true,
+		Events:        []string{models.NotificationEventWatchProgress, models.NotificationEventWatchWatched},
+		TitleTemplate: defaultTitleTemplate, BodyTemplate: defaultBodyTemplate,
+	}
+	service := New(repo)
+	defer service.Close()
+
+	update := models.PlaybackProgressUpdate{
+		MediaType: "movie", ItemID: "tmdb:1", MovieName: "Movie", Duration: 100,
+	}
+	service.HandlePlaybackUpdate("profile", update, 1)
+	first := waitForNotificationRequest(t, received)
+	if first.method != http.MethodPost || first.path != "/api/webhooks/1/token" || first.query != "wait=true" {
+		t.Fatalf("initial request = %s %s?%s", first.method, first.path, first.query)
+	}
+	if first.title != "Watching: Movie" || !strings.Contains(first.body, "1%") ||
+		!strings.Contains(first.body, "▱") {
+		t.Fatalf("initial progress payload = title %q body %q", first.title, first.body)
+	}
+	if strings.Count(first.body, "1%") != 1 {
+		t.Fatalf("initial progress body repeats percentage: %q", first.body)
+	}
+
+	service.HandlePlaybackUpdate("profile", update, 1.9)
+	select {
+	case item := <-received:
+		t.Fatalf("same whole-percentage progress bucket emitted %s %s", item.method, item.path)
+	case <-time.After(75 * time.Millisecond):
+	}
+
+	service.HandlePlaybackUpdate("profile", update, 2)
+	second := waitForNotificationRequest(t, received)
+	if second.method != http.MethodPatch ||
+		second.path != "/api/webhooks/1/token/messages/discord-message-1" {
+		t.Fatalf("progress update request = %s %s", second.method, second.path)
+	}
+	if !strings.Contains(second.body, "2%") {
+		t.Fatalf("updated progress body = %q", second.body)
+	}
+
+	service.HandlePlaybackUpdate("profile", update, 95)
+	completed := waitForNotificationRequest(t, received)
+	if completed.method != http.MethodPatch ||
+		completed.path != "/api/webhooks/1/token/messages/discord-message-1" {
+		t.Fatalf("completion request = %s %s", completed.method, completed.path)
+	}
+	if completed.title != "Watched: Movie" || strings.Contains(completed.body, "%") {
+		t.Fatalf("completion payload = title %q body %q", completed.title, completed.body)
+	}
+}
+
+func TestDiscordProgressNotificationDeletesWhenPlaybackEndsUnfinished(t *testing.T) {
+	type request struct {
+		method string
+		path   string
+	}
+	received := make(chan request, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received <- request{method: r.Method, path: r.URL.Path}
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			_, _ = w.Write([]byte(`{"id":"discord-message-2"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	repo := newMemoryRepo()
+	repo.channels["channel"] = models.NotificationChannel{
+		ID: "channel", ProfileID: "profile", Type: models.NotificationChannelDiscord,
+		URL: server.URL + "/api/webhooks/1/token", Enabled: true,
+		Events:        []string{models.NotificationEventWatchProgress},
+		TitleTemplate: defaultTitleTemplate, BodyTemplate: defaultBodyTemplate,
+	}
+	service := New(repo)
+	defer service.Close()
+
+	update := models.PlaybackProgressUpdate{
+		MediaType: "movie", ItemID: "tmdb:1", MovieName: "Movie", Duration: 100,
+	}
+	service.HandlePlaybackUpdate("profile", update, 20)
+	_ = waitForNotificationRequest(t, received)
+	update.IsPaused = true
+	update.PlaybackEnded = true
+	service.HandlePlaybackUpdate("profile", update, 20)
+	deleted := waitForNotificationRequest(t, received)
+	if deleted.method != http.MethodDelete ||
+		deleted.path != "/api/webhooks/1/token/messages/discord-message-2" {
+		t.Fatalf("stop request = %s %s", deleted.method, deleted.path)
+	}
+}
+
+func TestDiscordProgressNotificationDeletesAfterHeartbeatTimeout(t *testing.T) {
+	type request struct {
+		method string
+		path   string
+	}
+	received := make(chan request, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received <- request{method: r.Method, path: r.URL.Path}
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			_, _ = w.Write([]byte(`{"id":"discord-stale-message"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	repo := newMemoryRepo()
+	repo.channels["channel"] = models.NotificationChannel{
+		ID: "channel", ProfileID: "profile", Type: models.NotificationChannelDiscord,
+		URL: server.URL + "/api/webhooks/1/token", Enabled: true,
+		Events:        []string{models.NotificationEventWatchProgress},
+		TitleTemplate: defaultTitleTemplate, BodyTemplate: defaultBodyTemplate,
+	}
+	service := New(repo)
+	defer service.Close()
+
+	update := models.PlaybackProgressUpdate{
+		MediaType: "movie", ItemID: "tmdb:1", MovieName: "Movie", Duration: 100,
+	}
+	service.HandlePlaybackUpdate("profile", update, 20)
+	_ = waitForNotificationRequest(t, received)
+
+	service.reapStalePlaybackSessions(time.Now().UTC().Add(progressHeartbeatTimeout))
+	deleted := waitForNotificationRequest(t, received)
+	if deleted.method != http.MethodDelete ||
+		deleted.path != "/api/webhooks/1/token/messages/discord-stale-message" {
+		t.Fatalf("stale-session request = %s %s", deleted.method, deleted.path)
+	}
+}
+
+func TestDiscordProgressNotificationSurvivesServiceRestart(t *testing.T) {
+	type request struct {
+		method string
+		path   string
+	}
+	received := make(chan request, 3)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received <- request{method: r.Method, path: r.URL.Path}
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			_, _ = w.Write([]byte(`{"id":"discord-durable-message"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	repo := newMemoryRepo()
+	repo.channels["channel"] = models.NotificationChannel{
+		ID: "channel", ProfileID: "profile", Type: models.NotificationChannelDiscord,
+		URL: server.URL + "/api/webhooks/1/token", Enabled: true,
+		Events:        []string{models.NotificationEventWatchProgress},
+		TitleTemplate: defaultTitleTemplate, BodyTemplate: defaultBodyTemplate,
+	}
+	update := models.PlaybackProgressUpdate{
+		MediaType: "movie", ItemID: "tmdb:1", MovieName: "Movie", Duration: 100,
+	}
+
+	firstService := New(repo)
+	firstService.HandlePlaybackUpdate("profile", update, 20)
+	created := waitForNotificationRequest(t, received)
+	if created.method != http.MethodPost {
+		t.Fatalf("initial durable request = %s %s", created.method, created.path)
+	}
+	waitForDurableProgressMessage(t, repo, "channel", notificationPlaybackKey(update))
+	firstService.Close()
+
+	secondService := New(repo)
+	defer secondService.Close()
+	secondService.HandlePlaybackUpdate("profile", update, 21)
+	adopted := waitForNotificationRequest(t, received)
+	if adopted.method != http.MethodPatch ||
+		adopted.path != "/api/webhooks/1/token/messages/discord-durable-message" {
+		t.Fatalf("post-restart request = %s %s", adopted.method, adopted.path)
+	}
+}
+
+func waitForDurableProgressMessage(t *testing.T, repo *memoryRepo, channelID, playbackKey string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		message, err := repo.GetProgressMessage(context.Background(), channelID, playbackKey)
+		if err != nil {
+			t.Fatalf("get durable progress message: %v", err)
+		}
+		if message != nil {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("timed out waiting for durable progress message")
+}
+
+func TestProgressNotificationsRequireDiscord(t *testing.T) {
+	service := New(newMemoryRepo())
+	defer service.Close()
+
+	_, err := service.SaveChannel(context.Background(), models.NotificationChannel{
+		ProfileID: "profile",
+		Name:      "Generic",
+		Type:      models.NotificationChannelWebhook,
+		URL:       "https://example.com/webhook",
+		Events:    []string{models.NotificationEventWatchProgress},
+	})
+	if err == nil || !strings.Contains(err.Error(), "require a Discord destination") {
+		t.Fatalf("SaveChannel error = %v", err)
+	}
+}
+
+func waitForNotificationRequest[T any](t *testing.T, received <-chan T) T {
+	t.Helper()
+	select {
+	case item := <-received:
+		return item
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for notification request")
+		var zero T
+		return zero
 	}
 }
 
