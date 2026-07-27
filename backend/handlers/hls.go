@@ -517,7 +517,7 @@ const (
 
 	// YouTube trailer startup should wait for actual media readiness, not a fixed
 	// wall-clock window. The timeout keeps expired CDN URLs from blocking fallback.
-	youtubeStartupReadyTimeout      = 4 * time.Second
+	youtubeStartupReadyTimeout      = 12 * time.Second
 	youtubeStartupReadyPollInterval = 25 * time.Millisecond
 
 	// Timeout for details page prequeue - user opened details but might not play
@@ -1563,13 +1563,19 @@ func (m *HLSManager) CreateYouTubeSession(ctx context.Context, videoURL, audioUR
 		case <-readyTicker.C:
 			continue
 		case <-readyTimer.C:
-			log.Printf("[hls-youtube] session %s startup readiness timeout elapsed=%s playlistBytes=%d segment0Bytes=%d segment1Bytes=%d returning session without two ready segments",
+			log.Printf("[hls-youtube] session %s startup readiness timeout elapsed=%s playlistBytes=%d segment0Bytes=%d segment1Bytes=%d rejecting incomplete session",
 				sessionID,
 				time.Since(now).Round(time.Millisecond),
 				lastPlaylistBytes,
 				lastSegment0Bytes,
 				lastSegment1Bytes)
-			return session, nil
+			cleanupStartupFailure()
+			return nil, fmt.Errorf(
+				"youtube HLS startup timed out before two segments were ready (playlistBytes=%d segment0Bytes=%d segment1Bytes=%d)",
+				lastPlaylistBytes,
+				lastSegment0Bytes,
+				lastSegment1Bytes,
+			)
 		case <-ctx.Done():
 			cleanupStartupFailure()
 			return nil, ctx.Err()
@@ -1630,55 +1636,14 @@ func (m *HLSManager) startYouTubeTranscoding(ctx context.Context, session *HLSSe
 	session.mu.RLock()
 	startOffset := session.TranscodingOffset
 	session.mu.RUnlock()
-	args := []string{
-		"-nostdin",
-		"-y",
-		"-loglevel", "error",
-		"-protocol_whitelist", "file,http,https,tcp,tls,crypto",
-		"-probesize", "1000000",
-		"-analyzeduration", "500000",
-		"-fflags", "+genpts+discardcorrupt",
-	}
-	if startOffset > 0 {
-		args = append(args, "-noaccurate_seek", "-ss", fmt.Sprintf("%.3f", startOffset))
-	}
-	args = append(args, ffmpegHTTPProxyArgs(proxyURL)...)
-	args = append(args,
-		"-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-		"-reconnect", "1",
-		"-reconnect_streamed", "1",
-		"-reconnect_delay_max", "5",
-		"-i", videoURL,
-	)
-	if startOffset > 0 {
-		args = append(args, "-noaccurate_seek", "-ss", fmt.Sprintf("%.3f", startOffset))
-	}
-	args = append(args, ffmpegHTTPProxyArgs(proxyURL)...)
-	args = append(args,
-		"-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-		"-reconnect", "1",
-		"-reconnect_streamed", "1",
-		"-reconnect_delay_max", "5",
-		"-i", audioURL,
-		"-map", "0:v:0",
-		"-map", "1:a:0",
-		"-c:v", "copy",
-		"-c:a", "aac",
-		"-b:a", "160k",
-		"-hls_time", fmt.Sprintf("%.0f", hlsSegmentDuration),
-		"-hls_list_size", "0",
-		"-hls_flags", "independent_segments",
-		"-hls_segment_filename", segmentPattern,
-		"-f", "hls",
-		playlistPath,
-	)
+	args := youtubeTranscodingArgs(videoURL, audioURL, proxyURL, playlistPath, segmentPattern, startOffset)
 
 	cmd := exec.CommandContext(ctx, m.ffmpegPath, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
 	started := time.Now()
-	log.Printf("[hls-youtube] session %s: starting FFmpeg high-quality HLS proxy=%v video={%s} audio={%s}",
+	log.Printf("[hls-youtube] session %s: starting FFmpeg segment-safe HLS proxy=%v video={%s} audio={%s}",
 		session.ID,
 		strings.TrimSpace(proxyURL) != "",
 		youtubeMediaURLLogSummary(videoURL),
@@ -1740,6 +1705,67 @@ func (m *HLSManager) startYouTubeTranscoding(ctx context.Context, session *HLSSe
 
 	log.Printf("[hls-youtube] session %s: FFmpeg completed segments=%d elapsed=%s", session.ID, highestSegment+1, time.Since(started).Round(time.Millisecond))
 	return nil
+}
+
+func youtubeTranscodingArgs(videoURL, audioURL, proxyURL, playlistPath, segmentPattern string, startOffset float64) []string {
+	args := []string{
+		"-nostdin",
+		"-y",
+		"-loglevel", "error",
+		"-protocol_whitelist", "file,http,https,tcp,tls,crypto",
+		"-probesize", "1000000",
+		"-analyzeduration", "500000",
+		"-fflags", "+genpts+discardcorrupt",
+	}
+	if startOffset > 0 {
+		args = append(args, "-noaccurate_seek", "-ss", fmt.Sprintf("%.3f", startOffset))
+	}
+	args = append(args, ffmpegHTTPProxyArgs(proxyURL)...)
+	args = append(args,
+		"-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+		"-reconnect", "1",
+		"-reconnect_streamed", "1",
+		"-reconnect_delay_max", "5",
+		"-i", videoURL,
+	)
+	if startOffset > 0 {
+		args = append(args, "-noaccurate_seek", "-ss", fmt.Sprintf("%.3f", startOffset))
+	}
+	args = append(args, ffmpegHTTPProxyArgs(proxyURL)...)
+	args = append(args,
+		"-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+		"-reconnect", "1",
+		"-reconnect_streamed", "1",
+		"-reconnect_delay_max", "5",
+		"-i", audioURL,
+		"-map", "0:v:0",
+		"-map", "1:a:0",
+		// Stream-copying arbitrary YouTube GOPs can produce TS segments whose
+		// IDR frames do not repeat SPS/PPS. Such segments are not independently
+		// decodable even if the playlist advertises EXT-X-INDEPENDENT-SEGMENTS,
+		// and KSPlayer/AVPlayer rejects the video track. Re-encode this short
+		// trailer path with keyframes aligned to the HLS segment cadence.
+		"-c:v", "libx264",
+		"-preset", "veryfast",
+		"-crf", "21",
+		"-profile:v", "high",
+		"-level:v", "4.1",
+		"-pix_fmt", "yuv420p",
+		"-force_key_frames", fmt.Sprintf("expr:gte(t,n_forced*%.3f)", hlsSegmentDuration),
+		"-sc_threshold", "0",
+		"-threads", "0",
+		"-c:a", "aac",
+		"-ac", "2",
+		"-b:a", "160k",
+		"-ar", "48000",
+		"-hls_time", fmt.Sprintf("%.0f", hlsSegmentDuration),
+		"-hls_list_size", "0",
+		"-hls_flags", "independent_segments+temp_file",
+		"-hls_segment_filename", segmentPattern,
+		"-f", "hls",
+		playlistPath,
+	)
+	return args
 }
 
 // CreateLiveSession creates an HLS session for live TV streams
