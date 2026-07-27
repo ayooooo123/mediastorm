@@ -2164,6 +2164,7 @@ func (m *Manager) Load() (Settings, error) {
 			{Name: "Real Debrid", Provider: "realdebrid"},
 			{Name: "Torbox", Provider: "torbox"},
 			{Name: "AllDebrid", Provider: "alldebrid"},
+			{Name: "Premiumize", Provider: "premiumize"},
 		}
 	}
 	// Backfill MultiProviderMode if not set (default to fastest for best UX)

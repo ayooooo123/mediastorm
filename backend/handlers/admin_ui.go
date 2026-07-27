@@ -319,7 +319,7 @@ var SettingsSchema = map[string]interface{}{
 		"key":      "debridProviders",
 		"fields": map[string]interface{}{
 			"name":     map[string]interface{}{"type": "text", "label": "Name", "description": "Provider display name", "order": 1},
-			"provider": map[string]interface{}{"type": "select", "label": "Provider", "options": []string{"realdebrid", "torbox", "alldebrid"}, "description": "Provider type", "order": 2},
+			"provider": map[string]interface{}{"type": "select", "label": "Provider", "options": []string{"realdebrid", "torbox", "alldebrid", "premiumize"}, "description": "Provider type", "order": 2},
 			"apiKey":   map[string]interface{}{"type": "password", "label": "API Key", "description": "Provider API key", "order": 3},
 			"enabled":  map[string]interface{}{"type": "boolean", "label": "Enabled", "description": "Enable this provider", "order": 4},
 			"config.autoClearQueue": map[string]interface{}{
@@ -3443,6 +3443,18 @@ func (h *AdminUIHandler) GetDebridStatus(w http.ResponseWriter, r *http.Request)
 				if info, err := client.GetAccountInfo(ctx); err == nil {
 					status.Username = info.Username
 					status.Email = info.Email
+					status.PremiumActive = info.PremiumActive
+					if info.ExpiresAt != nil {
+						status.ExpiresAt = info.ExpiresAt.Format("2006-01-02")
+						status.DaysRemaining = info.DaysRemaining
+					}
+				} else {
+					status.Error = err.Error()
+				}
+			case "premiumize":
+				client := debrid.NewPremiumizeClient(p.APIKey)
+				if info, err := client.GetAccountInfo(ctx); err == nil {
+					status.Username = info.Username
 					status.PremiumActive = info.PremiumActive
 					if info.ExpiresAt != nil {
 						status.ExpiresAt = info.ExpiresAt.Format("2006-01-02")
@@ -9911,6 +9923,28 @@ func (h *AdminUIHandler) TestDebridProvider(w http.ResponseWriter, r *http.Reque
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": true,
 			"message": fmt.Sprintf("Connected as %s (%s)", adResult.Data.User.Username, accountType),
+		})
+
+	case "premiumize":
+		pmClient := debrid.NewPremiumizeClient(req.APIKey)
+		info, err := pmClient.GetAccountInfo(r.Context())
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"error":   err.Error(),
+			})
+			return
+		}
+
+		accountType := "Free"
+		if info.PremiumActive {
+			accountType = "Premium"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"message": fmt.Sprintf("Connected as customer %s (%s)", info.Username, accountType),
 		})
 
 	default:
