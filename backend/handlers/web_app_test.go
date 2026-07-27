@@ -144,6 +144,9 @@ func TestWebPlaybackHandlerServesStandalonePlayer(t *testing.T) {
 		"recoverWebPlayerHlsSession('hls-network-error'",
 		"recover hls session via seek",
 		"let position = progressPositionForSend(options);",
+		"Authorization: `Bearer ${AUTH_TOKEN}`",
+		"apiUrl(path, { appendToken: false })",
+		"apiUrl(endpoint, { appendToken: false })",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("expected playback template to contain HLS recovery hook %q", want)

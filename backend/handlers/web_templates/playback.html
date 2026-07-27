@@ -2425,9 +2425,9 @@
       lastProgressPaused = isPaused;
       lastProgressBuffering = isBuffering;
 
-      return fetch(apiUrl(endpoint), {
+      return fetch(apiUrl(endpoint, { appendToken: false }), {
         credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
+        headers: apiAuthHeaders({ 'Content-Type': 'application/json' }),
         ...fetchOptions,
         keepalive: Boolean(options.keepalive),
       }).catch(() => null);
@@ -2465,9 +2465,9 @@
         lastProgressPosition = position;
         lastProgressPaused = isPaused;
         lastProgressBuffering = isBuffering;
-        return fetch(apiUrl(endpoint), {
+        return fetch(apiUrl(endpoint, { appendToken: false }), {
           credentials: 'same-origin',
-          headers: { 'Content-Type': 'application/json' },
+          headers: apiAuthHeaders({ 'Content-Type': 'application/json' }),
           ...fetchOptions,
           keepalive: true,
         }).catch(() => null);
@@ -2488,7 +2488,15 @@
           setStatus('Playback stopped by server policy.');
         }
         return result;
-      }).catch(() => null);
+      }).catch((error) => {
+        webPlayerDebugLog('error', 'progress.error', {
+          status: error?.message || String(error),
+          profileId: activeProfileId,
+          mediaType: payload.mediaType,
+          itemId: payload.itemId,
+        });
+        return null;
+      });
     }
 
     function buildProgressPayload(position, duration, isPaused, isBuffering) {
@@ -2569,10 +2577,10 @@
     }
 
     async function apiCall(path, options = {}) {
-      const response = await fetch(apiUrl(path), {
+      const response = await fetch(apiUrl(path, { appendToken: false }), {
         credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
         ...options,
+        headers: apiAuthHeaders({ 'Content-Type': 'application/json', ...(options.headers || {}) }),
       });
       if (!response.ok) {
         const text = await response.text();
@@ -2597,10 +2605,10 @@
             timestamp: new Date().toISOString(),
           }],
         };
-        fetch(apiUrl('/debug/log'), {
+        fetch(apiUrl('/debug/log', { appendToken: false }), {
           method: 'POST',
           credentials: 'same-origin',
-          headers: { 'Content-Type': 'application/json' },
+          headers: apiAuthHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify(payload),
           keepalive: true,
         }).catch(() => {});
@@ -2618,16 +2626,24 @@
       }
     }
 
-    function apiUrl(path) {
+    function apiAuthHeaders(headers = {}) {
+      return {
+        ...(AUTH_TOKEN ? { Authorization: `Bearer ${AUTH_TOKEN}` } : {}),
+        ...headers,
+      };
+    }
+
+    function apiUrl(path, options = {}) {
       const value = String(path || '');
       if (/^https?:\/\//i.test(value)) return value;
       const apiPrefix = AUTH_TOKEN ? `${SERVER_BASE_PATH}/api` : `${SERVER_BASE_PATH}/account/api`;
-      if (value.startsWith(`${SERVER_BASE_PATH}/account/api/`)) return appendAuthToken(value);
-      if (value.startsWith(`${SERVER_BASE_PATH}/api/`)) return appendAuthToken(value);
-      if (value.startsWith('/account/api/')) return appendAuthToken(`${SERVER_BASE_PATH}${value}`);
-      if (value.startsWith('/api/')) return appendAuthToken(`${SERVER_BASE_PATH}${value}`);
-      if (value.startsWith('/video/') || value.startsWith('/live/')) return appendAuthToken(`${apiPrefix}${value}`);
-      if (value.startsWith('/')) return appendAuthToken(`${apiPrefix}${value}`);
+      const withAuthToken = (url) => options.appendToken === false ? url : appendAuthToken(url);
+      if (value.startsWith(`${SERVER_BASE_PATH}/account/api/`)) return withAuthToken(value);
+      if (value.startsWith(`${SERVER_BASE_PATH}/api/`)) return withAuthToken(value);
+      if (value.startsWith('/account/api/')) return withAuthToken(`${SERVER_BASE_PATH}${value}`);
+      if (value.startsWith('/api/')) return withAuthToken(`${SERVER_BASE_PATH}${value}`);
+      if (value.startsWith('/video/') || value.startsWith('/live/')) return withAuthToken(`${apiPrefix}${value}`);
+      if (value.startsWith('/')) return withAuthToken(`${apiPrefix}${value}`);
       return value;
     }
 
