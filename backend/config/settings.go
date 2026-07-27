@@ -694,6 +694,13 @@ type HomeShelvesSettings struct {
 	ExploreCardPosition             ExploreCardPosition `json:"exploreCardPosition,omitempty"`             // "front" (default) or "end"
 	ItemCap                         int                 `json:"itemCap,omitempty"`                         // Max items shown per home shelf before Explore card (default 20)
 	ExcludeUpcomingFromContinue     bool                `json:"excludeUpcomingFromContinue,omitempty"`     // Move unreleased next-up episodes out of Continue Watching
+	// PopularOnServerWindowDays is the lookback window in days for the
+	// "Popular on This Server" and "Recently Watched" shelves.
+	// Valid range: 7-365. Default 90.
+	PopularOnServerWindowDays int `json:"popularOnServerWindowDays,omitempty"`
+	// RecentlyWatchedCapPerProfile limits how many recent watch entries each
+	// profile contributes to the "Recently Watched" feed. Default 3.
+	RecentlyWatchedCapPerProfile int `json:"recentlyWatchedCapPerProfile,omitempty"`
 	MobileTopShelfMode              string              `json:"mobileTopShelfMode,omitempty"`              // "default", "disabled", or "shelf"
 	MobileTopShelfSourceID          string              `json:"mobileTopShelfSourceId,omitempty"`          // Shelf ID used when mobileTopShelfMode is "shelf"
 	TVTopShelfMode                  string              `json:"tvTopShelfMode,omitempty"`                  // "default", "disabled", or "shelf"
@@ -718,6 +725,8 @@ func DefaultHomeShelfConfigs() []ShelfConfig {
 		{ID: "trending-tv", Name: "Trending TV Shows", Enabled: true, Order: 9},
 		{ID: "streaming-services", Name: "Streaming Services", Enabled: true, Order: 10},
 		{ID: "live-favorites", Name: "Favorite Channels", Enabled: false, Order: 11},
+		{ID: "popular-on-server", Name: "Popular on This Server", Enabled: false, Order: 12},
+		{ID: "recently-watched", Name: "Recently Watched", Enabled: false, Order: 13},
 	}
 }
 
@@ -945,6 +954,66 @@ func EnsureDefaultHomeShelves(shelves []ShelfConfig) ([]ShelfConfig, bool) {
 		nextShelves = append(nextShelves, ShelfConfig{
 			ID:      "live-favorites",
 			Name:    "Favorite Channels",
+			Enabled: false,
+			Order:   insertOrder,
+		})
+		changed = true
+	}
+
+	if !hasShelf("popular-on-server") {
+		insertOrder := -1
+		for _, shelf := range nextShelves {
+			if shelf.ID == "live-favorites" {
+				insertOrder = shelf.Order + 1
+				break
+			}
+			if shelf.Order > insertOrder {
+				insertOrder = shelf.Order + 1
+			}
+		}
+		if insertOrder < 0 {
+			insertOrder = 0
+		}
+
+		for i := range nextShelves {
+			if nextShelves[i].Order >= insertOrder {
+				nextShelves[i].Order++
+			}
+		}
+
+		nextShelves = append(nextShelves, ShelfConfig{
+			ID:      "popular-on-server",
+			Name:    "Popular on This Server",
+			Enabled: false,
+			Order:   insertOrder,
+		})
+		changed = true
+	}
+
+	if !hasShelf("recently-watched") {
+		insertOrder := -1
+		for _, shelf := range nextShelves {
+			if shelf.ID == "popular-on-server" {
+				insertOrder = shelf.Order + 1
+				break
+			}
+			if shelf.Order > insertOrder {
+				insertOrder = shelf.Order + 1
+			}
+		}
+		if insertOrder < 0 {
+			insertOrder = 0
+		}
+
+		for i := range nextShelves {
+			if nextShelves[i].Order >= insertOrder {
+				nextShelves[i].Order++
+			}
+		}
+
+		nextShelves = append(nextShelves, ShelfConfig{
+			ID:      "recently-watched",
+			Name:    "Recently Watched",
 			Enabled: false,
 			Order:   insertOrder,
 		})
