@@ -566,6 +566,22 @@ func validatePrequeueVideoProbe(result *VideoFullResult) error {
 	return nil
 }
 
+func validatePrequeueEpisodeDuration(mediaType string, episode *models.EpisodeReference, durationSeconds float64) error {
+	if mediaType != "series" || episode == nil || episode.RuntimeMinutes <= 0 || durationSeconds <= 0 {
+		return nil
+	}
+	expectedSeconds := float64(episode.RuntimeMinutes * 60)
+	maximumSeconds := expectedSeconds * 3
+	if durationSeconds > maximumSeconds {
+		return fmt.Errorf(
+			"probed duration %.2fs exceeds 3x the expected %dm episode runtime",
+			durationSeconds,
+			episode.RuntimeMinutes,
+		)
+	}
+	return nil
+}
+
 // HLSCreator interface for creating HLS sessions
 type HLSCreator interface {
 	CreateHLSSession(ctx context.Context, path string, hasDV bool, dvProfile string, hasHDR bool, audioTrackIndex int, subtitleTrackIndex int, profileID string, startOffset float64, prequeueType string) (*HLSSessionResult, error)
@@ -1670,6 +1686,27 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 						Reason:      "prequeue:metadata-probe-unplayable",
 					}); markErr != nil {
 						log.Printf("[prequeue] Failed to mark unplayable probe result bad for %s: %v", result.Title, markErr)
+					}
+				}
+				resolution = nil
+				lastErr = probeErr
+				continue
+			}
+			if probeErr = validatePrequeueEpisodeDuration(mediaType, targetEpisode, probeResult.Duration); probeErr != nil {
+				log.Printf("[prequeue] Episode duration mismatch for %s: %v, trying next result", result.Title, probeErr)
+				if h.badStreamsSvc != nil {
+					provider := result.Attributes["provider"]
+					if provider == "" {
+						provider = result.Attributes["debridProvider"]
+					}
+					if _, markErr := h.badStreamsSvc.Mark(badstreams.MarkRequest{
+						ReleaseName: result.Title,
+						ServiceType: string(result.ServiceType),
+						Provider:    provider,
+						SourcePath:  resolution.WebDAVPath,
+						Reason:      "prequeue:episode-duration-mismatch",
+					}); markErr != nil {
+						log.Printf("[prequeue] Failed to mark duration-mismatched result bad for %s: %v", result.Title, markErr)
 					}
 				}
 				resolution = nil

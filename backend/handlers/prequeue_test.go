@@ -90,6 +90,20 @@ func TestValidatePrequeueVideoProbe(t *testing.T) {
 	}
 }
 
+func TestValidatePrequeueEpisodeDuration(t *testing.T) {
+	episode := &models.EpisodeReference{SeasonNumber: 8, EpisodeNumber: 7, RuntimeMinutes: 23}
+
+	if err := validatePrequeueEpisodeDuration("series", episode, 7185.79); err == nil {
+		t.Fatal("validatePrequeueEpisodeDuration() accepted a two-hour file for a 23-minute episode")
+	}
+	if err := validatePrequeueEpisodeDuration("series", episode, 1500); err != nil {
+		t.Fatalf("validatePrequeueEpisodeDuration() rejected a normal episode: %v", err)
+	}
+	if err := validatePrequeueEpisodeDuration("movie", episode, 7185.79); err != nil {
+		t.Fatalf("validatePrequeueEpisodeDuration() applied episode validation to a movie: %v", err)
+	}
+}
+
 // mockMovieDetailsProvider implements MovieDetailsProvider for testing
 type mockMovieDetailsProvider struct {
 	title *models.Title
