@@ -3,14 +3,18 @@ package metadata
 import (
 	"context"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -541,5 +545,378 @@ func TestLogoLanguage(t *testing.T) {
 				t.Errorf("logoLanguage(%q) = %q, want %q", tc.language, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestFetchShelfTitlesSupportsEveryTMDBSourceType(t *testing.T) {
+	tests := []struct {
+		name          string
+		opts          TMDBListOptions
+		wantPath      string
+		wantMediaType string
+		response      string
+		checkQuery    func(*testing.T, *http.Request)
+	}{
+		{
+			name:          "public list",
+			opts:          TMDBListOptions{SourceType: TMDBSourcePublicList, SourceID: "10", MediaType: "movie", Sort: "original"},
+			wantPath:      "/3/list/10",
+			wantMediaType: "movie",
+			response:      `{"items":[{"id":101,"title":"Public Movie","media_type":"movie","poster_path":"/public.jpg","release_date":"2024-01-01","original_language":"en","genre_ids":[28],"vote_average":8,"vote_count":500}]}`,
+		},
+		{
+			name:          "production company",
+			opts:          TMDBListOptions{SourceType: TMDBSourceProductionCompany, SourceID: "10", MediaType: "movie", Sort: "popularity.desc"},
+			wantPath:      "/3/discover/movie",
+			wantMediaType: "movie",
+			response:      `{"results":[{"id":102,"title":"Company Movie","poster_path":"/company.jpg","release_date":"2024-01-01","original_language":"en","genre_ids":[28],"vote_average":8,"vote_count":500,"popularity":100}],"total_results":1}`,
+			checkQuery: func(t *testing.T, req *http.Request) {
+				if got := req.URL.Query().Get("with_companies"); got != "10" {
+					t.Fatalf("with_companies = %q, want 10", got)
+				}
+			},
+		},
+		{
+			name:          "production company with documentaries",
+			opts:          TMDBListOptions{SourceType: TMDBSourceProductionCompany, SourceID: "10", MediaType: "movie", Sort: "popularity.desc"},
+			wantPath:      "/3/discover/movie",
+			wantMediaType: "movie",
+			response:      `{"results":[{"id":109,"title":"Company Documentary","poster_path":"/documentary.jpg","release_date":"2024-01-01","original_language":"en","genre_ids":[99],"vote_average":8,"vote_count":500,"popularity":100}],"total_results":1}`,
+			checkQuery: func(t *testing.T, req *http.Request) {
+				if got := req.URL.Query().Get("with_companies"); got != "10" {
+					t.Fatalf("with_companies = %q, want 10", got)
+				}
+				if got := req.URL.Query().Get("without_genres"); got != "" {
+					t.Fatalf("without_genres = %q, want empty", got)
+				}
+				if got := req.URL.Query().Get("with_runtime.gte"); got != "" {
+					t.Fatalf("with_runtime.gte = %q, want empty", got)
+				}
+			},
+		},
+		{
+			name:          "production company series",
+			opts:          TMDBListOptions{SourceType: TMDBSourceProductionCompany, SourceID: "10", MediaType: "tv", Sort: "popularity.desc"},
+			wantPath:      "/3/discover/tv",
+			wantMediaType: "series",
+			response:      `{"results":[{"id":110,"name":"Company Series","poster_path":"/series.jpg","first_air_date":"2024-01-01","original_language":"en","genre_ids":[28],"vote_average":8,"vote_count":500,"popularity":100}],"total_results":1}`,
+		},
+		{
+			name:          "network",
+			opts:          TMDBListOptions{SourceType: TMDBSourceNetwork, SourceID: "213", MediaType: "movie", Sort: "popularity.desc"},
+			wantPath:      "/3/discover/tv",
+			wantMediaType: "series",
+			response:      `{"results":[{"id":103,"name":"Network Series","poster_path":"/network.jpg","first_air_date":"2024-01-01","original_language":"en","genre_ids":[28],"vote_average":8,"vote_count":500,"popularity":100}],"total_results":1}`,
+			checkQuery: func(t *testing.T, req *http.Request) {
+				if got := req.URL.Query().Get("with_networks"); got != "213" {
+					t.Fatalf("with_networks = %q, want 213", got)
+				}
+			},
+		},
+		{
+			name:          "movie collection",
+			opts:          TMDBListOptions{SourceType: TMDBSourceMovieCollection, SourceID: "10", MediaType: "tv", Sort: "original"},
+			wantPath:      "/3/collection/10",
+			wantMediaType: "movie",
+			response:      `{"parts":[{"id":104,"title":"Collection Movie","poster_path":"/collection.jpg","release_date":"2024-01-01","original_language":"en","genre_ids":[28],"vote_average":8,"vote_count":500}]}`,
+		},
+		{
+			name:          "person credits",
+			opts:          TMDBListOptions{SourceType: TMDBSourcePersonCredits, SourceID: "31", MediaType: "movie", Sort: "popularity.desc"},
+			wantPath:      "/3/person/31/combined_credits",
+			wantMediaType: "movie",
+			response:      `{"cast":[{"id":105,"title":"Actor Movie","media_type":"movie","poster_path":"/actor.jpg","release_date":"2024-01-01","original_language":"en","genre_ids":[28],"vote_average":8,"vote_count":500,"popularity":100}]}`,
+		},
+		{
+			name:          "director credits",
+			opts:          TMDBListOptions{SourceType: TMDBSourceDirectorCredits, SourceID: "31", MediaType: "movie", Sort: "popularity.desc"},
+			wantPath:      "/3/person/31/combined_credits",
+			wantMediaType: "movie",
+			response:      `{"crew":[{"id":106,"title":"Directed Movie","media_type":"movie","poster_path":"/director.jpg","job":"Director","release_date":"2024-01-01","original_language":"en","genre_ids":[28],"vote_average":8,"vote_count":500,"popularity":100},{"id":999,"title":"Produced Movie","media_type":"movie","job":"Producer"}]}`,
+		},
+		{
+			name:          "custom discover",
+			opts:          TMDBListOptions{SourceType: TMDBSourceCustomDiscover, MediaType: "movie", Sort: "vote_average.desc"},
+			wantPath:      "/3/discover/movie",
+			wantMediaType: "movie",
+			response:      `{"results":[{"id":107,"title":"Discovered Movie","poster_path":"/discover.jpg","release_date":"2024-01-01","original_language":"en","genre_ids":[28],"vote_average":8,"vote_count":500,"popularity":100}],"total_results":1}`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			test.opts.Limit = 10
+			test.opts.DiscoverQuery = "genres=28&date.gte=2024-01-01&date.lte=2024-12-31&rating.gte=7&rating.lte=10&votes.gte=100&language=en&year=2024"
+			client := newTMDBClient("test-key", "en", &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if req.URL.Path != test.wantPath {
+					t.Fatalf("path = %q, want %q", req.URL.Path, test.wantPath)
+				}
+				if test.checkQuery != nil {
+					test.checkQuery(t, req)
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(test.response)),
+				}, nil
+			})}, nil)
+
+			titles, total, err := client.fetchShelfTitles(context.Background(), test.opts)
+			if err != nil {
+				t.Fatalf("fetchShelfTitles: %v", err)
+			}
+			if total != 1 || len(titles) != 1 {
+				t.Fatalf("total=%d titles=%d, want 1/1", total, len(titles))
+			}
+			if titles[0].MediaType != test.wantMediaType {
+				t.Fatalf("mediaType=%q, want %q", titles[0].MediaType, test.wantMediaType)
+			}
+			if titles[0].TMDBID == 999 {
+				t.Fatal("director credits included a non-director crew item")
+			}
+		})
+	}
+}
+
+func TestSearchShelfSourcesSupportsNamesAndURLs(t *testing.T) {
+	t.Run("company name", func(t *testing.T) {
+		client := newTMDBClient("test-key", "en", &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.URL.Path != "/3/search/company" || req.URL.Query().Get("query") != "Marvel Studios" {
+				t.Fatalf("unexpected request %s", req.URL.String())
+			}
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"results":[{"id":420,"name":"Marvel Studios"}]}`))}, nil
+		})}, nil)
+		results, err := client.searchShelfSources(context.Background(), TMDBSourceProductionCompany, "Marvel Studios")
+		if err != nil || len(results) != 1 || results[0].ID != "420" {
+			t.Fatalf("results=%+v err=%v", results, err)
+		}
+	})
+
+	t.Run("network URL", func(t *testing.T) {
+		client := newTMDBClient("test-key", "en", &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.URL.Path != "/3/network/213" {
+				t.Fatalf("path=%q, want /3/network/213", req.URL.Path)
+			}
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"id":213,"name":"Netflix"}`))}, nil
+		})}, nil)
+		results, err := client.searchShelfSources(context.Background(), TMDBSourceNetwork, "https://www.themoviedb.org/network/213")
+		if err != nil || len(results) != 1 || results[0].Name != "Netflix" {
+			t.Fatalf("results=%+v err=%v", results, err)
+		}
+	})
+}
+
+func TestFetchShelfTitlesZeroLimitReturnsEveryPage(t *testing.T) {
+	calls := 0
+	client := newTMDBClient("test-key", "en", &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		page := req.URL.Query().Get("page")
+		start, end := 1, 20
+		if page == "2" {
+			start, end = 21, 25
+		}
+		rows := make([]string, 0, end-start+1)
+		for id := start; id <= end; id++ {
+			rows = append(rows, fmt.Sprintf(
+				`{"id":%d,"title":"Movie %d","poster_path":"/poster-%d.jpg","release_date":"2024-01-01","original_language":"en","genre_ids":[28],"vote_average":8,"vote_count":500}`,
+				id, id, id,
+			))
+		}
+		payload := `{"results":[` + strings.Join(rows, ",") + `],"total_results":25}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(payload)),
+		}, nil
+	})}, nil)
+
+	titles, total, err := client.fetchShelfTitles(context.Background(), TMDBListOptions{
+		SourceType: TMDBSourceCustomDiscover,
+		MediaType:  "movie",
+		Sort:       "popularity.desc",
+		Limit:      0,
+	})
+	if err != nil {
+		t.Fatalf("fetchShelfTitles: %v", err)
+	}
+	if total != 25 || len(titles) != 25 {
+		t.Fatalf("total=%d titles=%d, want 25/25", total, len(titles))
+	}
+	if calls != 2 {
+		t.Fatalf("TMDB page calls=%d, want 2", calls)
+	}
+}
+
+func TestDiscoverShelfPageUsesPageCache(t *testing.T) {
+	var calls atomic.Int32
+	client := newTMDBClient(
+		"test-key",
+		"en",
+		&http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls.Add(1)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body: io.NopCloser(strings.NewReader(
+					`{"results":[{"id":1,"title":"Cached Movie","release_date":"2024-01-01"}],"total_results":1}`,
+				)),
+			}, nil
+		})},
+		newFileCache(t.TempDir(), 24),
+	)
+
+	for range 2 {
+		items, total, err := client.discoverShelfPage(context.Background(), "movie", nil, 1, "popularity.desc")
+		if err != nil || total != 1 || len(items) != 1 {
+			t.Fatalf("items=%+v total=%d err=%v", items, total, err)
+		}
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("TMDB calls=%d, want 1 cached call", got)
+	}
+}
+
+func TestFetchShelfTitlesFetchesRemainingPagesConcurrently(t *testing.T) {
+	var calls atomic.Int32
+	var active atomic.Int32
+	var maxActive atomic.Int32
+	client := newTMDBClient("test-key", "en", &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		current := active.Add(1)
+		defer active.Add(-1)
+		for {
+			previous := maxActive.Load()
+			if current <= previous || maxActive.CompareAndSwap(previous, current) {
+				break
+			}
+		}
+		page, _ := strconv.Atoi(req.URL.Query().Get("page"))
+		if page > 1 {
+			time.Sleep(25 * time.Millisecond)
+		}
+		start := (page-1)*20 + 1
+		rows := make([]string, 0, 20)
+		for id := start; id < start+20; id++ {
+			rows = append(rows, fmt.Sprintf(
+				`{"id":%d,"title":"Movie %d","poster_path":"/poster-%d.jpg","release_date":"2024-01-01","popularity":%d}`,
+				id, id, id, 101-id,
+			))
+		}
+		payload := `{"results":[` + strings.Join(rows, ",") + `],"total_results":100}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(payload)),
+		}, nil
+	})}, nil)
+	client.minInterval = 0
+
+	titles, total, err := client.fetchShelfTitles(context.Background(), TMDBListOptions{
+		SourceType: TMDBSourceCustomDiscover,
+		MediaType:  "movie",
+		Sort:       "popularity.desc",
+		Limit:      100,
+	})
+	if err != nil {
+		t.Fatalf("fetchShelfTitles: %v", err)
+	}
+	if total != 100 || len(titles) != 100 {
+		t.Fatalf("total=%d titles=%d, want 100/100", total, len(titles))
+	}
+	if got := calls.Load(); got != 5 {
+		t.Fatalf("TMDB page calls=%d, want 5", got)
+	}
+	if got := maxActive.Load(); got < 2 {
+		t.Fatalf("max concurrent TMDB calls=%d, want at least 2", got)
+	}
+}
+
+func TestFetchShelfTitlesKeepsTitlesWithoutPosters(t *testing.T) {
+	var calls atomic.Int32
+	client := newTMDBClient("test-key", "en", &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		payload := `{"results":[
+			{"id":1,"title":"Backdrop Only","backdrop_path":"/backdrop.jpg"},
+			{"id":2,"title":"No Artwork"}
+		],"total_results":2}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(payload)),
+		}, nil
+	})}, nil)
+
+	titles, total, err := client.fetchShelfTitles(context.Background(), TMDBListOptions{
+		SourceType: TMDBSourceProductionCompany,
+		SourceID:   "34",
+		MediaType:  "movie",
+		Limit:      20,
+	})
+	if err != nil {
+		t.Fatalf("fetchShelfTitles: %v", err)
+	}
+	if total != 2 || len(titles) != 2 {
+		t.Fatalf("total=%d titles=%d, want 2/2", total, len(titles))
+	}
+	if titles[0].Poster == nil || titles[0].Poster.URL != "https://image.tmdb.org/t/p/w780/backdrop.jpg" {
+		t.Fatalf("backdrop fallback poster=%+v", titles[0].Poster)
+	}
+	if titles[1].Poster != nil {
+		t.Fatalf("title without artwork should use the client placeholder, got %+v", titles[1].Poster)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("TMDB page calls=%d, want 1", got)
+	}
+}
+
+func TestFilterStaticShelfTitlesFetchesDetailsConcurrentlyAndCachesThem(t *testing.T) {
+	var calls atomic.Int32
+	var active atomic.Int32
+	var maxActive atomic.Int32
+	client := newTMDBClient(
+		"test-key",
+		"en",
+		&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			calls.Add(1)
+			current := active.Add(1)
+			defer active.Add(-1)
+			for {
+				previous := maxActive.Load()
+				if current <= previous || maxActive.CompareAndSwap(previous, current) {
+					break
+				}
+			}
+			time.Sleep(25 * time.Millisecond)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body: io.NopCloser(strings.NewReader(
+					`{"production_companies":[{"id":420}],"keywords":{"keywords":[]}}`,
+				)),
+			}, nil
+		})},
+		newFileCache(t.TempDir(), 24),
+	)
+	client.minInterval = 0
+	items := make([]tmdbShelfTitle, 12)
+	for i := range items {
+		items[i] = tmdbShelfTitle{ID: int64(i + 1), Title: fmt.Sprintf("Movie %d", i+1), MediaType: "movie"}
+	}
+	filters := url.Values{"companies": {"420"}}
+
+	for range 2 {
+		filtered, err := client.filterStaticShelfTitles(context.Background(), items, filters)
+		if err != nil {
+			t.Fatalf("filterStaticShelfTitles: %v", err)
+		}
+		if len(filtered) != len(items) || filtered[0].ID != 1 || filtered[len(filtered)-1].ID != 12 {
+			t.Fatalf("filtered titles lost order: %+v", filtered)
+		}
+	}
+	if got := calls.Load(); got != int32(len(items)) {
+		t.Fatalf("TMDB detail calls=%d, want %d after cached second load", got, len(items))
+	}
+	if got := maxActive.Load(); got < 2 {
+		t.Fatalf("max concurrent TMDB detail calls=%d, want at least 2", got)
 	}
 }

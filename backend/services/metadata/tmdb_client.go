@@ -2,6 +2,7 @@ package metadata
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -26,6 +27,7 @@ import (
 	"novastream/models"
 
 	xdraw "golang.org/x/image/draw"
+	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -3498,6 +3500,1012 @@ func tmdbDiscoverSort(apiMediaType, sortBy, direction string) string {
 	default:
 		return "popularity.desc"
 	}
+}
+
+const (
+	TMDBSourcePublicList        = "public-list"
+	TMDBSourceProductionCompany = "production-company"
+	TMDBSourceNetwork           = "network"
+	TMDBSourceMovieCollection   = "movie-collection"
+	TMDBSourcePersonCredits     = "person-credits"
+	TMDBSourceDirectorCredits   = "director-credits"
+	TMDBSourceCustomDiscover    = "custom-discover"
+)
+
+var tmdbShelfSourceTypes = map[string]struct{}{
+	TMDBSourcePublicList:        {},
+	TMDBSourceProductionCompany: {},
+	TMDBSourceNetwork:           {},
+	TMDBSourceMovieCollection:   {},
+	TMDBSourcePersonCredits:     {},
+	TMDBSourceDirectorCredits:   {},
+	TMDBSourceCustomDiscover:    {},
+}
+
+// TMDBListOptions identifies a TMDB-backed shelf and controls its paging.
+type TMDBListOptions struct {
+	SourceType    string
+	SourceID      string
+	MediaType     string
+	Sort          string
+	DiscoverQuery string
+	Limit         int
+	Offset        int
+	ArtworkLimit  int
+}
+
+// TMDBSourceResult is a company, network, collection, person, or public list
+// that can be selected as the source of a TMDB shelf.
+type TMDBSourceResult struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	MediaType string `json:"mediaType,omitempty"`
+	ImageURL  string `json:"imageUrl,omitempty"`
+}
+
+type tmdbShelfTitle struct {
+	ID               int64   `json:"id"`
+	Name             string  `json:"name"`
+	Title            string  `json:"title"`
+	Overview         string  `json:"overview"`
+	OriginalLanguage string  `json:"original_language"`
+	PosterPath       string  `json:"poster_path"`
+	BackdropPath     string  `json:"backdrop_path"`
+	MediaType        string  `json:"media_type"`
+	ReleaseDate      string  `json:"release_date"`
+	FirstAirDate     string  `json:"first_air_date"`
+	Popularity       float64 `json:"popularity"`
+	VoteAverage      float64 `json:"vote_average"`
+	VoteCount        int     `json:"vote_count"`
+	GenreIDs         []int   `json:"genre_ids"`
+	Adult            bool    `json:"adult"`
+	Job              string  `json:"job"`
+	Department       string  `json:"department"`
+}
+
+func (item tmdbShelfTitle) toTitle(forcedMediaType string) (models.Title, bool) {
+	apiMediaType := strings.ToLower(strings.TrimSpace(item.MediaType))
+	if apiMediaType == "" {
+		apiMediaType = strings.ToLower(strings.TrimSpace(forcedMediaType))
+	}
+	if apiMediaType != "movie" && apiMediaType != "tv" {
+		if strings.TrimSpace(item.Title) != "" {
+			apiMediaType = "movie"
+		} else if strings.TrimSpace(item.Name) != "" {
+			apiMediaType = "tv"
+		}
+	}
+	if item.ID <= 0 || (apiMediaType != "movie" && apiMediaType != "tv") {
+		return models.Title{}, false
+	}
+	mediaType := "movie"
+	if apiMediaType == "tv" {
+		mediaType = "series"
+	}
+	title := models.Title{
+		ID:         fmt.Sprintf("tmdb:%s:%d", apiMediaType, item.ID),
+		Name:       pickTMDBName(apiMediaType, item.Name, item.Title),
+		Overview:   item.Overview,
+		Language:   item.OriginalLanguage,
+		MediaType:  mediaType,
+		TMDBID:     item.ID,
+		Popularity: scoreFallback(item.Popularity, item.VoteAverage),
+		VoteCount:  item.VoteCount,
+		Adult:      item.Adult,
+	}
+	title.Year = parseTMDBYear(item.ReleaseDate, item.FirstAirDate)
+	title.Poster = buildTMDBImage(item.PosterPath, tmdbPosterSize, "poster")
+	if title.Poster == nil {
+		title.Poster = buildTMDBImage(item.BackdropPath, tmdbPosterSize, "poster")
+	}
+	title.Backdrop = buildTMDBImage(item.BackdropPath, tmdbBackdropSize, "backdrop")
+	title.Genres = resolveGenreIDs(item.GenreIDs, apiMediaType)
+	if item.VoteAverage > 0 {
+		title.Ratings = []models.Rating{{Source: "tmdb", Value: item.VoteAverage, Max: 10}}
+	}
+	return title, strings.TrimSpace(title.Name) != ""
+}
+
+func normalizeTMDBShelfSourceType(sourceType string) string {
+	return strings.ToLower(strings.TrimSpace(sourceType))
+}
+
+func parseTMDBSourceID(raw string) int64 {
+	raw = strings.TrimSpace(raw)
+	if id, err := strconv.ParseInt(raw, 10, 64); err == nil && id > 0 {
+		return id
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return 0
+	}
+	parts := strings.FieldsFunc(parsed.Path, func(r rune) bool {
+		return r == '/' || r == '-'
+	})
+	for i := len(parts) - 1; i >= 0; i-- {
+		if id, err := strconv.ParseInt(parts[i], 10, 64); err == nil && id > 0 {
+			return id
+		}
+	}
+	return 0
+}
+
+func (c *tmdbClient) searchShelfSources(ctx context.Context, sourceType, query string) ([]TMDBSourceResult, error) {
+	if !c.isConfigured() {
+		return nil, errors.New("tmdb api key not configured")
+	}
+	sourceType = normalizeTMDBShelfSourceType(sourceType)
+	if _, ok := tmdbShelfSourceTypes[sourceType]; !ok {
+		return nil, fmt.Errorf("unsupported tmdb source type %q", sourceType)
+	}
+	if sourceType == TMDBSourceCustomDiscover {
+		return []TMDBSourceResult{}, nil
+	}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, errors.New("tmdb source search query required")
+	}
+
+	if sourceID := parseTMDBSourceID(query); sourceID > 0 {
+		detailPath := map[string]string{
+			TMDBSourcePublicList:        "list",
+			TMDBSourceProductionCompany: "company",
+			TMDBSourceNetwork:           "network",
+			TMDBSourceMovieCollection:   "collection",
+			TMDBSourcePersonCredits:     "person",
+			TMDBSourceDirectorCredits:   "person",
+		}[sourceType]
+		endpoint := fmt.Sprintf("%s/%s/%d?api_key=%s", tmdbBaseURL, detailPath, sourceID, url.QueryEscape(c.apiKey))
+		if lang := strings.TrimSpace(c.language); lang != "" {
+			endpoint += "&language=" + url.QueryEscape(normalizeLanguage(lang))
+		}
+		var payload struct {
+			ID          int64  `json:"id"`
+			Name        string `json:"name"`
+			Title       string `json:"title"`
+			PosterPath  string `json:"poster_path"`
+			ProfilePath string `json:"profile_path"`
+			LogoPath    string `json:"logo_path"`
+		}
+		if err := c.doGET(ctx, endpoint, &payload); err != nil {
+			return nil, fmt.Errorf("tmdb source lookup failed: %w", err)
+		}
+		name := strings.TrimSpace(payload.Name)
+		if name == "" {
+			name = strings.TrimSpace(payload.Title)
+		}
+		imagePath := payload.LogoPath
+		if imagePath == "" {
+			imagePath = payload.ProfilePath
+		}
+		if imagePath == "" {
+			imagePath = payload.PosterPath
+		}
+		result := TMDBSourceResult{ID: strconv.FormatInt(payload.ID, 10), Name: name}
+		if image := buildTMDBImage(imagePath, tmdbPosterSize, "poster"); image != nil {
+			result.ImageURL = image.URL
+		}
+		return []TMDBSourceResult{result}, nil
+	}
+
+	searchPath := map[string]string{
+		TMDBSourceProductionCompany: "company",
+		TMDBSourceMovieCollection:   "collection",
+		TMDBSourcePersonCredits:     "person",
+		TMDBSourceDirectorCredits:   "person",
+	}[sourceType]
+	if searchPath == "" {
+		return nil, errors.New("this tmdb source requires a numeric ID or TMDB URL")
+	}
+	params := url.Values{
+		"api_key":       {c.apiKey},
+		"query":         {query},
+		"include_adult": {"false"},
+		"page":          {"1"},
+	}
+	if lang := strings.TrimSpace(c.language); lang != "" {
+		params.Set("language", normalizeLanguage(lang))
+	}
+	var payload struct {
+		Results []struct {
+			ID          int64  `json:"id"`
+			Name        string `json:"name"`
+			Title       string `json:"title"`
+			PosterPath  string `json:"poster_path"`
+			ProfilePath string `json:"profile_path"`
+			LogoPath    string `json:"logo_path"`
+		} `json:"results"`
+	}
+	if err := c.doGET(ctx, tmdbBaseURL+"/search/"+searchPath+"?"+params.Encode(), &payload); err != nil {
+		return nil, fmt.Errorf("tmdb source search failed: %w", err)
+	}
+	results := make([]TMDBSourceResult, 0, len(payload.Results))
+	for _, item := range payload.Results {
+		name := strings.TrimSpace(item.Name)
+		if name == "" {
+			name = strings.TrimSpace(item.Title)
+		}
+		if item.ID <= 0 || name == "" {
+			continue
+		}
+		result := TMDBSourceResult{ID: strconv.FormatInt(item.ID, 10), Name: name}
+		imagePath := item.LogoPath
+		if imagePath == "" {
+			imagePath = item.ProfilePath
+		}
+		if imagePath == "" {
+			imagePath = item.PosterPath
+		}
+		if image := buildTMDBImage(imagePath, tmdbPosterSize, "poster"); image != nil {
+			result.ImageURL = image.URL
+		}
+		results = append(results, result)
+		if len(results) == 20 {
+			break
+		}
+	}
+	return results, nil
+}
+
+func normalizeTMDBShelfMediaTypes(sourceType, mediaType string) []string {
+	switch sourceType {
+	case TMDBSourceNetwork:
+		return []string{"tv"}
+	case TMDBSourceMovieCollection:
+		return []string{"movie"}
+	}
+	switch strings.ToLower(strings.TrimSpace(mediaType)) {
+	case "movie", "movies":
+		return []string{"movie"}
+	case "tv", "series", "show", "shows":
+		return []string{"tv"}
+	default:
+		return []string{"movie", "tv"}
+	}
+}
+
+func normalizeTMDBShelfSort(apiMediaType, requested string) string {
+	requested = strings.ToLower(strings.TrimSpace(requested))
+	switch requested {
+	case "popularity.asc", "popularity.desc", "vote_average.asc", "vote_average.desc":
+		return requested
+	case "release_date.asc":
+		if apiMediaType == "tv" {
+			return "first_air_date.asc"
+		}
+		return "primary_release_date.asc"
+	case "release_date.desc":
+		if apiMediaType == "tv" {
+			return "first_air_date.desc"
+		}
+		return "primary_release_date.desc"
+	case "title.asc":
+		if apiMediaType == "tv" {
+			return "name.asc"
+		}
+		return "title.asc"
+	case "title.desc":
+		if apiMediaType == "tv" {
+			return "name.desc"
+		}
+		return "title.desc"
+	default:
+		return "popularity.desc"
+	}
+}
+
+func parseTMDBDiscoverQuery(raw string) (url.Values, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return url.Values{}, nil
+	}
+	if strings.Contains(raw, "?") {
+		raw = raw[strings.Index(raw, "?")+1:]
+	}
+	raw = strings.TrimPrefix(raw, "?")
+	values, err := url.ParseQuery(raw)
+	if err != nil {
+		return nil, fmt.Errorf("invalid tmdb discover query: %w", err)
+	}
+	for _, controlled := range []string{"api_key", "language", "page", "sort_by"} {
+		values.Del(controlled)
+	}
+	return values, nil
+}
+
+func tmdbDiscoverFilters(apiMediaType string, filters url.Values) url.Values {
+	mapped := url.Values{}
+	for key, values := range filters {
+		targetKey := key
+		switch key {
+		case "genres":
+			targetKey = "with_genres"
+		case "date.gte":
+			if apiMediaType == "tv" {
+				targetKey = "first_air_date.gte"
+			} else {
+				targetKey = "primary_release_date.gte"
+			}
+		case "date.lte":
+			if apiMediaType == "tv" {
+				targetKey = "first_air_date.lte"
+			} else {
+				targetKey = "primary_release_date.lte"
+			}
+		case "rating.gte":
+			targetKey = "vote_average.gte"
+		case "rating.lte":
+			targetKey = "vote_average.lte"
+		case "votes.gte":
+			targetKey = "vote_count.gte"
+		case "language":
+			targetKey = "with_original_language"
+		case "country":
+			targetKey = "with_origin_country"
+		case "keywords":
+			targetKey = "with_keywords"
+		case "companies":
+			targetKey = "with_companies"
+		case "networks":
+			if apiMediaType != "tv" {
+				continue
+			}
+			targetKey = "with_networks"
+		case "year":
+			if apiMediaType == "tv" {
+				targetKey = "first_air_date_year"
+			} else {
+				targetKey = "primary_release_year"
+			}
+		}
+		for _, value := range values {
+			if strings.TrimSpace(value) != "" {
+				mapped.Add(targetKey, value)
+			}
+		}
+	}
+	return mapped
+}
+
+func addRequiredTMDBFilter(filters url.Values, genericKey, sourceID string) {
+	existing := strings.TrimSpace(filters.Get(genericKey))
+	if existing == "" {
+		filters.Set(genericKey, sourceID)
+		return
+	}
+	filters.Set(genericKey, sourceID+","+existing)
+}
+
+func tmdbFilterValue(filters url.Values, genericKey, apiKey string) string {
+	if value := strings.TrimSpace(filters.Get(genericKey)); value != "" {
+		return value
+	}
+	return strings.TrimSpace(filters.Get(apiKey))
+}
+
+func tmdbFilterFloat(filters url.Values, genericKey, apiKey string) (float64, bool) {
+	raw := tmdbFilterValue(filters, genericKey, apiKey)
+	if raw == "" {
+		return 0, false
+	}
+	value, err := strconv.ParseFloat(raw, 64)
+	return value, err == nil
+}
+
+func tmdbFilterInt(filters url.Values, genericKey, apiKey string) (int, bool) {
+	raw := tmdbFilterValue(filters, genericKey, apiKey)
+	if raw == "" {
+		return 0, false
+	}
+	value, err := strconv.Atoi(raw)
+	return value, err == nil
+}
+
+func tmdbIDsMatchFilter(available []int64, raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return true
+	}
+	have := make(map[int64]struct{}, len(available))
+	for _, id := range available {
+		have[id] = struct{}{}
+	}
+	if strings.Contains(raw, "|") {
+		for _, part := range strings.Split(raw, "|") {
+			id, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
+			if err == nil {
+				if _, ok := have[id]; ok {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	for _, part := range strings.Split(raw, ",") {
+		id, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
+		if err != nil {
+			return false
+		}
+		if _, ok := have[id]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func tmdbIDsContainAny(available []int64, raw string) bool {
+	have := make(map[int64]struct{}, len(available))
+	for _, id := range available {
+		have[id] = struct{}{}
+	}
+	for _, part := range strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == '|' }) {
+		id, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
+		if err == nil {
+			if _, ok := have[id]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+type tmdbShelfFilterDetails struct {
+	ProductionCompanies []struct {
+		ID int64 `json:"id"`
+	} `json:"production_companies"`
+	ProductionCountries []struct {
+		Code string `json:"iso_3166_1"`
+	} `json:"production_countries"`
+	Networks []struct {
+		ID int64 `json:"id"`
+	} `json:"networks"`
+	OriginCountry []string `json:"origin_country"`
+	Keywords      struct {
+		Keywords []struct {
+			ID int64 `json:"id"`
+		} `json:"keywords"`
+		Results []struct {
+			ID int64 `json:"id"`
+		} `json:"results"`
+	} `json:"keywords"`
+	Runtime int `json:"runtime"`
+}
+
+func tmdbShelfFiltersNeedDetails(filters url.Values) bool {
+	return tmdbFilterValue(filters, "companies", "with_companies") != "" ||
+		tmdbFilterValue(filters, "networks", "with_networks") != "" ||
+		tmdbFilterValue(filters, "keywords", "with_keywords") != "" ||
+		tmdbFilterValue(filters, "country", "with_origin_country") != "" ||
+		tmdbFilterValue(filters, "runtime.gte", "with_runtime.gte") != ""
+}
+
+func (c *tmdbClient) shelfFilterDetails(ctx context.Context, apiMediaType string, itemID int64) (tmdbShelfFilterDetails, error) {
+	cacheID := cacheKey(
+		"tmdb",
+		"shelf-filter-details",
+		"v1",
+		c.language,
+		apiMediaType,
+		strconv.FormatInt(itemID, 10),
+	)
+	var details tmdbShelfFilterDetails
+	if c.cache != nil {
+		if ok, _ := c.cache.get(cacheID, &details); ok {
+			return details, nil
+		}
+	}
+	params := url.Values{
+		"api_key":            {c.apiKey},
+		"append_to_response": {"keywords"},
+	}
+	if lang := strings.TrimSpace(c.language); lang != "" {
+		params.Set("language", normalizeLanguage(lang))
+	}
+	endpoint := fmt.Sprintf("%s/%s/%d?%s", tmdbBaseURL, apiMediaType, itemID, params.Encode())
+	if err := c.doGET(ctx, endpoint, &details); err != nil {
+		return tmdbShelfFilterDetails{}, fmt.Errorf("tmdb shelf filter details failed: %w", err)
+	}
+	if c.cache != nil {
+		_ = c.cache.set(cacheID, &details)
+	}
+	return details, nil
+}
+
+func (c *tmdbClient) staticShelfTitleMatchesFilters(ctx context.Context, item tmdbShelfTitle, filters url.Values) (bool, error) {
+	if len(filters) == 0 {
+		return true, nil
+	}
+	apiMediaType := strings.ToLower(strings.TrimSpace(item.MediaType))
+	if apiMediaType == "" {
+		if item.Title != "" {
+			apiMediaType = "movie"
+		} else {
+			apiMediaType = "tv"
+		}
+	}
+	genres := make([]int64, len(item.GenreIDs))
+	for i, id := range item.GenreIDs {
+		genres[i] = int64(id)
+	}
+	if !tmdbIDsMatchFilter(genres, tmdbFilterValue(filters, "genres", "with_genres")) {
+		return false, nil
+	}
+	if tmdbIDsContainAny(genres, tmdbFilterValue(filters, "without_genres", "without_genres")) {
+		return false, nil
+	}
+	date := item.ReleaseDate
+	if apiMediaType == "tv" {
+		date = item.FirstAirDate
+	}
+	dateFrom := tmdbFilterValue(filters, "date.gte", map[string]string{"movie": "primary_release_date.gte", "tv": "first_air_date.gte"}[apiMediaType])
+	dateTo := tmdbFilterValue(filters, "date.lte", map[string]string{"movie": "primary_release_date.lte", "tv": "first_air_date.lte"}[apiMediaType])
+	if dateFrom != "" && (date == "" || date < dateFrom) {
+		return false, nil
+	}
+	if dateTo != "" && (date == "" || date > dateTo) {
+		return false, nil
+	}
+	if minimum, ok := tmdbFilterFloat(filters, "rating.gte", "vote_average.gte"); ok && item.VoteAverage < minimum {
+		return false, nil
+	}
+	if maximum, ok := tmdbFilterFloat(filters, "rating.lte", "vote_average.lte"); ok && item.VoteAverage > maximum {
+		return false, nil
+	}
+	if minimum, ok := tmdbFilterInt(filters, "votes.gte", "vote_count.gte"); ok && item.VoteCount < minimum {
+		return false, nil
+	}
+	language := tmdbFilterValue(filters, "language", "with_original_language")
+	if language != "" && !strings.EqualFold(strings.TrimSpace(item.OriginalLanguage), language) {
+		return false, nil
+	}
+	if year, ok := tmdbFilterInt(filters, "year", map[string]string{"movie": "primary_release_year", "tv": "first_air_date_year"}[apiMediaType]); ok {
+		if parseTMDBYear(item.ReleaseDate, item.FirstAirDate) != year {
+			return false, nil
+		}
+	}
+
+	companyFilter := tmdbFilterValue(filters, "companies", "with_companies")
+	networkFilter := tmdbFilterValue(filters, "networks", "with_networks")
+	keywordFilter := tmdbFilterValue(filters, "keywords", "with_keywords")
+	countryFilter := tmdbFilterValue(filters, "country", "with_origin_country")
+	runtimeMinimum, filterRuntime := tmdbFilterInt(filters, "runtime.gte", "with_runtime.gte")
+	filterRuntime = filterRuntime && apiMediaType == "movie"
+	if companyFilter == "" && networkFilter == "" && keywordFilter == "" && countryFilter == "" && !filterRuntime {
+		return true, nil
+	}
+	details, err := c.shelfFilterDetails(ctx, apiMediaType, item.ID)
+	if err != nil {
+		return false, err
+	}
+	if filterRuntime && details.Runtime < runtimeMinimum {
+		return false, nil
+	}
+	companies := make([]int64, 0, len(details.ProductionCompanies))
+	for _, company := range details.ProductionCompanies {
+		companies = append(companies, company.ID)
+	}
+	if !tmdbIDsMatchFilter(companies, companyFilter) {
+		return false, nil
+	}
+	networks := make([]int64, 0, len(details.Networks))
+	for _, network := range details.Networks {
+		networks = append(networks, network.ID)
+	}
+	if !tmdbIDsMatchFilter(networks, networkFilter) {
+		return false, nil
+	}
+	keywords := make([]int64, 0, len(details.Keywords.Keywords)+len(details.Keywords.Results))
+	for _, keyword := range details.Keywords.Keywords {
+		keywords = append(keywords, keyword.ID)
+	}
+	for _, keyword := range details.Keywords.Results {
+		keywords = append(keywords, keyword.ID)
+	}
+	if !tmdbIDsMatchFilter(keywords, keywordFilter) {
+		return false, nil
+	}
+	if countryFilter != "" {
+		found := false
+		for _, country := range details.OriginCountry {
+			if strings.EqualFold(country, countryFilter) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			for _, country := range details.ProductionCountries {
+				if strings.EqualFold(country.Code, countryFilter) {
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func (c *tmdbClient) filterStaticShelfTitles(ctx context.Context, items []tmdbShelfTitle, filters url.Values) ([]tmdbShelfTitle, error) {
+	if len(filters) == 0 {
+		return items, nil
+	}
+	if !tmdbShelfFiltersNeedDetails(filters) {
+		filtered := make([]tmdbShelfTitle, 0, len(items))
+		for _, item := range items {
+			matches, err := c.staticShelfTitleMatchesFilters(ctx, item, filters)
+			if err != nil {
+				return nil, err
+			}
+			if matches {
+				filtered = append(filtered, item)
+			}
+		}
+		return filtered, nil
+	}
+
+	matches := make([]bool, len(items))
+	group, groupCtx := errgroup.WithContext(ctx)
+	group.SetLimit(6)
+	for i := range items {
+		i := i
+		group.Go(func() error {
+			matched, err := c.staticShelfTitleMatchesFilters(groupCtx, items[i], filters)
+			if err != nil {
+				return err
+			}
+			matches[i] = matched
+			return nil
+		})
+	}
+	if err := group.Wait(); err != nil {
+		return nil, err
+	}
+	filtered := make([]tmdbShelfTitle, 0, len(items))
+	for i, matched := range matches {
+		if matched {
+			filtered = append(filtered, items[i])
+		}
+	}
+	return filtered, nil
+}
+
+type tmdbShelfPage struct {
+	Items []tmdbShelfTitle `json:"items"`
+	Total int              `json:"total"`
+}
+
+func (c *tmdbClient) cachedDiscoverShelfPage(apiMediaType string, filters url.Values, page int, sortKey string) (tmdbShelfPage, bool) {
+	if c.cache == nil {
+		return tmdbShelfPage{}, false
+	}
+	cacheID := cacheKey(
+		"tmdb", "discover-shelf-page", "v1", c.language, apiMediaType,
+		strings.ToLower(strings.TrimSpace(sortKey)), filters.Encode(), strconv.Itoa(page),
+	)
+	var cached tmdbShelfPage
+	ok, _ := c.cache.get(cacheID, &cached)
+	return cached, ok
+}
+
+func (c *tmdbClient) cacheDiscoverShelfPage(apiMediaType string, filters url.Values, page int, sortKey string, result tmdbShelfPage) {
+	if c.cache == nil {
+		return
+	}
+	cacheID := cacheKey(
+		"tmdb", "discover-shelf-page", "v1", c.language, apiMediaType,
+		strings.ToLower(strings.TrimSpace(sortKey)), filters.Encode(), strconv.Itoa(page),
+	)
+	if err := c.cache.set(cacheID, result); err != nil {
+		log.Printf("[tmdb] failed to cache discover shelf page: %v", err)
+	}
+}
+
+func (c *tmdbClient) fetchDiscoverShelfTitles(
+	ctx context.Context,
+	apiMediaType string,
+	filters url.Values,
+	sortKey string,
+	needed int,
+	unlimited bool,
+) ([]tmdbShelfTitle, int, error) {
+	first, sourceTotal, err := c.discoverShelfPage(ctx, apiMediaType, filters, 1, sortKey)
+	if err != nil {
+		return nil, 0, err
+	}
+	totalPages := max(1, (sourceTotal+19)/20)
+	pageCount := totalPages
+	if !unlimited {
+		pageCount = minInt(pageCount, max(1, (needed+19)/20))
+	}
+	pages := make([][]tmdbShelfTitle, totalPages)
+	pages[0] = first
+
+	fetchThrough := func(lastPage int) error {
+		group, groupCtx := errgroup.WithContext(ctx)
+		group.SetLimit(6)
+		for page := pageCount + 1; page <= lastPage; page++ {
+			page := page
+			group.Go(func() error {
+				items, _, fetchErr := c.discoverShelfPage(groupCtx, apiMediaType, filters, page, sortKey)
+				if fetchErr != nil {
+					return fetchErr
+				}
+				pages[page-1] = items
+				return nil
+			})
+		}
+		if err := group.Wait(); err != nil {
+			return err
+		}
+		pageCount = lastPage
+		return nil
+	}
+
+	// Fetch the initial range in one bounded concurrent wave.
+	initialPageCount := pageCount
+	pageCount = 1
+	if initialPageCount > 1 {
+		if err := fetchThrough(initialPageCount); err != nil {
+			return nil, 0, err
+		}
+	}
+
+	items := make([]tmdbShelfTitle, 0, minInt(sourceTotal, pageCount*20))
+	for page := range pageCount {
+		items = append(items, pages[page]...)
+	}
+	return items, sourceTotal, nil
+}
+
+// discoverShelfPage caches individual TMDB pages so a later offset does not
+// refetch every preceding page. This also lets full Explore loads reuse pages
+// previously fetched by the home shelf.
+func (c *tmdbClient) discoverShelfPage(ctx context.Context, apiMediaType string, filters url.Values, page int, sortKey string) ([]tmdbShelfTitle, int, error) {
+	if cached, ok := c.cachedDiscoverShelfPage(apiMediaType, filters, page, sortKey); ok {
+		return cached.Items, cached.Total, nil
+	}
+	params := url.Values{
+		"api_key": {c.apiKey},
+		"page":    {strconv.Itoa(page)},
+		"sort_by": {normalizeTMDBShelfSort(apiMediaType, sortKey)},
+	}
+	if lang := strings.TrimSpace(c.language); lang != "" {
+		params.Set("language", normalizeLanguage(lang))
+	}
+	for key, values := range tmdbDiscoverFilters(apiMediaType, filters) {
+		for _, value := range values {
+			params.Add(key, value)
+		}
+	}
+	var payload struct {
+		Results      []tmdbShelfTitle `json:"results"`
+		TotalResults int              `json:"total_results"`
+	}
+	endpoint := fmt.Sprintf("%s/discover/%s?%s", tmdbBaseURL, apiMediaType, params.Encode())
+	if err := c.doGET(ctx, endpoint, &payload); err != nil {
+		return nil, 0, fmt.Errorf("tmdb discover shelf failed: %w", err)
+	}
+	for i := range payload.Results {
+		payload.Results[i].MediaType = apiMediaType
+	}
+	result := tmdbShelfPage{Items: payload.Results, Total: payload.TotalResults}
+	c.cacheDiscoverShelfPage(apiMediaType, filters, page, sortKey, result)
+	return result.Items, result.Total, nil
+}
+
+func (c *tmdbClient) staticShelfTitles(ctx context.Context, opts TMDBListOptions, sourceID int64) ([]tmdbShelfTitle, error) {
+	params := url.Values{"api_key": {c.apiKey}}
+	if lang := strings.TrimSpace(c.language); lang != "" {
+		params.Set("language", normalizeLanguage(lang))
+	}
+	var endpoint string
+	switch opts.SourceType {
+	case TMDBSourcePublicList:
+		endpoint = fmt.Sprintf("%s/list/%d?%s", tmdbBaseURL, sourceID, params.Encode())
+		var payload struct {
+			Items []tmdbShelfTitle `json:"items"`
+		}
+		if err := c.doGET(ctx, endpoint, &payload); err != nil {
+			return nil, fmt.Errorf("tmdb public list failed: %w", err)
+		}
+		return payload.Items, nil
+	case TMDBSourceMovieCollection:
+		endpoint = fmt.Sprintf("%s/collection/%d?%s", tmdbBaseURL, sourceID, params.Encode())
+		var payload struct {
+			Parts []tmdbShelfTitle `json:"parts"`
+		}
+		if err := c.doGET(ctx, endpoint, &payload); err != nil {
+			return nil, fmt.Errorf("tmdb movie collection failed: %w", err)
+		}
+		for i := range payload.Parts {
+			payload.Parts[i].MediaType = "movie"
+		}
+		return payload.Parts, nil
+	case TMDBSourcePersonCredits, TMDBSourceDirectorCredits:
+		endpoint = fmt.Sprintf("%s/person/%d/combined_credits?%s", tmdbBaseURL, sourceID, params.Encode())
+		var payload struct {
+			Cast []tmdbShelfTitle `json:"cast"`
+			Crew []tmdbShelfTitle `json:"crew"`
+		}
+		if err := c.doGET(ctx, endpoint, &payload); err != nil {
+			return nil, fmt.Errorf("tmdb person credits failed: %w", err)
+		}
+		if opts.SourceType == TMDBSourcePersonCredits {
+			return payload.Cast, nil
+		}
+		directed := make([]tmdbShelfTitle, 0, len(payload.Crew))
+		for _, item := range payload.Crew {
+			if strings.EqualFold(strings.TrimSpace(item.Job), "director") {
+				directed = append(directed, item)
+			}
+		}
+		return directed, nil
+	default:
+		return nil, fmt.Errorf("unsupported static tmdb source %q", opts.SourceType)
+	}
+}
+
+func tmdbShelfTitleMatchesMediaTypes(item tmdbShelfTitle, mediaTypes []string) bool {
+	itemType := strings.ToLower(strings.TrimSpace(item.MediaType))
+	if itemType == "" {
+		if strings.TrimSpace(item.Title) != "" {
+			itemType = "movie"
+		} else if strings.TrimSpace(item.Name) != "" {
+			itemType = "tv"
+		}
+	}
+	for _, mediaType := range mediaTypes {
+		if itemType == mediaType {
+			return true
+		}
+	}
+	return false
+}
+
+func sortTMDBShelfTitles(items []tmdbShelfTitle, sortKey string) {
+	sortKey = strings.ToLower(strings.TrimSpace(sortKey))
+	if sortKey == "" || sortKey == "original" {
+		return
+	}
+	descending := !strings.HasSuffix(sortKey, ".asc")
+	sort.SliceStable(items, func(i, j int) bool {
+		comparison := 0
+		switch {
+		case strings.HasPrefix(sortKey, "vote_average"):
+			comparison = cmp.Compare(items[i].VoteAverage, items[j].VoteAverage)
+		case strings.HasPrefix(sortKey, "release_date"):
+			left := items[i].ReleaseDate
+			if left == "" {
+				left = items[i].FirstAirDate
+			}
+			right := items[j].ReleaseDate
+			if right == "" {
+				right = items[j].FirstAirDate
+			}
+			comparison = strings.Compare(left, right)
+		case strings.HasPrefix(sortKey, "title"):
+			left := pickTMDBName(items[i].MediaType, items[i].Name, items[i].Title)
+			right := pickTMDBName(items[j].MediaType, items[j].Name, items[j].Title)
+			comparison = strings.Compare(strings.ToLower(left), strings.ToLower(right))
+		default:
+			comparison = cmp.Compare(items[i].Popularity, items[j].Popularity)
+		}
+		if descending {
+			return comparison > 0
+		}
+		return comparison < 0
+	})
+}
+
+func (c *tmdbClient) fetchShelfTitles(ctx context.Context, opts TMDBListOptions) ([]models.Title, int, error) {
+	if !c.isConfigured() {
+		return nil, 0, errors.New("tmdb api key not configured")
+	}
+	opts.SourceType = normalizeTMDBShelfSourceType(opts.SourceType)
+	if _, ok := tmdbShelfSourceTypes[opts.SourceType]; !ok {
+		return nil, 0, fmt.Errorf("unsupported tmdb source type %q", opts.SourceType)
+	}
+	sourceID := parseTMDBSourceID(opts.SourceID)
+	if opts.SourceType != TMDBSourceCustomDiscover && sourceID <= 0 {
+		return nil, 0, errors.New("tmdb source ID required")
+	}
+	if opts.Offset < 0 {
+		opts.Offset = 0
+	}
+	unlimited := opts.Limit <= 0
+	if unlimited {
+		opts.Limit = 0
+	} else if opts.Limit > 500 {
+		opts.Limit = 500
+	}
+	rawCapacity := 0
+	if !unlimited {
+		rawCapacity = opts.Offset + opts.Limit
+	}
+	mediaTypes := normalizeTMDBShelfMediaTypes(opts.SourceType, opts.MediaType)
+	rawItems := make([]tmdbShelfTitle, 0, rawCapacity)
+	total := 0
+
+	filters, err := parseTMDBDiscoverQuery(opts.DiscoverQuery)
+	if err != nil {
+		return nil, 0, err
+	}
+	switch opts.SourceType {
+	case TMDBSourceProductionCompany, TMDBSourceNetwork, TMDBSourceCustomDiscover:
+		if opts.SourceType == TMDBSourceProductionCompany {
+			addRequiredTMDBFilter(filters, "companies", strconv.FormatInt(sourceID, 10))
+		} else if opts.SourceType == TMDBSourceNetwork {
+			addRequiredTMDBFilter(filters, "networks", strconv.FormatInt(sourceID, 10))
+		}
+		needed := opts.Offset + opts.Limit
+		for _, mediaType := range mediaTypes {
+			typeItems, typeTotal, fetchErr := c.fetchDiscoverShelfTitles(
+				ctx,
+				mediaType,
+				filters,
+				opts.Sort,
+				needed,
+				unlimited,
+			)
+			if fetchErr != nil {
+				return nil, 0, fetchErr
+			}
+			rawItems = append(rawItems, typeItems...)
+			total += typeTotal
+		}
+	default:
+		items, fetchErr := c.staticShelfTitles(ctx, opts, sourceID)
+		if fetchErr != nil {
+			return nil, 0, fetchErr
+		}
+		mediaItems := make([]tmdbShelfTitle, 0, len(items))
+		for _, item := range items {
+			if tmdbShelfTitleMatchesMediaTypes(item, mediaTypes) {
+				mediaItems = append(mediaItems, item)
+			}
+		}
+		rawItems, fetchErr = c.filterStaticShelfTitles(ctx, mediaItems, filters)
+		if fetchErr != nil {
+			return nil, 0, fetchErr
+		}
+	}
+
+	if opts.SourceType != TMDBSourceProductionCompany &&
+		opts.SourceType != TMDBSourceNetwork &&
+		opts.SourceType != TMDBSourceCustomDiscover {
+		total = len(rawItems)
+	}
+	sortTMDBShelfTitles(rawItems, opts.Sort)
+	seen := make(map[string]struct{}, len(rawItems))
+	titleCapacity := len(rawItems)
+	if !unlimited {
+		titleCapacity = minInt(opts.Limit, titleCapacity)
+	}
+	titles := make([]models.Title, 0, titleCapacity)
+	for _, item := range rawItems {
+		forcedMediaType := ""
+		if len(mediaTypes) == 1 {
+			forcedMediaType = mediaTypes[0]
+		}
+		title, ok := item.toTitle(forcedMediaType)
+		if !ok {
+			continue
+		}
+		if _, exists := seen[title.ID]; exists {
+			continue
+		}
+		seen[title.ID] = struct{}{}
+		if len(seen) <= opts.Offset {
+			continue
+		}
+		titles = append(titles, title)
+		if !unlimited && len(titles) == opts.Limit {
+			break
+		}
+	}
+	return titles, total, nil
 }
 
 func tmdbOriginalLanguageFilter(lang string) string {
