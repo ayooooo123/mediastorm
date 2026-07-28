@@ -23,6 +23,7 @@ var (
 	ErrStorageDirRequired   = errors.New("storage directory not provided")
 	ErrUsernameRequired     = errors.New("username is required")
 	ErrPasswordRequired     = errors.New("password is required")
+	ErrDefaultPasswordOnly  = errors.New("master account no longer uses the default password")
 	ErrAccountNotFound      = errors.New("account not found")
 	ErrUsernameExists       = errors.New("username already exists")
 	ErrInvalidCredentials   = errors.New("invalid username or password")
@@ -370,6 +371,59 @@ func (s *Service) UpdatePassword(id, newPassword string) error {
 		return err
 	}
 	if account.IsMaster && s.bootstrapCredentialPath != "" {
+		_ = os.Remove(s.bootstrapCredentialPath)
+		s.bootstrapCredentialPath = ""
+		s.initialMasterPassword = ""
+	}
+	return nil
+}
+
+// ReplaceDefaultMasterPassword atomically replaces the legacy shared master
+// password during first-login setup. It deliberately succeeds only while the
+// master account still uses DefaultMasterPassword, preventing a stale setup
+// request from overwriting a password that another request already changed.
+func (s *Service) ReplaceDefaultMasterPassword(newPassword string) error {
+	newPassword = strings.TrimSpace(newPassword)
+	if newPassword == "" {
+		return ErrPasswordRequired
+	}
+	if newPassword == DefaultMasterPassword {
+		return ErrDefaultPasswordOnly
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var master models.Account
+	found := false
+	for _, account := range s.accounts {
+		if account.IsMaster {
+			master = account
+			found = true
+			break
+		}
+	}
+	if !found {
+		return ErrAccountNotFound
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(master.PasswordHash), []byte(DefaultMasterPassword)); err != nil {
+		return ErrDefaultPasswordOnly
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return fmt.Errorf("hash password: %w", err)
+	}
+
+	master.PasswordHash = string(hash)
+	master.UpdatedAt = time.Now().UTC()
+	previousMaster := s.accounts[master.ID]
+	s.accounts[master.ID] = master
+	if err := s.saveLocked(); err != nil {
+		s.accounts[master.ID] = previousMaster
+		return err
+	}
+	if s.bootstrapCredentialPath != "" {
 		_ = os.Remove(s.bootstrapCredentialPath)
 		s.bootstrapCredentialPath = ""
 		s.initialMasterPassword = ""

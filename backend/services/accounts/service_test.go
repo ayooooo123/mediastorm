@@ -486,6 +486,34 @@ func TestHasDefaultPassword_False(t *testing.T) {
 	}
 }
 
+func TestReplaceDefaultMasterPassword(t *testing.T) {
+	svc := setupTestService(t)
+
+	if err := svc.ReplaceDefaultMasterPassword("replacement-password"); err != nil {
+		t.Fatalf("ReplaceDefaultMasterPassword failed: %v", err)
+	}
+	if _, err := svc.Authenticate(models.MasterAccountUsername, "replacement-password"); err != nil {
+		t.Fatalf("replacement password did not authenticate: %v", err)
+	}
+	if svc.HasDefaultPassword() {
+		t.Fatal("default password remained active")
+	}
+	if err := svc.ReplaceDefaultMasterPassword("second-password"); err != ErrDefaultPasswordOnly {
+		t.Fatalf("second replacement error = %v, want %v", err, ErrDefaultPasswordOnly)
+	}
+}
+
+func TestReplaceDefaultMasterPasswordRejectsDefault(t *testing.T) {
+	svc := setupTestService(t)
+
+	if err := svc.ReplaceDefaultMasterPassword(DefaultMasterPassword); err != ErrDefaultPasswordOnly {
+		t.Fatalf("error = %v, want %v", err, ErrDefaultPasswordOnly)
+	}
+	if !svc.HasDefaultPassword() {
+		t.Fatal("default password unexpectedly changed")
+	}
+}
+
 func TestList_SortedByCreationTime(t *testing.T) {
 	svc := setupTestService(t)
 
