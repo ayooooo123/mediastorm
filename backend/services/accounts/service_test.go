@@ -42,18 +42,18 @@ func TestNewService_InitializesMasterAccount(t *testing.T) {
 	}
 }
 
-func TestNewService_GeneratesUniqueInitialMasterPassword(t *testing.T) {
+func TestNewService_UsesDefaultInitialMasterPassword(t *testing.T) {
 	t.Setenv(initialMasterPasswordEnv, "")
 	svc, err := NewService(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewService failed: %v", err)
 	}
 	password := svc.InitialMasterPassword()
-	if password == "" || password == DefaultMasterPassword {
-		t.Fatalf("initial password was not installation-specific")
+	if password != DefaultMasterPassword {
+		t.Fatalf("initial password = %q, want %q", password, DefaultMasterPassword)
 	}
-	if _, err := svc.Authenticate(models.MasterAccountUsername, password); err != nil {
-		t.Fatalf("generated initial password did not authenticate: %v", err)
+	if _, err := svc.Authenticate(models.MasterAccountUsername, DefaultMasterPassword); err != nil {
+		t.Fatalf("default initial password did not authenticate: %v", err)
 	}
 }
 
@@ -483,6 +483,34 @@ func TestHasDefaultPassword_False(t *testing.T) {
 
 	if svc.HasDefaultPassword() {
 		t.Error("expected HasDefaultPassword to be false after password change")
+	}
+}
+
+func TestReplaceDefaultMasterPassword(t *testing.T) {
+	svc := setupTestService(t)
+
+	if err := svc.ReplaceDefaultMasterPassword("replacement-password"); err != nil {
+		t.Fatalf("ReplaceDefaultMasterPassword failed: %v", err)
+	}
+	if _, err := svc.Authenticate(models.MasterAccountUsername, "replacement-password"); err != nil {
+		t.Fatalf("replacement password did not authenticate: %v", err)
+	}
+	if svc.HasDefaultPassword() {
+		t.Fatal("default password remained active")
+	}
+	if err := svc.ReplaceDefaultMasterPassword("second-password"); err != ErrDefaultPasswordOnly {
+		t.Fatalf("second replacement error = %v, want %v", err, ErrDefaultPasswordOnly)
+	}
+}
+
+func TestReplaceDefaultMasterPasswordRejectsDefault(t *testing.T) {
+	svc := setupTestService(t)
+
+	if err := svc.ReplaceDefaultMasterPassword(DefaultMasterPassword); err != ErrDefaultPasswordOnly {
+		t.Fatalf("error = %v, want %v", err, ErrDefaultPasswordOnly)
+	}
+	if !svc.HasDefaultPassword() {
+		t.Fatal("default password unexpectedly changed")
 	}
 }
 

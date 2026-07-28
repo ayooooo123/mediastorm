@@ -134,7 +134,7 @@ func TestLogin_Success(t *testing.T) {
 	}
 }
 
-func TestLogin_DefaultMasterPasswordRejectedRemotely(t *testing.T) {
+func TestLogin_DefaultMasterPasswordRequiresReplacement(t *testing.T) {
 	t.Setenv("STRMR_INITIAL_ADMIN_PASSWORD", accounts.DefaultMasterPassword)
 	tmpDir := t.TempDir()
 	accountsSvc, err := accounts.NewService(tmpDir)
@@ -154,8 +154,50 @@ func TestLogin_DefaultMasterPasswordRejectedRemotely(t *testing.T) {
 
 	handler.Login(rec, req)
 
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusUnauthorized, rec.Body.String())
+	if rec.Code != http.StatusPreconditionRequired {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusPreconditionRequired, rec.Body.String())
+	}
+	var response map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response["code"] != "password_change_required" {
+		t.Fatalf("code = %q, want password_change_required", response["code"])
+	}
+}
+
+func TestLogin_DefaultMasterPasswordCanBeReplacedThroughDockerBridge(t *testing.T) {
+	t.Setenv("STRMR_INITIAL_ADMIN_PASSWORD", accounts.DefaultMasterPassword)
+	tmpDir := t.TempDir()
+	accountsSvc, err := accounts.NewService(tmpDir)
+	if err != nil {
+		t.Fatalf("accounts service: %v", err)
+	}
+	sessionsSvc, err := sessions.NewService(tmpDir, sessions.DefaultSessionDuration)
+	if err != nil {
+		t.Fatalf("sessions service: %v", err)
+	}
+	handler := handlers.NewAuthHandler(accountsSvc, sessionsSvc)
+	body, _ := json.Marshal(handlers.LoginRequest{
+		Username:    "admin",
+		Password:    accounts.DefaultMasterPassword,
+		NewPassword: "docker-password",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(body))
+	req.RemoteAddr = "172.18.0.1:4321"
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.Login(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if _, err := accountsSvc.Authenticate("admin", "docker-password"); err != nil {
+		t.Fatalf("replacement password did not authenticate: %v", err)
+	}
+	if accountsSvc.HasDefaultPassword() {
+		t.Fatal("default password remained active after first login")
 	}
 }
 

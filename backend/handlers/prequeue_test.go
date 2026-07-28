@@ -19,6 +19,49 @@ import (
 	"novastream/services/playback"
 )
 
+func TestNormalizePrequeueSeriesTitle(t *testing.T) {
+	tests := map[string]string{
+		"Legion • S02E01 – Chapter 9":          "Legion",
+		"One Piece • S23E1162 – Episode Title": "One Piece",
+		"Formula 1": "Formula 1",
+	}
+
+	for input, want := range tests {
+		if got := normalizePrequeueSeriesTitle(input); got != want {
+			t.Errorf("normalizePrequeueSeriesTitle(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestHasReusablePreparationRequiresCompleteDolbyVisionConfiguration(t *testing.T) {
+	legacy := &playback.PrequeueEntry{
+		HasDolbyVision:     true,
+		DolbyVisionProfile: "dvhe.08.06",
+		AudioTracks:        []playback.AudioTrackInfo{{Index: 1}},
+	}
+	if hasReusablePreparation(legacy) {
+		t.Fatal("legacy Dolby Vision entry without decoder configuration should require a fresh probe")
+	}
+
+	legacy.DolbyVisionConfiguration = &models.DolbyVisionConfiguration{
+		StreamIndex:             0,
+		VersionMajor:            1,
+		Profile:                 8,
+		Level:                   6,
+		RPUPresentFlag:          1,
+		BLPresentFlag:           1,
+		BLSignalCompatibilityID: 1,
+	}
+	if hasReusablePreparation(legacy) {
+		t.Fatal("Dolby Vision entry without a pre-probed pixel format should require a fresh probe")
+	}
+
+	legacy.DolbyVisionConfiguration.PixelFormat = "yuv420p10le"
+	if !hasReusablePreparation(legacy) {
+		t.Fatal("Dolby Vision entry with decoder configuration and pixel format should remain reusable")
+	}
+}
+
 type prequeueRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f prequeueRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {

@@ -158,6 +158,23 @@ func ValidateOutboundURL(ctx context.Context, rawURL string, allowRestricted Res
 // after applying the outbound-address policy. Redirects are revalidated and
 // sensitive headers retain the standard library's cross-host stripping rules.
 func NewSafeHTTPClient(timeout time.Duration, maxRedirects int, allowRestricted RestrictedHostPolicy) *http.Client {
+	return NewSafeHTTPClientWithPolicyProvider(timeout, maxRedirects, func() RestrictedHostPolicy {
+		return allowRestricted
+	})
+}
+
+// NewSafeHTTPClientWithPolicyProvider is equivalent to NewSafeHTTPClient, but
+// resolves the restricted-host policy for every new connection and redirect.
+// This allows long-lived clients to reuse safe public connections while still
+// observing runtime configuration changes for explicitly allowed private
+// origins.
+func NewSafeHTTPClientWithPolicyProvider(timeout time.Duration, maxRedirects int, policyProvider func() RestrictedHostPolicy) *http.Client {
+	currentPolicy := func() RestrictedHostPolicy {
+		if policyProvider == nil {
+			return nil
+		}
+		return policyProvider()
+	}
 	baseTransport, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
 		// Supports deterministic tests that replace the default round tripper.
@@ -169,7 +186,7 @@ func NewSafeHTTPClient(timeout time.Duration, maxRedirects int, allowRestricted 
 				if len(via) >= maxRedirects {
 					return fmt.Errorf("too many redirects")
 				}
-				return ValidateOutboundURL(req.Context(), req.URL.String(), allowRestricted)
+				return ValidateOutboundURL(req.Context(), req.URL.String(), currentPolicy())
 			},
 		}
 	}
@@ -182,7 +199,7 @@ func NewSafeHTTPClient(timeout time.Duration, maxRedirects int, allowRestricted 
 		if err != nil {
 			return nil, fmt.Errorf("invalid outbound address: %w", err)
 		}
-		ips, err := resolveAllowedIPs(ctx, host, port, allowRestricted)
+		ips, err := resolveAllowedIPs(ctx, host, port, currentPolicy())
 		if err != nil {
 			return nil, err
 		}
@@ -204,7 +221,7 @@ func NewSafeHTTPClient(timeout time.Duration, maxRedirects int, allowRestricted 
 			if len(via) >= maxRedirects {
 				return fmt.Errorf("too many redirects")
 			}
-			return ValidateOutboundURL(req.Context(), req.URL.String(), allowRestricted)
+			return ValidateOutboundURL(req.Context(), req.URL.String(), currentPolicy())
 		},
 	}
 }

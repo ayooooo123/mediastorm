@@ -22,6 +22,7 @@ type PlaybackService struct {
 	healthService *HealthService
 	multiProvider *MultiProviderService
 	circuit       *providerResolutionCircuit
+	preflightData *torrentMetainfoCache
 }
 
 // NewPlaybackService creates a new debrid playback service.
@@ -41,6 +42,7 @@ func NewPlaybackService(cfg *config.Manager, healthService *HealthService) *Play
 		healthService: healthService,
 		multiProvider: NewMultiProviderService(cfg, circuit),
 		circuit:       circuit,
+		preflightData: newTorrentMetainfoCache(),
 	}
 }
 
@@ -194,11 +196,15 @@ func (s *PlaybackService) resolveWithProvider(ctx context.Context, client Provid
 		}
 		log.Printf("[debrid-playback] TIMING: AddMagnet took %v", time.Since(addStart))
 	} else if torrentURL != "" {
-		// Download and upload torrent file
-		log.Printf("[debrid-playback] downloading torrent file from %s", safeURLForLog(torrentURL))
-		torrentData, filename, downloadErr := s.downloadTorrentFile(ctx, torrentURL)
+		// Reuse metainfo fetched during cache preflight when possible. Besides
+		// avoiding a second tracker request, this preserves the exact private
+		// tracker metadata that produced the checked info hash.
+		torrentData, filename, reused, downloadErr := s.torrentFileForResolution(ctx, infoHash, torrentURL)
 		if downloadErr != nil {
 			return nil, fmt.Errorf("download torrent file: %w", downloadErr)
+		}
+		if reused {
+			log.Printf("[debrid-playback] reusing preflight torrent file hash=%s (%d bytes)", infoHash, len(torrentData))
 		}
 		log.Printf("[debrid-playback] uploading torrent file (%d bytes) to %s", len(torrentData), providerName)
 		addResp, err = client.AddTorrentFile(ctx, torrentData, filename)

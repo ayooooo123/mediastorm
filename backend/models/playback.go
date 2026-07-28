@@ -1,5 +1,21 @@
 package models
 
+// DolbyVisionConfiguration is FFmpeg's decoder configuration record from a
+// pre-playback probe. Native players can inject it when they intentionally skip
+// packet analysis during startup.
+type DolbyVisionConfiguration struct {
+	StreamIndex             int    `json:"streamIndex"`
+	PixelFormat             string `json:"pixelFormat"`
+	VersionMajor            int    `json:"versionMajor"`
+	VersionMinor            int    `json:"versionMinor"`
+	Profile                 int    `json:"profile"`
+	Level                   int    `json:"level"`
+	RPUPresentFlag          int    `json:"rpuPresentFlag"`
+	ELPresentFlag           int    `json:"elPresentFlag"`
+	BLPresentFlag           int    `json:"blPresentFlag"`
+	BLSignalCompatibilityID int    `json:"blSignalCompatibilityId"`
+}
+
 // SubtitleSessionInfo represents a pre-extracted subtitle track session
 type SubtitleSessionInfo struct {
 	SessionID    string  `json:"sessionId"`
