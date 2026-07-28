@@ -43,32 +43,6 @@ func TestNormalizedReleaseGroupKeyMatchesIndexerVariants(t *testing.T) {
 	}
 }
 
-func TestReorderDebridCandidatesByCachePreservesNonDebridPositions(t *testing.T) {
-	candidates := []models.NZBResult{
-		{Title: "unknown debrid", ServiceType: models.ServiceTypeDebrid},
-		{Title: "usenet", ServiceType: models.ServiceTypeUsenet},
-		{Title: "cached debrid", ServiceType: models.ServiceTypeDebrid},
-		{Title: "uncached debrid", ServiceType: models.ServiceTypeDebrid},
-	}
-	health := []*DebridHealthCheck{
-		{Status: "skipped"},
-		nil,
-		{Status: "cached", Cached: true},
-		{Status: "not_cached"},
-	}
-
-	got, cached, uncached := reorderDebridCandidatesByCache(candidates, health)
-	if cached != 1 || uncached != 1 {
-		t.Fatalf("counts = cached:%d uncached:%d, want 1 and 1", cached, uncached)
-	}
-	wantTitles := []string{"cached debrid", "usenet", "unknown debrid", "uncached debrid"}
-	for i, want := range wantTitles {
-		if got[i].Title != want {
-			t.Fatalf("result[%d] = %q, want %q", i, got[i].Title, want)
-		}
-	}
-}
-
 type torrentPreflightProvider struct {
 	*mockProvider
 	cached    map[string]bool
@@ -84,7 +58,7 @@ func (p *torrentPreflightProvider) CheckInstantAvailabilityBulk(_ context.Contex
 	return out, nil
 }
 
-func TestPrioritizeCachedCandidatesEnrichesAndGroupsTorrentFiles(t *testing.T) {
+func TestPrepareTorrentCandidatesEnrichesAndGroupsWithoutReordering(t *testing.T) {
 	info := []byte("d6:lengthi123e4:name9:movie.mkve")
 	metainfo := append([]byte("d8:announce13:https://test/4:info"), info...)
 	metainfo = append(metainfo, 'e')
@@ -145,14 +119,16 @@ func TestPrioritizeCachedCandidatesEnrichesAndGroupsTorrentFiles(t *testing.T) {
 		},
 	}
 
-	got := service.PrioritizeCachedCandidates(context.Background(), candidates)
-	if got[0].Title != "cached Zilean" {
-		t.Fatalf("first result = %q, want cached Zilean", got[0].Title)
+	got := service.PrepareTorrentCandidates(context.Background(), candidates)
+	for i := range candidates {
+		if got[i].Title != candidates[i].Title {
+			t.Fatalf("result[%d] = %q, want original order %q", i, got[i].Title, candidates[i].Title)
+		}
 	}
 	if got[2].Title != "usenet" {
 		t.Fatalf("non-debrid slot moved: result[2] = %q", got[2].Title)
 	}
-	if got[1].Attributes["infoHash"] != torrentHash || got[3].Attributes["infoHash"] != torrentHash {
+	if got[0].Attributes["infoHash"] != torrentHash || got[1].Attributes["infoHash"] != torrentHash {
 		t.Fatalf("grouped torrent candidates were not enriched with hash %q", torrentHash)
 	}
 	if calls := provider.bulkCalls.Load(); calls != 2 {

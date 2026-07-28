@@ -97,14 +97,13 @@ func (c *torrentMetainfoCache) get(infoHash string) ([]byte, string, bool) {
 	return append([]byte(nil), entry.data...), entry.filename, true
 }
 
-// PrioritizeCachedCandidates safely promotes confirmed-cached debrid candidates
-// before serial playback resolution. Torrent-file-only results are grouped by
-// release name, downloaded without adding them to a provider, and enriched with
-// the v1 info hash from their metainfo so they can join the provider bulk check.
+// PrepareTorrentCandidates enriches torrent-file-only debrid results before
+// serial playback resolution. Results are grouped by release name, downloaded
+// without adding them to a provider, and enriched with the v1 info hash from
+// their metainfo so they can join the provider bulk check.
 //
-// Non-debrid candidates retain their original positions, preserving the user's
-// configured service priority.
-func (s *PlaybackService) PrioritizeCachedCandidates(ctx context.Context, candidates []models.NZBResult) []models.NZBResult {
+// Candidate order is never changed.
+func (s *PlaybackService) PrepareTorrentCandidates(ctx context.Context, candidates []models.NZBResult) []models.NZBResult {
 	if s == nil || s.healthService == nil || len(candidates) < 2 || !s.supportsTorrentPreflight() {
 		return candidates
 	}
@@ -128,19 +127,16 @@ func (s *PlaybackService) PrioritizeCachedCandidates(ctx context.Context, candid
 	}
 
 	enrichedGroups := s.enrichTorrentFileGroups(preflightCtx, enriched, enrichmentLimit, defaultTorrentPreflightGroupLimit)
-	health := initialHealth
 	if enrichedGroups > 0 {
-		health, err = s.CheckQuickCacheOnlyBulk(preflightCtx, enriched)
+		_, err = s.CheckQuickCacheOnlyBulk(preflightCtx, enriched)
 		if err != nil {
-			log.Printf("[debrid-preflight] enriched bulk cache check failed; using initial cache results: %v", err)
-			health = initialHealth
+			log.Printf("[debrid-preflight] enriched bulk cache check failed: %v", err)
 		}
 	}
 
-	ordered, cachedCount, uncachedCount := reorderDebridCandidatesByCache(enriched, health)
-	log.Printf("[debrid-preflight] prioritized candidates: enrichedGroups=%d cached=%d uncached=%d total=%d",
-		enrichedGroups, cachedCount, uncachedCount, len(candidates))
-	return ordered
+	log.Printf("[debrid-preflight] prepared candidates without reordering: enrichedGroups=%d total=%d",
+		enrichedGroups, len(candidates))
+	return enriched
 }
 
 func (s *PlaybackService) supportsTorrentPreflight() bool {
@@ -379,58 +375,6 @@ func (s *PlaybackService) torrentFileForResolution(ctx context.Context, infoHash
 	log.Printf("[debrid-playback] downloading torrent file from %s", safeURLForLog(torrentURL))
 	data, filename, err := s.downloadTorrentFile(ctx, torrentURL)
 	return data, filename, false, err
-}
-
-func reorderDebridCandidatesByCache(candidates []models.NZBResult, health []*DebridHealthCheck) ([]models.NZBResult, int, int) {
-	type rankedCandidate struct {
-		result models.NZBResult
-		state  int
-	}
-	const (
-		cacheStateCached = iota
-		cacheStateUnknown
-		cacheStateUncached
-	)
-
-	debridPositions := make([]int, 0)
-	debrid := make([]rankedCandidate, 0)
-	cachedCount := 0
-	uncachedCount := 0
-	for i, candidate := range candidates {
-		if candidate.ServiceType != models.ServiceTypeDebrid {
-			continue
-		}
-		state := cacheStateUnknown
-		if i < len(health) && health[i] != nil {
-			switch {
-			case health[i].Cached:
-				state = cacheStateCached
-				cachedCount++
-			case health[i].Status == "not_cached":
-				state = cacheStateUncached
-				uncachedCount++
-			}
-		}
-		debridPositions = append(debridPositions, i)
-		debrid = append(debrid, rankedCandidate{result: candidate, state: state})
-	}
-	if cachedCount == 0 {
-		return candidates, 0, uncachedCount
-	}
-
-	orderedDebrid := make([]models.NZBResult, 0, len(debrid))
-	for _, targetState := range []int{cacheStateCached, cacheStateUnknown, cacheStateUncached} {
-		for _, candidate := range debrid {
-			if candidate.state == targetState {
-				orderedDebrid = append(orderedDebrid, candidate.result)
-			}
-		}
-	}
-	out := append([]models.NZBResult(nil), candidates...)
-	for i, position := range debridPositions {
-		out[position] = orderedDebrid[i]
-	}
-	return out, cachedCount, uncachedCount
 }
 
 func normalizedReleaseGroupKey(title string) string {
