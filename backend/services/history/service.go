@@ -2,6 +2,7 @@ package history
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -99,14 +100,16 @@ type cachedContinueWatching struct {
 
 // Service persists watch history for all content (movies, series, episodes).
 type Service struct {
-	mu                   sync.RWMutex
-	store                *datastore.DataStore
-	path                 string
-	watchHistPath        string
-	playbackProgressPath string
-	states               map[string]map[string]models.SeriesWatchState // Deprecated: kept for migration only
-	watchHistory         map[string]map[string]models.WatchHistoryItem // Manual watch tracking (all media)
-	playbackProgress     map[string]map[string]models.PlaybackProgress // userID -> mediaKey -> progress
+	mu                        sync.RWMutex
+	store                     *datastore.DataStore
+	path                      string
+	watchHistPath             string
+	playbackProgressPath      string
+	states                    map[string]map[string]models.SeriesWatchState // Deprecated: kept for migration only
+	watchHistory              map[string]map[string]models.WatchHistoryItem // Manual watch tracking (all media)
+	playbackProgress          map[string]map[string]models.PlaybackProgress // userID -> mediaKey -> progress
+	persistedWatchHistory     map[historyPersistenceKey][sha256.Size]byte
+	persistedPlaybackProgress map[historyPersistenceKey][sha256.Size]byte
 	// activePlaybackProgress mirrors the most recent progress heartbeat for each
 	// item but is NEVER cleared by watched-marking. It exists so the active-stream
 	// dashboard can keep tracking position past the 90% auto-watched threshold
@@ -132,6 +135,23 @@ type continueWatchingRevisionStats struct {
 	playbackProgressCount int
 	hiddenCount           int
 	playbackUpdated       time.Time
+}
+
+type historyPersistenceKey struct {
+	userID string
+	itemID string
+}
+
+type watchHistoryPersistenceUpsert struct {
+	key         historyPersistenceKey
+	item        models.WatchHistoryItem
+	fingerprint [sha256.Size]byte
+}
+
+type playbackProgressPersistenceUpsert struct {
+	key         historyPersistenceKey
+	item        models.PlaybackProgress
+	fingerprint [sha256.Size]byte
 }
 
 // useDB returns true when the service is backed by PostgreSQL.
@@ -3925,9 +3945,15 @@ func (s *Service) loadWatchHistory() error {
 			return fmt.Errorf("load watch history from db: %w", err)
 		}
 		s.watchHistory = make(map[string]map[string]models.WatchHistoryItem, len(allItems))
+		persisted := make(map[historyPersistenceKey][sha256.Size]byte)
 		for userID, items := range allItems {
 			perUser := make(map[string]models.WatchHistoryItem, len(items))
 			for _, item := range items {
+				fingerprint, err := watchHistoryPersistenceFingerprint(item)
+				if err != nil {
+					return fmt.Errorf("snapshot loaded watch history item %s: %w", item.ID, err)
+				}
+				persisted[historyPersistenceKey{userID: userID, itemID: item.ID}] = fingerprint
 				item = normalizeWatchHistoryItem(item)
 				key := item.ID
 				perUser[key] = item
@@ -3935,6 +3961,7 @@ func (s *Service) loadWatchHistory() error {
 			reconcileEquivalentEpisodeWatchHistoryLocked(perUser)
 			s.watchHistory[userID] = perUser
 		}
+		s.persistedWatchHistory = persisted
 		return nil
 	}
 
@@ -5145,15 +5172,22 @@ func (s *Service) loadPlaybackProgress() error {
 			return fmt.Errorf("load playback progress from db: %w", err)
 		}
 		s.playbackProgress = make(map[string]map[string]models.PlaybackProgress, len(allItems))
+		persisted := make(map[historyPersistenceKey][sha256.Size]byte)
 		for userID, items := range allItems {
 			perUser := make(map[string]models.PlaybackProgress, len(items))
 			for _, item := range items {
+				fingerprint, err := playbackProgressPersistenceFingerprint(item)
+				if err != nil {
+					return fmt.Errorf("snapshot loaded playback progress item %s: %w", item.ID, err)
+				}
+				persisted[historyPersistenceKey{userID: userID, itemID: item.ID}] = fingerprint
 				item = normalizePlaybackProgressItem(item)
 				key := item.ID
 				perUser[key] = item
 			}
 			s.playbackProgress[userID] = perUser
 		}
+		s.persistedPlaybackProgress = persisted
 		return nil
 	}
 
@@ -5265,88 +5299,201 @@ func (s *Service) savePlaybackProgressLocked() error {
 	return nil
 }
 
-// syncWatchedToDB writes the full in-memory watch history state to PostgreSQL.
-func (s *Service) syncWatchedToDB() error {
-	ctx := context.Background()
-	return s.store.WithTx(ctx, func(tx *datastore.Tx) error {
-		// Get existing DB state to detect deletes
-		existing, err := tx.WatchHistory().ListAll(ctx)
-		if err != nil {
-			return err
-		}
-		// Build set of existing DB keys per user
-		dbKeys := make(map[string]map[string]bool)
-		for userID, items := range existing {
-			keys := make(map[string]bool, len(items))
-			for _, item := range items {
-				keys[item.ID] = true
-			}
-			dbKeys[userID] = keys
-		}
-		// Upsert all in-memory items
-		for userID, perUser := range s.watchHistory {
-			for _, item := range perUser {
-				itemCopy := item
-				if err := tx.WatchHistory().Upsert(ctx, userID, &itemCopy); err != nil {
-					return err
-				}
-				if dbKeys[userID] != nil {
-					delete(dbKeys[userID], item.ID)
-				}
-			}
-		}
-		// Delete items removed from memory
-		for userID, keys := range dbKeys {
-			for key := range keys {
-				if err := tx.WatchHistory().Delete(ctx, userID, key); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	})
+func watchHistoryPersistenceFingerprint(item models.WatchHistoryItem) ([sha256.Size]byte, error) {
+	data, err := json.Marshal(item)
+	if err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	return sha256.Sum256(data), nil
 }
 
-// syncProgressToDB writes the full in-memory playback progress state to PostgreSQL.
-func (s *Service) syncProgressToDB() error {
+func playbackProgressPersistenceFingerprint(item models.PlaybackProgress) ([sha256.Size]byte, error) {
+	// Runtime playback-control fields are deliberately excluded because the
+	// PostgreSQL repository does not persist them.
+	item.IsBuffering = false
+	item.AllowedToContinue = nil
+	item.MigrationRequested = false
+	item.MigrationReason = ""
+	item.MigrationPreparationRequested = false
+	item.MigrationPreparationReason = ""
+
+	data, err := json.Marshal(item)
+	if err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	return sha256.Sum256(data), nil
+}
+
+func watchHistoryPersistenceFingerprints(items map[string]map[string]models.WatchHistoryItem) (map[historyPersistenceKey][sha256.Size]byte, error) {
+	out := make(map[historyPersistenceKey][sha256.Size]byte)
+	for userID, perUser := range items {
+		for itemID, item := range perUser {
+			fingerprint, err := watchHistoryPersistenceFingerprint(item)
+			if err != nil {
+				return nil, err
+			}
+			out[historyPersistenceKey{userID: userID, itemID: itemID}] = fingerprint
+		}
+	}
+	return out, nil
+}
+
+func playbackProgressPersistenceFingerprints(items map[string]map[string]models.PlaybackProgress) (map[historyPersistenceKey][sha256.Size]byte, error) {
+	out := make(map[historyPersistenceKey][sha256.Size]byte)
+	for userID, perUser := range items {
+		for itemID, item := range perUser {
+			fingerprint, err := playbackProgressPersistenceFingerprint(item)
+			if err != nil {
+				return nil, err
+			}
+			out[historyPersistenceKey{userID: userID, itemID: itemID}] = fingerprint
+		}
+	}
+	return out, nil
+}
+
+func planWatchHistoryPersistence(
+	current map[string]map[string]models.WatchHistoryItem,
+	persisted map[historyPersistenceKey][sha256.Size]byte,
+) ([]watchHistoryPersistenceUpsert, []historyPersistenceKey, error) {
+	seen := make(map[historyPersistenceKey]struct{})
+	var upserts []watchHistoryPersistenceUpsert
+	for userID, perUser := range current {
+		for itemID, item := range perUser {
+			key := historyPersistenceKey{userID: userID, itemID: itemID}
+			seen[key] = struct{}{}
+			fingerprint, err := watchHistoryPersistenceFingerprint(item)
+			if err != nil {
+				return nil, nil, err
+			}
+			if previous, ok := persisted[key]; ok && previous == fingerprint {
+				continue
+			}
+			upserts = append(upserts, watchHistoryPersistenceUpsert{
+				key: key, item: item, fingerprint: fingerprint,
+			})
+		}
+	}
+
+	var deletes []historyPersistenceKey
+	for key := range persisted {
+		if _, ok := seen[key]; !ok {
+			deletes = append(deletes, key)
+		}
+	}
+	return upserts, deletes, nil
+}
+
+func planPlaybackProgressPersistence(
+	current map[string]map[string]models.PlaybackProgress,
+	persisted map[historyPersistenceKey][sha256.Size]byte,
+) ([]playbackProgressPersistenceUpsert, []historyPersistenceKey, error) {
+	seen := make(map[historyPersistenceKey]struct{})
+	var upserts []playbackProgressPersistenceUpsert
+	for userID, perUser := range current {
+		for itemID, item := range perUser {
+			key := historyPersistenceKey{userID: userID, itemID: itemID}
+			seen[key] = struct{}{}
+			fingerprint, err := playbackProgressPersistenceFingerprint(item)
+			if err != nil {
+				return nil, nil, err
+			}
+			if previous, ok := persisted[key]; ok && previous == fingerprint {
+				continue
+			}
+			upserts = append(upserts, playbackProgressPersistenceUpsert{
+				key: key, item: item, fingerprint: fingerprint,
+			})
+		}
+	}
+
+	var deletes []historyPersistenceKey
+	for key := range persisted {
+		if _, ok := seen[key]; !ok {
+			deletes = append(deletes, key)
+		}
+	}
+	return upserts, deletes, nil
+}
+
+// syncWatchedToDB writes only changed and deleted watch-history rows.
+func (s *Service) syncWatchedToDB() error {
 	ctx := context.Background()
-	return s.store.WithTx(ctx, func(tx *datastore.Tx) error {
-		// Get existing DB state to detect deletes
-		existing, err := tx.PlaybackProgress().ListAll(ctx)
-		if err != nil {
-			return err
-		}
-		// Build set of existing DB keys per user
-		dbKeys := make(map[string]map[string]bool)
-		for userID, items := range existing {
-			keys := make(map[string]bool, len(items))
-			for _, item := range items {
-				keys[item.ID] = true
-			}
-			dbKeys[userID] = keys
-		}
-		// Upsert all in-memory items
-		for userID, perUser := range s.playbackProgress {
-			for _, item := range perUser {
-				itemCopy := item
-				if err := tx.PlaybackProgress().Upsert(ctx, userID, &itemCopy); err != nil {
-					return err
-				}
-				if dbKeys[userID] != nil {
-					delete(dbKeys[userID], item.ID)
-				}
+	upserts, deletes, err := planWatchHistoryPersistence(s.watchHistory, s.persistedWatchHistory)
+	if err != nil {
+		return fmt.Errorf("plan watch history persistence: %w", err)
+	}
+	if len(upserts) == 0 && len(deletes) == 0 {
+		return nil
+	}
+
+	if err := s.store.WithTx(ctx, func(tx *datastore.Tx) error {
+		for i := range upserts {
+			change := &upserts[i]
+			if err := tx.WatchHistory().Upsert(ctx, change.key.userID, &change.item); err != nil {
+				return err
 			}
 		}
-		// Delete items removed from memory
-		for userID, keys := range dbKeys {
-			for key := range keys {
-				if err := tx.PlaybackProgress().Delete(ctx, userID, key); err != nil {
-					return err
-				}
+		for _, key := range deletes {
+			if err := tx.WatchHistory().Delete(ctx, key.userID, key.itemID); err != nil {
+				return err
 			}
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+
+	if s.persistedWatchHistory == nil {
+		s.persistedWatchHistory = make(map[historyPersistenceKey][sha256.Size]byte)
+	}
+	for _, change := range upserts {
+		s.persistedWatchHistory[change.key] = change.fingerprint
+	}
+	for _, key := range deletes {
+		delete(s.persistedWatchHistory, key)
+	}
+	return nil
+}
+
+// syncProgressToDB writes only changed and deleted playback-progress rows.
+func (s *Service) syncProgressToDB() error {
+	ctx := context.Background()
+	upserts, deletes, err := planPlaybackProgressPersistence(s.playbackProgress, s.persistedPlaybackProgress)
+	if err != nil {
+		return fmt.Errorf("plan playback progress persistence: %w", err)
+	}
+	if len(upserts) == 0 && len(deletes) == 0 {
+		return nil
+	}
+
+	if err := s.store.WithTx(ctx, func(tx *datastore.Tx) error {
+		for i := range upserts {
+			change := &upserts[i]
+			if err := tx.PlaybackProgress().Upsert(ctx, change.key.userID, &change.item); err != nil {
+				return err
+			}
+		}
+		for _, key := range deletes {
+			if err := tx.PlaybackProgress().Delete(ctx, key.userID, key.itemID); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	if s.persistedPlaybackProgress == nil {
+		s.persistedPlaybackProgress = make(map[historyPersistenceKey][sha256.Size]byte)
+	}
+	for _, change := range upserts {
+		s.persistedPlaybackProgress[change.key] = change.fingerprint
+	}
+	for _, key := range deletes {
+		delete(s.persistedPlaybackProgress, key)
+	}
+	return nil
 }
 
 // activeProgressTTL bounds how long a heartbeat lingers in activePlaybackProgress
