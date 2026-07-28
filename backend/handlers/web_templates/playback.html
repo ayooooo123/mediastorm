@@ -980,6 +980,9 @@
     const WEB_PLAYER_PROGRESS_MIN_DELTA_SECONDS = 5;
     const WEB_PLAYER_STALE_PAUSE_MS = 45000;
     const WEB_NEAR_END_SECONDS = 30;
+    const WEB_PREQUEUE_PROGRESS = 0.9;
+    const WEB_PREQUEUE_POLL_MS = 1500;
+    const WEB_PREQUEUE_MAX_POLLS = 40;
     const SUBTITLE_OFFSET_STEP = 0.25;
 
     let activeProfileId = '';
@@ -994,6 +997,9 @@
     let nextEpisodeInfo = null;
     let upNextDismissed = false;
     let upNextFetchPromise = null;
+    let nextEpisodePrequeue = null;
+    let nextEpisodePrequeuePolling = false;
+    let playingNextEpisode = false;
     let hlsDuration = 0;
     let hlsPlaylistUrl = '';
     let webPlayerActualStartOffset = 0;
@@ -2481,6 +2487,7 @@
       }
       if (nextEpisodeInfo) {
         syncUpNextUi();
+        maybeTriggerNextEpisodePrequeue();
         return nextEpisodeInfo;
       }
       if (upNextFetchPromise) {
@@ -2524,6 +2531,7 @@
             seasonCount: Array.isArray(details?.seasons) ? details.seasons.length : 0,
           });
           syncUpNextUi();
+          maybeTriggerNextEpisodePrequeue();
           return nextEpisodeInfo;
         } catch (error) {
           console.warn('[web-player] next episode lookup failed', error);
@@ -2592,7 +2600,10 @@
       const thumbEl = document.getElementById('upNextThumb');
       if (!titleEl || !nextEpisodeInfo) return;
       const label = `S${String(nextEpisodeInfo.seasonNumber).padStart(2, '0')}E${String(nextEpisodeInfo.episodeNumber).padStart(2, '0')}`;
-      titleEl.textContent = [label, nextEpisodeInfo.name].filter(Boolean).join(' · ');
+      const ready = nextEpisodePrequeue?.status === 'ready';
+      titleEl.textContent = [label, nextEpisodeInfo.name, ready ? 'Ready' : '']
+        .filter(Boolean)
+        .join(' · ');
       if (thumbEl) {
         if (nextEpisodeInfo.imageUrl) {
           thumbEl.src = nextEpisodeInfo.imageUrl;
@@ -2607,7 +2618,8 @@
     function updateUpNextVisibility(options = {}) {
       const host = document.getElementById('videoHost');
       if (!host) return;
-      if (SHARE_MODE || playbackMeta.mediaType !== 'episode' || upNextDismissed || !nextEpisodeInfo) {
+      maybeTriggerNextEpisodePrequeue();
+      if (SHARE_MODE || playbackMeta.mediaType !== 'episode' || upNextDismissed || !nextEpisodeInfo || playingNextEpisode) {
         host.classList.remove('up-next-visible');
         return;
       }
@@ -2629,62 +2641,301 @@
       host?.classList.remove('up-next-visible');
     }
 
-    function playNextEpisode() {
-      if (!nextEpisodeInfo) return;
-      sendWebPlayerProgress({ force: true, keepalive: true, isPaused: true });
-      stopHlsSession({ keepalive: true });
-
-      try {
-        sessionStorage.setItem('strmr.webUpNext', JSON.stringify({
-          seasonNumber: nextEpisodeInfo.seasonNumber,
-          episodeNumber: nextEpisodeInfo.episodeNumber,
-          autoPlay: true,
-          titleId: routeParam('titleId') || '',
-          imdbId: playbackMeta.imdbId || '',
-          tmdbId: playbackMeta.tmdbId || '',
-          tvdbId: playbackMeta.tvdbId || '',
-          at: Date.now(),
-        }));
-      } catch {}
-
-      const nextUrl = buildNextEpisodeDetailsUrl(nextEpisodeInfo);
-      window.location.replace(nextUrl || `${SERVER_BASE_PATH || ''}/watch`);
+    function resetNextEpisodeState() {
+      nextEpisodeInfo = null;
+      upNextDismissed = false;
+      upNextFetchPromise = null;
+      nextEpisodePrequeue = null;
+      nextEpisodePrequeuePolling = false;
     }
 
-    function buildNextEpisodeDetailsUrl(next) {
-      const candidates = [];
-      const explicitReturn = String(routeParam('returnTo') || '').trim();
-      if (explicitReturn) candidates.push(explicitReturn);
-      try {
-        if (document.referrer) candidates.push(document.referrer);
-      } catch {}
+    function seriesTitleIdForPrequeue() {
+      return String(
+        routeParam('titleId') ||
+          playbackMeta.itemId ||
+          playbackMeta.imdbId ||
+          playbackMeta.tvdbId ||
+          playbackMeta.tmdbId ||
+          '',
+      ).trim();
+    }
 
-      for (const candidate of candidates) {
-        try {
-          const parsed = new URL(candidate, window.location.origin);
-          if (parsed.origin !== window.location.origin || !parsed.pathname.endsWith('/watch/details')) continue;
-          parsed.searchParams.set('initialSeason', String(next.seasonNumber));
-          parsed.searchParams.set('initialEpisode', String(next.episodeNumber));
-          parsed.searchParams.set('_playbackReturn', String(Date.now()));
-          return parsed.pathname + parsed.search + parsed.hash;
-        } catch {}
+    function isPrequeueInProgress(status) {
+      return ['queued', 'searching', 'resolving', 'probing'].includes(String(status || ''));
+    }
+
+    function isPrequeueReady(status) {
+      return String(status || '') === 'ready';
+    }
+
+    function maybeTriggerNextEpisodePrequeue() {
+      if (SHARE_MODE || playbackMeta.mediaType !== 'episode' || !nextEpisodeInfo || !activeProfileId) return;
+      if (playingNextEpisode) return;
+      if (nextEpisodePrequeue?.prequeueId) {
+        const sameTarget =
+          nextEpisodePrequeue.targetEpisode?.seasonNumber === nextEpisodeInfo.seasonNumber &&
+          nextEpisodePrequeue.targetEpisode?.episodeNumber === nextEpisodeInfo.episodeNumber;
+        if (sameTarget) {
+          if (isPrequeueReady(nextEpisodePrequeue.status) || isPrequeueInProgress(nextEpisodePrequeue.status)) return;
+        }
+      }
+      const duration = currentDuration();
+      const position = currentAbsoluteTime();
+      if (!Number.isFinite(duration) || duration <= 0 || !Number.isFinite(position) || position <= 0) return;
+      if (position / duration < WEB_PREQUEUE_PROGRESS) return;
+      triggerNextEpisodePrequeue().catch((error) => {
+        console.warn('[web-player] next episode prequeue failed', error);
+      });
+    }
+
+    async function triggerNextEpisodePrequeue() {
+      if (!nextEpisodeInfo || !activeProfileId) return null;
+      if (nextEpisodePrequeuePolling) return nextEpisodePrequeue;
+      const titleId = seriesTitleIdForPrequeue();
+      const titleName = playbackMeta.seriesTitle || playbackMeta.title || '';
+      if (!titleId || !titleName) {
+        console.warn('[web-player] next episode prequeue skipped: missing titleId/titleName');
+        return null;
       }
 
-      const params = new URLSearchParams();
-      params.set('title', playbackMeta.seriesTitle || playbackMeta.title || 'Series');
-      params.set('mediaType', 'series');
-      if (routeParam('titleId')) params.set('titleId', routeParam('titleId'));
-      if (playbackMeta.imdbId) params.set('imdbId', playbackMeta.imdbId);
-      if (playbackMeta.tmdbId) params.set('tmdbId', String(playbackMeta.tmdbId));
-      if (playbackMeta.tvdbId) params.set('tvdbId', String(playbackMeta.tvdbId));
-      if (playbackMeta.year) params.set('year', String(playbackMeta.year));
-      if (playbackMeta.posterUrl) params.set('headerImage', playbackMeta.posterUrl);
-      params.set('initialSeason', String(next.seasonNumber));
-      params.set('initialEpisode', String(next.episodeNumber));
-      params.set('_playbackReturn', String(Date.now()));
-      const watchIndex = window.location.pathname.indexOf('/watch');
-      const basePath = watchIndex >= 0 ? window.location.pathname.slice(0, watchIndex) : SERVER_BASE_PATH;
-      return `${basePath || ''}/watch/details?${params.toString()}`;
+      nextEpisodePrequeuePolling = true;
+      try {
+        const body = {
+          titleId,
+          titleName,
+          mediaType: 'series',
+          userId: activeProfileId,
+          seasonNumber: nextEpisodeInfo.seasonNumber,
+          episodeNumber: nextEpisodeInfo.episodeNumber,
+          // Web creates its own target=web HLS session from streamPath.
+          skipHLS: true,
+        };
+        if (playbackMeta.imdbId) body.imdbId = playbackMeta.imdbId;
+        if (playbackMeta.tmdbId) body.tmdbId = String(playbackMeta.tmdbId);
+        if (playbackMeta.tvdbId) body.tvdbId = String(playbackMeta.tvdbId);
+        if (playbackMeta.year) body.year = Number(playbackMeta.year);
+
+        const response = await apiCall('/playback/prequeue', {
+          method: 'POST',
+          body: JSON.stringify(body),
+        });
+        nextEpisodePrequeue = {
+          prequeueId: response?.prequeueId || '',
+          targetEpisode: {
+            seasonNumber: nextEpisodeInfo.seasonNumber,
+            episodeNumber: nextEpisodeInfo.episodeNumber,
+          },
+          status: response?.status || 'queued',
+          statusResponse: null,
+        };
+        console.info('[web-player] next episode prequeue started', {
+          prequeueId: nextEpisodePrequeue.prequeueId,
+          status: nextEpisodePrequeue.status,
+          target: `S${nextEpisodeInfo.seasonNumber}E${nextEpisodeInfo.episodeNumber}`,
+        });
+        if (nextEpisodePrequeue.prequeueId) {
+          pollNextEpisodePrequeue(nextEpisodePrequeue.prequeueId);
+        }
+        syncUpNextUi();
+        return nextEpisodePrequeue;
+      } catch (error) {
+        nextEpisodePrequeuePolling = false;
+        throw error;
+      }
+    }
+
+    async function pollNextEpisodePrequeue(prequeueId) {
+      let polls = 0;
+      while (polls < WEB_PREQUEUE_MAX_POLLS) {
+        await new Promise((resolve) => setTimeout(resolve, WEB_PREQUEUE_POLL_MS));
+        polls += 1;
+        if (nextEpisodePrequeue?.prequeueId !== prequeueId) {
+          nextEpisodePrequeuePolling = false;
+          return null;
+        }
+        try {
+          const status = await apiCall(`/playback/prequeue/${encodeURIComponent(prequeueId)}`);
+          nextEpisodePrequeue = {
+            ...nextEpisodePrequeue,
+            status: status?.status || nextEpisodePrequeue.status,
+            statusResponse: status,
+            targetEpisode: status?.targetEpisode || nextEpisodePrequeue.targetEpisode,
+          };
+          updateUpNextCard();
+          if (isPrequeueReady(status?.status)) {
+            console.info('[web-player] next episode prequeue ready', {
+              prequeueId,
+              hasStreamPath: Boolean(status?.streamPath),
+            });
+            nextEpisodePrequeuePolling = false;
+            return status;
+          }
+          if (status?.status === 'failed' || status?.status === 'expired') {
+            console.warn('[web-player] next episode prequeue ended', status?.status);
+            nextEpisodePrequeuePolling = false;
+            return status;
+          }
+        } catch (error) {
+          console.warn('[web-player] next episode prequeue poll failed', error);
+          nextEpisodePrequeuePolling = false;
+          return null;
+        }
+      }
+      nextEpisodePrequeuePolling = false;
+      return nextEpisodePrequeue?.statusResponse || null;
+    }
+
+    async function ensureNextEpisodePrequeueReady() {
+      if (!nextEpisodeInfo) return null;
+      const matchesTarget =
+        nextEpisodePrequeue?.targetEpisode?.seasonNumber === nextEpisodeInfo.seasonNumber &&
+        nextEpisodePrequeue?.targetEpisode?.episodeNumber === nextEpisodeInfo.episodeNumber;
+
+      if (matchesTarget && isPrequeueReady(nextEpisodePrequeue?.status) && nextEpisodePrequeue?.statusResponse?.streamPath) {
+        return nextEpisodePrequeue.statusResponse;
+      }
+
+      if (!matchesTarget || !nextEpisodePrequeue?.prequeueId) {
+        await triggerNextEpisodePrequeue();
+      }
+
+      if (nextEpisodePrequeue?.prequeueId && !isPrequeueReady(nextEpisodePrequeue?.status)) {
+        const polled = await pollNextEpisodePrequeue(nextEpisodePrequeue.prequeueId);
+        if (polled) return polled;
+      }
+
+      if (nextEpisodePrequeue?.prequeueId) {
+        try {
+          const status = await apiCall(`/playback/prequeue/${encodeURIComponent(nextEpisodePrequeue.prequeueId)}`);
+          nextEpisodePrequeue = {
+            ...nextEpisodePrequeue,
+            status: status?.status || nextEpisodePrequeue.status,
+            statusResponse: status,
+          };
+          return status;
+        } catch (error) {
+          console.warn('[web-player] next episode prequeue status fetch failed', error);
+        }
+      }
+      return nextEpisodePrequeue?.statusResponse || null;
+    }
+
+    function syncPlaybackUrlToHistory() {
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.set('mediaType', 'episode');
+        if (sourcePath) {
+          url.searchParams.set('sourcePath', sourcePath);
+          url.searchParams.delete('movie');
+        }
+        if (playbackMeta.seasonNumber != null) url.searchParams.set('seasonNumber', String(playbackMeta.seasonNumber));
+        if (playbackMeta.episodeNumber != null) url.searchParams.set('episodeNumber', String(playbackMeta.episodeNumber));
+        if (playbackMeta.episodeName) url.searchParams.set('episodeName', playbackMeta.episodeName);
+        else url.searchParams.delete('episodeName');
+        if (playbackMeta.displayName) url.searchParams.set('displayName', playbackMeta.displayName);
+        if (playbackMeta.seriesTitle) url.searchParams.set('seriesTitle', playbackMeta.seriesTitle);
+        if (playbackMeta.title) url.searchParams.set('title', playbackMeta.title);
+        if (playbackMeta.dv) url.searchParams.set('dv', '1');
+        else url.searchParams.delete('dv');
+        if (playbackMeta.hdr10) url.searchParams.set('hdr10', '1');
+        else url.searchParams.delete('hdr10');
+        if (playbackMeta.dvProfile) url.searchParams.set('dvProfile', playbackMeta.dvProfile);
+        else url.searchParams.delete('dvProfile');
+        url.searchParams.delete('startOffset');
+        url.searchParams.delete('startPercent');
+        url.searchParams.delete('hlsSessionId');
+        // Keep token + profileId untouched.
+        history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+      } catch (error) {
+        console.warn('[web-player] failed to sync playback URL', error);
+      }
+    }
+
+    function renderNextEpisodeError(message) {
+      const host = document.getElementById('videoHost');
+      if (!host) return;
+      host.className = '';
+      host.innerHTML = `
+        <div class="empty status error">
+          <span>${escapeHtml(message || 'Failed to prepare the next episode.')}</span>
+          <div style="margin-top:12px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
+            <button class="btn btn-primary" type="button" onclick="playNextEpisode()">Retry</button>
+            <button class="btn" type="button" onclick="goBackToWatch()">Back</button>
+          </div>
+        </div>`;
+    }
+
+    async function switchToNextEpisode(status) {
+      const next = nextEpisodeInfo;
+      if (!next || !status?.streamPath) {
+        throw new Error('Next episode stream is not ready yet.');
+      }
+
+      sourcePath = status.streamPath;
+      directMovieUrl = '';
+      playbackMeta = {
+        ...playbackMeta,
+        mediaType: 'episode',
+        seasonNumber: next.seasonNumber,
+        episodeNumber: next.episodeNumber,
+        episodeName: next.name || status.targetEpisode?.title || '',
+        title: playbackMeta.seriesTitle || playbackMeta.title || 'Series',
+        displayName: status.displayName || '',
+        dv: Boolean(status.hasDolbyVision),
+        hdr10: Boolean(status.hasHdr10),
+        dvProfile: status.dolbyVisionProfile || '',
+        forceAAC: true,
+      };
+      if (Number.isFinite(Number(status.selectedAudioTrack)) && Number(status.selectedAudioTrack) >= 0) {
+        webPlayerSelectedAudioTrack = Number(status.selectedAudioTrack);
+      } else {
+        webPlayerSelectedAudioTrack = null;
+      }
+      if (Number.isFinite(Number(status.selectedSubtitleTrack))) {
+        webPlayerSelectedSubtitleTrack = Number(status.selectedSubtitleTrack);
+      } else {
+        webPlayerSelectedSubtitleTrack = -1;
+      }
+
+      webPlayerUserSubtitleOffset = 0;
+      progressCompleted = false;
+      lastKnownPositivePosition = 0;
+      hlsDuration = Number(status.duration || 0);
+      resetNextEpisodeState();
+      syncPlaybackUrlToHistory();
+      renderHeader();
+      await startWebPlayerFromSource({ startOffset: 0 });
+      ensureNextEpisodeInfo().catch(() => {});
+    }
+
+    async function playNextEpisode() {
+      if (!nextEpisodeInfo || playingNextEpisode) return;
+      playingNextEpisode = true;
+      upNextDismissed = true;
+      const host = document.getElementById('videoHost');
+      host?.classList.remove('up-next-visible');
+
+      sendWebPlayerProgress({ force: true, keepalive: true, isPaused: true });
+      stopHlsSession({ keepalive: true });
+      renderLoading('Preparing next episode...');
+
+      try {
+        const status = await ensureNextEpisodePrequeueReady();
+        if (!status || status.status === 'failed' || status.status === 'expired') {
+          throw new Error(status?.status === 'expired'
+            ? 'Next episode prep expired. Try again.'
+            : 'Could not prepare the next episode.');
+        }
+        if (!isPrequeueReady(status.status) || !status.streamPath) {
+          throw new Error('Next episode is still preparing. Try again in a moment.');
+        }
+        await switchToNextEpisode(status);
+      } catch (error) {
+        console.warn('[web-player] play next episode failed', error);
+        renderNextEpisodeError(error?.message || String(error));
+      } finally {
+        playingNextEpisode = false;
+      }
     }
 
     function parseWebVttCues(text) {
@@ -3039,7 +3290,12 @@
     }
 
     function routeParam(name) {
-      return decodeRouteValue(ROUTE_PARAMS.get(name) || '');
+      // Read live from the address bar so in-place next-episode replaceState is visible.
+      try {
+        return decodeRouteValue(new URLSearchParams(window.location.search || '').get(name) || '');
+      } catch {
+        return decodeRouteValue(ROUTE_PARAMS.get(name) || '');
+      }
     }
 
     function numericRouteParam(name) {
