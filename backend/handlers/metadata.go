@@ -189,18 +189,23 @@ type MetadataHandler struct {
 	SimklClient        *simkl.Client
 	MDBListListsClient *mdblist.ListsClient
 	LetterboxdClient   *letterboxd.Client
+	stremioHTTPClient  *http.Client
 
 	personalizedMu       sync.Mutex
 	personalizedCache    map[string]personalizedRecommendationsCacheEntry
 	personalizedInFlight map[string]*personalizedRecommendationsBuild
+	stremioCatalogMu     sync.Mutex
+	stremioCatalogCache  map[string]stremioShelfCatalogCacheEntry
 }
 
 func NewMetadataHandler(s metadataService, cfgManager *config.Manager) *MetadataHandler {
 	return &MetadataHandler{
 		Service:              s,
 		CfgManager:           cfgManager,
+		stremioHTTPClient:    newStremioShelfHTTPClient(),
 		personalizedCache:    make(map[string]personalizedRecommendationsCacheEntry),
 		personalizedInFlight: make(map[string]*personalizedRecommendationsBuild),
+		stremioCatalogCache:  make(map[string]stremioShelfCatalogCacheEntry),
 	}
 }
 

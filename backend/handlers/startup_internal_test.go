@@ -32,6 +32,30 @@ func TestStartupDiscoverShelfRequestsArtworkForVisibleItems(t *testing.T) {
 	}
 }
 
+func TestStartupStremioShelfQuery(t *testing.T) {
+	shelf := models.ShelfConfig{
+		ID:               "stremio-ranked",
+		Type:             "stremio",
+		Name:             "Ranked",
+		AddonManifestURL: "https://addon.example/config/manifest.json",
+		AddonCatalogType: "movie",
+		AddonCatalogID:   "ranked",
+	}
+	query, ok := startupDisplayListQueryForShelf(shelf, 24, true, "client")
+	if !ok {
+		t.Fatal("expected startup Stremio shelf query")
+	}
+	if query.Get("source") != "stremio" ||
+		query.Get("manifestUrl") != shelf.AddonManifestURL ||
+		query.Get("catalogType") != "movie" ||
+		query.Get("catalogId") != "ranked" {
+		t.Fatalf("unexpected Stremio query: %v", query)
+	}
+	if query.Get("hideWatched") != "true" || query.Get("limit") != "28" {
+		t.Fatalf("missing shared shelf options: %v", query)
+	}
+}
+
 func TestStartupTMDBShelfFetchLimitPreservesOtherOverflow(t *testing.T) {
 	tests := []struct {
 		name        string

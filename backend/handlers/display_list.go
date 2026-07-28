@@ -156,6 +156,10 @@ func (h *DisplayListHandler) Get(w http.ResponseWriter, r *http.Request) {
 		source = "mdblist"
 		h.delegateMetadata(w, r, source, h.MetadataHandler.CustomList, displayListQuery(r, userID, nil))
 		return
+	case "stremio", "stremio-catalog":
+		source = "stremio"
+		h.delegateMetadata(w, r, source, h.MetadataHandler.StremioList, displayListQuery(r, userID, nil))
+		return
 	case "tmdb-list":
 		h.delegateMetadata(w, r, source, h.MetadataHandler.TMDBList, displayListQuery(r, userID, nil))
 		return
