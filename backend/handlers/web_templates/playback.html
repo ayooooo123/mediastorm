@@ -1020,8 +1020,10 @@
     let webPlayerSubtitleRenderFrame = null;
     let webPlayerControlsHideTimer = null;
     let webPlayerMediaRecoverAttempts = 0;
-    let webPlayerVolume = 1;
-    let webPlayerMuted = false;
+    const WEB_PLAYER_VOLUME_STORAGE_KEY = 'strmr.webPlayerVolume';
+    const savedWebPlayerVolume = loadWebPlayerVolumePrefs();
+    let webPlayerVolume = savedWebPlayerVolume.volume;
+    let webPlayerMuted = savedWebPlayerVolume.muted;
     let webPlayerAutoMutedPendingGesture = false;
     let webPlayerDebugSessionId = `web-player-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     let keepaliveTimer = null;
@@ -1556,7 +1558,7 @@
           <button id="muteButton" class="btn icon-btn" onclick="toggleMute()" aria-label="Mute" title="Mute">
             <span id="volumeIcon" class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg></span>
           </button>
-          <input id="volumeSlider" class="volume-slider desktop-only" type="range" min="0" max="1" step="0.05" value="1" oninput="setWebPlayerVolume(this.value)" aria-label="Volume" title="Volume">
+          <input id="volumeSlider" class="volume-slider desktop-only" type="range" min="0" max="1" step="0.05" value="${webPlayerMuted ? 0 : webPlayerVolume}" oninput="setWebPlayerVolume(this.value)" aria-label="Volume" title="Volume">
           ${isLive ? '' : `<button class="btn icon-btn tracks-btn" onclick="openTrackSheet()" aria-label="Audio & subtitles" title="Audio & subtitles">
             <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 15h4"/><path d="M14 15h3"/><path d="M7 11h2"/><path d="M12 11h5"/></svg></span>
           </button>`}
@@ -1882,6 +1884,10 @@
       video.addEventListener('volumechange', () => {
         webPlayerVolume = Number(video.volume || 0);
         webPlayerMuted = Boolean(video.muted);
+        // Skip persist while autoplay forced mute — do not overwrite the user's preference.
+        if (!webPlayerAutoMutedPendingGesture) {
+          persistWebPlayerVolume();
+        }
         updateControls();
       });
       video.addEventListener('error', () => {
@@ -2210,6 +2216,33 @@
       }
     }
 
+    function loadWebPlayerVolumePrefs() {
+      try {
+        const raw = window.localStorage?.getItem(WEB_PLAYER_VOLUME_STORAGE_KEY);
+        if (!raw) return { volume: 1, muted: false };
+        const parsed = JSON.parse(raw);
+        const volume = Math.max(0, Math.min(1, Number(parsed?.volume)));
+        return {
+          volume: Number.isFinite(volume) ? volume : 1,
+          muted: Boolean(parsed?.muted),
+        };
+      } catch {
+        return { volume: 1, muted: false };
+      }
+    }
+
+    function persistWebPlayerVolume() {
+      try {
+        window.localStorage?.setItem(
+          WEB_PLAYER_VOLUME_STORAGE_KEY,
+          JSON.stringify({
+            volume: Math.max(0, Math.min(1, Number(webPlayerVolume) || 0)),
+            muted: Boolean(webPlayerMuted),
+          }),
+        );
+      } catch {}
+    }
+
     function toggleMute() {
       const video = document.getElementById('webPlayer');
       if (!video) return;
@@ -2218,6 +2251,7 @@
       if (!webPlayerMuted && webPlayerVolume <= 0) webPlayerVolume = 0.5;
       video.volume = webPlayerVolume;
       video.muted = webPlayerMuted;
+      persistWebPlayerVolume();
       updateControls();
     }
 
@@ -2230,6 +2264,7 @@
       webPlayerMuted = vol <= 0;
       video.volume = vol;
       video.muted = webPlayerMuted;
+      persistWebPlayerVolume();
       updateControls();
       showControls();
     }
