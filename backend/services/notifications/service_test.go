@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"novastream/models"
 )
@@ -200,6 +201,33 @@ func TestFormatOmitsProgressForWatchedEvent(t *testing.T) {
 	}
 	if body != "Movie" {
 		t.Fatalf("body = %q", body)
+	}
+}
+
+func TestProgressBarKeepsStartingSegmentFilled(t *testing.T) {
+	tests := []struct {
+		name    string
+		percent float64
+		filled  int
+	}{
+		{name: "negative", percent: -1, filled: 1},
+		{name: "zero", percent: 0, filled: 1},
+		{name: "below first rounded segment", percent: 2, filled: 1},
+		{name: "next segment", percent: 8, filled: 2},
+		{name: "complete", percent: 100, filled: 20},
+		{name: "above complete", percent: 101, filled: 20},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bar := progressBar(tt.percent)
+			if got := strings.Count(bar, "▰"); got != tt.filled {
+				t.Fatalf("filled segments = %d, want %d in %q", got, tt.filled, bar)
+			}
+			if got := utf8.RuneCountInString(bar); got != 20 {
+				t.Fatalf("bar width = %d, want 20 in %q", got, bar)
+			}
+		})
 	}
 }
 

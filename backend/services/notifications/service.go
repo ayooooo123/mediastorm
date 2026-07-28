@@ -879,6 +879,11 @@ func progressBar(percent float64) string {
 		percent = 100
 	}
 	filled := int((percent*width + 50) / 100)
+	// Keep an active zero/low-percent bar from becoming one long run of hollow
+	// parallelograms, which Discord renders wider than the mixed bar.
+	if filled == 0 {
+		filled = 1
+	}
 	return strings.Repeat("▰", filled) + strings.Repeat("▱", width-filled)
 }
 
