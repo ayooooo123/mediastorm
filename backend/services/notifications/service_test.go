@@ -204,6 +204,24 @@ func TestFormatOmitsProgressForWatchedEvent(t *testing.T) {
 	}
 }
 
+func TestFormatIncludesZeroPercentForProgressEvent(t *testing.T) {
+	title, body := Format(models.NotificationChannel{
+		TitleTemplate: "{{eventLabel}}: {{title}}",
+		BodyTemplate:  "{{mediaLabel}}{{progressLabel}}",
+	}, models.NotificationEvent{
+		Type:      models.NotificationEventWatchProgress,
+		Title:     "Movie",
+		MediaType: "movie",
+		Percent:   0,
+	})
+	if title != "Watching: Movie" {
+		t.Fatalf("title = %q", title)
+	}
+	if body != "Movie · 0%" {
+		t.Fatalf("body = %q", body)
+	}
+}
+
 func TestProgressBarKeepsStartingSegmentFilled(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -741,20 +759,20 @@ func TestDiscordProgressNotificationEditsThenCompletesOneMessage(t *testing.T) {
 	update := models.PlaybackProgressUpdate{
 		MediaType: "movie", ItemID: "tmdb:1", MovieName: "Movie", Duration: 100,
 	}
-	service.HandlePlaybackUpdate("profile", update, 1)
+	service.HandlePlaybackUpdate("profile", update, 0)
 	first := waitForNotificationRequest(t, received)
 	if first.method != http.MethodPost || first.path != "/api/webhooks/1/token" || first.query != "wait=true" {
 		t.Fatalf("initial request = %s %s?%s", first.method, first.path, first.query)
 	}
-	if first.title != "Watching: Movie" || !strings.Contains(first.body, "1%") ||
+	if first.title != "Watching: Movie" || !strings.Contains(first.body, "0%") ||
 		!strings.Contains(first.body, "▱") {
 		t.Fatalf("initial progress payload = title %q body %q", first.title, first.body)
 	}
-	if strings.Count(first.body, "1%") != 1 {
+	if strings.Count(first.body, "0%") != 1 {
 		t.Fatalf("initial progress body repeats percentage: %q", first.body)
 	}
 
-	service.HandlePlaybackUpdate("profile", update, 1.9)
+	service.HandlePlaybackUpdate("profile", update, 0.9)
 	select {
 	case item := <-received:
 		t.Fatalf("same whole-percentage progress bucket emitted %s %s", item.method, item.path)

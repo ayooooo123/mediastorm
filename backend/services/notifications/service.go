@@ -1080,8 +1080,10 @@ func templateValues(event models.NotificationEvent) map[string]string {
 	}
 	percent := ""
 	progressLabel := ""
-	if event.Type != models.NotificationEventWatchWatched && event.Percent > 0 {
-		percent = strconv.FormatFloat(event.Percent, 'f', 0, 64)
+	if event.Type != models.NotificationEventWatchWatched &&
+		(event.Type == models.NotificationEventWatchProgress || event.Percent > 0) {
+		displayPercent := max(event.Percent, 0)
+		percent = strconv.FormatFloat(displayPercent, 'f', 0, 64)
 		progressLabel = " · " + percent + "%"
 	}
 	releaseLabel := ""
