@@ -3,12 +3,93 @@ package playback
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"novastream/models"
 )
+
+type recordingPrequeueRepository struct {
+	mu        sync.Mutex
+	upsertIDs []string
+}
+
+func (r *recordingPrequeueRepository) Get(context.Context, string) ([]byte, error) {
+	return nil, nil
+}
+
+func (r *recordingPrequeueRepository) GetByTitleUser(context.Context, string, string) ([]byte, error) {
+	return nil, nil
+}
+
+func (r *recordingPrequeueRepository) List(context.Context) ([][]byte, error) {
+	return nil, nil
+}
+
+func (r *recordingPrequeueRepository) Upsert(_ context.Context, id, _, _, _ string, _ []byte, _ interface{}) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.upsertIDs = append(r.upsertIDs, id)
+	return nil
+}
+
+func (r *recordingPrequeueRepository) Delete(context.Context, string) error {
+	return nil
+}
+
+func (r *recordingPrequeueRepository) DeleteExpired(context.Context) (int64, error) {
+	return 0, nil
+}
+
+func (r *recordingPrequeueRepository) Count(context.Context) (int64, error) {
+	return 0, nil
+}
+
+func (r *recordingPrequeueRepository) IDs() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.upsertIDs...)
+}
+
+func TestPrequeueStoreReadyUpdatePersistsOnlyChangedEntry(t *testing.T) {
+	store := NewPrequeueStore(time.Hour)
+	repo := &recordingPrequeueRepository{}
+	store.repo = repo
+
+	first, created := store.Create("movie:1", "First", "default", "movie", 2024, nil, "details")
+	if !created {
+		t.Fatal("first Create returned created=false")
+	}
+	second, created := store.Create("movie:2", "Second", "default", "movie", 2024, nil, "details")
+	if !created {
+		t.Fatal("second Create returned created=false")
+	}
+
+	store.Update(first.ID, func(e *PrequeueEntry) {
+		e.Status = PrequeueStatusReady
+		e.StreamPath = "/debrid/torbox/1/file/0/first.mkv"
+	})
+	store.Update(second.ID, func(e *PrequeueEntry) {
+		e.Status = PrequeueStatusReady
+		e.StreamPath = "/debrid/torbox/2/file/0/second.mkv"
+	})
+	store.UpdateWorker(first.ID, func(e *PrequeueEntry) {
+		e.SelectedAudioTrack = 1
+	})
+
+	got := repo.IDs()
+	want := []string{first.ID, second.ID, first.ID}
+	if len(got) != len(want) {
+		t.Fatalf("upsert IDs = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("upsert IDs = %v, want %v", got, want)
+		}
+	}
+}
 
 func TestPrequeueStoreValidatesReadyEntryOnLookup(t *testing.T) {
 	store := NewPrequeueStore(time.Hour)

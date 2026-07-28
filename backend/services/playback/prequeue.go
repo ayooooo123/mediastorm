@@ -230,7 +230,7 @@ type PrequeueStore struct {
 	byTitleUser map[string]string
 	defaultTTL  time.Duration
 	storagePath string // If set, ready entries are persisted to this file
-	store       *datastore.DataStore
+	repo        datastore.PrequeueRepository
 
 	streamPathValidator StreamPathValidator
 	streamPathValidated map[string]time.Time
@@ -246,12 +246,16 @@ type DeletedPrequeueEntry struct {
 }
 
 // useDB returns true when the store is backed by PostgreSQL.
-func (s *PrequeueStore) useDB() bool { return s.store != nil }
+func (s *PrequeueStore) useDB() bool { return s.repo != nil }
 
 // SetDataStore sets the PostgreSQL datastore for persistence.
 // When set, entries are persisted to the database instead of disk.
 func (s *PrequeueStore) SetDataStore(store *datastore.DataStore) {
-	s.store = store
+	if store == nil {
+		s.repo = nil
+		return
+	}
+	s.repo = store.Prequeue()
 }
 
 // SetStreamPathValidator enables lazy validation for restored ready entries.
@@ -378,13 +382,13 @@ func (s *PrequeueStore) loadFromDB() error {
 	ctx := context.Background()
 
 	// Clean up expired entries first
-	if n, err := s.store.Prequeue().DeleteExpired(ctx); err != nil {
+	if n, err := s.repo.DeleteExpired(ctx); err != nil {
 		log.Printf("[prequeue] Warning: failed to delete expired DB rows on load: %v", err)
 	} else if n > 0 {
 		log.Printf("[prequeue] Cleaned up %d expired rows from database on startup", n)
 	}
 
-	blobs, err := s.store.Prequeue().List(ctx)
+	blobs, err := s.repo.List(ctx)
 	if err != nil {
 		return fmt.Errorf("load prequeue from db: %w", err)
 	}
@@ -425,7 +429,7 @@ func (s *PrequeueStore) loadFromDB() error {
 	// Delete superseded duplicates from DB
 	if len(supersededIDs) > 0 {
 		for _, id := range supersededIDs {
-			if err := s.store.Prequeue().Delete(ctx, id); err != nil {
+			if err := s.repo.Delete(ctx, id); err != nil {
 				log.Printf("[prequeue] Warning: failed to delete superseded DB entry %s: %v", id, err)
 			}
 		}
@@ -481,21 +485,47 @@ func (s *PrequeueStore) saveToDisk() {
 
 // saveToDB persists all ready entries to PostgreSQL. Caller must hold s.mu.
 func (s *PrequeueStore) saveToDB() {
-	ctx := context.Background()
 	now := time.Now()
 
 	for _, e := range s.entries {
 		if e.Status != PrequeueStatusReady || e.StreamPath == "" || now.After(e.ExpiresAt) {
 			continue
 		}
-		data, err := json.Marshal(e)
-		if err != nil {
-			log.Printf("[prequeue] Warning: failed to marshal entry %s for DB: %v", e.ID, err)
-			continue
-		}
-		if err := s.store.Prequeue().Upsert(ctx, e.ID, e.TitleID, e.UserID, string(e.Status), data, e.ExpiresAt); err != nil {
-			log.Printf("[prequeue] Warning: failed to upsert entry %s to DB: %v", e.ID, err)
-		}
+		s.saveEntryToDB(e)
+	}
+}
+
+// saveReadyEntry persists the entry that just became ready. PostgreSQL stores
+// entries independently, so rewriting the full in-memory collection here only
+// adds serialization, network, and JSONB write amplification. File-backed
+// persistence still writes a complete snapshot.
+func (s *PrequeueStore) saveReadyEntry(entry *PrequeueEntry) {
+	if s.useDB() {
+		s.saveEntryToDB(entry)
+		return
+	}
+	s.saveToDisk()
+}
+
+func (s *PrequeueStore) saveEntryToDB(entry *PrequeueEntry) {
+	if entry == nil || !s.useDB() {
+		return
+	}
+	data, err := json.Marshal(entry)
+	if err != nil {
+		log.Printf("[prequeue] Warning: failed to marshal entry %s for DB: %v", entry.ID, err)
+		return
+	}
+	if err := s.repo.Upsert(
+		context.Background(),
+		entry.ID,
+		entry.TitleID,
+		entry.UserID,
+		string(entry.Status),
+		data,
+		entry.ExpiresAt,
+	); err != nil {
+		log.Printf("[prequeue] Warning: failed to upsert entry %s to DB: %v", entry.ID, err)
 	}
 }
 
@@ -545,7 +575,7 @@ func (s *PrequeueStore) CreateScoped(titleID, titleName, userID, mediaType strin
 			// Remove old entry from memory and DB
 			delete(s.entries, existingID)
 			if s.useDB() {
-				if err := s.store.Prequeue().Delete(context.Background(), existingID); err != nil {
+				if err := s.repo.Delete(context.Background(), existingID); err != nil {
 					log.Printf("[prequeue] Warning: failed to delete old DB entry %s: %v", existingID, err)
 				}
 			}
@@ -751,7 +781,7 @@ func (s *PrequeueStore) Update(id string, updateFn func(*PrequeueEntry)) bool {
 		if entry.ExpiresAt.Before(defaultExpiry) {
 			entry.ExpiresAt = defaultExpiry
 		}
-		s.saveToDisk()
+		s.saveReadyEntry(entry)
 	}
 
 	return true
@@ -791,7 +821,7 @@ func (s *PrequeueStore) UpdateWorker(id string, updateFn func(*PrequeueEntry)) b
 		if entry.ExpiresAt.Before(defaultExpiry) {
 			entry.ExpiresAt = defaultExpiry
 		}
-		s.saveToDisk()
+		s.saveReadyEntry(entry)
 	}
 
 	return true
@@ -845,7 +875,7 @@ func (s *PrequeueStore) Delete(id string) {
 
 	// Remove from DB
 	if s.useDB() {
-		if err := s.store.Prequeue().Delete(context.Background(), id); err != nil {
+		if err := s.repo.Delete(context.Background(), id); err != nil {
 			log.Printf("[prequeue] Warning: failed to delete entry %s from DB: %v", id, err)
 		}
 	} else {
@@ -890,7 +920,7 @@ func (s *PrequeueStore) DeleteByStreamPath(streamPath string) []DeletedPrequeueE
 		delete(s.entries, id)
 
 		if s.useDB() {
-			if err := s.store.Prequeue().Delete(context.Background(), id); err != nil {
+			if err := s.repo.Delete(context.Background(), id); err != nil {
 				log.Printf("[prequeue] Warning: failed to delete stream-path entry %s from DB: %v", id, err)
 			}
 		}
@@ -952,7 +982,7 @@ func (s *PrequeueStore) DeleteByUser(userID string) {
 		delete(s.entries, id)
 
 		if s.useDB() {
-			if err := s.store.Prequeue().Delete(context.Background(), id); err != nil {
+			if err := s.repo.Delete(context.Background(), id); err != nil {
 				log.Printf("[prequeue] Warning: failed to delete user entry %s from DB: %v", id, err)
 			}
 		}
@@ -1012,7 +1042,7 @@ func (s *PrequeueStore) cleanup() {
 
 	// Bulk-delete expired rows from DB (covers both in-memory and orphaned rows)
 	if s.useDB() {
-		if n, err := s.store.Prequeue().DeleteExpired(context.Background()); err != nil {
+		if n, err := s.repo.DeleteExpired(context.Background()); err != nil {
 			log.Printf("[prequeue] Warning: failed to delete expired DB rows: %v", err)
 		} else if n > 0 {
 			log.Printf("[prequeue] Cleaned up %d expired rows from database", n)
