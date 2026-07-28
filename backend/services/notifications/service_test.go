@@ -752,6 +752,16 @@ func TestDiscordProgressNotificationEditsThenCompletesOneMessage(t *testing.T) {
 	if completed.title != "Watched: Movie" || strings.Contains(completed.body, "%") {
 		t.Fatalf("completion payload = title %q body %q", completed.title, completed.body)
 	}
+
+	// A replacement stream can briefly report zero while seeking back to the
+	// watched position. Never reopen progress after this playback session has
+	// already completed.
+	service.HandlePlaybackUpdate("profile", update, 0)
+	select {
+	case item := <-received:
+		t.Fatalf("post-completion progress emitted %s %s", item.method, item.path)
+	case <-time.After(75 * time.Millisecond):
+	}
 }
 
 func TestDiscordProgressNotificationDeletesWhenPlaybackEndsUnfinished(t *testing.T) {
