@@ -304,7 +304,7 @@ func (s *Service) HandlePlaybackUpdate(userID string, update models.PlaybackProg
 	if percent >= 90 && !state.watched {
 		eventTypes = append(eventTypes, models.NotificationEventWatchWatched)
 		state.watched = true
-	} else if active && percent < 90 {
+	} else if active && percent < 90 && !state.watched {
 		progressBucket := int(percent) / progressStepPercent
 		if !state.progressSent || progressBucket != state.progressBucket {
 			eventTypes = append(eventTypes, models.NotificationEventWatchProgress)
