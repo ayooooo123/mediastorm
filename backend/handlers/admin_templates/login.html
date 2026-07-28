@@ -311,10 +311,12 @@
             <p>Sign in to your account</p>
         </div>
 
+        {{if .RequirePasswordChange}}
         <div class="first-login-help">
             First installation? Sign in with <code>admin</code> /
-            <code>admin</code>, then change the password immediately.
+            <code>admin</code> and choose a new password below.
         </div>
+        {{end}}
 
         {{if .Error}}
         <div class="form-error">{{.Error}}</div>
@@ -347,6 +349,34 @@
                     required
                 >
             </div>
+
+            {{if .RequirePasswordChange}}
+            <div class="form-group">
+                <label class="form-label" for="new_password">New admin password</label>
+                <input
+                    type="password"
+                    id="new_password"
+                    name="new_password"
+                    class="form-input"
+                    placeholder="Choose a new password"
+                    autocomplete="new-password"
+                    required
+                >
+            </div>
+
+            <div class="form-group">
+                <label class="form-label" for="confirm_password">Confirm new password</label>
+                <input
+                    type="password"
+                    id="confirm_password"
+                    name="confirm_password"
+                    class="form-input"
+                    placeholder="Confirm the new password"
+                    autocomplete="new-password"
+                    required
+                >
+            </div>
+            {{end}}
 
             <div class="checkbox-group">
                 <input type="checkbox" id="remember" name="remember" class="checkbox-input" value="1">

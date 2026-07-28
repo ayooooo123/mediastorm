@@ -3829,8 +3829,9 @@ func (h *AdminUIHandler) PropagateSettings(w http.ResponseWriter, r *http.Reques
 
 // LoginPageData holds data for the login template
 type LoginPageData struct {
-	Error          string
-	ServerBasePath string
+	Error                 string
+	RequirePasswordChange bool
+	ServerBasePath        string
 }
 
 // IsAuthenticated checks if the request has a valid session (any account)
@@ -4042,7 +4043,11 @@ func (h *AdminUIHandler) LoginPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := h.loginTemplate.ExecuteTemplate(w, "login", LoginPageData{ServerBasePath: h.serverBasePath}); err != nil {
+	requirePasswordChange := h.accountsService != nil && h.accountsService.HasDefaultPassword()
+	if err := h.loginTemplate.ExecuteTemplate(w, "login", LoginPageData{
+		RequirePasswordChange: requirePasswordChange,
+		ServerBasePath:        h.serverBasePath,
+	}); err != nil {
 		fmt.Printf("Login template error: %v\n", err)
 		http.Error(w, "Template error", http.StatusInternalServerError)
 	}
@@ -4105,6 +4110,8 @@ func (h *AdminUIHandler) LoginSubmit(w http.ResponseWriter, r *http.Request) {
 
 	username := strings.TrimSpace(r.FormValue("username"))
 	password := r.FormValue("password")
+	newPassword := r.FormValue("new_password")
+	confirmPassword := r.FormValue("confirm_password")
 
 	if username == "" {
 		h.renderLoginError(w, "Username is required")
@@ -4125,9 +4132,26 @@ func (h *AdminUIHandler) LoginSubmit(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if account.IsMaster && h.accountsService.HasDefaultPassword() && !requestsecurity.IsLoopback(r) {
-		h.renderLoginError(w, "The legacy default admin password can only be changed from localhost")
-		return
+	if account.IsMaster && h.accountsService.HasDefaultPassword() {
+		// Replace the shared bootstrap credential before creating a session.
+		// This works through Docker bridges without treating bridge networks as
+		// trusted localhost peers.
+		if strings.TrimSpace(newPassword) == "" {
+			h.renderLoginError(w, "Choose a new admin password to finish initial setup")
+			return
+		}
+		if newPassword != confirmPassword {
+			h.renderLoginError(w, "New passwords do not match")
+			return
+		}
+		if err := h.accountsService.ReplaceDefaultMasterPassword(newPassword); err != nil {
+			if errors.Is(err, accounts.ErrPasswordRequired) || strings.TrimSpace(newPassword) == accounts.DefaultMasterPassword {
+				h.renderLoginError(w, "The new password must be different from the default password")
+			} else {
+				h.renderLoginError(w, "The default password was already changed; sign in again")
+			}
+			return
+		}
 	}
 
 	// Check if "remember me" is checked
@@ -4187,7 +4211,12 @@ func (h *AdminUIHandler) Logout(w http.ResponseWriter, r *http.Request) {
 
 func (h *AdminUIHandler) renderLoginError(w http.ResponseWriter, errMsg string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := h.loginTemplate.ExecuteTemplate(w, "login", LoginPageData{Error: errMsg, ServerBasePath: h.serverBasePath}); err != nil {
+	requirePasswordChange := h.accountsService != nil && h.accountsService.HasDefaultPassword()
+	if err := h.loginTemplate.ExecuteTemplate(w, "login", LoginPageData{
+		Error:                 errMsg,
+		RequirePasswordChange: requirePasswordChange,
+		ServerBasePath:        h.serverBasePath,
+	}); err != nil {
 		fmt.Printf("Login template error: %v\n", err)
 		http.Error(w, "Template error", http.StatusInternalServerError)
 	}
