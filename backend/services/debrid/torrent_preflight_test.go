@@ -161,4 +161,23 @@ func TestPrioritizeCachedCandidatesEnrichesAndGroupsTorrentFiles(t *testing.T) {
 	if count := downloads.Load(); count != 2 {
 		t.Fatalf("torrent downloads = %d, want 2 raced alternate sources", count)
 	}
+
+	data, filename, reused, err := service.torrentFileForResolution(
+		context.Background(), torrentHash, got[1].Attributes["torrentURL"],
+	)
+	if err != nil {
+		t.Fatalf("torrentFileForResolution returned error: %v", err)
+	}
+	if !reused {
+		t.Fatal("torrentFileForResolution did not reuse preflight metainfo")
+	}
+	if string(data) != string(metainfo) {
+		t.Fatal("reused torrent metainfo differs from downloaded data")
+	}
+	if filename != "movie.torrent" {
+		t.Fatalf("reused filename = %q, want movie.torrent", filename)
+	}
+	if count := downloads.Load(); count != 2 {
+		t.Fatalf("torrent downloads after resolution lookup = %d, want 2", count)
+	}
 }

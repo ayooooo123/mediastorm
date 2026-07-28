@@ -21,7 +21,81 @@ const (
 	torrentPreflightAlternateLimit        = 2
 	torrentPreflightTimeout               = 6 * time.Second
 	torrentPreflightGroupTimeout          = 4 * time.Second
+	torrentMetainfoCacheTTL               = 5 * time.Minute
+	torrentMetainfoCacheLimit             = 64
 )
+
+type torrentMetainfo struct {
+	data      []byte
+	filename  string
+	expiresAt time.Time
+}
+
+type torrentMetainfoCache struct {
+	mu      sync.Mutex
+	entries map[string]torrentMetainfo
+}
+
+func newTorrentMetainfoCache() *torrentMetainfoCache {
+	return &torrentMetainfoCache{entries: make(map[string]torrentMetainfo)}
+}
+
+func (c *torrentMetainfoCache) put(infoHash string, data []byte, filename string) {
+	if c == nil || len(data) == 0 {
+		return
+	}
+	infoHash = strings.ToLower(strings.TrimSpace(infoHash))
+	if infoHash == "" {
+		return
+	}
+
+	now := time.Now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for hash, entry := range c.entries {
+		if !entry.expiresAt.After(now) {
+			delete(c.entries, hash)
+		}
+	}
+	if len(c.entries) >= torrentMetainfoCacheLimit {
+		var oldestHash string
+		var oldestExpiry time.Time
+		for hash, entry := range c.entries {
+			if oldestHash == "" || entry.expiresAt.Before(oldestExpiry) {
+				oldestHash = hash
+				oldestExpiry = entry.expiresAt
+			}
+		}
+		delete(c.entries, oldestHash)
+	}
+	c.entries[infoHash] = torrentMetainfo{
+		data:      append([]byte(nil), data...),
+		filename:  filename,
+		expiresAt: now.Add(torrentMetainfoCacheTTL),
+	}
+}
+
+func (c *torrentMetainfoCache) get(infoHash string) ([]byte, string, bool) {
+	if c == nil {
+		return nil, "", false
+	}
+	infoHash = strings.ToLower(strings.TrimSpace(infoHash))
+	if infoHash == "" {
+		return nil, "", false
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[infoHash]
+	if !ok {
+		return nil, "", false
+	}
+	if !entry.expiresAt.After(time.Now()) {
+		delete(c.entries, infoHash)
+		return nil, "", false
+	}
+	return append([]byte(nil), entry.data...), entry.filename, true
+}
 
 // PrioritizeCachedCandidates safely promotes confirmed-cached debrid candidates
 // before serial playback resolution. Torrent-file-only results are grouped by
@@ -125,9 +199,11 @@ type torrentPreflightGroup struct {
 }
 
 type torrentPreflightResult struct {
-	group *torrentPreflightGroup
-	hash  string
-	err   error
+	group    *torrentPreflightGroup
+	hash     string
+	data     []byte
+	filename string
+	err      error
 }
 
 func (s *PlaybackService) enrichTorrentFileGroups(ctx context.Context, candidates []models.NZBResult, candidateLimit, groupLimit int) int {
@@ -186,8 +262,10 @@ func (s *PlaybackService) enrichTorrentFileGroups(ctx context.Context, candidate
 		go func() {
 			defer wg.Done()
 			for group := range queue {
-				hash, err := s.resolveTorrentGroupInfoHash(ctx, group)
-				results <- torrentPreflightResult{group: group, hash: hash, err: err}
+				hash, data, filename, err := s.resolveTorrentGroupInfoHash(ctx, group)
+				results <- torrentPreflightResult{
+					group: group, hash: hash, data: data, filename: filename, err: err,
+				}
 			}
 		}()
 	}
@@ -218,6 +296,7 @@ func (s *PlaybackService) enrichTorrentFileGroups(ctx context.Context, candidate
 			}
 			candidates[index].Attributes["infoHash"] = result.hash
 		}
+		s.preflightData.put(result.hash, result.data, result.filename)
 		enrichedCount++
 		log.Printf("[debrid-preflight] enriched release=%q candidates=%d hash=%s",
 			result.group.key, len(result.group.indexes), result.hash)
@@ -242,9 +321,9 @@ func torrentFileCandidateNeedsHash(candidate models.NZBResult) bool {
 	return strings.HasPrefix(torrentURL, "http://") || strings.HasPrefix(torrentURL, "https://")
 }
 
-func (s *PlaybackService) resolveTorrentGroupInfoHash(ctx context.Context, group *torrentPreflightGroup) (string, error) {
+func (s *PlaybackService) resolveTorrentGroupInfoHash(ctx context.Context, group *torrentPreflightGroup) (string, []byte, string, error) {
 	if group == nil || len(group.urls) == 0 {
-		return "", fmt.Errorf("no torrent URLs")
+		return "", nil, "", fmt.Errorf("no torrent URLs")
 	}
 	limit := len(group.urls)
 	if limit > torrentPreflightAlternateLimit {
@@ -254,19 +333,21 @@ func (s *PlaybackService) resolveTorrentGroupInfoHash(ctx context.Context, group
 	groupCtx, cancel := context.WithTimeout(ctx, torrentPreflightGroupTimeout)
 	defer cancel()
 	type result struct {
-		hash string
-		err  error
+		hash     string
+		data     []byte
+		filename string
+		err      error
 	}
 	resultCh := make(chan result, limit)
 	for _, torrentURL := range group.urls[:limit] {
 		go func(url string) {
-			data, _, err := s.downloadTorrentFile(groupCtx, url)
+			data, filename, err := s.downloadTorrentFile(groupCtx, url)
 			if err != nil {
 				resultCh <- result{err: err}
 				return
 			}
 			hash, err := torrentV1InfoHash(data)
-			resultCh <- result{hash: hash, err: err}
+			resultCh <- result{hash: hash, data: data, filename: filename, err: err}
 		}(torrentURL)
 	}
 
@@ -274,11 +355,11 @@ func (s *PlaybackService) resolveTorrentGroupInfoHash(ctx context.Context, group
 	for i := 0; i < limit; i++ {
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return "", nil, "", ctx.Err()
 		case result := <-resultCh:
 			if result.err == nil && result.hash != "" {
 				cancel()
-				return result.hash, nil
+				return result.hash, result.data, result.filename, nil
 			}
 			if result.err != nil {
 				lastErr = result.err
@@ -288,7 +369,16 @@ func (s *PlaybackService) resolveTorrentGroupInfoHash(ctx context.Context, group
 	if lastErr == nil {
 		lastErr = fmt.Errorf("torrent metadata did not contain a v1 info hash")
 	}
-	return "", lastErr
+	return "", nil, "", lastErr
+}
+
+func (s *PlaybackService) torrentFileForResolution(ctx context.Context, infoHash, torrentURL string) ([]byte, string, bool, error) {
+	if data, filename, ok := s.preflightData.get(infoHash); ok {
+		return data, filename, true, nil
+	}
+	log.Printf("[debrid-playback] downloading torrent file from %s", safeURLForLog(torrentURL))
+	data, filename, err := s.downloadTorrentFile(ctx, torrentURL)
+	return data, filename, false, err
 }
 
 func reorderDebridCandidatesByCache(candidates []models.NZBResult, health []*DebridHealthCheck) ([]models.NZBResult, int, int) {
