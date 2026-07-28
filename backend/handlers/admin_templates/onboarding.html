@@ -87,22 +87,23 @@
             <div class="card-body">
                 <div id="passwordStatus" class="check-item" style="margin-bottom: 1rem;"></div>
                 <form onsubmit="saveMasterAdminAccount(event)" class="setup-grid">
+                    <div id="passwordGuidance" class="inline-result success" style="grid-column: 1 / -1;"></div>
                     <div class="form-group" style="grid-column: 1 / -1;">
                         <label class="form-label">Admin Username</label>
                         <input type="text" id="adminUsername" class="form-input" autocomplete="username">
                         <p class="form-hint">You can keep this as admin or choose a different master username.</p>
                     </div>
                     <div class="form-group">
-                        <label class="form-label">New Password</label>
+                        <label class="form-label" id="adminPasswordLabel">New Password</label>
                         <input type="password" id="adminPassword" class="form-input" minlength="4" autocomplete="new-password">
                     </div>
                     <div class="form-group">
-                        <label class="form-label">Confirm Password</label>
+                        <label class="form-label" id="adminPasswordConfirmLabel">Confirm Password</label>
                         <input type="password" id="adminPasswordConfirm" class="form-input" minlength="4" autocomplete="new-password">
                     </div>
                     <div style="grid-column: 1 / -1;">
-                        <button class="btn btn-primary" type="submit">Save Master Admin Account</button>
-                        <p class="form-hint">Changing the password signs out existing admin sessions.</p>
+                        <button class="btn btn-primary" id="saveMasterAdminButton" type="submit">Save Master Admin Account</button>
+                        <p class="form-hint" id="passwordChangeHint">Changing the password signs out existing admin sessions.</p>
                     </div>
                 </form>
             </div>
@@ -359,8 +360,18 @@ function previousStep() { goToStep(activeStep - 1); }
 function renderPasswordStatus() {
   const el = document.getElementById('passwordStatus');
   if (!statusData) return;
-  el.className = 'check-item ' + (!statusData.defaultPassword ? 'done' : '');
-  el.innerHTML = `<span>${statusData.defaultPassword ? 'Master admin account is using the default password.' : 'Master admin account is secured.'}</span><span class="check-state">${statusData.defaultPassword ? 'Needs action' : 'Done'}</span>`;
+  const needsPasswordChange = statusData.defaultPassword;
+  el.className = 'check-item ' + (!needsPasswordChange ? 'done' : '');
+  el.innerHTML = `<span>${needsPasswordChange ? 'Master admin account is using the default password.' : 'Password secured during sign-in. No additional password change is required.'}</span><span class="check-state">${needsPasswordChange ? 'Needs action' : 'Done'}</span>`;
+  document.getElementById('passwordGuidance').textContent = needsPasswordChange
+    ? 'Choose a new password below before continuing.'
+    : 'Your new password is already active. Leave both password fields blank and select Next, or enter them only if you want to change it again.';
+  document.getElementById('adminPasswordLabel').textContent = needsPasswordChange ? 'New Password' : 'Change Password Again (Optional)';
+  document.getElementById('adminPasswordConfirmLabel').textContent = needsPasswordChange ? 'Confirm Password' : 'Confirm Optional Password';
+  document.getElementById('saveMasterAdminButton').textContent = needsPasswordChange ? 'Save Master Admin Account' : 'Save Account Changes';
+  document.getElementById('passwordChangeHint').textContent = needsPasswordChange
+    ? 'Changing the password signs out existing admin sessions.'
+    : 'Leave these fields blank to keep the password you set during sign-in. Changing it again signs out existing admin sessions.';
 }
 
 function getMasterAccount() {
