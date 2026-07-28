@@ -30,6 +30,7 @@ import (
 	"novastream/internal/netproxy"
 	"novastream/internal/requestsecurity"
 	"novastream/models"
+	"novastream/services/debrid"
 	"novastream/services/streaming"
 	"novastream/utils"
 )
@@ -57,6 +58,8 @@ var hlsRedirectHTTPClient = &http.Client{
 	Timeout:   30 * time.Second,
 	Transport: cdnClient.Transport,
 }
+
+var errExternalStreamPlaceholder = errors.New("external stream resolved to unavailable-content placeholder")
 
 func isHTTPDirectURL(raw string) bool {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
@@ -1087,16 +1090,13 @@ func generateSessionID() string {
 func (m *HLSManager) resolveExternalURL(ctx context.Context, externalURL string) (string, error) {
 	videoTracef("[hls] resolving external URL")
 
-	// Create a request-scoped client that captures the final URL after redirects
-	// while sharing the CDN transport and DNS cache.
-	var finalURL string
+	// Create a request-scoped client that follows redirects while sharing the
+	// CDN transport and DNS cache.
 	client := *hlsRedirectHTTPClient
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 10 {
 			return fmt.Errorf("too many redirects")
 		}
-		// Track the URL we're redirecting to
-		finalURL = req.URL.String()
 		videoTracef("[hls] following external URL redirect")
 		return nil
 	}
@@ -1120,12 +1120,16 @@ func (m *HLSManager) resolveExternalURL(ctx context.Context, externalURL string)
 		return "", fmt.Errorf("HEAD request failed: %w", err)
 	}
 	resp.Body.Close()
+	resolvedURL := resp.Request.URL.String()
+	if debrid.IsKnownPlaceholderURL(resolvedURL) {
+		return "", fmt.Errorf("%w: %s", errExternalStreamPlaceholder, requestsecurity.URLForLog(resolvedURL))
+	}
 
 	// If HEAD succeeded, check for redirects
 	if resp.StatusCode < 400 {
-		if finalURL != "" && finalURL != externalURL {
+		if resolvedURL != externalURL {
 			videoTracef("[hls] resolved external URL via HEAD")
-			return finalURL, nil
+			return resolvedURL, nil
 		}
 		videoTracef("[hls] external URL has no redirects (HEAD)")
 		return externalURL, nil
@@ -1134,7 +1138,6 @@ func (m *HLSManager) resolveExternalURL(ctx context.Context, externalURL string)
 	// HEAD failed (e.g., 405 Method Not Allowed), try GET with Range header
 	// This minimizes data transfer while still following redirects
 	log.Printf("[hls] HEAD returned %d, trying GET with Range header", resp.StatusCode)
-	finalURL = "" // Reset for new request
 
 	req, err = http.NewRequestWithContext(ctx, http.MethodGet, encodedURL, nil)
 	if err != nil {
@@ -1149,15 +1152,19 @@ func (m *HLSManager) resolveExternalURL(ctx context.Context, externalURL string)
 		return "", fmt.Errorf("GET request failed: %w", err)
 	}
 	resp.Body.Close() // Close immediately, we only needed the redirect resolution
+	resolvedURL = resp.Request.URL.String()
+	if debrid.IsKnownPlaceholderURL(resolvedURL) {
+		return "", fmt.Errorf("%w: %s", errExternalStreamPlaceholder, requestsecurity.URLForLog(resolvedURL))
+	}
 
 	if resp.StatusCode >= 400 {
 		return "", fmt.Errorf("GET request returned status %d", resp.StatusCode)
 	}
 
 	// If we followed redirects, use the final URL
-	if finalURL != "" && finalURL != externalURL {
+	if resolvedURL != externalURL {
 		videoTracef("[hls] resolved external URL via GET")
-		return finalURL, nil
+		return resolvedURL, nil
 	}
 
 	// No redirects, use the original URL
@@ -1298,6 +1305,11 @@ func (m *HLSManager) CreateSession(ctx context.Context, path string, originalPat
 	if isExternalURL {
 		resolvedURL, err := m.resolveExternalURL(ctx, path)
 		if err != nil {
+			if errors.Is(err, errExternalStreamPlaceholder) {
+				cancel()
+				_ = os.RemoveAll(outputDir)
+				return nil, err
+			}
 			log.Printf("[hls] session %s: failed to resolve external URL, using original: %v", sessionID, err)
 			// Continue with original URL - ffmpeg/ffprobe can follow redirects
 		} else if resolvedURL != path {

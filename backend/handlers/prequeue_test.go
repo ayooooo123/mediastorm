@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -863,6 +864,44 @@ func TestDefaultExternalURLValidator(t *testing.T) {
 
 		if err := defaultExternalURLValidator(context.Background(), "https://example.com/stream"); err == nil {
 			t.Fatal("expected validation error for 403")
+		}
+	})
+
+	t.Run("forces reresolve when head redirects to ElfHosted slate", func(t *testing.T) {
+		http.DefaultTransport = prequeueRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+			finalReq := r.Clone(r.Context())
+			finalReq.URL, _ = url.Parse("https://slate.elfhosted.com/cache/link-expired.mp4")
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("")),
+				Header:     make(http.Header),
+				Request:    finalReq,
+			}, nil
+		})
+
+		if err := defaultExternalURLValidator(context.Background(), "https://example.com/stream"); err == nil {
+			t.Fatal("expected validation error for ElfHosted slate redirect")
+		}
+	})
+
+	t.Run("forces reresolve when ranged fallback returns slate playlist", func(t *testing.T) {
+		http.DefaultTransport = prequeueRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+			status := http.StatusMethodNotAllowed
+			body := ""
+			if r.Method == http.MethodGet {
+				status = http.StatusOK
+				body = "#EXTM3U\n#EXTINF:120.960,\nhttps://slate.elfhosted.com/cache/link-expired.ts\n"
+			}
+			return &http.Response{
+				StatusCode: status,
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Header:     make(http.Header),
+				Request:    r,
+			}, nil
+		})
+
+		if err := defaultExternalURLValidator(context.Background(), "https://example.com/stream"); err == nil {
+			t.Fatal("expected validation error for ElfHosted slate playlist")
 		}
 	})
 

@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +20,37 @@ import (
 	"novastream/config"
 	"novastream/services/streaming"
 )
+
+func TestCreateSessionRejectsElfHostedPlaceholderRedirect(t *testing.T) {
+	originalClient := hlsRedirectHTTPClient
+	defer func() { hlsRedirectHTTPClient = originalClient }()
+
+	hlsRedirectHTTPClient = &http.Client{
+		Transport: prequeueRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+			finalReq := r.Clone(r.Context())
+			finalReq.URL, _ = url.Parse("https://slate.elfhosted.com/cache/link-expired.mp4")
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("placeholder")),
+				Header:     make(http.Header),
+				Request:    finalReq,
+			}, nil
+		}),
+	}
+
+	manager := NewHLSManager(t.TempDir(), "", "", nil)
+	defer manager.Shutdown()
+
+	_, err := manager.CreateSession(
+		context.Background(),
+		"https://comet.elfhosted.com/playback/expired",
+		"https://comet.elfhosted.com/playback/expired",
+		false, "", false, false, 0, 0, -1, -1, "", "", "", false, "", "", 0,
+	)
+	if !errors.Is(err, errExternalStreamPlaceholder) {
+		t.Fatalf("CreateSession error = %v, want external placeholder error", err)
+	}
+}
 
 // --- generateSessionID tests ---
 

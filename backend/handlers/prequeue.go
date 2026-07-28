@@ -6,8 +6,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -262,26 +264,67 @@ func validateExternalStreamURL(ctx context.Context, streamURL string, allowRestr
 	if err := requestsecurity.ValidateOutboundURL(ctx, streamURL, allowRestricted); err != nil {
 		return err
 	}
+	client := requestsecurity.NewSafeHTTPClient(5*time.Second, 5, allowRestricted)
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, streamURL, nil)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; mediastorm/1.0)")
 
-	resp, err := requestsecurity.NewSafeHTTPClient(5*time.Second, 5, allowRestricted).Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	finalURL := resp.Request.URL.String()
+	_ = resp.Body.Close()
 
-	if resp.StatusCode == http.StatusMethodNotAllowed {
-		return nil
+	if debrid.IsKnownPlaceholderURL(finalURL) {
+		return fmt.Errorf("external stream redirected to unavailable-content placeholder")
 	}
 	if shouldForceReresolveForStatus(resp.StatusCode) {
 		return fmt.Errorf("external stream validation returned %d", resp.StatusCode)
 	}
+	if resp.StatusCode != http.StatusMethodNotAllowed &&
+		!isElfHostedStreamURL(streamURL) &&
+		!isElfHostedStreamURL(finalURL) {
+		return nil
+	}
+
+	rangeReq, err := http.NewRequestWithContext(ctx, http.MethodGet, streamURL, nil)
+	if err != nil {
+		return err
+	}
+	rangeReq.Header.Set("User-Agent", "Mozilla/5.0 (compatible; mediastorm/1.0)")
+	rangeReq.Header.Set("Range", "bytes=0-4095")
+	rangeReq.Header.Set("Accept-Encoding", "identity")
+
+	rangeResp, err := client.Do(rangeReq)
+	if err != nil {
+		return err
+	}
+	defer rangeResp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(rangeResp.Body, 4096))
+	if err != nil {
+		return err
+	}
+	if debrid.IsKnownPlaceholderResponse(rangeResp.Request.URL.String(), body) {
+		return fmt.Errorf("external stream returned unavailable-content placeholder")
+	}
+	if shouldForceReresolveForStatus(rangeResp.StatusCode) {
+		return fmt.Errorf("external stream validation returned %d", rangeResp.StatusCode)
+	}
 
 	return nil
+}
+
+func isElfHostedStreamURL(rawURL string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	return host == "elfhosted.com" || strings.HasSuffix(host, ".elfhosted.com")
 }
 
 func (h *PrequeueHandler) validateReadyEntryForReuse(ctx context.Context, entry *playback.PrequeueEntry) error {
