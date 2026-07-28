@@ -38,6 +38,7 @@ import (
 	"novastream/internal/ytdlp"
 	"novastream/models"
 	"novastream/services/credits"
+	"novastream/services/debrid"
 	"novastream/services/playback"
 	"novastream/services/streaming"
 
@@ -3537,6 +3538,9 @@ func (h *VideoHandler) StartHLSSession(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[video] failed to create HLS session: %v", err)
 		if errors.Is(err, streaming.ErrStaleTorrent) {
 			http.Error(w, "debrid torrent expired or deleted — please re-resolve", http.StatusGone)
+		} else if errors.Is(err, errExternalStreamPlaceholder) {
+			h.invalidatePrequeuesForFailedPath(path)
+			http.Error(w, "external stream expired — please re-resolve", http.StatusGone)
 		} else {
 			http.Error(w, fmt.Sprintf("failed to create HLS session: %v", err), http.StatusInternalServerError)
 		}
@@ -5768,6 +5772,15 @@ func (h *VideoHandler) proxyExternalURL(w http.ResponseWriter, r *http.Request, 
 	defer resp.Body.Close()
 	headersAt := time.Now()
 	finalURL := resp.Request.URL.String()
+	if debrid.IsKnownPlaceholderURL(finalURL) {
+		h.forgetExternalRedirect(cleanURL)
+		h.invalidatePrequeuesForFailedPath(externalURL)
+		if cleanURL != externalURL {
+			h.invalidatePrequeuesForFailedPath(cleanURL)
+		}
+		http.Error(w, "external stream expired — please re-resolve", http.StatusGone)
+		return true, fmt.Errorf("%w: %s", errExternalStreamPlaceholder, requestsecurity.URLForLog(finalURL))
+	}
 	if finalURL != cleanURL {
 		h.rememberExternalRedirect(cleanURL, finalURL)
 	}
