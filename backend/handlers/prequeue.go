@@ -1616,6 +1616,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 	resolveStart := time.Now()
 	log.Printf("[prequeue] TIMING: starting resolution phase (%d results, elapsed: %v)",
 		len(allResults), time.Since(workerStart))
+	allResults = h.playbackSvc.PrioritizeCachedDebridCandidates(ctx, allResults)
 
 	// Cached probe result for DV checking (reused later for track selection)
 	var cachedProbeResult *VideoFullResult
