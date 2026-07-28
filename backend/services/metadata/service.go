@@ -7564,27 +7564,44 @@ func (s *Service) ResolveIMDBID(ctx context.Context, title string, mediaType str
 		return ""
 	}
 
+	// TVDB applies the year filter strictly, but announced and regional movie
+	// release years often move by one. Retry without the remote year filter and
+	// validate the returned year locally before accepting an IMDb ID.
+	if len(results) == 0 && year > 0 {
+		if mediaType == "movie" {
+			results, err = s.searchTVDBMovie(title, 0, "")
+		} else {
+			results, err = s.searchTVDBSeries(title, 0, "")
+		}
+		if err != nil {
+			log.Printf("[metadata] ResolveIMDBID TVDB search without year failed: %v", err)
+			return ""
+		}
+	}
+
 	if len(results) == 0 {
 		metadataTracef("[metadata] ResolveIMDBID no TVDB results for %q", title)
 		return ""
 	}
 
-	// Look for IMDB ID in the first result's RemoteIDs
-	for _, result := range results {
-		for _, remote := range result.RemoteIDs {
-			id := strings.TrimSpace(remote.ID)
-			if id == "" {
-				continue
-			}
-			sourceName := strings.ToLower(strings.TrimSpace(remote.SourceName))
-			if strings.Contains(sourceName, "imdb") {
-				metadataTracef("[metadata] ResolveIMDBID found IMDB ID=%s for %q via TVDB result %q", id, title, result.Name)
-				return id
-			}
+	result, ok := selectIMDBResolutionTVDBSearchResult(title, year, results)
+	if !ok {
+		log.Printf("[metadata] ResolveIMDBID rejected %d nonmatching TVDB result(s) for title=%q year=%d", len(results), title, year)
+		return ""
+	}
+	for _, remote := range result.RemoteIDs {
+		id := strings.TrimSpace(remote.ID)
+		if id == "" {
+			continue
+		}
+		sourceName := strings.ToLower(strings.TrimSpace(remote.SourceName))
+		if strings.Contains(sourceName, "imdb") {
+			metadataTracef("[metadata] ResolveIMDBID found IMDB ID=%s for %q via validated TVDB result %q", id, title, result.Name)
+			return id
 		}
 	}
 
-	metadataTracef("[metadata] ResolveIMDBID no IMDB ID found in %d TVDB results for %q", len(results), title)
+	metadataTracef("[metadata] ResolveIMDBID validated TVDB result %q has no IMDB ID for %q", result.Name, title)
 	return ""
 }
 
@@ -8885,6 +8902,47 @@ func selectMovieDetailsTVDBSearchResult(req models.MovieDetailsQuery, results []
 	return selectCustomListTVDBSearchResult(item, results)
 }
 
+func selectIMDBResolutionTVDBSearchResult(title string, year int, results []tvdbSearchResult) (tvdbSearchResult, bool) {
+	for _, result := range results {
+		if !tvdbSearchResultTitleMatches(title, result) {
+			continue
+		}
+		if year > 0 {
+			if resultYear, ok := parseTVDBSearchYear(result.Year); ok && !releaseYearsClose(year, resultYear) {
+				continue
+			}
+		}
+		if !tvdbSearchResultHasIMDBID(result) {
+			continue
+		}
+		return result, true
+	}
+	return tvdbSearchResult{}, false
+}
+
+func tvdbSearchResultHasIMDBID(result tvdbSearchResult) bool {
+	for _, remote := range result.RemoteIDs {
+		if strings.TrimSpace(remote.ID) != "" &&
+			strings.Contains(strings.ToLower(strings.TrimSpace(remote.SourceName)), "imdb") {
+			return true
+		}
+	}
+	return false
+}
+
+func releaseYearsClose(expected, actual int) bool {
+	if expected <= 0 || actual <= 0 {
+		return true
+	}
+	difference := expected - actual
+	if difference < 0 {
+		difference = -difference
+	}
+	// Movie release years commonly shift by one between announcement,
+	// festival, theatrical, and regional metadata records.
+	return difference <= 1
+}
+
 func (s *Service) resolveTMDBMovieByTitleYear(ctx context.Context, title string, year int) int64 {
 	if s == nil || s.tmdb == nil || !s.tmdb.isConfigured() {
 		return 0
@@ -8957,7 +9015,7 @@ func customListTVDBSearchResultMatches(item mdblistItem, result tvdbSearchResult
 		}
 		return false
 	}
-	if !normalizedListTitleEqual(item.Title, result.Name) {
+	if !tvdbSearchResultTitleMatches(item.Title, result) {
 		return false
 	}
 	if item.ReleaseYear <= 0 {
@@ -8968,6 +9026,18 @@ func customListTVDBSearchResultMatches(item mdblistItem, result tvdbSearchResult
 		return true
 	}
 	return resultYear == item.ReleaseYear
+}
+
+func tvdbSearchResultTitleMatches(title string, result tvdbSearchResult) bool {
+	if normalizedListTitleEqual(title, result.Name) {
+		return true
+	}
+	for _, translation := range result.Translations {
+		if normalizedListTitleEqual(title, translation) {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizedListTitleEqual(left, right string) bool {
