@@ -336,6 +336,112 @@ func TestSelectMovieDetailsTVDBSearchResultRejectsPawPatrolForPatriot(t *testing
 	}
 }
 
+func TestSelectIMDBResolutionTVDBSearchResultRejectsWrongFirstResult(t *testing.T) {
+	results := []tvdbSearchResult{
+		tvdbSearchResultWithIMDB("Paw Patrol: The Dino Movie", "2026", "tt29356163"),
+		tvdbSearchResultWithIMDB("Patriot", "2026", "tt33412884"),
+	}
+
+	result, ok := selectIMDBResolutionTVDBSearchResult("Patriot", 2026, results)
+	if !ok {
+		t.Fatal("expected matching Patriot result")
+	}
+	if got := imdbIDFromTVDBSearchResult(result); got != "tt33412884" {
+		t.Fatalf("selected imdb id = %q, want tt33412884", got)
+	}
+}
+
+func TestResolveIMDBIDUsesValidatedMovieResult(t *testing.T) {
+	cache := newFileCache(t.TempDir(), 24)
+	svc := &Service{
+		client: &tvdbClient{language: "eng"},
+		cache:  cache,
+	}
+	results := []tvdbSearchResult{
+		tvdbSearchResultWithIMDB("Paw Patrol: The Dino Movie", "2026", "tt29356163"),
+		tvdbSearchResultWithIMDB("Patriot", "2026", "tt33412884"),
+	}
+	if err := cache.set(cacheKey("tvdb", "search", "movie", "Patriot", "2026", ""), results); err != nil {
+		t.Fatalf("seed TVDB search cache: %v", err)
+	}
+
+	if got := svc.ResolveIMDBID(t.Context(), "Patriot", "movie", 2026); got != "tt33412884" {
+		t.Fatalf("resolved imdb id = %q, want tt33412884", got)
+	}
+}
+
+func TestResolveIMDBIDRetriesWithoutStrictTVDBYear(t *testing.T) {
+	cache := newFileCache(t.TempDir(), 24)
+	svc := &Service{
+		client: &tvdbClient{language: "eng"},
+		cache:  cache,
+	}
+	if err := cache.set(cacheKey("tvdb", "search", "movie", "Idhayam Murali", "2026", ""), []tvdbSearchResult{}); err != nil {
+		t.Fatalf("seed strict-year TVDB search cache: %v", err)
+	}
+	result := tvdbSearchResultWithIMDB("இதயம் முரளி", "2025", "tt35723557")
+	result.Translations = map[string]string{
+		"eng": "The One Side",
+		"pt":  "Idhayam Murali",
+		"tam": "இதயம் முரளி",
+	}
+	if err := cache.set(cacheKey("tvdb", "search", "movie", "Idhayam Murali", "", ""), []tvdbSearchResult{result}); err != nil {
+		t.Fatalf("seed no-year TVDB search cache: %v", err)
+	}
+
+	if got := svc.ResolveIMDBID(t.Context(), "Idhayam Murali", "movie", 2026); got != "tt35723557" {
+		t.Fatalf("resolved imdb id = %q, want tt35723557", got)
+	}
+}
+
+func TestSelectIMDBResolutionTVDBSearchResultUsesTranslation(t *testing.T) {
+	result := tvdbSearchResultWithIMDB("இதயம் முரளி", "2025", "tt35723557")
+	result.Translations = map[string]string{
+		"eng": "The One Side",
+		"pt":  "Idhayam Murali",
+		"tam": "இதயம் முரளி",
+	}
+
+	selected, ok := selectIMDBResolutionTVDBSearchResult("Idhayam Murali", 2026, []tvdbSearchResult{result})
+	if !ok {
+		t.Fatal("expected translated title with adjacent release year to match")
+	}
+	if got := imdbIDFromTVDBSearchResult(selected); got != "tt35723557" {
+		t.Fatalf("selected imdb id = %q, want tt35723557", got)
+	}
+}
+
+func TestSelectIMDBResolutionTVDBSearchResultRejectsYearMismatch(t *testing.T) {
+	_, ok := selectIMDBResolutionTVDBSearchResult("Patriot", 2026, []tvdbSearchResult{
+		tvdbSearchResultWithIMDB("Patriot", "2000", "tt0187393"),
+	})
+	if ok {
+		t.Fatal("expected matching title with mismatched year to be rejected")
+	}
+}
+
+func tvdbSearchResultWithIMDB(name, year, imdbID string) tvdbSearchResult {
+	result := tvdbSearchResult{Name: name, Year: year}
+	result.RemoteIDs = append(result.RemoteIDs, struct {
+		ID         string `json:"id"`
+		Type       int    `json:"type"`
+		SourceName string `json:"sourceName"`
+	}{
+		ID:         imdbID,
+		SourceName: "IMDB",
+	})
+	return result
+}
+
+func imdbIDFromTVDBSearchResult(result tvdbSearchResult) string {
+	for _, remote := range result.RemoteIDs {
+		if strings.Contains(strings.ToLower(remote.SourceName), "imdb") {
+			return remote.ID
+		}
+	}
+	return ""
+}
+
 func TestSelectCustomListTVDBSearchResultRejectsRemoteIDMismatch(t *testing.T) {
 	item := mdblistItem{
 		Title:       "Patriot",
