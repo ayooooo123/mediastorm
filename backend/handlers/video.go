@@ -2657,6 +2657,31 @@ func shouldTagHevcAsHvc1(codec string) bool {
 	return strings.HasPrefix(value, "hevc")
 }
 
+func extractDolbyVisionConfiguration(stream *ffprobeStream) *models.DolbyVisionConfiguration {
+	if stream == nil {
+		return nil
+	}
+	for _, sd := range stream.SideDataList {
+		sdType := strings.ToLower(strings.TrimSpace(sd.SideDataType))
+		if !strings.Contains(sdType, "dovi") && !strings.Contains(sdType, "dolby") {
+			continue
+		}
+		return &models.DolbyVisionConfiguration{
+			StreamIndex:             stream.Index,
+			PixelFormat:             strings.TrimSpace(stream.PixFmt),
+			VersionMajor:            sd.DVVersionMajor,
+			VersionMinor:            sd.DVVersionMinor,
+			Profile:                 sd.DVProfile,
+			Level:                   sd.DVLevel,
+			RPUPresentFlag:          sd.RPUPresentFlag,
+			ELPresentFlag:           sd.ELPresentFlag,
+			BLPresentFlag:           sd.BLPresentFlag,
+			BLSignalCompatibilityID: sd.DVBLSignalCompatibilityID,
+		}
+	}
+	return nil
+}
+
 func detectDolbyVision(stream *ffprobeStream) (hasDV bool, dvProfile string, hdrFormat string) {
 	if stream == nil {
 		return false, "", ""
@@ -2668,30 +2693,26 @@ func detectDolbyVision(stream *ffprobeStream) (hasDV bool, dvProfile string, hdr
 	}
 
 	// Check for Dolby Vision via side data
-	for _, sd := range stream.SideDataList {
-		sdType := strings.ToLower(strings.TrimSpace(sd.SideDataType))
-		if strings.Contains(sdType, "dovi") || strings.Contains(sdType, "dolby") {
-			// Log detailed DOVI configuration
-			profileStr := fmt.Sprintf("dvhe.%02d.%02d", sd.DVProfile, sd.DVLevel)
-			videoTracef("[video] Dolby Vision detected: profile=%d level=%d version=%d.%d rpu=%d el=%d bl=%d bl_compat_id=%d (%s)",
-				sd.DVProfile, sd.DVLevel, sd.DVVersionMajor, sd.DVVersionMinor,
-				sd.RPUPresentFlag, sd.ELPresentFlag, sd.BLPresentFlag, sd.DVBLSignalCompatibilityID, profileStr)
+	if config := extractDolbyVisionConfiguration(stream); config != nil {
+		profileStr := fmt.Sprintf("dvhe.%02d.%02d", config.Profile, config.Level)
+		videoTracef("[video] Dolby Vision detected: profile=%d level=%d version=%d.%d rpu=%d el=%d bl=%d bl_compat_id=%d (%s)",
+			config.Profile, config.Level, config.VersionMajor, config.VersionMinor,
+			config.RPUPresentFlag, config.ELPresentFlag, config.BLPresentFlag, config.BLSignalCompatibilityID, profileStr)
 
-			// Determine if this profile has HDR10 fallback
-			// Profile 8 with bl_compat_id=1 or 2 has HDR10 base layer
-			// Profile 5 is dual-layer without HDR10 fallback
-			hasHDR10Fallback := sd.DVProfile == 8 && (sd.DVBLSignalCompatibilityID == 1 || sd.DVBLSignalCompatibilityID == 2)
-			if hasHDR10Fallback {
-				videoTracef("[video] Dolby Vision profile %d has HDR10 compatible base layer (bl_compat_id=%d)",
-					sd.DVProfile, sd.DVBLSignalCompatibilityID)
-			} else if sd.DVProfile == 5 {
-				videoTracef("[video] Dolby Vision profile 5 detected - dual-layer without HDR10 fallback")
-			} else if sd.DVProfile == 7 {
-				videoTracef("[video] Dolby Vision profile 7 detected - MEL/FEL enhancement layer")
-			}
-
-			return true, profileStr, "DV"
+		// Determine if this profile has HDR10 fallback
+		// Profile 8 with bl_compat_id=1 or 2 has HDR10 base layer
+		// Profile 5 is dual-layer without HDR10 fallback
+		hasHDR10Fallback := config.Profile == 8 && (config.BLSignalCompatibilityID == 1 || config.BLSignalCompatibilityID == 2)
+		if hasHDR10Fallback {
+			videoTracef("[video] Dolby Vision profile %d has HDR10 compatible base layer (bl_compat_id=%d)",
+				config.Profile, config.BLSignalCompatibilityID)
+		} else if config.Profile == 5 {
+			videoTracef("[video] Dolby Vision profile 5 detected - dual-layer without HDR10 fallback")
+		} else if config.Profile == 7 {
+			videoTracef("[video] Dolby Vision profile 7 detected - MEL/FEL enhancement layer")
 		}
+
+		return true, profileStr, "DV"
 	}
 
 	// Check profile for Dolby Vision markers
@@ -2867,21 +2888,22 @@ func composeMetadataResponse(meta *ffprobeOutput, sanitizedPath string, plan aud
 		case "video":
 			hasDV, dvProfile, hdrFormat := detectDolbyVision(stream)
 			summary := videoStreamSummary{
-				Index:              stream.Index,
-				CodecName:          strings.TrimSpace(stream.CodecName),
-				CodecLongName:      strings.TrimSpace(stream.CodecLongName),
-				Width:              stream.Width,
-				Height:             stream.Height,
-				BitRate:            getStreamBitrate(stream.BitRate, stream.Tags),
-				PixFmt:             strings.TrimSpace(stream.PixFmt),
-				Profile:            strings.TrimSpace(stream.Profile),
-				AvgFrameRate:       strings.TrimSpace(stream.AvgFrameRate),
-				HasDolbyVision:     hasDV,
-				DolbyVisionProfile: dvProfile,
-				HdrFormat:          hdrFormat,
-				ColorTransfer:      strings.TrimSpace(stream.ColorTransfer),
-				ColorPrimaries:     strings.TrimSpace(stream.ColorPrimaries),
-				ColorSpace:         strings.TrimSpace(stream.ColorSpace),
+				Index:                    stream.Index,
+				CodecName:                strings.TrimSpace(stream.CodecName),
+				CodecLongName:            strings.TrimSpace(stream.CodecLongName),
+				Width:                    stream.Width,
+				Height:                   stream.Height,
+				BitRate:                  getStreamBitrate(stream.BitRate, stream.Tags),
+				PixFmt:                   strings.TrimSpace(stream.PixFmt),
+				Profile:                  strings.TrimSpace(stream.Profile),
+				AvgFrameRate:             strings.TrimSpace(stream.AvgFrameRate),
+				HasDolbyVision:           hasDV,
+				DolbyVisionProfile:       dvProfile,
+				DolbyVisionConfiguration: extractDolbyVisionConfiguration(stream),
+				HdrFormat:                hdrFormat,
+				ColorTransfer:            strings.TrimSpace(stream.ColorTransfer),
+				ColorPrimaries:           strings.TrimSpace(stream.ColorPrimaries),
+				ColorSpace:               strings.TrimSpace(stream.ColorSpace),
 			}
 			resp.VideoStreams = append(resp.VideoStreams, summary)
 		case "subtitle":
@@ -3105,18 +3127,19 @@ type audioStreamSummary struct {
 }
 
 type videoStreamSummary struct {
-	Index              int    `json:"index"`
-	CodecName          string `json:"codecName"`
-	CodecLongName      string `json:"codecLongName,omitempty"`
-	Width              int    `json:"width,omitempty"`
-	Height             int    `json:"height,omitempty"`
-	BitRate            int64  `json:"bitRate,omitempty"`
-	PixFmt             string `json:"pixFmt,omitempty"`
-	Profile            string `json:"profile,omitempty"`
-	AvgFrameRate       string `json:"avgFrameRate,omitempty"`
-	HasDolbyVision     bool   `json:"hasDolbyVision"`
-	DolbyVisionProfile string `json:"dolbyVisionProfile,omitempty"`
-	HdrFormat          string `json:"hdrFormat,omitempty"`
+	Index                    int                              `json:"index"`
+	CodecName                string                           `json:"codecName"`
+	CodecLongName            string                           `json:"codecLongName,omitempty"`
+	Width                    int                              `json:"width,omitempty"`
+	Height                   int                              `json:"height,omitempty"`
+	BitRate                  int64                            `json:"bitRate,omitempty"`
+	PixFmt                   string                           `json:"pixFmt,omitempty"`
+	Profile                  string                           `json:"profile,omitempty"`
+	AvgFrameRate             string                           `json:"avgFrameRate,omitempty"`
+	HasDolbyVision           bool                             `json:"hasDolbyVision"`
+	DolbyVisionProfile       string                           `json:"dolbyVisionProfile,omitempty"`
+	DolbyVisionConfiguration *models.DolbyVisionConfiguration `json:"dolbyVisionConfiguration,omitempty"`
+	HdrFormat                string                           `json:"hdrFormat,omitempty"`
 	// HDR color metadata for HDR10 detection
 	ColorTransfer  string `json:"colorTransfer,omitempty"`
 	ColorPrimaries string `json:"colorPrimaries,omitempty"`
@@ -5118,6 +5141,7 @@ func (h *VideoHandler) ProbeVideoPath(ctx context.Context, path string) (*VideoP
 	hasDV, dvProfile, _ := detectDolbyVision(stream)
 	result.HasDolbyVision = hasDV
 	result.DolbyVisionProfile = dvProfile
+	result.DolbyVisionConfiguration = extractDolbyVisionConfiguration(stream)
 
 	// Detect HDR10 (PQ transfer with BT.2020)
 	colorTransfer := strings.ToLower(strings.TrimSpace(stream.ColorTransfer))
@@ -5328,6 +5352,7 @@ func (h *VideoHandler) ProbeVideoFull(ctx context.Context, path string) (*VideoF
 		hasDV, dvProfile, _ := detectDolbyVision(stream)
 		result.HasDolbyVision = hasDV
 		result.DolbyVisionProfile = dvProfile
+		result.DolbyVisionConfiguration = extractDolbyVisionConfiguration(stream)
 
 		// Detect HDR10 (PQ transfer with BT.2020)
 		colorTransfer := strings.ToLower(strings.TrimSpace(stream.ColorTransfer))
@@ -5420,18 +5445,19 @@ func (h *VideoHandler) ProbeVideoFull(ctx context.Context, path string) (*VideoF
 // unifiedProbeToVideoFull converts a cached UnifiedProbeResult to VideoFullResult
 func (h *VideoHandler) unifiedProbeToVideoFull(cached *UnifiedProbeResult) *VideoFullResult {
 	result := &VideoFullResult{
-		Duration:           cached.Duration,
-		VideoCodec:         cached.VideoCodec,
-		VideoPixFmt:        cached.VideoPixFmt,
-		VideoProfile:       cached.VideoProfile,
-		AvgFrameRate:       cached.AvgFrameRate,
-		HasDolbyVision:     cached.HasDolbyVision,
-		HasHDR10:           cached.HasHDR10,
-		DolbyVisionProfile: cached.DolbyVisionProfile,
-		HasTrueHD:          cached.HasTrueHD,
-		HasCompatibleAudio: cached.HasCompatibleAudio,
-		AudioStreams:       make([]AudioStreamInfo, 0, len(cached.AudioStreams)),
-		SubtitleStreams:    make([]SubtitleStreamInfo, 0, len(cached.SubtitleStreams)),
+		Duration:                 cached.Duration,
+		VideoCodec:               cached.VideoCodec,
+		VideoPixFmt:              cached.VideoPixFmt,
+		VideoProfile:             cached.VideoProfile,
+		AvgFrameRate:             cached.AvgFrameRate,
+		HasDolbyVision:           cached.HasDolbyVision,
+		HasHDR10:                 cached.HasHDR10,
+		DolbyVisionProfile:       cached.DolbyVisionProfile,
+		DolbyVisionConfiguration: cached.DolbyVisionConfiguration,
+		HasTrueHD:                cached.HasTrueHD,
+		HasCompatibleAudio:       cached.HasCompatibleAudio,
+		AudioStreams:             make([]AudioStreamInfo, 0, len(cached.AudioStreams)),
+		SubtitleStreams:          make([]SubtitleStreamInfo, 0, len(cached.SubtitleStreams)),
 	}
 
 	// Convert audio streams
@@ -5462,18 +5488,19 @@ func (h *VideoHandler) unifiedProbeToVideoFull(cached *UnifiedProbeResult) *Vide
 // videoFullToUnifiedProbe converts a VideoFullResult to UnifiedProbeResult for caching
 func (h *VideoHandler) videoFullToUnifiedProbe(result *VideoFullResult) *UnifiedProbeResult {
 	cached := &UnifiedProbeResult{
-		Duration:           result.Duration,
-		VideoCodec:         result.VideoCodec,
-		VideoPixFmt:        result.VideoPixFmt,
-		VideoProfile:       result.VideoProfile,
-		AvgFrameRate:       result.AvgFrameRate,
-		HasDolbyVision:     result.HasDolbyVision,
-		HasHDR10:           result.HasHDR10,
-		DolbyVisionProfile: result.DolbyVisionProfile,
-		HasTrueHD:          result.HasTrueHD,
-		HasCompatibleAudio: result.HasCompatibleAudio,
-		AudioStreams:       make([]audioStreamInfo, 0, len(result.AudioStreams)),
-		SubtitleStreams:    make([]subtitleStreamInfo, 0, len(result.SubtitleStreams)),
+		Duration:                 result.Duration,
+		VideoCodec:               result.VideoCodec,
+		VideoPixFmt:              result.VideoPixFmt,
+		VideoProfile:             result.VideoProfile,
+		AvgFrameRate:             result.AvgFrameRate,
+		HasDolbyVision:           result.HasDolbyVision,
+		HasHDR10:                 result.HasHDR10,
+		DolbyVisionProfile:       result.DolbyVisionProfile,
+		DolbyVisionConfiguration: result.DolbyVisionConfiguration,
+		HasTrueHD:                result.HasTrueHD,
+		HasCompatibleAudio:       result.HasCompatibleAudio,
+		AudioStreams:             make([]audioStreamInfo, 0, len(result.AudioStreams)),
+		SubtitleStreams:          make([]subtitleStreamInfo, 0, len(result.SubtitleStreams)),
 	}
 
 	// Convert audio streams
