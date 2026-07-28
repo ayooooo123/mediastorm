@@ -36,6 +36,12 @@
 .profile-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
 .account-badge { display: inline-flex; align-items: center; gap: 0.25rem; background: var(--bg-tertiary); padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.75rem; color: var(--text-secondary); }
 .account-badge.none { background: var(--danger); color: white; opacity: 0.7; }
+.account-profiles { flex: 1 0 100%; padding-top: 0.75rem; border-top: 1px solid var(--border); }
+.account-profiles-label { margin-bottom: 0.5rem; color: var(--text-muted); font-size: 0.75rem; font-weight: 500; text-transform: uppercase; letter-spacing: 0.04em; }
+.account-profiles-list { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.account-profile { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.3rem 0.55rem 0.3rem 0.35rem; border-radius: 999px; background: var(--bg-tertiary); color: var(--text-secondary); font-size: 0.8rem; }
+.account-profile-avatar { width: 24px; height: 24px; border-radius: 50%; flex-shrink: 0; display: flex; align-items: center; justify-content: center; color: white; font-size: 0.7rem; font-weight: 600; object-fit: cover; }
+.account-profiles-empty { color: var(--text-muted); font-size: 0.8rem; font-style: italic; }
 .connection-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
 .connection-header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 1rem; }
 .connection-header-row > div { flex: 1; min-width: 0; }
@@ -344,7 +350,19 @@ function renderAccounts() {
     }
 
     container.innerHTML = accounts.map(a => {
-        const profileCount = profiles.filter(p => p.accountId === a.id).length;
+        const accountProfiles = Array.isArray(a.profiles)
+            ? a.profiles
+            : profiles.filter(p => p.accountId === a.id);
+        const profileCount = accountProfiles.length;
+        const profilesHtml = accountProfiles.length > 0
+            ? `<div class="account-profiles-list">${accountProfiles.map(p => {
+                const initial = (p.name || 'P').charAt(0).toUpperCase();
+                const avatarHtml = p.hasIcon
+                    ? `<img class="account-profile-avatar" src="${basePath}/api/profiles/icon?profileId=${encodeURIComponent(p.id)}" alt="">`
+                    : `<span class="account-profile-avatar" style="background: ${p.color || '#6366f1'};">${escapeHtml(initial)}</span>`;
+                return `<span class="account-profile">${avatarHtml}<span>${escapeHtml(p.name || 'Unnamed profile')}</span>${p.isKidsProfile ? '<span class="status-badge warning" style="font-size: 0.6rem;">Kids</span>' : ''}</span>`;
+            }).join('')}</div>`
+            : '<div class="account-profiles-empty">No profiles associated with this account.</div>';
         return `
             <div class="card" style="margin-bottom: 0.75rem;">
                 <div class="card-body" style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
@@ -369,6 +387,10 @@ function renderAccounts() {
                         <button class="btn btn-secondary btn-sm" onclick="showMaxStreamsModal('${a.id}', '${escapeHtml(a.username)}', ${a.maxStreams || 0})">Streams</button>
                         <button class="btn btn-secondary btn-sm" onclick="showChangePasswordModal('${a.id}', '${escapeHtml(a.username)}')">Password</button>
                         ${!a.isMaster ? `<button class="btn btn-danger btn-sm" onclick="deleteAccount('${a.id}', '${escapeHtml(a.username)}')">Delete</button>` : ''}
+                    </div>
+                    <div class="account-profiles">
+                        <div class="account-profiles-label">Associated profiles</div>
+                        ${profilesHtml}
                     </div>
                 </div>
             </div>

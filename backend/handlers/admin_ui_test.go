@@ -378,14 +378,49 @@ func TestAdminUIHandler_GetUserAccounts(t *testing.T) {
 		t.Fatal("master account not found")
 	}
 
+	createBody, err := json.Marshal(map[string]string{
+		"name":      "Living Room",
+		"accountId": masterAccount.ID,
+	})
+	if err != nil {
+		t.Fatalf("marshal create profile request: %v", err)
+	}
+	createReq := createAuthenticatedRequest(t, http.MethodPost, "/admin/api/profiles", createBody, sessionsService, masterAccount.ID, true)
+	createRec := httptest.NewRecorder()
+	handler.RequireAuth(handler.CreateProfile)(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("CreateProfile status = %d, want %d: %s", createRec.Code, http.StatusOK, createRec.Body.String())
+	}
+
 	req := createAuthenticatedRequest(t, http.MethodGet, "/api/admin/accounts", nil, sessionsService, masterAccount.ID, true)
 	rec := httptest.NewRecorder()
 
 	handler.RequireMasterAuth(handler.GetUserAccounts)(rec, req)
 
-	// Should succeed or require auth
-	if rec.Code != http.StatusOK && rec.Code != http.StatusUnauthorized {
-		t.Errorf("GetUserAccounts status = %d, want 200 or 401", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GetUserAccounts status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var response struct {
+		Accounts []handlers.AdminAccountWithProfiles `json:"accounts"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode accounts response: %v", err)
+	}
+	if len(response.Accounts) != 1 {
+		t.Fatalf("accounts count = %d, want 1", len(response.Accounts))
+	}
+	var found bool
+	for _, profile := range response.Accounts[0].Profiles {
+		if profile.Name == "Living Room" {
+			found = true
+			if profile.AccountID != masterAccount.ID {
+				t.Errorf("associated profile account ID = %q, want %q", profile.AccountID, masterAccount.ID)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("accounts response did not include the associated Living Room profile: %+v", response.Accounts[0].Profiles)
 	}
 }
 
