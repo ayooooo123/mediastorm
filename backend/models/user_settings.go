@@ -405,9 +405,13 @@ type ShelfConfig struct {
 	Name                   string                 `json:"name"`                             // Display name
 	Enabled                bool                   `json:"enabled"`                          // Whether the shelf is visible
 	Order                  int                    `json:"order"`                            // Sort order (lower numbers appear first)
-	Type                   string                 `json:"type,omitempty"`                   // "builtin" (default), "mdblist", "tmdb", "trakt", "simkl", "letterboxd", "genre", "decade", "collection-hub", or "library"
+	Type                   string                 `json:"type,omitempty"`                   // "builtin" (default), "mdblist", "stremio", "tmdb", "trakt", "simkl", "letterboxd", "genre", "decade", "collection-hub", or "library"
 	LibraryID              string                 `json:"libraryId,omitempty"`              // Configured media library selected by a "library" shelf
 	ListURL                string                 `json:"listUrl,omitempty"`                // MDBList URL for custom lists (e.g., https://mdblist.com/lists/username/list-name/json)
+	AddonManifestURL       string                 `json:"addonManifestUrl,omitempty"`       // Stremio add-on manifest URL selected by a "stremio" shelf
+	AddonCatalogType       string                 `json:"addonCatalogType,omitempty"`       // Stremio catalog media type ("movie" or "series")
+	AddonCatalogID         string                 `json:"addonCatalogId,omitempty"`         // Stremio catalog ID from the add-on manifest
+	AddonName              string                 `json:"addonName,omitempty"`              // Stremio add-on name captured during manifest ingestion
 	TMDBSourceType         string                 `json:"tmdbSourceType,omitempty"`         // TMDB source builder type
 	TMDBSourceID           string                 `json:"tmdbSourceId,omitempty"`           // Numeric TMDB list/company/network/collection/person ID
 	TMDBSourceName         string                 `json:"tmdbSourceName,omitempty"`         // Resolved source name shown by the shelf editor

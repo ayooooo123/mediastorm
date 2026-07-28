@@ -1070,6 +1070,7 @@ func main() {
 	r.HandleFunc("/admin/api/lists/simkl", adminUIHandler.RequireAuth(metadataHandler.SimklList)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/lists/letterboxd", adminUIHandler.RequireAuth(metadataHandler.LetterboxdList)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/lists/letterboxd/sources", adminUIHandler.RequireAuth(metadataHandler.LetterboxdSources)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/api/home-shelves/stremio/manifest", adminUIHandler.RequireAuth(metadataHandler.StremioManifest)).Methods(http.MethodGet)
 	// Kids profile settings endpoints (for admin kids-settings page)
 	r.HandleFunc("/admin/api/users/{userID}/kids/mode", adminUIHandler.RequireAuth(usersHandler.SetKidsMode)).Methods(http.MethodPut)
 	r.HandleFunc("/admin/api/users/{userID}/kids/rating", adminUIHandler.RequireAuth(usersHandler.SetKidsMaxRating)).Methods(http.MethodPut)

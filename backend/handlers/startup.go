@@ -985,6 +985,10 @@ func isStartupFetchableCustomShelf(shelf models.ShelfConfig) bool {
 	switch strings.ToLower(strings.TrimSpace(shelf.Type)) {
 	case "mdblist":
 		return strings.TrimSpace(shelf.ListURL) != ""
+	case "stremio":
+		return strings.TrimSpace(shelf.AddonManifestURL) != "" &&
+			strings.TrimSpace(shelf.AddonCatalogType) != "" &&
+			strings.TrimSpace(shelf.AddonCatalogID) != ""
 	case "tmdb":
 		return strings.TrimSpace(shelf.TMDBSourceType) == metadatapkg.TMDBSourceCustomDiscover ||
 			(strings.TrimSpace(shelf.TMDBSourceType) != "" && strings.TrimSpace(shelf.TMDBSourceID) != "")
@@ -1028,6 +1032,11 @@ func startupDisplayListQueryForShelf(shelf models.ShelfConfig, homeShelfLimit in
 	case "mdblist":
 		query.Set("source", "mdblist")
 		query.Set("url", strings.TrimSpace(shelf.ListURL))
+	case "stremio":
+		query.Set("source", "stremio")
+		query.Set("manifestUrl", strings.TrimSpace(shelf.AddonManifestURL))
+		query.Set("catalogType", strings.TrimSpace(shelf.AddonCatalogType))
+		query.Set("catalogId", strings.TrimSpace(shelf.AddonCatalogID))
 	case "tmdb":
 		query.Set("source", "tmdb-list")
 		query.Set("sourceType", strings.TrimSpace(shelf.TMDBSourceType))
@@ -1160,6 +1169,8 @@ func homeShelfSourceKey(shelf models.ShelfConfig) string {
 	switch shelf.Type {
 	case "mdblist":
 		return "mdblist:" + strings.TrimSpace(shelf.ListURL)
+	case "stremio":
+		return fmt.Sprintf("stremio:%s:%s:%s", hashForManifest(strings.TrimSpace(shelf.AddonManifestURL)), shelf.AddonCatalogType, shelf.AddonCatalogID)
 	case "tmdb":
 		return fmt.Sprintf("tmdb:%s:%s:%s:%s:%s", shelf.TMDBSourceType, shelf.TMDBSourceID, shelf.TMDBMediaType, shelf.Sort, shelf.TMDBDiscoverQuery)
 	case "trakt":

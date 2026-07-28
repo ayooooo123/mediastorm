@@ -9285,8 +9285,7 @@ func (s *Service) curatedListCacheID(items []CuratedItem) string {
 			identities[i] = fmt.Sprintf("title:%s:%d", strings.ToLower(strings.TrimSpace(item.Title)), item.Year)
 		}
 	}
-	sort.Strings(identities)
-	return cacheKey("curated", "v8", strings.Join(identities, ","), s.client.language)
+	return cacheKey("curated", "v9", strings.Join(identities, ","), s.client.language)
 }
 
 func (s *Service) cachedCuratedList(ctx context.Context, cacheID, label string) ([]models.TrendingItem, bool) {
@@ -9361,10 +9360,10 @@ func (s *Service) GetCuratedList(ctx context.Context, items []CuratedItem, label
 		}
 	}
 
-	// Build a deterministic cache key from sorted item identities + language
-	sort.Strings(identities)
-	sortedIdentities := strings.Join(identities, ",")
-	cacheID := cacheKey("curated", "v8", sortedIdentities, s.client.language)
+	// Preserve source order in the cache key. Ranked Stremio/curated catalogs can
+	// reorder the same identities without changing their membership.
+	orderedIdentities := strings.Join(identities, ",")
+	cacheID := cacheKey("curated", "v9", orderedIdentities, s.client.language)
 
 	if cached, ok := s.cachedCuratedList(ctx, cacheID, label); ok {
 		if rawCacheID != cacheID {
