@@ -107,9 +107,10 @@ type PrequeueStatusResponse struct {
 	HealthStatus string `json:"healthStatus,omitempty"`
 
 	// HDR detection results
-	HasDolbyVision     bool   `json:"hasDolbyVision,omitempty"`
-	HasHDR10           bool   `json:"hasHdr10,omitempty"`
-	DolbyVisionProfile string `json:"dolbyVisionProfile,omitempty"`
+	HasDolbyVision           bool                             `json:"hasDolbyVision,omitempty"`
+	HasHDR10                 bool                             `json:"hasHdr10,omitempty"`
+	DolbyVisionProfile       string                           `json:"dolbyVisionProfile,omitempty"`
+	DolbyVisionConfiguration *models.DolbyVisionConfiguration `json:"dolbyVisionConfiguration,omitempty"`
 
 	// Audio transcoding detection (TrueHD, DTS, etc.)
 	NeedsAudioTranscode bool `json:"needsAudioTranscode,omitempty"`
@@ -165,9 +166,10 @@ type PrequeueEntry struct {
 	HealthStatus string         `json:"healthStatus,omitempty"`
 
 	// HDR detection
-	HasDolbyVision     bool   `json:"hasDolbyVision,omitempty"`
-	HasHDR10           bool   `json:"hasHdr10,omitempty"`
-	DolbyVisionProfile string `json:"dolbyVisionProfile,omitempty"`
+	HasDolbyVision           bool                             `json:"hasDolbyVision,omitempty"`
+	HasHDR10                 bool                             `json:"hasHdr10,omitempty"`
+	DolbyVisionProfile       string                           `json:"dolbyVisionProfile,omitempty"`
+	DolbyVisionConfiguration *models.DolbyVisionConfiguration `json:"dolbyVisionConfiguration,omitempty"`
 
 	// Audio transcoding detection (TrueHD, DTS, etc.)
 	NeedsAudioTranscode bool `json:"needsAudioTranscode,omitempty"`
@@ -1098,33 +1100,34 @@ func (e *PrequeueEntry) ToResponse() *PrequeueStatusResponse {
 		}
 	}
 	return &PrequeueStatusResponse{
-		PrequeueID:             e.ID,
-		Status:                 e.Status,
-		UserID:                 e.UserID,
-		TargetEpisode:          e.TargetEpisode,
-		StreamPath:             e.StreamPath,
-		ServiceType:            serviceType,
-		FileSize:               e.FileSize,
-		HealthStatus:           e.HealthStatus,
-		HasDolbyVision:         e.HasDolbyVision,
-		HasHDR10:               e.HasHDR10,
-		DolbyVisionProfile:     e.DolbyVisionProfile,
-		NeedsAudioTranscode:    e.NeedsAudioTranscode,
-		HLSSessionID:           e.HLSSessionID,
-		HLSPlaylistURL:         e.HLSPlaylistURL,
-		Duration:               e.Duration,
-		FrameRate:              e.FrameRate,
-		SelectedAudioTrack:     e.SelectedAudioTrack,
-		SelectedSubtitleTrack:  e.SelectedSubtitleTrack,
-		AudioTracks:            e.AudioTracks,
-		SubtitleTracks:         e.SubtitleTracks,
-		SubtitleSessions:       e.SubtitleSessions,
-		PassthroughName:        e.PassthroughName,
-		PassthroughDescription: e.PassthroughDescription,
-		ResultAttributes:       e.ResultAttributes,
-		SelectedResult:         e.SelectedResult,
-		SelectedResultIndex:    e.SelectedResultIndex,
-		MigrationCandidates:    e.MigrationCandidates,
-		Error:                  e.Error,
+		PrequeueID:               e.ID,
+		Status:                   e.Status,
+		UserID:                   e.UserID,
+		TargetEpisode:            e.TargetEpisode,
+		StreamPath:               e.StreamPath,
+		ServiceType:              serviceType,
+		FileSize:                 e.FileSize,
+		HealthStatus:             e.HealthStatus,
+		HasDolbyVision:           e.HasDolbyVision,
+		HasHDR10:                 e.HasHDR10,
+		DolbyVisionProfile:       e.DolbyVisionProfile,
+		DolbyVisionConfiguration: e.DolbyVisionConfiguration,
+		NeedsAudioTranscode:      e.NeedsAudioTranscode,
+		HLSSessionID:             e.HLSSessionID,
+		HLSPlaylistURL:           e.HLSPlaylistURL,
+		Duration:                 e.Duration,
+		FrameRate:                e.FrameRate,
+		SelectedAudioTrack:       e.SelectedAudioTrack,
+		SelectedSubtitleTrack:    e.SelectedSubtitleTrack,
+		AudioTracks:              e.AudioTracks,
+		SubtitleTracks:           e.SubtitleTracks,
+		SubtitleSessions:         e.SubtitleSessions,
+		PassthroughName:          e.PassthroughName,
+		PassthroughDescription:   e.PassthroughDescription,
+		ResultAttributes:         e.ResultAttributes,
+		SelectedResult:           e.SelectedResult,
+		SelectedResultIndex:      e.SelectedResultIndex,
+		MigrationCandidates:      e.MigrationCandidates,
+		Error:                    e.Error,
 	}
 }

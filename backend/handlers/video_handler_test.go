@@ -418,6 +418,49 @@ func TestDetectDolbyVision(t *testing.T) {
 	}
 }
 
+func TestComposeMetadataResponseIncludesDolbyVisionConfiguration(t *testing.T) {
+	meta := &ffprobeOutput{
+		Streams: []ffprobeStream{
+			{
+				Index:     2,
+				CodecType: "video",
+				CodecName: "hevc",
+				PixFmt:    "yuv420p10le",
+				SideDataList: []ffprobeSideData{
+					{
+						SideDataType:              "DOVI configuration record",
+						DVVersionMajor:            1,
+						DVVersionMinor:            0,
+						DVProfile:                 8,
+						DVLevel:                   6,
+						RPUPresentFlag:            1,
+						ELPresentFlag:             0,
+						BLPresentFlag:             1,
+						DVBLSignalCompatibilityID: 1,
+					},
+				},
+			},
+		},
+	}
+
+	response := composeMetadataResponse(meta, "/movie.mkv", audioPlan{})
+	if len(response.VideoStreams) != 1 {
+		t.Fatalf("video stream count = %d, want 1", len(response.VideoStreams))
+	}
+	stream := response.VideoStreams[0]
+	if stream.DolbyVisionConfiguration == nil {
+		t.Fatal("DolbyVisionConfiguration is nil")
+	}
+	config := stream.DolbyVisionConfiguration
+	if config.StreamIndex != 2 || config.PixelFormat != "yuv420p10le" ||
+		config.VersionMajor != 1 || config.VersionMinor != 0 ||
+		config.Profile != 8 || config.Level != 6 ||
+		config.RPUPresentFlag != 1 || config.ELPresentFlag != 0 ||
+		config.BLPresentFlag != 1 || config.BLSignalCompatibilityID != 1 {
+		t.Fatalf("unexpected Dolby Vision configuration: %+v", config)
+	}
+}
+
 // --- isDolbyVisionProfile7 tests ---
 
 func TestIsDolbyVisionProfile7(t *testing.T) {
