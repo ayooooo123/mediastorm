@@ -357,6 +357,16 @@ func (s *Service) Resolve(ctx context.Context, candidate models.NZBResult) (*mod
 	return s.buildInternalPlaybackResolution(cfg, candidate, finalPath, sourceNZBPath, estimateNZBFileSize(nzbBytes), "healthy")
 }
 
+// PrioritizeCachedDebridCandidates enriches torrent-file-only debrid results
+// with their metainfo hashes and promotes provider-confirmed cached results.
+// Non-debrid candidates keep their original positions.
+func (s *Service) PrioritizeCachedDebridCandidates(ctx context.Context, candidates []models.NZBResult) []models.NZBResult {
+	if s == nil || s.debrid == nil {
+		return candidates
+	}
+	return s.debrid.PrioritizeCachedCandidates(ctx, candidates)
+}
+
 func (s *Service) buildInternalPlaybackResolution(cfg config.Settings, candidate models.NZBResult, storagePath, sourceNZBPath string, fileSize int64, healthStatus string) (*models.PlaybackResolution, error) {
 	finalPath := storagePath
 	if s.metadataSvc != nil && s.isLikelyDirectory(storagePath) {
