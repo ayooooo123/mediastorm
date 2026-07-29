@@ -1110,35 +1110,32 @@ func filterWatchedItems(items []models.TrendingItem, userID string, historySvc h
 	result := make([]models.TrendingItem, 0, len(items))
 	filteredCount := 0
 	for _, item := range items {
-		// Build item ID for watch history lookup
-		itemID := buildItemIDForHistory(item)
-		if itemID == "" {
-			// Can't determine ID, include by default
-			result = append(result, item)
-			continue
-		}
-
-		mediaType := item.Title.MediaType
-		if mediaType == "" {
-			// Unknown type - include by default
-			result = append(result, item)
-			continue
-		}
-
-		// Check if item is marked as watched
-		watchItem, _ := historySvc.GetWatchHistoryItem(userID, mediaType, itemID)
-		if watchItem == nil || !watchItem.Watched {
+		if !isTrendingItemWatched(item, userID, historySvc) {
 			// Not watched or not found - include it
 			result = append(result, item)
 		} else {
 			filteredCount++
 			if filteredCount <= 3 {
-				log.Printf("[hideWatched] filtered %s: %s (itemID=%s)", mediaType, item.Title.Name, itemID)
+				itemID := buildItemIDForHistory(item)
+				log.Printf("[hideWatched] filtered %s: %s (itemID=%s)", item.Title.MediaType, item.Title.Name, itemID)
 			}
 		}
 	}
 	log.Printf("[hideWatched] filter result: %d/%d items kept (filtered %d)", len(result), len(items), filteredCount)
 	return result
+}
+
+func isTrendingItemWatched(item models.TrendingItem, userID string, historySvc historyServiceInterface) bool {
+	if userID == "" || historySvc == nil {
+		return false
+	}
+	itemID := buildItemIDForHistory(item)
+	mediaType := item.Title.MediaType
+	if itemID == "" || mediaType == "" {
+		return false
+	}
+	watchItem, _ := historySvc.GetWatchHistoryItem(userID, mediaType, itemID)
+	return watchItem != nil && watchItem.Watched
 }
 
 // buildItemIDForHistory constructs the item ID used in watch history from a TrendingItem.
@@ -2580,8 +2577,9 @@ func (h *MetadataHandler) PopularOnServer(w http.ResponseWriter, r *http.Request
 	for id := range eligibleUsers {
 		eligibleIDs[id] = true
 	}
+	viewerUserID, hideWatched := sharedShelfViewerFilter(r)
 	offset, limit := sharedShelfPage(r, 20)
-	cacheKey := fmt.Sprintf("%s:%d:%d:%d:%d", privacyKey, windowDays, minViews, offset, limit)
+	cacheKey := fmt.Sprintf("%s:%s:%t:%d:%d:%d:%d", privacyKey, viewerUserID, hideWatched, windowDays, minViews, offset, limit)
 
 	h.popularCacheMu.Lock()
 	if h.popularCache != nil && h.popularCache.key == cacheKey && h.popularCache.expiresAt.After(time.Now()) {
@@ -2593,6 +2591,16 @@ func (h *MetadataHandler) PopularOnServer(w http.ResponseWriter, r *http.Request
 	h.popularCacheMu.Unlock()
 
 	popular := historyService.AggregatePopularTitles(eligibleIDs, windowDays, minViews)
+	if hideWatched {
+		filtered := make([]models.PopularTitle, 0, len(popular))
+		for _, item := range popular {
+			title := titleFromSharedShelfItem(item.ItemID, item.Name, item.MediaType, item.Year, item.ExternalIDs)
+			if !isTrendingItemWatched(models.TrendingItem{Title: title}, viewerUserID, h.HistoryService) {
+				filtered = append(filtered, item)
+			}
+		}
+		popular = filtered
+	}
 	total := len(popular)
 	if offset >= len(popular) {
 		popular = nil
@@ -2654,8 +2662,9 @@ func (h *MetadataHandler) RecentlyWatched(w http.ResponseWriter, r *http.Request
 	}
 
 	eligibleUsers, privacyKey := eligibleSharedShelfUsers(usersService.ListAll())
+	viewerUserID, hideWatched := sharedShelfViewerFilter(r)
 	offset, limit := sharedShelfPage(r, 20)
-	cacheKey := fmt.Sprintf("%s:%d:%d:%d:%d", privacyKey, windowDays, maxPerProfile, offset, limit)
+	cacheKey := fmt.Sprintf("%s:%s:%t:%d:%d:%d:%d", privacyKey, viewerUserID, hideWatched, windowDays, maxPerProfile, offset, limit)
 
 	h.recentWatchesCacheMu.Lock()
 	if h.recentWatchesCache != nil && h.recentWatchesCache.key == cacheKey && h.recentWatchesCache.expiresAt.After(time.Now()) {
@@ -2667,6 +2676,16 @@ func (h *MetadataHandler) RecentlyWatched(w http.ResponseWriter, r *http.Request
 	h.recentWatchesCacheMu.Unlock()
 
 	recent := historyService.ListRecentWatches(eligibleUsers, windowDays, maxPerProfile)
+	if hideWatched {
+		filtered := make([]models.RecentWatch, 0, len(recent))
+		for _, watch := range recent {
+			title := recentWatchBaseTitle(watch)
+			if !isTrendingItemWatched(models.TrendingItem{Title: title}, viewerUserID, h.HistoryService) {
+				filtered = append(filtered, watch)
+			}
+		}
+		recent = filtered
+	}
 	total := len(recent)
 	if offset >= len(recent) {
 		recent = nil
@@ -2684,15 +2703,7 @@ func (h *MetadataHandler) RecentlyWatched(w http.ResponseWriter, r *http.Request
 	}
 	items := parallelSharedShelfItems(r.Context(), ranked, func(ctx context.Context, rankedWatch rankedRecentWatch) models.TrendingItem {
 		watch := rankedWatch.Watch
-		mediaType := watch.MediaType
-		itemID := watch.ItemID
-		name := watch.Name
-		if watch.MediaType == "episode" {
-			mediaType = "series"
-			itemID = watch.SeriesID
-			name = watch.SeriesName
-		}
-		title := titleFromSharedShelfItem(itemID, name, mediaType, 0, watch.ExternalIDs)
+		title := recentWatchBaseTitle(watch)
 		title = enrichRecentWatchTitle(ctx, service, title, watch)
 		title.CardSubtitle = recentWatchSubtitle(watch)
 		title.ForceTitleOverlay = true
@@ -2725,6 +2736,24 @@ func eligibleSharedShelfUsers(users []models.User) (map[string]models.User, stri
 	}
 	sort.Strings(keys)
 	return eligible, strings.Join(keys, "|")
+}
+
+func sharedShelfViewerFilter(r *http.Request) (string, bool) {
+	userID := strings.TrimSpace(r.URL.Query().Get("userId"))
+	hideWatched := userID != "" && strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("hideWatched")), "true")
+	return userID, hideWatched
+}
+
+func recentWatchBaseTitle(watch models.RecentWatch) models.Title {
+	mediaType := watch.MediaType
+	itemID := watch.ItemID
+	name := watch.Name
+	if watch.MediaType == "episode" {
+		mediaType = "series"
+		itemID = watch.SeriesID
+		name = watch.SeriesName
+	}
+	return titleFromSharedShelfItem(itemID, name, mediaType, 0, watch.ExternalIDs)
 }
 
 func sharedShelfPage(r *http.Request, fallback int) (int, int) {
@@ -2903,9 +2932,6 @@ func (h *MetadataHandler) writeSharedShelfResponse(
 	}
 	originalCount := len(items)
 	userID := strings.TrimSpace(r.URL.Query().Get("userId"))
-	if userID != "" && strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("hideWatched")), "true") {
-		items = filterWatchedItems(items, userID, h.HistoryService)
-	}
 	items = h.filterTrendingByKids(r.Context(), userID, service, items)
 	if len(items) != originalCount {
 		total = len(items)
