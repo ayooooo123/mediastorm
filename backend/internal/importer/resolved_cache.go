@@ -334,7 +334,10 @@ func (c *resolvedNZBCache) saveLocked(idx *resolvedNZBIndex) error {
 
 func (c *resolvedNZBCache) entryExists(entry ResolvedNZBEntry) bool {
 	storagePath := normalizeResolvedStoragePath(entry.StoragePath)
-	return storagePath != "" && (c.metadataService.DirectoryExists(storagePath) || c.metadataService.FileExists(storagePath))
+	if storagePath == "" || isNonContentArchivePath(storagePath) {
+		return false
+	}
+	return c.metadataService.DirectoryExists(storagePath) || c.metadataService.FileExists(storagePath)
 }
 
 func resolvedEntryMatches(entry ResolvedNZBEntry, filter string) bool {

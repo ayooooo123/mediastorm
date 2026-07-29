@@ -226,6 +226,30 @@ func TestFFmpegTokenSetParsesNames(t *testing.T) {
 	}
 }
 
+func TestCompactProbeOutput(t *testing.T) {
+	if got := compactProbeOutput("  first line\nsecond\tline  "); got != "first line second line" {
+		t.Fatalf("compactProbeOutput normalized whitespace to %q", got)
+	}
+	if got := compactProbeOutput(" \n\t "); got != "<no output>" {
+		t.Fatalf("compactProbeOutput(empty) = %q", got)
+	}
+	long := strings.Repeat("x", maxProbeOutputLogBytes+100)
+	got := compactProbeOutput(long)
+	if len(got) >= len(long) || !strings.HasSuffix(got, "...[truncated]") {
+		t.Fatalf("compactProbeOutput did not bound long output: len=%d suffix=%q", len(got), got[len(got)-20:])
+	}
+}
+
+func TestHWEncoderUsableExplainsMissingEncoder(t *testing.T) {
+	_, ok, reason := hwEncoderUsable("/nonexistent/ffmpeg", HWNVENC, map[string]bool{})
+	if ok {
+		t.Fatal("missing encoder unexpectedly usable")
+	}
+	if !strings.Contains(reason, "h264_nvenc not present") {
+		t.Fatalf("missing encoder reason = %q", reason)
+	}
+}
+
 type mutableHWAccelConfigProvider struct {
 	settings config.Settings
 }

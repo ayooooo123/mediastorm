@@ -85,6 +85,24 @@ func TestAdminSettingsSaveCommitsPendingTextArrayInputs(t *testing.T) {
 	}
 }
 
+func TestAdminSettingsCustomShelfActionsAlignWithInputs(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/settings.html")
+	if err != nil {
+		t.Fatalf("read settings template: %v", err)
+	}
+	source := string(templateBytes)
+
+	for _, marker := range []string{
+		".add-custom-list-form .form-group{flex:1;margin-bottom:0;}",
+		".tmdb-source-actions button,.add-custom-list-submit{height:38px;display:inline-flex;align-items:center;justify-content:center;}",
+		"new URLSearchParams(window.location.search).get('layoutDebug') === '1'",
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("settings template missing custom shelf alignment marker %q", marker)
+		}
+	}
+}
+
 func TestUsenetEngineStatusProbeJobIDUsesGUIDForNZBDav(t *testing.T) {
 	for _, engineType := range []string{"nzbdav", "nzbdavex"} {
 		t.Run(engineType, func(t *testing.T) {

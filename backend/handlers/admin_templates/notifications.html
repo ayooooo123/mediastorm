@@ -61,10 +61,11 @@
                 <label class="form-label">Watch status events</label>
                 <div class="checkbox-grid">
                     <label><input type="checkbox" name="watch-event" value="watch.started"> Start</label>
+                    <label><input type="checkbox" name="watch-event" value="watch.progress"> Progress</label>
                     <label><input type="checkbox" name="watch-event" value="watch.resumed"> Resume</label>
                     <label><input type="checkbox" name="watch-event" value="watch.watched"> Watched</label>
                 </div>
-                <div class="form-help">Start is the first heartbeat in a session. Resume is emitted when playback continues after pause or buffering.</div>
+                <div class="form-help">Progress (Discord only) edits one message on each whole-percentage change, changes it to Watched at completion, and deletes it when unfinished playback ends.</div>
             </div>
 
             <div id="release-settings" class="form-grid" hidden>
@@ -77,6 +78,18 @@
                     <label class="form-label" for="trending-limit">Top trending items</label>
                     <input class="form-input" id="trending-limit" type="number" min="1" max="100" value="20">
                     <div class="form-help">Applied independently to trending movies and shows.</div>
+                </div>
+                <div class="form-group" style="grid-column: 1 / -1;">
+                    <label class="form-label">Release types</label>
+                    <div class="checkbox-grid">
+                        <label><input type="checkbox" name="release-type" value="digital" checked> Digital</label>
+                        <label><input type="checkbox" name="release-type" value="physical" checked> Physical</label>
+                        <label><input type="checkbox" name="release-type" value="theatrical"> Theatrical</label>
+                        <label><input type="checkbox" name="release-type" value="theatricalLimited"> Limited Theatrical</label>
+                        <label><input type="checkbox" name="release-type" value="premiere"> Premiere</label>
+                        <label><input type="checkbox" name="release-type" value="tv"> TV / broadcast</label>
+                    </div>
+                    <div class="form-help">Digital and Physical are selected by default. Release types are based on provider metadata.</div>
                 </div>
             </div>
 
@@ -199,6 +212,7 @@ function renderChannels() {
             .filter(event => event !== 'watch.playing')
             .map(event => ({
             'watch.started': 'Start',
+            'watch.progress': 'Progress',
             'watch.resumed': 'Resume',
             'watch.watched': 'Watched',
             'release.available': 'Released / aired'
@@ -206,7 +220,17 @@ function renderChannels() {
         const sources = [];
         if (channel.notifyWatchlist) sources.push('watchlist');
         if (channel.notifyTrending) sources.push('top ' + channel.trendingLimit + ' trending');
-        const notificationType = (channel.events || []).includes('release.available') ? 'Release status' : 'Watch status';
+        const releaseTypeLabels = {
+            digital: 'Digital',
+            physical: 'Physical',
+            theatrical: 'Theatrical',
+            theatricalLimited: 'Limited Theatrical',
+            premiere: 'Premiere',
+            tv: 'TV / broadcast'
+        };
+        const releaseTypes = (channel.releaseTypes || []).map(type => releaseTypeLabels[type] || type);
+        const isRelease = (channel.events || []).includes('release.available');
+        const notificationType = isRelease ? 'Release status' : 'Watch status';
         return `
             <div class="notification-row">
                 <div class="notification-main">
@@ -218,6 +242,7 @@ function renderChannels() {
                     </div>
                     <div class="notification-meta">${escapeHtml(eventLabels.join(', '))}</div>
                     ${sources.length ? `<div class="notification-meta">Releases: ${escapeHtml(sources.join(', '))}</div>` : ''}
+                    ${isRelease && releaseTypes.length ? `<div class="notification-meta">Types: ${escapeHtml(releaseTypes.join(', '))}</div>` : ''}
                     <div class="notification-meta">URL: ${channel.urlConfigured ? 'configured' : 'missing'} · Poster: ${channel.includePoster ? 'included' : 'omitted'}</div>
                 </div>
                 <div class="notification-actions">
@@ -247,10 +272,21 @@ function updateCategoryVisibility() {
     });
     document.getElementById('notify-watchlist').disabled = !isRelease;
     document.getElementById('notify-trending').disabled = !isRelease;
+    document.querySelectorAll('input[name="release-type"]').forEach(input => {
+        input.disabled = !isRelease;
+    });
     document.getElementById('watch-template-fields').hidden = isRelease;
     document.getElementById('release-template-fields').hidden = !isRelease;
+    updateProgressAvailability();
     updateTrendingVisibility();
     updatePreview();
+}
+
+function updateProgressAvailability() {
+    const progressInput = document.querySelector('input[name="watch-event"][value="watch.progress"]');
+    const isDiscord = document.getElementById('channel-type').value === 'discord';
+    progressInput.disabled = selectedCategory() === 'release' || !isDiscord;
+    if (!isDiscord) progressInput.checked = false;
 }
 
 function updateTrendingVisibility() {
@@ -264,6 +300,7 @@ function previewValues() {
     const isRelease = selectedCategory() === 'release';
     const watchEvents = {
         'watch.started': {label: 'Started watching', percent: '1'},
+        'watch.progress': {label: 'Watching', percent: '42'},
         'watch.resumed': {label: 'Resumed', percent: '42'},
         'watch.watched': {label: 'Watched', percent: '100'}
     };
@@ -282,9 +319,9 @@ function previewValues() {
         episodeNumber: '',
         percent: isRelease ? '0' : watchEvent.percent,
         progressLabel: isRelease ? '' : ' · ' + watchEvent.percent + '%',
-        releaseType: isRelease ? 'digital' : '',
+        releaseType: isRelease ? 'Digital' : '',
         releaseDate: isRelease ? '2026-07-23' : '',
-        releaseLabel: isRelease ? ' · digital · 2026-07-23' : '',
+        releaseLabel: isRelease ? ' · Digital · 2026-07-23' : '',
         source: isRelease ? (document.getElementById('notify-trending').checked ? 'top-trending' : 'watchlist') : '',
         rank: isRelease && document.getElementById('notify-trending').checked ? '1' : '',
         posterUrl: ''
@@ -324,6 +361,9 @@ async function saveChannel(event) {
         notifyWatchlist: isRelease && document.getElementById('notify-watchlist').checked,
         notifyTrending: isRelease && document.getElementById('notify-trending').checked,
         trendingLimit: Number(document.getElementById('trending-limit').value),
+        releaseTypes: isRelease
+            ? Array.from(document.querySelectorAll('input[name="release-type"]:checked')).map(input => input.value)
+            : [],
         titleTemplate: document.getElementById('title-template').value,
         bodyTemplate: document.getElementById('body-template').value,
         includePoster: document.getElementById('include-poster').checked
@@ -354,6 +394,9 @@ function editChannel(id) {
     document.getElementById('notify-watchlist').checked = channel.notifyWatchlist;
     document.getElementById('notify-trending').checked = channel.notifyTrending;
     document.getElementById('trending-limit').value = channel.trendingLimit;
+    document.querySelectorAll('input[name="release-type"]').forEach(input => {
+        input.checked = (channel.releaseTypes || ['digital', 'physical']).includes(input.value);
+    });
     document.getElementById('title-template').value = channel.titleTemplate;
     document.getElementById('body-template').value = channel.bodyTemplate;
     document.getElementById('include-poster').checked = channel.includePoster;
@@ -377,6 +420,9 @@ function resetForm() {
     document.getElementById('body-template').value = '\u007b\u007bmediaLabel\u007d\u007d\u007b\u007bprogressLabel\u007d\u007d\u007b\u007breleaseLabel\u007d\u007d';
     document.getElementById('notify-watchlist').checked = true;
     document.getElementById('notify-trending').checked = false;
+    document.querySelectorAll('input[name="release-type"]').forEach(input => {
+        input.checked = input.value === 'digital' || input.value === 'physical';
+    });
     document.getElementById('include-poster').checked = true;
     document.getElementById('channel-enabled').checked = true;
     document.querySelector('input[name="notification-category"][value="watch"]').checked = true;
@@ -426,6 +472,10 @@ async function deleteChannel(id) {
 document.getElementById('title-template').addEventListener('input', updatePreview);
 document.getElementById('body-template').addEventListener('input', updatePreview);
 document.getElementById('include-poster').addEventListener('change', updatePreview);
+document.getElementById('channel-type').addEventListener('change', () => {
+    updateProgressAvailability();
+    updatePreview();
+});
 document.getElementById('notify-watchlist').addEventListener('change', updatePreview);
 document.getElementById('notify-trending').addEventListener('change', updatePreview);
 document.querySelectorAll('input[name="watch-event"]').forEach(input => {

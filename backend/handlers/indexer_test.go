@@ -12,6 +12,42 @@ import (
 	"novastream/services/indexer"
 )
 
+func TestNormalizeDecoratedSeriesQuery(t *testing.T) {
+	tests := []struct {
+		name      string
+		query     string
+		mediaType string
+		want      string
+	}{
+		{
+			name:      "continue watching display title",
+			query:     "Legion • S02E01 – Chapter 9 S02E02",
+			mediaType: "series",
+			want:      "Legion S02E02",
+		},
+		{
+			name:      "ordinary series query",
+			query:     "Legion S02E02 2160p",
+			mediaType: "series",
+			want:      "Legion S02E02 2160p",
+		},
+		{
+			name:      "movie title remains untouched",
+			query:     "Movie • S02E01 S02E02",
+			mediaType: "movie",
+			want:      "Movie • S02E01 S02E02",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeDecoratedSeriesQuery(tt.query, tt.mediaType); got != tt.want {
+				t.Fatalf("normalizeDecoratedSeriesQuery(%q, %q) = %q, want %q", tt.query, tt.mediaType, got, tt.want)
+			}
+		})
+	}
+}
+
 type fakeIndexerService struct {
 	results  []models.NZBResult
 	err      error

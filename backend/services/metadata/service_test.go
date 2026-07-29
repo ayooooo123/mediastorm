@@ -336,6 +336,112 @@ func TestSelectMovieDetailsTVDBSearchResultRejectsPawPatrolForPatriot(t *testing
 	}
 }
 
+func TestSelectIMDBResolutionTVDBSearchResultRejectsWrongFirstResult(t *testing.T) {
+	results := []tvdbSearchResult{
+		tvdbSearchResultWithIMDB("Paw Patrol: The Dino Movie", "2026", "tt29356163"),
+		tvdbSearchResultWithIMDB("Patriot", "2026", "tt33412884"),
+	}
+
+	result, ok := selectIMDBResolutionTVDBSearchResult("Patriot", 2026, results)
+	if !ok {
+		t.Fatal("expected matching Patriot result")
+	}
+	if got := imdbIDFromTVDBSearchResult(result); got != "tt33412884" {
+		t.Fatalf("selected imdb id = %q, want tt33412884", got)
+	}
+}
+
+func TestResolveIMDBIDUsesValidatedMovieResult(t *testing.T) {
+	cache := newFileCache(t.TempDir(), 24)
+	svc := &Service{
+		client: &tvdbClient{language: "eng"},
+		cache:  cache,
+	}
+	results := []tvdbSearchResult{
+		tvdbSearchResultWithIMDB("Paw Patrol: The Dino Movie", "2026", "tt29356163"),
+		tvdbSearchResultWithIMDB("Patriot", "2026", "tt33412884"),
+	}
+	if err := cache.set(cacheKey("tvdb", "search", "movie", "Patriot", "2026", ""), results); err != nil {
+		t.Fatalf("seed TVDB search cache: %v", err)
+	}
+
+	if got := svc.ResolveIMDBID(t.Context(), "Patriot", "movie", 2026); got != "tt33412884" {
+		t.Fatalf("resolved imdb id = %q, want tt33412884", got)
+	}
+}
+
+func TestResolveIMDBIDRetriesWithoutStrictTVDBYear(t *testing.T) {
+	cache := newFileCache(t.TempDir(), 24)
+	svc := &Service{
+		client: &tvdbClient{language: "eng"},
+		cache:  cache,
+	}
+	if err := cache.set(cacheKey("tvdb", "search", "movie", "Idhayam Murali", "2026", ""), []tvdbSearchResult{}); err != nil {
+		t.Fatalf("seed strict-year TVDB search cache: %v", err)
+	}
+	result := tvdbSearchResultWithIMDB("இதயம் முரளி", "2025", "tt35723557")
+	result.Translations = map[string]string{
+		"eng": "The One Side",
+		"pt":  "Idhayam Murali",
+		"tam": "இதயம் முரளி",
+	}
+	if err := cache.set(cacheKey("tvdb", "search", "movie", "Idhayam Murali", "", ""), []tvdbSearchResult{result}); err != nil {
+		t.Fatalf("seed no-year TVDB search cache: %v", err)
+	}
+
+	if got := svc.ResolveIMDBID(t.Context(), "Idhayam Murali", "movie", 2026); got != "tt35723557" {
+		t.Fatalf("resolved imdb id = %q, want tt35723557", got)
+	}
+}
+
+func TestSelectIMDBResolutionTVDBSearchResultUsesTranslation(t *testing.T) {
+	result := tvdbSearchResultWithIMDB("இதயம் முரளி", "2025", "tt35723557")
+	result.Translations = map[string]string{
+		"eng": "The One Side",
+		"pt":  "Idhayam Murali",
+		"tam": "இதயம் முரளி",
+	}
+
+	selected, ok := selectIMDBResolutionTVDBSearchResult("Idhayam Murali", 2026, []tvdbSearchResult{result})
+	if !ok {
+		t.Fatal("expected translated title with adjacent release year to match")
+	}
+	if got := imdbIDFromTVDBSearchResult(selected); got != "tt35723557" {
+		t.Fatalf("selected imdb id = %q, want tt35723557", got)
+	}
+}
+
+func TestSelectIMDBResolutionTVDBSearchResultRejectsYearMismatch(t *testing.T) {
+	_, ok := selectIMDBResolutionTVDBSearchResult("Patriot", 2026, []tvdbSearchResult{
+		tvdbSearchResultWithIMDB("Patriot", "2000", "tt0187393"),
+	})
+	if ok {
+		t.Fatal("expected matching title with mismatched year to be rejected")
+	}
+}
+
+func tvdbSearchResultWithIMDB(name, year, imdbID string) tvdbSearchResult {
+	result := tvdbSearchResult{Name: name, Year: year}
+	result.RemoteIDs = append(result.RemoteIDs, struct {
+		ID         string `json:"id"`
+		Type       int    `json:"type"`
+		SourceName string `json:"sourceName"`
+	}{
+		ID:         imdbID,
+		SourceName: "IMDB",
+	})
+	return result
+}
+
+func imdbIDFromTVDBSearchResult(result tvdbSearchResult) string {
+	for _, remote := range result.RemoteIDs {
+		if strings.Contains(strings.ToLower(remote.SourceName), "imdb") {
+			return remote.ID
+		}
+	}
+	return ""
+}
+
 func TestSelectCustomListTVDBSearchResultRejectsRemoteIDMismatch(t *testing.T) {
 	item := mdblistItem{
 		Title:       "Patriot",
@@ -403,7 +509,7 @@ func TestGetCachedArtworkURLsResolvesSeriesTMDBToTVDBCache(t *testing.T) {
 		cache:  cache,
 	}
 
-	if err := cache.set(cacheKey("tvdb", "resolve", "tmdb", "71712"), int64(328634)); err != nil {
+	if err := cache.set(seriesTVDBResolutionCacheKey(71712), int64(328634)); err != nil {
 		t.Fatalf("set resolve cache: %v", err)
 	}
 	if err := cache.set(seriesDetailsCacheKey("eng", 328634, ""), models.SeriesDetails{
@@ -846,6 +952,136 @@ func TestSeriesDetailsUpgradesCachedLiteSeasonNames(t *testing.T) {
 	}
 	if seasonTranslationHit == 0 {
 		t.Fatal("expected full SeriesDetails to fetch season translations for cached lite data")
+	}
+}
+
+func TestResolveSeriesTVDBIDDoesNotUseLegacyNameDerivedMappingWhenTMDBHasNoTVDBID(t *testing.T) {
+	cache := newFileCache(t.TempDir(), 24)
+	if err := cache.set(cacheKey("tvdb", "resolve", "tmdb", "107124"), int64(375642)); err != nil {
+		t.Fatalf("seed legacy resolution cache: %v", err)
+	}
+
+	httpc := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.URL.Path != "/3/tv/107124" {
+				t.Fatalf("unexpected request: %s", req.URL.String())
+			}
+			body := `{
+				"id":107124,
+				"name":"Animaniacs",
+				"first_air_date":"2020-11-20",
+				"external_ids":{"imdb_id":"tt6951546","tvdb_id":0}
+			}`
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+	service := &Service{
+		client:           &tvdbClient{language: "eng"},
+		tmdb:             newTMDBClient("test-tmdb-key", "eng", httpc, cache),
+		cache:            cache,
+		inflightRequests: make(map[string]*inflightRequest),
+	}
+
+	got, err := service.resolveSeriesTVDBIDActual(context.Background(), models.SeriesDetailsQuery{
+		TitleID: "tmdb:tv:107124",
+		Name:    "Animaniacs",
+		Year:    2020,
+		TMDBID:  107124,
+	})
+	if err == nil || !strings.Contains(err.Error(), "has no tvdb external id") {
+		t.Fatalf("resolve error = %v, want authoritative missing-TVDB error", err)
+	}
+	if got != 0 {
+		t.Fatalf("resolved TVDB ID = %d, want 0", got)
+	}
+
+	var cached int64
+	if ok, _ := cache.get(seriesTVDBResolutionCacheKey(107124), &cached); ok {
+		t.Fatalf("unexpected v2 mapping cached: %d", cached)
+	}
+}
+
+func TestSeriesDetailsLiteFallsBackToTMDBAndKeepsLogoOnCachedProviderMismatch(t *testing.T) {
+	cache := newFileCache(t.TempDir(), 24)
+	if err := cache.set(seriesTVDBResolutionCacheKey(107124), int64(375642)); err != nil {
+		t.Fatalf("seed resolution cache: %v", err)
+	}
+	liteCacheID := cacheKey("tvdb", "series", "details", "v13-lite", "eng", "375642", "default")
+	if err := cache.set(liteCacheID, models.SeriesDetails{
+		Title: models.Title{
+			ID:        "tvdb:series:375642",
+			Name:      "Animania",
+			MediaType: "series",
+			TVDBID:    375642,
+			TMDBID:    96025,
+		},
+		Seasons: []models.SeriesSeason{{Number: 1, EpisodeCount: 12}},
+	}); err != nil {
+		t.Fatalf("seed mismatched lite cache: %v", err)
+	}
+	imagesCacheID := cacheKey("tmdb", "images", "v7", "eng", "series", "107124")
+	if err := cache.set(imagesCacheID, tmdbImagesResult{
+		Logo: &models.Image{
+			URL:      "https://image.tmdb.org/t/p/w500/animaniacs-logo.png",
+			Type:     "logo",
+			Language: "en",
+		},
+	}); err != nil {
+		t.Fatalf("seed image cache: %v", err)
+	}
+
+	httpc := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.URL.Path != "/3/tv/107124" {
+				t.Fatalf("unexpected request: %s", req.URL.String())
+			}
+			body := `{
+				"id":107124,
+				"name":"Animaniacs",
+				"original_name":"Animaniacs",
+				"first_air_date":"2020-11-20",
+				"poster_path":"/poster.jpg",
+				"backdrop_path":"/backdrop.jpg",
+				"external_ids":{"imdb_id":"tt6951546","tvdb_id":0},
+				"seasons":[]
+			}`
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+	service := &Service{
+		client:           &tvdbClient{language: "eng"},
+		tmdb:             newTMDBClient("test-tmdb-key", "eng", httpc, cache),
+		cache:            cache,
+		inflightRequests: make(map[string]*inflightRequest),
+	}
+
+	details, err := service.SeriesDetailsLite(context.Background(), models.SeriesDetailsQuery{
+		TitleID: "tmdb:tv:107124",
+		Name:    "Animaniacs",
+		Year:    2020,
+		TMDBID:  107124,
+	})
+	if err != nil {
+		t.Fatalf("SeriesDetailsLite: %v", err)
+	}
+	if details.Title.Name != "Animaniacs" || details.Title.TMDBID != 107124 {
+		t.Fatalf("fallback title = %+v, want Animaniacs/TMDB 107124", details.Title)
+	}
+	if details.Title.TVDBID != 0 {
+		t.Fatalf("fallback TVDB ID = %d, want 0", details.Title.TVDBID)
+	}
+	if details.Title.Logo == nil || details.Title.Logo.URL != "https://image.tmdb.org/t/p/w500/animaniacs-logo.png" {
+		t.Fatalf("fallback logo = %#v, want cached TMDB logo", details.Title.Logo)
 	}
 }
 
@@ -2383,7 +2619,7 @@ func TestSeriesDetailsParsesTMDBTitleIDBeforeResolvingTVDB(t *testing.T) {
 		inflightRequests: make(map[string]*inflightRequest),
 	}
 
-	if err := svc.cache.set(cacheKey("tvdb", "resolve", "tmdb", "82728"), int64(353546)); err != nil {
+	if err := svc.cache.set(seriesTVDBResolutionCacheKey(82728), int64(353546)); err != nil {
 		t.Fatalf("set tmdb resolve cache: %v", err)
 	}
 	if err := svc.cache.set(seriesDetailsCacheKey("eng", 353546, ""), models.SeriesDetails{

@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -72,6 +73,14 @@ type metadataService interface {
 
 type trendingOptionsService interface {
 	TrendingWithOptions(context.Context, string, metadatapkg.ShelfLoadOptions) ([]models.TrendingItem, error)
+}
+
+type tmdbListService interface {
+	GetTMDBList(context.Context, metadatapkg.TMDBListOptions) ([]models.TrendingItem, int, error)
+}
+
+type tmdbSourceSearchService interface {
+	SearchTMDBSources(context.Context, string, string) ([]metadatapkg.TMDBSourceResult, error)
 }
 
 type discoverByGenreOptionsService interface {
@@ -184,6 +193,7 @@ type MetadataHandler struct {
 	SimklClient        *simkl.Client
 	MDBListListsClient *mdblist.ListsClient
 	LetterboxdClient   *letterboxd.Client
+	stremioHTTPClient  *http.Client
 
 	personalizedMu       sync.Mutex
 	personalizedCache    map[string]personalizedRecommendationsCacheEntry
@@ -193,14 +203,18 @@ type MetadataHandler struct {
 	popularCache         *cachedPopularOnServer
 	recentWatchesCacheMu sync.Mutex
 	recentWatchesCache   *cachedRecentlyWatched
+	stremioCatalogMu     sync.Mutex
+	stremioCatalogCache  map[string]stremioShelfCatalogCacheEntry
 }
 
 func NewMetadataHandler(s metadataService, cfgManager *config.Manager) *MetadataHandler {
 	return &MetadataHandler{
 		Service:              s,
 		CfgManager:           cfgManager,
+		stremioHTTPClient:    newStremioShelfHTTPClient(),
 		personalizedCache:    make(map[string]personalizedRecommendationsCacheEntry),
 		personalizedInFlight: make(map[string]*personalizedRecommendationsBuild),
+		stremioCatalogCache:  make(map[string]stremioShelfCatalogCacheEntry),
 	}
 }
 
@@ -1914,7 +1928,7 @@ func (h *MetadataHandler) buildShelfFromCurated(w http.ResponseWriter, r *http.R
 	return resp
 }
 
-// parseLimitOffset reads optional limit/offset query parameters (0 = unset).
+// parseLimitOffset reads optional pagination parameters; a zero limit is unlimited.
 func parseLimitOffset(r *http.Request) (int, int) {
 	limit := 0
 	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
@@ -1978,6 +1992,117 @@ func (h *MetadataHandler) CuratedList(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"items": items})
+}
+
+// TMDBSources resolves a source-builder search term, numeric ID, or TMDB URL.
+func (h *MetadataHandler) TMDBSources(w http.ResponseWriter, r *http.Request) {
+	sourceType := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("sourceType")))
+	query := strings.TrimSpace(r.URL.Query().Get("query"))
+	if sourceType == "" || (query == "" && sourceType != metadatapkg.TMDBSourceCustomDiscover) {
+		writeJSONError(w, "sourceType and query are required", http.StatusBadRequest)
+		return
+	}
+	service := h.serviceForUser(r.URL.Query().Get("userId"))
+	svc, ok := service.(tmdbSourceSearchService)
+	if !ok {
+		writeJSONError(w, "TMDB source search is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	results, err := svc.SearchTMDBSources(r.Context(), sourceType, query)
+	if err != nil {
+		status := http.StatusBadGateway
+		if errors.Is(err, metadatapkg.ErrInvalidTMDBList) ||
+			strings.Contains(strings.ToLower(err.Error()), "requires a numeric id") {
+			status = http.StatusBadRequest
+		}
+		writeJSONError(w, err.Error(), status)
+		return
+	}
+	if results == nil {
+		results = []metadatapkg.TMDBSourceResult{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"items": results})
+}
+
+// TMDBList returns a shelf built from any TMDB source-builder type.
+func (h *MetadataHandler) TMDBList(w http.ResponseWriter, r *http.Request) {
+	service := h.serviceForUser(r.URL.Query().Get("userId"))
+	svc, ok := service.(tmdbListService)
+	if !ok {
+		writeJSONError(w, "TMDB lists are unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	limit, offset := parseLimitOffset(r)
+	userID := strings.TrimSpace(r.URL.Query().Get("userId"))
+	hideUnreleased := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("hideUnreleased")), "true")
+	hideWatched := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("hideWatched")), "true")
+	postFilterPagination := limit > 0 && (hideUnreleased || hideWatched)
+	loadOpts := parseShelfLoadOptions(r)
+	opts := metadatapkg.TMDBListOptions{
+		SourceType:    strings.TrimSpace(r.URL.Query().Get("sourceType")),
+		SourceID:      strings.TrimSpace(r.URL.Query().Get("sourceId")),
+		MediaType:     strings.TrimSpace(r.URL.Query().Get("mediaType")),
+		Sort:          strings.TrimSpace(r.URL.Query().Get("sort")),
+		DiscoverQuery: strings.TrimSpace(r.URL.Query().Get("discoverQuery")),
+		Limit:         limit,
+		Offset:        offset,
+		ArtworkLimit:  loadOpts.ArtworkLimit,
+	}
+	if postFilterPagination {
+		// Visibility filters run after TMDB mapping. Load the bounded source
+		// result from the beginning so filtering cannot leave a short page or
+		// apply the offset before excluded titles are removed.
+		opts.Limit = maxDiscoveryListItems
+		opts.Offset = 0
+	}
+	items, total, err := svc.GetTMDBList(r.Context(), opts)
+	if err != nil {
+		status := http.StatusBadGateway
+		if errors.Is(err, metadatapkg.ErrInvalidTMDBList) {
+			status = http.StatusBadRequest
+		}
+		writeJSONError(w, err.Error(), status)
+		return
+	}
+	if items == nil {
+		items = []models.TrendingItem{}
+	}
+
+	unfilteredTotal := total
+	completeResultSet := opts.Offset == 0 && len(items) >= unfilteredTotal
+	policy := resolveUnreleasedVisibilityPolicy(h.CfgManager, h.UserSettings, h.ClientSettings, userID, requestClientID(r), unreleasedVisibilityLists)
+	if hideUnreleased {
+		policy.IncludeMovies = false
+		policy.IncludeShows = false
+	}
+	if !policy.IncludeMovies {
+		enrichTrendingMovieReleaseVisibility(r.Context(), items, service)
+	}
+	items = filterTrendingItemsByUnreleasedVisibility(items, policy)
+	if hideWatched && userID != "" && h.HistoryService != nil {
+		items = filterWatchedItems(items, userID, h.HistoryService)
+	}
+	items = h.filterTrendingByKids(r.Context(), userID, service, items)
+	if completeResultSet {
+		total = len(items)
+	} else {
+		// A filtered page cannot reveal the filtered total for unseen TMDB
+		// pages. Keep the stable source total instead of subtracting only the
+		// removals observed on this page.
+		total = unfilteredTotal
+	}
+	if postFilterPagination {
+		items = paginateTrendingItems(items, offset, limit)
+	}
+	enrichTrendingRatings(items, service)
+
+	response := DiscoverNewResponse{Items: items, Total: total}
+	if hideUnreleased || hideWatched || total != unfilteredTotal {
+		response.UnfilteredTotal = unfilteredTotal
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }
 
 // DiscoverByGenre returns TMDB discover results for a specific genre

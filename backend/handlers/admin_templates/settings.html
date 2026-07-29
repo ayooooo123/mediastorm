@@ -5067,6 +5067,11 @@
         // If profile has type/listUrl, they must match global
         if (normalizeOptionalString(profileShelf.type) && normalizeOptionalString(profileShelf.type) !== normalizeOptionalString(globalShelf.type)) return false;
         if (normalizeOptionalString(profileShelf.listUrl) && normalizeOptionalString(profileShelf.listUrl) !== normalizeOptionalString(globalShelf.listUrl)) return false;
+        if (normalizeOptionalString(profileShelf.tmdbSourceType) && normalizeOptionalString(profileShelf.tmdbSourceType) !== normalizeOptionalString(globalShelf.tmdbSourceType)) return false;
+        if (normalizeOptionalString(profileShelf.tmdbSourceId) && normalizeOptionalString(profileShelf.tmdbSourceId) !== normalizeOptionalString(globalShelf.tmdbSourceId)) return false;
+        if (normalizeOptionalString(profileShelf.tmdbSourceName) && normalizeOptionalString(profileShelf.tmdbSourceName) !== normalizeOptionalString(globalShelf.tmdbSourceName)) return false;
+        if (normalizeOptionalString(profileShelf.tmdbMediaType) && normalizeOptionalString(profileShelf.tmdbMediaType) !== normalizeOptionalString(globalShelf.tmdbMediaType)) return false;
+        if (normalizeOptionalString(profileShelf.tmdbDiscoverQuery) && normalizeOptionalString(profileShelf.tmdbDiscoverQuery) !== normalizeOptionalString(globalShelf.tmdbDiscoverQuery)) return false;
         if (profileShelf.limit !== undefined && normalizeOptionalNumber(profileShelf.limit) !== normalizeOptionalNumber(globalShelf.limit)) return false;
         if (profileShelf.hideUnreleased !== undefined && normalizeOptionalBoolean(profileShelf.hideUnreleased) !== normalizeOptionalBoolean(globalShelf.hideUnreleased)) return false;
         if (normalizeOptionalString(profileShelf.sort) && normalizeOptionalString(profileShelf.sort) !== normalizeOptionalString(globalShelf.sort)) return false;
@@ -5545,7 +5550,7 @@
             const isStreamingServices = s.id === 'streaming-services';
             const isCollectionHub = s.type === 'collection-hub';
             const isLibrary = s.type === 'library' || s.type === 'local-library';
-            const isCustom = !!s.listUrl || isLibrary || s.type === 'mdblist' || s.type === 'trakt' || s.type === 'simkl' || s.type === 'letterboxd' || s.type === 'genre' || s.type === 'decade' || isCollectionHub || (s.id && (s.id.startsWith('mdblist-') || s.id.startsWith('streaming-service-') || s.id.startsWith('trakt-') || s.id.startsWith('simkl-') || s.id.startsWith('letterboxd-') || s.id.startsWith('genre-') || s.id.startsWith('decade-') || s.id.startsWith('collection-hub-')));
+            const isCustom = !!s.listUrl || isLibrary || s.type === 'mdblist' || s.type === 'stremio' || s.type === 'tmdb' || s.type === 'trakt' || s.type === 'simkl' || s.type === 'letterboxd' || s.type === 'genre' || s.type === 'decade' || isCollectionHub || (s.id && (s.id.startsWith('mdblist-') || s.id.startsWith('stremio-') || s.id.startsWith('tmdb-') || s.id.startsWith('streaming-service-') || s.id.startsWith('trakt-') || s.id.startsWith('simkl-') || s.id.startsWith('letterboxd-') || s.id.startsWith('genre-') || s.id.startsWith('decade-') || s.id.startsWith('collection-hub-')));
             const typeLabel = isRecentlyAired ? '<span class="shelf-type-badge">Calendar</span>' : (isCustom ? '<span class="shelf-type-badge">'+getShelfTypeLabel(s.type)+'</span>' : '');
             const filterBadge = (isCustom && s.hideUnreleased) ? '<span class="shelf-filter-badge" title="Hide Unreleased enabled">🎬</span>' : '';
             const sourceBadge = isRecentlyAired
@@ -5623,8 +5628,8 @@
                 '.add-custom-list-form button{width:100%;margin-bottom:0;margin-top:4px;}'+
             '}'+
             '.add-custom-list-form{margin-top:16px;padding:16px;background:rgba(255,255,255,0.03);border-radius:8px;border:1px dashed rgba(255,255,255,0.1);}'+
-            '.add-custom-list-form .form-row{display:flex;gap:12px;align-items:flex-end;}'+
-            '.add-custom-list-form .form-group{flex:1;}'+
+            '.add-custom-list-form .form-row{display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;}'+
+            '.add-custom-list-form .form-group{flex:1;margin-bottom:0;}'+
             '.add-custom-list-form input{width:100%;padding:8px 12px;background:rgba(0,0,0,0.2);border:1px solid rgba(255,255,255,0.1);border-radius:6px;color:white;font-size:14px;}'+
             '.add-custom-list-form button{padding:8px 16px;background:#8a2be2;border:none;border-radius:6px;color:white;cursor:pointer;white-space:nowrap;}'+
             '.add-custom-list-form button:hover{background:#9b3ce6;}'+
@@ -5638,6 +5643,20 @@
             '.shelves-inherited .add-custom-list-form input,.shelves-inherited .add-custom-list-form select,.shelves-inherited .add-custom-list-form button{opacity:0.7;}'+
             '.add-custom-list-form select{width:100%;padding:8px 12px;background:rgba(0,0,0,0.2);border:1px solid rgba(255,255,255,0.1);border-radius:6px;color:white;font-size:14px;cursor:pointer;}'+
             '.add-custom-list-form select option{background:#1a1a2e;color:white;}'+
+            '.tmdb-filter-details{width:100%;margin:12px 0;border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:10px 12px;}'+
+            '.tmdb-filter-details summary{cursor:pointer;color:#aaa;font-size:12px;font-weight:600;}'+
+            '.tmdb-filter-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:12px;}'+
+            '.tmdb-filter-grid label{font-size:11px;color:#888;font-weight:600;}'+
+            '.tmdb-filter-grid input{margin-top:4px;}'+
+            '.tmdb-source-actions{display:flex;gap:8px;align-items:center;align-self:flex-end;height:38px;}'+
+            '.tmdb-source-actions button,.add-custom-list-submit{height:38px;display:inline-flex;align-items:center;justify-content:center;}'+
+            '.stremio-manifest-row{display:flex;gap:8px;align-items:center;}'+
+            '.stremio-manifest-row input{min-width:0;flex:1;}'+
+            '.shelves-layout-debug .add-custom-list-form::before{content:"Layout debug: cyan = fields, magenta = actions; lines mark vertical centers";display:block;margin-bottom:10px;color:#facc15;font:600 11px/1.4 monospace;}'+
+            '.shelves-layout-debug .add-custom-list-form .form-row{outline:1px dashed #facc15;}'+
+            '.shelves-layout-debug .add-custom-list-form input:not([type="hidden"]),.shelves-layout-debug .add-custom-list-form select{outline:2px solid #22d3ee;background-image:linear-gradient(to bottom,transparent calc(50% - 1px),#22d3ee 50%,transparent calc(50% + 1px));}'+
+            '.shelves-layout-debug .add-custom-list-form button{outline:2px solid #f472b6;background-image:linear-gradient(to bottom,transparent calc(50% - 1px),#f472b6 50%,transparent calc(50% + 1px));}'+
+            '@media(max-width:768px){.tmdb-filter-grid{grid-template-columns:1fr;}.tmdb-source-actions{width:100%;}.tmdb-source-actions button{flex:1;}}'+
             '.streaming-services-modal{padding:1rem;overscroll-behavior:contain;}'+
             '.streaming-services-modal-content{max-width:920px;width:min(920px,100%);max-height:calc(100dvh - 2rem);}'+
             '.streaming-services-modal-header{align-items:flex-start;gap:1rem;}'+
@@ -5683,10 +5702,12 @@
         const addCustomListForm = '<div class="add-custom-list-form">'+
             '<h4 style="margin:0 0 12px 0;font-size:14px;font-weight:500;">Add Custom List</h4>'+
             '<div class="form-row">'+
-                '<div class="form-group">'+
+                '<div class="form-group" style="flex:0 0 200px;">'+
                     '<label class="form-label" style="font-size:12px;margin-bottom:4px;">Type</label>'+
                     '<select id="newShelfType" onchange="onShelfTypeChange()">'+
                         '<option value="mdblist">MDBList</option>'+
+                        '<option value="stremio">Stremio Add-on</option>'+
+                        '<option value="tmdb">TMDB</option>'+
                         '<option value="trakt">Trakt</option>'+
                         '<option value="simkl">Simkl</option>'+
                         '<option value="letterboxd">Letterboxd</option>'+
@@ -5695,6 +5716,64 @@
                         '<option value="decade">Decade</option>'+
                         '<option value="collection-hub">Collection Hub</option>'+
                         '<option value="streaming-service">Streaming Service</option>'+
+                    '</select>'+
+                '</div>'+
+                '<div class="form-group" id="stremioImportModeGroup" style="display:none;flex:0 0 240px;">'+
+                    '<label class="form-label" style="font-size:12px;margin-bottom:4px;">Import As</label>'+
+                    '<select id="newShelfStremioImportMode" onchange="onStremioImportModeChange()">'+
+                        '<option value="shelves">Individual shelves</option>'+
+                        '<option value="hub">Collection hub</option>'+
+                    '</select>'+
+                '</div>'+
+                '<div class="form-group" id="tmdbSourceTypeGroup" style="display:none;">'+
+                    '<label class="form-label" style="font-size:12px;margin-bottom:4px;">Source Type</label>'+
+                    '<select id="newShelfTmdbSourceType" onchange="onTMDBSourceTypeChange()">'+
+                        '<option value="public-list">Public list</option>'+
+                        '<option value="production-company">Production company</option>'+
+                        '<option value="network">Network</option>'+
+                        '<option value="movie-collection">Movie collection</option>'+
+                        '<option value="person-credits">Person credits</option>'+
+                        '<option value="director-credits">Director credits</option>'+
+                        '<option value="custom-discover">Custom discover</option>'+
+                    '</select>'+
+                '</div>'+
+                '<div class="form-group" id="tmdbSearchGroup" style="display:none;flex:2;">'+
+                    '<label class="form-label" id="newShelfTmdbSourceLabel" style="font-size:12px;margin-bottom:4px;">List</label>'+
+                    '<input type="text" id="newShelfTmdbSourceQuery" placeholder="TMDB URL, name, or numeric ID">'+
+                    '<input type="hidden" id="newShelfTmdbSourceId">'+
+                    '<input type="hidden" id="newShelfTmdbSourceName">'+
+                '</div>'+
+                '<div class="tmdb-source-actions" id="tmdbSearchActions" style="display:none;">'+
+                    '<button type="button" onclick="searchTMDBShelfSource(\'newShelf\')">Autofill</button>'+
+                    '<button type="button" onclick="searchTMDBShelfSource(\'newShelf\')">Search</button>'+
+                '</div>'+
+                '<div class="form-group" id="newShelfTmdbSourceResultGroup" style="display:none;flex:2;">'+
+                    '<label class="form-label" style="font-size:12px;margin-bottom:4px;">Result</label>'+
+                    '<select id="newShelfTmdbSourceResult" onchange="applyTMDBSourceResult(\'newShelf\')"></select>'+
+                '</div>'+
+                '<div class="form-group" id="tmdbMediaTypeGroup" style="display:none;">'+
+                    '<label class="form-label" style="font-size:12px;margin-bottom:4px;">Type</label>'+
+                    '<select id="newShelfTmdbMediaType">'+
+                        '<option value="movie">Movies</option>'+
+                        '<option value="tv">Series</option>'+
+                        '<option value="all">Movies + Series</option>'+
+                    '</select>'+
+                '</div>'+
+                '<div class="form-group" id="tmdbSortGroup" style="display:none;">'+
+                    '<label class="form-label" style="font-size:12px;margin-bottom:4px;">Sort</label>'+
+                    '<select id="newShelfTmdbSort" onchange="onTMDBSortFieldChange(\'newShelf\')">'+
+                        '<option value="original">Original order</option>'+
+                        '<option value="popularity">Popularity</option>'+
+                        '<option value="vote_average">Rating</option>'+
+                        '<option value="release_date">Release date</option>'+
+                        '<option value="title">Title</option>'+
+                    '</select>'+
+                '</div>'+
+                '<div class="form-group" id="tmdbSortDirectionGroup" style="display:none;">'+
+                    '<label class="form-label" style="font-size:12px;margin-bottom:4px;">Direction</label>'+
+                    '<select id="newShelfTmdbSortDirection">'+
+                        '<option value="desc">Descending</option>'+
+                        '<option value="asc">Ascending</option>'+
                     '</select>'+
                 '</div>'+
                 '<div class="form-group" id="mediaLibraryGroup" style="display:none;flex:2;">'+
@@ -5802,7 +5881,24 @@
                     '<label class="form-label" style="font-size:12px;margin-bottom:4px;">URL</label>'+
                     '<input type="text" id="newShelfUrl" placeholder="https://mdblist.com/lists/username/list-name/json">'+
                 '</div>'+
-                '<div class="form-group">'+
+                '<div class="form-group" id="stremioManifestGroup" style="display:none;flex:1 0 100%;">'+
+                    '<label class="form-label" style="font-size:12px;margin-bottom:4px;">Manifest URL</label>'+
+                    '<div class="stremio-manifest-row">'+
+                        '<input type="text" id="newShelfStremioManifest" oninput="clearLoadedStremioManifest()" placeholder="Manifest, install, or stremio-addons.net page URL">'+
+                        '<button type="button" class="btn btn-secondary" onclick="loadStremioShelfManifest()">Load Catalogs</button>'+
+                    '</div>'+
+                    '<p class="form-hint" id="stremioImportHint" style="margin-top:6px;">Paste a configured manifest, Stremio install URL, or stremio-addons.net add-on page.</p>'+
+                '</div>'+
+                '<div class="form-group" id="stremioCatalogsGroup" style="display:none;flex:1 1 100%;">'+
+                    '<label class="form-label" style="font-size:12px;margin-bottom:4px;">Catalogs</label>'+
+                    '<div id="stremioCatalogsList" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:6px;"></div>'+
+                    '<p id="stremioCatalogStatus" class="form-hint" style="margin-top:6px;"></p>'+
+                '</div>'+
+                '<div class="form-group" id="stremioHubNameGroup" style="display:none;flex:1 1 280px;">'+
+                    '<label class="form-label" style="font-size:12px;margin-bottom:4px;">Hub Name</label>'+
+                    '<input type="text" id="newShelfStremioHubName" placeholder="Add-on collections">'+
+                '</div>'+
+                '<div class="form-group" id="newShelfNameGroup">'+
                     '<label class="form-label" style="font-size:12px;margin-bottom:4px;">Name</label>'+
                     '<input type="text" id="newShelfName" placeholder="My Custom List">'+
                 '</div>'+
@@ -5814,8 +5910,9 @@
                     '<label class="form-label" style="font-size:12px;margin-bottom:4px;">Hide Unreleased</label>'+
                     '<div style="display:flex;align-items:center;height:38px;" title="Filter out movies not yet available for home viewing, and upcoming/in-production series"><input type="checkbox" id="newShelfHideUnreleased"></div>'+
                 '</div>'+
-                '<button onclick="addCustomShelf()" style="align-self:center;height:38px;margin-top:18px;">Add</button>'+
+                '<button class="add-custom-list-submit" onclick="addCustomShelf()">Add</button>'+
             '</div>'+
+            buildTMDBCustomFilterFields('newShelf', '')+
             '<p class="form-hint" id="shelfFormHint" style="margin-top:8px;font-size:11px;">Example: https://mdblist.com/lists/garycrawfordgc/top-movies-of-the-week/json<br><span style="color:#9b9b9b;">Hide Unreleased: Only show movies available for home viewing (streaming/digital/physical) and exclude upcoming series.</span></p>'+
             '<p class="form-hint" id="letterboxdUrlHint" style="margin-top:8px;font-size:11px;display:none;">Paste any public Letterboxd list or watchlist URL — no MDBList account needed.<br><span style="color:#9b9b9b;">Example: https://letterboxd.com/dave/list/official-top-250-narrative-feature-films/</span></p>'+
             '<p class="form-hint" id="letterboxdMdblistHint" style="margin-top:8px;font-size:11px;display:none;">Pick a Letterboxd list you\'ve imported into mdblist.com. Don\'t see yours? Import it on MDBList first, then reload this page.</p>'+
@@ -5823,9 +5920,12 @@
 
         // Add inherited class to wrapper when inheriting from global
         const inheritedClass = (selectedUserId && isInherited) ? ' shelves-inherited' : '';
+        const layoutDebugClass = new URLSearchParams(window.location.search).get('layoutDebug') === '1'
+            ? ' shelves-layout-debug'
+            : '';
 
         return styles+
-            '<div class="shelves-wrapper'+inheritedClass+'">'+
+            '<div class="shelves-wrapper'+inheritedClass+layoutDebugClass+'">'+
             '<div style="display:flex;align-items:center;margin-bottom:8px;"><p class="form-hint" style="margin:0;">Drag to reorder. Toggle to show/hide shelves on the home screen.</p>'+inheritanceBadgeHtml+'</div>'+
             '<div class="shelves-container" id="shelvesContainer">'+rows+'</div>'+
             addCustomListForm+
@@ -5917,6 +6017,8 @@
     function getShelfTypeLabel(type) {
         switch (type) {
             case 'mdblist': return 'MDBList';
+            case 'stremio': return 'Stremio Add-on';
+            case 'tmdb': return 'TMDB';
             case 'trakt': return 'Trakt';
             case 'simkl': return 'Simkl';
             case 'letterboxd': return 'Letterboxd';
@@ -6259,6 +6361,162 @@
         if (listGroup) listGroup.style.display = isUrl ? 'none' : 'block';
     }
 
+    const TMDB_SOURCE_RULES = {
+        'public-list': { label: 'List', title: 'List', mediaType: 'movie', lockMedia: true, sort: 'original' },
+        'production-company': { label: 'Company Search', title: 'Production', mediaType: 'movie', sort: 'popularity.desc' },
+        'network': { label: 'Network ID', title: 'Network', mediaType: 'tv', lockMedia: true, sort: 'popularity.desc' },
+        'movie-collection': { label: 'Collection ID', title: 'Movie Collection', mediaType: 'movie', lockMedia: true, sort: 'original' },
+        'person-credits': { label: 'Person ID', title: 'Person Credits', mediaType: 'movie', sort: 'popularity.desc' },
+        'director-credits': { label: 'Person ID', title: 'Director Credits', mediaType: 'movie', sort: 'popularity.desc' },
+        'custom-discover': { label: '', title: 'Discover', mediaType: 'movie', sort: 'popularity.desc' },
+    };
+
+    const TMDB_FILTER_FIELDS = [
+        ['Genres', 'genres', '28,12'],
+        ['Date From', 'date.gte', '2020-01-01'],
+        ['Date To', 'date.lte', '2024-12-31'],
+        ['Rating Min', 'rating.gte', '7.0'],
+        ['Rating Max', 'rating.lte', '10'],
+        ['Votes Min', 'votes.gte', '100'],
+        ['Language', 'language', 'en'],
+        ['Country', 'country', 'US'],
+        ['Keywords', 'keywords', '9715'],
+        ['Companies', 'companies', '420'],
+        ['Networks', 'networks', '213'],
+        ['Year', 'year', '2024'],
+    ];
+
+    function tmdbFilterInputId(prefix, key) {
+        return prefix + 'TmdbFilter' + key.replace(/[^a-z0-9]+(.)/gi, (_, c) => c.toUpperCase()).replace(/^[a-z]/, (c) => c.toUpperCase());
+    }
+
+    function buildTMDBCustomFilterFields(prefix, query, visible = false) {
+        const values = new URLSearchParams(query || '');
+        const fields = TMDB_FILTER_FIELDS.map(([label, key, placeholder]) => {
+            const value = escapeHtml(values.get(key) || '').replace(/"/g, '&quot;');
+            return `<label>${label}<input type="text" class="form-input" id="${tmdbFilterInputId(prefix, key)}" value="${value}" placeholder="${placeholder}"></label>`;
+        }).join('');
+        return `<details class="tmdb-filter-details" id="${prefix}TmdbFilterDetails" style="${visible ? '' : 'display:none;'}"><summary>Custom Filters</summary><div class="tmdb-filter-grid">${fields}</div></details>`;
+    }
+
+    function readTMDBCustomFilters(prefix) {
+        const values = new URLSearchParams();
+        for (const [, key] of TMDB_FILTER_FIELDS) {
+            const value = document.getElementById(tmdbFilterInputId(prefix, key))?.value?.trim();
+            if (value) values.set(key, value);
+        }
+        return values.toString();
+    }
+
+    function applyTMDBSourceResult(prefix) {
+        const select = document.getElementById(prefix + 'TmdbSourceResult');
+        const option = select?.selectedOptions?.[0];
+        if (!option) return;
+        document.getElementById(prefix + 'TmdbSourceId').value = option.value;
+        document.getElementById(prefix + 'TmdbSourceName').value = option.dataset.name || option.textContent || '';
+        const queryInput = document.getElementById(prefix + 'TmdbSourceQuery');
+        if (queryInput) queryInput.value = `${option.dataset.name || option.textContent}, ${option.value}`;
+        const nameInput = document.getElementById(prefix === 'newShelf' ? 'newShelfName' : 'editShelfName');
+        if (nameInput && option.dataset.name) nameInput.value = option.dataset.name;
+    }
+
+    async function searchTMDBShelfSource(prefix) {
+        const sourceType = document.getElementById(prefix + 'TmdbSourceType')?.value || 'public-list';
+        const query = document.getElementById(prefix + 'TmdbSourceQuery')?.value?.trim() || '';
+        if (!query) {
+            alert('Enter a TMDB name, URL, or numeric ID.');
+            return;
+        }
+        const resultGroup = document.getElementById(prefix + 'TmdbSourceResultGroup');
+        const select = document.getElementById(prefix + 'TmdbSourceResult');
+        if (select) select.innerHTML = '<option value="">Searching...</option>';
+        if (resultGroup) resultGroup.style.display = '';
+        try {
+            const params = new URLSearchParams({ sourceType, query });
+            const response = await fetch(basePath + '/api/lists/tmdb/sources?' + params.toString());
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(payload.error || 'TMDB search failed');
+            const items = payload.items || [];
+            if (!items.length) {
+                if (select) select.innerHTML = '<option value="">No results found</option>';
+                return;
+            }
+            if (select) {
+                select.innerHTML = items.map((item) =>
+                    `<option value="${escapeHtml(String(item.id)).replace(/"/g, '&quot;')}" data-name="${escapeHtml(item.name || '').replace(/"/g, '&quot;')}">${escapeHtml(item.name || 'TMDB')} (${escapeHtml(String(item.id))})</option>`
+                ).join('');
+            }
+            applyTMDBSourceResult(prefix);
+        } catch (error) {
+            if (resultGroup) resultGroup.style.display = 'none';
+            alert(error.message || 'TMDB search failed');
+        }
+    }
+
+    function parseTMDBSort(value) {
+        const normalized = String(value || 'popularity.desc').toLowerCase();
+        if (normalized === 'original') return { field: 'original', direction: 'desc' };
+        const [field, rawDirection] = normalized.split('.');
+        const supportedFields = ['popularity', 'vote_average', 'release_date', 'title'];
+        return {
+            field: supportedFields.includes(field) ? field : 'popularity',
+            direction: rawDirection === 'asc' ? 'asc' : 'desc',
+        };
+    }
+
+    function readTMDBSort(prefix) {
+        const field = document.getElementById(prefix + 'TmdbSort')?.value || 'popularity';
+        if (field === 'original') return 'original';
+        const direction = document.getElementById(prefix + 'TmdbSortDirection')?.value === 'asc' ? 'asc' : 'desc';
+        return `${field}.${direction}`;
+    }
+
+    function onTMDBSortFieldChange(prefix) {
+        const sortSelect = document.getElementById(prefix + 'TmdbSort');
+        const directionSelect = document.getElementById(prefix + 'TmdbSortDirection');
+        if (directionSelect) directionSelect.disabled = !sortSelect || sortSelect.disabled || sortSelect.value === 'original';
+    }
+
+    function onTMDBSourceTypeChange(prefix = 'newShelf', preserveValues = false) {
+        const sourceType = document.getElementById(prefix + 'TmdbSourceType')?.value || 'public-list';
+        const rule = TMDB_SOURCE_RULES[sourceType] || TMDB_SOURCE_RULES['public-list'];
+        const mediaSelect = document.getElementById(prefix + 'TmdbMediaType');
+        const sortSelect = document.getElementById(prefix + 'TmdbSort');
+        const directionSelect = document.getElementById(prefix + 'TmdbSortDirection');
+        if (mediaSelect) {
+            if (!preserveValues) mediaSelect.value = rule.mediaType;
+            mediaSelect.disabled = !!rule.lockMedia;
+        }
+        if (sortSelect) {
+            if (!preserveValues) {
+                const parsedSort = parseTMDBSort(rule.sort);
+                sortSelect.value = parsedSort.field;
+                if (directionSelect) directionSelect.value = parsedSort.direction;
+            }
+            sortSelect.disabled = !!rule.lockSort;
+        }
+        onTMDBSortFieldChange(prefix);
+        const searchGroup = document.getElementById(prefix === 'newShelf' ? 'tmdbSearchGroup' : prefix + 'TmdbSearchGroup');
+        const searchActions = document.getElementById(prefix === 'newShelf' ? 'tmdbSearchActions' : prefix + 'TmdbSearchActions');
+        const sourceLabel = document.getElementById(prefix + 'TmdbSourceLabel');
+        const customDiscover = sourceType === 'custom-discover';
+        if (searchGroup) searchGroup.style.display = customDiscover ? 'none' : '';
+        if (searchActions) searchActions.style.display = customDiscover ? 'none' : 'flex';
+        if (sourceLabel) sourceLabel.textContent = rule.label;
+        const resultGroup = document.getElementById(prefix + 'TmdbSourceResultGroup');
+        if (resultGroup) resultGroup.style.display = 'none';
+        const nameInput = document.getElementById(prefix === 'newShelf' ? 'newShelfName' : 'editShelfName');
+        if (nameInput && prefix === 'newShelf' && !preserveValues) nameInput.value = rule.title;
+        const sourceID = document.getElementById(prefix + 'TmdbSourceId');
+        const sourceName = document.getElementById(prefix + 'TmdbSourceName');
+        if (!preserveValues) {
+            if (sourceID) sourceID.value = '';
+            if (sourceName) sourceName.value = '';
+            const queryInput = document.getElementById(prefix + 'TmdbSourceQuery');
+            if (queryInput) queryInput.value = '';
+        }
+    }
+
     const GENRE_SHELVES = {
         movie: [
             { id: 28, name: 'Action' },
@@ -6376,9 +6634,81 @@
         }));
     }
 
+    let loadedStremioShelfManifest = null;
+
+    function clearLoadedStremioManifest() {
+        loadedStremioShelfManifest = null;
+        const list = document.getElementById('stremioCatalogsList');
+        const status = document.getElementById('stremioCatalogStatus');
+        const group = document.getElementById('stremioCatalogsGroup');
+        if (list) list.innerHTML = '';
+        if (status) status.textContent = '';
+        if (group) group.style.display = 'none';
+    }
+
+    async function loadStremioShelfManifest() {
+        const input = document.getElementById('newShelfStremioManifest');
+        const status = document.getElementById('stremioCatalogStatus');
+        const group = document.getElementById('stremioCatalogsGroup');
+        const list = document.getElementById('stremioCatalogsList');
+        const manifestUrl = input?.value?.trim() || '';
+        if (!manifestUrl) {
+            alert('Paste a Stremio add-on manifest URL first.');
+            return;
+        }
+        if (group) group.style.display = '';
+        if (status) status.textContent = 'Loading catalogs...';
+        if (list) list.innerHTML = '';
+        try {
+            const response = await fetch(basePath + '/api/home-shelves/stremio/manifest?url=' + encodeURIComponent(manifestUrl));
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(payload.error || 'Could not load the Stremio manifest');
+            }
+            loadedStremioShelfManifest = payload;
+            if (input) input.value = payload.manifestUrl || manifestUrl;
+            const hubNameInput = document.getElementById('newShelfStremioHubName');
+            if (hubNameInput && !hubNameInput.value.trim()) {
+                hubNameInput.value = payload.name || 'Stremio Collections';
+            }
+            const catalogs = Array.isArray(payload.catalogs) ? payload.catalogs : [];
+            if (list) {
+                list.innerHTML = catalogs.map((catalog, index) => {
+                    const typeLabel = catalog.type === 'movie' ? 'Movies' : 'Series';
+                    return `<label style="display:flex;align-items:center;gap:8px;padding:7px 9px;border:1px solid var(--border-color);border-radius:6px;cursor:pointer;">
+                        <input type="checkbox" class="stremio-catalog-choice" value="${index}" checked>
+                        <span>${escapeHtml(catalog.name)} <span style="color:var(--text-muted);font-size:11px;">${typeLabel}</span></span>
+                    </label>`;
+                }).join('');
+            }
+            if (status) {
+                status.textContent = `${payload.name || 'Stremio add-on'}: ${catalogs.length} catalog${catalogs.length === 1 ? '' : 's'} found.`;
+            }
+        } catch (error) {
+            loadedStremioShelfManifest = null;
+            if (status) status.textContent = error.message || 'Could not load the Stremio manifest';
+        }
+    }
+
+    function onStremioImportModeChange() {
+        const isStremio = document.getElementById('newShelfType')?.value === 'stremio';
+        const importMode = document.getElementById('newShelfStremioImportMode')?.value || 'shelves';
+        const isHub = isStremio && importMode === 'hub';
+        const hubNameGroup = document.getElementById('stremioHubNameGroup');
+        const hint = document.getElementById('stremioImportHint');
+        if (hubNameGroup) hubNameGroup.style.display = isHub ? '' : 'none';
+        if (hint) {
+            hint.textContent = isHub
+                ? 'Paste a manifest, install URL, or stremio-addons.net page. Selected catalogs become entries in one hub; their source shelves stay hidden.'
+                : 'Paste a manifest, install URL, or stremio-addons.net page. Each selected catalog becomes its own Home shelf.';
+        }
+    }
+
     // Update form fields when shelf type changes
     function onShelfTypeChange() {
         const type = document.getElementById('newShelfType')?.value;
+        const isStremio = type === 'stremio';
+        const isTMDB = type === 'tmdb';
         const isStreaming = type === 'streaming-service';
         const isTrakt = type === 'trakt';
         const isSimkl = type === 'simkl';
@@ -6387,6 +6717,14 @@
         const isDecade = type === 'decade';
         const isCollectionHub = type === 'collection-hub';
         const isLibrary = type === 'library';
+        document.getElementById('tmdbSourceTypeGroup').style.display = isTMDB ? '' : 'none';
+        document.getElementById('tmdbMediaTypeGroup').style.display = isTMDB ? '' : 'none';
+        document.getElementById('tmdbSortGroup').style.display = isTMDB ? '' : 'none';
+        document.getElementById('tmdbSortDirectionGroup').style.display = isTMDB ? '' : 'none';
+        document.getElementById('tmdbSearchGroup').style.display = isTMDB ? '' : 'none';
+        document.getElementById('tmdbSearchActions').style.display = isTMDB ? 'flex' : 'none';
+        document.getElementById('newShelfTmdbSourceResultGroup').style.display = 'none';
+        document.getElementById('newShelfTmdbFilterDetails').style.display = isTMDB ? '' : 'none';
         document.getElementById('mediaLibraryGroup').style.display = isLibrary ? '' : 'none';
         document.getElementById('streamingServiceGroup').style.display = isStreaming ? '' : 'none';
         document.getElementById('streamingMediaTypeGroup').style.display = isStreaming ? '' : 'none';
@@ -6403,10 +6741,14 @@
         document.getElementById('genreGroup').style.display = isGenre ? '' : 'none';
         document.getElementById('decadeMediaTypeGroup').style.display = isDecade ? '' : 'none';
         document.getElementById('decadeGroup').style.display = isDecade ? '' : 'none';
-        document.getElementById('mdblistUrlGroup').style.display = (isStreaming || isTrakt || isSimkl || isLetterboxd || isGenre || isDecade || isCollectionHub || isLibrary) ? 'none' : '';
+        document.getElementById('stremioImportModeGroup').style.display = isStremio ? '' : 'none';
+        document.getElementById('stremioManifestGroup').style.display = isStremio ? '' : 'none';
+        document.getElementById('stremioCatalogsGroup').style.display = isStremio && loadedStremioShelfManifest ? '' : 'none';
+        document.getElementById('newShelfNameGroup').style.display = isStremio ? 'none' : '';
+        document.getElementById('mdblistUrlGroup').style.display = (isStremio || isTMDB || isStreaming || isTrakt || isSimkl || isLetterboxd || isGenre || isDecade || isCollectionHub || isLibrary) ? 'none' : '';
         const hint = document.getElementById('shelfFormHint');
         if (hint) {
-            hint.style.display = (isStreaming || isTrakt || isSimkl || isLetterboxd || isGenre || isDecade || isCollectionHub || isLibrary) ? 'none' : '';
+            hint.style.display = (isStremio || isTMDB || isStreaming || isTrakt || isSimkl || isLetterboxd || isGenre || isDecade || isCollectionHub || isLibrary) ? 'none' : '';
         }
         if (!isLetterboxd) {
             const urlHint = document.getElementById('letterboxdUrlHint');
@@ -6414,6 +6756,14 @@
             if (urlHint) urlHint.style.display = 'none';
             if (mdblistHint) mdblistHint.style.display = 'none';
         }
+        if (isStremio) {
+            document.getElementById('newShelfName').value = '';
+            onStremioImportModeChange();
+        }
+        else if (isTMDB) {
+            onTMDBSourceTypeChange();
+        }
+        else
         if (isLibrary) {
             renderMediaLibraryOptions('newShelfLibrary');
             onMediaLibraryShelfSourceChange();
@@ -6504,6 +6854,128 @@
             shelves = currentSettings.homeShelves.shelves;
         }
 
+        if (shelfType === 'stremio') {
+            if (!loadedStremioShelfManifest) {
+                alert('Load the Stremio manifest and select at least one catalog first.');
+                return;
+            }
+            const selectedIndexes = Array.from(document.querySelectorAll('.stremio-catalog-choice:checked'))
+                .map((input) => parseInt(input.value, 10))
+                .filter((index) => Number.isInteger(index));
+            if (selectedIndexes.length === 0) {
+                alert('Select at least one Stremio catalog.');
+                return;
+            }
+            const selectedCatalogs = selectedIndexes
+                .map((index) => loadedStremioShelfManifest.catalogs?.[index])
+                .filter(Boolean);
+            const duplicateNames = new Map();
+            selectedCatalogs.forEach((catalog) => {
+                const key = String(catalog.name || catalog.id).toLowerCase();
+                duplicateNames.set(key, (duplicateNames.get(key) || 0) + 1);
+            });
+            const importMode = document.getElementById('newShelfStremioImportMode')?.value || 'shelves';
+            const importAsHub = importMode === 'hub';
+            const hubNameInput = document.getElementById('newShelfStremioHubName');
+            const hubName = hubNameInput?.value?.trim() || loadedStremioShelfManifest.name || 'Stremio Collections';
+            if (importAsHub && !hubName) {
+                alert('Enter a collection hub name.');
+                return;
+            }
+            let maxOrder = Math.max(...shelves.map(s => s.order || 0), -1);
+            const stamp = Date.now();
+            const importedShelves = selectedCatalogs.map((catalog, index) => {
+                const baseName = catalog.name || catalog.id;
+                const duplicate = (duplicateNames.get(String(baseName).toLowerCase()) || 0) > 1;
+                const typeLabel = catalog.type === 'movie' ? 'Movies' : 'Series';
+                const safeAddonId = String(loadedStremioShelfManifest.id || loadedStremioShelfManifest.name || 'addon')
+                    .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+                const safeCatalogId = String(catalog.id).toLowerCase()
+                    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+                const importedShelf = {
+                    id: `stremio-${safeAddonId || 'addon'}-${safeCatalogId || index}-${stamp}-${index}`,
+                    name: duplicate ? `${baseName} — ${typeLabel}` : baseName,
+                    enabled: !importAsHub,
+                    order: ++maxOrder,
+                    type: 'stremio',
+                    addonManifestUrl: loadedStremioShelfManifest.manifestUrl,
+                    addonCatalogType: catalog.type,
+                    addonCatalogId: catalog.id,
+                    addonName: loadedStremioShelfManifest.name || '',
+                    limit,
+                    hideUnreleased,
+                };
+                shelves.push(importedShelf);
+                return importedShelf;
+            });
+            if (importAsHub) {
+                const hubSlug = hubName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+                shelves.push({
+                    id: `collection-hub-${hubSlug || 'stremio'}-${stamp}`,
+                    name: hubName,
+                    enabled: true,
+                    order: ++maxOrder,
+                    type: 'collection-hub',
+                    showCollectionTitles: true,
+                    collectionItems: importedShelves.map((shelf, index) => ({
+                        id: `collection-${shelf.id}`,
+                        name: shelf.name,
+                        enabled: true,
+                        order: index,
+                        sourceShelfId: shelf.id,
+                    })),
+                });
+            }
+            if (typeSelect) typeSelect.value = 'mdblist';
+            const manifestInput = document.getElementById('newShelfStremioManifest');
+            if (manifestInput) manifestInput.value = '';
+            const importModeInput = document.getElementById('newShelfStremioImportMode');
+            if (importModeInput) importModeInput.value = 'shelves';
+            if (hubNameInput) hubNameInput.value = '';
+            if (limitInput) limitInput.value = '0';
+            if (hideUnreleasedInput) hideUnreleasedInput.checked = false;
+            clearLoadedStremioManifest();
+            onShelfTypeChange();
+        } else if (shelfType === 'tmdb') {
+            const tmdbSourceType = document.getElementById('newShelfTmdbSourceType')?.value || 'public-list';
+            const tmdbSourceId = document.getElementById('newShelfTmdbSourceId')?.value?.trim() || '';
+            const tmdbSourceName = document.getElementById('newShelfTmdbSourceName')?.value?.trim() || '';
+            const tmdbMediaType = document.getElementById('newShelfTmdbMediaType')?.value || 'movie';
+            const tmdbSort = readTMDBSort('newShelf');
+            const tmdbDiscoverQuery = readTMDBCustomFilters('newShelf');
+            const name = nameInput?.value?.trim();
+            if (tmdbSourceType !== 'custom-discover' && !tmdbSourceId) {
+                alert('Search or autofill a TMDB source first.');
+                return;
+            }
+            if (!name) {
+                alert('Please enter a display title.');
+                return;
+            }
+            shelves.push({
+                id: `tmdb-${tmdbSourceType}-${tmdbSourceId || 'discover'}-${Date.now()}`,
+                name,
+                enabled: true,
+                order: Math.max(...shelves.map(s => s.order || 0), -1) + 1,
+                type: 'tmdb',
+                tmdbSourceType,
+                tmdbSourceId,
+                tmdbSourceName,
+                tmdbMediaType,
+                tmdbDiscoverQuery,
+                sort: tmdbSort,
+                limit,
+                hideUnreleased,
+            });
+            if (typeSelect) typeSelect.value = 'mdblist';
+            nameInput.value = '';
+            document.getElementById('newShelfTmdbSourceQuery').value = '';
+            document.getElementById('newShelfTmdbSourceId').value = '';
+            document.getElementById('newShelfTmdbSourceName').value = '';
+            if (limitInput) limitInput.value = '0';
+            if (hideUnreleasedInput) hideUnreleasedInput.checked = false;
+            onShelfTypeChange();
+        } else
         if (shelfType === 'library') {
             const libraryId = document.getElementById('newShelfLibrary')?.value || '';
             const name = nameInput?.value?.trim();
@@ -7252,6 +7724,8 @@
 
         const isMyUpcomingShelf = shelf.id === 'my-upcoming';
         const isRecentlyAiredShelf = shelf.id === 'my-recently-aired';
+        const isStremioShelf = shelf.type === 'stremio';
+        const isTMDBShelf = shelf.type === 'tmdb';
         const isTraktShelf = shelf.type === 'trakt';
         const isSimklShelf = shelf.type === 'simkl';
         const isLetterboxdShelf = shelf.type === 'letterboxd';
@@ -7297,6 +7771,26 @@
             `<option value="tv" ${decadeMediaType === 'tv' ? 'selected' : ''}>TV Shows</option>`;
         const decadeOptions = DECADE_SHELVES.map((decade) =>
             `<option value="${decade}" ${String(decade) === String(decadeStart) ? 'selected' : ''}>${decade}s</option>`).join('');
+        const tmdbSourceType = shelf.tmdbSourceType || 'public-list';
+        const tmdbSourceOptions = Object.entries(TMDB_SOURCE_RULES).map(([value, rule]) =>
+            `<option value="${value}" ${tmdbSourceType === value ? 'selected' : ''}>${rule.title}</option>`).join('');
+        const tmdbMediaType = shelf.tmdbMediaType || 'movie';
+        const tmdbMediaOptions =
+            `<option value="movie" ${tmdbMediaType === 'movie' ? 'selected' : ''}>Movies</option>` +
+            `<option value="tv" ${tmdbMediaType === 'tv' ? 'selected' : ''}>Series</option>` +
+            `<option value="all" ${tmdbMediaType === 'all' ? 'selected' : ''}>Movies + Series</option>`;
+        const tmdbSort = parseTMDBSort(shelf.sort || TMDB_SOURCE_RULES[tmdbSourceType]?.sort || 'popularity.desc');
+        const tmdbSortOptions = [
+            ['original', 'Original order'],
+            ['popularity', 'Popularity'],
+            ['vote_average', 'Rating'],
+            ['release_date', 'Release date'],
+            ['title', 'Title'],
+        ].map(([value, label]) => `<option value="${value}" ${tmdbSort.field === value ? 'selected' : ''}>${label}</option>`).join('');
+        const tmdbSortDirectionOptions = [
+            ['desc', 'Descending'],
+            ['asc', 'Ascending'],
+        ].map(([value, label]) => `<option value="${value}" ${tmdbSort.direction === value ? 'selected' : ''}>${label}</option>`).join('');
         let traktSourceFields;
         if (isMyUpcomingShelf) {
             const currentSort = shelf.sort || defaultMyUpcomingSort();
@@ -7313,6 +7807,58 @@
         `;
         } else if (isRecentlyAiredShelf) {
             traktSourceFields = buildCalendarSourceFields(shelf, 'editShelfCalendar');
+        } else if (isStremioShelf) {
+            traktSourceFields = `
+                    <div style="margin-bottom:12px;">
+                        <label class="form-label" style="font-size:12px;margin-bottom:4px;display:block;">Add-on</label>
+                        <input type="text" value="${escapeHtml(shelf.addonName || 'Stremio Add-on').replace(/"/g, '&quot;')}" class="form-input" disabled>
+                    </div>
+                    <div style="margin-bottom:12px;">
+                        <label class="form-label" style="font-size:12px;margin-bottom:4px;display:block;">Catalog</label>
+                        <input type="text" value="${escapeHtml((shelf.addonCatalogId || '') + ' (' + (shelf.addonCatalogType || '') + ')').replace(/"/g, '&quot;')}" class="form-input" disabled>
+                    </div>
+                    <div style="margin-bottom:12px;">
+                        <label class="form-label" style="font-size:12px;margin-bottom:4px;display:block;">Manifest URL</label>
+                        <input type="text" id="editShelfStremioManifest" value="${escapeHtml(shelf.addonManifestUrl || '').replace(/"/g, '&quot;')}" class="form-input">
+                    </div>
+        `;
+        } else if (isTMDBShelf) {
+            const tmdbSourceName = shelf.tmdbSourceName || '';
+            const tmdbSourceID = shelf.tmdbSourceId || '';
+            const tmdbQueryValue = [tmdbSourceName, tmdbSourceID].filter(Boolean).join(', ');
+            traktSourceFields = `
+                    <div style="margin-bottom:12px;">
+                        <label class="form-label" style="font-size:12px;margin-bottom:4px;display:block;">Source Type</label>
+                        <select id="editShelfTmdbSourceType" onchange="onTMDBSourceTypeChange('editShelf')" class="form-input">${tmdbSourceOptions}</select>
+                    </div>
+                    <div id="editShelfTmdbSearchGroup" style="margin-bottom:12px;">
+                        <label id="editShelfTmdbSourceLabel" class="form-label" style="font-size:12px;margin-bottom:4px;display:block;">TMDB Source</label>
+                        <input type="text" id="editShelfTmdbSourceQuery" value="${escapeHtml(tmdbQueryValue).replace(/"/g, '&quot;')}" class="form-input" placeholder="TMDB URL, name, or numeric ID">
+                        <input type="hidden" id="editShelfTmdbSourceId" value="${escapeHtml(tmdbSourceID).replace(/"/g, '&quot;')}">
+                        <input type="hidden" id="editShelfTmdbSourceName" value="${escapeHtml(tmdbSourceName).replace(/"/g, '&quot;')}">
+                    </div>
+                    <div id="editShelfTmdbSearchActions" class="tmdb-source-actions" style="margin-bottom:12px;">
+                        <button type="button" class="btn btn-secondary" onclick="searchTMDBShelfSource('editShelf')">Autofill</button>
+                        <button type="button" class="btn btn-secondary" onclick="searchTMDBShelfSource('editShelf')">Search</button>
+                    </div>
+                    <div id="editShelfTmdbSourceResultGroup" style="display:none;margin-bottom:12px;">
+                        <label class="form-label" style="font-size:12px;margin-bottom:4px;display:block;">Result</label>
+                        <select id="editShelfTmdbSourceResult" onchange="applyTMDBSourceResult('editShelf')" class="form-input"></select>
+                    </div>
+                    <div style="margin-bottom:12px;">
+                        <label class="form-label" style="font-size:12px;margin-bottom:4px;display:block;">Type</label>
+                        <select id="editShelfTmdbMediaType" class="form-input">${tmdbMediaOptions}</select>
+                    </div>
+                    <div style="margin-bottom:12px;">
+                        <label class="form-label" style="font-size:12px;margin-bottom:4px;display:block;">Sort</label>
+                        <select id="editShelfTmdbSort" onchange="onTMDBSortFieldChange('editShelf')" class="form-input">${tmdbSortOptions}</select>
+                    </div>
+                    <div style="margin-bottom:12px;">
+                        <label class="form-label" style="font-size:12px;margin-bottom:4px;display:block;">Direction</label>
+                        <select id="editShelfTmdbSortDirection" class="form-input" ${tmdbSort.field === 'original' ? 'disabled' : ''}>${tmdbSortDirectionOptions}</select>
+                    </div>
+                    ${buildTMDBCustomFilterFields('editShelf', shelf.tmdbDiscoverQuery || '', true)}
+        `;
         } else if (isLibraryShelf) {
             traktSourceFields = `
                     <div style="margin-bottom:12px;">
@@ -7453,6 +7999,9 @@
         if (isTraktShelf) {
             onEditTraktShelfSourceChange(shelf.traktListId || '');
         }
+        if (isTMDBShelf) {
+            onTMDBSourceTypeChange('editShelf', true);
+        }
 
         // Close on escape key
         if (editShelfEscapeHandler) {
@@ -7527,7 +8076,27 @@
             shelf.limit = limit;
             shelf.hideUnreleased = hideUnreleased;
         }
-        if (shelf.type === 'trakt') {
+        if (shelf.type === 'stremio') {
+            const manifestUrl = document.getElementById('editShelfStremioManifest')?.value?.trim() || '';
+            if (!manifestUrl) {
+                alert('Please enter a Stremio manifest URL.');
+                return;
+            }
+            shelf.addonManifestUrl = manifestUrl;
+        } else if (shelf.type === 'tmdb') {
+            const sourceType = document.getElementById('editShelfTmdbSourceType')?.value || 'public-list';
+            const sourceID = document.getElementById('editShelfTmdbSourceId')?.value?.trim() || '';
+            if (sourceType !== 'custom-discover' && !sourceID) {
+                alert('Search or autofill a TMDB source first.');
+                return;
+            }
+            shelf.tmdbSourceType = sourceType;
+            shelf.tmdbSourceId = sourceType === 'custom-discover' ? '' : sourceID;
+            shelf.tmdbSourceName = sourceType === 'custom-discover' ? '' : (document.getElementById('editShelfTmdbSourceName')?.value?.trim() || '');
+            shelf.tmdbMediaType = document.getElementById('editShelfTmdbMediaType')?.value || 'movie';
+            shelf.tmdbDiscoverQuery = readTMDBCustomFilters('editShelf');
+            shelf.sort = readTMDBSort('editShelf');
+        } else if (shelf.type === 'trakt') {
             const accountId = document.getElementById('editShelfTraktAccount')?.value?.trim();
             const listType = document.getElementById('editShelfTraktListType')?.value?.trim() || 'watchlist';
             const listId = document.getElementById('editShelfTraktList')?.value?.trim() || '';

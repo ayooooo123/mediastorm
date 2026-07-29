@@ -495,8 +495,10 @@ func (proc *Processor) processRarArchiveWithDir(ctx context.Context, parsed *Par
 				"is_video", isVideo,
 				"segments", len(rc.Segments))
 
-			// If this is the first video file, mark it for early playback
-			if isVideo && !firstVideoFound {
+			// If this is the first content video file, mark it for early playback.
+			// Samples and extras are still materialized, but must never become the
+			// path returned to playback.
+			if isVideo && proc.isContentVideoPath(rc.InternalPath) && !firstVideoFound {
 				firstVideoFound = true
 				firstVideoPath = virtualFilePath
 				proc.log.Info("First video file discovered - playback can start",
@@ -789,6 +791,40 @@ func (proc *Processor) isVideoFile(filename string) bool {
 	return false
 }
 
+// isContentVideoPath reports whether an archive entry is eligible to be
+// returned as the immediate playback target. Non-content videos are still
+// materialized so they remain available when browsing the archive.
+func (proc *Processor) isContentVideoPath(internalPath string) bool {
+	normalized := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(internalPath)), "\\", "/")
+	base := filepath.Base(normalized)
+	if !proc.isVideoFile(base) {
+		return false
+	}
+
+	return !isNonContentArchivePath(normalized)
+}
+
+func isNonContentArchivePath(internalPath string) bool {
+	normalized := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(internalPath)), "\\", "/")
+	base := filepath.Base(normalized)
+	nonContentMarkers := []string{"sample", "extras", "trailer", "featurette", "bonus", "promo"}
+	for _, marker := range nonContentMarkers {
+		if strings.Contains(base, marker) {
+			return true
+		}
+	}
+
+	for _, component := range strings.Split(normalized, "/") {
+		switch component {
+		case "sample", "samples", "extra", "extras", "trailer", "trailers",
+			"featurette", "featurettes", "bonus", "promo", "promos":
+			return true
+		}
+	}
+
+	return false
+}
+
 // isRarFile checks if a filename is a RAR archive file
 func (proc *Processor) isRarFile(filename string) bool {
 	lower := strings.ToLower(filename)
@@ -880,8 +916,8 @@ func (proc *Processor) processNestedRarArchives(ctx context.Context, nestedRarCo
 			"is_video", isVideo,
 			"segments", len(rc.Segments))
 
-		// If this is the first video file, mark it
-		if isVideo && firstVideoPath == "" {
+		// If this is the first content video file, mark it.
+		if isVideo && proc.isContentVideoPath(rc.InternalPath) && firstVideoPath == "" {
 			firstVideoPath = virtualFilePath
 			proc.log.Info("First video file discovered in nested RAR - playback can start",
 				"file", rc.Filename,
@@ -1047,8 +1083,9 @@ func (proc *Processor) process7zArchiveWithDir(ctx context.Context, parsed *Pars
 				"is_video", isVideo,
 				"segments", len(sc.Segments))
 
-			// If this is the first video file, mark it for early playback
-			if isVideo && !firstVideoFound {
+			// If this is the first content video file, mark it for early playback.
+			// Samples and extras remain indexed but cannot be selected.
+			if isVideo && proc.isContentVideoPath(sc.InternalPath) && !firstVideoFound {
 				firstVideoFound = true
 				firstVideoPath = virtualFilePath
 				proc.log.Info("First video file discovered - playback can start",

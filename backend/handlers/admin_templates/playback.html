@@ -1585,8 +1585,7 @@
     });
 
     window.addEventListener('beforeunload', () => {
-        sendWebPlayerProgress({ force: true, keepalive: true, isPaused: true });
-        stopHlsSession();
+        stopHlsSession({ keepalive: true });
     });
 
     function apiUrl(path) {
@@ -3207,7 +3206,7 @@
         return ids;
     }
 
-    function buildWebPlayerProgressPayload(position, duration, isPaused, isBuffering) {
+    function buildWebPlayerProgressPayload(position, duration, isPaused, isBuffering, playbackEnded = false) {
         if (!selectedItem || !activeProfileId) return null;
         const mediaType = selectedItem.mediaType === 'series' ? 'episode' : 'movie';
         const itemId = buildWebPlayerItemId();
@@ -3220,6 +3219,7 @@
             duration,
             isPaused: Boolean(isPaused),
             isBuffering: Boolean(isBuffering),
+            playbackEnded: Boolean(playbackEnded),
             timestamp: new Date().toISOString(),
             externalIds: buildWebPlayerExternalIds(),
             year: selectedItem.year || undefined,
@@ -3817,7 +3817,7 @@
             return Promise.resolve(null);
         }
 
-        const payload = buildWebPlayerProgressPayload(position, duration, isPaused, isBuffering);
+        const payload = buildWebPlayerProgressPayload(position, duration, isPaused, isBuffering, isEnded);
         if (!payload) return Promise.resolve(null);
 
         const endpoint = `/api/users/${encodeURIComponent(activeProfileId)}/history/progress`;
@@ -5273,9 +5273,14 @@
         }, 20000);
     }
 
-    function stopHlsSession() {
+    function stopHlsSession(options = {}) {
         webPlayerDebug('stopHlsSession.begin');
-        sendWebPlayerProgress({ force: true, isPaused: true });
+        sendWebPlayerProgress({
+            force: true,
+            keepalive: Boolean(options.keepalive),
+            isPaused: true,
+            ended: true,
+        });
         stopWebPlayerProgressTracking();
         flushWebPlayerDebug();
         const host = document.getElementById('videoHost');

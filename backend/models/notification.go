@@ -6,10 +6,11 @@ const (
 	NotificationChannelDiscord = "discord"
 	NotificationChannelWebhook = "webhook"
 
-	NotificationEventWatchStarted = "watch.started"
-	NotificationEventWatchResumed = "watch.resumed"
-	NotificationEventWatchWatched = "watch.watched"
-	NotificationEventRelease      = "release.available"
+	NotificationEventWatchStarted  = "watch.started"
+	NotificationEventWatchProgress = "watch.progress"
+	NotificationEventWatchResumed  = "watch.resumed"
+	NotificationEventWatchWatched  = "watch.watched"
+	NotificationEventRelease       = "release.available"
 )
 
 // NotificationChannel is a profile-owned destination and its subscriptions.
@@ -25,6 +26,7 @@ type NotificationChannel struct {
 	NotifyWatchlist bool      `json:"notifyWatchlist"`
 	NotifyTrending  bool      `json:"notifyTrending"`
 	TrendingLimit   int       `json:"trendingLimit"`
+	ReleaseTypes    []string  `json:"releaseTypes"`
 	TitleTemplate   string    `json:"titleTemplate"`
 	BodyTemplate    string    `json:"bodyTemplate"`
 	IncludePoster   bool      `json:"includePoster"`
@@ -39,6 +41,16 @@ type NotificationObservation struct {
 	Status    string
 	Event     NotificationEvent
 	UpdatedAt time.Time
+}
+
+// NotificationProgressMessage stores the Discord message backing an active
+// playback progress notification so it can be adopted after a backend restart.
+type NotificationProgressMessage struct {
+	ChannelID   string    `json:"channelId"`
+	ProfileID   string    `json:"profileId"`
+	PlaybackKey string    `json:"playbackKey"`
+	MessageID   string    `json:"messageId"`
+	UpdatedAt   time.Time `json:"updatedAt"`
 }
 
 // NotificationEvent is the provider-neutral input to notification formatting.

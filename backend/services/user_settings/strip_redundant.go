@@ -231,6 +231,15 @@ func configShelvesToModel(shelves []config.ShelfConfig) []models.ShelfConfig {
 			Type:                   s.Type,
 			LibraryID:              s.LibraryID,
 			ListURL:                s.ListURL,
+			AddonManifestURL:       s.AddonManifestURL,
+			AddonCatalogType:       s.AddonCatalogType,
+			AddonCatalogID:         s.AddonCatalogID,
+			AddonName:              s.AddonName,
+			TMDBSourceType:         s.TMDBSourceType,
+			TMDBSourceID:           s.TMDBSourceID,
+			TMDBSourceName:         s.TMDBSourceName,
+			TMDBMediaType:          s.TMDBMediaType,
+			TMDBDiscoverQuery:      s.TMDBDiscoverQuery,
 			StreamingServices:      configStreamingServicesToModel(s.StreamingServices),
 			CollectionItems:        configCollectionHubItemsToModel(s.CollectionItems),
 			TraktAccountID:         s.TraktAccountID,
@@ -1415,6 +1424,15 @@ func shelfConfigsEqual(user []models.ShelfConfig, global []config.ShelfConfig) b
 			(us.Type != "" && us.Type != gs.Type) ||
 			(us.LibraryID != "" && us.LibraryID != gs.LibraryID) ||
 			(us.ListURL != "" && us.ListURL != gs.ListURL) ||
+			(us.AddonManifestURL != "" && us.AddonManifestURL != gs.AddonManifestURL) ||
+			(us.AddonCatalogType != "" && us.AddonCatalogType != gs.AddonCatalogType) ||
+			(us.AddonCatalogID != "" && us.AddonCatalogID != gs.AddonCatalogID) ||
+			(us.AddonName != "" && us.AddonName != gs.AddonName) ||
+			(us.TMDBSourceType != "" && us.TMDBSourceType != gs.TMDBSourceType) ||
+			(us.TMDBSourceID != "" && us.TMDBSourceID != gs.TMDBSourceID) ||
+			(us.TMDBSourceName != "" && us.TMDBSourceName != gs.TMDBSourceName) ||
+			(us.TMDBMediaType != "" && us.TMDBMediaType != gs.TMDBMediaType) ||
+			(us.TMDBDiscoverQuery != "" && us.TMDBDiscoverQuery != gs.TMDBDiscoverQuery) ||
 			us.Limit != gs.Limit ||
 			us.HideUnreleased != gs.HideUnreleased ||
 			(us.Sort != "" && us.Sort != gs.Sort) ||

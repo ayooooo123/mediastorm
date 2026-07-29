@@ -38,7 +38,10 @@ type DisplayListResponse struct {
 	AlphabetBuckets []string    `json:"alphabetBuckets,omitempty"`
 }
 
-const maxDiscoveryListItems = 500
+const (
+	maxDiscoveryListItems   = 500
+	watchTMDBShelfURLPrefix = "mediastorm:tmdb:"
+)
 
 func NewDisplayListHandler(watchlist watchlistService, customLists customListsService, users userService) *DisplayListHandler {
 	return &DisplayListHandler{
@@ -146,8 +149,25 @@ func (h *DisplayListHandler) Get(w http.ResponseWriter, r *http.Request) {
 		}))
 		return
 	case "mdblist", "mdblist-url", "mdblist-shelf", "seasonal":
+		if shelfID, ok := watchTMDBShelfID(r.URL.Query().Get("url")); ok {
+			overrides, found := h.watchTMDBShelfOverrides(userID, shelfID)
+			if !found {
+				http.Error(w, "TMDB shelf is unavailable", http.StatusNotFound)
+				return
+			}
+			source = "tmdb-list"
+			h.delegateMetadata(w, r, source, h.MetadataHandler.TMDBList, displayListQuery(r, userID, overrides))
+			return
+		}
 		source = "mdblist"
 		h.delegateMetadata(w, r, source, h.MetadataHandler.CustomList, displayListQuery(r, userID, nil))
+		return
+	case "stremio", "stremio-catalog":
+		source = "stremio"
+		h.delegateMetadata(w, r, source, h.MetadataHandler.StremioList, displayListQuery(r, userID, nil))
+		return
+	case "tmdb-list":
+		h.delegateMetadata(w, r, source, h.MetadataHandler.TMDBList, displayListQuery(r, userID, nil))
 		return
 	case "trakt-list":
 		h.delegateMetadata(w, r, source, h.MetadataHandler.TraktList, displayListQuery(r, userID, nil))
@@ -280,6 +300,64 @@ func firstQueryValue(r *http.Request, names ...string) string {
 		}
 	}
 	return ""
+}
+func watchTMDBShelfID(listURL string) (string, bool) {
+	listURL = strings.TrimSpace(listURL)
+	if !strings.HasPrefix(listURL, watchTMDBShelfURLPrefix) {
+		return "", false
+	}
+	shelfID := strings.TrimSpace(strings.TrimPrefix(listURL, watchTMDBShelfURLPrefix))
+	return shelfID, shelfID != ""
+}
+
+func (h *DisplayListHandler) watchTMDBShelfOverrides(userID, shelfID string) (map[string]string, bool) {
+	if h.MetadataHandler == nil {
+		return nil, false
+	}
+	if h.MetadataHandler.UserSettings != nil {
+		if settings, err := h.MetadataHandler.UserSettings.Get(userID); err == nil && settings != nil {
+			for i := range settings.HomeShelves.Shelves {
+				shelf := settings.HomeShelves.Shelves[i]
+				if shelf.ID == shelfID && strings.EqualFold(strings.TrimSpace(shelf.Type), "tmdb") {
+					return tmdbShelfQueryOverrides(
+						shelf.TMDBSourceType,
+						shelf.TMDBSourceID,
+						shelf.TMDBMediaType,
+						shelf.Sort,
+						shelf.TMDBDiscoverQuery,
+					), true
+				}
+			}
+		}
+	}
+	if h.MetadataHandler.CfgManager != nil {
+		if settings, err := h.MetadataHandler.CfgManager.Load(); err == nil {
+			for i := range settings.HomeShelves.Shelves {
+				shelf := settings.HomeShelves.Shelves[i]
+				if shelf.ID == shelfID && strings.EqualFold(strings.TrimSpace(shelf.Type), "tmdb") {
+					return tmdbShelfQueryOverrides(
+						shelf.TMDBSourceType,
+						shelf.TMDBSourceID,
+						shelf.TMDBMediaType,
+						shelf.Sort,
+						shelf.TMDBDiscoverQuery,
+					), true
+				}
+			}
+		}
+	}
+	return nil, false
+}
+
+func tmdbShelfQueryOverrides(sourceType, sourceID, mediaType, sortBy, discoverQuery string) map[string]string {
+	return map[string]string{
+		"url":           "",
+		"sourceType":    sourceType,
+		"sourceId":      sourceID,
+		"mediaType":     mediaType,
+		"sort":          sortBy,
+		"discoverQuery": discoverQuery,
+	}
 }
 
 func (h *DisplayListHandler) delegateMetadata(

@@ -78,6 +78,27 @@ func TestAdminOnboardingStatus_DefaultNeedsOnboarding(t *testing.T) {
 	}
 }
 
+func TestAdminOnboardingPageClarifiesFirstLoginPasswordIsAlreadySet(t *testing.T) {
+	t.Setenv("STRMR_INITIAL_ADMIN_PASSWORD", "first-login-password")
+	h, sessionsSvc, _ := newAdminOnboardingTestHandler(t, nil)
+	req := newAdminRequestWithSession(t, sessionsSvc, http.MethodGet, "/admin/onboarding", true)
+	rr := httptest.NewRecorder()
+
+	h.RequireAuth(h.OnboardingPage).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if got := rr.Body.String(); !containsAll(
+		got,
+		"Password secured during sign-in. No additional password change is required.",
+		"Your new password is already active. Leave both password fields blank and select Next",
+		"Change Password Again (Optional)",
+	) {
+		t.Fatalf("onboarding page did not clarify the optional password change: %s", got)
+	}
+}
+
 func TestAdminOnboardingStatus_SearchSourceFollowsStreamingMode(t *testing.T) {
 	tests := []struct {
 		name          string

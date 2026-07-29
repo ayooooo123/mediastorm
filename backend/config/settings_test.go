@@ -666,6 +666,39 @@ func TestLoadBackfillsStreamingServicesAndLiveFavoritesHomeShelves(t *testing.T)
 	}
 }
 
+func TestLoadMigratesLegacyGeneratedTMDBShelfNames(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	raw := []byte(`{"homeShelves":{"shelves":[
+		{"id":"list","name":"TMDB List","type":"tmdb","tmdbSourceType":"public-list"},
+		{"id":"collection","name":"TMDB Movie Collection","type":"tmdb","tmdbSourceType":"movie-collection"},
+		{"id":"discover","name":"TMDB Discover","type":"tmdb","tmdbSourceType":"custom-discover"},
+		{"id":"custom","name":"My TMDB Discover","type":"tmdb","tmdbSourceType":"custom-discover"}
+	]}}`)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+
+	settings, err := NewManager(path).Load()
+	if err != nil {
+		t.Fatalf("load settings: %v", err)
+	}
+	got := make(map[string]string)
+	for _, shelf := range settings.HomeShelves.Shelves {
+		got[shelf.ID] = shelf.Name
+	}
+	want := map[string]string{
+		"list":       "List",
+		"collection": "Movie Collection",
+		"discover":   "Discover",
+		"custom":     "My TMDB Discover",
+	}
+	for id, name := range want {
+		if got[id] != name {
+			t.Fatalf("shelf %q name = %q, want %q", id, got[id], name)
+		}
+	}
+}
+
 func TestLoadMigratesLegacyLiveSettingsToFirstSource(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
 	raw := []byte(`{

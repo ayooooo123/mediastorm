@@ -357,6 +357,15 @@ func (s *Service) Resolve(ctx context.Context, candidate models.NZBResult) (*mod
 	return s.buildInternalPlaybackResolution(cfg, candidate, finalPath, sourceNZBPath, estimateNZBFileSize(nzbBytes), "healthy")
 }
 
+// PrepareTorrentCandidates enriches torrent-file-only debrid results with their
+// metainfo hashes without changing candidate order.
+func (s *Service) PrepareTorrentCandidates(ctx context.Context, candidates []models.NZBResult) []models.NZBResult {
+	if s == nil || s.debrid == nil {
+		return candidates
+	}
+	return s.debrid.PrepareTorrentCandidates(ctx, candidates)
+}
+
 func (s *Service) buildInternalPlaybackResolution(cfg config.Settings, candidate models.NZBResult, storagePath, sourceNZBPath string, fileSize int64, healthStatus string) (*models.PlaybackResolution, error) {
 	finalPath := storagePath
 	if s.metadataSvc != nil && s.isLikelyDirectory(storagePath) {

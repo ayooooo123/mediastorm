@@ -29,9 +29,10 @@ func NewAuthHandler(accountsSvc *accounts.Service, sessionsSvc *sessions.Service
 
 // LoginRequest represents the login request body.
 type LoginRequest struct {
-	Username   string `json:"username"`
-	Password   string `json:"password"`
-	RememberMe bool   `json:"rememberMe"`
+	Username    string `json:"username"`
+	Password    string `json:"password"`
+	NewPassword string `json:"newPassword,omitempty"`
+	RememberMe  bool   `json:"rememberMe"`
 }
 
 // LoginResponse represents the login response.
@@ -87,14 +88,34 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"error": msg})
 		return
 	}
-	if account.IsMaster && h.accounts.HasDefaultPassword() && !requestsecurity.IsLoopback(r) {
-		log.Printf("[auth] blocked remote login using legacy default master password from %s", getClientIPAddress(r))
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]string{"error": "default admin password may only be changed from localhost"})
-		return
+	if account.IsMaster && h.accounts.HasDefaultPassword() {
+		// Docker port forwarding does not reliably preserve a loopback peer
+		// address. Require the shared bootstrap password to be replaced before
+		// issuing any session instead of trying to infer whether the host is local.
+		if strings.TrimSpace(req.NewPassword) == "" {
+			log.Printf("[auth] requiring legacy default master password replacement from %s", getClientIPAddress(r))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusPreconditionRequired)
+			json.NewEncoder(w).Encode(map[string]string{
+				"code":  "password_change_required",
+				"error": "change the default admin password by resubmitting login with newPassword",
+			})
+			return
+		}
+		if err := h.accounts.ReplaceDefaultMasterPassword(req.NewPassword); err != nil {
+			status := http.StatusConflict
+			message := "the default admin password was already changed; sign in again"
+			if errors.Is(err, accounts.ErrPasswordRequired) || strings.TrimSpace(req.NewPassword) == accounts.DefaultMasterPassword {
+				status = http.StatusBadRequest
+				message = "newPassword must be different from the default password"
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			json.NewEncoder(w).Encode(map[string]string{"error": message})
+			return
+		}
+		log.Printf("[auth] replaced legacy default master password during first login from %s", getClientIPAddress(r))
 	}
-
 	// Create session
 	userAgent := r.Header.Get("User-Agent")
 	ipAddress := getClientIPAddress(r)
