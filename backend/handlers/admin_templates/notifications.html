@@ -54,6 +54,10 @@
                         <input type="radio" name="notification-category" value="release" onchange="updateCategoryVisibility()">
                         <span><strong>Release Status</strong><small>Notify when watchlist or trending content becomes available.</small></span>
                     </label>
+                    <label class="choice-card">
+                        <input type="radio" name="notification-category" value="system" onchange="updateCategoryVisibility()">
+                        <span><strong>System Operations</strong><small>Notify when the mediastorm backend starts or shuts down.</small></span>
+                    </label>
                 </div>
             </div>
 
@@ -93,7 +97,16 @@
                 </div>
             </div>
 
-            <div class="form-group">
+            <div id="system-settings" class="form-group" hidden>
+                <label class="form-label">System operation events</label>
+                <div class="checkbox-grid">
+                    <label><input type="checkbox" name="system-event" value="system.startup"> Startup</label>
+                    <label><input type="checkbox" name="system-event" value="system.shutdown"> Shutdown</label>
+                </div>
+                <div class="form-help">Shutdown is sent synchronously before services are stopped. Docker Compose allows a 45-second stop grace period so the request can finish.</div>
+            </div>
+
+            <div class="form-group" id="poster-settings">
                 <label class="check-row"><input type="checkbox" id="include-poster" checked> Include item poster when available</label>
             </div>
 
@@ -145,7 +158,7 @@
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
 .checkbox-grid { display: flex; flex-wrap: wrap; gap: 0.75rem 1.25rem; }
 .checkbox-grid label, .check-row { display: inline-flex; align-items: center; gap: 0.4rem; color: var(--text-secondary); }
-.choice-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; }
+.choice-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; }
 .choice-card { display: flex; align-items: flex-start; gap: 0.65rem; padding: 0.85rem; border: 1px solid var(--border); border-radius: 0.5rem; cursor: pointer; }
 .choice-card:has(input:checked) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
 .choice-card input { margin-top: 0.2rem; }
@@ -215,7 +228,9 @@ function renderChannels() {
             'watch.progress': 'Progress',
             'watch.resumed': 'Resume',
             'watch.watched': 'Watched',
-            'release.available': 'Released / aired'
+            'release.available': 'Released / aired',
+            'system.startup': 'Startup',
+            'system.shutdown': 'Shutdown'
         })[event] || event);
         const sources = [];
         if (channel.notifyWatchlist) sources.push('watchlist');
@@ -230,7 +245,8 @@ function renderChannels() {
         };
         const releaseTypes = (channel.releaseTypes || []).map(type => releaseTypeLabels[type] || type);
         const isRelease = (channel.events || []).includes('release.available');
-        const notificationType = isRelease ? 'Release status' : 'Watch status';
+        const isSystem = (channel.events || []).some(event => event.startsWith('system.'));
+        const notificationType = isRelease ? 'Release status' : (isSystem ? 'System operations' : 'Watch status');
         return `
             <div class="notification-row">
                 <div class="notification-main">
@@ -260,22 +276,31 @@ function selectedCategory() {
 
 function selectedEvents() {
     if (selectedCategory() === 'release') return ['release.available'];
+    if (selectedCategory() === 'system') {
+        return Array.from(document.querySelectorAll('input[name="system-event"]:checked')).map(input => input.value);
+    }
     return Array.from(document.querySelectorAll('input[name="watch-event"]:checked')).map(input => input.value);
 }
 
 function updateCategoryVisibility() {
     const isRelease = selectedCategory() === 'release';
-    document.getElementById('watch-settings').hidden = isRelease;
+    const isSystem = selectedCategory() === 'system';
+    document.getElementById('watch-settings').hidden = isRelease || isSystem;
     document.getElementById('release-settings').hidden = !isRelease;
+    document.getElementById('system-settings').hidden = !isSystem;
+    document.getElementById('poster-settings').hidden = isSystem;
     document.querySelectorAll('input[name="watch-event"]').forEach(input => {
-        input.disabled = isRelease;
+        input.disabled = isRelease || isSystem;
+    });
+    document.querySelectorAll('input[name="system-event"]').forEach(input => {
+        input.disabled = !isSystem;
     });
     document.getElementById('notify-watchlist').disabled = !isRelease;
     document.getElementById('notify-trending').disabled = !isRelease;
     document.querySelectorAll('input[name="release-type"]').forEach(input => {
         input.disabled = !isRelease;
     });
-    document.getElementById('watch-template-fields').hidden = isRelease;
+    document.getElementById('watch-template-fields').hidden = isRelease || isSystem;
     document.getElementById('release-template-fields').hidden = !isRelease;
     updateProgressAvailability();
     updateTrendingVisibility();
@@ -285,7 +310,7 @@ function updateCategoryVisibility() {
 function updateProgressAvailability() {
     const progressInput = document.querySelector('input[name="watch-event"][value="watch.progress"]');
     const isDiscord = document.getElementById('channel-type').value === 'discord';
-    progressInput.disabled = selectedCategory() === 'release' || !isDiscord;
+    progressInput.disabled = selectedCategory() !== 'watch' || !isDiscord;
     if (!isDiscord) progressInput.checked = false;
 }
 
@@ -298,6 +323,10 @@ function updateTrendingVisibility() {
 
 function previewValues() {
     const isRelease = selectedCategory() === 'release';
+    const isSystem = selectedCategory() === 'system';
+    const selectedSystemEvent = document.querySelector('input[name="system-event"]:checked');
+    const systemEvent = selectedSystemEvent ? selectedSystemEvent.value : 'system.startup';
+    const systemLabel = systemEvent === 'system.shutdown' ? 'Server shutting down' : 'Server started';
     const watchEvents = {
         'watch.started': {label: 'Started watching', percent: '1'},
         'watch.progress': {label: 'Watching', percent: '42'},
@@ -306,19 +335,19 @@ function previewValues() {
     };
     const watchEvent = watchEvents[previewWatchEvent] || watchEvents['watch.started'];
     return {
-        event: isRelease ? 'release.available' : previewWatchEvent,
-        eventLabel: isRelease ? 'Now available' : watchEvent.label,
-        title: 'Example Movie',
-        year: '2026',
-        mediaType: 'movie',
-        mediaLabel: 'Movie',
+        event: isSystem ? systemEvent : (isRelease ? 'release.available' : previewWatchEvent),
+        eventLabel: isSystem ? systemLabel : (isRelease ? 'Now available' : watchEvent.label),
+        title: isSystem ? 'mediastorm' : 'Example Movie',
+        year: isSystem ? '' : '2026',
+        mediaType: isSystem ? 'system' : 'movie',
+        mediaLabel: isSystem ? 'System' : 'Movie',
         seriesTitle: '',
         episodeTitle: '',
         episode: '',
         season: '',
         episodeNumber: '',
-        percent: isRelease ? '0' : watchEvent.percent,
-        progressLabel: isRelease ? '' : ' · ' + watchEvent.percent + '%',
+        percent: isRelease || isSystem ? '' : watchEvent.percent,
+        progressLabel: isRelease || isSystem ? '' : ' · ' + watchEvent.percent + '%',
         releaseType: isRelease ? 'Digital' : '',
         releaseDate: isRelease ? '2026-07-23' : '',
         releaseLabel: isRelease ? ' · Digital · 2026-07-23' : '',
@@ -344,12 +373,13 @@ function updatePreview() {
     document.getElementById('preview-body').textContent =
         renderPreviewTemplate(document.getElementById('body-template').value, values) || '(No message)';
     document.getElementById('preview-poster').hidden =
-        !document.getElementById('include-poster').checked;
+        selectedCategory() === 'system' || !document.getElementById('include-poster').checked;
 }
 
 async function saveChannel(event) {
     event.preventDefault();
     const isRelease = selectedCategory() === 'release';
+    const isSystem = selectedCategory() === 'system';
     const payload = {
         id: document.getElementById('channel-id').value,
         profileId,
@@ -366,7 +396,7 @@ async function saveChannel(event) {
             : [],
         titleTemplate: document.getElementById('title-template').value,
         bodyTemplate: document.getElementById('body-template').value,
-        includePoster: document.getElementById('include-poster').checked
+        includePoster: !isSystem && document.getElementById('include-poster').checked
     };
     try {
         const response = await fetch(notificationsBasePath + '/api/notifications', {
@@ -401,8 +431,13 @@ function editChannel(id) {
     document.getElementById('body-template').value = channel.bodyTemplate;
     document.getElementById('include-poster').checked = channel.includePoster;
     const isRelease = (channel.events || []).includes('release.available');
-    document.querySelector(`input[name="notification-category"][value="${isRelease ? 'release' : 'watch'}"]`).checked = true;
+    const isSystem = (channel.events || []).some(event => event.startsWith('system.'));
+    const category = isRelease ? 'release' : (isSystem ? 'system' : 'watch');
+    document.querySelector(`input[name="notification-category"][value="${category}"]`).checked = true;
     document.querySelectorAll('input[name="watch-event"]').forEach(input => {
+        input.checked = (channel.events || []).includes(input.value);
+    });
+    document.querySelectorAll('input[name="system-event"]').forEach(input => {
         input.checked = (channel.events || []).includes(input.value);
     });
     previewWatchEvent = (channel.events || []).find(event => event.startsWith('watch.') && event !== 'watch.playing') || 'watch.started';
@@ -427,6 +462,9 @@ function resetForm() {
     document.getElementById('channel-enabled').checked = true;
     document.querySelector('input[name="notification-category"][value="watch"]').checked = true;
     document.querySelectorAll('input[name="watch-event"]').forEach(input => {
+        input.checked = false;
+    });
+    document.querySelectorAll('input[name="system-event"]').forEach(input => {
         input.checked = false;
     });
     previewWatchEvent = 'watch.started';
@@ -488,6 +526,9 @@ document.querySelectorAll('input[name="watch-event"]').forEach(input => {
         }
         updatePreview();
     });
+});
+document.querySelectorAll('input[name="system-event"]').forEach(input => {
+    input.addEventListener('change', updatePreview);
 });
 updateCategoryVisibility();
 loadChannels();

@@ -30,6 +30,7 @@ import (
 	"novastream/internal/slogutil"
 	internalusenet "novastream/internal/usenet"
 	"novastream/internal/webdav"
+	"novastream/models"
 	"novastream/services/accounts"
 	"novastream/services/backup"
 	"novastream/services/badstreams"
@@ -1546,6 +1547,8 @@ func main() {
 	// Setup graceful shutdown
 	shutdownChan := make(chan os.Signal, 1)
 	signal.Notify(shutdownChan, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(shutdownChan)
+	shutdownDone := make(chan struct{})
 
 	// Start background cache manager to warm trending data and custom lists
 	// on startup and refresh periodically (every 2 hours)
@@ -1633,7 +1636,7 @@ func main() {
 			defer ticker.Stop()
 			for {
 				select {
-				case <-shutdownChan:
+				case <-shutdownDone:
 					return
 				case <-ticker.C:
 					var m runtime.MemStats
@@ -1676,6 +1679,11 @@ func main() {
 		}
 	}()
 	log.Printf("Server listening on %s", addr)
+	startupNotificationCtx, startupNotificationCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := notificationService.NotifySystem(startupNotificationCtx, models.NotificationEventSystemStartup); err != nil {
+		log.Printf("[notifications] startup delivery failed: %v", err)
+	}
+	startupNotificationCancel()
 
 	// Start expensive restore/sync/warmup work after the socket is accepting
 	// connections so restart health checks are not blocked by external probes.
@@ -1702,11 +1710,17 @@ func main() {
 
 	// Wait for shutdown signal
 	<-shutdownChan
+	close(shutdownDone)
 	log.Println("🛑 Shutdown signal received, cleaning up...")
 
 	// Create shutdown context with timeout
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
+	shutdownNotificationCtx, shutdownNotificationCancel := context.WithTimeout(shutdownCtx, 10*time.Second)
+	if err := notificationService.NotifySystem(shutdownNotificationCtx, models.NotificationEventSystemShutdown); err != nil {
+		log.Printf("[notifications] shutdown delivery failed: %v", err)
+	}
+	shutdownNotificationCancel()
 
 	// Stop background cache manager
 	metadataService.StopBackgroundCacheManager()
