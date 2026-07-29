@@ -975,18 +975,14 @@ type HLSManager struct {
 	hwAccelRetryAfter time.Time
 }
 
-// PlaybackActivityObserver receives player updates only after they have been
-// matched to a currently active stream.
-type PlaybackActivityObserver interface {
-	HandlePlaybackUpdate(userID string, update models.PlaybackProgressUpdate, percentWatched float64)
-}
-
-func (m *HLSManager) SetPlaybackActivityObserver(observer PlaybackActivityObserver) {
+// AddPlaybackActivityObserver registers one more consumer of this manager's
+// playback activity. See playbackObserverFanout for why there is more than one.
+func (m *HLSManager) AddPlaybackActivityObserver(observer PlaybackActivityObserver) {
 	if m == nil {
 		return
 	}
 	m.mu.Lock()
-	m.playbackObserver = observer
+	m.playbackObserver = addPlaybackObserver(m.playbackObserver, observer)
 	m.mu.Unlock()
 }
 
@@ -4168,6 +4164,10 @@ func (m *HLSManager) KeepAlive(w http.ResponseWriter, r *http.Request, sessionID
 	paused := session.PlaybackPaused
 	buffering := session.PlaybackBuffering
 	ended := session.PlaybackEnded
+	// The internal stream path this session transcodes from. Consumers that have
+	// to reach the source again — the p2p auto-seeder re-resolves it to a current
+	// URL — cannot recover it from anywhere else on this request.
+	sourcePath := session.Path
 	session.mu.Unlock()
 
 	if hasPlaybackPosition {
@@ -4185,6 +4185,7 @@ func (m *HLSManager) KeepAlive(w http.ResponseWriter, r *http.Request, sessionID
 				IsBuffering:       buffering,
 				PlaybackEnded:     ended,
 				PlaybackSessionID: "hls:" + sessionID,
+				SourcePath:        sourcePath,
 			}, metadata)
 			percent := 0.0
 			if duration > 0 {

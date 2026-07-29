@@ -744,8 +744,8 @@ func main() {
 	videoHandler.SetPrequeueStore(prequeueHandler.GetStore())
 	localBaseURL := fmt.Sprintf("http://127.0.0.1:%d", settings.Server.Port)
 	videoHandler.SetLocalBaseURL(localBaseURL)
-	videoHandler.GetHLSManager().SetPlaybackActivityObserver(notificationService)
-	handlers.GetStreamTracker().SetPlaybackActivityObserver(notificationService)
+	videoHandler.GetHLSManager().AddPlaybackActivityObserver(notificationService)
+	handlers.GetStreamTracker().AddPlaybackActivityObserver(notificationService)
 	historyHandler.SetActivePlaybackTrackers(handlers.GetStreamTracker())
 
 	if videoHandler != nil && settings.WebDAV.Enabled {
@@ -823,7 +823,16 @@ func main() {
 	settingsHandler.SetPearTubeConfigurer(pearTubeHandler)
 	// Seed what a viewer starts watching into the swarm. Inert without a relay;
 	// with one, on unless the operator turned auto-seeding off.
+	//
+	// Every playback signal is registered, because no single one of them sees
+	// every player. The progress endpoint below is the web player's heartbeat;
+	// the HLS keepalive is the web player behind a transcode; and a byte-range
+	// stream request opening a new playback is the only signal an app produces.
+	// One title still seeds once: the seeder claims by title, not by signal.
 	historyHandler.SetAutoSeeder(pearTubeHandler)
+	videoHandler.GetHLSManager().AddPlaybackActivityObserver(pearTubeHandler)
+	handlers.GetStreamTracker().AddPlaybackActivityObserver(pearTubeHandler)
+	handlers.GetStreamTracker().SetPlaybackAutoSeeder(pearTubeHandler)
 	userSettingsHandler.LocalMedia = localMediaService
 	userSettingsHandler.SetPrequeueStore(prequeueHandler.GetStore())
 	userSettingsHandler.SetSearchCacheClearer(indexerService)

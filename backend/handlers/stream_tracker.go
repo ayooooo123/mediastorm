@@ -25,6 +25,7 @@ type StreamTracker struct {
 	mu               sync.RWMutex
 	counter          uint64
 	playbackObserver PlaybackActivityObserver
+	autoSeeder       playbackAutoSeeder
 }
 
 type playbackMigrationSignal struct {
@@ -233,12 +234,31 @@ func GetStreamTracker() *StreamTracker {
 	return globalStreamTracker
 }
 
-func (t *StreamTracker) SetPlaybackActivityObserver(observer PlaybackActivityObserver) {
+// AddPlaybackActivityObserver registers one more consumer of matched playback
+// activity. See playbackObserverFanout for why there is more than one.
+func (t *StreamTracker) AddPlaybackActivityObserver(observer PlaybackActivityObserver) {
 	if t == nil {
 		return
 	}
 	t.mu.Lock()
-	t.playbackObserver = observer
+	t.playbackObserver = addPlaybackObserver(t.playbackObserver, observer)
+	t.mu.Unlock()
+}
+
+// SetPlaybackAutoSeeder registers the p2p integration on the only playback
+// signal a native player produces.
+//
+// A player heartbeat reaches this tracker through ObservePlaybackActivity, but
+// only the web player sends one: the apps play a byte-range stream and never
+// call the progress endpoint. Their playback is visible here and nowhere else,
+// so the seeder is told when a stream request opens a new playback rather than
+// when a heartbeat arrives. See StartStreamWithAccount.
+func (t *StreamTracker) SetPlaybackAutoSeeder(seeder playbackAutoSeeder) {
+	if t == nil || seeder == nil {
+		return
+	}
+	t.mu.Lock()
+	t.autoSeeder = seeder
 	t.mu.Unlock()
 }
 
@@ -276,6 +296,12 @@ func (t *StreamTracker) ObservePlaybackActivity(userID string, update models.Pla
 		// single playback. Key notifications like the consolidated Active
 		// Streams row, not by an individual transport connection.
 		update.PlaybackSessionID = "direct:" + trackedStreamSlotKey(best)
+		// A player that reported no source path still has one: the request this
+		// heartbeat was matched to names it. Consumers that must reach the source
+		// again, rather than merely name it, depend on that.
+		if strings.TrimSpace(update.SourcePath) == "" {
+			update.SourcePath = best.Path
+		}
 		update = enrichPlaybackUpdateFromStream(update, best.MediaMetadata)
 	}
 	t.mu.RUnlock()
@@ -389,8 +415,44 @@ func (t *StreamTracker) StartStreamWithAccount(r *http.Request, path string, con
 		activityCounter: activityCounter,
 	}
 
+	// A sequential player closes each range before opening the next, so this is
+	// not a guarantee of one announcement per playback — only a cheap way to skip
+	// the connections a player keeps open in parallel. One seed per playback is
+	// the seeder's claim, not this.
+	newPlayback := !t.hasPlaybackSlotLocked(nil, trackedStreamSlotKey(stream))
 	t.streams[id] = stream
+	if newPlayback {
+		t.observePlaybackStartLocked(stream)
+	}
 	return id, bytesCounter, activityCounter
+}
+
+// observePlaybackStartLocked hands a newly opened playback to the auto-seeder.
+//
+// It never blocks and never fails the stream: the seeder gets its own goroutine
+// and the caller is a request that is already writing bytes to a viewer. The
+// dedupe lives in the seeder, keyed by title rather than by request, which is
+// what makes a repeat call for the same playback — a fresh range connection, a
+// seek, a reconnect, a second viewer — cost a map lookup. It is also why this
+// logs nothing: one line per range request would bury the seeder's own outcome.
+func (t *StreamTracker) observePlaybackStartLocked(stream *TrackedStream) {
+	if t.autoSeeder == nil {
+		return
+	}
+	update := enrichPlaybackUpdateFromStream(models.PlaybackProgressUpdate{
+		// Position stays zero: a range request says a playback started, not how
+		// far into it the viewer is.
+		SourcePath:        stream.Path,
+		Timestamp:         stream.StartTime,
+		PlaybackSessionID: "direct:" + trackedStreamSlotKey(stream),
+	}, stream.MediaMetadata)
+	if update.MediaType == "" || update.MediaType == "live" || update.ItemID == "" {
+		// Nothing identifies what is playing, so there are no coordinates to
+		// publish under. A metadata-less probe or a live channel lands here.
+		return
+	}
+	seeder := t.autoSeeder
+	go seeder.OnPlaybackStarted(update)
 }
 
 // SetStreamCancel attaches a cancellation function to a tracked stream.

@@ -86,6 +86,13 @@ type PearTubeHandler struct {
 	autoSeedClaims map[string]time.Time
 }
 
+// The handler is registered on every playback signal this backend produces, and
+// each of those signals has its own consumer interface.
+var (
+	_ playbackAutoSeeder       = (*PearTubeHandler)(nil)
+	_ PlaybackActivityObserver = (*PearTubeHandler)(nil)
+)
+
 // PearTubeRelayConsumer is a service that captured the relay client when it was
 // built and cannot pick up a replacement on its own. indexer.Service satisfies
 // it via SetPearTubeRelay.
@@ -357,15 +364,19 @@ var tmdbPlaybackID = regexp.MustCompile(`(?i)\btmdb:(?:movie|tv|show):([1-9][0-9
 // OnPlaybackStarted publishes what a viewer just started watching into the
 // swarm. It is a no-op unless a relay is configured and automatic seeding is on.
 //
-// The trigger is a playback-progress heartbeat rather than a playback resolve.
-// A resolve is not a watch: the prequeue resolves candidates before anyone
-// presses play and re-resolves down the candidate list on failure, so hooking it
-// would seed titles nobody watched. A resolve also has no TMDB coordinates to
-// publish under — it carries an indexer result, not an identified title —
-// whereas a heartbeat carries the coordinates and the active source path. And it
-// is emphatically not the byte-range path: a single playback opens hundreds of
-// range requests, while heartbeats arrive every few seconds and are collapsed to
-// one submission by the claim below.
+// The trigger is live playback rather than a playback resolve. A resolve is not
+// a watch: the prequeue resolves candidates before anyone presses play and
+// re-resolves down the candidate list on failure, so hooking it would seed
+// titles nobody watched. A resolve also has no TMDB coordinates to publish under
+// — it carries an indexer result, not an identified title — whereas playback
+// carries the coordinates and the active source path.
+//
+// Live playback reaches here from three places, because no single one of them
+// sees every player: the web player's progress heartbeat, the HLS keepalive
+// behind a transcode, and a byte-range stream request opening a new playback,
+// which is the only signal an app produces. All three are collapsed to one
+// submission per title by the claim below, so being called every few seconds by
+// one and hundreds of times by another costs a map lookup.
 //
 // Seeding happens on start, not on a watched threshold. The relay fetches the
 // source itself, independently of the viewer, so there is no partial file to
@@ -378,11 +389,18 @@ func (h *PearTubeHandler) OnPlaybackStarted(update models.PlaybackProgressUpdate
 	if !ok {
 		return
 	}
-	// Fire and forget. A heartbeat is on the player's critical path and its
+	// Fire and forget. The caller is on the player's critical path and its
 	// request context dies with the response, so the submission gets its own
 	// goroutine and its own deadline. Nothing about a failed seed reaches the
 	// viewer.
 	go plan.submit()
+}
+
+// HandlePlaybackUpdate makes the handler a PlaybackActivityObserver, so it is
+// told about the playback the HLS manager and the stream tracker have already
+// matched to an active stream, alongside the notification service.
+func (h *PearTubeHandler) HandlePlaybackUpdate(_ string, update models.PlaybackProgressUpdate, _ float64) {
+	h.OnPlaybackStarted(update)
 }
 
 // autoSeedPlan is an automatic seed that has claimed its title and is waiting to
