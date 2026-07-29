@@ -6377,33 +6377,17 @@ func isMatchingPlaybackForWatchUpdate(progress models.PlaybackProgress, update m
 // across all eligible (non-private) profiles within the given lookback window.
 // Episodes are rolled up to their parent series so a user who watched multiple
 // episodes of the same show contributes only 1 to that show's tally.
-func (s *Service) AggregatePopularTitles(eligibleUsers map[string]bool, windowDays int) []models.PopularTitle {
+func (s *Service) AggregatePopularTitles(
+	eligibleUsers map[string]bool,
+	windowDays int,
+	minProfiles int,
+) []models.PopularTitle {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	cutoff := time.Now().UTC().AddDate(0, 0, -windowDays)
-
-	// userID -> set of canonical keys they've watched (one per movie/series)
-	userWatches := make(map[string]map[string]bool)
-
-	for userID, perUser := range s.watchHistory {
-		if !eligibleUsers[userID] {
-			continue
-		}
-		keys := make(map[string]bool)
-		for _, item := range perUser {
-			if !item.Watched || item.WatchedAt.Before(cutoff) {
-				continue
-			}
-			// Roll episodes up to their series; movies stand alone.
-			key := popularTitleKey(item)
-			if key != "" {
-				keys[key] = true
-			}
-		}
-		if len(keys) > 0 {
-			userWatches[userID] = keys
-		}
+	if minProfiles < 1 {
+		minProfiles = 1
 	}
 
 	// Aggregate: title key -> PopularTitle + set of users who watched
@@ -6413,58 +6397,56 @@ func (s *Service) AggregatePopularTitles(eligibleUsers map[string]bool, windowDa
 	}
 	aggregated := make(map[string]*aggEntry)
 
-	for userID, keys := range userWatches {
-		for key := range keys {
-			entry, ok := aggregated[key]
-			if !ok {
-				entry = &aggEntry{userIDs: make(map[string]bool)}
-				aggregated[key] = entry
-			}
-			if !entry.userIDs[userID] {
-				entry.userIDs[userID] = true
-			}
-		}
-	}
-
-	// Build title metadata for each entry by scanning history for the first
-	// matching item (to grab name, year, external IDs).
 	for userID, perUser := range s.watchHistory {
+		if !eligibleUsers[userID] {
+			continue
+		}
 		for _, item := range perUser {
+			if !item.Watched || item.WatchedAt.Before(cutoff) {
+				continue
+			}
 			key := popularTitleKey(item)
 			if key == "" {
 				continue
 			}
-			entry, ok := aggregated[key]
-			if !ok || entry.title.Name != "" {
-				continue
+			entry := aggregated[key]
+			if entry == nil {
+				entry = &aggEntry{userIDs: make(map[string]bool)}
+				aggregated[key] = entry
 			}
-			if entry.userIDs[userID] {
+			entry.userIDs[userID] = true
+			if entry.title.Name == "" || item.WatchedAt.After(entry.title.LastWatched) {
 				mediaType, name, year, extIDs := popularTitleMetadata(item)
 				entry.title = models.PopularTitle{
 					MediaType:   mediaType,
 					ItemID:      popularTitleItemID(item),
 					Name:        name,
 					Year:        year,
-					WatchCount:  0, // filled below
-					ExternalIDs: extIDs,
+					ExternalIDs: cloneStringMap(extIDs),
+					LastWatched: item.WatchedAt,
 				}
+			} else {
+				mergeMissingExternalIDs(entry.title.ExternalIDs, item.ExternalIDs)
 			}
 		}
 	}
 
-	// Build result list
 	result := make([]models.PopularTitle, 0, len(aggregated))
 	for _, entry := range aggregated {
 		entry.title.WatchCount = len(entry.userIDs)
-		if entry.title.Name == "" {
-			continue // shouldn't happen, but guard
+		if entry.title.Name == "" || entry.title.WatchCount < minProfiles {
+			continue
 		}
 		result = append(result, entry.title)
 	}
 
-	// Sort by watch count descending, then name ascending for ties
+	// Rank by distinct opted-in profiles, then by the most recent qualifying
+	// watch so ties do not produce an arbitrary alphabetical archive.
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].WatchCount == result[j].WatchCount {
+			if !result[i].LastWatched.Equal(result[j].LastWatched) {
+				return result[i].LastWatched.After(result[j].LastWatched)
+			}
 			return strings.ToLower(result[i].Name) < strings.ToLower(result[j].Name)
 		}
 		return result[i].WatchCount > result[j].WatchCount
@@ -6572,6 +6554,20 @@ func (s *Service) ListRecentWatches(eligibleUsers map[string]models.User, window
 // "movie:<itemID>" for movies, "series:<seriesID>" for episodes.
 // Returns "" if the item cannot be resolved.
 func popularTitleKey(item models.WatchHistoryItem) string {
+	mediaType := strings.ToLower(strings.TrimSpace(item.MediaType))
+	if mediaType == "episode" || mediaType == "series" {
+		mediaType = "series"
+	} else if mediaType == "movie" {
+		mediaType = "movie"
+	} else {
+		return ""
+	}
+	for _, provider := range []string{"imdb", "tmdb", "tvdb"} {
+		if value := strings.ToLower(strings.TrimSpace(item.ExternalIDs[provider])); value != "" {
+			return mediaType + ":" + provider + ":" + value
+		}
+	}
+
 	switch item.MediaType {
 	case "movie":
 		id := strings.TrimSpace(item.ItemID)
@@ -6579,8 +6575,11 @@ func popularTitleKey(item models.WatchHistoryItem) string {
 			return ""
 		}
 		return "movie:" + strings.ToLower(id)
-	case "episode":
+	case "episode", "series":
 		sid := strings.TrimSpace(item.SeriesID)
+		if item.MediaType == "series" && sid == "" {
+			sid = strings.TrimSpace(item.ItemID)
+		}
 		if sid == "" {
 			// Try to infer from ItemID (strip :S##E## suffix)
 			sid = inferSeriesID(item.ItemID)
@@ -6597,8 +6596,11 @@ func popularTitleKey(item models.WatchHistoryItem) string {
 // popularTitleItemID returns the item-level ID for a watch history item
 // (series ID for episodes, item ID for movies).
 func popularTitleItemID(item models.WatchHistoryItem) string {
-	if item.MediaType == "episode" {
+	if item.MediaType == "episode" || item.MediaType == "series" {
 		sid := strings.TrimSpace(item.SeriesID)
+		if item.MediaType == "series" && sid == "" {
+			sid = strings.TrimSpace(item.ItemID)
+		}
 		if sid != "" {
 			return sid
 		}
@@ -6609,10 +6611,33 @@ func popularTitleItemID(item models.WatchHistoryItem) string {
 
 // popularTitleMetadata extracts display metadata from a watch history item.
 func popularTitleMetadata(item models.WatchHistoryItem) (mediaType, name string, year int, extIDs map[string]string) {
-	if item.MediaType == "episode" {
-		return "series", item.SeriesName, item.Year, item.ExternalIDs
+	if item.MediaType == "episode" || item.MediaType == "series" {
+		name = strings.TrimSpace(item.SeriesName)
+		if name == "" {
+			name = strings.TrimSpace(item.Name)
+		}
+		return "series", name, item.Year, item.ExternalIDs
 	}
 	return "movie", item.Name, item.Year, item.ExternalIDs
+}
+
+func cloneStringMap(source map[string]string) map[string]string {
+	result := make(map[string]string, len(source))
+	for key, value := range source {
+		result[key] = value
+	}
+	return result
+}
+
+func mergeMissingExternalIDs(target map[string]string, source map[string]string) {
+	if target == nil {
+		return
+	}
+	for key, value := range source {
+		if strings.TrimSpace(target[key]) == "" && strings.TrimSpace(value) != "" {
+			target[key] = value
+		}
+	}
 }
 
 // inferSeriesID strips the :S##E## suffix from an episode ItemID to yield
@@ -6636,4 +6661,3 @@ func inferSeriesID(itemID string) string {
 	}
 	return itemID[:idx]
 }
-

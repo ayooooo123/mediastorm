@@ -141,6 +141,29 @@ func TestAdminSettingsAddListIncludesSharedActivityShelves(t *testing.T) {
 	}
 }
 
+func TestAdminSettingsSharedActivityShelvesExposeAssociatedSettings(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/settings.html")
+	if err != nil {
+		t.Fatalf("read settings template: %v", err)
+	}
+	source := string(templateBytes)
+
+	for _, marker := range []string{
+		`editSharedActivityShelf(\''+s.id+'\')`,
+		`id="sharedShelfWindowDays"`,
+		`id="sharedShelfMinProfiles"`,
+		`id="sharedShelfPerProfileCap"`,
+		`shelf.activityWindowDays`,
+		`shelf.minimumProfiles`,
+		`shelf.maxItemsPerProfile`,
+		`saveSharedActivityShelf()`,
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("settings template missing shared activity shelf setting marker %q", marker)
+		}
+	}
+}
+
 func TestUsenetEngineStatusProbeJobIDUsesGUIDForNZBDav(t *testing.T) {
 	for _, engineType := range []string{"nzbdav", "nzbdavex"} {
 		t.Run(engineType, func(t *testing.T) {

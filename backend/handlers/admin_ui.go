@@ -743,8 +743,6 @@ var SettingsSchema = map[string]interface{}{
 			"disableTvLandscapeCardExpansion": map[string]interface{}{"type": "boolean", "label": "Disable TV Card Expansion", "description": "Keep portrait shelf cards from expanding into landscape layout when focused on TV home screens.", "order": 8},
 			"homeShelfScale":                  map[string]interface{}{"type": "number", "label": "TV Shelf Scale", "description": "Scale TV home shelf headers, cards, card overlays, and hero text. Lower values fit more shelves on screen.", "order": 9, "step": 0.05, "min": 0.5, "max": 1.0},
 			"homeHeroScale":                   map[string]interface{}{"type": "number", "label": "TV Hero Area Scale", "description": "Scale the upper TV hero region and top-right hero artwork. Lower values move shelves higher.", "order": 10, "step": 0.05, "min": 0.5, "max": 1.0},
-			"popularOnServerWindowDays":       map[string]interface{}{"type": "number", "label": "Shared Activity Window", "description": "Days of opted-in profile activity used by Popular on This Server and Recently Watched.", "order": 11, "step": 1, "min": 7, "max": 365, "globalOnly": true},
-			"recentlyWatchedCapPerProfile":    map[string]interface{}{"type": "number", "label": "Recently Watched Per Profile", "description": "Maximum recent entries contributed by each opted-in profile.", "order": 12, "step": 1, "min": 1, "max": 20, "globalOnly": true},
 		},
 	},
 	"homeShelves.shelves": map[string]interface{}{

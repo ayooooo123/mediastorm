@@ -12,9 +12,18 @@ import (
 
 type fakeSharedShelfHistory struct {
 	*fakeMetadataHistoryService
+	popularWindowDays   int
+	popularMinProfiles  int
+	recentWindowDays    int
+	recentMaxPerProfile int
 }
 
-func (f *fakeSharedShelfHistory) AggregatePopularTitles(eligible map[string]bool, _ int) []models.PopularTitle {
+func (f *fakeSharedShelfHistory) AggregatePopularTitles(
+	eligible map[string]bool,
+	windowDays, minProfiles int,
+) []models.PopularTitle {
+	f.popularWindowDays = windowDays
+	f.popularMinProfiles = minProfiles
 	if !eligible["shared"] {
 		return nil
 	}
@@ -26,7 +35,12 @@ func (f *fakeSharedShelfHistory) AggregatePopularTitles(eligible map[string]bool
 	}}
 }
 
-func (f *fakeSharedShelfHistory) ListRecentWatches(eligible map[string]models.User, _ int, _ int) []models.RecentWatch {
+func (f *fakeSharedShelfHistory) ListRecentWatches(
+	eligible map[string]models.User,
+	windowDays, maxPerProfile int,
+) []models.RecentWatch {
+	f.recentWindowDays = windowDays
+	f.recentMaxPerProfile = maxPerProfile
 	user, ok := eligible["shared"]
 	if !ok {
 		return nil
@@ -42,6 +56,35 @@ func (f *fakeSharedShelfHistory) ListRecentWatches(eligible map[string]models.Us
 		EpisodeNumber: 2,
 		WatchedAt:     time.Now().UTC(),
 	}}
+}
+
+func TestSharedShelfQuerySettingsReachAggregation(t *testing.T) {
+	history := &fakeSharedShelfHistory{fakeMetadataHistoryService: &fakeMetadataHistoryService{}}
+	handler := NewMetadataHandler(&fakeMetadataService{}, nil)
+	handler.SetHistoryService(history)
+	handler.SetUsersService(&fakeSharedShelfUsers{users: []models.User{{
+		ID: "shared", Name: "Watcher", ActivityPrivacy: models.ActivityPrivacyShared,
+	}}})
+
+	popularResponse := httptest.NewRecorder()
+	handler.PopularOnServer(popularResponse, httptest.NewRequest(
+		http.MethodGet,
+		"/api/discover/popular-on-server?activityWindowDays=30&minimumProfiles=3",
+		nil,
+	))
+	if history.popularWindowDays != 30 || history.popularMinProfiles != 3 {
+		t.Fatalf("popular settings = %d days/%d profiles", history.popularWindowDays, history.popularMinProfiles)
+	}
+
+	recentResponse := httptest.NewRecorder()
+	handler.RecentlyWatched(recentResponse, httptest.NewRequest(
+		http.MethodGet,
+		"/api/discover/recently-watched?activityWindowDays=7&maxItemsPerProfile=5",
+		nil,
+	))
+	if history.recentWindowDays != 7 || history.recentMaxPerProfile != 5 {
+		t.Fatalf("recent settings = %d days/%d items", history.recentWindowDays, history.recentMaxPerProfile)
+	}
 }
 
 type fakeSharedShelfUsers struct {
@@ -93,7 +136,16 @@ func TestPopularOnServerRequiresExplicitProfileOptIn(t *testing.T) {
 }
 
 func TestRecentlyWatchedUsesTrendingItemContract(t *testing.T) {
-	handler := NewMetadataHandler(&fakeMetadataService{}, nil)
+	episodeImage := &models.Image{URL: "https://example.com/episode.jpg", Type: "backdrop"}
+	handler := NewMetadataHandler(&fakeMetadataService{seriesResp: &models.SeriesDetails{
+		Title: models.Title{ID: "tvdb:20", Name: "Shared Show", MediaType: "series"},
+		Seasons: []models.SeriesSeason{{
+			Number: 1,
+			Episodes: []models.SeriesEpisode{{
+				SeasonNumber: 1, EpisodeNumber: 2, Image: episodeImage,
+			}},
+		}},
+	}}, nil)
 	handler.SetHistoryService(&fakeSharedShelfHistory{fakeMetadataHistoryService: &fakeMetadataHistoryService{}})
 	handler.SetUsersService(&fakeSharedShelfUsers{users: []models.User{{
 		ID: "shared", Name: "Watcher", ActivityPrivacy: models.ActivityPrivacyShared,
@@ -115,5 +167,8 @@ func TestRecentlyWatchedUsesTrendingItemContract(t *testing.T) {
 	}
 	if title.CardSubtitle != "Watcher watched S01E02 · Second Episode" || !title.ForceTitleOverlay {
 		t.Fatalf("recent-watch context missing from card: %+v", title)
+	}
+	if title.CardImage == nil || title.CardImage.URL != episodeImage.URL {
+		t.Fatalf("recent episode image missing from landscape card: %+v", title.CardImage)
 	}
 }

@@ -181,16 +181,17 @@ type PopularTitle struct {
 	Year        int               `json:"year,omitempty"`
 	WatchCount  int               `json:"watchCount"` // number of unique profiles who watched
 	ExternalIDs map[string]string `json:"externalIds,omitempty"`
+	LastWatched time.Time         `json:"-"`
 }
 
 // RecentWatch represents a single watch event for the "Recently Watched" feed.
 type RecentWatch struct {
-	UserID        string            `json:"userId,omitempty"`      // omitted when anonymous
-	UserName      string            `json:"userName"`              // profile name or "Fellow user"
+	UserID        string            `json:"userId,omitempty"` // omitted when anonymous
+	UserName      string            `json:"userName"`         // profile name or "Fellow user"
 	IsAnonymous   bool              `json:"isAnonymous"`
-	MediaType     string            `json:"mediaType"`             // "movie" or "episode"
+	MediaType     string            `json:"mediaType"` // "movie" or "episode"
 	ItemID        string            `json:"itemId"`
-	Name          string            `json:"name"`                  // movie name or episode title
+	Name          string            `json:"name"` // movie name or episode title
 	SeriesID      string            `json:"seriesId,omitempty"`
 	SeriesName    string            `json:"seriesName,omitempty"`
 	SeasonNumber  int               `json:"seasonNumber,omitempty"`
