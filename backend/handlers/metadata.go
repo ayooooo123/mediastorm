@@ -2873,9 +2873,9 @@ func parallelSharedShelfItems[T any](
 
 func pluralizeView(count int) string {
 	if count == 1 {
-		return "View"
+		return "view"
 	}
-	return "Views"
+	return "views"
 }
 
 func recentWatchSubtitle(watch models.RecentWatch) string {
