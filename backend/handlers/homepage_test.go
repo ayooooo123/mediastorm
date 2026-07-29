@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,6 +67,60 @@ func TestHomepageUsesCanonicalDashboardStreams(t *testing.T) {
 	}
 	if got := stats.Streams[1]; got.ProfileName != "mom" || got.Type != "hls" || !got.HasHDR {
 		t.Errorf("second stream = %+v, want canonical mom HLS stream", got)
+	}
+}
+
+func TestDashboardShelfUsesPresentationSafeCanonicalStreams(t *testing.T) {
+	createdAt := time.Date(2026, 7, 29, 18, 30, 0, 0, time.UTC)
+	handler := NewHomepageHandler(nil)
+	handler.SetStreamsProvider(homepageStreamsStub{response: StreamsResponse{
+		Count: 1,
+		Streams: []StreamInfo{{
+			ID:              "stream-paused",
+			ItemID:          "tmdb:tv:123:s1:e2",
+			Path:            "/secret/media/show.mkv",
+			ClientIP:        "10.0.0.5",
+			UserAgent:       "private-player-agent",
+			ProfileNames:    []string{"Liam", "Guest"},
+			CreatedAt:       createdAt,
+			Duration:        2400,
+			CurrentPosition: 600,
+			PercentWatched:  25,
+			IsPaused:        true,
+			MediaType:       "episode",
+			Title:           "Example Show",
+			SeasonNumber:    1,
+			EpisodeNumber:   2,
+			EpisodeName:     "Second Episode",
+			PosterURL:       "https://images.example/poster.jpg",
+		}},
+	}})
+
+	rec := httptest.NewRecorder()
+	handler.GetDashboardShelf(rec, httptest.NewRequest(http.MethodGet, "/api/dashboard/shelf", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	body := rec.Body.String()
+	var response DashboardShelfResponse
+	if err := json.Unmarshal([]byte(body), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Count != 1 || len(response.Streams) != 1 {
+		t.Fatalf("count/streams = %d/%d, want 1/1", response.Count, len(response.Streams))
+	}
+	stream := response.Streams[0]
+	if !stream.IsPaused || stream.Status != "paused" || stream.PercentWatched != 25 {
+		t.Fatalf("unexpected playback state: %+v", stream)
+	}
+	if len(stream.ProfileNames) != 2 || stream.ProfileNames[0] != "Liam" {
+		t.Fatalf("unexpected watcher names: %+v", stream.ProfileNames)
+	}
+	for _, sensitive := range []string{"/secret/media/show.mkv", "10.0.0.5", "private-player-agent"} {
+		if strings.Contains(body, sensitive) {
+			t.Fatalf("dashboard shelf response leaked %q", sensitive)
+		}
 	}
 }
 

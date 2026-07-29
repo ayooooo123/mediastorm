@@ -498,6 +498,7 @@ func Register(
 	homepageHandler.SetMetadataService(metadataHandler.Service)
 	homepageHandler.SetAPIKey(homepageAPIKey)
 	api.HandleFunc("/homepage", homepageHandler.GetStats).Methods(http.MethodGet, http.MethodOptions)
+	protected.HandleFunc("/dashboard/shelf", homepageHandler.GetDashboardShelf).Methods(http.MethodGet, http.MethodOptions)
 
 	// Static assets endpoint (public - rating icons, etc.)
 	staticHandler := handlers.NewStaticHandler()
