@@ -2435,6 +2435,15 @@ func TestAdminUIHandler_ConnectionsPage(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("admin: expected 200, got %d", rec.Code)
 	}
+	body := rec.Body.String()
+	for _, contentID := range []string{"search-diagnostics-content", "api-usage-content"} {
+		if !strings.Contains(body, `aria-expanded="false" aria-controls="`+contentID+`"`) {
+			t.Errorf("admin: expected %s toggle to start collapsed", contentID)
+		}
+		if !strings.Contains(body, `id="`+contentID+`" class="collapsible-panel-content" hidden`) {
+			t.Errorf("admin: expected %s content to be hidden by default", contentID)
+		}
+	}
 
 	// Test non-admin gets 403 from RequireMasterAuth
 	nonAdminAccount, err := accountsService.Create("regular", "pass123")
