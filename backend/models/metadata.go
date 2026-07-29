@@ -90,6 +90,7 @@ type Title struct {
 	WatchState        string      `json:"watchState,omitempty"`        // "none" | "partial" | "complete"
 	UnwatchedCount    *int        `json:"unwatchedCount,omitempty"`    // series only: total - watched
 	CardSubtitle      string      `json:"cardSubtitle,omitempty"`      // Optional shelf-specific context rendered above the title
+	CardImage         *Image      `json:"cardImage,omitempty"`         // Optional shelf-specific landscape image
 	ForceTitleOverlay bool        `json:"forceTitleOverlay,omitempty"` // Keep title/subtitle visible on clean-poster layouts
 }
 

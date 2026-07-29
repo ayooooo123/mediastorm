@@ -163,7 +163,7 @@ type historyServiceInterface interface {
 }
 
 type sharedShelfHistoryService interface {
-	AggregatePopularTitles(eligibleUsers map[string]bool, windowDays int) []models.PopularTitle
+	AggregatePopularTitles(eligibleUsers map[string]bool, windowDays, minProfiles int) []models.PopularTitle
 	ListRecentWatches(eligibleUsers map[string]models.User, windowDays int, maxPerProfile int) []models.RecentWatch
 }
 
@@ -2558,12 +2558,15 @@ type PopularOnServerResponse struct {
 func (h *MetadataHandler) PopularOnServer(w http.ResponseWriter, r *http.Request) {
 	service := h.serviceForUser("")
 	windowDays := 90
+	minProfiles := 2
 	if h.CfgManager != nil {
 		cfg, err := h.CfgManager.Load()
 		if err == nil && cfg.HomeShelves.PopularOnServerWindowDays >= 7 && cfg.HomeShelves.PopularOnServerWindowDays <= 365 {
 			windowDays = cfg.HomeShelves.PopularOnServerWindowDays
 		}
 	}
+	windowDays = sharedShelfIntQuery(r, "activityWindowDays", 7, 365, windowDays)
+	minProfiles = sharedShelfIntQuery(r, "minimumProfiles", 1, 100, minProfiles)
 
 	historyService, historyOK := h.HistoryService.(sharedShelfHistoryService)
 	usersService, usersOK := h.UsersService.(sharedShelfUsersService)
@@ -2578,7 +2581,7 @@ func (h *MetadataHandler) PopularOnServer(w http.ResponseWriter, r *http.Request
 		eligibleIDs[id] = true
 	}
 	offset, limit := sharedShelfPage(r, 20)
-	cacheKey := fmt.Sprintf("%s:%d:%d:%d", privacyKey, windowDays, offset, limit)
+	cacheKey := fmt.Sprintf("%s:%d:%d:%d:%d", privacyKey, windowDays, minProfiles, offset, limit)
 
 	h.popularCacheMu.Lock()
 	if h.popularCache != nil && h.popularCache.key == cacheKey && h.popularCache.expiresAt.After(time.Now()) {
@@ -2589,7 +2592,7 @@ func (h *MetadataHandler) PopularOnServer(w http.ResponseWriter, r *http.Request
 	}
 	h.popularCacheMu.Unlock()
 
-	popular := historyService.AggregatePopularTitles(eligibleIDs, windowDays)
+	popular := historyService.AggregatePopularTitles(eligibleIDs, windowDays, minProfiles)
 	total := len(popular)
 	if offset >= len(popular) {
 		popular = nil
@@ -2597,8 +2600,7 @@ func (h *MetadataHandler) PopularOnServer(w http.ResponseWriter, r *http.Request
 		popular = popular[offset:minInt(len(popular), offset+limit)]
 	}
 
-	items := make([]models.TrendingItem, 0, len(popular))
-	for _, pt := range popular {
+	items := parallelSharedShelfItems(r.Context(), popular, func(ctx context.Context, pt models.PopularTitle) models.TrendingItem {
 		title := titleFromSharedShelfItem(
 			pt.ItemID,
 			pt.Name,
@@ -2606,16 +2608,18 @@ func (h *MetadataHandler) PopularOnServer(w http.ResponseWriter, r *http.Request
 			pt.Year,
 			pt.ExternalIDs,
 		)
-		title = enrichSharedShelfTitle(r.Context(), service, title)
-		items = append(items, models.TrendingItem{Title: title, Rank: pt.WatchCount})
-	}
+		title = enrichSharedShelfTitle(ctx, service, title)
+		title.CardSubtitle = fmt.Sprintf("%d opted-in %s watched", pt.WatchCount, pluralizeProfile(pt.WatchCount))
+		title.ForceTitleOverlay = true
+		return models.TrendingItem{Title: title, Rank: pt.WatchCount}
+	})
 
 	h.popularCacheMu.Lock()
 	h.popularCache = &cachedPopularOnServer{
 		items:     items,
 		total:     total,
 		key:       cacheKey,
-		expiresAt: time.Now().Add(6 * time.Hour),
+		expiresAt: time.Now().Add(10 * time.Minute),
 	}
 	h.popularCacheMu.Unlock()
 
@@ -2631,17 +2635,16 @@ type RecentlyWatchedResponse struct {
 // RecentlyWatched handles GET /api/discover/recently-watched.
 func (h *MetadataHandler) RecentlyWatched(w http.ResponseWriter, r *http.Request) {
 	service := h.serviceForUser("")
-	windowDays := 90
+	windowDays := 14
 	maxPerProfile := 3
 	if h.CfgManager != nil {
 		cfg, err := h.CfgManager.Load()
-		if err == nil && cfg.HomeShelves.PopularOnServerWindowDays >= 7 && cfg.HomeShelves.PopularOnServerWindowDays <= 365 {
-			windowDays = cfg.HomeShelves.PopularOnServerWindowDays
-		}
 		if err == nil && cfg.HomeShelves.RecentlyWatchedCapPerProfile > 0 && cfg.HomeShelves.RecentlyWatchedCapPerProfile <= 20 {
 			maxPerProfile = cfg.HomeShelves.RecentlyWatchedCapPerProfile
 		}
 	}
+	windowDays = sharedShelfIntQuery(r, "activityWindowDays", 1, 90, windowDays)
+	maxPerProfile = sharedShelfIntQuery(r, "maxItemsPerProfile", 1, 20, maxPerProfile)
 
 	historyService, historyOK := h.HistoryService.(sharedShelfHistoryService)
 	usersService, usersOK := h.UsersService.(sharedShelfUsersService)
@@ -2671,8 +2674,16 @@ func (h *MetadataHandler) RecentlyWatched(w http.ResponseWriter, r *http.Request
 		recent = recent[offset:minInt(len(recent), offset+limit)]
 	}
 
-	items := make([]models.TrendingItem, 0, len(recent))
+	type rankedRecentWatch struct {
+		Rank  int
+		Watch models.RecentWatch
+	}
+	ranked := make([]rankedRecentWatch, len(recent))
 	for i, watch := range recent {
+		ranked[i] = rankedRecentWatch{Rank: i + 1, Watch: watch}
+	}
+	items := parallelSharedShelfItems(r.Context(), ranked, func(ctx context.Context, rankedWatch rankedRecentWatch) models.TrendingItem {
+		watch := rankedWatch.Watch
 		mediaType := watch.MediaType
 		itemID := watch.ItemID
 		name := watch.Name
@@ -2682,11 +2693,11 @@ func (h *MetadataHandler) RecentlyWatched(w http.ResponseWriter, r *http.Request
 			name = watch.SeriesName
 		}
 		title := titleFromSharedShelfItem(itemID, name, mediaType, 0, watch.ExternalIDs)
-		title = enrichSharedShelfTitle(r.Context(), service, title)
+		title = enrichRecentWatchTitle(ctx, service, title, watch)
 		title.CardSubtitle = recentWatchSubtitle(watch)
 		title.ForceTitleOverlay = true
-		items = append(items, models.TrendingItem{Title: title, Rank: i + 1})
-	}
+		return models.TrendingItem{Title: title, Rank: rankedWatch.Rank}
+	})
 
 	h.recentWatchesCacheMu.Lock()
 	h.recentWatchesCache = &cachedRecentlyWatched{
@@ -2726,6 +2737,14 @@ func sharedShelfPage(r *http.Request, fallback int) (int, int) {
 		limit = minInt(value, 100)
 	}
 	return offset, limit
+}
+
+func sharedShelfIntQuery(r *http.Request, key string, minimum, maximum, fallback int) int {
+	value, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get(key)))
+	if err != nil || value < minimum || value > maximum {
+		return fallback
+	}
+	return value
 }
 
 func titleFromSharedShelfItem(itemID, name, mediaType string, year int, externalIDs map[string]string) models.Title {
@@ -2781,6 +2800,82 @@ func enrichSharedShelfTitle(ctx context.Context, service metadataService, title 
 		}
 	}
 	return title
+}
+
+func enrichRecentWatchTitle(
+	ctx context.Context,
+	service metadataService,
+	title models.Title,
+	watch models.RecentWatch,
+) models.Title {
+	if watch.MediaType != "episode" || title.MediaType != "series" {
+		return enrichSharedShelfTitle(ctx, service, title)
+	}
+
+	query := models.SeriesDetailsQuery{
+		TitleID: title.ID,
+		Name:    title.Name,
+		Year:    title.Year,
+		TVDBID:  title.TVDBID,
+		TMDBID:  title.TMDBID,
+		IMDBID:  title.IMDBID,
+	}
+	details, err := service.SeriesDetails(ctx, query)
+	if err != nil || details == nil {
+		return title
+	}
+
+	enriched := details.Title
+	for _, season := range details.Seasons {
+		if season.Number != watch.SeasonNumber {
+			continue
+		}
+		for _, episode := range season.Episodes {
+			if episode.EpisodeNumber == watch.EpisodeNumber && episode.Image != nil {
+				image := *episode.Image
+				enriched.CardImage = &image
+				return enriched
+			}
+		}
+	}
+	return enriched
+}
+
+func parallelSharedShelfItems[T any](
+	ctx context.Context,
+	source []T,
+	build func(context.Context, T) models.TrendingItem,
+) []models.TrendingItem {
+	items := make([]models.TrendingItem, len(source))
+	if len(source) == 0 {
+		return items
+	}
+
+	const maxConcurrentEnrichments = 6
+	semaphore := make(chan struct{}, maxConcurrentEnrichments)
+	var wg sync.WaitGroup
+	for i, sourceItem := range source {
+		wg.Add(1)
+		go func(index int, item T) {
+			defer wg.Done()
+			select {
+			case semaphore <- struct{}{}:
+				defer func() { <-semaphore }()
+			case <-ctx.Done():
+				return
+			}
+			items[index] = build(ctx, item)
+		}(i, sourceItem)
+	}
+	wg.Wait()
+	return items
+}
+
+func pluralizeProfile(count int) string {
+	if count == 1 {
+		return "profile"
+	}
+	return "profiles"
 }
 
 func recentWatchSubtitle(watch models.RecentWatch) string {

@@ -639,6 +639,9 @@ type ShelfConfig struct {
 	LetterboxdListID       string                 `json:"letterboxdListId,omitempty"`       // MDBList external-list ID for an imported Letterboxd list
 	LetterboxdListURL      string                 `json:"letterboxdListUrl,omitempty"`      // Public Letterboxd list URL
 	Limit                  int                    `json:"limit,omitempty"`                  // Optional limit on number of items returned (0 = no limit)
+	ActivityWindowDays     int                    `json:"activityWindowDays,omitempty"`     // Shared-activity lookback window for backend activity shelves
+	MinimumProfiles        int                    `json:"minimumProfiles,omitempty"`        // Distinct opted-in profiles required by Popular on This Server
+	MaxItemsPerProfile     int                    `json:"maxItemsPerProfile,omitempty"`     // Per-profile contribution cap for Recently Watched
 	HideUnreleased         bool                   `json:"hideUnreleased,omitempty"`         // Filter out unreleased/in-theaters content
 	Sort                   string                 `json:"sort,omitempty"`                   // Optional shelf-specific sort mode
 	CalendarSources        CalendarSourceSettings `json:"calendarSources,omitempty"`        // Optional source filter for calendar-backed shelves
@@ -704,7 +707,7 @@ type HomeShelvesSettings struct {
 	ItemCap                     int                 `json:"itemCap,omitempty"`                     // Max items shown per home shelf before Explore card (default 20)
 	ExcludeUpcomingFromContinue bool                `json:"excludeUpcomingFromContinue,omitempty"` // Move unreleased next-up episodes out of Continue Watching
 	// PopularOnServerWindowDays is the lookback window in days for the
-	// "Popular on This Server" and "Recently Watched" shelves.
+	// "Popular on This Server" shelf.
 	// Valid range: 7-365. Default 90.
 	PopularOnServerWindowDays int `json:"popularOnServerWindowDays,omitempty"`
 	// RecentlyWatchedCapPerProfile limits how many recent watch entries each
@@ -734,8 +737,8 @@ func DefaultHomeShelfConfigs() []ShelfConfig {
 		{ID: "trending-tv", Name: "Trending TV Shows", Enabled: true, Order: 9},
 		{ID: "streaming-services", Name: "Streaming Services", Enabled: true, Order: 10},
 		{ID: "live-favorites", Name: "Favorite Channels", Enabled: false, Order: 11},
-		{ID: "popular-on-server", Name: "Popular on This Server", Enabled: false, Order: 12},
-		{ID: "recently-watched", Name: "Recently Watched", Enabled: false, Order: 13},
+		{ID: "popular-on-server", Name: "Popular on This Server", Enabled: false, Order: 12, ActivityWindowDays: 90, MinimumProfiles: 2},
+		{ID: "recently-watched", Name: "Recently Watched", Enabled: false, Order: 13, ActivityWindowDays: 14, MaxItemsPerProfile: 3},
 	}
 }
 
@@ -1019,10 +1022,12 @@ func EnsureDefaultHomeShelves(shelves []ShelfConfig) ([]ShelfConfig, bool) {
 		}
 
 		nextShelves = append(nextShelves, ShelfConfig{
-			ID:      "popular-on-server",
-			Name:    "Popular on This Server",
-			Enabled: false,
-			Order:   insertOrder,
+			ID:                 "popular-on-server",
+			Name:               "Popular on This Server",
+			Enabled:            false,
+			Order:              insertOrder,
+			ActivityWindowDays: 90,
+			MinimumProfiles:    2,
 		})
 		changed = true
 	}
@@ -1049,12 +1054,37 @@ func EnsureDefaultHomeShelves(shelves []ShelfConfig) ([]ShelfConfig, bool) {
 		}
 
 		nextShelves = append(nextShelves, ShelfConfig{
-			ID:      "recently-watched",
-			Name:    "Recently Watched",
-			Enabled: false,
-			Order:   insertOrder,
+			ID:                 "recently-watched",
+			Name:               "Recently Watched",
+			Enabled:            false,
+			Order:              insertOrder,
+			ActivityWindowDays: 14,
+			MaxItemsPerProfile: 3,
 		})
 		changed = true
+	}
+
+	for i := range nextShelves {
+		switch nextShelves[i].ID {
+		case "popular-on-server":
+			if nextShelves[i].ActivityWindowDays < 7 || nextShelves[i].ActivityWindowDays > 365 {
+				nextShelves[i].ActivityWindowDays = 90
+				changed = true
+			}
+			if nextShelves[i].MinimumProfiles < 1 || nextShelves[i].MinimumProfiles > 100 {
+				nextShelves[i].MinimumProfiles = 2
+				changed = true
+			}
+		case "recently-watched":
+			if nextShelves[i].ActivityWindowDays < 1 || nextShelves[i].ActivityWindowDays > 90 {
+				nextShelves[i].ActivityWindowDays = 14
+				changed = true
+			}
+			if nextShelves[i].MaxItemsPerProfile < 1 || nextShelves[i].MaxItemsPerProfile > 20 {
+				nextShelves[i].MaxItemsPerProfile = 3
+				changed = true
+			}
+		}
 	}
 
 	return nextShelves, changed

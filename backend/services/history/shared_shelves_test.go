@@ -36,12 +36,47 @@ func TestAggregatePopularTitlesCountsUniqueEligibleProfiles(t *testing.T) {
 		},
 	}
 
-	items := service.AggregatePopularTitles(map[string]bool{"shared-a": true, "shared-b": true}, 90)
+	items := service.AggregatePopularTitles(map[string]bool{"shared-a": true, "shared-b": true}, 90, 2)
 	if len(items) != 1 {
 		t.Fatalf("items = %d, want one shared title: %+v", len(items), items)
 	}
 	if items[0].ItemID != "tvdb:10" || items[0].MediaType != "series" || items[0].WatchCount != 2 {
 		t.Fatalf("unexpected aggregate: %+v", items[0])
+	}
+}
+
+func TestAggregatePopularTitlesCanonicalizesProviderIDsAndFiltersSingleProfileItems(t *testing.T) {
+	now := time.Now().UTC()
+	service := &Service{
+		watchHistory: map[string]map[string]models.WatchHistoryItem{
+			"shared-a": {
+				"bluey-tmdb": {
+					MediaType: "episode", ItemID: "tmdb:tv:82728:s01e01", SeriesID: "tmdb:tv:82728",
+					SeriesName: "Bluey", Watched: true, WatchedAt: now.Add(-time.Hour),
+					ExternalIDs: map[string]string{"imdb": "tt7678620", "tmdb": "82728"},
+				},
+				"single": {
+					MediaType: "movie", ItemID: "tmdb:movie:1", Name: "Only One Profile",
+					Watched: true, WatchedAt: now,
+					ExternalIDs: map[string]string{"imdb": "tt0000001"},
+				},
+			},
+			"shared-b": {
+				"bluey-tvdb": {
+					MediaType: "episode", ItemID: "tvdb:series:353546:s01e02", SeriesID: "tvdb:series:353546",
+					SeriesName: "Bluey", Watched: true, WatchedAt: now,
+					ExternalIDs: map[string]string{"imdb": "tt7678620", "tvdb": "353546"},
+				},
+			},
+		},
+	}
+
+	items := service.AggregatePopularTitles(map[string]bool{"shared-a": true, "shared-b": true}, 90, 2)
+	if len(items) != 1 {
+		t.Fatalf("items = %d, want one canonical multi-profile title: %+v", len(items), items)
+	}
+	if items[0].Name != "Bluey" || items[0].WatchCount != 2 {
+		t.Fatalf("unexpected canonical aggregate: %+v", items[0])
 	}
 }
 

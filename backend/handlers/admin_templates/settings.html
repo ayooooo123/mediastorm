@@ -5548,6 +5548,7 @@
             const isMyUpcoming = s.id === 'my-upcoming';
             const isRecentlyAired = s.id === 'my-recently-aired';
             const isStreamingServices = s.id === 'streaming-services';
+            const isSharedActivity = s.id === 'popular-on-server' || s.id === 'recently-watched';
             const isCollectionHub = s.type === 'collection-hub';
             const isLibrary = s.type === 'library' || s.type === 'local-library';
             const isCustom = !!s.listUrl || isLibrary || s.type === 'mdblist' || s.type === 'stremio' || s.type === 'tmdb' || s.type === 'trakt' || s.type === 'simkl' || s.type === 'letterboxd' || s.type === 'genre' || s.type === 'decade' || isCollectionHub || (s.id && (s.id.startsWith('mdblist-') || s.id.startsWith('stremio-') || s.id.startsWith('tmdb-') || s.id.startsWith('streaming-service-') || s.id.startsWith('trakt-') || s.id.startsWith('simkl-') || s.id.startsWith('letterboxd-') || s.id.startsWith('genre-') || s.id.startsWith('decade-') || s.id.startsWith('collection-hub-')));
@@ -5565,7 +5566,7 @@
                 : '';
 
             let actionsHtml = '';
-            if (isCustom || isRecentlyAired || isMyUpcoming || isStreamingServices) {
+            if (isCustom || isRecentlyAired || isMyUpcoming || isStreamingServices || isSharedActivity) {
                 // Custom lists can be edited/deleted; configurable built-ins expose scoped settings.
                 const configButton = (handler, title) => '<button class="shelf-edit-btn shelf-config-btn" onclick="'+handler+'" title="'+title+'" aria-label="'+title+'">'+icons.edit+'</button>';
                 actionsHtml = '<div class="shelf-actions">'+
@@ -5575,6 +5576,8 @@
                             ? configButton('editCustomShelf(\''+s.id+'\')', 'Configure sort')
                         : isStreamingServices
                             ? configButton('editStreamingServicesShelf(\''+s.id+'\')', 'Configure streaming services')
+                        : isSharedActivity
+                            ? configButton('editSharedActivityShelf(\''+s.id+'\')', 'Configure shared activity shelf')
                         : isCollectionHub
                             ? configButton('editCollectionHubShelf(\''+s.id+'\')', 'Configure collection hub')
                         : configButton('editCustomShelf(\''+s.id+'\')', 'Configure shelf'))+
@@ -6141,12 +6144,26 @@
             id: 'popular-on-server',
             name: 'Popular on This Server',
             enabled: false,
+            activityWindowDays: 90,
+            minimumProfiles: 2,
         }, 'live-favorites');
         insertBuiltInShelf({
             id: 'recently-watched',
             name: 'Recently Watched',
             enabled: false,
+            activityWindowDays: 14,
+            maxItemsPerProfile: 3,
         }, 'popular-on-server');
+        const popularShelf = shelves.find((s) => s.id === 'popular-on-server');
+        if (popularShelf) {
+            if (!popularShelf.activityWindowDays) popularShelf.activityWindowDays = 90;
+            if (!popularShelf.minimumProfiles) popularShelf.minimumProfiles = 2;
+        }
+        const recentlyWatchedShelf = shelves.find((s) => s.id === 'recently-watched');
+        if (recentlyWatchedShelf) {
+            if (!recentlyWatchedShelf.activityWindowDays) recentlyWatchedShelf.activityWindowDays = 14;
+            if (!recentlyWatchedShelf.maxItemsPerProfile) recentlyWatchedShelf.maxItemsPerProfile = 3;
+        }
         return shelves;
     }
 
@@ -6888,6 +6905,9 @@
                     enabled: true,
                     order: Math.max(...shelves.map((s) => s.order || 0), -1) + 1,
                     type: 'builtin',
+                    activityWindowDays: shelfType === 'popular-on-server' ? 90 : 14,
+                    minimumProfiles: shelfType === 'popular-on-server' ? 2 : undefined,
+                    maxItemsPerProfile: shelfType === 'recently-watched' ? 3 : undefined,
                 });
             }
             if (typeSelect) typeSelect.value = 'mdblist';
@@ -7743,6 +7763,115 @@
         shelf.animateLogoOnlyOnFocus = animateLogoOnlyOnFocus;
         shelf.collectionItems = items;
         closeCollectionHubModal();
+        renderSettings();
+    }
+
+    function editSharedActivityShelf(shelfId) {
+        const shelves = getEditableHomeShelves();
+        const shelf = shelves.find((item) => item.id === shelfId);
+        if (!shelf) return;
+
+        const isPopular = shelfId === 'popular-on-server';
+        const description = isPopular
+            ? 'Ranks completed movies and series by how many distinct opted-in profiles watched them. Multiple episodes watched by one profile count once. Provider IDs are combined into one canonical title.'
+            : 'Shows completed watch events from opted-in profiles in reverse chronological order. Profile privacy choices are always respected.';
+        const settingFields = isPopular
+            ? `
+                <div style="margin-bottom:12px;">
+                    <label class="form-label" style="font-size:12px;margin-bottom:4px;display:block;">Activity Window (days)</label>
+                    <input type="number" id="sharedShelfWindowDays" value="${shelf.activityWindowDays || 90}" min="7" max="365" class="form-input">
+                </div>
+                <div style="margin-bottom:12px;">
+                    <label class="form-label" style="font-size:12px;margin-bottom:4px;display:block;">Minimum Distinct Profiles</label>
+                    <input type="number" id="sharedShelfMinProfiles" value="${shelf.minimumProfiles || 2}" min="1" max="100" class="form-input">
+                    <p class="form-hint" style="margin-top:6px;">The default of 2 prevents a single profile's history from being presented as server popularity.</p>
+                </div>`
+            : `
+                <div style="margin-bottom:12px;">
+                    <label class="form-label" style="font-size:12px;margin-bottom:4px;display:block;">Activity Window (days)</label>
+                    <input type="number" id="sharedShelfWindowDays" value="${shelf.activityWindowDays || 14}" min="1" max="90" class="form-input">
+                </div>
+                <div style="margin-bottom:12px;">
+                    <label class="form-label" style="font-size:12px;margin-bottom:4px;display:block;">Maximum Items Per Profile</label>
+                    <input type="number" id="sharedShelfPerProfileCap" value="${shelf.maxItemsPerProfile || 3}" min="1" max="20" class="form-input">
+                    <p class="form-hint" style="margin-top:6px;">Prevents one profile from dominating the shared feed.</p>
+                </div>`;
+
+        const modalHtml = `
+            <div id="sharedActivityShelfModal" data-shelf-id="${shelfId}" class="test-modal streaming-services-modal visible" onclick="closeSharedActivityShelfModal(event)">
+                <div class="test-modal-content streaming-services-modal-content" onclick="event.stopPropagation()" style="max-width:560px;">
+                    <div class="test-modal-header streaming-services-modal-header">
+                        <div class="streaming-services-modal-title">
+                            <h3>${icons.edit}<span>Configure ${escapeHtml(shelf.name)}</span></h3>
+                            <p class="form-hint" style="margin-top:0.35rem;">${description}</p>
+                        </div>
+                        <button type="button" class="test-modal-close" onclick="closeSharedActivityShelfModal()" aria-label="Close">&times;</button>
+                    </div>
+                    <div class="test-modal-body streaming-services-modal-body">
+                        <div style="margin-bottom:12px;">
+                            <label class="form-label" style="font-size:12px;margin-bottom:4px;display:block;">Shelf Name</label>
+                            <input type="text" id="sharedShelfName" value="${escapeHtml(shelf.name).replace(/"/g, '&quot;')}" class="form-input">
+                        </div>
+                        ${settingFields}
+                        <div style="margin-bottom:12px;">
+                            <label class="form-label" style="font-size:12px;margin-bottom:4px;display:block;">Item Limit <span style="color:#888;font-weight:normal;">(0 = unlimited)</span></label>
+                            <input type="number" id="sharedShelfItemLimit" value="${shelf.limit || 0}" min="0" max="500" class="form-input">
+                        </div>
+                        <p class="form-hint">These values follow the selected profile's Home Shelves configuration and are executed by the backend.</p>
+                    </div>
+                    <div class="test-modal-footer streaming-services-modal-footer">
+                        <button type="button" class="btn btn-secondary" onclick="closeSharedActivityShelfModal()">Cancel</button>
+                        <button type="button" class="btn btn-primary" onclick="saveSharedActivityShelf()">Save</button>
+                    </div>
+                </div>
+            </div>`;
+        document.body.insertAdjacentHTML('beforeend', modalHtml);
+        document.body.style.overflow = 'hidden';
+        document.getElementById('sharedShelfName')?.focus();
+    }
+
+    function closeSharedActivityShelfModal(event) {
+        if (event && event.target && event.target.id !== 'sharedActivityShelfModal') return;
+        document.getElementById('sharedActivityShelfModal')?.remove();
+        document.body.style.overflow = '';
+    }
+
+    function saveSharedActivityShelf() {
+        const modal = document.getElementById('sharedActivityShelfModal');
+        const shelfId = modal?.dataset.shelfId || '';
+        const shelf = getEditableHomeShelves().find((item) => item.id === shelfId);
+        if (!shelf) return;
+
+        const name = document.getElementById('sharedShelfName')?.value?.trim() || '';
+        const windowDays = parseInt(document.getElementById('sharedShelfWindowDays')?.value || '0', 10);
+        const itemLimit = parseInt(document.getElementById('sharedShelfItemLimit')?.value || '0', 10) || 0;
+        if (!name) {
+            alert('Please enter a shelf name.');
+            return;
+        }
+        if (shelfId === 'popular-on-server') {
+            const minProfiles = parseInt(document.getElementById('sharedShelfMinProfiles')?.value || '0', 10);
+            if (windowDays < 7 || windowDays > 365 || minProfiles < 1 || minProfiles > 100) {
+                alert('Use an activity window from 7 to 365 days and a minimum from 1 to 100 profiles.');
+                return;
+            }
+            shelf.activityWindowDays = windowDays;
+            shelf.minimumProfiles = minProfiles;
+        } else if (shelfId === 'recently-watched') {
+            const perProfileCap = parseInt(document.getElementById('sharedShelfPerProfileCap')?.value || '0', 10);
+            if (windowDays < 1 || windowDays > 90 || perProfileCap < 1 || perProfileCap > 20) {
+                alert('Use an activity window from 1 to 90 days and a per-profile maximum from 1 to 20.');
+                return;
+            }
+            shelf.activityWindowDays = windowDays;
+            shelf.maxItemsPerProfile = perProfileCap;
+        } else {
+            return;
+        }
+
+        shelf.name = name;
+        shelf.limit = Math.max(0, Math.min(500, itemLimit));
+        closeSharedActivityShelfModal();
         renderSettings();
     }
 
