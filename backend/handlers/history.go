@@ -55,12 +55,20 @@ type activePlaybackTracker interface {
 	ObservePlaybackActivity(userID string, update models.PlaybackProgressUpdate, percentWatched float64) int
 }
 
+// playbackAutoSeeder is told when a playback starts, so the p2p integration can
+// publish what is being watched into the swarm. PearTubeHandler implements it,
+// and its implementation is inert unless a relay is configured.
+type playbackAutoSeeder interface {
+	OnPlaybackStarted(update models.PlaybackProgressUpdate)
+}
+
 type HistoryHandler struct {
 	Service                historyService
 	Users                  userService
 	DemoMode               bool
 	PrequeueStore          continueWatchingPrequeueStore
 	ActivePlaybackTrackers []activePlaybackTracker
+	AutoSeeder             playbackAutoSeeder
 }
 
 type hideContinueWatchingRequest struct {
@@ -85,6 +93,13 @@ func (h *HistoryHandler) SetPrequeueStore(store continueWatchingPrequeueStore) {
 
 func (h *HistoryHandler) SetActivePlaybackTrackers(trackers ...activePlaybackTracker) {
 	h.ActivePlaybackTrackers = trackers
+}
+
+// SetAutoSeeder wires the p2p integration onto playback starts.
+func (h *HistoryHandler) SetAutoSeeder(seeder playbackAutoSeeder) {
+	if seeder != nil {
+		h.AutoSeeder = seeder
+	}
 }
 
 func (h *HistoryHandler) ListContinueWatching(w http.ResponseWriter, r *http.Request) {
@@ -593,6 +608,11 @@ func (h *HistoryHandler) UpdatePlaybackProgress(w http.ResponseWriter, r *http.R
 		if tracker != nil && tracker.ObservePlaybackActivity(userID, update, progress.PercentWatched) > 0 {
 			break
 		}
+	}
+	if h.AutoSeeder != nil {
+		// Contribute what is being watched to the p2p swarm. Returns without
+		// blocking, and a seed that fails never reaches the viewer.
+		h.AutoSeeder.OnPlaybackStarted(update)
 	}
 	if reason, migrate := GetStreamTracker().ShouldMigratePlayback(userID, update); migrate {
 		progress.MigrationRequested = true

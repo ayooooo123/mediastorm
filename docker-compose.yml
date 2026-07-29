@@ -35,6 +35,9 @@ services:
       # Optional: point at a PearTube relay to add p2p as a stream source and
       # enable seeding. Unset, nothing about search or playback changes.
       - PEARTUBE_RELAY_URL=${PEARTUBE_RELAY_URL:-}
+      # With a relay configured, starting a playback also publishes what it
+      # plays into the swarm. Set to 0 to keep seeding a manual action.
+      - PEARTUBE_AUTOSEED=${PEARTUBE_AUTOSEED:-1}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "http://localhost:7777/health"]

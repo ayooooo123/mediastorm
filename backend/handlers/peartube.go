@@ -10,12 +10,15 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
 
+	"novastream/internal/mediaidentity"
 	"novastream/models"
 	"novastream/services/localmedia"
 	"novastream/services/peartube"
@@ -52,20 +55,27 @@ type streamURLResolver interface {
 // usenet, any resolved stream — is handed over as a URL that the relay fetches
 // itself, so no media crosses this process.
 //
-// There is no automatic hook onto a watched/completed signal: seeding stays an
-// explicit call the frontend makes when a user opts in. An automatic
-// watch-threshold trigger would attach in HistoryHandler.UpdatePlaybackProgress
-// (handlers/history.go), which already receives the watched fraction and the
-// item's coordinates on every progress write; it would call seed with the same
-// fields the frontend sends here.
+// Seeding happens two ways. The frontend can ask for it explicitly, and — unless
+// the operator turned it off — starting a playback asks for it automatically;
+// see OnPlaybackStarted for why the trigger is a playback heartbeat and not a
+// resolve or a byte range.
 type PearTubeHandler struct {
 	relay      *peartube.Client
 	localMedia localMediaLibrary
 	streams    streamURLResolver
+
+	// autoSeed is the operator's switch, read once at startup rather than on
+	// every heartbeat.
+	autoSeed bool
+
+	// autoSeedClaims holds the titles an automatic seed has already taken
+	// responsibility for, keyed by peartube.EntityKey. See claimAutoSeed.
+	autoSeedMu     sync.Mutex
+	autoSeedClaims map[string]time.Time
 }
 
 func NewPearTubeHandler(relay *peartube.Client, localMedia *localmedia.Service) *PearTubeHandler {
-	handler := &PearTubeHandler{relay: relay}
+	handler := &PearTubeHandler{relay: relay, autoSeed: peartube.AutoSeedEnabled()}
 	// A typed nil in an interface is not nil; only assign a real service.
 	if localMedia != nil {
 		handler.localMedia = localMedia
@@ -150,7 +160,10 @@ func (h *PearTubeHandler) Status(w http.ResponseWriter, r *http.Request) {
 		"notOpen":          relayState.NotOpen,
 		"seedingAvailable": relayState.SeedingAvailable,
 		"catalogEntities":  relayState.CatalogEntities,
-		"state":            p2pStateLabel(relayState),
+		// Whether starting a playback publishes it, so an admin screen can say
+		// so rather than leaving the operator to infer it from the environment.
+		"autoSeed": h.autoSeed,
+		"state":    p2pStateLabel(relayState),
 	}
 	if relayState.Remedy != "" {
 		body["remedy"] = relayState.Remedy
@@ -225,11 +238,224 @@ func (h *PearTubeHandler) Seed(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// planSeed picks the relay transport a seed request needs and validates
-// everything that can be checked without a round trip. Only the returned
-// closure talks to the relay, so a caller mistake stays a client error.
-func (h *PearTubeHandler) planSeed(ctx context.Context, req SeedRequest) (func(context.Context) (*peartube.ArchiveJob, error), error) {
-	coordinates := peartube.ArchiveCoordinates{
+const (
+	// autoSeedGuardWindow is how long one title stays claimed by an automatic
+	// seed, so a burst of heartbeats, a seek, a stream retry, or two viewers
+	// starting the same title cannot enqueue the same whole-file fetch twice.
+	//
+	// It has to outlast the relay's fetch, because until that finishes the title
+	// is not in the catalog and the catalog check cannot see it. Six hours covers
+	// a feature-length fetch on a slow link with room to spare, and the claim
+	// lapses afterwards, so a seed that failed for a transient reason is retried
+	// by a later watch rather than never again.
+	autoSeedGuardWindow = 6 * time.Hour
+
+	// autoSeedTimeout bounds one background attempt: a catalog read, a debrid
+	// re-resolve, and the relay's acceptance. The relay's own fetch of the file
+	// happens after that and is not waited on.
+	autoSeedTimeout = 2 * time.Minute
+)
+
+// A player's item or series id is namespaced when it came from TMDB
+// (`tmdb:movie:603`, `tmdb:tv:1399`, `tmdb:tv:1399:s01e02`). A tvdb- or
+// imdb-keyed id carries no TMDB number, and the swarm keys everything by TMDB.
+var tmdbPlaybackID = regexp.MustCompile(`(?i)\btmdb:(?:movie|tv|show):([1-9][0-9]{0,9})\b`)
+
+// OnPlaybackStarted publishes what a viewer just started watching into the
+// swarm. It is a no-op unless a relay is configured and automatic seeding is on.
+//
+// The trigger is a playback-progress heartbeat rather than a playback resolve.
+// A resolve is not a watch: the prequeue resolves candidates before anyone
+// presses play and re-resolves down the candidate list on failure, so hooking it
+// would seed titles nobody watched. A resolve also has no TMDB coordinates to
+// publish under — it carries an indexer result, not an identified title —
+// whereas a heartbeat carries the coordinates and the active source path. And it
+// is emphatically not the byte-range path: a single playback opens hundreds of
+// range requests, while heartbeats arrive every few seconds and are collapsed to
+// one submission by the claim below.
+//
+// Seeding happens on start, not on a watched threshold. The relay fetches the
+// source itself, independently of the viewer, so there is no partial file to
+// wait for and waiting buys nothing but a later upload. The cost is that a title
+// abandoned after ten seconds is seeded anyway. An operator who wants seeding to
+// mean "someone actually watched this" should set PEARTUBE_AUTOSEED=0 and call
+// POST /api/p2p/seed from the frontend on whatever signal they prefer.
+func (h *PearTubeHandler) OnPlaybackStarted(update models.PlaybackProgressUpdate) {
+	plan, ok := h.planAutoSeed(update)
+	if !ok {
+		return
+	}
+	// Fire and forget. A heartbeat is on the player's critical path and its
+	// request context dies with the response, so the submission gets its own
+	// goroutine and its own deadline. Nothing about a failed seed reaches the
+	// viewer.
+	go plan.submit()
+}
+
+// autoSeedPlan is an automatic seed that has claimed its title and is waiting to
+// be submitted off the request path.
+type autoSeedPlan struct {
+	handler *PearTubeHandler
+	request SeedRequest
+	key     string
+}
+
+// planAutoSeed decides, without touching the network, whether this heartbeat
+// should become a seed — and claims the title if so, so that the decision is
+// made once even when heartbeats overlap.
+func (h *PearTubeHandler) planAutoSeed(update models.PlaybackProgressUpdate) (autoSeedPlan, bool) {
+	if h == nil || h.relay == nil || !h.autoSeed {
+		return autoSeedPlan{}, false
+	}
+	request, ok := autoSeedRequest(update)
+	if !ok {
+		return autoSeedPlan{}, false
+	}
+	key := peartube.EntityKey(seedCoordinates(request))
+	if key == "" {
+		return autoSeedPlan{}, false
+	}
+	if !h.claimAutoSeed(key) {
+		return autoSeedPlan{}, false
+	}
+	return autoSeedPlan{handler: h, request: request, key: key}, true
+}
+
+// autoSeedRequest turns a playback heartbeat into the seed request the manual
+// endpoint would have received, or reports that this playback is not seedable.
+//
+// It names the stream path and never a URL. The seed path re-resolves that path
+// server-side, which is the only thing that works: a Torbox resolution is an
+// internal torrent_id:file_id reference rather than an address, and the debrid
+// URLs that are addresses expire in about ten minutes.
+func autoSeedRequest(update models.PlaybackProgressUpdate) (SeedRequest, bool) {
+	request := SeedRequest{StreamPath: strings.TrimSpace(update.SourcePath)}
+	if request.StreamPath == "" {
+		// Nothing to re-resolve, and the player's own URL must never be
+		// forwarded in its place.
+		return SeedRequest{}, false
+	}
+
+	switch mediaidentity.NormalizeMediaType(update.MediaType) {
+	case "movie":
+		request.ContentKind = "movie"
+		request.TMDBID = tmdbIDFromPlayback(update.ItemID, update.ExternalIDs)
+		request.TMDBTitle = strings.TrimSpace(update.MovieName)
+		request.TMDBYear = update.Year
+	case "episode":
+		// The swarm keys an episode by its series' TMDB id, which is what
+		// seriesId carries; an episode's own id is no use here.
+		seriesID := strings.TrimSpace(update.SeriesID)
+		if seriesID == "" {
+			seriesID = update.ItemID
+		}
+		request.ContentKind = "episode"
+		request.TMDBID = tmdbIDFromPlayback(seriesID, update.ExternalIDs)
+		request.TMDBTitle = strings.TrimSpace(update.SeriesName)
+		request.TMDBSeason = update.SeasonNumber
+		request.TMDBEpisode = update.EpisodeNumber
+	default:
+		// Live TV and anything else has no TMDB coordinates to publish under.
+		return SeedRequest{}, false
+	}
+
+	// A player that reported no TMDB id or no title gives the relay nothing to
+	// publish under. Silence beats a rejected submission on every heartbeat.
+	if err := seedCoordinates(request).Validate(); err != nil {
+		return SeedRequest{}, false
+	}
+	return request, true
+}
+
+// tmdbIDFromPlayback recovers the numeric TMDB id a seed must be published
+// under. The external id map wins: for an episode its `tmdb` entry is the series
+// id, which is exactly the coordinate needed, and it is present even when the
+// player's own ids came from another provider.
+func tmdbIDFromPlayback(id string, externalIDs map[string]string) string {
+	if value := strings.TrimSpace(mediaidentity.NormalizeExternalIDs(externalIDs)["tmdb"]); isTMDBID(value) {
+		return value
+	}
+	if match := tmdbPlaybackID.FindStringSubmatch(id); match != nil {
+		return match[1]
+	}
+	return ""
+}
+
+// claimAutoSeed reserves a title for one automatic seed, reporting whether the
+// caller got it. This is the in-process half of the dedupe; the relay catalog is
+// the other half, and only this half can stop two submissions racing each other
+// before either reaches the relay.
+func (h *PearTubeHandler) claimAutoSeed(key string) bool {
+	now := time.Now()
+	h.autoSeedMu.Lock()
+	defer h.autoSeedMu.Unlock()
+	if h.autoSeedClaims == nil {
+		h.autoSeedClaims = make(map[string]time.Time)
+	}
+	if until, held := h.autoSeedClaims[key]; held && until.After(now) {
+		return false
+	}
+	// Lapsed claims are dropped here rather than by a timer: the map only grows
+	// when something is played, so the sweep runs exactly as often as it needs to.
+	for claimed, until := range h.autoSeedClaims {
+		if !until.After(now) {
+			delete(h.autoSeedClaims, claimed)
+		}
+	}
+	h.autoSeedClaims[key] = now.Add(autoSeedGuardWindow)
+	return true
+}
+
+func (h *PearTubeHandler) releaseAutoSeed(key string) {
+	h.autoSeedMu.Lock()
+	defer h.autoSeedMu.Unlock()
+	delete(h.autoSeedClaims, key)
+}
+
+// submit performs the claimed seed. It runs on its own goroutine, so every
+// outcome ends in a log line and nothing else.
+func (p autoSeedPlan) submit() {
+	ctx, cancel := context.WithTimeout(context.Background(), autoSeedTimeout)
+	defer cancel()
+
+	published, err := p.handler.relay.CatalogHasEntity(ctx, seedCoordinates(p.request))
+	switch {
+	case err != nil:
+		// The relay could not say whether the swarm already has this. Seeding
+		// anyway would ask it to fetch a whole file it may already hold, so the
+		// attempt is abandoned — and the claim is dropped, because nothing was
+		// submitted and a later watch should ask again. That is not a poll: the
+		// client caches a failed catalog read for 30s, so the heartbeats of this
+		// playback re-read nothing.
+		p.handler.releaseAutoSeed(p.key)
+		log.Printf("[peartube] autoseed %s: skipped, catalog unavailable: %v", p.key, err)
+		return
+	case published:
+		log.Printf("[peartube] autoseed %s: already served by the swarm", p.key)
+		return
+	}
+
+	// From here the claim is kept whatever happens. A source the relay refuses
+	// will be refused again on the next heartbeat, and one log line per title
+	// per guard window is the right amount of noise for that.
+	submit, err := p.handler.planSeed(ctx, p.request)
+	if err != nil {
+		log.Printf("[peartube] autoseed %s: not seedable: %v", p.key, err)
+		return
+	}
+	job, err := submit(ctx)
+	if err != nil {
+		log.Printf("[peartube] autoseed %s: relay refused the seed: %v", p.key, err)
+		return
+	}
+	log.Printf("[peartube] autoseed %s: relay accepted job %s (%s)", p.key, job.JobID, job.Status)
+}
+
+// seedCoordinates are the TMDB coordinates a seed request publishes under.
+// Shared with the automatic trigger, which needs them before it commits to a
+// seed in order to ask the relay whether the swarm already has this title.
+func seedCoordinates(req SeedRequest) peartube.ArchiveCoordinates {
+	return peartube.ArchiveCoordinates{
 		ContentKind: strings.TrimSpace(req.ContentKind),
 		TMDBID:      strings.TrimSpace(req.TMDBID),
 		TMDBTitle:   strings.TrimSpace(req.TMDBTitle),
@@ -241,6 +467,13 @@ func (h *PearTubeHandler) planSeed(ctx context.Context, req SeedRequest) (func(c
 		Runtime:     req.Runtime,
 		Genres:      strings.TrimSpace(req.Genres),
 	}
+}
+
+// planSeed picks the relay transport a seed request needs and validates
+// everything that can be checked without a round trip. Only the returned
+// closure talks to the relay, so a caller mistake stays a client error.
+func (h *PearTubeHandler) planSeed(ctx context.Context, req SeedRequest) (func(context.Context) (*peartube.ArchiveJob, error), error) {
+	coordinates := seedCoordinates(req)
 
 	onDisk := strings.TrimSpace(req.LocalMediaItemID) != "" || strings.TrimSpace(req.FilePath) != ""
 	remote := strings.TrimSpace(req.SourceURL) != "" || strings.TrimSpace(req.StreamPath) != ""

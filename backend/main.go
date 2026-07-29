@@ -813,6 +813,9 @@ func main() {
 	// or usenet source is re-resolved to a current URL at seed time instead of
 	// the caller shipping an expired one.
 	pearTubeHandler.SetStreamResolver(compositeProvider)
+	// Seed what a viewer starts watching into the swarm. Inert without a relay;
+	// with one, on unless PEARTUBE_AUTOSEED names a false value.
+	historyHandler.SetAutoSeeder(pearTubeHandler)
 	userSettingsHandler.LocalMedia = localMediaService
 	userSettingsHandler.SetPrequeueStore(prequeueHandler.GetStore())
 	userSettingsHandler.SetSearchCacheClearer(indexerService)
