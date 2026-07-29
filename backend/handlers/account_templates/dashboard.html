@@ -212,6 +212,15 @@
                     </label>
                     <p class="form-hint">Enable content restrictions for children</p>
                 </div>
+                <div class="form-group">
+                    <label class="form-label" for="editActivityPrivacy">Watch Activity Sharing</label>
+                    <select id="editActivityPrivacy" class="form-input">
+                        <option value="not_shared">Do not share (default)</option>
+                        <option value="shared_anonymous">Share anonymously</option>
+                        <option value="shared">Share with profile name</option>
+                    </select>
+                    <p class="form-hint">Opt in to activity used by Popular on This Server and Recently Watched shelves.</p>
+                </div>
                 <div style="display: flex; gap: 0.5rem; margin-top: 1rem;">
                     <button type="submit" class="btn btn-primary">Save Changes</button>
                     <button type="button" class="btn btn-danger" onclick="deleteProfile()">Delete</button>
@@ -338,6 +347,7 @@
         document.getElementById('editProfileId').value = profileId;
         document.getElementById('editProfileName').value = profile.name;
         document.getElementById('editKidsProfile').checked = profile.isKidsProfile;
+        document.getElementById('editActivityPrivacy').value = profile.activityPrivacy || 'not_shared';
         document.getElementById('editIconUrl').value = '';
         editSelectedColor = profile.color || '#3B82F6';
 
@@ -503,6 +513,7 @@
         const profileId = document.getElementById('editProfileId').value;
         const name = document.getElementById('editProfileName').value.trim();
         const isKidsProfile = document.getElementById('editKidsProfile').checked;
+        const activityPrivacy = document.getElementById('editActivityPrivacy').value;
 
         try {
             let response = await fetch(basePath + '/api/profiles?profileId=' + encodeURIComponent(profileId), {
@@ -527,6 +538,22 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ isKidsProfile })
             });
+            if (!response.ok) {
+                const error = await response.text();
+                showToast(error || 'Failed to update kids profile', 'error');
+                return;
+            }
+
+            response = await fetch(basePath + '/api/profiles/activity-privacy?profileId=' + encodeURIComponent(profileId), {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ activityPrivacy })
+            });
+            if (!response.ok) {
+                const error = await response.text();
+                showToast(error || 'Failed to update activity sharing', 'error');
+                return;
+            }
 
             showToast('Profile updated');
             location.reload();

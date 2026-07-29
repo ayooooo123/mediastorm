@@ -733,6 +733,62 @@ func EnsureDefaultHomeShelves(shelves []ShelfConfig) ([]ShelfConfig, bool) {
 		changed = true
 	}
 
+	if !hasShelf("popular-on-server") {
+		insertOrder := -1
+		for _, shelf := range nextShelves {
+			if shelf.ID == "live-favorites" {
+				insertOrder = shelf.Order + 1
+				break
+			}
+			if shelf.Order > insertOrder {
+				insertOrder = shelf.Order + 1
+			}
+		}
+		if insertOrder < 0 {
+			insertOrder = 0
+		}
+		for i := range nextShelves {
+			if nextShelves[i].Order >= insertOrder {
+				nextShelves[i].Order++
+			}
+		}
+		nextShelves = append(nextShelves, ShelfConfig{
+			ID:      "popular-on-server",
+			Name:    "Popular on This Server",
+			Enabled: false,
+			Order:   insertOrder,
+		})
+		changed = true
+	}
+
+	if !hasShelf("recently-watched") {
+		insertOrder := -1
+		for _, shelf := range nextShelves {
+			if shelf.ID == "popular-on-server" {
+				insertOrder = shelf.Order + 1
+				break
+			}
+			if shelf.Order > insertOrder {
+				insertOrder = shelf.Order + 1
+			}
+		}
+		if insertOrder < 0 {
+			insertOrder = 0
+		}
+		for i := range nextShelves {
+			if nextShelves[i].Order >= insertOrder {
+				nextShelves[i].Order++
+			}
+		}
+		nextShelves = append(nextShelves, ShelfConfig{
+			ID:      "recently-watched",
+			Name:    "Recently Watched",
+			Enabled: false,
+			Order:   insertOrder,
+		})
+		changed = true
+	}
+
 	return nextShelves, changed
 }
 

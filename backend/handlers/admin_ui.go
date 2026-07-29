@@ -743,6 +743,8 @@ var SettingsSchema = map[string]interface{}{
 			"disableTvLandscapeCardExpansion": map[string]interface{}{"type": "boolean", "label": "Disable TV Card Expansion", "description": "Keep portrait shelf cards from expanding into landscape layout when focused on TV home screens.", "order": 8},
 			"homeShelfScale":                  map[string]interface{}{"type": "number", "label": "TV Shelf Scale", "description": "Scale TV home shelf headers, cards, card overlays, and hero text. Lower values fit more shelves on screen.", "order": 9, "step": 0.05, "min": 0.5, "max": 1.0},
 			"homeHeroScale":                   map[string]interface{}{"type": "number", "label": "TV Hero Area Scale", "description": "Scale the upper TV hero region and top-right hero artwork. Lower values move shelves higher.", "order": 10, "step": 0.05, "min": 0.5, "max": 1.0},
+			"popularOnServerWindowDays":       map[string]interface{}{"type": "number", "label": "Shared Activity Window", "description": "Days of opted-in profile activity used by Popular on This Server and Recently Watched.", "order": 11, "step": 1, "min": 7, "max": 365, "globalOnly": true},
+			"recentlyWatchedCapPerProfile":    map[string]interface{}{"type": "number", "label": "Recently Watched Per Profile", "description": "Maximum recent entries contributed by each opted-in profile.", "order": 12, "step": 1, "min": 1, "max": 20, "globalOnly": true},
 		},
 	},
 	"homeShelves.shelves": map[string]interface{}{
@@ -757,7 +759,7 @@ var SettingsSchema = map[string]interface{}{
 			"type": map[string]interface{}{
 				"type":        "select",
 				"label":       "Type",
-				"options":     []string{"builtin", "mdblist", "tmdb", "trakt", "simkl", "letterboxd", "genre", "decade", "collection-hub", "library"},
+				"options":     []string{"builtin", "mdblist", "stremio", "tmdb", "trakt", "simkl", "letterboxd", "genre", "decade", "collection-hub", "library"},
 				"description": "Shelf type (built-in, TMDB, external list, collection hub, or configured media library)",
 				"order":       2,
 			},
@@ -6760,6 +6762,7 @@ type ProfileWithPinStatus struct {
 	HasIcon            bool      `json:"hasIcon"`
 	IsKidsProfile      bool      `json:"isKidsProfile"`
 	AllowShareLinks    bool      `json:"allowShareLinks"`
+	ActivityPrivacy    string    `json:"activityPrivacy"`
 	KidsMode           string    `json:"kidsMode,omitempty"`
 	KidsMaxRating      string    `json:"kidsMaxRating,omitempty"`
 	KidsMaxMovieRating string    `json:"kidsMaxMovieRating,omitempty"`
@@ -6795,6 +6798,7 @@ func (h *AdminUIHandler) GetProfiles(w http.ResponseWriter, r *http.Request) {
 			HasIcon:            u.HasIcon(),
 			IsKidsProfile:      u.IsKidsProfile,
 			AllowShareLinks:    u.AllowShareLinks,
+			ActivityPrivacy:    models.NormalizeActivityPrivacy(u.ActivityPrivacy),
 			KidsMode:           u.KidsMode,
 			KidsMaxRating:      u.KidsMaxRating,
 			KidsMaxMovieRating: u.KidsMaxMovieRating,
@@ -6861,6 +6865,7 @@ func (h *AdminUIHandler) SetProfilePin(w http.ResponseWriter, r *http.Request) {
 		HasPin:             user.HasPin(),
 		HasIcon:            user.HasIcon(),
 		IsKidsProfile:      user.IsKidsProfile,
+		ActivityPrivacy:    models.NormalizeActivityPrivacy(user.ActivityPrivacy),
 		KidsMode:           user.KidsMode,
 		KidsMaxRating:      user.KidsMaxRating,
 		KidsMaxMovieRating: user.KidsMaxMovieRating,
@@ -6907,6 +6912,7 @@ func (h *AdminUIHandler) ClearProfilePin(w http.ResponseWriter, r *http.Request)
 		HasPin:             user.HasPin(),
 		HasIcon:            user.HasIcon(),
 		IsKidsProfile:      user.IsKidsProfile,
+		ActivityPrivacy:    models.NormalizeActivityPrivacy(user.ActivityPrivacy),
 		KidsMode:           user.KidsMode,
 		KidsMaxRating:      user.KidsMaxRating,
 		KidsMaxMovieRating: user.KidsMaxMovieRating,
@@ -7767,6 +7773,49 @@ func (h *AdminUIHandler) SetProfileAllowShareLinks(w http.ResponseWriter, r *htt
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "share permission updated"})
+}
+
+// SetProfileActivityPrivacy updates a profile's opt-in preference for shared
+// server activity shelves.
+func (h *AdminUIHandler) SetProfileActivityPrivacy(w http.ResponseWriter, r *http.Request) {
+	if h.usersService == nil {
+		http.Error(w, "Users service not available", http.StatusInternalServerError)
+		return
+	}
+
+	profileID := strings.TrimSpace(r.URL.Query().Get("profileId"))
+	if profileID == "" {
+		http.Error(w, "profileId parameter required", http.StatusBadRequest)
+		return
+	}
+	if ok, _ := h.requireProfileScope(w, r, profileID); !ok {
+		return
+	}
+
+	var req struct {
+		ActivityPrivacy string `json:"activityPrivacy"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		http.Error(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	profile, err := h.usersService.SetActivityPrivacy(profileID, req.ActivityPrivacy)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, users.ErrUserNotFound) {
+			status = http.StatusNotFound
+		} else if errors.Is(err, users.ErrActivityPrivacy) {
+			status = http.StatusBadRequest
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(profile)
 }
 
 // RenameAccountRequest represents a request to rename an account

@@ -612,6 +612,15 @@ function showEditProfileModal(profileId) {
                     </div>
                     ` : ''}
                 </div>
+                <div class="form-group">
+                    <label class="form-label" for="activityPrivacy-${profileId}">Watch Activity Sharing</label>
+                    <select id="activityPrivacy-${profileId}" name="activityPrivacy" class="form-input">
+                        <option value="not_shared" ${(p.activityPrivacy || 'not_shared') === 'not_shared' ? 'selected' : ''}>Do not share (default)</option>
+                        <option value="shared_anonymous" ${p.activityPrivacy === 'shared_anonymous' ? 'selected' : ''}>Share anonymously</option>
+                        <option value="shared" ${p.activityPrivacy === 'shared' ? 'selected' : ''}>Share with profile name</option>
+                    </select>
+                    <p class="form-hint">Opt in to activity used by Popular on This Server and Recently Watched shelves.</p>
+                </div>
                 <div class="form-group" style="border-top: 1px solid var(--border); padding-top: 1rem; margin-top: 1rem;">
                     <label class="form-label">Profile PIN</label>
                     ${p.hasPin
@@ -653,6 +662,12 @@ async function updateProfile(e, profileId) {
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({ isKidsProfile: form.isKids.checked })
         });
+        const privacyResponse = await fetch(basePath + '/api/profiles/activity-privacy?profileId=' + encodeURIComponent(profileId), {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ activityPrivacy: form.activityPrivacy.value })
+        });
+        if (!privacyResponse.ok) throw new Error(await privacyResponse.text());
         hideModal();
         showToast('Profile updated');
         loadData();

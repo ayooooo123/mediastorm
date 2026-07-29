@@ -685,8 +685,8 @@ func TestGetWithDefaults_BackfillsCalendarShelf(t *testing.T) {
 		t.Fatalf("GetWithDefaults: %v", err)
 	}
 
-	if len(got.HomeShelves.Shelves) != 12 {
-		t.Fatalf("expected 12 shelves after backfill, got %d", len(got.HomeShelves.Shelves))
+	if len(got.HomeShelves.Shelves) != 14 {
+		t.Fatalf("expected 14 shelves after backfill, got %d", len(got.HomeShelves.Shelves))
 	}
 
 	var topTen *models.ShelfConfig
@@ -954,8 +954,8 @@ func TestLoad_MigratesMissingCalendarShelf(t *testing.T) {
 	if got == nil {
 		t.Fatal("expected migrated settings")
 	}
-	if len(got.HomeShelves.Shelves) != 12 {
-		t.Fatalf("expected 12 shelves after migration, got %d", len(got.HomeShelves.Shelves))
+	if len(got.HomeShelves.Shelves) != 14 {
+		t.Fatalf("expected 14 shelves after migration, got %d", len(got.HomeShelves.Shelves))
 	}
 
 	var topTen *models.ShelfConfig
