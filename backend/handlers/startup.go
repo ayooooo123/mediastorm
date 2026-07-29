@@ -20,6 +20,7 @@ import (
 	"novastream/models"
 	calendarpkg "novastream/services/calendar"
 	"novastream/services/kids"
+	metadatapkg "novastream/services/metadata"
 	"novastream/services/playback"
 
 	"github.com/gorilla/mux"
@@ -29,6 +30,7 @@ import (
 // size on low-power devices. Full lists are fetched on demand (e.g. explore page).
 const defaultStartupShelfLimit = 20
 const startupExploreCollageItemCount = 4
+const startupTMDBShelfLimit = 25
 
 // startupTrendingTimeout limits how long the startup handler waits for trending
 // data. On cold start, Trending() can take 20-30s enriching metadata from TMDB.
@@ -529,9 +531,49 @@ func (h *StartupHandler) GetStartup(w http.ResponseWriter, r *http.Request) {
 			resp.HomeBundleErrors = homeErrors
 		}
 	}
+	if resp.UserSettings != nil && !watchSupportsNativeTMDBShelves(r) {
+		compatibleSettings := startupSettingsForWatch(*resp.UserSettings)
+		resp.UserSettings = &compatibleSettings
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+// watchSupportsNativeTMDBShelves provides a clean cutover for Watch builds
+// that implement the native tmdb shelf type. Older clients omit the feature
+// and continue to receive the MDBList sentinel compatibility representation.
+func watchSupportsNativeTMDBShelves(r *http.Request) bool {
+	if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("nativeTMDBShelves")), "true") {
+		return true
+	}
+	for _, feature := range strings.Split(r.Header.Get("X-Mediastorm-Features"), ",") {
+		if strings.EqualFold(strings.TrimSpace(feature), "tmdb-shelves") {
+			return true
+		}
+	}
+	return false
+}
+
+// startupSettingsForWatch keeps TMDB shelves visible in the bundled Watch
+// client. Watch currently recognizes custom shelves through its MDBList,
+// Trakt, Simkl, Letterboxd, genre, and decade types before consuming the
+// preloaded payload keyed by shelf ID. Representing TMDB as an MDBList shelf
+// with a non-empty sentinel URL passes that client-side eligibility check;
+// the original TMDB fields remain present and the backend still preloads the
+// shelf through the TMDB source.
+func startupSettingsForWatch(settings models.UserSettings) models.UserSettings {
+	shelves := settings.HomeShelves.Shelves
+	settings.HomeShelves.Shelves = append([]models.ShelfConfig(nil), shelves...)
+	for i := range settings.HomeShelves.Shelves {
+		shelf := &settings.HomeShelves.Shelves[i]
+		if !strings.EqualFold(strings.TrimSpace(shelf.Type), "tmdb") {
+			continue
+		}
+		shelf.Type = "mdblist"
+		shelf.ListURL = watchTMDBShelfURLPrefix + shelf.ID
+	}
+	return settings
 }
 
 func homeShelfHidesUnreleased(shelves []models.ShelfConfig, id string) bool {
@@ -943,6 +985,13 @@ func isStartupFetchableCustomShelf(shelf models.ShelfConfig) bool {
 	switch strings.ToLower(strings.TrimSpace(shelf.Type)) {
 	case "mdblist":
 		return strings.TrimSpace(shelf.ListURL) != ""
+	case "stremio":
+		return strings.TrimSpace(shelf.AddonManifestURL) != "" &&
+			strings.TrimSpace(shelf.AddonCatalogType) != "" &&
+			strings.TrimSpace(shelf.AddonCatalogID) != ""
+	case "tmdb":
+		return strings.TrimSpace(shelf.TMDBSourceType) == metadatapkg.TMDBSourceCustomDiscover ||
+			(strings.TrimSpace(shelf.TMDBSourceType) != "" && strings.TrimSpace(shelf.TMDBSourceID) != "")
 	case "trakt":
 		return strings.TrimSpace(shelf.TraktAccountID) != "" && strings.TrimSpace(shelf.TraktListType) != ""
 	case "simkl":
@@ -988,6 +1037,20 @@ func startupDisplayListQueryForShelf(shelf models.ShelfConfig, homeShelfLimit in
 	case "mdblist":
 		query.Set("source", "mdblist")
 		query.Set("url", strings.TrimSpace(shelf.ListURL))
+	case "stremio":
+		query.Set("source", "stremio")
+		query.Set("manifestUrl", strings.TrimSpace(shelf.AddonManifestURL))
+		query.Set("catalogType", strings.TrimSpace(shelf.AddonCatalogType))
+		query.Set("catalogId", strings.TrimSpace(shelf.AddonCatalogID))
+	case "tmdb":
+		query.Set("source", "tmdb-list")
+		query.Set("sourceType", strings.TrimSpace(shelf.TMDBSourceType))
+		query.Set("sourceId", strings.TrimSpace(shelf.TMDBSourceID))
+		query.Set("mediaType", strings.TrimSpace(shelf.TMDBMediaType))
+		query.Set("sort", strings.TrimSpace(shelf.Sort))
+		query.Set("discoverQuery", strings.TrimSpace(shelf.TMDBDiscoverQuery))
+		query.Set("lite", "true")
+		query.Set("artworkLimit", strconv.Itoa(minInt(limit, homeShelfLimit+startupExploreCollageItemCount)))
 	case "trakt":
 		query.Set("source", "trakt-list")
 		query.Set("accountId", strings.TrimSpace(shelf.TraktAccountID))
@@ -1049,13 +1112,19 @@ func startupCustomShelfFetchLimit(shelf models.ShelfConfig, homeShelfLimit int) 
 	if homeShelfLimit <= 0 {
 		homeShelfLimit = defaultStartupShelfLimit
 	}
+	shelfType := strings.ToLower(strings.TrimSpace(shelf.Type))
 	if shelf.Limit > 0 {
+		if shelfType == "tmdb" {
+			return minInt(shelf.Limit, startupTMDBShelfLimit)
+		}
 		if shelf.Limit >= homeShelfLimit {
 			return maxInt(shelf.Limit, homeShelfLimit+startupExploreCollageItemCount)
 		}
 		return shelf.Limit
 	}
-	switch strings.ToLower(strings.TrimSpace(shelf.Type)) {
+	switch shelfType {
+	case "tmdb":
+		return startupTMDBShelfLimit
 	case "genre", "decade":
 		return maxInt(homeShelfLimit, 50)
 	default:
@@ -1114,6 +1183,10 @@ func homeShelfSourceKey(shelf models.ShelfConfig) string {
 	switch shelf.Type {
 	case "mdblist":
 		return "mdblist:" + strings.TrimSpace(shelf.ListURL)
+	case "stremio":
+		return fmt.Sprintf("stremio:%s:%s:%s", hashForManifest(strings.TrimSpace(shelf.AddonManifestURL)), shelf.AddonCatalogType, shelf.AddonCatalogID)
+	case "tmdb":
+		return fmt.Sprintf("tmdb:%s:%s:%s:%s:%s", shelf.TMDBSourceType, shelf.TMDBSourceID, shelf.TMDBMediaType, shelf.Sort, shelf.TMDBDiscoverQuery)
 	case "trakt":
 		return fmt.Sprintf("trakt:%s:%s:%s", shelf.TraktAccountID, shelf.TraktListType, shelf.TraktListID)
 	case "simkl":

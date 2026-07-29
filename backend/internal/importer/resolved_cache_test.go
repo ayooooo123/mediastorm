@@ -60,3 +60,38 @@ func TestResolvedNZBCacheListFindAndDelete(t *testing.T) {
 		t.Fatalf("delete() missing error = %v, want os.ErrNotExist", err)
 	}
 }
+
+func TestResolvedNZBCacheRejectsSamplePlaybackPath(t *testing.T) {
+	ctx := context.Background()
+	metaSvc := metadata.NewMetadataService(t.TempDir())
+	cache := newResolvedNZBCache(metaSvc)
+
+	samplePath := "/shows/Release/Sample/Show.S01E08.sample.mkv"
+	if err := metaSvc.WriteFileMetadata(samplePath, &metapb.FileMetadata{
+		FileSize: 39142327,
+		Status:   metapb.FileStatus_FILE_STATUS_HEALTHY,
+	}); err != nil {
+		t.Fatalf("WriteFileMetadata() error = %v", err)
+	}
+
+	const downloadURL = "https://indexer.example/release/sample-first.nzb"
+	nzbHash := resolvedNZBHash([]byte("sample-first-nzb"))
+	if err := cache.put(ctx, nzbHash, "release.nzb", samplePath, ResolvedNZBSource{
+		DownloadURL: downloadURL,
+		Title:       "Sample First Release",
+	}); err != nil {
+		t.Fatalf("put() error = %v", err)
+	}
+
+	if entry, ok, err := cache.findByDownloadURL(ctx, downloadURL); err != nil {
+		t.Fatalf("findByDownloadURL() error = %v", err)
+	} else if ok || entry != nil {
+		t.Fatalf("findByDownloadURL() = (%+v, %t), want stale sample entry rejected", entry, ok)
+	}
+
+	if entry, ok, err := cache.findByNZBHash(ctx, nzbHash); err != nil {
+		t.Fatalf("findByNZBHash() error = %v", err)
+	} else if ok || entry != nil {
+		t.Fatalf("findByNZBHash() = (%+v, %t), want stale sample entry removed", entry, ok)
+	}
+}

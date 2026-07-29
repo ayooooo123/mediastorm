@@ -319,7 +319,7 @@ var SettingsSchema = map[string]interface{}{
 		"key":      "debridProviders",
 		"fields": map[string]interface{}{
 			"name":     map[string]interface{}{"type": "text", "label": "Name", "description": "Provider display name", "order": 1},
-			"provider": map[string]interface{}{"type": "select", "label": "Provider", "options": []string{"realdebrid", "torbox", "alldebrid"}, "description": "Provider type", "order": 2},
+			"provider": map[string]interface{}{"type": "select", "label": "Provider", "options": []string{"realdebrid", "torbox", "alldebrid", "premiumize"}, "description": "Provider type", "order": 2},
 			"apiKey":   map[string]interface{}{"type": "password", "label": "API Key", "description": "Provider API key", "order": 3},
 			"enabled":  map[string]interface{}{"type": "boolean", "label": "Enabled", "description": "Enable this provider", "order": 4},
 			"config.autoClearQueue": map[string]interface{}{
@@ -757,8 +757,8 @@ var SettingsSchema = map[string]interface{}{
 			"type": map[string]interface{}{
 				"type":        "select",
 				"label":       "Type",
-				"options":     []string{"builtin", "mdblist", "trakt", "library"},
-				"description": "Shelf type (builtin, custom MDBList, Trakt, or configured media library)",
+				"options":     []string{"builtin", "mdblist", "tmdb", "trakt", "simkl", "letterboxd", "genre", "decade", "collection-hub", "library"},
+				"description": "Shelf type (built-in, TMDB, external list, collection hub, or configured media library)",
 				"order":       2,
 			},
 			"libraryId": map[string]interface{}{
@@ -775,6 +775,24 @@ var SettingsSchema = map[string]interface{}{
 				"showWhen":    "type=mdblist",
 				"order":       3,
 			},
+			"tmdbSourceType": map[string]interface{}{
+				"type":        "select",
+				"label":       "TMDB Source Type",
+				"options":     []string{"public-list", "production-company", "network", "movie-collection", "person-credits", "director-credits", "custom-discover"},
+				"description": "TMDB source-builder type",
+				"showWhen":    "type=tmdb",
+				"order":       3,
+			},
+			"tmdbSourceId":   map[string]interface{}{"type": "text", "label": "TMDB Source ID", "showWhen": "type=tmdb", "order": 4},
+			"tmdbSourceName": map[string]interface{}{"type": "text", "label": "TMDB Source Name", "showWhen": "type=tmdb", "order": 5},
+			"tmdbMediaType": map[string]interface{}{
+				"type":     "select",
+				"label":    "TMDB Media Type",
+				"options":  []string{"movie", "tv", "all"},
+				"showWhen": "type=tmdb",
+				"order":    6,
+			},
+			"tmdbDiscoverQuery": map[string]interface{}{"type": "text", "label": "TMDB Custom Filters", "showWhen": "type=tmdb", "order": 7},
 			"limit": map[string]interface{}{
 				"type":        "number",
 				"label":       "Item Limit",
@@ -787,9 +805,13 @@ var SettingsSchema = map[string]interface{}{
 			"sort": map[string]interface{}{
 				"type":        "select",
 				"label":       "Sort",
-				"description": "Shelf-specific sort mode. My Upcoming supports air-date-asc, air-date-desc, recently-watched, and title.",
-				"options":     []string{"air-date-asc", "air-date-desc", "recently-watched", "title"},
-				"order":       5,
+				"description": "Shelf-specific sort mode. TMDB shelves support ascending and descending popularity, rating, release date, and title.",
+				"options": []string{
+					"air-date-asc", "air-date-desc", "recently-watched", "title",
+					"original", "popularity.desc", "popularity.asc", "vote_average.desc", "vote_average.asc",
+					"release_date.desc", "release_date.asc", "title.asc", "title.desc",
+				},
+				"order": 5,
 			},
 		},
 	},
@@ -3429,6 +3451,18 @@ func (h *AdminUIHandler) GetDebridStatus(w http.ResponseWriter, r *http.Request)
 				} else {
 					status.Error = err.Error()
 				}
+			case "premiumize":
+				client := debrid.NewPremiumizeClient(p.APIKey)
+				if info, err := client.GetAccountInfo(ctx); err == nil {
+					status.Username = info.Username
+					status.PremiumActive = info.PremiumActive
+					if info.ExpiresAt != nil {
+						status.ExpiresAt = info.ExpiresAt.Format("2006-01-02")
+						status.DaysRemaining = info.DaysRemaining
+					}
+				} else {
+					status.Error = err.Error()
+				}
 			}
 		}
 
@@ -3795,8 +3829,9 @@ func (h *AdminUIHandler) PropagateSettings(w http.ResponseWriter, r *http.Reques
 
 // LoginPageData holds data for the login template
 type LoginPageData struct {
-	Error          string
-	ServerBasePath string
+	Error                 string
+	RequirePasswordChange bool
+	ServerBasePath        string
 }
 
 // IsAuthenticated checks if the request has a valid session (any account)
@@ -4008,7 +4043,11 @@ func (h *AdminUIHandler) LoginPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := h.loginTemplate.ExecuteTemplate(w, "login", LoginPageData{ServerBasePath: h.serverBasePath}); err != nil {
+	requirePasswordChange := h.accountsService != nil && h.accountsService.HasDefaultPassword()
+	if err := h.loginTemplate.ExecuteTemplate(w, "login", LoginPageData{
+		RequirePasswordChange: requirePasswordChange,
+		ServerBasePath:        h.serverBasePath,
+	}); err != nil {
 		fmt.Printf("Login template error: %v\n", err)
 		http.Error(w, "Template error", http.StatusInternalServerError)
 	}
@@ -4071,6 +4110,8 @@ func (h *AdminUIHandler) LoginSubmit(w http.ResponseWriter, r *http.Request) {
 
 	username := strings.TrimSpace(r.FormValue("username"))
 	password := r.FormValue("password")
+	newPassword := r.FormValue("new_password")
+	confirmPassword := r.FormValue("confirm_password")
 
 	if username == "" {
 		h.renderLoginError(w, "Username is required")
@@ -4091,9 +4132,26 @@ func (h *AdminUIHandler) LoginSubmit(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if account.IsMaster && h.accountsService.HasDefaultPassword() && !requestsecurity.IsLoopback(r) {
-		h.renderLoginError(w, "The legacy default admin password can only be changed from localhost")
-		return
+	if account.IsMaster && h.accountsService.HasDefaultPassword() {
+		// Replace the shared bootstrap credential before creating a session.
+		// This works through Docker bridges without treating bridge networks as
+		// trusted localhost peers.
+		if strings.TrimSpace(newPassword) == "" {
+			h.renderLoginError(w, "Choose a new admin password to finish initial setup")
+			return
+		}
+		if newPassword != confirmPassword {
+			h.renderLoginError(w, "New passwords do not match")
+			return
+		}
+		if err := h.accountsService.ReplaceDefaultMasterPassword(newPassword); err != nil {
+			if errors.Is(err, accounts.ErrPasswordRequired) || strings.TrimSpace(newPassword) == accounts.DefaultMasterPassword {
+				h.renderLoginError(w, "The new password must be different from the default password")
+			} else {
+				h.renderLoginError(w, "The default password was already changed; sign in again")
+			}
+			return
+		}
 	}
 
 	// Check if "remember me" is checked
@@ -4153,7 +4211,12 @@ func (h *AdminUIHandler) Logout(w http.ResponseWriter, r *http.Request) {
 
 func (h *AdminUIHandler) renderLoginError(w http.ResponseWriter, errMsg string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := h.loginTemplate.ExecuteTemplate(w, "login", LoginPageData{Error: errMsg, ServerBasePath: h.serverBasePath}); err != nil {
+	requirePasswordChange := h.accountsService != nil && h.accountsService.HasDefaultPassword()
+	if err := h.loginTemplate.ExecuteTemplate(w, "login", LoginPageData{
+		Error:                 errMsg,
+		RequirePasswordChange: requirePasswordChange,
+		ServerBasePath:        h.serverBasePath,
+	}); err != nil {
 		fmt.Printf("Login template error: %v\n", err)
 		http.Error(w, "Template error", http.StatusInternalServerError)
 	}
@@ -9889,6 +9952,28 @@ func (h *AdminUIHandler) TestDebridProvider(w http.ResponseWriter, r *http.Reque
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": true,
 			"message": fmt.Sprintf("Connected as %s (%s)", adResult.Data.User.Username, accountType),
+		})
+
+	case "premiumize":
+		pmClient := debrid.NewPremiumizeClient(req.APIKey)
+		info, err := pmClient.GetAccountInfo(r.Context())
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"error":   err.Error(),
+			})
+			return
+		}
+
+		accountType := "Free"
+		if info.PremiumActive {
+			accountType = "Premium"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"message": fmt.Sprintf("Connected as customer %s (%s)", info.Username, accountType),
 		})
 
 	default:

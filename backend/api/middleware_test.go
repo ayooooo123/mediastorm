@@ -86,6 +86,19 @@ func TestExtractTokenRestrictsQueryTokensToMediaRoutes(t *testing.T) {
 		t.Fatalf("artwork query token = %q, want art-token", got)
 	}
 
+	for _, target := range []string{
+		"/api/metadata/trailers/proxy?token=media-token&url=https://example.test/trailer",
+		"/api/metadata/trailers/prequeue/serve?token=media-token&id=trailer-1",
+		"/api/subtitles/download?token=media-token&subtitleId=sub-1",
+		"/api/subtitles/translate?token=media-token&sourceUrl=https://example.test/sub.vtt",
+		"/api/live/recordings/recording-1/stream?token=media-token",
+	} {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		if got := extractToken(req); got != "media-token" {
+			t.Errorf("media query token for %q = %q, want media-token", target, got)
+		}
+	}
+
 	settingsReq := httptest.NewRequest("GET", "/api/settings?token=leaked-token", nil)
 	if got := extractToken(settingsReq); got != "" {
 		t.Fatalf("general API accepted query token %q", got)

@@ -70,6 +70,23 @@
             font-size: 0.875rem;
         }
 
+        .first-login-help {
+            background: rgba(59, 130, 246, 0.08);
+            border: 1px solid rgba(59, 130, 246, 0.2);
+            border-radius: var(--radius);
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+            line-height: 1.45;
+            margin-bottom: 1rem;
+            padding: 0.75rem;
+            text-align: center;
+        }
+
+        .first-login-help code {
+            color: var(--text-primary);
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        }
+
         .login-body {
             padding: 0 2rem 2rem;
         }
@@ -294,6 +311,13 @@
             <p>Sign in to your account</p>
         </div>
 
+        {{if .RequirePasswordChange}}
+        <div class="first-login-help">
+            First installation? Sign in with <code>admin</code> /
+            <code>admin</code> and choose a new password below.
+        </div>
+        {{end}}
+
         {{if .Error}}
         <div class="form-error">{{.Error}}</div>
         {{end}}
@@ -325,6 +349,34 @@
                     required
                 >
             </div>
+
+            {{if .RequirePasswordChange}}
+            <div class="form-group">
+                <label class="form-label" for="new_password">New admin password</label>
+                <input
+                    type="password"
+                    id="new_password"
+                    name="new_password"
+                    class="form-input"
+                    placeholder="Choose a new password"
+                    autocomplete="new-password"
+                    required
+                >
+            </div>
+
+            <div class="form-group">
+                <label class="form-label" for="confirm_password">Confirm new password</label>
+                <input
+                    type="password"
+                    id="confirm_password"
+                    name="confirm_password"
+                    class="form-input"
+                    placeholder="Confirm the new password"
+                    autocomplete="new-password"
+                    required
+                >
+            </div>
+            {{end}}
 
             <div class="checkbox-group">
                 <input type="checkbox" id="remember" name="remember" class="checkbox-input" value="1">

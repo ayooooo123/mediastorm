@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -30,6 +31,8 @@ import (
 
 	"github.com/gorilla/mux"
 )
+
+var seriesDisplayLabelRE = regexp.MustCompile(`(?i)\s*[•·]\s*S\d{1,4}E\d{1,5}\b.*$`)
 
 // SeriesDetailsProvider provides series metadata for episode counting
 type SeriesDetailsProvider interface {
@@ -97,6 +100,15 @@ func (h *PrequeueHandler) authorizeEntry(w http.ResponseWriter, r *http.Request,
 
 func hasReusablePreparation(entry *playback.PrequeueEntry) bool {
 	if entry == nil {
+		return false
+	}
+	// Entries persisted before the complete DOVI record was stored can still have
+	// HasDolbyVision/profile populated. Reusing one would let fast-start open the
+	// stream without the decoder configuration needed to create a DV format
+	// description, so force a fresh probe to backfill the record.
+	if entry.HasDolbyVision &&
+		(entry.DolbyVisionConfiguration == nil ||
+			strings.TrimSpace(entry.DolbyVisionConfiguration.PixelFormat) == "") {
 		return false
 	}
 	return entry.MigrationAdopted || len(entry.AudioTracks) > 0 || len(entry.SubtitleTracks) > 0
@@ -511,9 +523,10 @@ type VideoProber interface {
 
 // VideoProbeResult contains the relevant HDR detection results
 type VideoProbeResult struct {
-	HasDolbyVision     bool
-	HasHDR10           bool
-	DolbyVisionProfile string
+	HasDolbyVision           bool
+	HasHDR10                 bool
+	DolbyVisionProfile       string
+	DolbyVisionConfiguration *models.DolbyVisionConfiguration
 }
 
 // VideoMetadataResult contains stream metadata for track selection
@@ -530,9 +543,10 @@ type VideoMetadataProber interface {
 // VideoFullResult combines HDR detection and stream metadata in a single result
 type VideoFullResult struct {
 	// HDR detection
-	HasDolbyVision     bool
-	HasHDR10           bool
-	DolbyVisionProfile string
+	HasDolbyVision           bool
+	HasHDR10                 bool
+	DolbyVisionProfile       string
+	DolbyVisionConfiguration *models.DolbyVisionConfiguration
 	// Video codec detection
 	VideoCodec   string // e.g., "h264", "hevc", "mpeg4" - used to detect incompatible codecs
 	VideoPixFmt  string // e.g., "yuv420p", "yuv420p10le" - used for browser compatibility
@@ -782,6 +796,9 @@ func (h *PrequeueHandler) Prequeue(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "titleName is required", http.StatusBadRequest)
 		return
 	}
+	if mediaType == "series" || mediaType == "tv" || mediaType == "show" {
+		titleName = normalizePrequeueSeriesTitle(titleName)
+	}
 
 	// Canonicalize the title ID so the same show resolves to one prequeue key
 	// regardless of which shelf (Continue Watching vs Top Ten/Trending, etc.) it
@@ -953,6 +970,15 @@ func (h *PrequeueHandler) Prequeue(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+func normalizePrequeueSeriesTitle(title string) string {
+	trimmed := strings.TrimSpace(title)
+	cleaned := strings.TrimSpace(seriesDisplayLabelRE.ReplaceAllString(trimmed, ""))
+	if cleaned != "" {
+		return cleaned
+	}
+	return trimmed
+}
+
 // GetStatus returns the status of a prequeue request
 func (h *PrequeueHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
@@ -1043,6 +1069,7 @@ func (h *PrequeueHandler) AdoptMigration(w http.ResponseWriter, r *http.Request)
 		e.HasDolbyVision = false
 		e.HasHDR10 = false
 		e.DolbyVisionProfile = ""
+		e.DolbyVisionConfiguration = nil
 		e.NeedsAudioTranscode = false
 		e.SelectedAudioTrack = -1
 		e.SelectedSubtitleTrack = -1
@@ -1112,14 +1139,15 @@ func (h *PrequeueHandler) AdoptMigration(w http.ResponseWriter, r *http.Request)
 }
 
 type adoptedMigrationMetadata struct {
-	audioStreams       []AudioStreamInfo
-	subtitleStreams    []SubtitleStreamInfo
-	hasDolbyVision     bool
-	hasHDR10           bool
-	dolbyVisionProfile string
-	hasTrueHD          bool
-	duration           float64
-	avgFrameRate       string
+	audioStreams             []AudioStreamInfo
+	subtitleStreams          []SubtitleStreamInfo
+	hasDolbyVision           bool
+	hasHDR10                 bool
+	dolbyVisionProfile       string
+	dolbyVisionConfiguration *models.DolbyVisionConfiguration
+	hasTrueHD                bool
+	duration                 float64
+	avgFrameRate             string
 }
 
 func (h *PrequeueHandler) refreshAdoptedMigrationMetadata(prequeueID, streamPath string) {
@@ -1164,6 +1192,7 @@ func (h *PrequeueHandler) refreshAdoptedMigrationMetadata(prequeueID, streamPath
 		e.HasDolbyVision = metadata.hasDolbyVision
 		e.HasHDR10 = metadata.hasHDR10
 		e.DolbyVisionProfile = metadata.dolbyVisionProfile
+		e.DolbyVisionConfiguration = metadata.dolbyVisionConfiguration
 		e.NeedsAudioTranscode = metadata.hasTrueHD
 		e.SelectedAudioTrack = selectedAudioTrack
 		e.SelectedSubtitleTrack = selectedSubtitleTrack
@@ -1190,6 +1219,7 @@ func (h *PrequeueHandler) probeAdoptedMigrationMetadata(ctx context.Context, str
 			metadata.hasDolbyVision = fullResult.HasDolbyVision
 			metadata.hasHDR10 = fullResult.HasHDR10
 			metadata.dolbyVisionProfile = fullResult.DolbyVisionProfile
+			metadata.dolbyVisionConfiguration = fullResult.DolbyVisionConfiguration
 			metadata.hasTrueHD = fullResult.HasTrueHD
 			metadata.duration = fullResult.Duration
 			metadata.avgFrameRate = fullResult.AvgFrameRate
@@ -1215,6 +1245,7 @@ func (h *PrequeueHandler) probeAdoptedMigrationMetadata(ctx context.Context, str
 			metadata.hasDolbyVision = result.HasDolbyVision
 			metadata.hasHDR10 = result.HasHDR10
 			metadata.dolbyVisionProfile = result.DolbyVisionProfile
+			metadata.dolbyVisionConfiguration = result.DolbyVisionConfiguration
 		}
 	}
 	if len(metadata.audioStreams) == 0 && len(metadata.subtitleStreams) == 0 && !metadata.hasDolbyVision && !metadata.hasHDR10 && lastErr != nil {
@@ -1585,6 +1616,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 	resolveStart := time.Now()
 	log.Printf("[prequeue] TIMING: starting resolution phase (%d results, elapsed: %v)",
 		len(allResults), time.Since(workerStart))
+	allResults = h.playbackSvc.PrepareTorrentCandidates(ctx, allResults)
 
 	// Cached probe result for DV checking (reused later for track selection)
 	var cachedProbeResult *VideoFullResult
@@ -1888,6 +1920,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 		var hasDV, hasHDR10 bool
 		var hasTrueHD, hasCompatibleAudio bool
 		var dvProfile string
+		var dvConfiguration *models.DolbyVisionConfiguration
 		var avgFrameRate string
 
 		// Reuse cached probe result if we already probed during DV check
@@ -1898,6 +1931,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 			hasDV = cachedProbeResult.HasDolbyVision
 			hasHDR10 = cachedProbeResult.HasHDR10
 			dvProfile = cachedProbeResult.DolbyVisionProfile
+			dvConfiguration = cachedProbeResult.DolbyVisionConfiguration
 			hasTrueHD = cachedProbeResult.HasTrueHD
 			hasCompatibleAudio = cachedProbeResult.HasCompatibleAudio
 			duration = cachedProbeResult.Duration
@@ -1919,6 +1953,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 				hasDV = fullResult.HasDolbyVision
 				hasHDR10 = fullResult.HasHDR10
 				dvProfile = fullResult.DolbyVisionProfile
+				dvConfiguration = fullResult.DolbyVisionConfiguration
 				hasTrueHD = fullResult.HasTrueHD
 				hasCompatibleAudio = fullResult.HasCompatibleAudio
 				duration = fullResult.Duration
@@ -1945,6 +1980,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 					hasDV = probeResult.HasDolbyVision
 					hasHDR10 = probeResult.HasHDR10
 					dvProfile = probeResult.DolbyVisionProfile
+					dvConfiguration = probeResult.DolbyVisionConfiguration
 				}
 			}
 		}
@@ -2054,6 +2090,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 			e.HasDolbyVision = hasDV
 			e.HasHDR10 = hasHDR10
 			e.DolbyVisionProfile = dvProfile
+			e.DolbyVisionConfiguration = dvConfiguration
 			e.NeedsAudioTranscode = needsAudioTranscode
 		})
 

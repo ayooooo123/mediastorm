@@ -57,6 +57,7 @@ func (h *IndexerHandler) Search(w http.ResponseWriter, r *http.Request) {
 	categories := r.URL.Query()["cat"]
 	imdbID := strings.TrimSpace(r.URL.Query().Get("imdbId"))
 	mediaType := strings.TrimSpace(r.URL.Query().Get("mediaType"))
+	query = normalizeDecoratedSeriesQuery(query, mediaType)
 	userID := strings.TrimSpace(r.URL.Query().Get("userId"))
 	// Client ID from header (preferred) or query param
 	clientID := strings.TrimSpace(r.Header.Get("X-Client-ID"))
@@ -241,6 +242,7 @@ func (h *IndexerHandler) SearchTest(w http.ResponseWriter, r *http.Request) {
 	categories := r.URL.Query()["cat"]
 	imdbID := strings.TrimSpace(r.URL.Query().Get("imdbId"))
 	mediaType := strings.TrimSpace(r.URL.Query().Get("mediaType"))
+	query = normalizeDecoratedSeriesQuery(query, mediaType)
 	userID := strings.TrimSpace(r.URL.Query().Get("userId"))
 	clientID := strings.TrimSpace(r.Header.Get("X-Client-ID"))
 	if clientID == "" {
@@ -334,6 +336,17 @@ func (h *IndexerHandler) SearchTest(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(results)
+}
+
+func normalizeDecoratedSeriesQuery(query, mediaType string) string {
+	if !strings.EqualFold(strings.TrimSpace(mediaType), "series") || !seriesDisplayLabelRE.MatchString(query) {
+		return query
+	}
+	parsed := debrid.ParseQuery(query)
+	if parsed.Title == "" || !parsed.HasSeasonMatch || parsed.Episode <= 0 {
+		return query
+	}
+	return fmt.Sprintf("%s S%02dE%02d", parsed.Title, parsed.Season, parsed.Episode)
 }
 
 func markBadScoredResults(results []models.ScoredNZBResult, badStreams *badstreams.Service) {

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"novastream/internal/requestsecurity"
+	"novastream/models"
 	"novastream/services/streaming"
 )
 
@@ -72,9 +73,10 @@ type UnifiedProbeResult struct {
 	HasTrueHD          bool
 	HasCompatibleAudio bool
 	// Extended fields for VideoFullResult compatibility
-	HasDolbyVision     bool
-	HasHDR10           bool
-	DolbyVisionProfile string
+	HasDolbyVision           bool
+	HasHDR10                 bool
+	DolbyVisionProfile       string
+	DolbyVisionConfiguration *models.DolbyVisionConfiguration
 }
 
 // cachedProbeEntry stores a probe result with expiration time

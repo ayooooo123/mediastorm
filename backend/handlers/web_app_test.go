@@ -144,6 +144,9 @@ func TestWebPlaybackHandlerServesStandalonePlayer(t *testing.T) {
 		"recoverWebPlayerHlsSession('hls-network-error'",
 		"recover hls session via seek",
 		"let position = progressPositionForSend(options);",
+		"Authorization: `Bearer ${AUTH_TOKEN}`",
+		"apiUrl(path, { appendToken: false })",
+		"apiUrl(endpoint, { appendToken: false })",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("expected playback template to contain HLS recovery hook %q", want)
@@ -172,6 +175,24 @@ func TestAdminPlaybackTemplateDoesNotForceEndedProgressToDuration(t *testing.T) 
 	}
 	if !strings.Contains(rendered, "let position = currentWebPlayerAbsoluteTime();") {
 		t.Fatal("admin playback template must report the actual playhead on ended events")
+	}
+}
+
+func TestWebPlaybackTemplateSendsFinalHeartbeatOnTeardown(t *testing.T) {
+	body, err := webTemplates.ReadFile("web_templates/playback.html")
+	if err != nil {
+		t.Fatalf("read web playback template: %v", err)
+	}
+
+	rendered := string(body)
+	for _, want := range []string{
+		"playbackEnded: Boolean(playbackEnded)",
+		"stopHlsSession({ keepalive: true });",
+		"ended: true,",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("web playback template missing final-heartbeat hook %q", want)
+		}
 	}
 }
 

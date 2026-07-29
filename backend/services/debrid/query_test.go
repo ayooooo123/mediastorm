@@ -111,6 +111,24 @@ func TestParseQuery(t *testing.T) {
 			wantEpisode: 7,
 			wantType:    MediaTypeSeries,
 		},
+		{
+			name:        "series display label with ordinary episode number",
+			query:       "Legion • S02E01 – Chapter 9 S02E02",
+			wantTitle:   "Legion",
+			wantYear:    0,
+			wantSeason:  2,
+			wantEpisode: 2,
+			wantType:    MediaTypeSeries,
+		},
+		{
+			name:        "ordinary multi episode query retains first episode",
+			query:       "Show S01E01 S01E02",
+			wantTitle:   "Show",
+			wantYear:    0,
+			wantSeason:  1,
+			wantEpisode: 1,
+			wantType:    MediaTypeSeries,
+		},
 	}
 
 	for _, tt := range tests {

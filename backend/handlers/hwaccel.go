@@ -3,6 +3,8 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"runtime"
@@ -85,6 +87,8 @@ func (m *HLSManager) hwAccelCaps() HWAccelCaps {
 			if p := strings.ToLower(strings.TrimSpace(settings.Transmux.HardwareAcceleration)); p != "" {
 				pref = p
 			}
+		} else {
+			log.Printf("[hwaccel] failed to load configured preference; using %q: %v", pref, err)
 		}
 	}
 
@@ -92,13 +96,21 @@ func (m *HLSManager) hwAccelCaps() HWAccelCaps {
 	defer m.hwAccelMu.Unlock()
 	if m.hwAccelReady && m.hwAccelPref == pref &&
 		(m.hwAccelRetryAfter.IsZero() || time.Now().Before(m.hwAccelRetryAfter)) {
+		log.Printf("[hwaccel] using cached capabilities: preference=%s encoder=%s device=%q tonemap=%s retryAfter=%s",
+			pref, effectiveEncoderName(m.hwAccel), m.hwAccel.EncodeDevice, effectiveTonemapName(m.hwAccel),
+			formatHWAccelRetryTime(m.hwAccelRetryAfter))
 		return m.hwAccel
 	}
 
+	log.Printf("[hwaccel] detecting capabilities: preference=%s ffmpeg=%q previousPreference=%q ready=%v retryAfter=%s",
+		pref, m.ffmpegPath, m.hwAccelPref, m.hwAccelReady, formatHWAccelRetryTime(m.hwAccelRetryAfter))
 	m.hwAccel = detectHWAccel(m.ffmpegPath, pref)
 	m.hwAccelPref = pref
 	m.hwAccelReady = true
 	m.hwAccelRetryAfter = time.Time{}
+	log.Printf("[hwaccel] detection complete: preference=%s encoder=%s hardwareEncode=%v device=%q tonemap=%s zscale=%v",
+		pref, effectiveEncoderName(m.hwAccel), m.hwAccel.Encode != HWNone, m.hwAccel.EncodeDevice,
+		effectiveTonemapName(m.hwAccel), m.hwAccel.Zscale)
 	return m.hwAccel
 }
 
@@ -112,12 +124,19 @@ func (m *HLSManager) markHWAccelFailed(kind HWAccelKind) {
 	m.hwAccelMu.Lock()
 	defer m.hwAccelMu.Unlock()
 	if !m.hwAccelReady || m.hwAccel.Encode != kind {
+		log.Printf("[hwaccel] ignoring failure quarantine for encoder=%s because cached encoder=%s ready=%v",
+			kind, m.hwAccel.Encode, m.hwAccelReady)
 		return
 	}
+	log.Printf("[hwaccel] quarantining failed encoder=%s for %s; subsequent web transcodes will use software encoding",
+		kind, hwAccelFailureRetryDelay)
 	m.hwAccel = detectHWAccel(m.ffmpegPath, string(HWNone))
 	m.hwAccelPref = currentHWAccelPreference(m.configManager)
 	m.hwAccelReady = true
 	m.hwAccelRetryAfter = time.Now().Add(hwAccelFailureRetryDelay)
+	log.Printf("[hwaccel] software fallback active: configuredPreference=%s encoder=%s tonemap=%s retryAfter=%s",
+		m.hwAccelPref, effectiveEncoderName(m.hwAccel), effectiveTonemapName(m.hwAccel),
+		formatHWAccelRetryTime(m.hwAccelRetryAfter))
 }
 
 func currentHWAccelPreference(provider ConfigProvider) string {
@@ -151,7 +170,31 @@ func (m *HLSManager) HardwareAccelerationStatus() HWAccelStatus {
 		status.RetryAfter = m.hwAccelRetryAfter.UTC().Format(time.RFC3339)
 	}
 	m.hwAccelMu.Unlock()
+	log.Printf("[hwaccel] status: configured=%s effectiveEncoder=%s hardwareEncode=%v toneMapper=%s retryAfter=%s",
+		status.Configured, status.EffectiveEncoder, status.HardwareEncode,
+		status.ToneMapper, status.RetryAfter)
 	return status
+}
+
+func effectiveEncoderName(caps HWAccelCaps) string {
+	if caps.Encode == HWNone {
+		return "libx264"
+	}
+	return string(caps.Encode)
+}
+
+func effectiveTonemapName(caps HWAccelCaps) string {
+	if caps.Tonemap == "" {
+		return "none"
+	}
+	return caps.Tonemap
+}
+
+func formatHWAccelRetryTime(retryAfter time.Time) string {
+	if retryAfter.IsZero() {
+		return "none"
+	}
+	return retryAfter.UTC().Format(time.RFC3339)
 }
 
 func shouldFallbackHardwareEncode(commandErr, contextErr error, idleTriggered bool, plan videoEncodePlan, actualSegments int, attempted bool) bool {
@@ -171,17 +214,22 @@ func shouldFallbackHardwareEncode(commandErr, contextErr error, idleTriggered bo
 func detectHWAccel(ffmpegPath, pref string) HWAccelCaps {
 	caps := HWAccelCaps{Encode: HWNone}
 	if strings.TrimSpace(ffmpegPath) == "" {
+		log.Printf("[hwaccel] detection stopped: FFmpeg path is empty; using libx264 with no verified tone mapper")
 		return caps
 	}
 
 	encoders := ffmpegEncoderSet(ffmpegPath)
 	filters := ffmpegFilterSet(ffmpegPath)
 	caps.Zscale = filters["zscale"]
+	log.Printf("[hwaccel] FFmpeg capabilities: h264_nvenc=%v h264_qsv=%v h264_vaapi=%v h264_videotoolbox=%v libplacebo=%v tonemap_opencl=%v zscale=%v",
+		encoders["h264_nvenc"], encoders["h264_qsv"], encoders["h264_vaapi"],
+		encoders["h264_videotoolbox"], filters["libplacebo"], filters["tonemap_opencl"], filters["zscale"])
 
 	pref = strings.ToLower(strings.TrimSpace(pref))
 	if pref == "" {
 		pref = "auto"
 	}
+	log.Printf("[hwaccel] normalized hardware acceleration preference=%s", pref)
 
 	// Pick the best tone-mapping implementation that actually works. GPU paths
 	// require a runtime device (Vulkan/OpenCL) that may be absent even when the
@@ -193,6 +241,8 @@ func detectHWAccel(ffmpegPath, pref string) HWAccelCaps {
 	caps.Tonemap = detectTonemap(ffmpegPath, filters, pref != string(HWNone))
 
 	if pref == string(HWNone) {
+		log.Printf("[hwaccel] GPU encoding disabled by preference; selected encoder=libx264 toneMapper=%s",
+			effectiveTonemapName(caps))
 		return caps
 	}
 
@@ -214,33 +264,49 @@ func detectHWAccel(ffmpegPath, pref string) HWAccelCaps {
 	case string(HWVideoToolbox):
 		candidates = []HWAccelKind{HWVideoToolbox}
 	default:
+		log.Printf("[hwaccel] unsupported hardware acceleration preference=%q; using libx264", pref)
 		return caps
 	}
 
 	for _, kind := range candidates {
-		device, ok := hwEncoderUsable(ffmpegPath, kind, encoders)
+		device, ok, reason := hwEncoderUsable(ffmpegPath, kind, encoders)
 		if !ok {
+			log.Printf("[hwaccel] encoder candidate rejected: kind=%s reason=%s", kind, reason)
 			continue
 		}
 		caps.Encode = kind
 		caps.EncodeDevice = device
+		log.Printf("[hwaccel] encoder candidate selected: kind=%s device=%q", kind, device)
 		return caps
 	}
 
+	log.Printf("[hwaccel] no usable hardware encoder found for preference=%s candidates=%v; using libx264", pref, candidates)
 	return caps
 }
 
 // detectTonemap returns the best verified tone-mapping implementation.
 func detectTonemap(ffmpegPath string, filters map[string]bool, allowGPU bool) string {
-	if allowGPU && filters["libplacebo"] && libplaceboUsable(ffmpegPath) {
+	if !allowGPU {
+		log.Printf("[hwaccel] GPU tone mapping disabled by hardware acceleration preference")
+	} else if !filters["libplacebo"] {
+		log.Printf("[hwaccel] tone mapper candidate unavailable: kind=libplacebo reason=filter not present in FFmpeg")
+	} else if libplaceboUsable(ffmpegPath) {
+		log.Printf("[hwaccel] tone mapper selected: kind=libplacebo")
 		return "libplacebo"
 	}
-	if allowGPU && filters["tonemap_opencl"] && openclTonemapUsable(ffmpegPath) {
-		return "opencl"
+	if allowGPU {
+		if !filters["tonemap_opencl"] {
+			log.Printf("[hwaccel] tone mapper candidate unavailable: kind=opencl reason=filter not present in FFmpeg")
+		} else if openclTonemapUsable(ffmpegPath) {
+			log.Printf("[hwaccel] tone mapper selected: kind=opencl")
+			return "opencl"
+		}
 	}
 	if filters["zscale"] {
+		log.Printf("[hwaccel] tone mapper selected: kind=zscale execution=cpu")
 		return "zscale"
 	}
+	log.Printf("[hwaccel] no usable tone mapper found; HDR/DV web transcodes will not be tone mapped")
 	return ""
 }
 
@@ -249,42 +315,65 @@ func detectTonemap(ffmpegPath string, filters map[string]bool, allowGPU bool) st
 // can pass a tiny functional probe but is far too slow for real-time 4K HLS.
 func libplaceboUsable(ffmpegPath string) bool {
 	if softwareVulkanForcedByEnvironment() {
+		log.Printf("[hwaccel] tone mapper candidate rejected: kind=libplacebo reason=software Vulkan forced by environment")
 		return false
 	}
 
-	ok, output := runFilterProbeWithOutput(ffmpegPath,
+	ok, output, err := runFilterProbeWithOutput(ffmpegPath,
 		[]string{"-init_hw_device", "vulkan=vk", "-filter_hw_device", "vk"},
 		"color=c=black:s=128x128:d=0.1",
 		"libplacebo=format=yuv420p",
 		"verbose")
-	return ok && !vulkanProbeUsesSoftwareRenderer(output)
+	if !ok {
+		log.Printf("[hwaccel] tone mapper candidate rejected: kind=libplacebo reason=probe failed error=%v output=%q",
+			err, compactProbeOutput(output))
+		return false
+	}
+	if vulkanProbeUsesSoftwareRenderer(output) {
+		log.Printf("[hwaccel] tone mapper candidate rejected: kind=libplacebo reason=software Vulkan renderer output=%q",
+			compactProbeOutput(output))
+		return false
+	}
+	log.Printf("[hwaccel] tone mapper probe passed: kind=libplacebo")
+	return true
 }
 
 // openclTonemapUsable verifies an OpenCL device initializes and tonemap_opencl runs.
 func openclTonemapUsable(ffmpegPath string) bool {
-	return runFilterProbe(ffmpegPath,
+	ok, output, err := runFilterProbeWithOutput(ffmpegPath,
 		[]string{"-init_hw_device", "opencl=ocl", "-filter_hw_device", "ocl"},
 		"color=c=black:s=128x128:d=0.1,format=yuv420p10le,setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc",
-		"format=p010le,hwupload,tonemap_opencl=tonemap=hable:t=bt709:m=bt709:p=bt709:format=nv12,hwdownload,format=nv12")
+		"format=p010le,hwupload,tonemap_opencl=tonemap=hable:t=bt709:m=bt709:p=bt709:format=nv12,hwdownload,format=nv12",
+		"error")
+	if !ok {
+		log.Printf("[hwaccel] tone mapper candidate rejected: kind=opencl reason=probe failed error=%v output=%q",
+			err, compactProbeOutput(output))
+		return false
+	}
+	log.Printf("[hwaccel] tone mapper probe passed: kind=opencl")
+	return true
 }
 
 // runFilterProbe runs a tiny null-output transcode to confirm a filter graph
 // (and any hardware device it needs) is usable on this host.
 func runFilterProbe(ffmpegPath string, globalArgs []string, lavfiSrc, filter string) bool {
-	ok, _ := runFilterProbeWithOutput(ffmpegPath, globalArgs, lavfiSrc, filter, "error")
+	ok, _, _ := runFilterProbeWithOutput(ffmpegPath, globalArgs, lavfiSrc, filter, "error")
 	return ok
 }
 
-func runFilterProbeWithOutput(ffmpegPath string, globalArgs []string, lavfiSrc, filter, logLevel string) (bool, string) {
+func runFilterProbeWithOutput(ffmpegPath string, globalArgs []string, lavfiSrc, filter, logLevel string) (bool, string, error) {
 	if strings.TrimSpace(ffmpegPath) == "" {
-		return false, ""
+		return false, "", fmt.Errorf("FFmpeg path is empty")
 	}
 	args := append([]string{"-hide_banner", "-loglevel", logLevel}, globalArgs...)
 	args = append(args, "-f", "lavfi", "-i", lavfiSrc, "-vf", filter, "-frames:v", "1", "-f", "null", "-")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	output, err := exec.CommandContext(ctx, ffmpegPath, args...).CombinedOutput()
-	return err == nil, string(output)
+	if ctx.Err() != nil {
+		err = ctx.Err()
+	}
+	return err == nil, string(output), err
 }
 
 func softwareVulkanForcedByEnvironment() bool {
@@ -314,17 +403,20 @@ func vulkanProbeUsesSoftwareRenderer(output string) bool {
 // hwEncoderUsable reports whether the given backend's H.264 encoder exists and
 // passes a quick null test-encode (which confirms a working device — this is
 // what makes Docker /dev passthrough detection reliable rather than assumed).
-func hwEncoderUsable(ffmpegPath string, kind HWAccelKind, encoders map[string]bool) (device string, ok bool) {
+func hwEncoderUsable(ffmpegPath string, kind HWAccelKind, encoders map[string]bool) (device string, ok bool, reason string) {
 	encoder := hwEncoderName(kind)
-	if encoder == "" || !encoders[encoder] {
-		return "", false
+	if encoder == "" {
+		return "", false, "no FFmpeg encoder mapping"
+	}
+	if !encoders[encoder] {
+		return "", false, fmt.Sprintf("%s not present in FFmpeg", encoder)
 	}
 
 	switch kind {
 	case HWVAAPI, HWQSV:
 		// Require the render node to exist before even attempting the probe.
 		if _, err := os.Stat(vaapiDefaultDevice); err != nil {
-			return "", false
+			return "", false, fmt.Sprintf("render device %s unavailable: %v", vaapiDefaultDevice, err)
 		}
 		device = vaapiDefaultDevice
 	}
@@ -347,11 +439,27 @@ func hwEncoderUsable(ffmpegPath string, kind HWAccelKind, encoders map[string]bo
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, ffmpegPath, args...)
-	if err := cmd.Run(); err != nil {
-		return "", false
+	output, err := exec.CommandContext(ctx, ffmpegPath, args...).CombinedOutput()
+	if ctx.Err() != nil {
+		err = ctx.Err()
 	}
-	return device, true
+	if err != nil {
+		return "", false, fmt.Sprintf("test encode failed: %v; output=%q", err, compactProbeOutput(string(output)))
+	}
+	return device, true, "test encode passed"
+}
+
+const maxProbeOutputLogBytes = 2048
+
+func compactProbeOutput(output string) string {
+	compact := strings.Join(strings.Fields(output), " ")
+	if compact == "" {
+		return "<no output>"
+	}
+	if len(compact) > maxProbeOutputLogBytes {
+		return compact[:maxProbeOutputLogBytes] + "...[truncated]"
+	}
+	return compact
 }
 
 func hwEncoderName(kind HWAccelKind) string {
@@ -390,6 +498,11 @@ func ffmpegTokenSet(ffmpegPath, listFlag string) map[string]bool {
 	cmd.Stdout = &out
 	cmd.Stderr = &out
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
+		log.Printf("[hwaccel] FFmpeg capability query failed: flag=%s ffmpeg=%q error=%v output=%q",
+			listFlag, ffmpegPath, err, compactProbeOutput(out.String()))
 		return set
 	}
 	for _, line := range strings.Split(out.String(), "\n") {

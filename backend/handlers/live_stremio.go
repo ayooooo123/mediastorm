@@ -34,14 +34,20 @@ const (
 )
 
 type stremioManifest struct {
-	Catalogs []stremioCatalogDef `json:"catalogs"`
+	ID        string              `json:"id"`
+	Version   string              `json:"version"`
+	Name      string              `json:"name"`
+	Resources []json.RawMessage   `json:"resources"`
+	Types     []string            `json:"types"`
+	Catalogs  []stremioCatalogDef `json:"catalogs"`
 }
 
 type stremioCatalogDef struct {
-	Type  string             `json:"type"`
-	ID    string             `json:"id"`
-	Name  string             `json:"name"`
-	Extra []stremioExtraProp `json:"extra"`
+	Type     string             `json:"type"`
+	ID       string             `json:"id"`
+	Name     string             `json:"name"`
+	PageSize int                `json:"pageSize,omitempty"`
+	Extra    []stremioExtraProp `json:"extra"`
 }
 
 type stremioExtraProp struct {
@@ -49,11 +55,16 @@ type stremioExtraProp struct {
 }
 
 type stremioMeta struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	Poster      string   `json:"poster"`
-	Genres      []string `json:"genres"`
-	Description string   `json:"description"`
+	ID          string      `json:"id"`
+	Type        string      `json:"type"`
+	Name        string      `json:"name"`
+	Poster      string      `json:"poster"`
+	Background  string      `json:"background"`
+	Genres      []string    `json:"genres"`
+	Description string      `json:"description"`
+	ReleaseInfo string      `json:"releaseInfo"`
+	IMDBRating  interface{} `json:"imdbRating"`
+	Rank        int         `json:"rank"`
 }
 
 type stremioCatalogResponse struct {

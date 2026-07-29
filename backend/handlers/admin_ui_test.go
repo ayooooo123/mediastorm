@@ -110,6 +110,78 @@ func setupAdminUIHandler(t *testing.T) (*handlers.AdminUIHandler, string) {
 	return handler, tmpDir
 }
 
+func TestAdminLoginPageShowsFirstLoginCredentials(t *testing.T) {
+	handler, _ := setupAdminUIHandler(t)
+	req := httptest.NewRequest(http.MethodGet, "/admin/login", nil)
+	rec := httptest.NewRecorder()
+
+	handler.LoginPage(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "<code>admin</code> /") ||
+		!strings.Contains(body, `name="new_password"`) ||
+		!strings.Contains(body, `name="confirm_password"`) {
+		t.Fatal("expected login page to show the first-login credentials and required password-change fields")
+	}
+}
+
+func TestAdminLoginSubmitAcceptsFirstLoginCredentials(t *testing.T) {
+	handler, _ := setupAdminUIHandler(t)
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/admin/login",
+		strings.NewReader("username=admin&password=admin&new_password=replaced-password&confirm_password=replaced-password"),
+	)
+	req.RemoteAddr = "127.0.0.1:4321"
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+
+	handler.LoginSubmit(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected first login to redirect with status 303, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAdminLoginSubmitReplacesDefaultPasswordThroughDockerBridge(t *testing.T) {
+	handler, tmpDir := setupAdminUIHandler(t)
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/admin/login",
+		strings.NewReader("username=admin&password=admin&new_password=docker-password&confirm_password=docker-password"),
+	)
+	req.RemoteAddr = "172.18.0.1:4321"
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+
+	handler.LoginSubmit(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected Docker first login to redirect with status 303, got %d: %s", rec.Code, rec.Body.String())
+	}
+	accountsService, err := accounts.NewService(tmpDir)
+	if err != nil {
+		t.Fatalf("reload accounts service: %v", err)
+	}
+	if _, err := accountsService.Authenticate("admin", "docker-password"); err != nil {
+		t.Fatalf("replacement password did not authenticate: %v", err)
+	}
+	if accountsService.HasDefaultPassword() {
+		t.Fatal("default password remained active after first login")
+	}
+
+	loginPageReq := httptest.NewRequest(http.MethodGet, "/admin/login", nil)
+	loginPageRec := httptest.NewRecorder()
+	handler.LoginPage(loginPageRec, loginPageReq)
+	if strings.Contains(loginPageRec.Body.String(), `name="new_password"`) ||
+		strings.Contains(loginPageRec.Body.String(), "<code>admin</code> /") {
+		t.Fatal("first-login guidance remained visible after replacing the default password")
+	}
+}
+
 // createAuthenticatedRequest creates a request with valid session token
 func createAuthenticatedRequest(t *testing.T, method, url string, body []byte, sessionsService *sessions.Service, accountID string, isMaster bool) *http.Request {
 	t.Helper()

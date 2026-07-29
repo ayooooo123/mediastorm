@@ -2,10 +2,70 @@ package handlers
 
 import (
 	"bytes"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestExternalPrefixSpoolServesOverlappingStartupRange(t *testing.T) {
+	var spool externalPrefixSpool
+	header := make(http.Header)
+	header.Set("Content-Type", "video/x-matroska")
+	header.Set("ETag", `"startup-test"`)
+	prefix := make([]byte, 2048)
+	for i := range prefix {
+		prefix[i] = byte(i % 251)
+	}
+
+	spool.append("https://cdn.example/movie.mkv", 0, prefix[:1024], 10_000, header)
+	spool.append("https://cdn.example/movie.mkv", 1024, prefix[1024:], 10_000, header)
+
+	hit, ok := spool.get("https://cdn.example/movie.mkv", "bytes=337-")
+	if !ok {
+		t.Fatal("expected prefix spool hit")
+	}
+	if hit.start != 337 || hit.end != 2047 || hit.totalSize != 10_000 {
+		t.Fatalf("unexpected range metadata: start=%d end=%d total=%d", hit.start, hit.end, hit.totalSize)
+	}
+	if !bytes.Equal(hit.data, prefix[337:]) {
+		t.Fatal("spooled range data mismatch")
+	}
+	if hit.contentType != "video/x-matroska" || hit.etag != `"startup-test"` {
+		t.Fatalf("response metadata not retained: contentType=%q etag=%q", hit.contentType, hit.etag)
+	}
+}
+
+func TestExternalPrefixSpoolHonorsFiniteRange(t *testing.T) {
+	var spool externalPrefixSpool
+	prefix := bytes.Repeat([]byte{0x5a}, 1024)
+	spool.append("stream", 0, prefix, 4096, make(http.Header))
+
+	hit, ok := spool.get("stream", "bytes=100-199")
+	if !ok {
+		t.Fatal("expected finite prefix spool hit")
+	}
+	if hit.start != 100 || hit.end != 199 || len(hit.data) != 100 {
+		t.Fatalf("unexpected finite hit: start=%d end=%d bytes=%d", hit.start, hit.end, len(hit.data))
+	}
+}
+
+func TestParseSingleByteRangeRejectsUnsupportedRanges(t *testing.T) {
+	for _, header := range []string{"", "items=0-1", "bytes=-100", "bytes=10-5", "bytes=0-1,4-5"} {
+		if _, _, _, ok := parseSingleByteRange(header); ok {
+			t.Fatalf("parseSingleByteRange(%q) unexpectedly succeeded", header)
+		}
+	}
+}
+
+func TestExternalResponseTotalSize(t *testing.T) {
+	if got := externalResponseTotalSize("bytes 0-1023/9999", "1024"); got != 9999 {
+		t.Fatalf("total from Content-Range = %d, want 9999", got)
+	}
+	if got := externalResponseTotalSize("", "2048"); got != 2048 {
+		t.Fatalf("total from Content-Length = %d, want 2048", got)
+	}
+}
 
 func TestRangeBlockCache_PutAndGet(t *testing.T) {
 	var cache rangeBlockCache
