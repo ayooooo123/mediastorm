@@ -772,6 +772,43 @@ func TestIsBrowserCopyCompatibleVideo(t *testing.T) {
 	}
 }
 
+func TestLiveHLSOutputArgsNativeTransmuxPreservesCaptionCarryingTS(t *testing.T) {
+	args := liveHLSOutputArgs("native", "/tmp/live/segment%d.ts", "/tmp/live/stream.m3u8")
+	joined := strings.Join(args, " ")
+
+	for _, expected := range []string{
+		"-c:v copy",
+		"-c:a copy",
+		"-hls_segment_filename /tmp/live/segment%d.ts",
+		"/tmp/live/stream.m3u8",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("native live args %q missing %q", joined, expected)
+		}
+	}
+	for _, unexpected := range []string{"libx264", "-force_key_frames", "independent_segments"} {
+		if strings.Contains(joined, unexpected) {
+			t.Fatalf("native live args %q unexpectedly contain %q", joined, unexpected)
+		}
+	}
+}
+
+func TestLiveHLSOutputArgsWebRetainsCompatibilityTranscode(t *testing.T) {
+	args := liveHLSOutputArgs("web", "/tmp/live/segment%d.ts", "/tmp/live/stream.m3u8")
+	joined := strings.Join(args, " ")
+
+	for _, expected := range []string{
+		"-c:v libx264",
+		"-c:a aac",
+		"-force_key_frames expr:gte(t,n_forced*1)",
+		"delete_segments+independent_segments+temp_file",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("web live args %q missing %q", joined, expected)
+		}
+	}
+}
+
 func TestShouldUseAccurateRequestedSeekForWebSubtitle(t *testing.T) {
 	textSubs := []subtitleStreamInfo{{Index: 3, Codec: "subrip"}}
 

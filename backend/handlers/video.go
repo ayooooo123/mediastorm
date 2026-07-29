@@ -4492,7 +4492,8 @@ func (h *VideoHandler) StartLiveHLSSession(w http.ResponseWriter, r *http.Reques
 		ProxyURL:           target.ProxyURL,
 		RequestHeaders:     stremioRequestHeaders,
 	}
-	session, err := h.hlsManager.CreateLiveSession(r.Context(), liveURL, target.Provider, target.BucketKey, profileID, profileName, getClientIP(r), tuning)
+	playbackTarget := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("target")))
+	session, err := h.hlsManager.CreateLiveSession(r.Context(), liveURL, target.Provider, target.BucketKey, profileID, profileName, getClientIP(r), playbackTarget, tuning)
 	if err != nil {
 		log.Printf("[video] failed to create live HLS session: %v", err)
 		http.Error(w, fmt.Sprintf("failed to create live HLS session: %v", err), http.StatusInternalServerError)
