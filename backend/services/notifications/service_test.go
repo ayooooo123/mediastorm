@@ -702,6 +702,58 @@ func TestPlaybackNotificationsAreEdgeTriggered(t *testing.T) {
 	}
 }
 
+func TestPlaybackNotificationsExcludeLiveTV(t *testing.T) {
+	received := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Event string `json:"event"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		received <- payload.Event
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	repo := newMemoryRepo()
+	repo.channels["channel"] = models.NotificationChannel{
+		ID: "channel", ProfileID: "profile", Type: models.NotificationChannelDiscord,
+		URL: server.URL + "/api/webhooks/1/token", Enabled: true,
+		Events: []string{
+			models.NotificationEventWatchStarted,
+			models.NotificationEventWatchProgress,
+			models.NotificationEventWatchWatched,
+		},
+		TitleTemplate: defaultTitleTemplate, BodyTemplate: defaultBodyTemplate,
+	}
+	service := New(repo)
+	defer service.Close()
+
+	for _, mediaType := range []string{"live", "Live", " live ", "livetv", "live-tv", "channel", "channels"} {
+		service.HandlePlaybackUpdate("profile", models.PlaybackProgressUpdate{
+			MediaType: mediaType,
+			ItemID:    "live-channel",
+			MovieName: "Live Channel",
+			Duration:  100,
+		}, 50)
+	}
+
+	select {
+	case event := <-received:
+		t.Fatalf("live TV playback emitted %q notification", event)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	service.sessionMu.Lock()
+	sessionCount := len(service.sessions)
+	service.sessionMu.Unlock()
+	if sessionCount != 0 {
+		t.Fatalf("live TV playback created %d notification sessions", sessionCount)
+	}
+	if len(repo.progress) != 0 {
+		t.Fatalf("live TV playback persisted %d progress notifications", len(repo.progress))
+	}
+}
+
 func TestPlaybackNotificationPrefersOrientationSelectedArtwork(t *testing.T) {
 	received := make(chan models.NotificationEvent, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
