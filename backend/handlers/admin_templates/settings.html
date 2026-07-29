@@ -5700,12 +5700,14 @@
             '</style>';
 
         const addCustomListForm = '<div class="add-custom-list-form">'+
-            '<h4 style="margin:0 0 12px 0;font-size:14px;font-weight:500;">Add Custom List</h4>'+
+            '<h4 style="margin:0 0 12px 0;font-size:14px;font-weight:500;">Add Home Shelf</h4>'+
             '<div class="form-row">'+
                 '<div class="form-group" style="flex:0 0 200px;">'+
                     '<label class="form-label" style="font-size:12px;margin-bottom:4px;">Type</label>'+
                     '<select id="newShelfType" onchange="onShelfTypeChange()">'+
                         '<option value="mdblist">MDBList</option>'+
+                        '<option value="popular-on-server">Popular on This Server</option>'+
+                        '<option value="recently-watched">Recently Watched</option>'+
                         '<option value="stremio">Stremio Add-on</option>'+
                         '<option value="tmdb">TMDB</option>'+
                         '<option value="trakt">Trakt</option>'+
@@ -5902,11 +5904,11 @@
                     '<label class="form-label" style="font-size:12px;margin-bottom:4px;">Name</label>'+
                     '<input type="text" id="newShelfName" placeholder="My Custom List">'+
                 '</div>'+
-                '<div class="form-group" style="flex:0 0 80px;">'+
+                '<div class="form-group" id="newShelfLimitGroup" style="flex:0 0 80px;">'+
                     '<label class="form-label" style="font-size:12px;margin-bottom:4px;">Limit</label>'+
                     '<input type="number" id="newShelfLimit" placeholder="0" min="0" max="500" value="0">'+
                 '</div>'+
-                '<div class="form-group" style="flex:0 0 auto;">'+
+                '<div class="form-group" id="newShelfHideUnreleasedGroup" style="flex:0 0 auto;">'+
                     '<label class="form-label" style="font-size:12px;margin-bottom:4px;">Hide Unreleased</label>'+
                     '<div style="display:flex;align-items:center;height:38px;" title="Filter out movies not yet available for home viewing, and upcoming/in-production series"><input type="checkbox" id="newShelfHideUnreleased"></div>'+
                 '</div>'+
@@ -6717,6 +6719,7 @@
     // Update form fields when shelf type changes
     function onShelfTypeChange() {
         const type = document.getElementById('newShelfType')?.value;
+        const isBuiltInActivity = type === 'popular-on-server' || type === 'recently-watched';
         const isStremio = type === 'stremio';
         const isTMDB = type === 'tmdb';
         const isStreaming = type === 'streaming-service';
@@ -6754,11 +6757,13 @@
         document.getElementById('stremioImportModeGroup').style.display = isStremio ? '' : 'none';
         document.getElementById('stremioManifestGroup').style.display = isStremio ? '' : 'none';
         document.getElementById('stremioCatalogsGroup').style.display = isStremio && loadedStremioShelfManifest ? '' : 'none';
-        document.getElementById('newShelfNameGroup').style.display = isStremio ? 'none' : '';
-        document.getElementById('mdblistUrlGroup').style.display = (isStremio || isTMDB || isStreaming || isTrakt || isSimkl || isLetterboxd || isGenre || isDecade || isCollectionHub || isLibrary) ? 'none' : '';
+        document.getElementById('newShelfNameGroup').style.display = (isStremio || isBuiltInActivity) ? 'none' : '';
+        document.getElementById('newShelfLimitGroup').style.display = isBuiltInActivity ? 'none' : '';
+        document.getElementById('newShelfHideUnreleasedGroup').style.display = isBuiltInActivity ? 'none' : '';
+        document.getElementById('mdblistUrlGroup').style.display = (isBuiltInActivity || isStremio || isTMDB || isStreaming || isTrakt || isSimkl || isLetterboxd || isGenre || isDecade || isCollectionHub || isLibrary) ? 'none' : '';
         const hint = document.getElementById('shelfFormHint');
         if (hint) {
-            hint.style.display = (isStremio || isTMDB || isStreaming || isTrakt || isSimkl || isLetterboxd || isGenre || isDecade || isCollectionHub || isLibrary) ? 'none' : '';
+            hint.style.display = (isBuiltInActivity || isStremio || isTMDB || isStreaming || isTrakt || isSimkl || isLetterboxd || isGenre || isDecade || isCollectionHub || isLibrary) ? 'none' : '';
         }
         if (!isLetterboxd) {
             const urlHint = document.getElementById('letterboxdUrlHint');
@@ -6766,7 +6771,10 @@
             if (urlHint) urlHint.style.display = 'none';
             if (mdblistHint) mdblistHint.style.display = 'none';
         }
-        if (isStremio) {
+        if (isBuiltInActivity) {
+            document.getElementById('newShelfName').value = '';
+        }
+        else if (isStremio) {
             document.getElementById('newShelfName').value = '';
             onStremioImportModeChange();
         }
@@ -6864,7 +6872,27 @@
             shelves = currentSettings.homeShelves.shelves;
         }
 
-        if (shelfType === 'stremio') {
+        const builtInActivityShelves = {
+            'popular-on-server': 'Popular on This Server',
+            'recently-watched': 'Recently Watched',
+        };
+        if (builtInActivityShelves[shelfType]) {
+            const existingShelf = shelves.find((s) => s.id === shelfType);
+            if (existingShelf) {
+                existingShelf.enabled = true;
+                existingShelf.type = existingShelf.type || 'builtin';
+            } else {
+                shelves.push({
+                    id: shelfType,
+                    name: builtInActivityShelves[shelfType],
+                    enabled: true,
+                    order: Math.max(...shelves.map((s) => s.order || 0), -1) + 1,
+                    type: 'builtin',
+                });
+            }
+            if (typeSelect) typeSelect.value = 'mdblist';
+            onShelfTypeChange();
+        } else if (shelfType === 'stremio') {
             if (!loadedStremioShelfManifest) {
                 alert('Load the Stremio manifest and select at least one catalog first.');
                 return;

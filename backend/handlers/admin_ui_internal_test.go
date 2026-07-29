@@ -121,6 +121,26 @@ func TestAdminSettingsCustomShelfActionsAlignWithInputs(t *testing.T) {
 	}
 }
 
+func TestAdminSettingsAddListIncludesSharedActivityShelves(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/settings.html")
+	if err != nil {
+		t.Fatalf("read settings template: %v", err)
+	}
+	source := string(templateBytes)
+
+	for _, marker := range []string{
+		`<option value="popular-on-server">Popular on This Server</option>`,
+		`<option value="recently-watched">Recently Watched</option>`,
+		`'popular-on-server': 'Popular on This Server'`,
+		`'recently-watched': 'Recently Watched'`,
+		`existingShelf.enabled = true`,
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("settings template missing shared activity shelf add-list marker %q", marker)
+		}
+	}
+}
+
 func TestUsenetEngineStatusProbeJobIDUsesGUIDForNZBDav(t *testing.T) {
 	for _, engineType := range []string{"nzbdav", "nzbdavex"} {
 		t.Run(engineType, func(t *testing.T) {
