@@ -1782,7 +1782,7 @@ func youtubeTranscodingArgs(videoURL, audioURL, proxyURL, playlistPath, segmentP
 
 // CreateLiveSession creates an HLS session for live TV streams
 // Unlike VOD sessions, live sessions don't have a known duration and don't support seeking
-func (m *HLSManager) CreateLiveSession(ctx context.Context, liveURL, provider, bucketKey, profileID, profileName, clientIP string, tuning LiveTuningSettings) (*HLSSession, error) {
+func (m *HLSManager) CreateLiveSession(ctx context.Context, liveURL, provider, bucketKey, profileID, profileName, clientIP, playbackTarget string, tuning LiveTuningSettings) (*HLSSession, error) {
 	sessionID := generateSessionID()
 	outputDir := filepath.Join(m.baseDir, sessionID)
 
@@ -1820,6 +1820,7 @@ func (m *HLSManager) CreateLiveSession(ctx context.Context, liveURL, provider, b
 		ProfileID:               profileID,
 		ProfileName:             profileName,
 		ClientIP:                clientIP,
+		PlaybackTarget:          strings.ToLower(strings.TrimSpace(playbackTarget)),
 		LiveTuning:              tuning,
 		subtitleExtractOffsets:  make(map[int]float64),
 	}
@@ -2003,32 +2004,17 @@ func (m *HLSManager) startLiveTranscoding(ctx context.Context, session *HLSSessi
 		}
 	}
 
-	args = append(args,
-		"-i", inputArg,
-		// Output options - transcode live video so HLS can start on our keyframe cadence
-		// instead of waiting for the upstream IPTV stream's next keyframe.
-		"-c:v", "libx264",
-		"-preset", "veryfast",
-		"-tune", "zerolatency",
-		"-profile:v", "main",
-		"-pix_fmt", "yuv420p",
-		"-crf", "23",
-		"-max_muxing_queue_size", "1024",
-		"-force_key_frames", "expr:gte(t,n_forced*1)",
-		"-sc_threshold", "0",
-		"-c:a", "aac",
-		"-ac", "2",
-		"-b:a", "128k",
-		"-ar", "48000",
-		// HLS output
-		"-f", "hls",
-		"-hls_init_time", "1",
-		"-hls_time", "2",
-		"-hls_list_size", "10", // Keep last 10 segments for live
-		"-hls_flags", "delete_segments+independent_segments+temp_file",
-		"-hls_segment_filename", segmentPattern,
-		playlistPath,
-	)
+	args = append(args, "-i", inputArg)
+	session.mu.Lock()
+	if isNativeLivePlaybackTarget(session.PlaybackTarget) {
+		session.VideoEncoder = "copy"
+		log.Printf("[hls] live session %s: using native transmux mode (video=copy audio=copy target=%q)", session.ID, session.PlaybackTarget)
+	} else {
+		session.VideoEncoder = "libx264"
+		log.Printf("[hls] live session %s: using compatibility transcode mode (video=libx264 audio=aac target=%q)", session.ID, session.PlaybackTarget)
+	}
+	session.mu.Unlock()
+	args = append(args, liveHLSOutputArgs(session.PlaybackTarget, segmentPattern, playlistPath)...)
 
 	log.Printf("[hls] live session %s: starting FFmpeg with args: %v", session.ID, args)
 
@@ -2136,6 +2122,62 @@ func (m *HLSManager) startLiveTranscoding(ctx context.Context, session *HLSSessi
 
 	log.Printf("[hls] live session %s: FFmpeg completed normally", session.ID)
 	return nil
+}
+
+func isNativeLivePlaybackTarget(playbackTarget string) bool {
+	switch strings.ToLower(strings.TrimSpace(playbackTarget)) {
+	case "native", "android", "ios", "tvos", "mpv", "ksplayer", "exoplayer":
+		return true
+	default:
+		return false
+	}
+}
+
+func liveHLSOutputArgs(playbackTarget, segmentPattern, playlistPath string) []string {
+	args := make([]string, 0, 40)
+	hlsFlags := "delete_segments+independent_segments+temp_file"
+
+	if isNativeLivePlaybackTarget(playbackTarget) {
+		// MPV and KSPlayer can demux/decode normal IPTV codecs themselves. Preserve
+		// the provider's encoded packets, including H.264 SEI closed-caption data,
+		// and let the HLS muxer cut only at upstream keyframes. Do not advertise
+		// independent segments because stream copy cannot create a new keyframe at
+		// each requested segment boundary.
+		args = append(args,
+			"-c:v", "copy",
+			"-c:a", "copy",
+			"-max_muxing_queue_size", "1024",
+		)
+		hlsFlags = "delete_segments+temp_file"
+	} else {
+		// Web and legacy callers retain the compatibility encode with a controlled
+		// keyframe cadence.
+		args = append(args,
+			"-c:v", "libx264",
+			"-preset", "veryfast",
+			"-tune", "zerolatency",
+			"-profile:v", "main",
+			"-pix_fmt", "yuv420p",
+			"-crf", "23",
+			"-max_muxing_queue_size", "1024",
+			"-force_key_frames", "expr:gte(t,n_forced*1)",
+			"-sc_threshold", "0",
+			"-c:a", "aac",
+			"-ac", "2",
+			"-b:a", "128k",
+			"-ar", "48000",
+		)
+	}
+
+	return append(args,
+		"-f", "hls",
+		"-hls_init_time", "1",
+		"-hls_time", "2",
+		"-hls_list_size", "10",
+		"-hls_flags", hlsFlags,
+		"-hls_segment_filename", segmentPattern,
+		playlistPath,
+	)
 }
 
 // waitForFirstSegment polls for the first HLS segment to be available
