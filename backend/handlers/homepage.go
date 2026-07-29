@@ -80,6 +80,35 @@ type HomepageStats struct {
 	Streams       []HomepageStream  `json:"streams"`
 }
 
+// DashboardShelfStream is the presentation-safe subset of an active dashboard
+// stream exposed to authenticated app clients. It intentionally omits file
+// paths, network addresses, user agents, and transport statistics.
+type DashboardShelfStream struct {
+	ID              string            `json:"id"`
+	ItemID          string            `json:"itemId,omitempty"`
+	ProfileNames    []string          `json:"profileNames,omitempty"`
+	CreatedAt       time.Time         `json:"createdAt"`
+	Duration        float64           `json:"duration,omitempty"`
+	CurrentPosition float64           `json:"currentPosition,omitempty"`
+	PercentWatched  float64           `json:"percentWatched,omitempty"`
+	IsPaused        bool              `json:"isPaused"`
+	Status          string            `json:"status"`
+	MediaType       string            `json:"mediaType,omitempty"`
+	Title           string            `json:"title,omitempty"`
+	Year            int               `json:"year,omitempty"`
+	SeasonNumber    int               `json:"seasonNumber,omitempty"`
+	EpisodeNumber   int               `json:"episodeNumber,omitempty"`
+	EpisodeName     string            `json:"episodeName,omitempty"`
+	ExternalIDs     map[string]string `json:"externalIds,omitempty"`
+	PosterURL       string            `json:"posterUrl,omitempty"`
+	BackdropURL     string            `json:"backdropUrl,omitempty"`
+}
+
+type DashboardShelfResponse struct {
+	Streams []DashboardShelfStream `json:"streams"`
+	Count   int                    `json:"count"`
+}
+
 // NewHomepageHandler creates a new Homepage handler
 func NewHomepageHandler(accounts *accounts.Service) *HomepageHandler {
 	return &HomepageHandler{
@@ -172,6 +201,78 @@ func (h *HomepageHandler) GetStats(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(stats)
 }
 
+// GetDashboardShelf returns active playback cards for authenticated app
+// clients. The protected API router handles authentication.
+func (h *HomepageHandler) GetDashboardShelf(w http.ResponseWriter, r *http.Request) {
+	streams := make([]DashboardShelfStream, 0)
+	if h.streamsProvider != nil {
+		active := h.streamsProvider.ActiveStreams()
+		streams = make([]DashboardShelfStream, 0, len(active.Streams))
+		for _, source := range active.Streams {
+			stream := dashboardShelfStreamFromDashboard(source)
+			if h.metadataService != nil && stream.MediaType != "" && stream.Title != "" {
+				posterURL, backdropURL := h.fetchShelfArtwork(r.Context(), homepageProgressForShelfArtwork(stream))
+				if stream.PosterURL == "" {
+					stream.PosterURL = posterURL
+				}
+				stream.BackdropURL = backdropURL
+			}
+			streams = append(streams, stream)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(DashboardShelfResponse{Streams: streams, Count: len(streams)})
+}
+
+func dashboardShelfStreamFromDashboard(source StreamInfo) DashboardShelfStream {
+	profileNames := append([]string(nil), source.ProfileNames...)
+	if len(profileNames) == 0 && strings.TrimSpace(source.ProfileName) != "" {
+		profileNames = []string{source.ProfileName}
+	}
+	status := "playing"
+	if source.IsPaused {
+		status = "paused"
+	}
+	return DashboardShelfStream{
+		ID:              source.ID,
+		ItemID:          source.ItemID,
+		ProfileNames:    profileNames,
+		CreatedAt:       source.CreatedAt,
+		Duration:        source.Duration,
+		CurrentPosition: source.CurrentPosition,
+		PercentWatched:  source.PercentWatched,
+		IsPaused:        source.IsPaused,
+		Status:          status,
+		MediaType:       source.MediaType,
+		Title:           source.Title,
+		Year:            source.Year,
+		SeasonNumber:    source.SeasonNumber,
+		EpisodeNumber:   source.EpisodeNumber,
+		EpisodeName:     source.EpisodeName,
+		ExternalIDs:     source.ExternalIDs,
+		PosterURL:       source.PosterURL,
+	}
+}
+
+func homepageProgressForShelfArtwork(stream DashboardShelfStream) *models.PlaybackProgress {
+	progress := &models.PlaybackProgress{
+		ItemID:        stream.ItemID,
+		MediaType:     stream.MediaType,
+		ExternalIDs:   stream.ExternalIDs,
+		SeasonNumber:  stream.SeasonNumber,
+		EpisodeNumber: stream.EpisodeNumber,
+		EpisodeName:   stream.EpisodeName,
+		Year:          stream.Year,
+	}
+	if stream.MediaType == "episode" {
+		progress.SeriesName = stream.Title
+	} else {
+		progress.MovieName = stream.Title
+	}
+	return progress
+}
+
 func homepageStreamFromDashboard(source StreamInfo) HomepageStream {
 	return HomepageStream{
 		ID:              source.ID,
@@ -260,8 +361,13 @@ func findMatchingProgress(progressList []models.PlaybackProgress, cleanedFilenam
 
 // fetchPosterURL fetches the poster URL from the metadata service
 func (h *HomepageHandler) fetchPosterURL(ctx context.Context, progress *models.PlaybackProgress) string {
+	posterURL, _ := h.fetchShelfArtwork(ctx, progress)
+	return posterURL
+}
+
+func (h *HomepageHandler) fetchShelfArtwork(ctx context.Context, progress *models.PlaybackProgress) (string, string) {
 	if h.metadataService == nil || progress == nil {
-		return ""
+		return "", ""
 	}
 
 	// Parse external IDs
@@ -290,8 +396,15 @@ func (h *HomepageHandler) fetchPosterURL(ctx context.Context, progress *models.P
 			TMDBID: tmdbID,
 			TVDBID: tvdbID,
 		}
-		if title, err := h.metadataService.MovieDetails(ctx, query); err == nil && title != nil && title.Poster != nil {
-			return title.Poster.URL
+		if title, err := h.metadataService.MovieDetails(ctx, query); err == nil && title != nil {
+			var posterURL, backdropURL string
+			if title.Poster != nil {
+				posterURL = title.Poster.URL
+			}
+			if title.Backdrop != nil {
+				backdropURL = title.Backdrop.URL
+			}
+			return posterURL, backdropURL
 		}
 	case "episode":
 		query := models.SeriesDetailsQuery{
@@ -299,12 +412,19 @@ func (h *HomepageHandler) fetchPosterURL(ctx context.Context, progress *models.P
 			TMDBID: tmdbID,
 			TVDBID: tvdbID,
 		}
-		if details, err := h.metadataService.SeriesDetails(ctx, query); err == nil && details != nil && details.Title.Poster != nil {
-			return details.Title.Poster.URL
+		if details, err := h.metadataService.SeriesDetails(ctx, query); err == nil && details != nil {
+			var posterURL, backdropURL string
+			if details.Title.Poster != nil {
+				posterURL = details.Title.Poster.URL
+			}
+			if details.Title.Backdrop != nil {
+				backdropURL = details.Title.Backdrop.URL
+			}
+			return posterURL, backdropURL
 		}
 	}
 
-	return ""
+	return "", ""
 }
 
 // deduplicateStreams removes duplicate streams based on profileName + filename

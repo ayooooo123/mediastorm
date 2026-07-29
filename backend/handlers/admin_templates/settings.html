@@ -6156,6 +6156,11 @@
             activityWindowDays: 14,
             maxItemsPerProfile: 3,
         }, 'popular-on-server');
+        insertBuiltInShelf({
+            id: 'dashboard',
+            name: 'Dashboard',
+            enabled: false,
+        }, 'recently-watched');
         const popularShelf = shelves.find((s) => s.id === 'popular-on-server');
         if (popularShelf) {
             if (!popularShelf.limit) popularShelf.limit = 20;

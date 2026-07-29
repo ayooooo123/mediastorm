@@ -104,6 +104,28 @@ func TestEnsureDefaultHomeShelvesBackfillsSharedActivitySettings(t *testing.T) {
 	}
 }
 
+func TestEnsureDefaultHomeShelvesAddsDisabledDashboardShelf(t *testing.T) {
+	migrated, changed := EnsureDefaultHomeShelves([]ShelfConfig{
+		{ID: "continue-watching", Name: "Continue Watching", Enabled: true, Order: 0},
+		{ID: "recently-watched", Name: "Recently Watched", Enabled: false, Order: 1},
+	})
+	if !changed {
+		t.Fatal("expected missing dashboard shelf to trigger migration")
+	}
+	for _, shelf := range migrated {
+		if shelf.ID == "dashboard" {
+			if shelf.Enabled {
+				t.Fatal("dashboard shelf should be disabled by default")
+			}
+			if shelf.Name != "Dashboard" {
+				t.Fatalf("unexpected dashboard shelf name %q", shelf.Name)
+			}
+			return
+		}
+	}
+	t.Fatal("expected dashboard shelf to be added")
+}
+
 func newGlobal() *ResolvedLiveSource {
 	return &ResolvedLiveSource{
 		Mode:                  "m3u",
