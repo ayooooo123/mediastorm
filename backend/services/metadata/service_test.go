@@ -93,6 +93,85 @@ func TestResolveTMDBMovieByTitleYearCachesFailure(t *testing.T) {
 	}
 }
 
+func TestGetMovieDetailsFromTMDBHydratesLogoOnServiceCacheHit(t *testing.T) {
+	cache := newFileCache(t.TempDir(), 24)
+	rt := &countingRoundTripper{status: http.StatusInternalServerError, body: `{}`}
+	svc := &Service{
+		client: &tvdbClient{language: "en"},
+		tmdb:   newTMDBClient("test-key", "en", &http.Client{Transport: rt}, cache),
+		cache:  cache,
+	}
+	const tmdbID int64 = 4512
+	detailsCacheID := cacheKey("tmdb", "movie", "details", "v3", "en", strconv.FormatInt(tmdbID, 10))
+	if err := cache.set(detailsCacheID, models.Title{
+		ID:        "tmdb:movie:4512",
+		Name:      "Cached Movie",
+		MediaType: "movie",
+		TMDBID:    tmdbID,
+	}); err != nil {
+		t.Fatalf("seed details cache: %v", err)
+	}
+	logo := &models.Image{URL: "https://image.tmdb.org/t/p/w500/logo.png", Type: "logo"}
+	imagesCacheID := cacheKey("tmdb", "images", "v7", "en", "movie", strconv.FormatInt(tmdbID, 10))
+	if err := cache.set(imagesCacheID, tmdbImagesResult{Logo: logo}); err != nil {
+		t.Fatalf("seed images cache: %v", err)
+	}
+
+	got, err := svc.getMovieDetailsFromTMDB(context.Background(), models.MovieDetailsQuery{TMDBID: tmdbID})
+	if err != nil {
+		t.Fatalf("getMovieDetailsFromTMDB: %v", err)
+	}
+	if got.Logo == nil || got.Logo.URL != logo.URL {
+		t.Fatalf("logo = %#v, want %q", got.Logo, logo.URL)
+	}
+	if calls := rt.callCount(); calls != 0 {
+		t.Fatalf("network calls = %d, want 0", calls)
+	}
+}
+
+func TestGetMovieDetailsFromTMDBHydratesLogoOnFreshResponse(t *testing.T) {
+	cache := newFileCache(t.TempDir(), 24)
+	rt := &countingRoundTripper{
+		body: `{"id":4512,"title":"Fresh Movie","release_date":"2007-09-02","poster_path":"/poster.jpg","backdrop_path":"/backdrop.jpg"}`,
+	}
+	svc := &Service{
+		client: &tvdbClient{language: "en"},
+		tmdb:   newTMDBClient("test-key", "en", &http.Client{Transport: rt}, cache),
+		cache:  cache,
+	}
+	const tmdbID int64 = 4512
+	if err := cache.set(
+		cacheKey("tmdb", "movie", "releases", "v2", strconv.FormatInt(tmdbID, 10)),
+		cachedReleasesWithCert{},
+	); err != nil {
+		t.Fatalf("seed releases cache: %v", err)
+	}
+	if err := cache.set(
+		cacheKey("tmdb", "credits", "v1", "movie", strconv.FormatInt(tmdbID, 10)),
+		models.Credits{},
+	); err != nil {
+		t.Fatalf("seed credits cache: %v", err)
+	}
+	logo := &models.Image{URL: "https://image.tmdb.org/t/p/w500/logo.png", Type: "logo"}
+	if err := cache.set(
+		cacheKey("tmdb", "images", "v7", "en", "movie", strconv.FormatInt(tmdbID, 10)),
+		tmdbImagesResult{Logo: logo},
+	); err != nil {
+		t.Fatalf("seed images cache: %v", err)
+	}
+
+	got, err := svc.getMovieDetailsFromTMDB(context.Background(), models.MovieDetailsQuery{TMDBID: tmdbID})
+	if err != nil {
+		t.Fatalf("getMovieDetailsFromTMDB: %v", err)
+	}
+	if got.Logo == nil || got.Logo.URL != logo.URL {
+		t.Fatalf("logo = %#v, want %q", got.Logo, logo.URL)
+	}
+	if calls := rt.callCount(); calls != 1 {
+		t.Fatalf("network calls = %d, want 1 movie-details request", calls)
+	}
+}
+
 func TestEnrichLiteCustomListItemKeepsGenres(t *testing.T) {
 	svc := &Service{
 		client: &tvdbClient{language: "eng"},

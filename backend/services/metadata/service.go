@@ -2041,6 +2041,9 @@ func (s *Service) getMovieDetailsFromTMDB(ctx context.Context, req models.MovieD
 	var cached models.Title
 	if ok, _ := s.cache.get(cacheID, &cached); ok && cached.ID != "" {
 		metadataTracef("[metadata] movie details cache hit (TMDB) tmdbId=%d lang=%s", req.TMDBID, s.client.language)
+		if s.applyCachedTMDBImages(ctx, &cached, "movie", req.TMDBID) {
+			_ = s.cache.set(cacheID, cached)
+		}
 		return &cached, nil
 	}
 
@@ -2087,6 +2090,10 @@ func (s *Service) getMovieDetailsFromTMDB(ctx context.Context, req models.MovieD
 	} else if err != nil {
 		log.Printf("[metadata] failed to fetch credits for movie (TMDB) tmdbId=%d: %v", req.TMDBID, err)
 	}
+
+	// TMDB's movie details response only contains poster/backdrop paths. Logos
+	// and clean artwork variants come from its separate images endpoint.
+	s.applyCachedTMDBImages(ctx, &movieTitle, "movie", req.TMDBID)
 
 	// Cache the result
 	_ = s.cache.set(cacheID, movieTitle)
