@@ -94,10 +94,14 @@ type SubtitleTrackInfo struct {
 
 // PrequeueStatusResponse is the full status of a prequeue entry
 type PrequeueStatusResponse struct {
-	PrequeueID    string                   `json:"prequeueId"`
-	Status        PrequeueStatus           `json:"status"`
-	UserID        string                   `json:"userId,omitempty"` // The user who created this prequeue
-	TargetEpisode *models.EpisodeReference `json:"targetEpisode,omitempty"`
+	PrequeueID      string                   `json:"prequeueId"`
+	Status          PrequeueStatus           `json:"status"`
+	UserID          string                   `json:"userId,omitempty"` // The user who created this prequeue
+	TargetEpisode   *models.EpisodeReference `json:"targetEpisode,omitempty"`
+	ProgressStage   string                   `json:"progressStage,omitempty"`
+	ProgressDetail  string                   `json:"progressDetail,omitempty"`
+	ProgressCurrent int                      `json:"progressCurrent,omitempty"`
+	ProgressTotal   int                      `json:"progressTotal,omitempty"`
 
 	// When ready:
 	StreamPath   string `json:"streamPath,omitempty"`
@@ -158,12 +162,16 @@ type PrequeueEntry struct {
 	TargetEpisode    *models.EpisodeReference `json:"targetEpisode,omitempty"`
 	Reason           string                   `json:"reason"`
 
-	Status       PrequeueStatus `json:"status"`
-	StreamPath   string         `json:"streamPath,omitempty"`
-	MagnetLink   string         `json:"magnetLink,omitempty"` // Original magnet link for re-adding expired torrents
-	ServiceType  string         `json:"serviceType,omitempty"`
-	FileSize     int64          `json:"fileSize,omitempty"`
-	HealthStatus string         `json:"healthStatus,omitempty"`
+	Status          PrequeueStatus `json:"status"`
+	ProgressStage   string         `json:"progressStage,omitempty"`
+	ProgressDetail  string         `json:"progressDetail,omitempty"`
+	ProgressCurrent int            `json:"progressCurrent,omitempty"`
+	ProgressTotal   int            `json:"progressTotal,omitempty"`
+	StreamPath      string         `json:"streamPath,omitempty"`
+	MagnetLink      string         `json:"magnetLink,omitempty"` // Original magnet link for re-adding expired torrents
+	ServiceType     string         `json:"serviceType,omitempty"`
+	FileSize        int64          `json:"fileSize,omitempty"`
+	HealthStatus    string         `json:"healthStatus,omitempty"`
 
 	// HDR detection
 	HasDolbyVision           bool                             `json:"hasDolbyVision,omitempty"`
@@ -600,6 +608,7 @@ func (s *PrequeueStore) CreateScoped(titleID, titleName, userID, mediaType strin
 		TargetEpisode:         targetEpisode,
 		Reason:                reason,
 		Status:                PrequeueStatusQueued,
+		ProgressStage:         "queued",
 		SelectedAudioTrack:    -1, // Default: use all/default
 		SelectedSubtitleTrack: -1, // Default: none
 		CreatedAt:             time.Now(),
@@ -1134,6 +1143,10 @@ func (e *PrequeueEntry) ToResponse() *PrequeueStatusResponse {
 		Status:                   e.Status,
 		UserID:                   e.UserID,
 		TargetEpisode:            e.TargetEpisode,
+		ProgressStage:            e.ProgressStage,
+		ProgressDetail:           e.ProgressDetail,
+		ProgressCurrent:          e.ProgressCurrent,
+		ProgressTotal:            e.ProgressTotal,
 		StreamPath:               e.StreamPath,
 		ServiceType:              serviceType,
 		FileSize:                 e.FileSize,
