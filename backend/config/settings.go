@@ -640,7 +640,7 @@ type ShelfConfig struct {
 	LetterboxdListURL      string                 `json:"letterboxdListUrl,omitempty"`      // Public Letterboxd list URL
 	Limit                  int                    `json:"limit,omitempty"`                  // Optional limit on number of items returned (0 = no limit)
 	ActivityWindowDays     int                    `json:"activityWindowDays,omitempty"`     // Shared-activity lookback window for backend activity shelves
-	MinimumProfiles        int                    `json:"minimumProfiles,omitempty"`        // Distinct opted-in profiles required by Popular on This Server
+	MinimumProfiles        int                    `json:"minimumProfiles,omitempty"`        // Minimum completed media-item views required by Popular on This Server
 	MaxItemsPerProfile     int                    `json:"maxItemsPerProfile,omitempty"`     // Per-profile contribution cap for Recently Watched
 	HideUnreleased         bool                   `json:"hideUnreleased,omitempty"`         // Filter out unreleased/in-theaters content
 	Sort                   string                 `json:"sort,omitempty"`                   // Optional shelf-specific sort mode

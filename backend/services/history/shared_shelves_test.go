@@ -1,13 +1,14 @@
 package history
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
 	"novastream/models"
 )
 
-func TestAggregatePopularTitlesCountsUniqueEligibleProfiles(t *testing.T) {
+func TestAggregatePopularTitlesCountsEligibleMediaItemViews(t *testing.T) {
 	now := time.Now().UTC()
 	service := &Service{
 		watchHistory: map[string]map[string]models.WatchHistoryItem{
@@ -40,8 +41,26 @@ func TestAggregatePopularTitlesCountsUniqueEligibleProfiles(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("items = %d, want one shared title: %+v", len(items), items)
 	}
-	if items[0].ItemID != "tvdb:10" || items[0].MediaType != "series" || items[0].WatchCount != 2 {
+	if items[0].ItemID != "tvdb:10" || items[0].MediaType != "series" || items[0].WatchCount != 3 {
 		t.Fatalf("unexpected aggregate: %+v", items[0])
+	}
+}
+
+func TestAggregatePopularTitlesCountsEveryCompletedEpisodeAsAView(t *testing.T) {
+	now := time.Now().UTC()
+	episodes := make(map[string]models.WatchHistoryItem, 50)
+	for episode := 1; episode <= 50; episode++ {
+		itemID := fmt.Sprintf("tvdb:353546:s01e%02d", episode)
+		episodes[itemID] = models.WatchHistoryItem{
+			MediaType: "episode", ItemID: itemID, SeriesID: "tvdb:353546",
+			SeriesName: "Bluey", EpisodeNumber: episode, Watched: true, WatchedAt: now,
+		}
+	}
+	service := &Service{watchHistory: map[string]map[string]models.WatchHistoryItem{"shared": episodes}}
+
+	items := service.AggregatePopularTitles(map[string]bool{"shared": true}, 90, 2)
+	if len(items) != 1 || items[0].Name != "Bluey" || items[0].WatchCount != 50 {
+		t.Fatalf("expected Bluey with 50 views, got %+v", items)
 	}
 }
 

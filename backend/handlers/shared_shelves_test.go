@@ -73,7 +73,14 @@ func TestSharedShelfQuerySettingsReachAggregation(t *testing.T) {
 		nil,
 	))
 	if history.popularWindowDays != 30 || history.popularMinProfiles != 3 {
-		t.Fatalf("popular settings = %d days/%d profiles", history.popularWindowDays, history.popularMinProfiles)
+		t.Fatalf("popular settings = %d days/%d minimum views", history.popularWindowDays, history.popularMinProfiles)
+	}
+	var popularPayload PopularOnServerResponse
+	if err := json.NewDecoder(popularResponse.Body).Decode(&popularPayload); err != nil {
+		t.Fatalf("decode popular response: %v", err)
+	}
+	if len(popularPayload.Items) != 1 || popularPayload.Items[0].Title.CardSubtitle != "1 View" {
+		t.Fatalf("popular view context missing from card: %+v", popularPayload.Items)
 	}
 
 	recentResponse := httptest.NewRecorder()

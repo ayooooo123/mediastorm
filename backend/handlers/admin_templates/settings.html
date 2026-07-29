@@ -7773,8 +7773,8 @@
 
         const isPopular = shelfId === 'popular-on-server';
         const description = isPopular
-            ? 'Ranks completed movies and series by how many distinct opted-in profiles watched them. Multiple episodes watched by one profile count once. Provider IDs are combined into one canonical title.'
-            : 'Shows completed watch events from opted-in profiles in reverse chronological order. Profile privacy choices are always respected.';
+            ? 'Ranks movies and series by completed media-item views from sharing profiles. Each completed movie or episode counts as one view, so multiple episodes of a series increase its total. Provider IDs are combined into one canonical title.'
+            : 'Shows completed watch events from sharing profiles in reverse chronological order. Profile privacy choices are always respected.';
         const settingFields = isPopular
             ? `
                 <div style="margin-bottom:12px;">
@@ -7782,9 +7782,9 @@
                     <input type="number" id="sharedShelfWindowDays" value="${shelf.activityWindowDays || 90}" min="7" max="365" class="form-input">
                 </div>
                 <div style="margin-bottom:12px;">
-                    <label class="form-label" style="font-size:12px;margin-bottom:4px;display:block;">Minimum Distinct Profiles</label>
+                    <label class="form-label" style="font-size:12px;margin-bottom:4px;display:block;">Minimum Views</label>
                     <input type="number" id="sharedShelfMinProfiles" value="${shelf.minimumProfiles || 2}" min="1" max="100" class="form-input">
-                    <p class="form-hint" style="margin-top:6px;">The default of 2 prevents a single profile's history from being presented as server popularity.</p>
+                    <p class="form-hint" style="margin-top:6px;">Only titles with at least this many completed movie or episode views are shown.</p>
                 </div>`
             : `
                 <div style="margin-bottom:12px;">
@@ -7850,13 +7850,13 @@
             return;
         }
         if (shelfId === 'popular-on-server') {
-            const minProfiles = parseInt(document.getElementById('sharedShelfMinProfiles')?.value || '0', 10);
-            if (windowDays < 7 || windowDays > 365 || minProfiles < 1 || minProfiles > 100) {
-                alert('Use an activity window from 7 to 365 days and a minimum from 1 to 100 profiles.');
+            const minViews = parseInt(document.getElementById('sharedShelfMinProfiles')?.value || '0', 10);
+            if (windowDays < 7 || windowDays > 365 || minViews < 1 || minViews > 100) {
+                alert('Use an activity window from 7 to 365 days and a minimum from 1 to 100 views.');
                 return;
             }
             shelf.activityWindowDays = windowDays;
-            shelf.minimumProfiles = minProfiles;
+            shelf.minimumProfiles = minViews;
         } else if (shelfId === 'recently-watched') {
             const perProfileCap = parseInt(document.getElementById('sharedShelfPerProfileCap')?.value || '0', 10);
             if (windowDays < 1 || windowDays > 90 || perProfileCap < 1 || perProfileCap > 20) {

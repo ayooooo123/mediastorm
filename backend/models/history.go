@@ -179,7 +179,7 @@ type PopularTitle struct {
 	ItemID      string            `json:"itemId"`    // series-level or movie-level ID
 	Name        string            `json:"name"`
 	Year        int               `json:"year,omitempty"`
-	WatchCount  int               `json:"watchCount"` // number of unique profiles who watched
+	WatchCount  int               `json:"watchCount"` // completed media-item views rolled up to this title
 	ExternalIDs map[string]string `json:"externalIds,omitempty"`
 	LastWatched time.Time         `json:"-"`
 }

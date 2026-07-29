@@ -96,7 +96,7 @@ func TestSetAllowShareLinks(t *testing.T) {
 	}
 }
 
-func TestActivityPrivacyDefaultsPrivateAndPersistsOptIn(t *testing.T) {
+func TestActivityPrivacyDefaultsAnonymousAndPersistsChanges(t *testing.T) {
 	storageDir := t.TempDir()
 	svc, err := users.NewService(storageDir)
 	if err != nil {
@@ -107,16 +107,16 @@ func TestActivityPrivacyDefaultsPrivateAndPersistsOptIn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create returned error: %v", err)
 	}
-	if created.ActivityPrivacy != models.ActivityPrivacyNotShared {
-		t.Fatalf("activity privacy = %q, want private default", created.ActivityPrivacy)
+	if created.ActivityPrivacy != models.ActivityPrivacySharedAnonymous {
+		t.Fatalf("activity privacy = %q, want anonymous-sharing default", created.ActivityPrivacy)
 	}
 
-	updated, err := svc.SetActivityPrivacy(created.ID, models.ActivityPrivacySharedAnonymous)
+	updated, err := svc.SetActivityPrivacy(created.ID, models.ActivityPrivacyNotShared)
 	if err != nil {
 		t.Fatalf("SetActivityPrivacy returned error: %v", err)
 	}
-	if updated.ActivityPrivacy != models.ActivityPrivacySharedAnonymous {
-		t.Fatalf("activity privacy = %q, want anonymous sharing", updated.ActivityPrivacy)
+	if updated.ActivityPrivacy != models.ActivityPrivacyNotShared {
+		t.Fatalf("activity privacy = %q, want not shared", updated.ActivityPrivacy)
 	}
 	if _, err := svc.SetActivityPrivacy(created.ID, "public"); err == nil {
 		t.Fatal("expected invalid activity privacy to fail")
@@ -127,7 +127,7 @@ func TestActivityPrivacyDefaultsPrivateAndPersistsOptIn(t *testing.T) {
 		t.Fatalf("reload service: %v", err)
 	}
 	got, ok := reloaded.Get(created.ID)
-	if !ok || got.ActivityPrivacy != models.ActivityPrivacySharedAnonymous {
+	if !ok || got.ActivityPrivacy != models.ActivityPrivacyNotShared {
 		t.Fatalf("persisted privacy = %q, ok=%v", got.ActivityPrivacy, ok)
 	}
 }

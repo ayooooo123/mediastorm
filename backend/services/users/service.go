@@ -758,7 +758,7 @@ func (s *Service) SetAllowShareLinks(id string, allow bool) (models.User, error)
 	return user, nil
 }
 
-// SetActivityPrivacy updates a profile's opt-in preference for server-wide
+// SetActivityPrivacy updates a profile's privacy choice for server-wide
 // activity shelves.
 func (s *Service) SetActivityPrivacy(id, privacy string) (models.User, error) {
 	id = strings.TrimSpace(id)
@@ -1237,7 +1237,7 @@ func (s *Service) createLocked(accountID, name string) (models.User, error) {
 		ID:              id,
 		AccountID:       accountID,
 		Name:            name,
-		ActivityPrivacy: models.ActivityPrivacyNotShared,
+		ActivityPrivacy: models.ActivityPrivacySharedAnonymous,
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
