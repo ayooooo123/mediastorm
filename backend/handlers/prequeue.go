@@ -1448,6 +1448,10 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 	// Update status to searching
 	if !h.store.UpdateWorker(prequeueID, func(e *playback.PrequeueEntry) {
 		e.Status = playback.PrequeueStatusSearching
+		e.ProgressStage = "metadata"
+		e.ProgressDetail = ""
+		e.ProgressCurrent = 0
+		e.ProgressTotal = 0
 	}) {
 		log.Printf("[prequeue] Worker stopped before search because entry %s was replaced", prequeueID)
 		return
@@ -1494,6 +1498,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 	}
 
 	log.Printf("[prequeue] TIMING: search starting with query: %q (elapsed: %v)", query, time.Since(workerStart))
+	h.updatePrequeueProgress(prequeueID, "searching", query, 0, 0)
 
 	// For movies, check if the movie is anime by looking at genres
 	if mediaType == "movie" && h.movieMetadataSvc != nil {
@@ -1591,11 +1596,16 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 		h.failPrequeue(prequeueID, errMsg)
 		return
 	}
+	h.updatePrequeueProgress(prequeueID, "ranking", "", len(allResults), len(scoredResults))
 	log.Printf("[prequeue] TIMING: scored search complete, %d passed candidate(s) selected from %d total result(s), badStreams=%d (elapsed: %v)", len(allResults), len(scoredResults), badStreamCount, time.Since(workerStart))
 
 	// Update status to resolving
 	h.store.UpdateWorker(prequeueID, func(e *playback.PrequeueEntry) {
 		e.Status = playback.PrequeueStatusResolving
+		e.ProgressStage = "preparing_candidates"
+		e.ProgressDetail = ""
+		e.ProgressCurrent = 0
+		e.ProgressTotal = len(allResults)
 	})
 
 	// Load filter settings for DV profile compatibility checking
@@ -1689,9 +1699,11 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 			}
 		}
 
+		h.updatePrequeueProgress(prequeueID, "resolving_candidate", result.Title, i+1, len(allResults))
 		annotateResultProfile(&result, userID)
 		resolution, lastErr = h.playbackSvc.Resolve(ctx, result)
 		if lastErr == nil && resolution != nil && resolution.QueueID > 0 && strings.TrimSpace(resolution.WebDAVPath) == "" {
+			h.updatePrequeueProgress(prequeueID, "waiting_provider", result.Title, i+1, len(allResults))
 			resolution, lastErr = h.waitForPlaybackQueue(ctx, prequeueID, resolution.QueueID, result.Title)
 		}
 		if lastErr != nil || resolution == nil || resolution.WebDAVPath == "" {
@@ -1714,6 +1726,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 
 		var probeResult *VideoFullResult
 		var metadataResult *VideoMetadataResult
+		h.updatePrequeueProgress(prequeueID, "validating_candidate", result.Title, i+1, len(allResults))
 
 		// Every resolved prequeue candidate must expose a playable video track.
 		// This probe is also reused below for HDR and track selection, so moving it
@@ -1836,6 +1849,10 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 	// Update with resolution
 	h.store.UpdateWorker(prequeueID, func(e *playback.PrequeueEntry) {
 		e.Status = playback.PrequeueStatusProbing
+		e.ProgressStage = "analyzing_media"
+		e.ProgressDetail = ""
+		e.ProgressCurrent = 0
+		e.ProgressTotal = 0
 		e.StreamPath = resolution.WebDAVPath
 		if selectedResult != nil {
 			e.ServiceType = string(selectedResult.ServiceType)
@@ -1874,6 +1891,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 	probeStart := time.Now()
 
 	if h.metadataProber != nil && h.userSettingsSvc != nil {
+		h.updatePrequeueProgress(prequeueID, "selecting_tracks", "", 0, 0)
 		log.Printf("[prequeue] TIMING: starting probe/track selection (elapsed: %v)", time.Since(workerStart))
 		// Build defaults from global settings
 		var defaults models.UserSettings
@@ -2157,6 +2175,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 			}
 			log.Printf("[prequeue] TIMING: probe complete (probe took: %v, total elapsed: %v)", time.Since(probeStart), time.Since(workerStart))
 			log.Printf("[prequeue] Creating HLS session for: %s", reason)
+			h.updatePrequeueProgress(prequeueID, "preparing_playback", reason, 0, 0)
 
 			hlsStart := time.Now()
 			// Create HLS session for HDR content or incompatible audio
@@ -2196,12 +2215,25 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 	// Mark as ready
 	h.store.UpdateWorker(prequeueID, func(e *playback.PrequeueEntry) {
 		e.Status = playback.PrequeueStatusReady
+		e.ProgressStage = "ready"
+		e.ProgressDetail = ""
+		e.ProgressCurrent = 0
+		e.ProgressTotal = 0
 	})
 	if h.prewarmSvc != nil {
 		h.prewarmSvc.UpdateFromPrequeue(prequeueID)
 	}
 
 	log.Printf("[prequeue] TIMING: Prequeue %s is ready (TOTAL: %v)", prequeueID, time.Since(workerStart))
+}
+
+func (h *PrequeueHandler) updatePrequeueProgress(prequeueID, stage, detail string, current, total int) {
+	h.store.UpdateWorker(prequeueID, func(e *playback.PrequeueEntry) {
+		e.ProgressStage = stage
+		e.ProgressDetail = detail
+		e.ProgressCurrent = current
+		e.ProgressTotal = total
+	})
 }
 
 func logPrequeueCandidateList(scoredResults []models.ScoredNZBResult) {
@@ -2270,6 +2302,10 @@ func (h *PrequeueHandler) failPrequeue(prequeueID, errMsg string) {
 	log.Printf("[prequeue] Prequeue %s failed: %s", prequeueID, errMsg)
 	h.store.UpdateWorker(prequeueID, func(e *playback.PrequeueEntry) {
 		e.Status = playback.PrequeueStatusFailed
+		e.ProgressStage = "failed"
+		e.ProgressDetail = ""
+		e.ProgressCurrent = 0
+		e.ProgressTotal = 0
 		e.Error = errMsg
 	})
 }
