@@ -1,10 +1,73 @@
 package handlers
 
 import (
-	"novastream/models"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
+
+	"novastream/models"
 )
+
+type homepageStreamsStub struct {
+	response StreamsResponse
+}
+
+func (s homepageStreamsStub) ActiveStreams() StreamsResponse {
+	return s.response
+}
+
+func TestHomepageUsesCanonicalDashboardStreams(t *testing.T) {
+	createdAt := time.Date(2026, 7, 28, 20, 0, 0, 0, time.UTC)
+	handler := NewHomepageHandler(nil)
+	handler.SetAPIKey("homepage-secret")
+	handler.SetStreamsProvider(homepageStreamsStub{response: StreamsResponse{
+		Count: 2,
+		Streams: []StreamInfo{
+			{
+				ID:              "stream-nazara",
+				Type:            "direct",
+				Filename:        "movie.mkv",
+				ProfileName:     "nazara",
+				CreatedAt:       createdAt,
+				CurrentPosition: 120,
+				PercentWatched:  10,
+			},
+			{
+				ID:          "stream-mom",
+				Type:        "hls",
+				Filename:    "show.s01e01.mkv",
+				ProfileName: "mom",
+				CreatedAt:   createdAt,
+				HasHDR:      true,
+			},
+		},
+	}})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/homepage", nil)
+	req.Header.Set("X-API-Key", "homepage-secret")
+	rec := httptest.NewRecorder()
+	handler.GetStats(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var stats HomepageStats
+	if err := json.NewDecoder(rec.Body).Decode(&stats); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if stats.ActiveStreams != 2 || len(stats.Streams) != 2 {
+		t.Fatalf("activeStreams/streams = %d/%d, want 2/2", stats.ActiveStreams, len(stats.Streams))
+	}
+	if got := stats.Streams[0]; got.ProfileName != "nazara" || got.Type != "direct" || got.CurrentPosition != 120 {
+		t.Errorf("first stream = %+v, want canonical nazara direct stream", got)
+	}
+	if got := stats.Streams[1]; got.ProfileName != "mom" || got.Type != "hls" || !got.HasHDR {
+		t.Errorf("second stream = %+v, want canonical mom HLS stream", got)
+	}
+}
 
 func TestFindMatchingProgress_EpisodePreciseMatch(t *testing.T) {
 	// When filename contains S##E## pattern, the precise match should win
