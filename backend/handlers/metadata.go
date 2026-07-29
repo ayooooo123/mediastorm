@@ -160,6 +160,9 @@ type historyServiceInterface interface {
 	ListContinueWatching(userID string) ([]models.SeriesWatchState, error)
 	ListSeriesStates(userID string) ([]models.SeriesWatchState, error)
 	ListPlaybackProgress(userID string) ([]models.PlaybackProgress, error)
+	// Cross-user aggregation for server-wide shelves
+	AggregatePopularTitles(eligibleUsers map[string]bool, windowDays int) []models.PopularTitle
+	ListRecentWatches(eligibleUsers map[string]models.User, windowDays int, maxPerProfile int) []models.RecentWatch
 }
 
 // watchlistLister provides access to a user's watchlist for recommendations.
@@ -170,6 +173,7 @@ type watchlistLister interface {
 // usersServiceInterface provides access to user profiles for kids filtering.
 type usersServiceInterface interface {
 	Get(id string) (models.User, bool)
+	ListAll() []models.User
 }
 
 type accountsServiceInterface interface {
@@ -194,6 +198,11 @@ type MetadataHandler struct {
 	personalizedMu       sync.Mutex
 	personalizedCache    map[string]personalizedRecommendationsCacheEntry
 	personalizedInFlight map[string]*personalizedRecommendationsBuild
+
+	popularCacheMu       sync.Mutex
+	popularCache         *cachedPopularOnServer
+	recentWatchesCacheMu sync.Mutex
+	recentWatchesCache   *cachedRecentlyWatched
 	stremioCatalogMu     sync.Mutex
 	stremioCatalogCache  map[string]stremioShelfCatalogCacheEntry
 }
@@ -2516,4 +2525,183 @@ func (h *MetadataHandler) GetProgress(w http.ResponseWriter, r *http.Request) {
 	snapshot := h.Service.GetProgressSnapshot()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(snapshot)
+}
+
+// cachedPopularOnServer holds a cached "Popular on This Server" response.
+type cachedPopularOnServer struct {
+	items     []models.TrendingItem
+	cachedAt  time.Time
+	expiresAt time.Time
+}
+
+// cachedRecentlyWatched holds a cached "Recently Watched" response.
+type cachedRecentlyWatched struct {
+	items     []models.RecentWatch
+	cachedAt  time.Time
+	expiresAt time.Time
+}
+
+// PopularOnServerResponse is the JSON payload for the "Popular on This Server" shelf.
+type PopularOnServerResponse struct {
+	Items []models.TrendingItem `json:"items"`
+	Total int                   `json:"total"`
+}
+
+// PopularOnServer handles GET /api/discover/popular-on-server
+func (h *MetadataHandler) PopularOnServer(w http.ResponseWriter, r *http.Request) {
+	service := h.serviceForUser("")
+
+	windowDays := 90
+	if h.CfgManager != nil {
+		cfg, err := h.CfgManager.Load()
+		if err == nil && cfg.HomeShelves.PopularOnServerWindowDays >= 7 && cfg.HomeShelves.PopularOnServerWindowDays <= 365 {
+			windowDays = cfg.HomeShelves.PopularOnServerWindowDays
+		}
+	}
+
+	// Check cache (titles change slowly; 6 h TTL is sufficient)
+	h.popularCacheMu.Lock()
+	if h.popularCache != nil && h.popularCache.expiresAt.After(time.Now()) {
+		cached := h.popularCache
+		h.popularCacheMu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(PopularOnServerResponse{Items: cached.items, Total: len(cached.items)})
+		return
+	}
+	h.popularCacheMu.Unlock()
+
+	if h.HistoryService == nil || h.UsersService == nil {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(PopularOnServerResponse{})
+		return
+	}
+
+	// Build eligible users set (shared or shared_anonymous)
+	allUsers := h.UsersService.ListAll()
+	eligibleUsers := make(map[string]bool)
+	for _, user := range allUsers {
+		privacy := strings.ToLower(strings.TrimSpace(user.ActivityPrivacy))
+		if privacy == "" || privacy == "shared" || privacy == "shared_anonymous" {
+			eligibleUsers[user.ID] = true
+		}
+	}
+
+	popular := h.HistoryService.AggregatePopularTitles(eligibleUsers, windowDays)
+
+	// Enrich with TMDB metadata
+	items := make([]models.TrendingItem, 0, len(popular))
+	for _, pt := range popular {
+		title := models.Title{
+			ID:        pt.ItemID,
+			Name:      pt.Name,
+			MediaType: pt.MediaType,
+			Year:      pt.Year,
+		}
+		if pt.ExternalIDs != nil {
+			if tmdb, ok := pt.ExternalIDs["tmdb"]; ok {
+				if id, err := strconv.ParseInt(tmdb, 10, 64); err == nil {
+					title.TMDBID = id
+				}
+			}
+			if imdb, ok := pt.ExternalIDs["imdb"]; ok {
+				title.IMDBID = imdb
+			}
+			if tvdb, ok := pt.ExternalIDs["tvdb"]; ok {
+				if id, err := strconv.ParseInt(tvdb, 10, 64); err == nil {
+					title.TVDBID = id
+				}
+			}
+		}
+
+		// Fetch metadata to enrich poster/backdrop
+		ctx := r.Context()
+		if title.MediaType == "series" && title.TMDBID > 0 {
+			if details, err := service.SeriesDetails(ctx, models.SeriesDetailsQuery{TMDBID: title.TMDBID, Name: title.Name}); err == nil && details != nil {
+				title = details.Title
+			}
+		} else if title.MediaType == "movie" && (title.TMDBID > 0 || title.IMDBID != "") {
+			if t, err := service.MovieDetails(ctx, models.MovieDetailsQuery{TMDBID: title.TMDBID, IMDBID: title.IMDBID, Name: title.Name, Year: title.Year}); err == nil && t != nil {
+				title = *t
+			}
+		}
+
+		items = append(items, models.TrendingItem{Title: title, Rank: pt.WatchCount})
+	}
+
+	// Cache the result (6 hour TTL)
+	h.popularCacheMu.Lock()
+	h.popularCache = &cachedPopularOnServer{
+		items:     items,
+		cachedAt:  time.Now(),
+		expiresAt: time.Now().Add(6 * time.Hour),
+	}
+	h.popularCacheMu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(PopularOnServerResponse{Items: items, Total: len(items)})
+}
+
+// RecentlyWatchedResponse is the JSON payload for the "Recently Watched" shelf.
+type RecentlyWatchedResponse struct {
+	Items []models.RecentWatch `json:"items"`
+	Total int                  `json:"total"`
+}
+
+// RecentlyWatched handles GET /api/discover/recently-watched
+func (h *MetadataHandler) RecentlyWatched(w http.ResponseWriter, r *http.Request) {
+	windowDays := 90
+	maxPerProfile := 3
+	if h.CfgManager != nil {
+		cfg, err := h.CfgManager.Load()
+		if err == nil && cfg.HomeShelves.PopularOnServerWindowDays >= 7 && cfg.HomeShelves.PopularOnServerWindowDays <= 365 {
+			windowDays = cfg.HomeShelves.PopularOnServerWindowDays
+		}
+		if err == nil && cfg.HomeShelves.RecentlyWatchedCapPerProfile > 0 && cfg.HomeShelves.RecentlyWatchedCapPerProfile <= 20 {
+			maxPerProfile = cfg.HomeShelves.RecentlyWatchedCapPerProfile
+		}
+	}
+
+	// Check cache (feed changes quickly; 5 min TTL)
+	h.recentWatchesCacheMu.Lock()
+	if h.recentWatchesCache != nil && h.recentWatchesCache.expiresAt.After(time.Now()) {
+		cached := h.recentWatchesCache
+		h.recentWatchesCacheMu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(RecentlyWatchedResponse{Items: cached.items, Total: len(cached.items)})
+		return
+	}
+	h.recentWatchesCacheMu.Unlock()
+
+	if h.HistoryService == nil || h.UsersService == nil {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(RecentlyWatchedResponse{})
+		return
+	}
+
+	// Build eligible users map (need full User objects for name/privacy)
+	allUsers := h.UsersService.ListAll()
+	eligibleUsers := make(map[string]models.User)
+	for _, user := range allUsers {
+		privacy := strings.ToLower(strings.TrimSpace(user.ActivityPrivacy))
+		if privacy == "" || privacy == "shared" || privacy == "shared_anonymous" {
+			eligibleUsers[user.ID] = user
+		}
+	}
+
+	items := h.HistoryService.ListRecentWatches(eligibleUsers, windowDays, maxPerProfile)
+	if items == nil {
+		items = []models.RecentWatch{}
+	}
+
+	// Cache (5 min TTL)
+	h.recentWatchesCacheMu.Lock()
+	h.recentWatchesCache = &cachedRecentlyWatched{
+		items:     items,
+		cachedAt:  time.Now(),
+		expiresAt: time.Now().Add(5 * time.Minute),
+	}
+	h.recentWatchesCacheMu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(RecentlyWatchedResponse{Items: items, Total: len(items)})
 }

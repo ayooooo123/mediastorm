@@ -171,3 +171,30 @@ type PlaybackProgress struct {
 	MigrationPreparationRequested bool   `json:"migrationPreparationRequested,omitempty"`
 	MigrationPreparationReason    string `json:"migrationPreparationReason,omitempty"`
 }
+
+// PopularTitle represents a movie or series aggregated across all profiles
+// for the "Popular on This Server" shelf.
+type PopularTitle struct {
+	MediaType   string            `json:"mediaType"` // "movie" or "series"
+	ItemID      string            `json:"itemId"`    // series-level or movie-level ID
+	Name        string            `json:"name"`
+	Year        int               `json:"year,omitempty"`
+	WatchCount  int               `json:"watchCount"` // number of unique profiles who watched
+	ExternalIDs map[string]string `json:"externalIds,omitempty"`
+}
+
+// RecentWatch represents a single watch event for the "Recently Watched" feed.
+type RecentWatch struct {
+	UserID        string            `json:"userId,omitempty"`      // omitted when anonymous
+	UserName      string            `json:"userName"`              // profile name or "Fellow user"
+	IsAnonymous   bool              `json:"isAnonymous"`
+	MediaType     string            `json:"mediaType"`             // "movie" or "episode"
+	ItemID        string            `json:"itemId"`
+	Name          string            `json:"name"`                  // movie name or episode title
+	SeriesID      string            `json:"seriesId,omitempty"`
+	SeriesName    string            `json:"seriesName,omitempty"`
+	SeasonNumber  int               `json:"seasonNumber,omitempty"`
+	EpisodeNumber int               `json:"episodeNumber,omitempty"`
+	WatchedAt     time.Time         `json:"watchedAt"`
+	ExternalIDs   map[string]string `json:"externalIds,omitempty"`
+}

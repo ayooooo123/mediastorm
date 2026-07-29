@@ -127,6 +127,12 @@ func (h *DisplayListHandler) Get(w http.ResponseWriter, r *http.Request) {
 			"type": firstQueryValue(r, "mediaType", "type"),
 		}))
 		return
+	case "popular-on-server":
+		h.delegateMetadata(w, r, source, h.MetadataHandler.PopularOnServer, displayListQuery(r, userID, nil))
+		return
+	case "recently-watched":
+		h.delegateMetadata(w, r, source, h.MetadataHandler.RecentlyWatched, displayListQuery(r, userID, nil))
+		return
 	case "trending":
 		h.delegateMetadata(w, r, source, h.MetadataHandler.DiscoverNew, displayListQuery(r, userID, map[string]string{
 			"type": firstQueryValue(r, "mediaType", "type"),
