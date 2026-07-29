@@ -36,8 +36,11 @@ func TestBuildVideoEncodePlanCPUTonemap(t *testing.T) {
 	if !plan.Tonemapped {
 		t.Fatalf("expected tone mapping")
 	}
-	if !strings.Contains(plan.Filter, "tonemap=tonemap=hable") {
+	if !strings.Contains(plan.Filter, "tonemap=tonemap=mobius:param=0.35:desat=0:peak=1000") {
 		t.Fatalf("expected CPU zscale tonemap chain, got %q", plan.Filter)
+	}
+	if !strings.Contains(plan.Filter, "eq=brightness=0.03:contrast=1.08:saturation=1.15:gamma=0.98") {
+		t.Fatalf("expected SDR presentation correction, got %q", plan.Filter)
 	}
 	if !strings.HasSuffix(plan.Filter, "format=yuv420p") {
 		t.Fatalf("tonemap output should be yuv420p, got %q", plan.Filter)
@@ -98,7 +101,7 @@ func TestBuildVideoEncodePlanVAAPIForcesCPUTonemap(t *testing.T) {
 	if strings.Contains(joinArgs(plan.GlobalArgs), "vulkan") {
 		t.Fatalf("vaapi must not also init a vulkan filter device, got %v", plan.GlobalArgs)
 	}
-	if !strings.Contains(plan.Filter, "tonemap=tonemap=hable") {
+	if !strings.Contains(plan.Filter, "tonemap=tonemap=mobius") {
 		t.Fatalf("expected CPU zscale tonemap for vaapi, got %q", plan.Filter)
 	}
 }
