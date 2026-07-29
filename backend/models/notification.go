@@ -6,11 +6,13 @@ const (
 	NotificationChannelDiscord = "discord"
 	NotificationChannelWebhook = "webhook"
 
-	NotificationEventWatchStarted  = "watch.started"
-	NotificationEventWatchProgress = "watch.progress"
-	NotificationEventWatchResumed  = "watch.resumed"
-	NotificationEventWatchWatched  = "watch.watched"
-	NotificationEventRelease       = "release.available"
+	NotificationEventWatchStarted   = "watch.started"
+	NotificationEventWatchProgress  = "watch.progress"
+	NotificationEventWatchResumed   = "watch.resumed"
+	NotificationEventWatchWatched   = "watch.watched"
+	NotificationEventRelease        = "release.available"
+	NotificationEventSystemStartup  = "system.startup"
+	NotificationEventSystemShutdown = "system.shutdown"
 )
 
 // NotificationChannel is a profile-owned destination and its subscriptions.

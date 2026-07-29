@@ -185,6 +185,9 @@ COPY --chown=root:root --chmod=0555 backend/parse_title.py backend/parse_title_b
 # Expose port
 EXPOSE 7777
 
+# Ask Docker to use the signal handled by mediastorm's graceful shutdown path.
+STOPSIGNAL SIGTERM
+
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD wget -qO- http://localhost:7777/health > /dev/null || exit 1

@@ -33,6 +33,7 @@ type UserRepository interface {
 type NotificationRepository interface {
 	GetChannel(ctx context.Context, id string) (*models.NotificationChannel, error)
 	ListChannels(ctx context.Context, profileID string) ([]models.NotificationChannel, error)
+	ListAllChannels(ctx context.Context) ([]models.NotificationChannel, error)
 	CreateChannel(ctx context.Context, channel *models.NotificationChannel) error
 	UpdateChannel(ctx context.Context, channel *models.NotificationChannel) error
 	DeleteChannel(ctx context.Context, profileID, id string) error

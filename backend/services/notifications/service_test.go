@@ -51,6 +51,16 @@ func (r *memoryRepo) ListChannels(_ context.Context, profileID string) ([]models
 	return channels, nil
 }
 
+func (r *memoryRepo) ListAllChannels(_ context.Context) ([]models.NotificationChannel, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	channels := make([]models.NotificationChannel, 0, len(r.channels))
+	for _, channel := range r.channels {
+		channels = append(channels, channel)
+	}
+	return channels, nil
+}
+
 func (r *memoryRepo) CreateChannel(_ context.Context, channel *models.NotificationChannel) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -529,6 +539,94 @@ func TestSaveChannelRequiresSingleNotificationType(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected mixed notification types to be rejected")
+	}
+}
+
+func TestSaveChannelKeepsSystemOperationsSeparateFromMediaEvents(t *testing.T) {
+	service := New(newMemoryRepo())
+	defer service.Close()
+
+	_, err := service.SaveChannel(context.Background(), models.NotificationChannel{
+		ProfileID: "profile",
+		Name:      "Mixed",
+		Type:      models.NotificationChannelWebhook,
+		URL:       "https://example.com/hook",
+		Events: []string{
+			models.NotificationEventWatchStarted,
+			models.NotificationEventSystemStartup,
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "system operations") {
+		t.Fatalf("SaveChannel error = %v, want system operations validation error", err)
+	}
+
+	saved, err := service.SaveChannel(context.Background(), models.NotificationChannel{
+		ProfileID: "profile",
+		Name:      "Lifecycle",
+		Type:      models.NotificationChannelWebhook,
+		URL:       "https://example.com/hook",
+		Events: []string{
+			models.NotificationEventSystemStartup,
+			models.NotificationEventSystemShutdown,
+		},
+	})
+	if err != nil {
+		t.Fatalf("save system channel: %v", err)
+	}
+	if got := strings.Join(saved.Events, ","); got != "system.shutdown,system.startup" {
+		t.Fatalf("system events = %q", got)
+	}
+}
+
+func TestNotifySystemSynchronouslyDeliversOnlySubscribedEvent(t *testing.T) {
+	type receivedPayload struct {
+		Event string                   `json:"event"`
+		Data  models.NotificationEvent `json:"data"`
+	}
+	received := make(chan receivedPayload, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload receivedPayload
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode system notification: %v", err)
+		}
+		received <- payload
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	repo := newMemoryRepo()
+	repo.channels["startup"] = models.NotificationChannel{
+		ID: "startup", ProfileID: "profile-a", Type: models.NotificationChannelWebhook,
+		URL: server.URL, Enabled: true, Events: []string{models.NotificationEventSystemStartup},
+		TitleTemplate: defaultTitleTemplate, BodyTemplate: defaultBodyTemplate,
+	}
+	repo.channels["shutdown"] = models.NotificationChannel{
+		ID: "shutdown", ProfileID: "profile-b", Type: models.NotificationChannelWebhook,
+		URL: server.URL, Enabled: true, Events: []string{models.NotificationEventSystemShutdown},
+		TitleTemplate: defaultTitleTemplate, BodyTemplate: defaultBodyTemplate,
+	}
+	repo.channels["disabled"] = models.NotificationChannel{
+		ID: "disabled", ProfileID: "profile-c", Type: models.NotificationChannelWebhook,
+		URL: server.URL, Enabled: false, Events: []string{models.NotificationEventSystemStartup},
+		TitleTemplate: defaultTitleTemplate, BodyTemplate: defaultBodyTemplate,
+	}
+	service := New(repo)
+	defer service.Close()
+
+	if err := service.NotifySystem(context.Background(), models.NotificationEventSystemStartup); err != nil {
+		t.Fatalf("notify startup: %v", err)
+	}
+	payload := waitForNotificationRequest(t, received)
+	if payload.Event != models.NotificationEventSystemStartup ||
+		payload.Data.ProfileID != "profile-a" ||
+		payload.Data.Title != "mediastorm" ||
+		payload.Data.MediaType != "system" {
+		t.Fatalf("startup payload = %#v", payload)
+	}
+	select {
+	case extra := <-received:
+		t.Fatalf("unexpected system notification = %#v", extra)
+	default:
 	}
 }
 

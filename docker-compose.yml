@@ -33,6 +33,9 @@ services:
       - TZ=${TZ:-UTC}
       - DATABASE_URL=postgres://mediastorm:${POSTGRES_PASSWORD:-mediastorm}@postgres:5432/mediastorm?sslmode=disable
     restart: unless-stopped
+    # Leave enough time for the synchronous shutdown notification and the
+    # backend's existing 30-second graceful cleanup before Docker sends SIGKILL.
+    stop_grace_period: 45s
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "http://localhost:7777/health"]
       interval: 30s

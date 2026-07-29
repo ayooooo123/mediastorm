@@ -41,6 +41,24 @@ func TestNotificationsTemplateOmitsRedundantPlayingEvent(t *testing.T) {
 	}
 }
 
+func TestNotificationsTemplateIncludesSystemOperationsSection(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/notifications.html")
+	if err != nil {
+		t.Fatalf("read notifications template: %v", err)
+	}
+	source := string(templateBytes)
+	for _, marker := range []string{
+		"System Operations",
+		`value="system.startup"`,
+		`value="system.shutdown"`,
+		`id="system-settings"`,
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("notifications template missing system operations marker %q", marker)
+		}
+	}
+}
+
 func TestNotificationListDisablesCaching(t *testing.T) {
 	handler := &AdminUIHandler{}
 	recorder := httptest.NewRecorder()

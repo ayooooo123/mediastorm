@@ -51,11 +51,23 @@ func (r *pgNotificationRepo) GetChannel(ctx context.Context, id string) (*models
 }
 
 func (r *pgNotificationRepo) ListChannels(ctx context.Context, profileID string) ([]models.NotificationChannel, error) {
-	rows, err := r.pool.Query(ctx, `
+	return r.listChannels(ctx, `
 		SELECT id, profile_id, name, type, url, enabled, events, notify_watchlist,
 		       notify_trending, trending_limit, release_types, title_template, body_template,
 		       include_poster, created_at, updated_at
 		FROM notification_channels WHERE profile_id = $1 ORDER BY created_at`, profileID)
+}
+
+func (r *pgNotificationRepo) ListAllChannels(ctx context.Context) ([]models.NotificationChannel, error) {
+	return r.listChannels(ctx, `
+		SELECT id, profile_id, name, type, url, enabled, events, notify_watchlist,
+		       notify_trending, trending_limit, release_types, title_template, body_template,
+		       include_poster, created_at, updated_at
+		FROM notification_channels ORDER BY created_at`)
+}
+
+func (r *pgNotificationRepo) listChannels(ctx context.Context, query string, args ...any) ([]models.NotificationChannel, error) {
+	rows, err := r.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list notification channels: %w", err)
 	}
