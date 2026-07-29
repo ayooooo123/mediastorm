@@ -7773,7 +7773,7 @@ func (h *AdminUIHandler) SetProfileAllowShareLinks(w http.ResponseWriter, r *htt
 	json.NewEncoder(w).Encode(map[string]string{"status": "share permission updated"})
 }
 
-// SetProfileActivityPrivacy updates a profile's opt-in preference for shared
+// SetProfileActivityPrivacy updates a profile's privacy choice for shared
 // server activity shelves.
 func (h *AdminUIHandler) SetProfileActivityPrivacy(w http.ResponseWriter, r *http.Request) {
 	if h.usersService == nil {

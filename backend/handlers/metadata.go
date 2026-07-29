@@ -163,7 +163,7 @@ type historyServiceInterface interface {
 }
 
 type sharedShelfHistoryService interface {
-	AggregatePopularTitles(eligibleUsers map[string]bool, windowDays, minProfiles int) []models.PopularTitle
+	AggregatePopularTitles(eligibleUsers map[string]bool, windowDays, minViews int) []models.PopularTitle
 	ListRecentWatches(eligibleUsers map[string]models.User, windowDays int, maxPerProfile int) []models.RecentWatch
 }
 
@@ -2558,7 +2558,7 @@ type PopularOnServerResponse struct {
 func (h *MetadataHandler) PopularOnServer(w http.ResponseWriter, r *http.Request) {
 	service := h.serviceForUser("")
 	windowDays := 90
-	minProfiles := 2
+	minViews := 2
 	if h.CfgManager != nil {
 		cfg, err := h.CfgManager.Load()
 		if err == nil && cfg.HomeShelves.PopularOnServerWindowDays >= 7 && cfg.HomeShelves.PopularOnServerWindowDays <= 365 {
@@ -2566,7 +2566,7 @@ func (h *MetadataHandler) PopularOnServer(w http.ResponseWriter, r *http.Request
 		}
 	}
 	windowDays = sharedShelfIntQuery(r, "activityWindowDays", 7, 365, windowDays)
-	minProfiles = sharedShelfIntQuery(r, "minimumProfiles", 1, 100, minProfiles)
+	minViews = sharedShelfIntQuery(r, "minimumProfiles", 1, 100, minViews)
 
 	historyService, historyOK := h.HistoryService.(sharedShelfHistoryService)
 	usersService, usersOK := h.UsersService.(sharedShelfUsersService)
@@ -2581,7 +2581,7 @@ func (h *MetadataHandler) PopularOnServer(w http.ResponseWriter, r *http.Request
 		eligibleIDs[id] = true
 	}
 	offset, limit := sharedShelfPage(r, 20)
-	cacheKey := fmt.Sprintf("%s:%d:%d:%d:%d", privacyKey, windowDays, minProfiles, offset, limit)
+	cacheKey := fmt.Sprintf("%s:%d:%d:%d:%d", privacyKey, windowDays, minViews, offset, limit)
 
 	h.popularCacheMu.Lock()
 	if h.popularCache != nil && h.popularCache.key == cacheKey && h.popularCache.expiresAt.After(time.Now()) {
@@ -2592,7 +2592,7 @@ func (h *MetadataHandler) PopularOnServer(w http.ResponseWriter, r *http.Request
 	}
 	h.popularCacheMu.Unlock()
 
-	popular := historyService.AggregatePopularTitles(eligibleIDs, windowDays, minProfiles)
+	popular := historyService.AggregatePopularTitles(eligibleIDs, windowDays, minViews)
 	total := len(popular)
 	if offset >= len(popular) {
 		popular = nil
@@ -2609,7 +2609,7 @@ func (h *MetadataHandler) PopularOnServer(w http.ResponseWriter, r *http.Request
 			pt.ExternalIDs,
 		)
 		title = enrichSharedShelfTitle(ctx, service, title)
-		title.CardSubtitle = fmt.Sprintf("%d opted-in %s watched", pt.WatchCount, pluralizeProfile(pt.WatchCount))
+		title.CardSubtitle = fmt.Sprintf("%d %s", pt.WatchCount, pluralizeView(pt.WatchCount))
 		title.ForceTitleOverlay = true
 		return models.TrendingItem{Title: title, Rank: pt.WatchCount}
 	})
@@ -2871,11 +2871,11 @@ func parallelSharedShelfItems[T any](
 	return items
 }
 
-func pluralizeProfile(count int) string {
+func pluralizeView(count int) string {
 	if count == 1 {
-		return "profile"
+		return "View"
 	}
-	return "profiles"
+	return "Views"
 }
 
 func recentWatchSubtitle(watch models.RecentWatch) string {

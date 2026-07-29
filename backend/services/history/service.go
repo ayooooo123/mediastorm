@@ -6373,27 +6373,27 @@ func isMatchingPlaybackForWatchUpdate(progress models.PlaybackProgress, update m
 	return false
 }
 
-// AggregatePopularTitles returns titles ranked by unique-profile watch count
-// across all eligible (non-private) profiles within the given lookback window.
-// Episodes are rolled up to their parent series so a user who watched multiple
-// episodes of the same show contributes only 1 to that show's tally.
+// AggregatePopularTitles returns titles ranked by completed media-item views
+// across all eligible profiles within the given lookback window. Episodes are
+// rolled up to their parent series, but each completed episode contributes one
+// view to the series total.
 func (s *Service) AggregatePopularTitles(
 	eligibleUsers map[string]bool,
 	windowDays int,
-	minProfiles int,
+	minViews int,
 ) []models.PopularTitle {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	cutoff := time.Now().UTC().AddDate(0, 0, -windowDays)
-	if minProfiles < 1 {
-		minProfiles = 1
+	if minViews < 1 {
+		minViews = 1
 	}
 
-	// Aggregate: title key -> PopularTitle + set of users who watched
+	// Aggregate each completed movie or episode as one view of its canonical
+	// movie or parent-series title.
 	type aggEntry struct {
-		title   models.PopularTitle
-		userIDs map[string]bool
+		title models.PopularTitle
 	}
 	aggregated := make(map[string]*aggEntry)
 
@@ -6411,17 +6411,19 @@ func (s *Service) AggregatePopularTitles(
 			}
 			entry := aggregated[key]
 			if entry == nil {
-				entry = &aggEntry{userIDs: make(map[string]bool)}
+				entry = &aggEntry{}
 				aggregated[key] = entry
 			}
-			entry.userIDs[userID] = true
+			entry.title.WatchCount++
 			if entry.title.Name == "" || item.WatchedAt.After(entry.title.LastWatched) {
 				mediaType, name, year, extIDs := popularTitleMetadata(item)
+				watchCount := entry.title.WatchCount
 				entry.title = models.PopularTitle{
 					MediaType:   mediaType,
 					ItemID:      popularTitleItemID(item),
 					Name:        name,
 					Year:        year,
+					WatchCount:  watchCount,
 					ExternalIDs: cloneStringMap(extIDs),
 					LastWatched: item.WatchedAt,
 				}
@@ -6433,15 +6435,14 @@ func (s *Service) AggregatePopularTitles(
 
 	result := make([]models.PopularTitle, 0, len(aggregated))
 	for _, entry := range aggregated {
-		entry.title.WatchCount = len(entry.userIDs)
-		if entry.title.Name == "" || entry.title.WatchCount < minProfiles {
+		if entry.title.Name == "" || entry.title.WatchCount < minViews {
 			continue
 		}
 		result = append(result, entry.title)
 	}
 
-	// Rank by distinct opted-in profiles, then by the most recent qualifying
-	// watch so ties do not produce an arbitrary alphabetical archive.
+	// Rank by completed media-item views, then by the most recent qualifying
+	// view so ties do not produce an arbitrary alphabetical archive.
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].WatchCount == result[j].WatchCount {
 			if !result[i].LastWatched.Equal(result[j].LastWatched) {

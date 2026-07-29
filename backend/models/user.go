@@ -36,7 +36,8 @@ type User struct {
 	AllowShareLinks  bool   `json:"allowShareLinks"`            // Whether this profile may mint shareable playback links (master-controlled, default off)
 	// ActivityPrivacy controls whether this profile's watch activity appears in
 	// server-wide shelves like "Popular on This Server" and "Recently Watched".
-	// Activity sharing is opt-in. Empty and unknown values are treated as not_shared.
+	// New profiles share anonymously by default. Empty and unknown legacy values
+	// remain not_shared so existing profiles are never silently opted in.
 	ActivityPrivacy string `json:"activityPrivacy"`
 	// Kids profile content restriction settings
 	KidsMode           string    `json:"kidsMode,omitempty"`           // "rating", "content_list", or "" (disabled)

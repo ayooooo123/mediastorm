@@ -156,6 +156,8 @@ func TestAdminSettingsSharedActivityShelvesExposeAssociatedSettings(t *testing.T
 		`shelf.activityWindowDays`,
 		`shelf.minimumProfiles`,
 		`shelf.maxItemsPerProfile`,
+		`Minimum Views`,
+		`completed movie or episode views`,
 		`saveSharedActivityShelf()`,
 	} {
 		if !strings.Contains(source, marker) {
