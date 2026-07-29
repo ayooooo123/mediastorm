@@ -5,18 +5,28 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"novastream/config"
 )
 
 // The switch is on by default: an operator who configured a relay wants the
 // swarm to grow. Only an explicit false value turns the automatic trigger off.
 func TestAutoSeedIsOnUnlessExplicitlyDisabled(t *testing.T) {
+	autoSeedFromEnv := func(value string) bool {
+		return resolve(config.PearTubeSettings{}, func(key string) string {
+			if key == AutoSeedEnv {
+				return value
+			}
+			return ""
+		}).AutoSeed
+	}
 	for _, value := range []string{"", "1", "true", "yes", "on", "anything"} {
-		if !autoSeedFromEnv(func(string) string { return value }) {
+		if !autoSeedFromEnv(value) {
 			t.Fatalf("%s=%q disabled autoseed", AutoSeedEnv, value)
 		}
 	}
 	for _, value := range []string{"0", "false", "no", "off", " OFF ", "False"} {
-		if autoSeedFromEnv(func(string) string { return value }) {
+		if autoSeedFromEnv(value) {
 			t.Fatalf("%s=%q did not disable autoseed", AutoSeedEnv, value)
 		}
 	}

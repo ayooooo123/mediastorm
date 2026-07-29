@@ -30,11 +30,14 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"novastream/config"
 )
 
 const (
-	// RelayURLEnv names the relay base URL. Its absence is what keeps the whole
-	// integration inert for installs that never asked for it.
+	// RelayURLEnv names the relay base URL. Its absence, with nothing stored in
+	// the admin settings either, is what keeps the whole integration inert for
+	// installs that never asked for it.
 	RelayURLEnv = "PEARTUBE_RELAY_URL"
 	// EnabledEnv force-enables (with the default URL) or force-disables the
 	// integration independently of the URL.
@@ -54,56 +57,104 @@ const (
 )
 
 var (
-	defaultOnce   sync.Once
+	// defaultMu guards the process-wide client. Everything that can seed,
+	// search, resolve, or proxy p2p media reads it, and the admin settings page
+	// can replace it mid-flight, so it is a lock rather than a sync.Once.
+	defaultMu     sync.RWMutex
 	defaultClient *Client
+	// defaultConfigured records that a configuration has been applied, so the
+	// first reader falls back to the environment exactly once instead of
+	// re-reading it on every call.
+	defaultConfigured bool
 )
 
 // Default returns the process-wide relay client, or nil when no relay is
 // configured. Every integration point treats nil as "this feature does not
-// exist", so an install without PEARTUBE_RELAY_URL behaves exactly as before.
+// exist", so an install with no relay behaves exactly as before.
+//
+// Read it per use rather than capturing it: Configure can replace it when an
+// operator saves the admin settings, and a captured client goes stale.
 func Default() *Client {
-	defaultOnce.Do(func() {
-		client, err := newFromEnv(os.Getenv)
-		if err != nil {
-			log.Printf("[peartube] relay disabled: %v", err)
-			return
-		}
-		if client != nil {
-			log.Printf("[peartube] relay configured at %s", client.baseURL)
-		}
-		defaultClient = client
-	})
+	defaultMu.RLock()
+	if defaultConfigured {
+		client := defaultClient
+		defaultMu.RUnlock()
+		return client
+	}
+	defaultMu.RUnlock()
+
+	defaultMu.Lock()
+	defer defaultMu.Unlock()
+	if !defaultConfigured {
+		// Reached before the admin settings were applied — during startup, or
+		// in a test. The environment alone is the answer, which is what this
+		// integration did before it was configurable.
+		applyLocked(resolve(config.PearTubeSettings{}, os.Getenv))
+	}
 	return defaultClient
 }
 
-func newFromEnv(getenv func(string) string) (*Client, error) {
-	raw := strings.TrimSpace(getenv(RelayURLEnv))
-	switch strings.ToLower(strings.TrimSpace(getenv(EnabledEnv))) {
-	case "0", "false", "no", "off":
-		return nil, nil
-	case "1", "true", "yes", "on":
-		if raw == "" {
-			raw = DefaultRelayURL
-		}
-	default:
-		if raw == "" {
-			return nil, nil
-		}
+// Configure installs an effective configuration process-wide and returns the
+// resulting client, which is nil when no relay is configured.
+//
+// It is called once at startup with the stored settings and again every time
+// they are saved, which is what lets an operator point this backend at a relay,
+// move it, or switch it off without restarting the container.
+func Configure(resolved Resolved) *Client {
+	defaultMu.Lock()
+	defer defaultMu.Unlock()
+	applyLocked(resolved)
+	return defaultClient
+}
+
+// applyLocked installs a configuration. Must be called with defaultMu held.
+//
+// An unchanged URL keeps the existing client rather than building an equivalent
+// one, so a settings save unrelated to p2p does not throw away the catalog cache
+// or re-announce a relay gate that never moved.
+func applyLocked(resolved Resolved) {
+	defaultConfigured = true
+
+	previous := ""
+	if defaultClient != nil {
+		previous = defaultClient.baseURL
 	}
-	return New(raw)
+	if resolved.RelayURL == "" {
+		if previous != "" {
+			log.Printf("[peartube] relay disabled (was %s)", previous)
+		}
+		defaultClient = nil
+		return
+	}
+	client, err := New(resolved.RelayURL)
+	if err != nil {
+		log.Printf("[peartube] relay disabled: %v", err)
+		defaultClient = nil
+		return
+	}
+	if client.baseURL == previous {
+		return
+	}
+	log.Printf("[peartube] relay configured at %s", client.baseURL)
+	defaultClient = client
 }
 
 // New builds a relay client for an explicit base URL.
+//
+// The errors name the value rather than where it came from: a relay URL now
+// arrives from the admin settings as often as from PEARTUBE_RELAY_URL, and an
+// operator typing one into a settings field must not be told to go fix an
+// environment variable they never set.
 func New(rawBaseURL string) (*Client, error) {
 	parsed, err := url.Parse(strings.TrimSpace(rawBaseURL))
 	if err != nil {
-		return nil, fmt.Errorf("%s is not a URL: %w", RelayURLEnv, err)
+		return nil, fmt.Errorf("relay URL %q is not a URL: %w", rawBaseURL, err)
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return nil, fmt.Errorf("%s must be an http(s) URL", RelayURLEnv)
+		return nil, fmt.Errorf("relay URL %q must be an http(s) URL", rawBaseURL)
 	}
 	if parsed.Host == "" {
-		return nil, fmt.Errorf("%s is missing a host", RelayURLEnv)
+		return nil, fmt.Errorf("relay URL %q is missing a host", rawBaseURL)
 	}
 	base := strings.TrimSuffix(parsed.Scheme+"://"+parsed.Host+parsed.Path, "/")
 	return &Client{

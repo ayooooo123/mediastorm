@@ -6116,9 +6116,10 @@ func configuredProviderHostPolicy(configManager ConfigProvider) requestsecurity.
 			}
 		}
 	}
-	// A PearTube relay is a p2p media origin, configured by environment rather
-	// than by settings and usually on loopback. Without this the SSRF guard
-	// would refuse to proxy the very stream a p2p result resolved to.
+	// A PearTube relay is a p2p media origin, usually on loopback. Read live so a
+	// relay saved in the admin settings is trusted without a restart. Without this
+	// the SSRF guard would refuse to proxy the very stream a p2p result resolved
+	// to.
 	if relay := peartube.Default(); relay != nil {
 		addURLOrigin(relay.BaseURL())
 	}

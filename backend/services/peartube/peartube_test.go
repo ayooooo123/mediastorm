@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"novastream/config"
 	"novastream/models"
 )
 
@@ -506,10 +507,12 @@ func TestArchiveStatusSurfacesRelayError(t *testing.T) {
 	}
 }
 
+// The environment alone must still gate the integration exactly as it did
+// before the admin settings existed: nothing set means no relay at all.
 func TestEnvGatingKeepsIntegrationInert(t *testing.T) {
 	empty := func(string) string { return "" }
-	if client, err := newFromEnv(empty); client != nil || err != nil {
-		t.Fatalf("unset env produced client=%v err=%v", client, err)
+	if resolved := resolve(config.PearTubeSettings{}, empty); resolved.RelayURL != "" || resolved.Enabled {
+		t.Fatalf("unset env produced %+v", resolved)
 	}
 
 	enabled := func(key string) string {
@@ -518,12 +521,9 @@ func TestEnvGatingKeepsIntegrationInert(t *testing.T) {
 		}
 		return ""
 	}
-	client, err := newFromEnv(enabled)
-	if err != nil {
-		t.Fatalf("newFromEnv: %v", err)
-	}
-	if client == nil || client.BaseURL() != DefaultRelayURL {
-		t.Fatalf("enabled without a URL gave %v", client)
+	resolved := resolve(config.PearTubeSettings{}, enabled)
+	if resolved.RelayURL != DefaultRelayURL || !resolved.Enabled || !resolved.EnabledFromEnv {
+		t.Fatalf("enabled without a URL gave %+v", resolved)
 	}
 
 	off := func(key string) string {
@@ -535,8 +535,8 @@ func TestEnvGatingKeepsIntegrationInert(t *testing.T) {
 		}
 		return ""
 	}
-	if client, _ := newFromEnv(off); client != nil {
-		t.Fatal("an explicit disable was overridden by a configured URL")
+	if resolved := resolve(config.PearTubeSettings{}, off); resolved.RelayURL != "" || resolved.Enabled {
+		t.Fatalf("an explicit disable was overridden by a configured URL: %+v", resolved)
 	}
 }
 

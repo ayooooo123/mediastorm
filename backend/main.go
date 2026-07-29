@@ -51,7 +51,6 @@ import (
 	"novastream/services/mdblist"
 	"novastream/services/metadata"
 	"novastream/services/notifications"
-	"novastream/services/peartube"
 	"novastream/services/playback"
 	"novastream/services/plex"
 	"novastream/services/prewarm"
@@ -807,14 +806,23 @@ func main() {
 	localMediaHandler := handlers.NewLocalMediaHandler(localMediaService, userService, settings.Transmux.Enabled)
 	localMediaHandler.SetMetadataLanguageProviders(metadataService, cfgManager, userSettingsService)
 	localMediaHandler.SetRemoteMediaService(remoteMediaService)
-	// Inert unless PEARTUBE_RELAY_URL (or PEARTUBE_ENABLED) is set.
-	pearTubeHandler := handlers.NewPearTubeHandler(peartube.Default(), localMediaService)
+	// Inert unless the admin settings or PEARTUBE_RELAY_URL/PEARTUBE_ENABLED name
+	// a relay. ApplyPearTubeSettings below installs the effective configuration.
+	pearTubeHandler := handlers.NewPearTubeHandler(localMediaService)
 	// Lets a seed name the stream path a playback resolve returned, so a debrid
 	// or usenet source is re-resolved to a current URL at seed time instead of
 	// the caller shipping an expired one.
 	pearTubeHandler.SetStreamResolver(compositeProvider)
+	// The p2p search source captured the relay client when it was built, so it
+	// has to be handed the new one whenever the relay is reconfigured.
+	pearTubeHandler.AddRelayConsumer(indexerService)
+	// Configure the integration from the stored settings, and again on every
+	// settings save, so a relay can be added, moved, or switched off from the
+	// admin settings page without restarting the container.
+	pearTubeHandler.ApplyPearTubeSettings(settings.PearTube)
+	settingsHandler.SetPearTubeConfigurer(pearTubeHandler)
 	// Seed what a viewer starts watching into the swarm. Inert without a relay;
-	// with one, on unless PEARTUBE_AUTOSEED names a false value.
+	// with one, on unless the operator turned auto-seeding off.
 	historyHandler.SetAutoSeeder(pearTubeHandler)
 	userSettingsHandler.LocalMedia = localMediaService
 	userSettingsHandler.SetPrequeueStore(prequeueHandler.GetStore())

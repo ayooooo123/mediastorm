@@ -1219,6 +1219,44 @@ var SettingsSchema = map[string]interface{}{
 			"enableTranslatedSubs":  map[string]interface{}{"type": "boolean", "label": "Enable Translated Subtitles", "description": "Allow automatic translation of embedded English subtitles into the preferred subtitle language", "order": 4},
 		},
 	},
+	// PearTube is server-level, so every field is globalOnly: a peer-to-peer
+	// relay is one per install, not one per profile.
+	//
+	// Precedence for all three fields: what you save here wins, and the matching
+	// environment variable is the default while the field is left unset. An
+	// empty relay URL with no environment fallback means the integration does
+	// not exist. See config.PearTubeSettings.
+	"peartube": map[string]interface{}{
+		"label":       "PearTube (peer-to-peer)",
+		"icon":        "share",
+		"group":       "services",
+		"order":       3,
+		"description": "Serve and publish media over the PearTube peer-to-peer swarm through a relay process. Saved values take effect immediately — no restart. Anything left unset falls back to the matching environment variable (PEARTUBE_RELAY_URL, PEARTUBE_ENABLED, PEARTUBE_AUTOSEED), and what you save here overrides it.",
+		"fields": map[string]interface{}{
+			"relayUrl": map[string]interface{}{
+				"type":        "text",
+				"label":       "Relay URL",
+				"description": "Base URL of the PearTube relay. Leave empty to turn the integration off, which is the default. The relay is expected to be reachable only from this server: its API is unauthenticated.",
+				"placeholder": "http://127.0.0.1:8178",
+				"order":       0,
+				"globalOnly":  true,
+			},
+			"enabled": map[string]interface{}{
+				"type":        "boolean",
+				"label":       "Enable PearTube",
+				"description": "Use the relay. A relay URL on its own already enables it; turn this on to use the default relay address without naming one, or off to keep a configured relay unused.",
+				"order":       1,
+				"globalOnly":  true,
+			},
+			"autoSeed": map[string]interface{}{
+				"type":        "boolean",
+				"label":       "Auto-seed what I watch",
+				"description": "When a title starts playing, this server asks the relay to fetch that title and publish it, so it becomes available to the peer-to-peer network. The relay downloads the source itself; no media passes through this server. On by default whenever a relay is configured. Manual seeding keeps working either way.",
+				"order":       2,
+				"globalOnly":  true,
+			},
+		},
+	},
 	"mdblist": map[string]interface{}{
 		"label":    "MDBList",
 		"icon":     "star",

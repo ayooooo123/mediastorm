@@ -3,47 +3,25 @@ package peartube
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
-	"sync"
 )
 
-// AutoSeedEnv is the switch that turns watch-triggered seeding off.
+// AutoSeedEnv is the environment default for the switch that turns
+// watch-triggered seeding off. The stored admin setting wins over it; see
+// config.PearTubeSettings for the precedence rule and Resolve for the code.
 //
 // Precedence, outermost first:
 //
-//  1. RelayURLEnv / EnabledEnv decide whether the integration exists at all.
-//     Without a relay there is nothing to seed to, and no value of AutoSeedEnv
-//     can change that. That is what keeps an install which never asked for p2p
-//     behaving exactly as it did before: no relay, no seeding, no new calls.
-//  2. AutoSeedEnv set to a false value (0, false, no, off) disables the
-//     automatic trigger. The manual seed endpoint keeps working either way.
+//  1. The relay URL decides whether the integration exists at all. Without a
+//     relay there is nothing to seed to, and no value of this switch can change
+//     that. That is what keeps an install which never asked for p2p behaving
+//     exactly as it did before: no relay, no seeding, no new calls.
+//  2. A false value (0, false, no, off) disables the automatic trigger. The
+//     manual seed endpoint keeps working either way.
 //  3. Anything else, unset included, enables it. An operator who configured a
 //     relay wants the swarm to grow, so contributing what they watch is the
 //     useful default rather than a setting to discover.
 const AutoSeedEnv = "PEARTUBE_AUTOSEED"
-
-var (
-	autoSeedOnce  sync.Once
-	autoSeedState bool
-)
-
-// AutoSeedEnabled reports whether starting a playback should publish its source
-// into the swarm. It says nothing about whether a relay exists: the caller holds
-// the client, and a nil client is the outer gate.
-func AutoSeedEnabled() bool {
-	autoSeedOnce.Do(func() { autoSeedState = autoSeedFromEnv(os.Getenv) })
-	return autoSeedState
-}
-
-func autoSeedFromEnv(getenv func(string) string) bool {
-	switch strings.ToLower(strings.TrimSpace(getenv(AutoSeedEnv))) {
-	case "0", "false", "no", "off":
-		return false
-	default:
-		return true
-	}
-}
 
 // EntityKey is the swarm's identity for a title, derived from the coordinates a
 // seed would publish it under. One key serves two purposes that must agree:

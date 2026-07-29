@@ -49,6 +49,7 @@ type Settings struct {
 	Network         NetworkSettings         `json:"network,omitempty"`
 	Ranking         RankingSettings         `json:"ranking,omitempty"`
 	BackupRetention BackupRetentionSettings `json:"backupRetention,omitempty"`
+	PearTube        PearTubeSettings        `json:"peartube,omitempty"`
 }
 
 type ServerSettings struct {
@@ -1230,6 +1231,33 @@ func (m *MDBListSettings) RemoveAccount(id string) bool {
 		}
 	}
 	return false
+}
+
+// PearTubeSettings configures the PearTube peer-to-peer relay integration.
+//
+// Precedence, applied per field and identically to all three: a stored value
+// wins whenever it is present, and the matching environment variable is the
+// default that applies while it is absent. Present means a non-empty RelayURL
+// and a non-nil Enabled/AutoSeed — which is exactly why the two switches are
+// pointers. A saved "off" has to be distinguishable from "never configured
+// here, ask the environment", or an operator could never turn off something the
+// environment turned on.
+//
+// The all-absent zero value therefore reproduces the environment-only behaviour
+// this integration shipped with, and an install with no relay anywhere stays
+// completely inert.
+type PearTubeSettings struct {
+	// RelayURL is the relay's base URL. Empty, with no environment fallback,
+	// means there is no relay and the integration does not exist.
+	RelayURL string `json:"relayUrl,omitempty"`
+	// Enabled force-enables or force-disables the integration independently of
+	// the URL, mirroring PEARTUBE_ENABLED. Absent means "a configured URL is the
+	// switch".
+	Enabled *bool `json:"enabled,omitempty"`
+	// AutoSeed publishes each title a viewer starts watching into the swarm,
+	// mirroring PEARTUBE_AUTOSEED. Absent means on, because an operator who
+	// configured a relay wants the swarm to grow.
+	AutoSeed *bool `json:"autoSeed,omitempty"`
 }
 
 // TraktAccount represents a registered Trakt account with its own credentials and OAuth tokens.

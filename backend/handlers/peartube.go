@@ -18,6 +18,7 @@ import (
 
 	"github.com/gorilla/mux"
 
+	"novastream/config"
 	"novastream/internal/mediaidentity"
 	"novastream/models"
 	"novastream/services/localmedia"
@@ -60,13 +61,24 @@ type streamURLResolver interface {
 // see OnPlaybackStarted for why the trigger is a playback heartbeat and not a
 // resolve or a byte range.
 type PearTubeHandler struct {
-	relay      *peartube.Client
 	localMedia localMediaLibrary
 	streams    streamURLResolver
 
-	// autoSeed is the operator's switch, read once at startup rather than on
-	// every heartbeat.
+	// configMu guards the effective configuration below, which the admin
+	// settings page can replace while requests and heartbeats are in flight.
+	configMu sync.RWMutex
+	// relay is the client for the configured relay, or nil when this install has
+	// no relay at all. Nil is the outer gate for the whole integration.
+	relay *peartube.Client
+	// autoSeed is the operator's switch for watch-triggered seeding.
 	autoSeed bool
+	// resolved is where the effective configuration came from, reported by
+	// Status so the admin page can name the environment variable that is
+	// supplying a value instead of presenting it as the operator's own choice.
+	resolved peartube.Resolved
+	// relayConsumers are the services that captured the relay client when they
+	// were built and therefore have to be handed the new one on a settings save.
+	relayConsumers []PearTubeRelayConsumer
 
 	// autoSeedClaims holds the titles an automatic seed has already taken
 	// responsibility for, keyed by peartube.EntityKey. See claimAutoSeed.
@@ -74,13 +86,70 @@ type PearTubeHandler struct {
 	autoSeedClaims map[string]time.Time
 }
 
-func NewPearTubeHandler(relay *peartube.Client, localMedia *localmedia.Service) *PearTubeHandler {
-	handler := &PearTubeHandler{relay: relay, autoSeed: peartube.AutoSeedEnabled()}
+// PearTubeRelayConsumer is a service that captured the relay client when it was
+// built and cannot pick up a replacement on its own. indexer.Service satisfies
+// it via SetPearTubeRelay.
+type PearTubeRelayConsumer interface {
+	SetPearTubeRelay(*peartube.Client)
+}
+
+// NewPearTubeHandler builds the handler with no relay. The effective
+// configuration arrives from ApplyPearTubeSettings, which the caller must invoke
+// once at startup with the stored settings.
+func NewPearTubeHandler(localMedia *localmedia.Service) *PearTubeHandler {
+	handler := &PearTubeHandler{}
 	// A typed nil in an interface is not nil; only assign a real service.
 	if localMedia != nil {
 		handler.localMedia = localMedia
 	}
 	return handler
+}
+
+// AddRelayConsumer registers a service that has to be handed the relay client
+// whenever it changes.
+func (h *PearTubeHandler) AddRelayConsumer(consumer PearTubeRelayConsumer) {
+	if consumer == nil {
+		return
+	}
+	h.configMu.Lock()
+	h.relayConsumers = append(h.relayConsumers, consumer)
+	relay := h.relay
+	h.configMu.Unlock()
+	consumer.SetPearTubeRelay(relay)
+}
+
+// ApplyPearTubeSettings installs the operator's PearTube configuration on the
+// running integration. It is called once at startup and again on every settings
+// save, which is what lets an operator point this backend at a relay, move it,
+// or switch it off without restarting the container.
+//
+// One call reconfigures everything: peartube.Configure replaces the process-wide
+// client that playback resolution and the media proxy read per use, and the
+// services that captured it at build time are handed the new one here.
+func (h *PearTubeHandler) ApplyPearTubeSettings(stored config.PearTubeSettings) {
+	resolved := peartube.Resolve(stored)
+	relay := peartube.Configure(resolved)
+
+	h.configMu.Lock()
+	h.relay = relay
+	h.autoSeed = resolved.AutoSeed
+	h.resolved = resolved
+	consumers := h.relayConsumers
+	h.configMu.Unlock()
+
+	for _, consumer := range consumers {
+		consumer.SetPearTubeRelay(relay)
+	}
+}
+
+// currentRelay returns the configured relay client, or nil when there is none.
+func (h *PearTubeHandler) currentRelay() *peartube.Client {
+	if h == nil {
+		return nil
+	}
+	h.configMu.RLock()
+	defer h.configMu.RUnlock()
+	return h.relay
 }
 
 // SetStreamResolver supplies the streaming provider that resolves internal
@@ -143,15 +212,37 @@ const statusProbeTimeout = 5 * time.Second
 // actually do right now — so a frontend can hide the seed control, and an
 // operator can see that the relay is up but has not been allowed to serve
 // media, together with the command that fixes it.
+//
+// It also reports which fields the environment is supplying, because the admin
+// settings page renders stored values: without this it would show an empty relay
+// URL field beside a working relay and give no hint why.
 func (h *PearTubeHandler) Status(w http.ResponseWriter, r *http.Request) {
-	if h.relay == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"enabled": false, "state": "disabled"})
+	h.configMu.RLock()
+	relay, autoSeed, resolved := h.relay, h.autoSeed, h.resolved
+	h.configMu.RUnlock()
+
+	// Where each effective value came from. Reported whether or not a relay
+	// exists: "PEARTUBE_ENABLED is holding this off" is exactly the thing an
+	// operator staring at a disabled section needs to be told.
+	fromEnv := map[string]bool{
+		"relayUrl": resolved.RelayURLFromEnv,
+		"enabled":  resolved.EnabledFromEnv,
+		"autoSeed": resolved.AutoSeedFromEnv,
+	}
+
+	if relay == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"enabled":  false,
+			"state":    "disabled",
+			"autoSeed": autoSeed,
+			"fromEnv":  fromEnv,
+		})
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), statusProbeTimeout)
 	defer cancel()
-	relayState := h.relay.Probe(ctx)
+	relayState := relay.Probe(ctx)
 
 	body := map[string]any{
 		"enabled":          true,
@@ -162,8 +253,9 @@ func (h *PearTubeHandler) Status(w http.ResponseWriter, r *http.Request) {
 		"catalogEntities":  relayState.CatalogEntities,
 		// Whether starting a playback publishes it, so an admin screen can say
 		// so rather than leaving the operator to infer it from the environment.
-		"autoSeed": h.autoSeed,
+		"autoSeed": autoSeed,
 		"state":    p2pStateLabel(relayState),
+		"fromEnv":  fromEnv,
 	}
 	if relayState.Remedy != "" {
 		body["remedy"] = relayState.Remedy
@@ -189,7 +281,8 @@ func p2pStateLabel(state peartube.RelayState) string {
 
 // Seed publishes something this viewer can play into the PearTube swarm.
 func (h *PearTubeHandler) Seed(w http.ResponseWriter, r *http.Request) {
-	if h.relay == nil {
+	relay := h.currentRelay()
+	if relay == nil {
 		writeJSONError(w, "peartube relay is not configured", http.StatusServiceUnavailable)
 		return
 	}
@@ -199,7 +292,7 @@ func (h *PearTubeHandler) Seed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	submit, err := h.planSeed(r.Context(), req)
+	submit, err := h.planSeed(r.Context(), relay, req)
 	if err != nil {
 		status := http.StatusBadRequest
 		if errors.Is(err, localmedia.ErrItemNotFound) {
@@ -296,6 +389,10 @@ func (h *PearTubeHandler) OnPlaybackStarted(update models.PlaybackProgressUpdate
 // be submitted off the request path.
 type autoSeedPlan struct {
 	handler *PearTubeHandler
+	// relay is the client the plan was made against, carried rather than
+	// re-read: a settings save could repoint the relay between the claim and the
+	// submission, and this seed belongs to the relay whose catalog it checked.
+	relay   *peartube.Client
 	request SeedRequest
 	key     string
 }
@@ -304,7 +401,13 @@ type autoSeedPlan struct {
 // should become a seed — and claims the title if so, so that the decision is
 // made once even when heartbeats overlap.
 func (h *PearTubeHandler) planAutoSeed(update models.PlaybackProgressUpdate) (autoSeedPlan, bool) {
-	if h == nil || h.relay == nil || !h.autoSeed {
+	if h == nil {
+		return autoSeedPlan{}, false
+	}
+	h.configMu.RLock()
+	relay, autoSeed := h.relay, h.autoSeed
+	h.configMu.RUnlock()
+	if relay == nil || !autoSeed {
 		return autoSeedPlan{}, false
 	}
 	request, ok := autoSeedRequest(update)
@@ -318,7 +421,7 @@ func (h *PearTubeHandler) planAutoSeed(update models.PlaybackProgressUpdate) (au
 	if !h.claimAutoSeed(key) {
 		return autoSeedPlan{}, false
 	}
-	return autoSeedPlan{handler: h, request: request, key: key}, true
+	return autoSeedPlan{handler: h, relay: relay, request: request, key: key}, true
 }
 
 // autoSeedRequest turns a playback heartbeat into the seed request the manual
@@ -418,7 +521,7 @@ func (p autoSeedPlan) submit() {
 	ctx, cancel := context.WithTimeout(context.Background(), autoSeedTimeout)
 	defer cancel()
 
-	published, err := p.handler.relay.CatalogHasEntity(ctx, seedCoordinates(p.request))
+	published, err := p.relay.CatalogHasEntity(ctx, seedCoordinates(p.request))
 	switch {
 	case err != nil:
 		// The relay could not say whether the swarm already has this. Seeding
@@ -438,7 +541,7 @@ func (p autoSeedPlan) submit() {
 	// From here the claim is kept whatever happens. A source the relay refuses
 	// will be refused again on the next heartbeat, and one log line per title
 	// per guard window is the right amount of noise for that.
-	submit, err := p.handler.planSeed(ctx, p.request)
+	submit, err := p.handler.planSeed(ctx, p.relay, p.request)
 	if err != nil {
 		log.Printf("[peartube] autoseed %s: not seedable: %v", p.key, err)
 		return
@@ -472,7 +575,7 @@ func seedCoordinates(req SeedRequest) peartube.ArchiveCoordinates {
 // planSeed picks the relay transport a seed request needs and validates
 // everything that can be checked without a round trip. Only the returned
 // closure talks to the relay, so a caller mistake stays a client error.
-func (h *PearTubeHandler) planSeed(ctx context.Context, req SeedRequest) (func(context.Context) (*peartube.ArchiveJob, error), error) {
+func (h *PearTubeHandler) planSeed(ctx context.Context, relay *peartube.Client, req SeedRequest) (func(context.Context) (*peartube.ArchiveJob, error), error) {
 	coordinates := seedCoordinates(req)
 
 	onDisk := strings.TrimSpace(req.LocalMediaItemID) != "" || strings.TrimSpace(req.FilePath) != ""
@@ -494,7 +597,7 @@ func (h *PearTubeHandler) planSeed(ctx context.Context, req SeedRequest) (func(c
 		log.Printf("[peartube] seeding %s tmdb=%s title=%q from %s",
 			archive.ContentKind, archive.TMDBID, archive.TMDBTitle, seedSourceForLog(source))
 		return func(ctx context.Context) (*peartube.ArchiveJob, error) {
-			return h.relay.ArchiveURL(ctx, archive)
+			return relay.ArchiveURL(ctx, archive)
 		}, nil
 
 	case onDisk:
@@ -505,7 +608,7 @@ func (h *PearTubeHandler) planSeed(ctx context.Context, req SeedRequest) (func(c
 		log.Printf("[peartube] seeding %s tmdb=%s title=%q path=%q",
 			archive.ContentKind, archive.TMDBID, archive.TMDBTitle, archive.FilePath)
 		return func(ctx context.Context) (*peartube.ArchiveJob, error) {
-			return h.relay.Archive(ctx, archive)
+			return relay.Archive(ctx, archive)
 		}, nil
 
 	default:
@@ -554,11 +657,12 @@ func seedSourceForLog(raw string) string {
 
 // SeedStatus proxies the relay's job status so the frontend polls one origin.
 func (h *PearTubeHandler) SeedStatus(w http.ResponseWriter, r *http.Request) {
-	if h.relay == nil {
+	relay := h.currentRelay()
+	if relay == nil {
 		writeJSONError(w, "peartube relay is not configured", http.StatusServiceUnavailable)
 		return
 	}
-	status, err := h.relay.ArchiveStatus(r.Context(), mux.Vars(r)["jobId"])
+	status, err := relay.ArchiveStatus(r.Context(), mux.Vars(r)["jobId"])
 	if err != nil {
 		var apiErr *peartube.APIError
 		if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {

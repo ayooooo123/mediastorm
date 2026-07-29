@@ -39,6 +39,13 @@ type SearchCacheClearer interface {
 	ClearSearchCache()
 }
 
+// PearTubeConfigurer applies saved PearTube settings to the running p2p
+// integration, so a relay change takes effect without a container restart.
+// *PearTubeHandler satisfies it.
+type PearTubeConfigurer interface {
+	ApplyPearTubeSettings(config.PearTubeSettings)
+}
+
 func shouldClearPrequeueForGlobalSettingsChange(oldSettings, newSettings config.Settings) bool {
 	if oldSettings.Display.ShowParsedBadges != newSettings.Display.ShowParsedBadges {
 		return true
@@ -66,6 +73,7 @@ type SettingsHandler struct {
 	ClientSettingsBatch user_settings.ClientSettingsBatch
 	PrequeueStore       PrequeueClearer
 	SearchCache         SearchCacheClearer
+	PearTube            PearTubeConfigurer
 }
 
 func NewSettingsHandler(m *config.Manager) *SettingsHandler {
@@ -129,6 +137,12 @@ func (h *SettingsHandler) SetPrequeueStore(ps PrequeueClearer) {
 // SetSearchCacheClearer sets the search cache invalidator for ranking/filtering changes.
 func (h *SettingsHandler) SetSearchCacheClearer(sc SearchCacheClearer) {
 	h.SearchCache = sc
+}
+
+// SetPearTubeConfigurer sets the p2p integration for hot reloading the relay URL
+// and the seeding switches.
+func (h *SettingsHandler) SetPearTubeConfigurer(pt PearTubeConfigurer) {
+	h.PearTube = pt
 }
 
 // SettingsResponse wraps config.Settings with additional runtime information.
@@ -1155,6 +1169,12 @@ func (h *SettingsHandler) reloadServices(s config.Settings) {
 	// Reload debrid scrapers (Torrentio, Jackett, etc.)
 	if h.DebridSearchService != nil {
 		h.DebridSearchService.ReloadScrapers()
+	}
+
+	// Repoint the p2p integration: relay URL, enable switch, and the autoseed
+	// switch all take effect here rather than at the next container start.
+	if h.PearTube != nil {
+		h.PearTube.ApplyPearTubeSettings(s.PearTube)
 	}
 }
 

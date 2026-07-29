@@ -398,6 +398,7 @@
     let mediaLibrariesData = []; // Configured local, Plex, and Jellyfin libraries
     let hasDefaultPassword = false; // Whether admin has default password
     let hardwareAccelerationStatus = null;
+    let pearTubeStatus = null; // Live relay verdict from /api/p2p/status
     let userOverrides = {{json .UserOverrides}}; // Map of userId -> hasOverrides
     const isAdmin = {{json .IsAdmin}};
     const settingsDebugSessionId = 'settings-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
@@ -2440,6 +2441,7 @@
         'shield': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
         'key': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>',
         'wifi': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>',
+        'share': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>',
     };
 
     function getIcon(name) { return icons[name] || icons['server']; }
@@ -3249,6 +3251,9 @@
             }
             return '<p class="form-hint">AltMount and Decypharr usually use <code>/webdav</code>; NZBDav and NZBDavEx usually use the root URL.</p>';
         }
+        if (sectionKey === 'peartube') {
+            return renderPearTubeFieldHint(fieldKey);
+        }
         if (fieldKey !== 'maxStreams') return '';
         if (sectionKey === 'liveTV' && selectedUserId) {
             return '<p class="form-hint">Leave empty to inherit global.</p>';
@@ -3269,6 +3274,125 @@
             console.warn('Failed to load hardware acceleration status:', e);
         }
     }
+
+    async function loadPearTubeStatus() {
+        if (!isAdmin) return;
+        try {
+            const response = await fetch(basePath + '/api/p2p/status', { credentials: 'same-origin' });
+            if (!response.ok) return;
+            pearTubeStatus = await response.json();
+            if (!selectedUserId && !selectedClientId) renderSettings();
+        } catch (e) {
+            console.warn('Failed to load PearTube status:', e);
+        }
+    }
+
+    // Say what each field is actually doing right now, and name the environment
+    // variable when that is where the value came from.
+    //
+    // The switches render the stored value, which is absent until an operator
+    // touches them. An off-looking toggle beside an integration that is running
+    // would be a lie, so an untouched switch says so in as many words instead of
+    // letting its position imply a decision nobody made.
+    function renderPearTubeFieldHint(fieldKey) {
+        if (!pearTubeStatus) return '<p class="form-hint">Checking the relay…</p>';
+        const fromEnv = pearTubeStatus.fromEnv || {};
+        const onOff = (value) => (value ? 'on' : 'off');
+        const stored = getValue('peartube.' + fieldKey) !== undefined;
+        const overrides = (envVar, effective) => '<strong>' + envVar + '</strong> is providing the current value (' +
+            effective + '). This toggle is not set; switching it stores a value that overrides the variable.';
+
+        if (fieldKey === 'relayUrl') {
+            if (fromEnv.relayUrl) {
+                return '<p class="form-hint"><strong>PEARTUBE_RELAY_URL</strong> is providing the current value (<code>' +
+                    escapeHtml(pearTubeStatus.relayUrl || '') + '</code>). A URL saved here overrides it.</p>';
+            }
+            if (pearTubeStatus.enabled) {
+                return '<p class="form-hint">In use: <code>' + escapeHtml(pearTubeStatus.relayUrl || '') + '</code></p>';
+            }
+            return '<p class="form-hint">No relay configured, so nothing peer-to-peer runs on this server.</p>';
+        }
+
+        if (fieldKey === 'enabled') {
+            if (fromEnv.enabled) {
+                return '<p class="form-hint">' + overrides('PEARTUBE_ENABLED', onOff(pearTubeStatus.enabled)) + '</p>';
+            }
+            if (!stored) {
+                return '<p class="form-hint">Not set. PearTube is currently ' + onOff(pearTubeStatus.enabled) +
+                    (pearTubeStatus.enabled ? ', because a relay URL is configured.' : ', because no relay URL is configured.') + '</p>';
+            }
+            return '<p class="form-hint">PearTube is currently ' + onOff(pearTubeStatus.enabled) + '.</p>';
+        }
+
+        if (fieldKey === 'autoSeed') {
+            const seeding = pearTubeStatus.autoSeed && pearTubeStatus.enabled;
+            const effective = 'Auto-seeding is currently ' + onOff(seeding) +
+                (pearTubeStatus.autoSeed && !pearTubeStatus.enabled ? ' (no relay to seed to)' : '') + '.';
+            if (fromEnv.autoSeed) {
+                return '<p class="form-hint">' + overrides('PEARTUBE_AUTOSEED', onOff(pearTubeStatus.autoSeed)) + ' ' + effective + '</p>';
+            }
+            if (!stored) {
+                return '<p class="form-hint">Not set, which means on whenever a relay is configured. ' + effective + '</p>';
+            }
+            return '<p class="form-hint">' + effective + '</p>';
+        }
+        return '';
+    }
+
+    // The relay's own verdict, so a misconfigured relay is diagnosable from this
+    // page instead of from the container logs. "not_open" is the important one:
+    // the relay is up and still accepts seeds, it just refuses to enumerate or
+    // serve media until the operator opts in, and it names the flag itself.
+    function renderPearTubeStatusPanel() {
+        if (!pearTubeStatus) {
+            return '<div class="form-hint" style="margin-bottom: 1rem;">Checking the relay…</div>';
+        }
+        const state = String(pearTubeStatus.state || 'disabled');
+        const tones = {
+            ready: { color: 'var(--success)', label: 'Ready' },
+            not_open: { color: 'var(--warning)', label: 'Reachable, but not serving media' },
+            unreachable: { color: 'var(--error)', label: 'Unreachable' },
+            disabled: { color: 'var(--text-muted)', label: 'Disabled' },
+        };
+        const tone = tones[state] || tones.disabled;
+
+        const facts = [];
+        if (state === 'disabled') {
+            facts.push('No relay is configured, so no peer-to-peer search, playback, or seeding happens.');
+        } else {
+            facts.push('Relay: <code>' + escapeHtml(pearTubeStatus.relayUrl || '') + '</code>');
+            if (state === 'ready') {
+                facts.push('Titles the swarm can serve: ' + Number(pearTubeStatus.catalogEntities || 0));
+            }
+            facts.push('Seeding: ' + (pearTubeStatus.seedingAvailable ? 'available' : 'unavailable'));
+            facts.push('Auto-seed on playback: ' + (pearTubeStatus.autoSeed ? 'on' : 'off'));
+        }
+
+        let remedyHtml = '';
+        if (state === 'not_open' && pearTubeStatus.remedy) {
+            // Verbatim: it names the exact flag the operator has to set on the relay.
+            remedyHtml = '<div style="margin-top: 0.6rem; padding: 0.6rem 0.75rem; background: rgba(245,158,11,0.1); border: 1px solid var(--warning); border-radius: 6px; font-size: 0.8rem; color: var(--warning);">' +
+                '<strong>Fix on the relay:</strong> <code style="white-space: normal; overflow-wrap: anywhere;">' + escapeHtml(pearTubeStatus.remedy) + '</code></div>';
+        }
+        let detailHtml = '';
+        if (pearTubeStatus.detail) {
+            detailHtml = '<div class="form-hint" style="margin-top: 0.5rem; overflow-wrap: anywhere;">Relay says: ' + escapeHtml(pearTubeStatus.detail) + '</div>';
+        }
+
+        return '<div style="margin-bottom: 1.25rem; padding: 0.85rem 1rem; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius);">' +
+            '<div style="display: flex; align-items: center; gap: 0.55rem; font-weight: 600; font-size: 0.875rem;">' +
+                '<span style="width: 9px; height: 9px; border-radius: 50%; background: ' + tone.color + '; flex-shrink: 0;"></span>' +
+                escapeHtml(tone.label) +
+                '<code style="margin-left: auto; font-size: 0.75rem; color: var(--text-muted);">' + escapeHtml(state) + '</code>' +
+            '</div>' +
+            '<div class="form-hint" style="margin-top: 0.5rem; overflow-wrap: anywhere;">' + facts.join(' · ') + '</div>' +
+            remedyHtml + detailHtml +
+            '<div style="margin-top: 0.75rem;">' +
+                '<button type="button" class="btn btn-secondary btn-sm" onclick="void loadPearTubeStatus()">Re-check relay</button>' +
+            '</div>' +
+        '</div>';
+    }
+
     // Detect when an API-key field has had a full URL/query string pasted into it
     // instead of the bare key. Newznab/debrid keys are plain tokens; if the value
     // carries URL or query syntax the backend will send it verbatim as apikey= and
@@ -5314,6 +5438,7 @@
                     btn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>';
                     showToast('Settings saved successfully');
                     void loadHardwareAccelerationStatus();
+                    void loadPearTubeStatus();
                     setTimeout(() => renderSettings(), 500);
                     // Check if any profiles have overrides
                     await promptPropagateIfNeeded(changedGroups);
@@ -9072,6 +9197,11 @@
             customHtml = renderThemeQuickSelect();
         }
 
+        // The relay's live verdict belongs above the fields it explains.
+        if (sectionKey === 'peartube') {
+            customHtml = renderPearTubeStatusPanel();
+        }
+
         // Add test button for testable object sections
         let testHtml = '';
         if (sectionDef.testable && !selectedUserId && !selectedClientId) {
@@ -9080,7 +9210,8 @@
                 '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg> Test Connection</button>'+
                 '<span id="test-result-'+sectionKey+'" class="test-result"></span></div>';
         }
-        return (sectionKey === 'display' ? customHtml + fieldsHtml : fieldsHtml + customHtml) + testHtml;
+        const prependCustom = sectionKey === 'display' || sectionKey === 'peartube';
+        return (prependCustom ? customHtml + fieldsHtml : fieldsHtml + customHtml) + testHtml;
     }
 
     function sectionShowWhenMatches(sectionDef) {
@@ -10175,6 +10306,7 @@
                     originalSettings = JSON.parse(JSON.stringify(currentSettings));
                     showToast('Settings saved successfully');
                     void loadHardwareAccelerationStatus();
+                    void loadPearTubeStatus();
                     if (committedPendingTextArrays) renderSettings();
                     // Check if any profiles have overrides and offer to propagate
                     await promptPropagateIfNeeded(changedGroups);
@@ -10204,6 +10336,7 @@
 
         if (isAdmin) {
             void loadHardwareAccelerationStatus();
+            void loadPearTubeStatus();
             await Promise.all([loadProfiles(), loadAccounts(), loadTraktAccounts(), loadSimklAccounts(), loadLetterboxdLists(), loadMediaLibraries(), checkDefaultPassword()]);
             const selector = document.getElementById('userSelector');
             // Pre-select from query param if provided
