@@ -16,6 +16,24 @@ func TestPlaybackSettingsNormalizeAllowedTrackLanguages(t *testing.T) {
 	}
 }
 
+func TestEnsureDefaultHomeShelvesBackfillsSharedShelfLimits(t *testing.T) {
+	shelves, changed := EnsureDefaultHomeShelves([]ShelfConfig{
+		{ID: "popular-on-server", Name: "Popular"},
+		{ID: "recently-watched", Name: "Recent"},
+	})
+	if !changed {
+		t.Fatal("expected shared shelf limits to be backfilled")
+	}
+
+	for _, shelf := range shelves {
+		if shelf.ID == "popular-on-server" || shelf.ID == "recently-watched" {
+			if shelf.Limit != 20 {
+				t.Fatalf("%s limit = %d, want 20", shelf.ID, shelf.Limit)
+			}
+		}
+	}
+}
+
 func TestMigrateLibraryShelfConfigs(t *testing.T) {
 	shelves := []ShelfConfig{{ID: "local-library-library-123", Type: "local-library"}}
 

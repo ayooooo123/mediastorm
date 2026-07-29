@@ -79,7 +79,7 @@ func TestSharedShelfQuerySettingsReachAggregation(t *testing.T) {
 	if err := json.NewDecoder(popularResponse.Body).Decode(&popularPayload); err != nil {
 		t.Fatalf("decode popular response: %v", err)
 	}
-	if len(popularPayload.Items) != 1 || popularPayload.Items[0].Title.CardSubtitle != "1 View" {
+	if len(popularPayload.Items) != 1 || popularPayload.Items[0].Title.CardSubtitle != "1 view" {
 		t.Fatalf("popular view context missing from card: %+v", popularPayload.Items)
 	}
 

@@ -737,8 +737,8 @@ func DefaultHomeShelfConfigs() []ShelfConfig {
 		{ID: "trending-tv", Name: "Trending TV Shows", Enabled: true, Order: 9},
 		{ID: "streaming-services", Name: "Streaming Services", Enabled: true, Order: 10},
 		{ID: "live-favorites", Name: "Favorite Channels", Enabled: false, Order: 11},
-		{ID: "popular-on-server", Name: "Popular on This Server", Enabled: false, Order: 12, ActivityWindowDays: 90, MinimumProfiles: 2},
-		{ID: "recently-watched", Name: "Recently Watched", Enabled: false, Order: 13, ActivityWindowDays: 14, MaxItemsPerProfile: 3},
+		{ID: "popular-on-server", Name: "Popular on This Server", Enabled: false, Order: 12, Limit: 20, ActivityWindowDays: 90, MinimumProfiles: 2},
+		{ID: "recently-watched", Name: "Recently Watched", Enabled: false, Order: 13, Limit: 20, ActivityWindowDays: 14, MaxItemsPerProfile: 3},
 	}
 }
 
@@ -1026,6 +1026,7 @@ func EnsureDefaultHomeShelves(shelves []ShelfConfig) ([]ShelfConfig, bool) {
 			Name:               "Popular on This Server",
 			Enabled:            false,
 			Order:              insertOrder,
+			Limit:              20,
 			ActivityWindowDays: 90,
 			MinimumProfiles:    2,
 		})
@@ -1058,6 +1059,7 @@ func EnsureDefaultHomeShelves(shelves []ShelfConfig) ([]ShelfConfig, bool) {
 			Name:               "Recently Watched",
 			Enabled:            false,
 			Order:              insertOrder,
+			Limit:              20,
 			ActivityWindowDays: 14,
 			MaxItemsPerProfile: 3,
 		})
@@ -1067,6 +1069,10 @@ func EnsureDefaultHomeShelves(shelves []ShelfConfig) ([]ShelfConfig, bool) {
 	for i := range nextShelves {
 		switch nextShelves[i].ID {
 		case "popular-on-server":
+			if nextShelves[i].Limit <= 0 {
+				nextShelves[i].Limit = 20
+				changed = true
+			}
 			if nextShelves[i].ActivityWindowDays < 7 || nextShelves[i].ActivityWindowDays > 365 {
 				nextShelves[i].ActivityWindowDays = 90
 				changed = true
@@ -1076,6 +1082,10 @@ func EnsureDefaultHomeShelves(shelves []ShelfConfig) ([]ShelfConfig, bool) {
 				changed = true
 			}
 		case "recently-watched":
+			if nextShelves[i].Limit <= 0 {
+				nextShelves[i].Limit = 20
+				changed = true
+			}
 			if nextShelves[i].ActivityWindowDays < 1 || nextShelves[i].ActivityWindowDays > 90 {
 				nextShelves[i].ActivityWindowDays = 14
 				changed = true

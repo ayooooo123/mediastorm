@@ -6144,6 +6144,7 @@
             id: 'popular-on-server',
             name: 'Popular on This Server',
             enabled: false,
+            limit: 20,
             activityWindowDays: 90,
             minimumProfiles: 2,
         }, 'live-favorites');
@@ -6151,16 +6152,19 @@
             id: 'recently-watched',
             name: 'Recently Watched',
             enabled: false,
+            limit: 20,
             activityWindowDays: 14,
             maxItemsPerProfile: 3,
         }, 'popular-on-server');
         const popularShelf = shelves.find((s) => s.id === 'popular-on-server');
         if (popularShelf) {
+            if (!popularShelf.limit) popularShelf.limit = 20;
             if (!popularShelf.activityWindowDays) popularShelf.activityWindowDays = 90;
             if (!popularShelf.minimumProfiles) popularShelf.minimumProfiles = 2;
         }
         const recentlyWatchedShelf = shelves.find((s) => s.id === 'recently-watched');
         if (recentlyWatchedShelf) {
+            if (!recentlyWatchedShelf.limit) recentlyWatchedShelf.limit = 20;
             if (!recentlyWatchedShelf.activityWindowDays) recentlyWatchedShelf.activityWindowDays = 14;
             if (!recentlyWatchedShelf.maxItemsPerProfile) recentlyWatchedShelf.maxItemsPerProfile = 3;
         }
@@ -6905,6 +6909,7 @@
                     enabled: true,
                     order: Math.max(...shelves.map((s) => s.order || 0), -1) + 1,
                     type: 'builtin',
+                    limit: 20,
                     activityWindowDays: shelfType === 'popular-on-server' ? 90 : 14,
                     minimumProfiles: shelfType === 'popular-on-server' ? 2 : undefined,
                     maxItemsPerProfile: shelfType === 'recently-watched' ? 3 : undefined,

@@ -96,10 +96,10 @@ func TestEnsureDefaultHomeShelvesBackfillsSharedActivitySettings(t *testing.T) {
 			recent = &migrated[i]
 		}
 	}
-	if popular == nil || popular.ActivityWindowDays != 90 || popular.MinimumProfiles != 2 {
+	if popular == nil || popular.Limit != 20 || popular.ActivityWindowDays != 90 || popular.MinimumProfiles != 2 {
 		t.Fatalf("unexpected popular defaults: %+v", popular)
 	}
-	if recent == nil || recent.ActivityWindowDays != 14 || recent.MaxItemsPerProfile != 3 {
+	if recent == nil || recent.Limit != 20 || recent.ActivityWindowDays != 14 || recent.MaxItemsPerProfile != 3 {
 		t.Fatalf("unexpected recent defaults: %+v", recent)
 	}
 }
