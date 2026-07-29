@@ -166,6 +166,32 @@ func TestAdminSettingsSharedActivityShelvesExposeAssociatedSettings(t *testing.T
 	}
 }
 
+func TestProfileActivityPrivacyCopyIncludesDashboardShelf(t *testing.T) {
+	adminBytes, err := adminTemplates.ReadFile("admin_templates/accounts.html")
+	if err != nil {
+		t.Fatalf("read admin accounts template: %v", err)
+	}
+	accountBytes, err := accountTemplatesFS.ReadFile("account_templates/dashboard.html")
+	if err != nil {
+		t.Fatalf("read account dashboard template: %v", err)
+	}
+
+	for name, source := range map[string]string{
+		"admin":   string(adminBytes),
+		"account": string(accountBytes),
+	} {
+		for _, marker := range []string{
+			"Server Activity Sharing",
+			"Recently Watched, and the active Dashboard shelf",
+			">Do not share</option>",
+		} {
+			if !strings.Contains(source, marker) {
+				t.Fatalf("%s profile template missing activity privacy marker %q", name, marker)
+			}
+		}
+	}
+}
+
 func TestUsenetEngineStatusProbeJobIDUsesGUIDForNZBDav(t *testing.T) {
 	for _, engineType := range []string{"nzbdav", "nzbdavex"} {
 		t.Run(engineType, func(t *testing.T) {
