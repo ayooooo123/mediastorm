@@ -32,6 +32,9 @@ services:
     environment:
       - TZ=${TZ:-UTC}
       - DATABASE_URL=postgres://mediastorm:${POSTGRES_PASSWORD:-mediastorm}@postgres:5432/mediastorm?sslmode=disable
+      # Optional: point at a PearTube relay to add p2p as a stream source and
+      # enable seeding. Unset, nothing about search or playback changes.
+      - PEARTUBE_RELAY_URL=${PEARTUBE_RELAY_URL:-}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "http://localhost:7777/health"]

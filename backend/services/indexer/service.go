@@ -30,6 +30,7 @@ import (
 	"novastream/internal/providerbreaker"
 	"novastream/models"
 	"novastream/services/debrid"
+	"novastream/services/peartube"
 	"novastream/utils/filter"
 	"novastream/utils/language"
 
@@ -151,6 +152,9 @@ type Service struct {
 	metadata       metadataSearchService
 	userSettings   userSettingsProvider
 	clientSettings clientSettingsProvider
+	// peartube is the optional p2p source. It is nil, and the p2p leg of every
+	// search is skipped, unless a relay is configured for this install.
+	peartube *peartube.Client
 
 	searchCacheMu sync.RWMutex
 	searchCache   map[string]searchCacheEntry
@@ -190,7 +194,13 @@ func NewService(cfg *config.Manager, metadataSvc metadataSearchService, debridSv
 		metadata:        metadataSvc,
 		searchCache:     make(map[string]searchCacheEntry),
 		providerBreaker: providerbreaker.Shared(),
+		peartube:        peartube.Default(),
 	}
+}
+
+// SetPearTubeRelay overrides the p2p source. Passing nil disables it.
+func (s *Service) SetPearTubeRelay(relay *peartube.Client) {
+	s.peartube = relay
 }
 
 // ClearSearchCache drops cached Search results. It is called when ranking or
@@ -1075,6 +1085,7 @@ type SearchOptions struct {
 	Categories            []string
 	MaxResults            int
 	IMDBID                string
+	TMDBID                string                      // Optional: TMDB id of the title, used to match p2p catalog entities exactly
 	MediaType             string                      // "movie" or "series"
 	Year                  int                         // Release year (for movies)
 	UserID                string                      // Optional: user ID for per-user filtering settings
@@ -1138,6 +1149,7 @@ type searchCacheOptions struct {
 	Categories            []string
 	MaxResults            int
 	IMDBID                string
+	TMDBID                string
 	MediaType             string
 	Year                  int
 	UserID                string
@@ -1159,6 +1171,7 @@ func buildSearchCacheOptions(opts SearchOptions) searchCacheOptions {
 		Categories:            append([]string(nil), opts.Categories...),
 		MaxResults:            opts.MaxResults,
 		IMDBID:                opts.IMDBID,
+		TMDBID:                opts.TMDBID,
 		MediaType:             opts.MediaType,
 		Year:                  opts.Year,
 		UserID:                opts.UserID,
@@ -1368,7 +1381,7 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBR
 		return cached, nil
 	}
 
-	// Run usenet and debrid searches in parallel for faster results
+	// Run usenet, debrid, and p2p searches in parallel for faster results
 	type searchResult struct {
 		results []models.NZBResult
 		err     error
@@ -1376,7 +1389,7 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBR
 	}
 
 	var wg sync.WaitGroup
-	resultsChan := make(chan searchResult, 2)
+	resultsChan := make(chan searchResult, 3)
 
 	// Launch usenet search
 	if includeUsenet {
@@ -1445,13 +1458,31 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBR
 		}()
 	}
 
+	// Launch p2p (PearTube relay) search. Unlike usenet and debrid this is not
+	// gated by the streaming service mode: the relay is either configured for
+	// this install or it does not exist.
+	if s.peartube != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			p2pStart := time.Now()
+			p2pResults, err := s.searchP2P(ctx, opts, parsedQuery)
+			log.Printf("[indexer] TIMING: p2p search complete (took: %v, results: %d)", time.Since(p2pStart), len(p2pResults))
+			if err != nil {
+				resultsChan <- searchResult{err: err, source: "p2p"}
+				return
+			}
+			resultsChan <- searchResult{results: p2pResults, source: "p2p"}
+		}()
+	}
+
 	// Wait for all searches to complete, then close channel
 	go func() {
 		wg.Wait()
 		close(resultsChan)
 	}()
 
-	// Collect results from both searches
+	// Collect results from every source
 	var aggregated []models.NZBResult
 	var lastErr error
 
@@ -1759,7 +1790,7 @@ func (s *Service) searchRawResults(ctx context.Context, opts SearchOptions) ([]m
 	}
 
 	var wg sync.WaitGroup
-	resultsChan := make(chan searchResult, 2)
+	resultsChan := make(chan searchResult, 3)
 
 	if includeUsenet {
 		wg.Add(1)
@@ -1835,6 +1866,19 @@ func (s *Service) searchRawResults(ctx context.Context, opts SearchOptions) ([]m
 		}()
 	}
 
+	if s.peartube != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			p2pResults, err := s.searchP2P(ctx, opts, parsedQuery)
+			if err != nil {
+				resultsChan <- searchResult{err: err, source: "p2p"}
+				return
+			}
+			resultsChan <- searchResult{results: p2pResults, source: "p2p"}
+		}()
+	}
+
 	go func() {
 		wg.Wait()
 		close(resultsChan)
@@ -1865,6 +1909,37 @@ func (s *Service) searchRawResults(ctx context.Context, opts SearchOptions) ([]m
 
 	s.setCachedSearchResults(cacheKey, aggregated, time.Now())
 	return aggregated, nil
+}
+
+// searchP2P asks the configured PearTube relay which of its published
+// renditions match the title being played.
+//
+// The release-name filters are deliberately not applied here. They exist to
+// judge scene releases by their file names; a catalog entity is a TMDB-
+// identified title with no release name to judge, so running them would reject
+// every p2p source on evidence that does not exist.
+func (s *Service) searchP2P(ctx context.Context, opts SearchOptions, parsed debrid.ParsedQuery) ([]models.NZBResult, error) {
+	relay := s.peartube
+	if relay == nil {
+		return nil, nil
+	}
+	title := strings.TrimSpace(parsed.Title)
+	if title == "" {
+		title = strings.TrimSpace(opts.Query)
+	}
+	year := opts.Year
+	if year == 0 {
+		year = parsed.Year
+	}
+	return relay.Search(ctx, peartube.SearchRequest{
+		Title:      title,
+		Year:       year,
+		Season:     parsed.Season,
+		Episode:    parsed.Episode,
+		MediaType:  opts.MediaType,
+		TMDBID:     strings.TrimSpace(opts.TMDBID),
+		MaxResults: opts.MaxResults,
+	})
 }
 
 // fetchUsenetResultsAllQueries fetches raw usenet results from all queries without filtering.

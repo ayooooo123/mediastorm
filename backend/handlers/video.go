@@ -38,6 +38,7 @@ import (
 	"novastream/internal/ytdlp"
 	"novastream/models"
 	"novastream/services/credits"
+	"novastream/services/peartube"
 	"novastream/services/playback"
 	"novastream/services/streaming"
 
@@ -6094,29 +6095,35 @@ func (h *VideoHandler) requireAllowedExternalPath(w http.ResponseWriter, r *http
 
 func configuredProviderHostPolicy(configManager ConfigProvider) requestsecurity.RestrictedHostPolicy {
 	allowed := make(map[string]struct{})
-	if configManager != nil {
-		if settings, err := configManager.Load(); err == nil {
-			addURLOrigin := func(raw string) {
-				parsed, err := url.Parse(strings.TrimSpace(raw))
-				if err != nil || parsed == nil {
-					return
-				}
-				scheme := strings.ToLower(parsed.Scheme)
-				if parsed.Hostname() != "" && (scheme == "http" || scheme == "https") {
-					port := parsed.Port()
-					if port == "" {
-						switch scheme {
-						case "http":
-							port = "80"
-						case "https":
-							port = "443"
-						}
-					}
-					if port != "" {
-						allowed[privateMediaEndpointKey(parsed.Hostname(), port)] = struct{}{}
-					}
+	addURLOrigin := func(raw string) {
+		parsed, err := url.Parse(strings.TrimSpace(raw))
+		if err != nil || parsed == nil {
+			return
+		}
+		scheme := strings.ToLower(parsed.Scheme)
+		if parsed.Hostname() != "" && (scheme == "http" || scheme == "https") {
+			port := parsed.Port()
+			if port == "" {
+				switch scheme {
+				case "http":
+					port = "80"
+				case "https":
+					port = "443"
 				}
 			}
+			if port != "" {
+				allowed[privateMediaEndpointKey(parsed.Hostname(), port)] = struct{}{}
+			}
+		}
+	}
+	// A PearTube relay is a p2p media origin, configured by environment rather
+	// than by settings and usually on loopback. Without this the SSRF guard
+	// would refuse to proxy the very stream a p2p result resolved to.
+	if relay := peartube.Default(); relay != nil {
+		addURLOrigin(relay.BaseURL())
+	}
+	if configManager != nil {
+		if settings, err := configManager.Load(); err == nil {
 			for _, origin := range settings.Server.AllowedPrivateMediaOrigins {
 				addURLOrigin(origin)
 			}

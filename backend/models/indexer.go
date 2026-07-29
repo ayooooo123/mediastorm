@@ -8,6 +8,10 @@ const (
 	ServiceTypeUnknown ContentServiceType = ""
 	ServiceTypeUsenet  ContentServiceType = "usenet"
 	ServiceTypeDebrid  ContentServiceType = "debrid"
+	// ServiceTypeP2P is a rendition served by a PearTube relay over HTTP.
+	// Unlike usenet and debrid it has no upstream health or cache state, so
+	// the pipeline skips the checks that only make sense for those.
+	ServiceTypeP2P ContentServiceType = "p2p"
 )
 
 // NZBResult represents a normalized search result from a Torznab/Newznab indexer.

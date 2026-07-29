@@ -56,6 +56,9 @@ func (h *IndexerHandler) Search(w http.ResponseWriter, r *http.Request) {
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	categories := r.URL.Query()["cat"]
 	imdbID := strings.TrimSpace(r.URL.Query().Get("imdbId"))
+	// Optional: lets a p2p source match a relay catalog entity by exact TMDB
+	// coordinates instead of falling back to title and year.
+	tmdbID := strings.TrimSpace(r.URL.Query().Get("tmdbId"))
 	mediaType := strings.TrimSpace(r.URL.Query().Get("mediaType"))
 	query = normalizeDecoratedSeriesQuery(query, mediaType)
 	userID := strings.TrimSpace(r.URL.Query().Get("userId"))
@@ -128,6 +131,7 @@ func (h *IndexerHandler) Search(w http.ResponseWriter, r *http.Request) {
 		Categories:            categories,
 		MaxResults:            max,
 		IMDBID:                imdbID,
+		TMDBID:                tmdbID,
 		MediaType:             mediaType,
 		Year:                  year,
 		UserID:                userID,
@@ -241,6 +245,7 @@ func (h *IndexerHandler) SearchTest(w http.ResponseWriter, r *http.Request) {
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	categories := r.URL.Query()["cat"]
 	imdbID := strings.TrimSpace(r.URL.Query().Get("imdbId"))
+	tmdbID := strings.TrimSpace(r.URL.Query().Get("tmdbId"))
 	mediaType := strings.TrimSpace(r.URL.Query().Get("mediaType"))
 	query = normalizeDecoratedSeriesQuery(query, mediaType)
 	userID := strings.TrimSpace(r.URL.Query().Get("userId"))
@@ -305,6 +310,7 @@ func (h *IndexerHandler) SearchTest(w http.ResponseWriter, r *http.Request) {
 		Categories:            categories,
 		MaxResults:            max,
 		IMDBID:                imdbID,
+		TMDBID:                tmdbID,
 		MediaType:             mediaType,
 		Year:                  year,
 		UserID:                userID,

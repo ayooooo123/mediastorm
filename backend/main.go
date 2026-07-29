@@ -51,6 +51,7 @@ import (
 	"novastream/services/mdblist"
 	"novastream/services/metadata"
 	"novastream/services/notifications"
+	"novastream/services/peartube"
 	"novastream/services/playback"
 	"novastream/services/plex"
 	"novastream/services/prewarm"
@@ -806,6 +807,8 @@ func main() {
 	localMediaHandler := handlers.NewLocalMediaHandler(localMediaService, userService, settings.Transmux.Enabled)
 	localMediaHandler.SetMetadataLanguageProviders(metadataService, cfgManager, userSettingsService)
 	localMediaHandler.SetRemoteMediaService(remoteMediaService)
+	// Inert unless PEARTUBE_RELAY_URL (or PEARTUBE_ENABLED) is set.
+	pearTubeHandler := handlers.NewPearTubeHandler(peartube.Default(), localMediaService)
 	userSettingsHandler.LocalMedia = localMediaService
 	userSettingsHandler.SetPrequeueStore(prequeueHandler.GetStore())
 	userSettingsHandler.SetSearchCacheClearer(indexerService)
@@ -1010,6 +1013,9 @@ func main() {
 	r.HandleFunc("/admin/api/bad-streams", adminUIHandler.RequireMasterAuth(badStreamsHandler.Mark)).Methods(http.MethodPost)
 	r.HandleFunc("/admin/api/bad-streams", adminUIHandler.RequireMasterAuth(badStreamsHandler.Clear)).Methods(http.MethodDelete)
 	r.HandleFunc("/admin/api/bad-streams/{id}", adminUIHandler.RequireMasterAuth(badStreamsHandler.Delete)).Methods(http.MethodDelete)
+	r.HandleFunc("/admin/api/p2p/status", adminUIHandler.RequireAuth(pearTubeHandler.Status)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/api/p2p/seed", adminUIHandler.RequireAuth(pearTubeHandler.Seed)).Methods(http.MethodPost)
+	r.HandleFunc("/admin/api/p2p/seed/{jobId}", adminUIHandler.RequireAuth(pearTubeHandler.SeedStatus)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/playback/strm", adminUIHandler.RequireAuth(adminUIHandler.DownloadSTRM)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/share/create", adminUIHandler.RequireAuth(shareHandler.Create)).Methods(http.MethodPost)
 	r.HandleFunc("/admin/api/share/links", adminUIHandler.RequireAuth(shareHandler.List)).Methods(http.MethodGet)
@@ -1372,6 +1378,9 @@ func main() {
 	r.HandleFunc("/account/api/indexers/search", adminUIHandler.RequireAuth(indexerHandler.Search)).Methods(http.MethodGet)
 	r.HandleFunc("/account/api/playback/resolve", adminUIHandler.RequireAuth(playbackHandler.Resolve)).Methods(http.MethodPost)
 	r.HandleFunc("/account/api/playback/strm", adminUIHandler.RequireAuth(adminUIHandler.DownloadSTRM)).Methods(http.MethodGet)
+	r.HandleFunc("/account/api/p2p/status", adminUIHandler.RequireAuth(pearTubeHandler.Status)).Methods(http.MethodGet)
+	r.HandleFunc("/account/api/p2p/seed", adminUIHandler.RequireAuth(pearTubeHandler.Seed)).Methods(http.MethodPost)
+	r.HandleFunc("/account/api/p2p/seed/{jobId}", adminUIHandler.RequireAuth(pearTubeHandler.SeedStatus)).Methods(http.MethodGet)
 	r.HandleFunc("/account/api/share/create", adminUIHandler.RequireAuth(shareHandler.Create)).Methods(http.MethodPost)
 	r.HandleFunc("/account/api/share/links", adminUIHandler.RequireAuth(shareHandler.List)).Methods(http.MethodGet)
 	r.HandleFunc("/account/api/share/links/active", adminUIHandler.RequireAuth(shareHandler.SetActive)).Methods(http.MethodPost)

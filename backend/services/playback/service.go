@@ -35,6 +35,7 @@ import (
 	"novastream/internal/requestsecurity"
 	"novastream/models"
 	"novastream/services/debrid"
+	"novastream/services/peartube"
 	usenetsvc "novastream/services/usenet"
 	"novastream/services/usenetengine"
 
@@ -215,6 +216,13 @@ func (s *Service) Resolve(ctx context.Context, candidate models.NZBResult) (*mod
 			return nil, fmt.Errorf("debrid service not configured")
 		}
 		return s.debrid.Resolve(ctx, candidate)
+	}
+
+	// A PearTube rendition is already addressed by the search result and served
+	// over range-capable HTTP by the relay; there is nothing to fetch, queue,
+	// or health check.
+	if candidate.ServiceType == models.ServiceTypeP2P {
+		return peartube.ResolvePlayback(peartube.Default(), candidate)
 	}
 
 	// Otherwise, handle as usenet
