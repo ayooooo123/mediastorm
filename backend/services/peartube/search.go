@@ -69,6 +69,10 @@ func (r SearchRequest) wantsEpisode() bool {
 
 // Search maps every relay catalog entity that matches the request onto the
 // result struct the stream pipeline ranks and plays.
+//
+// A relay that refuses to enumerate (open access not enabled) yields no results
+// and ErrRelayNotOpen, which callers are expected to treat as "this source is
+// not available yet" rather than as a search failure.
 func (c *Client) Search(ctx context.Context, req SearchRequest) ([]models.NZBResult, error) {
 	if c == nil {
 		return nil, nil

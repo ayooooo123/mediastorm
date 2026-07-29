@@ -1931,7 +1931,7 @@ func (s *Service) searchP2P(ctx context.Context, opts SearchOptions, parsed debr
 	if year == 0 {
 		year = parsed.Year
 	}
-	return relay.Search(ctx, peartube.SearchRequest{
+	results, err := relay.Search(ctx, peartube.SearchRequest{
 		Title:      title,
 		Year:       year,
 		Season:     parsed.Season,
@@ -1940,6 +1940,15 @@ func (s *Service) searchP2P(ctx context.Context, opts SearchOptions, parsed debr
 		TMDBID:     strings.TrimSpace(opts.TMDBID),
 		MaxResults: opts.MaxResults,
 	})
+	// A relay with open access disabled is an operator configuration state, not
+	// a search failure: reporting it as an error here would count the p2p leg as
+	// a failed source and, when it is the only source with something to say,
+	// turn an unconfigured relay into a failed search. The relay itself logs the
+	// remedy, and the p2p status endpoint reports it.
+	if peartube.IsRelayNotOpen(err) {
+		return nil, nil
+	}
+	return results, err
 }
 
 // fetchUsenetResultsAllQueries fetches raw usenet results from all queries without filtering.

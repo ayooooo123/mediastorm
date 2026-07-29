@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gorilla/mux"
 
@@ -82,14 +83,53 @@ type SeedResponse struct {
 	StatusPath string `json:"statusPath"`
 }
 
-// Status reports whether p2p is wired up, so a frontend can hide the seed
-// control instead of offering an action that always fails.
+// statusProbeTimeout bounds the relay round trip a status poll makes. The
+// catalog is cached, so a poll right after a search costs nothing.
+const statusProbeTimeout = 5 * time.Second
+
+// Status reports whether p2p is wired up and, when it is, what the relay will
+// actually do right now — so a frontend can hide the seed control, and an
+// operator can see that the relay is up but has not been allowed to serve
+// media, together with the command that fixes it.
 func (h *PearTubeHandler) Status(w http.ResponseWriter, r *http.Request) {
-	body := map[string]any{"enabled": h.relay != nil}
-	if h.relay != nil {
-		body["relayUrl"] = h.relay.BaseURL()
+	if h.relay == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"enabled": false, "state": "disabled"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), statusProbeTimeout)
+	defer cancel()
+	relayState := h.relay.Probe(ctx)
+
+	body := map[string]any{
+		"enabled":          true,
+		"relayUrl":         relayState.RelayURL,
+		"reachable":        relayState.Reachable,
+		"notOpen":          relayState.NotOpen,
+		"seedingAvailable": relayState.SeedingAvailable,
+		"catalogEntities":  relayState.CatalogEntities,
+		"state":            p2pStateLabel(relayState),
+	}
+	if relayState.Remedy != "" {
+		body["remedy"] = relayState.Remedy
+	}
+	if relayState.Detail != "" {
+		body["detail"] = relayState.Detail
 	}
 	writeJSON(w, http.StatusOK, body)
+}
+
+// p2pStateLabel names the relay's condition in one word an admin UI can switch
+// on without re-deriving it from the flags.
+func p2pStateLabel(state peartube.RelayState) string {
+	switch {
+	case state.NotOpen:
+		return "not_open"
+	case !state.Reachable:
+		return "unreachable"
+	default:
+		return "ready"
+	}
 }
 
 // Seed publishes a local file into the PearTube swarm.

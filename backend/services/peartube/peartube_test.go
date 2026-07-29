@@ -3,13 +3,16 @@ package peartube
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"novastream/models"
 )
@@ -38,38 +41,43 @@ type stubRelay struct {
 	archiveName   string
 }
 
-func newStubRelay(t *testing.T) (*stubRelay, *Client) {
+// gateBody is verbatim what a relay bound to a non-loopback address answers
+// when the operator never passed --api-open.
+const gateBody = `{"error":{"code":"OPEN_ACCESS_NOT_ENABLED","message":"the relay is bound to 0.0.0.0 rather than loopback, so /api/v1/catalog and /api/v1/stream refuse to enumerate or serve media; restart the relay with --api-open (or PEARTUBE_ARCHIVE_API_OPEN=1)","field":null}}`
+
+func (stub *stubRelay) handleArchive(w http.ResponseWriter, r *http.Request) {
+	reader, err := r.MultipartReader()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	for {
+		part, err := reader.NextPart()
+		if err != nil {
+			break
+		}
+		body, _ := io.ReadAll(part)
+		if part.FileName() != "" {
+			stub.archiveName = part.FileName()
+			stub.archiveBytes = body
+			continue
+		}
+		stub.archiveFields[part.FormName()] = string(body)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(ArchiveJob{JobID: "job-1", Status: "queued", EntityHint: "movie:603"})
+}
+
+func newRelay(t *testing.T, catalog http.HandlerFunc) (*stubRelay, *Client) {
 	t.Helper()
 	stub := &stubRelay{archiveFields: map[string]string{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/catalog", func(w http.ResponseWriter, r *http.Request) {
 		stub.catalogCalls++
-		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, catalogBody)
+		catalog(w, r)
 	})
-	mux.HandleFunc("/api/v1/archive", func(w http.ResponseWriter, r *http.Request) {
-		reader, err := r.MultipartReader()
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		for {
-			part, err := reader.NextPart()
-			if err != nil {
-				break
-			}
-			body, _ := io.ReadAll(part)
-			if part.FileName() != "" {
-				stub.archiveName = part.FileName()
-				stub.archiveBytes = body
-				continue
-			}
-			stub.archiveFields[part.FormName()] = string(body)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusAccepted)
-		json.NewEncoder(w).Encode(ArchiveJob{JobID: "job-1", Status: "queued", EntityHint: "movie:603"})
-	})
+	mux.HandleFunc("/api/v1/archive", stub.handleArchive)
 	mux.HandleFunc("/api/v1/archive/missing", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
@@ -83,6 +91,25 @@ func newStubRelay(t *testing.T) (*stubRelay, *Client) {
 		t.Fatalf("New: %v", err)
 	}
 	return stub, client
+}
+
+func newStubRelay(t *testing.T) (*stubRelay, *Client) {
+	t.Helper()
+	return newRelay(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, catalogBody)
+	})
+}
+
+// newGatedRelay is a relay the operator has not opted into open access on: it
+// refuses to enumerate or serve media, but still accepts seeds.
+func newGatedRelay(t *testing.T) (*stubRelay, *Client) {
+	t.Helper()
+	return newRelay(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		io.WriteString(w, gateBody)
+	})
 }
 
 func TestSearchMatchesMovieByTMDBCoordinates(t *testing.T) {
@@ -329,5 +356,147 @@ func TestEnvGatingKeepsIntegrationInert(t *testing.T) {
 	}
 	if client, _ := newFromEnv(off); client != nil {
 		t.Fatal("an explicit disable was overridden by a configured URL")
+	}
+}
+
+// A relay that has not been opted into open access must be identifiable as
+// exactly that — not as a dead relay, and not as an empty catalog.
+func TestSearchOnGatedRelayYieldsSentinelAndNoResults(t *testing.T) {
+	_, client := newGatedRelay(t)
+
+	results, err := client.Search(context.Background(), SearchRequest{Title: "The Matrix", TMDBID: "603"})
+	if len(results) != 0 {
+		t.Fatalf("gated relay produced %d results: %+v", len(results), results)
+	}
+	if !IsRelayNotOpen(err) {
+		t.Fatalf("error = %v, want it to match ErrRelayNotOpen", err)
+	}
+	if !errors.Is(err, ErrRelayNotOpen) {
+		t.Fatalf("errors.Is(%v, ErrRelayNotOpen) = false", err)
+	}
+	// The code is what identifies the gate; the message varies with the bind
+	// address, so nothing may depend on it.
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("error = %T, want it to carry an *APIError", err)
+	}
+	if apiErr.Status != http.StatusForbidden || apiErr.Code != "OPEN_ACCESS_NOT_ENABLED" {
+		t.Fatalf("apiErr = %+v", apiErr)
+	}
+	if !strings.Contains(ErrRelayNotOpen.Error(), "--api-open") ||
+		!strings.Contains(ErrRelayNotOpen.Error(), "PEARTUBE_ARCHIVE_API_OPEN=1") {
+		t.Fatalf("sentinel does not carry the remedy: %v", ErrRelayNotOpen)
+	}
+}
+
+// A different 403, or any other relay failure, must not be mistaken for the
+// gate: those are not fixed by --api-open.
+func TestUnrelatedRelayErrorIsNotTheGate(t *testing.T) {
+	_, client := newRelay(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		io.WriteString(w, `{"error":{"code":"FORBIDDEN","message":"nope","field":null}}`)
+	})
+
+	_, err := client.Search(context.Background(), SearchRequest{Title: "The Matrix"})
+	if err == nil {
+		t.Fatal("a 403 FORBIDDEN was swallowed")
+	}
+	if IsRelayNotOpen(err) {
+		t.Fatalf("error %v was misread as the open-access gate", err)
+	}
+}
+
+// The gate must be reported once, not once per search: a stream search runs on
+// every play attempt. The catalog cache is bypassed here so the guard, and not
+// the cache, is what does the suppressing.
+func TestGateIsLoggedOncePerOccurrence(t *testing.T) {
+	_, client := newGatedRelay(t)
+
+	var logged strings.Builder
+	restore := log.Writer()
+	log.SetOutput(&logged)
+	log.SetFlags(0)
+	t.Cleanup(func() { log.SetOutput(restore) })
+
+	for range 5 {
+		client.mu.Lock()
+		client.cachedAt = time.Time{}
+		client.mu.Unlock()
+		if _, err := client.Search(context.Background(), SearchRequest{Title: "The Matrix"}); !IsRelayNotOpen(err) {
+			t.Fatalf("Search error = %v", err)
+		}
+	}
+
+	warnings := strings.Count(logged.String(), "WARN: relay "+client.BaseURL())
+	if warnings != 1 {
+		t.Fatalf("gate logged %d times across 5 searches:\n%s", warnings, logged.String())
+	}
+	if !strings.Contains(logged.String(), NotOpenRemedy) {
+		t.Fatalf("gate warning omitted the remedy:\n%s", logged.String())
+	}
+}
+
+// Seeding is not gated on the relay side. That asymmetry is deliberate: a
+// container-hosted backend can publish into the swarm before the operator
+// decides to let this network read from it.
+func TestSeedingSucceedsAgainstAGatedRelay(t *testing.T) {
+	stub, client := newGatedRelay(t)
+
+	if _, err := client.Search(context.Background(), SearchRequest{Title: "The Matrix"}); !IsRelayNotOpen(err) {
+		t.Fatalf("expected the catalog to be gated, got %v", err)
+	}
+
+	path := filepath.Join(t.TempDir(), "The.Matrix.mkv")
+	if err := os.WriteFile(path, []byte("media-bytes"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	job, err := client.Archive(context.Background(), ArchiveRequest{
+		FilePath:    path,
+		ContentKind: "movie",
+		TMDBID:      "603",
+		TMDBTitle:   "The Matrix",
+		TMDBYear:    1999,
+	})
+	if err != nil {
+		t.Fatalf("Archive against a gated relay: %v", err)
+	}
+	if job.JobID != "job-1" || job.Status != "queued" {
+		t.Fatalf("job = %+v", job)
+	}
+	if string(stub.archiveBytes) != "media-bytes" {
+		t.Fatalf("uploaded %q", stub.archiveBytes)
+	}
+}
+
+func TestProbeSeparatesGatedFromReadyAndUnreachable(t *testing.T) {
+	_, gated := newGatedRelay(t)
+	state := gated.Probe(context.Background())
+	if !state.Reachable || !state.NotOpen || !state.SeedingAvailable {
+		t.Fatalf("gated state = %+v, want reachable+notOpen+seedingAvailable", state)
+	}
+	if state.Remedy != NotOpenRemedy {
+		t.Fatalf("remedy = %q, want %q", state.Remedy, NotOpenRemedy)
+	}
+	if !strings.Contains(state.Detail, "0.0.0.0") {
+		t.Fatalf("detail lost the relay's own explanation: %q", state.Detail)
+	}
+	if state.CatalogEntities != 0 {
+		t.Fatalf("gated relay reported %d entities", state.CatalogEntities)
+	}
+
+	_, healthy := newStubRelay(t)
+	ready := healthy.Probe(context.Background())
+	if !ready.Reachable || ready.NotOpen || ready.CatalogEntities != 4 {
+		t.Fatalf("ready state = %+v", ready)
+	}
+
+	dead, err := New("http://127.0.0.1:1")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	down := dead.Probe(context.Background())
+	if down.Reachable || down.NotOpen || down.SeedingAvailable {
+		t.Fatalf("unreachable state = %+v", down)
 	}
 }

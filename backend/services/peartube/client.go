@@ -123,6 +123,9 @@ type Client struct {
 	cached      []CatalogEntity
 	cachedAt    time.Time
 	cachedError error
+	// gateNoted is the last open-access state reported to the log, so the gate
+	// is announced on transition instead of on every search.
+	gateNoted bool
 }
 
 // BaseURL returns the relay origin, normalized without a trailing slash.
@@ -235,6 +238,131 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("relay returned HTTP %d: %s", e.Status, strings.Join(parts, ": "))
 }
 
+// The relay gates enumeration and byte serving on how it is bound. Bound to
+// loopback it answers freely; bound to 0.0.0.0 or any other interface it
+// refuses GET /api/v1/catalog and GET /api/v1/stream until the operator opts
+// in. Seeding (POST /api/v1/archive) is never gated.
+//
+// This backend usually runs in a container and therefore reaches the relay over
+// a non-loopback address, so the gate is the expected first-run state rather
+// than a malfunction. It has to be named as such, or an unconfigured relay
+// looks like a broken integration.
+const (
+	// openAccessNotEnabledCode is the relay's error code for that refusal. Only
+	// the code is stable: the message embeds the actual bind address.
+	openAccessNotEnabledCode = "OPEN_ACCESS_NOT_ENABLED"
+
+	// NotOpenRemedy is the operator action that clears the gate, worded so it
+	// can be shown to a person verbatim.
+	NotOpenRemedy = "restart the relay with --api-open (or PEARTUBE_ARCHIVE_API_OPEN=1)"
+)
+
+// ErrRelayNotOpen marks a relay that is up and answering but refusing to
+// enumerate or serve media because open access was never enabled.
+//
+// It is deliberately distinct from "the relay is unreachable" and from "the
+// relay has nothing matching": this one is cleared by an operator, not by
+// retrying or by searching for something else.
+var ErrRelayNotOpen = errors.New("peartube relay will not enumerate or serve media until open access is enabled: " + NotOpenRemedy)
+
+// Unwrap lets errors.Is see the open-access gate through the structured relay
+// error, so callers match on a sentinel instead of re-deriving an error code.
+func (e *APIError) Unwrap() error {
+	if e.Code == openAccessNotEnabledCode {
+		return ErrRelayNotOpen
+	}
+	return nil
+}
+
+// IsRelayNotOpen reports whether err is the relay's open-access gate.
+func IsRelayNotOpen(err error) bool {
+	return errors.Is(err, ErrRelayNotOpen)
+}
+
+// noteGate reports a change in the relay's open-access state, and says nothing
+// while it holds steady. Must be called with c.mu held.
+//
+// A stream search runs on every play attempt, so logging the gate per search
+// would bury the log in one repeated line. Logging only on transition means an
+// operator sees it once when it starts, and once more when it clears.
+func (c *Client) noteGate(err error) {
+	gated := IsRelayNotOpen(err)
+	if gated == c.gateNoted {
+		return
+	}
+	c.gateNoted = gated
+	if !gated {
+		log.Printf("[peartube] relay %s is serving media again", c.baseURL)
+		return
+	}
+	detail := gateDetail(err)
+	// The relay's own message usually ends in the same remedy; only append it
+	// when the relay did not already say it.
+	if !strings.Contains(detail, NotOpenRemedy) {
+		detail += " -- " + NotOpenRemedy
+	}
+	log.Printf("[peartube] WARN: relay %s is reachable but refuses to enumerate or serve media: %s",
+		c.baseURL, detail)
+}
+
+// gateDetail is the relay's own explanation, which names the address it is
+// bound to. It falls back to the remedy when the relay sent no message.
+func gateDetail(err error) string {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		if message := strings.TrimSpace(apiErr.Message); message != "" {
+			return message
+		}
+	}
+	return NotOpenRemedy
+}
+
+// RelayState is a plain verdict on what the relay can currently do, for the
+// p2p status endpoint. "Reachable but not open" is its own answer: the relay is
+// up and still accepts seeds, it just will not enumerate or serve media yet.
+type RelayState struct {
+	RelayURL  string `json:"relayUrl"`
+	Reachable bool   `json:"reachable"`
+	// NotOpen is the operator-fixable state: the relay answered with its
+	// open-access refusal. Remedy says what to do about it.
+	NotOpen bool `json:"notOpen"`
+	// SeedingAvailable records that POST /api/v1/archive is not gated, so a
+	// relay that refuses to enumerate can still be seeded to.
+	SeedingAvailable bool   `json:"seedingAvailable"`
+	CatalogEntities  int    `json:"catalogEntities"`
+	Remedy           string `json:"remedy,omitempty"`
+	Detail           string `json:"detail,omitempty"`
+}
+
+// Probe asks the relay what it can currently do, reusing the catalog cache so
+// a status poll costs nothing when a search just ran.
+func (c *Client) Probe(ctx context.Context) RelayState {
+	if c == nil {
+		return RelayState{}
+	}
+	state := RelayState{RelayURL: c.baseURL}
+	entities, err := c.Catalog(ctx)
+	switch {
+	case err == nil:
+		state.Reachable = true
+		state.CatalogEntities = len(entities)
+	case IsRelayNotOpen(err):
+		state.Reachable = true
+		state.NotOpen = true
+		state.Remedy = NotOpenRemedy
+		state.Detail = gateDetail(err)
+	default:
+		// An APIError means the relay answered, just not with a catalog; a
+		// transport error means nothing answered at all.
+		var apiErr *APIError
+		state.Reachable = errors.As(err, &apiErr)
+		state.Detail = err.Error()
+	}
+	// Seeding is only gated by whether the relay is there to accept it.
+	state.SeedingAvailable = state.Reachable
+	return state
+}
+
 // Catalog returns every entity the relay can serve, cached briefly so a burst
 // of stream searches does not re-walk the relay's publisher catalogs.
 func (c *Client) Catalog(ctx context.Context) ([]CatalogEntity, error) {
@@ -253,6 +381,7 @@ func (c *Client) Catalog(ctx context.Context) ([]CatalogEntity, error) {
 		return nil, err
 	}
 	c.cached, c.cachedError, c.cachedAt = entities, err, time.Now()
+	c.noteGate(err)
 	return entities, err
 }
 

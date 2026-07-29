@@ -139,3 +139,60 @@ func TestSearchSurvivesUnreachableRelay(t *testing.T) {
 		t.Fatalf("expected the debrid result to survive a dead relay, got %+v", results)
 	}
 }
+
+// A relay whose open access was never enabled refuses to enumerate. That is an
+// operator configuration state, so the p2p leg must contribute nothing and
+// leave the rest of the search — here debrid — completely untouched.
+func TestSearchSurvivesGatedRelay(t *testing.T) {
+	gated := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		io.WriteString(w, `{"error":{"code":"OPEN_ACCESS_NOT_ENABLED","message":"the relay is bound to 0.0.0.0 rather than loopback, so /api/v1/catalog and /api/v1/stream refuse to enumerate or serve media; restart the relay with --api-open (or PEARTUBE_ARCHIVE_API_OPEN=1)","field":null}}`)
+	}))
+	defer gated.Close()
+
+	relay, err := peartube.New(gated.URL)
+	if err != nil {
+		t.Fatalf("peartube.New: %v", err)
+	}
+
+	svc := newP2PService(t, []models.NZBResult{
+		{Title: "The.Matrix.1999.2160p.WEB-DL", Indexer: "Comet", ServiceType: models.ServiceTypeDebrid},
+	})
+	svc.SetPearTubeRelay(relay)
+
+	results, err := svc.Search(t.Context(), SearchOptions{Query: "The Matrix 1999", MediaType: "movie", Year: 1999, TMDBID: "603"})
+	if err != nil {
+		t.Fatalf("a gated relay failed the whole search: %v", err)
+	}
+	if len(results) != 1 || results[0].ServiceType != models.ServiceTypeDebrid {
+		t.Fatalf("expected only the debrid result, got %+v", results)
+	}
+}
+
+// The same gate with nothing else to fall back on: an empty answer, never an
+// error the API would turn into a 500.
+func TestSearchWithOnlyAGatedRelayReturnsNoError(t *testing.T) {
+	gated := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		io.WriteString(w, `{"error":{"code":"OPEN_ACCESS_NOT_ENABLED","message":"not open","field":null}}`)
+	}))
+	defer gated.Close()
+
+	relay, err := peartube.New(gated.URL)
+	if err != nil {
+		t.Fatalf("peartube.New: %v", err)
+	}
+
+	svc := newP2PService(t, nil)
+	svc.SetPearTubeRelay(relay)
+
+	results, err := svc.Search(t.Context(), SearchOptions{Query: "The Matrix 1999", MediaType: "movie", Year: 1999, TMDBID: "603"})
+	if err != nil {
+		t.Fatalf("a gated relay as the only source failed the search: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("expected no results, got %+v", results)
+	}
+}

@@ -208,3 +208,77 @@ func TestSeedStatusProxiesRelayJob(t *testing.T) {
 		t.Fatalf("status = %+v", status)
 	}
 }
+
+// The status endpoint is what an operator reads when p2p produces nothing. A
+// relay that refuses to enumerate has to say so, in a form a person can act on,
+// rather than looking indistinguishable from a relay that is down.
+func TestStatusReportsAGatedRelay(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		io.WriteString(w, `{"error":{"code":"OPEN_ACCESS_NOT_ENABLED","message":"the relay is bound to 0.0.0.0 rather than loopback, so /api/v1/catalog and /api/v1/stream refuse to enumerate or serve media; restart the relay with --api-open (or PEARTUBE_ARCHIVE_API_OPEN=1)","field":null}}`)
+	}))
+	defer server.Close()
+	relay, err := peartube.New(server.URL)
+	if err != nil {
+		t.Fatalf("peartube.New: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	handler := &PearTubeHandler{relay: relay}
+	handler.Status(rec, httptest.NewRequest(http.MethodGet, "/account/api/p2p/status", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var body struct {
+		Enabled          bool   `json:"enabled"`
+		State            string `json:"state"`
+		Reachable        bool   `json:"reachable"`
+		NotOpen          bool   `json:"notOpen"`
+		SeedingAvailable bool   `json:"seedingAvailable"`
+		Remedy           string `json:"remedy"`
+		Detail           string `json:"detail"`
+		RelayURL         string `json:"relayUrl"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !body.Enabled || body.State != "not_open" || !body.Reachable || !body.NotOpen || !body.SeedingAvailable {
+		t.Fatalf("gated status = %s", rec.Body.String())
+	}
+	if body.Remedy != peartube.NotOpenRemedy {
+		t.Fatalf("remedy = %q, want %q", body.Remedy, peartube.NotOpenRemedy)
+	}
+	if body.RelayURL != relay.BaseURL() || body.Detail == "" {
+		t.Fatalf("gated status = %s", rec.Body.String())
+	}
+}
+
+func TestStatusReportsAReadyRelay(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"entities":[],"nextCursor":null}`)
+	}))
+	defer server.Close()
+	relay, err := peartube.New(server.URL)
+	if err != nil {
+		t.Fatalf("peartube.New: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	handler := &PearTubeHandler{relay: relay}
+	handler.Status(rec, httptest.NewRequest(http.MethodGet, "/account/api/p2p/status", nil))
+
+	var body struct {
+		State   string `json:"state"`
+		NotOpen bool   `json:"notOpen"`
+		Remedy  string `json:"remedy"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.State != "ready" || body.NotOpen || body.Remedy != "" {
+		t.Fatalf("ready status = %s", rec.Body.String())
+	}
+}
