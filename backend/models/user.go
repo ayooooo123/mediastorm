@@ -2,6 +2,7 @@ package models
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -10,6 +11,12 @@ const (
 	DefaultUserID = "default"
 	// DefaultUserName is used when creating the initial profile.
 	DefaultUserName = "Primary Profile"
+	// ActivityPrivacyNotShared keeps a profile's activity out of shared shelves.
+	ActivityPrivacyNotShared = "not_shared"
+	// ActivityPrivacySharedAnonymous includes activity without identifying the profile.
+	ActivityPrivacySharedAnonymous = "shared_anonymous"
+	// ActivityPrivacyShared includes activity with the profile's display name.
+	ActivityPrivacyShared = "shared"
 )
 
 // User models a NovaStream profile capable of holding watchlist data.
@@ -29,8 +36,8 @@ type User struct {
 	AllowShareLinks  bool   `json:"allowShareLinks"`            // Whether this profile may mint shareable playback links (master-controlled, default off)
 	// ActivityPrivacy controls whether this profile's watch activity appears in
 	// server-wide shelves like "Popular on This Server" and "Recently Watched".
-	// "shared" (default), "shared_anonymous", or "not_shared".
-	ActivityPrivacy string `json:"activityPrivacy,omitempty"`
+	// Activity sharing is opt-in. Empty and unknown values are treated as not_shared.
+	ActivityPrivacy string `json:"activityPrivacy"`
 	// Kids profile content restriction settings
 	KidsMode           string    `json:"kidsMode,omitempty"`           // "rating", "content_list", or "" (disabled)
 	KidsMaxRating      string    `json:"kidsMaxRating,omitempty"`      // Deprecated: use KidsMaxMovieRating/KidsMaxTVRating instead
@@ -39,6 +46,24 @@ type User struct {
 	KidsAllowedLists   []string  `json:"kidsAllowedLists,omitempty"`   // MDBList URLs allowed for content_list mode
 	CreatedAt          time.Time `json:"createdAt"`
 	UpdatedAt          time.Time `json:"updatedAt"`
+}
+
+// NormalizeActivityPrivacy returns a safe, canonical privacy value.
+func NormalizeActivityPrivacy(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case ActivityPrivacyShared:
+		return ActivityPrivacyShared
+	case ActivityPrivacySharedAnonymous:
+		return ActivityPrivacySharedAnonymous
+	default:
+		return ActivityPrivacyNotShared
+	}
+}
+
+// SharesActivity reports whether this profile explicitly opted into shared shelves.
+func (u User) SharesActivity() bool {
+	privacy := NormalizeActivityPrivacy(u.ActivityPrivacy)
+	return privacy == ActivityPrivacyShared || privacy == ActivityPrivacySharedAnonymous
 }
 
 // HasPin returns true if the user has a PIN set.
@@ -64,6 +89,7 @@ func (u User) MarshalJSON() ([]byte, error) {
 		PlexAccountID    string    `json:"plexAccountId,omitempty"`
 		MdblistAccountID string    `json:"mdblistAccountId,omitempty"`
 		SimklAccountID   string    `json:"simklAccountId,omitempty"`
+		ActivityPrivacy  string    `json:"activityPrivacy"`
 	}{
 		UserAlias:        UserAlias(u),
 		PinHash:          nil,
@@ -73,5 +99,6 @@ func (u User) MarshalJSON() ([]byte, error) {
 		PlexAccountID:    u.PlexAccountID,
 		MdblistAccountID: u.MdblistAccountID,
 		SimklAccountID:   u.SimklAccountID,
+		ActivityPrivacy:  NormalizeActivityPrivacy(u.ActivityPrivacy),
 	})
 }

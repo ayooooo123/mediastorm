@@ -6135,6 +6135,16 @@
             name: 'Favorite Channels',
             enabled: false,
         }, 'streaming-services');
+        insertBuiltInShelf({
+            id: 'popular-on-server',
+            name: 'Popular on This Server',
+            enabled: false,
+        }, 'live-favorites');
+        insertBuiltInShelf({
+            id: 'recently-watched',
+            name: 'Recently Watched',
+            enabled: false,
+        }, 'popular-on-server');
         return shelves;
     }
 

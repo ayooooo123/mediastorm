@@ -699,24 +699,24 @@ const (
 
 // HomeShelvesSettings controls which shelves appear on the home screen and their order.
 type HomeShelvesSettings struct {
-	Shelves                         []ShelfConfig       `json:"shelves"`
-	ExploreCardPosition             ExploreCardPosition `json:"exploreCardPosition,omitempty"`             // "front" (default) or "end"
-	ItemCap                         int                 `json:"itemCap,omitempty"`                         // Max items shown per home shelf before Explore card (default 20)
-	ExcludeUpcomingFromContinue     bool                `json:"excludeUpcomingFromContinue,omitempty"`     // Move unreleased next-up episodes out of Continue Watching
+	Shelves                     []ShelfConfig       `json:"shelves"`
+	ExploreCardPosition         ExploreCardPosition `json:"exploreCardPosition,omitempty"`         // "front" (default) or "end"
+	ItemCap                     int                 `json:"itemCap,omitempty"`                     // Max items shown per home shelf before Explore card (default 20)
+	ExcludeUpcomingFromContinue bool                `json:"excludeUpcomingFromContinue,omitempty"` // Move unreleased next-up episodes out of Continue Watching
 	// PopularOnServerWindowDays is the lookback window in days for the
 	// "Popular on This Server" and "Recently Watched" shelves.
 	// Valid range: 7-365. Default 90.
 	PopularOnServerWindowDays int `json:"popularOnServerWindowDays,omitempty"`
 	// RecentlyWatchedCapPerProfile limits how many recent watch entries each
 	// profile contributes to the "Recently Watched" feed. Default 3.
-	RecentlyWatchedCapPerProfile int `json:"recentlyWatchedCapPerProfile,omitempty"`
-	MobileTopShelfMode              string              `json:"mobileTopShelfMode,omitempty"`              // "default", "disabled", or "shelf"
-	MobileTopShelfSourceID          string              `json:"mobileTopShelfSourceId,omitempty"`          // Shelf ID used when mobileTopShelfMode is "shelf"
-	TVTopShelfMode                  string              `json:"tvTopShelfMode,omitempty"`                  // "default", "disabled", or "shelf"
-	TVTopShelfSourceID              string              `json:"tvTopShelfSourceId,omitempty"`              // Shelf ID used when tvTopShelfMode is "shelf"
-	DisableTvLandscapeCardExpansion bool                `json:"disableTvLandscapeCardExpansion,omitempty"` // Keep TV shelf cards in portrait when focused
-	HomeShelfScale                  float64             `json:"homeShelfScale,omitempty"`                  // TV home shelf/card scale, 0.5-1.0 (default 1.0)
-	HomeHeroScale                   float64             `json:"homeHeroScale,omitempty"`                   // TV upper hero/art scale, 0.5-1.0 (default 1.0)
+	RecentlyWatchedCapPerProfile    int     `json:"recentlyWatchedCapPerProfile,omitempty"`
+	MobileTopShelfMode              string  `json:"mobileTopShelfMode,omitempty"`              // "default", "disabled", or "shelf"
+	MobileTopShelfSourceID          string  `json:"mobileTopShelfSourceId,omitempty"`          // Shelf ID used when mobileTopShelfMode is "shelf"
+	TVTopShelfMode                  string  `json:"tvTopShelfMode,omitempty"`                  // "default", "disabled", or "shelf"
+	TVTopShelfSourceID              string  `json:"tvTopShelfSourceId,omitempty"`              // Shelf ID used when tvTopShelfMode is "shelf"
+	DisableTvLandscapeCardExpansion bool    `json:"disableTvLandscapeCardExpansion,omitempty"` // Keep TV shelf cards in portrait when focused
+	HomeShelfScale                  float64 `json:"homeShelfScale,omitempty"`                  // TV home shelf/card scale, 0.5-1.0 (default 1.0)
+	HomeHeroScale                   float64 `json:"homeHeroScale,omitempty"`                   // TV upper hero/art scale, 0.5-1.0 (default 1.0)
 }
 
 // DefaultHomeShelfConfigs returns the built-in home shelves in their default order.
@@ -1669,10 +1669,12 @@ func DefaultSettings() Settings {
 		Playback:  PlaybackSettings{PreferredPlayer: "native", PreferredAudioLanguage: "eng", PauseWhenAppInactive: false, UseLoadingScreen: false, SubtitleSize: 1.0, SubtitleUseCropDetectPosition: true, SubtitleColor: "#FFFFFF", SubtitleOpacity: 1.0, SubtitleBold: false, SubtitleOutlineEnabled: false, SubtitleOutlineColor: "#000000", SubtitleOutlineWeight: 0.35, SubtitleBackgroundEnabled: true, SubtitleBackgroundColor: "#000000", SubtitleBackgroundOpacity: 0.6, SeekForwardSeconds: 30, SeekBackwardSeconds: 10, StreamMigrationEnabled: true, CreditsDetectionEnabled: false, MatchFrameRate: false, Thumbnails: PlaybackThumbnailSettings{Enabled: false, Workers: 1}},
 		Live:      LiveSettings{Mode: "m3u", PlaylistURL: "", MaxStreams: 0, PlaylistCacheTTLHours: 24},
 		HomeShelves: HomeShelvesSettings{
-			Shelves:        DefaultHomeShelfConfigs(),
-			ItemCap:        20,
-			HomeShelfScale: 1.0,
-			HomeHeroScale:  1.0,
+			Shelves:                      DefaultHomeShelfConfigs(),
+			ItemCap:                      20,
+			PopularOnServerWindowDays:    90,
+			RecentlyWatchedCapPerProfile: 3,
+			HomeShelfScale:               1.0,
+			HomeHeroScale:                1.0,
 		},
 		Filtering: FilterSettings{
 			MaxSizeMovieGB:             0,                       // 0 means no limit
@@ -2336,6 +2338,12 @@ func (m *Manager) Load() (Settings, error) {
 	// Backfill ItemCap if empty or invalid (default to 20)
 	if s.HomeShelves.ItemCap <= 0 {
 		s.HomeShelves.ItemCap = 20
+	}
+	if s.HomeShelves.PopularOnServerWindowDays < 7 || s.HomeShelves.PopularOnServerWindowDays > 365 {
+		s.HomeShelves.PopularOnServerWindowDays = 90
+	}
+	if s.HomeShelves.RecentlyWatchedCapPerProfile < 1 || s.HomeShelves.RecentlyWatchedCapPerProfile > 20 {
+		s.HomeShelves.RecentlyWatchedCapPerProfile = 3
 	}
 	if s.HomeShelves.HomeShelfScale <= 0 {
 		s.HomeShelves.HomeShelfScale = 1.0

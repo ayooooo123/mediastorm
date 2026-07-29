@@ -25,6 +25,7 @@ var (
 	ErrStorageDirRequired = errors.New("storage directory not provided")
 	ErrNameRequired       = errors.New("name is required")
 	ErrUserNotFound       = errors.New("user not found")
+	ErrActivityPrivacy    = errors.New("activity privacy must be not_shared, shared_anonymous, or shared")
 	ErrPinRequired        = errors.New("PIN is required")
 	ErrPinInvalid         = errors.New("invalid PIN")
 	ErrPinTooShort        = errors.New("PIN must be at least 4 characters")
@@ -757,6 +758,39 @@ func (s *Service) SetAllowShareLinks(id string, allow bool) (models.User, error)
 	return user, nil
 }
 
+// SetActivityPrivacy updates a profile's opt-in preference for server-wide
+// activity shelves.
+func (s *Service) SetActivityPrivacy(id, privacy string) (models.User, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return models.User{}, ErrUserNotFound
+	}
+
+	trimmed := strings.ToLower(strings.TrimSpace(privacy))
+	normalized := models.NormalizeActivityPrivacy(trimmed)
+	if normalized != trimmed {
+		return models.User{}, ErrActivityPrivacy
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	user, ok := s.users[id]
+	if !ok {
+		return models.User{}, ErrUserNotFound
+	}
+
+	user.ActivityPrivacy = normalized
+	user.UpdatedAt = time.Now().UTC()
+	s.users[id] = user
+
+	if err := s.saveLocked(); err != nil {
+		return models.User{}, err
+	}
+
+	return user, nil
+}
+
 // SetKidsMode sets the kids mode for a profile ("rating", "content_list", "both", or "").
 func (s *Service) SetKidsMode(id, mode string) (models.User, error) {
 	id = strings.TrimSpace(id)
@@ -1200,11 +1234,12 @@ func (s *Service) createLocked(accountID, name string) (models.User, error) {
 
 	now := time.Now().UTC()
 	user := models.User{
-		ID:        id,
-		AccountID: accountID,
-		Name:      name,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:              id,
+		AccountID:       accountID,
+		Name:            name,
+		ActivityPrivacy: models.ActivityPrivacyNotShared,
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	}
 
 	s.users[user.ID] = user
@@ -1262,6 +1297,11 @@ func (s *Service) load() error {
 		// Migration: assign default account ID to profiles without one
 		if user.AccountID == "" {
 			user.AccountID = models.DefaultAccountID
+			needsSave = true
+		}
+		privacy := models.NormalizeActivityPrivacy(user.ActivityPrivacy)
+		if user.ActivityPrivacy != privacy {
+			user.ActivityPrivacy = privacy
 			needsSave = true
 		}
 		// Migration: assign default kids mode settings for existing kids profiles

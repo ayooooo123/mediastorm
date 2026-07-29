@@ -50,45 +50,47 @@ type Rating struct {
 }
 
 type Title struct {
-	ID              string      `json:"id"`
-	Name            string      `json:"name"`
-	OriginalName    string      `json:"originalName,omitempty"`
-	AlternateTitles []string    `json:"alternateTitles,omitempty"`
-	Overview        string      `json:"overview"`
-	Year            int         `json:"year"`
-	Language        string      `json:"language"`
-	Poster          *Image      `json:"poster,omitempty"`
-	TextPoster      *Image      `json:"textPoster,omitempty"` // Original poster with text (preserved when Poster is overridden with textless)
-	Backdrop        *Image      `json:"backdrop,omitempty"`
-	TextBackdrop    *Image      `json:"textBackdrop,omitempty"` // Original backdrop with text (preserved when Backdrop is overridden with textless)
-	Backdrops       []Image     `json:"backdrops,omitempty"`    // Additional backdrop options beyond the primary
-	Logo            *Image      `json:"logo,omitempty"`
-	MediaType       string      `json:"mediaType"` // series | movie
-	TVDBID          int64       `json:"tvdbId,omitempty"`
-	IMDBID          string      `json:"imdbId,omitempty"`
-	TMDBID          int64       `json:"tmdbId,omitempty"`
-	Popularity      float64     `json:"popularity,omitempty"`
-	VoteCount       int         `json:"voteCount,omitempty"`
-	Network         string      `json:"network,omitempty"`
-	AirsTime        string      `json:"airsTime,omitempty"`        // e.g. "21:00" — local air time from TVDB
-	AirsTimezone    string      `json:"airsTimezone,omitempty"`    // IANA timezone inferred from network/country
-	Status          string      `json:"status,omitempty"`          // Release availability: movies released/theatrical/upcoming/unknown; series released/unreleased.
-	LifecycleStatus string      `json:"lifecycleStatus,omitempty"` // Series lifecycle from provider (Continuing, Ended, Upcoming, etc.).
-	IsDaily         bool        `json:"isDaily,omitempty"`         // True for daily shows (talk shows, news, etc.) that use date-based episode naming
-	Certification   string      `json:"certification,omitempty"`   // MPAA/TV content rating (G, PG, PG-13, R, TV-Y, TV-G, TV-PG, TV-14, TV-MA)
-	PrimaryTrailer  *Trailer    `json:"primaryTrailer,omitempty"`
-	Trailers        []Trailer   `json:"trailers,omitempty"`
-	Releases        []Release   `json:"releases,omitempty"`
-	Theatrical      *Release    `json:"theatricalRelease,omitempty"`
-	HomeRelease     *Release    `json:"homeRelease,omitempty"`
-	Ratings         []Rating    `json:"ratings,omitempty"`        // Aggregated ratings from MDBList
-	Credits         *Credits    `json:"credits,omitempty"`        // Top billed cast
-	RuntimeMinutes  int         `json:"runtimeMinutes,omitempty"` // Runtime in minutes (movies only)
-	Collection      *Collection `json:"collection,omitempty"`     // Movie collection (movies only)
-	Genres          []string    `json:"genres,omitempty"`         // Genre names from TMDB
-	Adult           bool        `json:"adult,omitempty"`          // True when the metadata provider marks this title as adult content
-	WatchState      string      `json:"watchState,omitempty"`     // "none" | "partial" | "complete"
-	UnwatchedCount  *int        `json:"unwatchedCount,omitempty"` // series only: total - watched
+	ID                string      `json:"id"`
+	Name              string      `json:"name"`
+	OriginalName      string      `json:"originalName,omitempty"`
+	AlternateTitles   []string    `json:"alternateTitles,omitempty"`
+	Overview          string      `json:"overview"`
+	Year              int         `json:"year"`
+	Language          string      `json:"language"`
+	Poster            *Image      `json:"poster,omitempty"`
+	TextPoster        *Image      `json:"textPoster,omitempty"` // Original poster with text (preserved when Poster is overridden with textless)
+	Backdrop          *Image      `json:"backdrop,omitempty"`
+	TextBackdrop      *Image      `json:"textBackdrop,omitempty"` // Original backdrop with text (preserved when Backdrop is overridden with textless)
+	Backdrops         []Image     `json:"backdrops,omitempty"`    // Additional backdrop options beyond the primary
+	Logo              *Image      `json:"logo,omitempty"`
+	MediaType         string      `json:"mediaType"` // series | movie
+	TVDBID            int64       `json:"tvdbId,omitempty"`
+	IMDBID            string      `json:"imdbId,omitempty"`
+	TMDBID            int64       `json:"tmdbId,omitempty"`
+	Popularity        float64     `json:"popularity,omitempty"`
+	VoteCount         int         `json:"voteCount,omitempty"`
+	Network           string      `json:"network,omitempty"`
+	AirsTime          string      `json:"airsTime,omitempty"`        // e.g. "21:00" — local air time from TVDB
+	AirsTimezone      string      `json:"airsTimezone,omitempty"`    // IANA timezone inferred from network/country
+	Status            string      `json:"status,omitempty"`          // Release availability: movies released/theatrical/upcoming/unknown; series released/unreleased.
+	LifecycleStatus   string      `json:"lifecycleStatus,omitempty"` // Series lifecycle from provider (Continuing, Ended, Upcoming, etc.).
+	IsDaily           bool        `json:"isDaily,omitempty"`         // True for daily shows (talk shows, news, etc.) that use date-based episode naming
+	Certification     string      `json:"certification,omitempty"`   // MPAA/TV content rating (G, PG, PG-13, R, TV-Y, TV-G, TV-PG, TV-14, TV-MA)
+	PrimaryTrailer    *Trailer    `json:"primaryTrailer,omitempty"`
+	Trailers          []Trailer   `json:"trailers,omitempty"`
+	Releases          []Release   `json:"releases,omitempty"`
+	Theatrical        *Release    `json:"theatricalRelease,omitempty"`
+	HomeRelease       *Release    `json:"homeRelease,omitempty"`
+	Ratings           []Rating    `json:"ratings,omitempty"`           // Aggregated ratings from MDBList
+	Credits           *Credits    `json:"credits,omitempty"`           // Top billed cast
+	RuntimeMinutes    int         `json:"runtimeMinutes,omitempty"`    // Runtime in minutes (movies only)
+	Collection        *Collection `json:"collection,omitempty"`        // Movie collection (movies only)
+	Genres            []string    `json:"genres,omitempty"`            // Genre names from TMDB
+	Adult             bool        `json:"adult,omitempty"`             // True when the metadata provider marks this title as adult content
+	WatchState        string      `json:"watchState,omitempty"`        // "none" | "partial" | "complete"
+	UnwatchedCount    *int        `json:"unwatchedCount,omitempty"`    // series only: total - watched
+	CardSubtitle      string      `json:"cardSubtitle,omitempty"`      // Optional shelf-specific context rendered above the title
+	ForceTitleOverlay bool        `json:"forceTitleOverlay,omitempty"` // Keep title/subtitle visible on clean-poster layouts
 }
 
 type TrendingItem struct {

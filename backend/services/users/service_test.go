@@ -96,6 +96,59 @@ func TestSetAllowShareLinks(t *testing.T) {
 	}
 }
 
+func TestActivityPrivacyDefaultsPrivateAndPersistsOptIn(t *testing.T) {
+	storageDir := t.TempDir()
+	svc, err := users.NewService(storageDir)
+	if err != nil {
+		t.Fatalf("failed to create service: %v", err)
+	}
+
+	created, err := svc.Create("Watcher")
+	if err != nil {
+		t.Fatalf("create returned error: %v", err)
+	}
+	if created.ActivityPrivacy != models.ActivityPrivacyNotShared {
+		t.Fatalf("activity privacy = %q, want private default", created.ActivityPrivacy)
+	}
+
+	updated, err := svc.SetActivityPrivacy(created.ID, models.ActivityPrivacySharedAnonymous)
+	if err != nil {
+		t.Fatalf("SetActivityPrivacy returned error: %v", err)
+	}
+	if updated.ActivityPrivacy != models.ActivityPrivacySharedAnonymous {
+		t.Fatalf("activity privacy = %q, want anonymous sharing", updated.ActivityPrivacy)
+	}
+	if _, err := svc.SetActivityPrivacy(created.ID, "public"); err == nil {
+		t.Fatal("expected invalid activity privacy to fail")
+	}
+
+	reloaded, err := users.NewService(storageDir)
+	if err != nil {
+		t.Fatalf("reload service: %v", err)
+	}
+	got, ok := reloaded.Get(created.ID)
+	if !ok || got.ActivityPrivacy != models.ActivityPrivacySharedAnonymous {
+		t.Fatalf("persisted privacy = %q, ok=%v", got.ActivityPrivacy, ok)
+	}
+}
+
+func TestLegacyActivityPrivacyMigratesToPrivate(t *testing.T) {
+	storageDir := t.TempDir()
+	raw := `[{"id":"legacy","accountId":"default","name":"Legacy","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}]`
+	if err := os.WriteFile(filepath.Join(storageDir, "users.json"), []byte(raw), 0o600); err != nil {
+		t.Fatalf("write legacy users: %v", err)
+	}
+
+	svc, err := users.NewService(storageDir)
+	if err != nil {
+		t.Fatalf("load legacy users: %v", err)
+	}
+	got, ok := svc.Get("legacy")
+	if !ok || got.ActivityPrivacy != models.ActivityPrivacyNotShared {
+		t.Fatalf("legacy privacy = %q, ok=%v; want private", got.ActivityPrivacy, ok)
+	}
+}
+
 func TestSetPinStoresAndClearsPinLength(t *testing.T) {
 	storageDir := t.TempDir()
 	svc, err := users.NewService(storageDir)
