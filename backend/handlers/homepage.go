@@ -207,9 +207,14 @@ func (h *HomepageHandler) GetDashboardShelf(w http.ResponseWriter, r *http.Reque
 	streams := make([]DashboardShelfStream, 0)
 	if h.streamsProvider != nil {
 		active := h.streamsProvider.ActiveStreams()
+		privacy := newDashboardShelfPrivacyIndex(h.userService)
 		streams = make([]DashboardShelfStream, 0, len(active.Streams))
 		for _, source := range active.Streams {
-			stream := dashboardShelfStreamFromDashboard(source)
+			profileNames := privacy.visibleProfileNames(source)
+			if len(profileNames) == 0 {
+				continue
+			}
+			stream := dashboardShelfStreamFromDashboard(source, profileNames)
 			if h.metadataService != nil && stream.MediaType != "" && stream.Title != "" {
 				posterURL, backdropURL := h.fetchShelfArtwork(r.Context(), homepageProgressForShelfArtwork(stream))
 				if stream.PosterURL == "" {
@@ -225,11 +230,80 @@ func (h *HomepageHandler) GetDashboardShelf(w http.ResponseWriter, r *http.Reque
 	json.NewEncoder(w).Encode(DashboardShelfResponse{Streams: streams, Count: len(streams)})
 }
 
-func dashboardShelfStreamFromDashboard(source StreamInfo) DashboardShelfStream {
+type dashboardShelfPrivacyIndex struct {
+	byID   map[string]models.User
+	byName map[string]models.User
+}
+
+func newDashboardShelfPrivacyIndex(userService UserService) dashboardShelfPrivacyIndex {
+	index := dashboardShelfPrivacyIndex{
+		byID:   make(map[string]models.User),
+		byName: make(map[string]models.User),
+	}
+	if userService == nil {
+		return index
+	}
+	for _, user := range userService.ListAll() {
+		index.byID[user.ID] = user
+		if name := strings.ToLower(strings.TrimSpace(user.Name)); name != "" {
+			index.byName[name] = user
+		}
+	}
+	return index
+}
+
+func (i dashboardShelfPrivacyIndex) visibleProfileNames(source StreamInfo) []string {
+	profileIDs := append([]string(nil), source.ProfileIDs...)
 	profileNames := append([]string(nil), source.ProfileNames...)
+	if len(profileIDs) == 0 && strings.TrimSpace(source.ProfileID) != "" {
+		profileIDs = []string{source.ProfileID}
+	}
 	if len(profileNames) == 0 && strings.TrimSpace(source.ProfileName) != "" {
 		profileNames = []string{source.ProfileName}
 	}
+
+	count := maxInt(len(profileIDs), len(profileNames))
+	visible := make([]string, 0, count)
+	seen := make(map[string]struct{}, count)
+	for idx := 0; idx < count; idx++ {
+		var profileID, profileName string
+		if idx < len(profileIDs) {
+			profileID = strings.TrimSpace(profileIDs[idx])
+		}
+		if idx < len(profileNames) {
+			profileName = strings.TrimSpace(profileNames[idx])
+		}
+		user, ok := i.byID[profileID]
+		if !ok && profileName != "" {
+			user, ok = i.byName[strings.ToLower(profileName)]
+		}
+		if !ok {
+			continue
+		}
+
+		var displayName string
+		switch models.NormalizeActivityPrivacy(user.ActivityPrivacy) {
+		case models.ActivityPrivacyShared:
+			displayName = strings.TrimSpace(user.Name)
+		case models.ActivityPrivacySharedAnonymous:
+			displayName = "Fellow user"
+		default:
+			continue
+		}
+		if displayName == "" {
+			continue
+		}
+		key := strings.ToLower(displayName)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		visible = append(visible, displayName)
+	}
+	return visible
+}
+
+func dashboardShelfStreamFromDashboard(source StreamInfo, profileNames []string) DashboardShelfStream {
 	status := "playing"
 	if source.IsPaused {
 		status = "paused"

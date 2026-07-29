@@ -19,6 +19,14 @@ func (s homepageStreamsStub) ActiveStreams() StreamsResponse {
 	return s.response
 }
 
+type homepageUsersStub struct {
+	users []models.User
+}
+
+func (s homepageUsersStub) ListAll() []models.User {
+	return s.users
+}
+
 func TestHomepageUsesCanonicalDashboardStreams(t *testing.T) {
 	createdAt := time.Date(2026, 7, 28, 20, 0, 0, 0, time.UTC)
 	handler := NewHomepageHandler(nil)
@@ -73,27 +81,47 @@ func TestHomepageUsesCanonicalDashboardStreams(t *testing.T) {
 func TestDashboardShelfUsesPresentationSafeCanonicalStreams(t *testing.T) {
 	createdAt := time.Date(2026, 7, 29, 18, 30, 0, 0, time.UTC)
 	handler := NewHomepageHandler(nil)
+	handler.SetUserService(homepageUsersStub{users: []models.User{
+		{ID: "profile-liam", Name: "Liam", ActivityPrivacy: models.ActivityPrivacyShared},
+		{ID: "profile-guest", Name: "Guest", ActivityPrivacy: models.ActivityPrivacySharedAnonymous},
+		{ID: "profile-private", Name: "Private", ActivityPrivacy: models.ActivityPrivacyNotShared},
+	}})
 	handler.SetStreamsProvider(homepageStreamsStub{response: StreamsResponse{
-		Count: 1,
-		Streams: []StreamInfo{{
-			ID:              "stream-paused",
-			ItemID:          "tmdb:tv:123:s1:e2",
-			Path:            "/secret/media/show.mkv",
-			ClientIP:        "10.0.0.5",
-			UserAgent:       "private-player-agent",
-			ProfileNames:    []string{"Liam", "Guest"},
-			CreatedAt:       createdAt,
-			Duration:        2400,
-			CurrentPosition: 600,
-			PercentWatched:  25,
-			IsPaused:        true,
-			MediaType:       "episode",
-			Title:           "Example Show",
-			SeasonNumber:    1,
-			EpisodeNumber:   2,
-			EpisodeName:     "Second Episode",
-			PosterURL:       "https://images.example/poster.jpg",
-		}},
+		Count: 2,
+		Streams: []StreamInfo{
+			{
+				ID:              "stream-paused",
+				ItemID:          "tmdb:tv:123:s1:e2",
+				Path:            "/secret/media/show.mkv",
+				ClientIP:        "10.0.0.5",
+				UserAgent:       "private-player-agent",
+				ProfileIDs:      []string{"profile-liam", "profile-guest", "profile-private"},
+				ProfileNames:    []string{"Liam", "Guest", "Private"},
+				CreatedAt:       createdAt,
+				Duration:        2400,
+				CurrentPosition: 600,
+				PercentWatched:  25,
+				IsPaused:        true,
+				MediaType:       "episode",
+				Title:           "Example Show",
+				SeasonNumber:    1,
+				EpisodeNumber:   2,
+				EpisodeName:     "Second Episode",
+				PosterURL:       "https://images.example/poster.jpg",
+			},
+			{
+				ID:            "stream-private",
+				ProfileID:     "profile-private",
+				ProfileName:   "Private",
+				CreatedAt:     createdAt,
+				MediaType:     "movie",
+				Title:         "Private Movie",
+				PosterURL:     "https://images.example/private.jpg",
+				IsPaused:      false,
+				ExternalIDs:   map[string]string{"tmdb": "456"},
+				BytesStreamed: 1,
+			},
+		},
 	}})
 
 	rec := httptest.NewRecorder()
@@ -114,8 +142,11 @@ func TestDashboardShelfUsesPresentationSafeCanonicalStreams(t *testing.T) {
 	if !stream.IsPaused || stream.Status != "paused" || stream.PercentWatched != 25 {
 		t.Fatalf("unexpected playback state: %+v", stream)
 	}
-	if len(stream.ProfileNames) != 2 || stream.ProfileNames[0] != "Liam" {
+	if len(stream.ProfileNames) != 2 || stream.ProfileNames[0] != "Liam" || stream.ProfileNames[1] != "Fellow user" {
 		t.Fatalf("unexpected watcher names: %+v", stream.ProfileNames)
+	}
+	if strings.Contains(body, "Private") {
+		t.Fatalf("dashboard shelf response included a non-sharing profile: %s", body)
 	}
 	for _, sensitive := range []string{"/secret/media/show.mkv", "10.0.0.5", "private-player-agent"} {
 		if strings.Contains(body, sensitive) {

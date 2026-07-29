@@ -35,7 +35,8 @@ type User struct {
 	IsKidsProfile    bool   `json:"isKidsProfile"`              // Whether this is a kids profile with content restrictions
 	AllowShareLinks  bool   `json:"allowShareLinks"`            // Whether this profile may mint shareable playback links (master-controlled, default off)
 	// ActivityPrivacy controls whether this profile's watch activity appears in
-	// server-wide shelves like "Popular on This Server" and "Recently Watched".
+	// server-wide shelves like "Popular on This Server", "Recently Watched",
+	// and the active "Dashboard" shelf.
 	// New profiles share anonymously by default. Empty and unknown legacy values
 	// remain not_shared so existing profiles are never silently opted in.
 	ActivityPrivacy string `json:"activityPrivacy"`
