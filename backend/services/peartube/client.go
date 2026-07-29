@@ -3,8 +3,9 @@
 // A relay is a companion process that speaks a small machine API over plain
 // HTTP: GET /api/v1/catalog lists what the swarm can serve, GET
 // /api/v1/stream/{publicationId}/{renditionId} serves a rendition's bytes with
-// byte-range support, and POST /api/v1/archive publishes a local file into the
-// swarm. Viewers that seed become the CDN for the next viewer.
+// byte-range support, and POST /api/v1/archive publishes media into the swarm —
+// either as an uploaded file, or as a URL the relay fetches for itself.
+// Viewers that seed become the CDN for the next viewer.
 //
 // Trust model: the relay's HTTP surface is unauthenticated, matching the
 // operator console it is mounted beside. It is expected to be reachable only
@@ -13,6 +14,7 @@
 package peartube
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -265,11 +267,35 @@ const (
 // retrying or by searching for something else.
 var ErrRelayNotOpen = errors.New("peartube relay will not enumerate or serve media until open access is enabled: " + NotOpenRemedy)
 
-// Unwrap lets errors.Is see the open-access gate through the structured relay
+// sourceRefusedPrefix is the shared prefix of every relay error code that means
+// "the URL you gave me is not one I will fetch": a bad scheme, embedded
+// credentials, a host that is not publicly routable, a name that will not
+// resolve, or a missing/ambiguous source. They are all the caller's problem, so
+// they must be distinguishable from a relay that is merely broken or down.
+const sourceRefusedPrefix = "SOURCE_"
+
+// ErrSourceRefused marks a URL seed the relay declined to fetch because of the
+// URL itself.
+//
+// Nothing about the relay needs fixing when this happens, and retrying the same
+// URL fails identically: the caller has to supply a different one. The specific
+// reason stays on the APIError's Code.
+var ErrSourceRefused = errors.New("peartube relay refused the source URL")
+
+// IsSourceRefused reports whether the relay rejected the seed's source URL.
+func IsSourceRefused(err error) bool {
+	return errors.Is(err, ErrSourceRefused)
+}
+
+// Unwrap lets errors.Is see the relay's actionable refusals — the open-access
+// gate, and a source URL the relay will not fetch — through the structured
 // error, so callers match on a sentinel instead of re-deriving an error code.
 func (e *APIError) Unwrap() error {
-	if e.Code == openAccessNotEnabledCode {
+	switch {
+	case e.Code == openAccessNotEnabledCode:
 		return ErrRelayNotOpen
+	case strings.HasPrefix(e.Code, sourceRefusedPrefix):
+		return ErrSourceRefused
 	}
 	return nil
 }
@@ -425,9 +451,10 @@ func (c *Client) ArchiveStatus(ctx context.Context, jobID string) (*ArchiveStatu
 	return &status, nil
 }
 
-// ArchiveRequest describes a local file to publish into the swarm.
-type ArchiveRequest struct {
-	FilePath    string
+// ArchiveCoordinates are the TMDB coordinates a seed is published under. Both
+// seed transports carry exactly this set; only where the bytes come from
+// differs, so the coordinates live in one place.
+type ArchiveCoordinates struct {
 	ContentKind string // "movie" or "episode"
 	TMDBID      string
 	TMDBTitle   string
@@ -440,29 +467,71 @@ type ArchiveRequest struct {
 	Genres      string
 }
 
-func (r ArchiveRequest) validate() error {
-	switch r.ContentKind {
+// Validate rejects coordinates the relay would reject, so an obvious mistake
+// costs no round trip. It is exported because the caller that assembled the
+// coordinates is the one that can report the problem as a client error rather
+// than as a relay failure.
+func (c ArchiveCoordinates) Validate() error {
+	switch c.ContentKind {
 	case "movie":
-		if r.TMDBSeason != 0 || r.TMDBEpisode != 0 {
+		if c.TMDBSeason != 0 || c.TMDBEpisode != 0 {
 			return errors.New("a movie cannot carry season or episode coordinates")
 		}
 	case "episode":
-		if r.TMDBSeason < 1 || r.TMDBEpisode < 1 {
+		if c.TMDBSeason < 1 || c.TMDBEpisode < 1 {
 			return errors.New("an episode requires tmdbSeason and tmdbEpisode")
 		}
 	default:
-		return fmt.Errorf("contentKind must be movie or episode, got %q", r.ContentKind)
+		return fmt.Errorf("contentKind must be movie or episode, got %q", c.ContentKind)
 	}
-	if strings.TrimSpace(r.FilePath) == "" {
-		return errors.New("filePath is required")
-	}
-	if strings.TrimSpace(r.TMDBID) == "" {
+	if strings.TrimSpace(c.TMDBID) == "" {
 		return errors.New("tmdbId is required")
 	}
-	if strings.TrimSpace(r.TMDBTitle) == "" {
+	if strings.TrimSpace(c.TMDBTitle) == "" {
 		return errors.New("tmdbTitle is required")
 	}
 	return nil
+}
+
+// ArchiveRequest describes a local file to publish into the swarm. The relay
+// receives the bytes.
+type ArchiveRequest struct {
+	FilePath string
+	ArchiveCoordinates
+}
+
+func (r ArchiveRequest) Validate() error {
+	if strings.TrimSpace(r.FilePath) == "" {
+		return errors.New("filePath is required")
+	}
+	return r.ArchiveCoordinates.Validate()
+}
+
+// ArchiveURLRequest describes a URL the relay fetches for itself. This is what
+// makes a debrid or usenet stream seedable: this backend never holds those
+// bytes, so it hands over an address instead of a body.
+type ArchiveURLRequest struct {
+	SourceURL string
+	ArchiveCoordinates
+}
+
+func (r ArchiveURLRequest) Validate() error {
+	// Only the structural checks live here. Whether the host is publicly
+	// routable, whether the scheme is allowed, and whether embedded credentials
+	// disqualify the URL are the relay's calls, and its refusal codes are more
+	// specific than anything this side could re-derive.
+	trimmed := strings.TrimSpace(r.SourceURL)
+	if trimmed == "" {
+		return errors.New("url is required")
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return fmt.Errorf("url is not a valid URL: %w", err)
+	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return errors.New("url must be absolute, with a scheme and a host")
+	}
+	return r.ArchiveCoordinates.Validate()
 }
 
 // Archive uploads a file to the relay for publication. The body is streamed
@@ -471,7 +540,7 @@ func (c *Client) Archive(ctx context.Context, req ArchiveRequest) (*ArchiveJob, 
 	if c == nil {
 		return nil, errors.New("peartube relay is not configured")
 	}
-	if err := req.validate(); err != nil {
+	if err := req.Validate(); err != nil {
 		return nil, err
 	}
 	file, err := os.Open(req.FilePath)
@@ -490,7 +559,7 @@ func (c *Client) Archive(ctx context.Context, req ArchiveRequest) (*ArchiveJob, 
 	reader, writer := io.Pipe()
 	form := multipart.NewWriter(writer)
 	go func() {
-		writer.CloseWithError(writeArchiveForm(form, file, filepath.Base(req.FilePath), req))
+		writer.CloseWithError(writeArchiveForm(form, file, filepath.Base(req.FilePath), req.ArchiveCoordinates))
 	}()
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+apiPrefix+"/archive", reader)
@@ -513,7 +582,83 @@ func (c *Client) Archive(ctx context.Context, req ArchiveRequest) (*ArchiveJob, 
 	return &job, nil
 }
 
-func writeArchiveForm(form *multipart.Writer, file io.Reader, fileName string, req ArchiveRequest) error {
+// archiveURLBody is the relay's JSON seed contract. The relay rejects any field
+// it does not know, and requires season/episode to be absent for a movie, so
+// every optional field is omitted rather than zeroed.
+type archiveURLBody struct {
+	URL            string `json:"url"`
+	ContentKind    string `json:"contentKind"`
+	TMDBID         string `json:"tmdbId"`
+	TMDBTitle      string `json:"tmdbTitle"`
+	TMDBSeason     int    `json:"tmdbSeason,omitempty"`
+	TMDBEpisode    int    `json:"tmdbEpisode,omitempty"`
+	TMDBYear       string `json:"tmdbYear,omitempty"`
+	TMDBPosterPath string `json:"tmdbPosterPath,omitempty"`
+	TMDBOverview   string `json:"tmdbOverview,omitempty"`
+	TMDBRuntime    string `json:"tmdbRuntime,omitempty"`
+	TMDBGenres     string `json:"tmdbGenres,omitempty"`
+}
+
+// ArchiveURL asks the relay to fetch a URL itself and publish what it finds.
+//
+// This is the seed path for content this backend only ever proxies: a debrid or
+// usenet stream lives on someone else's CDN, so there is no file to upload. No
+// media bytes cross this process.
+//
+// A URL the relay will not fetch comes back as an *APIError that satisfies
+// IsSourceRefused, which is a different problem from the relay being down.
+func (c *Client) ArchiveURL(ctx context.Context, req ArchiveURLRequest) (*ArchiveJob, error) {
+	if c == nil {
+		return nil, errors.New("peartube relay is not configured")
+	}
+	if err := req.Validate(); err != nil {
+		return nil, err
+	}
+
+	body := archiveURLBody{
+		URL:            strings.TrimSpace(req.SourceURL),
+		ContentKind:    req.ContentKind,
+		TMDBID:         strings.TrimSpace(req.TMDBID),
+		TMDBTitle:      strings.TrimSpace(req.TMDBTitle),
+		TMDBPosterPath: strings.TrimSpace(req.PosterPath),
+		TMDBOverview:   strings.TrimSpace(req.Overview),
+		TMDBGenres:     strings.TrimSpace(req.Genres),
+	}
+	if req.ContentKind == "episode" {
+		body.TMDBSeason = req.TMDBSeason
+		body.TMDBEpisode = req.TMDBEpisode
+	}
+	if req.TMDBYear > 0 {
+		body.TMDBYear = strconv.Itoa(req.TMDBYear)
+	}
+	if req.Runtime > 0 {
+		body.TMDBRuntime = strconv.Itoa(req.Runtime)
+	}
+
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("encode archive request: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+apiPrefix+"/archive", bytes.NewReader(encoded))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("archive by url: %w", err)
+	}
+	defer resp.Body.Close()
+	var job ArchiveJob
+	if err := decodeResponse(resp, &job); err != nil {
+		return nil, err
+	}
+	return &job, nil
+}
+
+func writeArchiveForm(form *multipart.Writer, file io.Reader, fileName string, req ArchiveCoordinates) error {
 	fields := [][2]string{
 		{"contentKind", req.ContentKind},
 		{"tmdbId", req.TMDBID},

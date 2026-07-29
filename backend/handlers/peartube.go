@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -30,18 +31,37 @@ type localMediaLibrary interface {
 
 var _ localMediaLibrary = (*localmedia.Service)(nil)
 
-// PearTubeHandler exposes the seeding half of the p2p integration: it takes an
-// item this server already holds on disk and publishes it into the PearTube
-// swarm, so the next viewer can stream it from here instead of from a provider.
+// streamURLResolver turns an internal stream path this backend handed the player
+// (a /debrid/... path, most importantly) into the CDN URL it currently points
+// at. debrid.CompositeProvider satisfies it via streaming.DirectURLProvider.
 //
-// There is no automatic hook onto a watched/completed signal. The only playback
-// path where the server holds real bytes on disk is the local media library;
-// usenet and debrid playback both stream from somewhere else, and the backend
-// never has a file to hand the relay. So this is an explicit endpoint the
-// frontend calls when a user opts in to seeding what they watched.
+// Seeding needs it because the "resolved source URL" a debrid resolve produces
+// is not always a URL: Torbox hands back an internal torrent_id:file_id
+// reference that only becomes an address at stream time. Re-resolving here also
+// sidesteps the short lifetime of the URLs that are addresses (see Seed).
+type streamURLResolver interface {
+	GetDirectURL(ctx context.Context, path string) (string, error)
+}
+
+// PearTubeHandler exposes the seeding half of the p2p integration: it publishes
+// something this viewer can already play into the PearTube swarm, so the next
+// viewer can stream it from the swarm instead of from a provider.
+//
+// Two kinds of source reach the relay, because this backend only sometimes holds
+// the bytes. A local library item is uploaded from disk. Anything else — debrid,
+// usenet, any resolved stream — is handed over as a URL that the relay fetches
+// itself, so no media crosses this process.
+//
+// There is no automatic hook onto a watched/completed signal: seeding stays an
+// explicit call the frontend makes when a user opts in. An automatic
+// watch-threshold trigger would attach in HistoryHandler.UpdatePlaybackProgress
+// (handlers/history.go), which already receives the watched fraction and the
+// item's coordinates on every progress write; it would call seed with the same
+// fields the frontend sends here.
 type PearTubeHandler struct {
 	relay      *peartube.Client
 	localMedia localMediaLibrary
+	streams    streamURLResolver
 }
 
 func NewPearTubeHandler(relay *peartube.Client, localMedia *localmedia.Service) *PearTubeHandler {
@@ -53,15 +73,37 @@ func NewPearTubeHandler(relay *peartube.Client, localMedia *localmedia.Service) 
 	return handler
 }
 
-// SeedRequest names the bytes to publish and the TMDB coordinates to publish
-// them under.
+// SetStreamResolver supplies the streaming provider that resolves internal
+// stream paths, enabling the streamPath form of a seed request. Without it, a
+// caller can still seed by passing an already-resolved url.
+func (h *PearTubeHandler) SetStreamResolver(streams streamURLResolver) {
+	if streams != nil {
+		h.streams = streams
+	}
+}
+
+// SeedRequest names what to publish and the TMDB coordinates to publish it
+// under. Exactly one source must be given:
 //
-// Either localMediaItemId (the server resolves the path and the metadata) or
-// filePath (which must live inside a configured local media library root) is
-// required. Explicit TMDB fields always win over what the library knows.
+//   - localMediaItemId — a local library item; the server resolves the path and
+//     fills in the metadata the scanner matched.
+//   - filePath — an explicit path, which must live inside a configured local
+//     media library root.
+//   - url — an already-resolved http(s) source (a debrid or usenet stream URL);
+//     the relay fetches it itself.
+//   - streamPath — the webdavPath a playback resolve returned; the server
+//     re-resolves it to a current URL. Preferred over url for debrid, because
+//     some providers' resolutions are not URLs at all and the ones that are
+//     expire in minutes.
+//
+// Explicit TMDB fields always win over what the library knows. A url or
+// streamPath seed has no library to fall back on, so it must carry
+// contentKind, tmdbId and tmdbTitle.
 type SeedRequest struct {
 	LocalMediaItemID string `json:"localMediaItemId,omitempty"`
 	FilePath         string `json:"filePath,omitempty"`
+	SourceURL        string `json:"url,omitempty"`
+	StreamPath       string `json:"streamPath,omitempty"`
 
 	ContentKind string `json:"contentKind,omitempty"` // "movie" or "episode"
 	TMDBID      string `json:"tmdbId,omitempty"`
@@ -132,7 +174,7 @@ func p2pStateLabel(state peartube.RelayState) string {
 	}
 }
 
-// Seed publishes a local file into the PearTube swarm.
+// Seed publishes something this viewer can play into the PearTube swarm.
 func (h *PearTubeHandler) Seed(w http.ResponseWriter, r *http.Request) {
 	if h.relay == nil {
 		writeJSONError(w, "peartube relay is not configured", http.StatusServiceUnavailable)
@@ -144,7 +186,7 @@ func (h *PearTubeHandler) Seed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	archive, err := h.buildArchiveRequest(r.Context(), req)
+	submit, err := h.planSeed(r.Context(), req)
 	if err != nil {
 		status := http.StatusBadRequest
 		if errors.Is(err, localmedia.ErrItemNotFound) {
@@ -154,14 +196,21 @@ func (h *PearTubeHandler) Seed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[peartube] seeding %s tmdb=%s title=%q path=%q",
-		archive.ContentKind, archive.TMDBID, archive.TMDBTitle, archive.FilePath)
-
-	job, err := h.relay.Archive(r.Context(), archive)
+	job, err := submit(r.Context())
 	if err != nil {
+		// A source the relay will not fetch is the caller's to fix by sending a
+		// different one, and says nothing about the relay's health. Anything
+		// else — refused for another reason, unreachable, broken — is not.
 		var apiErr *peartube.APIError
-		if errors.As(err, &apiErr) {
-			writeJSONError(w, apiErr.Error(), http.StatusBadGateway)
+		if errors.As(err, &apiErr) && peartube.IsSourceRefused(err) {
+			message := apiErr.Message
+			if message == "" {
+				message = apiErr.Error()
+			}
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{
+				"error": message,
+				"code":  apiErr.Code,
+			})
 			return
 		}
 		writeJSONError(w, err.Error(), http.StatusBadGateway)
@@ -174,6 +223,100 @@ func (h *PearTubeHandler) Seed(w http.ResponseWriter, r *http.Request) {
 		EntityHint: job.EntityHint,
 		StatusPath: "p2p/seed/" + job.JobID,
 	})
+}
+
+// planSeed picks the relay transport a seed request needs and validates
+// everything that can be checked without a round trip. Only the returned
+// closure talks to the relay, so a caller mistake stays a client error.
+func (h *PearTubeHandler) planSeed(ctx context.Context, req SeedRequest) (func(context.Context) (*peartube.ArchiveJob, error), error) {
+	coordinates := peartube.ArchiveCoordinates{
+		ContentKind: strings.TrimSpace(req.ContentKind),
+		TMDBID:      strings.TrimSpace(req.TMDBID),
+		TMDBTitle:   strings.TrimSpace(req.TMDBTitle),
+		TMDBYear:    req.TMDBYear,
+		TMDBSeason:  req.TMDBSeason,
+		TMDBEpisode: req.TMDBEpisode,
+		PosterPath:  strings.TrimSpace(req.PosterPath),
+		Overview:    strings.TrimSpace(req.Overview),
+		Runtime:     req.Runtime,
+		Genres:      strings.TrimSpace(req.Genres),
+	}
+
+	onDisk := strings.TrimSpace(req.LocalMediaItemID) != "" || strings.TrimSpace(req.FilePath) != ""
+	remote := strings.TrimSpace(req.SourceURL) != "" || strings.TrimSpace(req.StreamPath) != ""
+
+	switch {
+	case onDisk && remote:
+		return nil, errors.New("seed either a local library item or a remote source, not both")
+
+	case remote:
+		source, err := h.resolveSeedURL(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		archive := peartube.ArchiveURLRequest{SourceURL: source, ArchiveCoordinates: coordinates}
+		if err := archive.Validate(); err != nil {
+			return nil, err
+		}
+		log.Printf("[peartube] seeding %s tmdb=%s title=%q from %s",
+			archive.ContentKind, archive.TMDBID, archive.TMDBTitle, seedSourceForLog(source))
+		return func(ctx context.Context) (*peartube.ArchiveJob, error) {
+			return h.relay.ArchiveURL(ctx, archive)
+		}, nil
+
+	case onDisk:
+		archive, err := h.buildArchiveRequest(ctx, req, coordinates)
+		if err != nil {
+			return nil, err
+		}
+		log.Printf("[peartube] seeding %s tmdb=%s title=%q path=%q",
+			archive.ContentKind, archive.TMDBID, archive.TMDBTitle, archive.FilePath)
+		return func(ctx context.Context) (*peartube.ArchiveJob, error) {
+			return h.relay.Archive(ctx, archive)
+		}, nil
+
+	default:
+		return nil, errors.New("localMediaItemId, filePath, url or streamPath is required")
+	}
+}
+
+// resolveSeedURL produces the address the relay will fetch.
+//
+// A streamPath is re-resolved rather than trusted as handed out, and that is
+// what makes the debrid case work at all. The URL a debrid resolve returns is
+// not always a URL — Torbox's resolution is an internal torrent_id:file_id
+// reference that only becomes an address at stream time — and the providers that
+// do return a real CDN URL mint short-lived, account-scoped ones, which this
+// backend itself re-unrestricts every 10 minutes. Resolving at seed time hands
+// the relay the freshest address available.
+func (h *PearTubeHandler) resolveSeedURL(ctx context.Context, req SeedRequest) (string, error) {
+	streamPath := strings.TrimSpace(req.StreamPath)
+	if streamPath == "" {
+		return strings.TrimSpace(req.SourceURL), nil
+	}
+	if h.streams == nil {
+		return "", errors.New("stream path resolution is unavailable; seed with an explicit url instead")
+	}
+	resolved, err := h.streams.GetDirectURL(ctx, streamPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve streamPath: %w", err)
+	}
+	if !strings.HasPrefix(resolved, "http://") && !strings.HasPrefix(resolved, "https://") {
+		// Local media and recordings resolve to filesystem paths, which the
+		// relay cannot fetch. Those seed by localMediaItemId, which uploads.
+		return "", errors.New("streamPath resolved to a local file rather than a URL; seed it with localMediaItemId")
+	}
+	return resolved, nil
+}
+
+// seedSourceForLog keeps a debrid CDN token out of the log. Those URLs carry
+// account-scoped credentials in the path or the query string.
+func seedSourceForLog(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return "an unparseable url"
+	}
+	return parsed.Scheme + "://" + parsed.Host + "/..."
 }
 
 // SeedStatus proxies the relay's job status so the frontend polls one origin.
@@ -195,19 +338,10 @@ func (h *PearTubeHandler) SeedStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, status)
 }
 
-func (h *PearTubeHandler) buildArchiveRequest(ctx context.Context, req SeedRequest) (peartube.ArchiveRequest, error) {
-	archive := peartube.ArchiveRequest{
-		ContentKind: strings.TrimSpace(req.ContentKind),
-		TMDBID:      strings.TrimSpace(req.TMDBID),
-		TMDBTitle:   strings.TrimSpace(req.TMDBTitle),
-		TMDBYear:    req.TMDBYear,
-		TMDBSeason:  req.TMDBSeason,
-		TMDBEpisode: req.TMDBEpisode,
-		PosterPath:  strings.TrimSpace(req.PosterPath),
-		Overview:    strings.TrimSpace(req.Overview),
-		Runtime:     req.Runtime,
-		Genres:      strings.TrimSpace(req.Genres),
-	}
+// buildArchiveRequest resolves the local-library form of a seed request to a
+// file this process may publish.
+func (h *PearTubeHandler) buildArchiveRequest(ctx context.Context, req SeedRequest, coordinates peartube.ArchiveCoordinates) (peartube.ArchiveRequest, error) {
+	archive := peartube.ArchiveRequest{ArchiveCoordinates: coordinates}
 
 	itemID := strings.TrimSpace(req.LocalMediaItemID)
 	if itemID != "" {
@@ -219,7 +353,7 @@ func (h *PearTubeHandler) buildArchiveRequest(ctx context.Context, req SeedReque
 			return archive, err
 		}
 		archive.FilePath = item.FilePath
-		applyLocalMediaMetadata(&archive, item)
+		applyLocalMediaMetadata(&archive.ArchiveCoordinates, item)
 	}
 
 	if path := strings.TrimSpace(req.FilePath); path != "" {
@@ -233,8 +367,8 @@ func (h *PearTubeHandler) buildArchiveRequest(ctx context.Context, req SeedReque
 	if archive.FilePath == "" {
 		return archive, errors.New("localMediaItemId or filePath is required")
 	}
-	if archive.ContentKind == "" {
-		return archive, errors.New("contentKind is required (movie or episode)")
+	if err := archive.Validate(); err != nil {
+		return archive, err
 	}
 	return archive, nil
 }
@@ -242,7 +376,7 @@ func (h *PearTubeHandler) buildArchiveRequest(ctx context.Context, req SeedReque
 // applyLocalMediaMetadata fills in the TMDB coordinates the caller did not
 // supply from what the library scanner matched. It never overwrites an explicit
 // value: the caller is the one looking at the detail screen.
-func applyLocalMediaMetadata(archive *peartube.ArchiveRequest, item *models.LocalMediaItem) {
+func applyLocalMediaMetadata(archive *peartube.ArchiveCoordinates, item *models.LocalMediaItem) {
 	if archive.TMDBID == "" && item.ExternalIDs != nil {
 		archive.TMDBID = strings.TrimSpace(item.ExternalIDs.TMDB)
 	}

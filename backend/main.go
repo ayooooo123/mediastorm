@@ -809,6 +809,10 @@ func main() {
 	localMediaHandler.SetRemoteMediaService(remoteMediaService)
 	// Inert unless PEARTUBE_RELAY_URL (or PEARTUBE_ENABLED) is set.
 	pearTubeHandler := handlers.NewPearTubeHandler(peartube.Default(), localMediaService)
+	// Lets a seed name the stream path a playback resolve returned, so a debrid
+	// or usenet source is re-resolved to a current URL at seed time instead of
+	// the caller shipping an expired one.
+	pearTubeHandler.SetStreamResolver(compositeProvider)
 	userSettingsHandler.LocalMedia = localMediaService
 	userSettingsHandler.SetPrequeueStore(prequeueHandler.GetStore())
 	userSettingsHandler.SetSearchCacheClearer(indexerService)
