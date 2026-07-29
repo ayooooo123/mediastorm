@@ -47,6 +47,19 @@ type streamURLResolver interface {
 	GetDirectURL(ctx context.Context, path string) (string, error)
 }
 
+// tmdbCoordinateResolver recovers the numeric TMDB id the swarm keys a title by,
+// for a player that named the title with somebody else's ids.
+// metadata.Service satisfies it.
+//
+// Seeding needs it because no app client here sends a TMDB id: a progress
+// heartbeat arrives with itemId `tvdb:movie:343856` and externalIds
+// `{imdb, tvdb, titleId}`, and a seed published under no TMDB id is a seed the
+// relay rejects. Resolving server-side is what makes every client already in the
+// field seed without an app release.
+type tmdbCoordinateResolver interface {
+	TMDBIDForExternalIDs(ctx context.Context, contentKind string, externalIDs map[string]string, title string, year int) int64
+}
+
 // PearTubeHandler exposes the seeding half of the p2p integration: it publishes
 // something this viewer can already play into the PearTube swarm, so the next
 // viewer can stream it from the swarm instead of from a provider.
@@ -63,6 +76,10 @@ type streamURLResolver interface {
 type PearTubeHandler struct {
 	localMedia localMediaLibrary
 	streams    streamURLResolver
+	// tmdb recovers a TMDB id for a playback that carries none. Nil leaves
+	// automatic seeding dependent on clients that send one, which in practice
+	// means the browser player only.
+	tmdb tmdbCoordinateResolver
 
 	// configMu guards the effective configuration below, which the admin
 	// settings page can replace while requests and heartbeats are in flight.
@@ -165,6 +182,15 @@ func (h *PearTubeHandler) currentRelay() *peartube.Client {
 func (h *PearTubeHandler) SetStreamResolver(streams streamURLResolver) {
 	if streams != nil {
 		h.streams = streams
+	}
+}
+
+// SetTMDBResolver supplies the metadata service that recovers a TMDB id from a
+// player's IMDb or TVDB ids. Without it, automatic seeding can only publish
+// playbacks that already name a TMDB id.
+func (h *PearTubeHandler) SetTMDBResolver(tmdb tmdbCoordinateResolver) {
+	if tmdb != nil {
+		h.tmdb = tmdb
 	}
 }
 
@@ -412,7 +438,15 @@ type autoSeedPlan struct {
 	// submission, and this seed belongs to the relay whose catalog it checked.
 	relay   *peartube.Client
 	request SeedRequest
-	key     string
+	// key is the claim this plan holds and the name it logs under: the swarm's
+	// EntityKey once the title has a TMDB id, and the playback's own identity
+	// until then.
+	key string
+	// pendingKey is the pre-resolution claim, retained alongside the entity key
+	// so a plan that has to be abandoned releases both.
+	pendingKey string
+	// update is carried so the TMDB id can be recovered off the request path.
+	update models.PlaybackProgressUpdate
 }
 
 // planAutoSeed decides, without touching the network, whether this heartbeat
@@ -432,14 +466,24 @@ func (h *PearTubeHandler) planAutoSeed(update models.PlaybackProgressUpdate) (au
 	if !ok {
 		return autoSeedPlan{}, false
 	}
-	key := peartube.EntityKey(seedCoordinates(request))
-	if key == "" {
+	// A playback that already names a TMDB id is claimed by the swarm's own key,
+	// exactly as before. An app client names the title by TVDB or IMDb instead,
+	// and recovering the TMDB number is a lookup that must not happen on the
+	// player's request path — so the claim is taken on the identity the playback
+	// does have, and identified promotes it once the number lands.
+	plan := autoSeedPlan{handler: h, relay: relay, request: request, update: update}
+	plan.key = peartube.EntityKey(seedCoordinates(request))
+	if plan.key == "" {
+		plan.pendingKey = autoSeedPendingKey(update, request)
+		plan.key = plan.pendingKey
+	}
+	if plan.key == "" {
 		return autoSeedPlan{}, false
 	}
-	if !h.claimAutoSeed(key) {
+	if !h.claimAutoSeed(plan.key) {
 		return autoSeedPlan{}, false
 	}
-	return autoSeedPlan{handler: h, relay: relay, request: request, key: key}, true
+	return plan, true
 }
 
 // autoSeedRequest turns a playback heartbeat into the seed request the manual
@@ -449,6 +493,11 @@ func (h *PearTubeHandler) planAutoSeed(update models.PlaybackProgressUpdate) (au
 // server-side, which is the only thing that works: a Torbox resolution is an
 // internal torrent_id:file_id reference rather than an address, and the debrid
 // URLs that are addresses expire in about ten minutes.
+//
+// The TMDB id may come back empty. Every app client here identifies titles by
+// TVDB and IMDb and sends no TMDB number at all, so requiring one at this point
+// silently discarded every app playback ever made; it is recovered later, off
+// this path. Everything else the relay insists on is settled here.
 func autoSeedRequest(update models.PlaybackProgressUpdate) (SeedRequest, bool) {
 	request := SeedRequest{StreamPath: strings.TrimSpace(update.SourcePath)}
 	if request.StreamPath == "" {
@@ -480,12 +529,41 @@ func autoSeedRequest(update models.PlaybackProgressUpdate) (SeedRequest, bool) {
 		return SeedRequest{}, false
 	}
 
-	// A player that reported no TMDB id or no title gives the relay nothing to
-	// publish under. Silence beats a rejected submission on every heartbeat.
-	if err := seedCoordinates(request).Validate(); err != nil {
+	// Everything the relay requires except the TMDB id is checked now, against a
+	// stand-in number, so a playback that could never be published — no title to
+	// publish under, an episode with no season or episode number — is dropped
+	// before anything is claimed or looked up.
+	probe := seedCoordinates(request)
+	if probe.TMDBID == "" {
+		probe.TMDBID = "1"
+	}
+	if err := probe.Validate(); err != nil {
 		return SeedRequest{}, false
 	}
 	return request, true
+}
+
+// autoSeedPendingKey names a title by whatever identity the player did supply, so
+// one claim can cover a heartbeat storm before the TMDB id is known. It only has
+// to be stable and unique per title; the swarm's own key takes over as soon as
+// the lookup lands.
+func autoSeedPendingKey(update models.PlaybackProgressUpdate, request SeedRequest) string {
+	ids := mediaidentity.NormalizeExternalIDs(update.ExternalIDs)
+	identity := ""
+	for _, candidate := range []string{
+		ids["imdb"], ids["tvdb"], update.SeriesID, update.ItemID,
+	} {
+		if identity = strings.TrimSpace(candidate); identity != "" {
+			break
+		}
+	}
+	if identity == "" {
+		return ""
+	}
+	if request.ContentKind == "episode" {
+		return fmt.Sprintf("pending:show:%s:s%d:e%d", identity, request.TMDBSeason, request.TMDBEpisode)
+	}
+	return "pending:movie:" + identity
 }
 
 // tmdbIDFromPlayback recovers the numeric TMDB id a seed must be published
@@ -533,11 +611,90 @@ func (h *PearTubeHandler) releaseAutoSeed(key string) {
 	delete(h.autoSeedClaims, key)
 }
 
+// releaseClaims drops everything this plan claimed, so a later watch asks again.
+func (p autoSeedPlan) releaseClaims() {
+	p.handler.releaseAutoSeed(p.key)
+	if p.pendingKey != "" && p.pendingKey != p.key {
+		p.handler.releaseAutoSeed(p.pendingKey)
+	}
+}
+
+// identified supplies the TMDB id the swarm keys on when the player named the
+// title some other way, and returns the plan re-keyed onto the swarm's identity.
+//
+// The lookup lives here, on the submission goroutine, because it can reach TMDB
+// and the caller is a playback heartbeat. The metadata layer memoises it in its
+// long-lived id cache, so a title costs one lookup on first play and nothing
+// afterwards.
+func (p autoSeedPlan) identified(ctx context.Context) (autoSeedPlan, bool) {
+	if p.pendingKey == "" {
+		return p, true
+	}
+	var tmdbID int64
+	if p.handler.tmdb != nil {
+		tmdbID = p.handler.tmdb.TMDBIDForExternalIDs(
+			ctx, p.request.ContentKind, p.update.ExternalIDs, p.request.TMDBTitle, p.request.TMDBYear)
+	}
+	if tmdbID <= 0 {
+		// The claim is kept: one line per title per guard window. Reporting this
+		// at all is the point — while it was silent, "the trigger never fired"
+		// and "the trigger fired and could not name the title" were
+		// indistinguishable from outside the process.
+		log.Printf("[peartube] autoseed %s: no tmdb id for %q (%s), not seeding",
+			p.key, p.request.TMDBTitle, autoSeedIDsForLog(p.update))
+		return autoSeedPlan{}, false
+	}
+	p.request.TMDBID = strconv.FormatInt(tmdbID, 10)
+	key := peartube.EntityKey(seedCoordinates(p.request))
+	if key == "" {
+		log.Printf("[peartube] autoseed %s: tmdb id %d does not name a publishable entity, not seeding",
+			p.key, tmdbID)
+		return autoSeedPlan{}, false
+	}
+	// Claim the swarm's identity too, so a second client that does name this
+	// title by TMDB id cannot seed it again. The pending claim stays held, which
+	// is what stops this lookup being repeated for the rest of the window.
+	if !p.handler.claimAutoSeed(key) {
+		return autoSeedPlan{}, false
+	}
+	p.key = key
+	log.Printf("[peartube] autoseed %s: recovered tmdb id %d for %q from %s",
+		key, tmdbID, p.request.TMDBTitle, autoSeedIDsForLog(p.update))
+	return p, true
+}
+
+// autoSeedIDsForLog names the ids an identification had to work with, so a line
+// about a title that could not be named says which lookup to go and fix.
+func autoSeedIDsForLog(update models.PlaybackProgressUpdate) string {
+	ids := mediaidentity.NormalizeExternalIDs(update.ExternalIDs)
+	parts := make([]string, 0, 5)
+	if itemID := strings.TrimSpace(update.ItemID); itemID != "" {
+		parts = append(parts, "itemId="+itemID)
+	}
+	if seriesID := strings.TrimSpace(update.SeriesID); seriesID != "" {
+		parts = append(parts, "seriesId="+seriesID)
+	}
+	for _, name := range [...]string{"imdb", "tvdb", "tmdb"} {
+		if value := strings.TrimSpace(ids[name]); value != "" {
+			parts = append(parts, name+"="+value)
+		}
+	}
+	if len(parts) == 0 {
+		return "no ids at all"
+	}
+	return strings.Join(parts, " ")
+}
+
 // submit performs the claimed seed. It runs on its own goroutine, so every
 // outcome ends in a log line and nothing else.
 func (p autoSeedPlan) submit() {
 	ctx, cancel := context.WithTimeout(context.Background(), autoSeedTimeout)
 	defer cancel()
+
+	p, ok := p.identified(ctx)
+	if !ok {
+		return
+	}
 
 	published, err := p.relay.CatalogHasEntity(ctx, seedCoordinates(p.request))
 	switch {
@@ -548,7 +705,7 @@ func (p autoSeedPlan) submit() {
 		// submitted and a later watch should ask again. That is not a poll: the
 		// client caches a failed catalog read for 30s, so the heartbeats of this
 		// playback re-read nothing.
-		p.handler.releaseAutoSeed(p.key)
+		p.releaseClaims()
 		log.Printf("[peartube] autoseed %s: skipped, catalog unavailable: %v", p.key, err)
 		return
 	case published:

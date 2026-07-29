@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -337,8 +338,10 @@ func TestAutoSeedKeepsItsClaimAfterARefusedSeed(t *testing.T) {
 	}
 }
 
-// Playback that carries no TMDB coordinates, or no source to re-resolve, cannot
-// be published and must not be attempted.
+// Playback with no source to re-resolve, no title, no usable coordinates, or no
+// identity at all cannot be published and must not be attempted. A playback
+// missing only the TMDB number is not in this list: that is the ordinary app
+// case, and it is recovered rather than dropped.
 func TestAutoSeedSkipsPlaybackItCannotPublish(t *testing.T) {
 	relay := &autoSeedRelay{}
 	handler := newAutoSeedHandler(t, relay, &fakeStreamResolver{url: "https://cdn.example.net/d/TOKEN/x.mkv"})
@@ -346,8 +349,8 @@ func TestAutoSeedSkipsPlaybackItCannotPublish(t *testing.T) {
 	withoutSource := moviePlayback()
 	withoutSource.SourcePath = ""
 
-	tvdbOnly := moviePlayback()
-	tvdbOnly.ItemID = "tvdb:movie:10702"
+	unidentified := moviePlayback()
+	unidentified.ItemID = ""
 
 	untitled := moviePlayback()
 	untitled.MovieName = ""
@@ -362,13 +365,13 @@ func TestAutoSeedSkipsPlaybackItCannotPublish(t *testing.T) {
 	}
 
 	for name, update := range map[string]models.PlaybackProgressUpdate{
-		"no source path":     withoutSource,
-		"no tmdb id":         tvdbOnly,
-		"no title":           untitled,
-		"no season number":   partialEpisode,
-		"live tv":            live,
-		"no coordinates":     {MediaType: "movie", SourcePath: "/debrid/x/1/file/1"},
-		"unknown media type": {MediaType: "photo", ItemID: "tmdb:movie:603", MovieName: "x", SourcePath: "/debrid/x/1/file/1"},
+		"no source path":            withoutSource,
+		"nothing to identify it by": unidentified,
+		"no title":                  untitled,
+		"no season number":          partialEpisode,
+		"live tv":                   live,
+		"no coordinates":            {MediaType: "movie", SourcePath: "/debrid/x/1/file/1"},
+		"unknown media type":        {MediaType: "photo", ItemID: "tmdb:movie:603", MovieName: "x", SourcePath: "/debrid/x/1/file/1"},
 	} {
 		if _, ok := handler.planAutoSeed(update); ok {
 			t.Fatalf("%s: planned a seed", name)
@@ -443,5 +446,198 @@ func TestAutoSeedFailureDoesNotAffectThePlaybackResponse(t *testing.T) {
 	}
 	if elapsed >= relay.archiveDelay {
 		t.Fatalf("the heartbeat waited %v on the relay", elapsed)
+	}
+}
+
+// fakeTMDBResolver stands in for the metadata service's id recovery, and records
+// what it was asked so the caller can be shown to hand over the ids it holds.
+type fakeTMDBResolver struct {
+	tmdbID int64
+
+	mu    sync.Mutex
+	calls int
+	kind  string
+	ids   map[string]string
+	title string
+	year  int
+}
+
+func (f *fakeTMDBResolver) TMDBIDForExternalIDs(
+	_ context.Context, contentKind string, externalIDs map[string]string, title string, year int,
+) int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	f.kind, f.ids, f.title, f.year = contentKind, externalIDs, title, year
+	return f.tmdbID
+}
+
+func (f *fakeTMDBResolver) observed() (int, string, map[string]string, string, int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls, f.kind, f.ids, f.title, f.year
+}
+
+// appPlayback is the progress heartbeat an app actually sends, captured off the
+// wire during a real playback on a live install. It is the case that matters:
+// the title is named by TVDB and IMDb, sourcePath is present, and there is no
+// TMDB number anywhere in the payload.
+func appPlayback() models.PlaybackProgressUpdate {
+	return models.PlaybackProgressUpdate{
+		MediaType:  "movie",
+		ItemID:     "tvdb:movie:343856",
+		MovieName:  "Supergirl",
+		Year:       2026,
+		SourcePath: "/debrid/torbox/65419880/file/2/Supergirl.2026.MULTi.1080p.AMZN.WEB-DL.x264.AC3-KiT.mkv",
+		ExternalIDs: map[string]string{
+			"imdb":    "tt8814476",
+			"tvdb":    "343856",
+			"titleId": "tvdb:movie:343856",
+		},
+		Position: 3410,
+		Duration: 6492,
+	}
+}
+
+// The case every app client is in: a playback that names its title by TVDB and
+// IMDb and sends no TMDB id. It must still seed, published under the id the
+// server recovers, because the swarm keys entities by TMDB number and no app
+// release is going to change what the installed clients send.
+func TestAutoSeedRecoversTheTMDBIDAnAppDoesNotSend(t *testing.T) {
+	relay := &autoSeedRelay{}
+	resolver := &fakeStreamResolver{url: "https://cdn.example.net/d/TOKEN/Supergirl.2026.mkv"}
+	handler := newAutoSeedHandler(t, relay, resolver)
+	tmdb := &fakeTMDBResolver{tmdbID: 402431}
+	handler.tmdb = tmdb
+
+	plan, ok := handler.planAutoSeed(appPlayback())
+	if !ok {
+		t.Fatal("a playback identified by tvdb and imdb was not seedable")
+	}
+	// The claim is taken before the id is known, on the identity the playback
+	// does carry, so a heartbeat storm still costs one submission.
+	if plan.pendingKey != "pending:movie:tt8814476" {
+		t.Fatalf("pending claim = %q", plan.pendingKey)
+	}
+	// Nothing may be looked up on the player's request path.
+	if calls, _, _, _, _ := tmdb.observed(); calls != 0 {
+		t.Fatalf("the id was resolved on the request path (%d calls)", calls)
+	}
+
+	plan.submit()
+
+	calls, kind, ids, title, year := tmdb.observed()
+	if calls != 1 {
+		t.Fatalf("resolver calls = %d, want 1", calls)
+	}
+	if kind != "movie" || title != "Supergirl" || year != 2026 || ids["imdb"] != "tt8814476" {
+		t.Fatalf("resolver asked with kind=%q title=%q year=%d ids=%#v", kind, title, year, ids)
+	}
+	body := relay.lastArchive()
+	if body["contentKind"] != "movie" || body["tmdbId"] != "402431" || body["tmdbTitle"] != "Supergirl" {
+		t.Fatalf("coordinates = %#v", body)
+	}
+	// The relay is handed a freshly resolved address, never the path the player
+	// held: a Torbox stream path is not an address at all.
+	if body["url"] != "https://cdn.example.net/d/TOKEN/Supergirl.2026.mkv" {
+		t.Fatalf("seeded url = %#v", body["url"])
+	}
+	if resolver.asked != appPlayback().SourcePath {
+		t.Fatalf("re-resolved %q", resolver.asked)
+	}
+}
+
+// Once the id is recovered, the title is claimed under the swarm's own key too,
+// so a second client that does name it by TMDB id cannot seed it again.
+func TestAutoSeedClaimsTheRecoveredEntityKey(t *testing.T) {
+	relay := &autoSeedRelay{}
+	handler := newAutoSeedHandler(t, relay, &fakeStreamResolver{url: "https://cdn.example.net/d/TOKEN/x.mkv"})
+	handler.tmdb = &fakeTMDBResolver{tmdbID: 603}
+
+	plan, ok := handler.planAutoSeed(appPlayback())
+	if !ok {
+		t.Fatal("the app playback was not seedable")
+	}
+	plan.submit()
+	if plan.key != "pending:movie:tt8814476" {
+		t.Fatalf("the caller's copy of the plan was mutated: key = %q", plan.key)
+	}
+
+	// The same title arriving from a TMDB-native player is already accounted for.
+	tmdbNative := moviePlayback()
+	tmdbNative.ItemID = "tmdb:movie:603"
+	if _, ok := handler.planAutoSeed(tmdbNative); ok {
+		t.Fatal("the recovered title was seeded a second time under its tmdb id")
+	}
+	if got := relay.archiveCount(); got != 1 {
+		t.Fatalf("archive submissions = %d, want 1", got)
+	}
+}
+
+// A title nothing can identify must not reach the relay, and must not be retried
+// on every heartbeat for the rest of the guard window.
+func TestAutoSeedAbandonsAPlaybackItCannotIdentify(t *testing.T) {
+	relay := &autoSeedRelay{}
+	resolver := &fakeStreamResolver{url: "https://cdn.example.net/d/TOKEN/x.mkv"}
+	handler := newAutoSeedHandler(t, relay, resolver)
+	tmdb := &fakeTMDBResolver{tmdbID: 0}
+	handler.tmdb = tmdb
+
+	plan, ok := handler.planAutoSeed(appPlayback())
+	if !ok {
+		t.Fatal("the playback was dropped before anything was attempted")
+	}
+	plan.submit()
+
+	if relay.catalogReads != 0 || relay.archiveCount() != 0 {
+		t.Fatalf("relay was contacted: %d catalog reads, %d archives", relay.catalogReads, relay.archiveCount())
+	}
+	if resolver.asked != "" {
+		t.Fatalf("the stream path was resolved for a title with no coordinates: %q", resolver.asked)
+	}
+	if _, ok := handler.planAutoSeed(appPlayback()); ok {
+		t.Fatal("an unidentifiable title was retried on the next heartbeat")
+	}
+	if calls, _, _, _, _ := tmdb.observed(); calls != 1 {
+		t.Fatalf("resolver calls = %d, want 1 — the lookup was repeated", calls)
+	}
+}
+
+// Without a resolver the handler must stay inert on an app playback rather than
+// submit coordinates the relay will reject.
+func TestAutoSeedWithoutAResolverDoesNotSubmitAnUnidentifiedTitle(t *testing.T) {
+	relay := &autoSeedRelay{}
+	handler := newAutoSeedHandler(t, relay, &fakeStreamResolver{url: "https://cdn.example.net/d/TOKEN/x.mkv"})
+
+	handler.OnPlaybackStarted(appPlayback())
+	waitForArchives(t, relay, 0)
+
+	if relay.catalogReads != 0 || relay.archiveCount() != 0 {
+		t.Fatalf("relay was contacted: %d catalog reads, %d archives", relay.catalogReads, relay.archiveCount())
+	}
+}
+
+// A player that does send a TMDB id is answered without any lookup at all, so
+// the recovery cannot become a cost on the path that already worked.
+func TestAutoSeedDoesNotLookUpATitleThatNamesItsTMDBID(t *testing.T) {
+	relay := &autoSeedRelay{}
+	handler := newAutoSeedHandler(t, relay, &fakeStreamResolver{url: "https://cdn.example.net/d/TOKEN/The.Matrix.1999.mkv"})
+	tmdb := &fakeTMDBResolver{tmdbID: 999999}
+	handler.tmdb = tmdb
+
+	plan, ok := handler.planAutoSeed(moviePlayback())
+	if !ok {
+		t.Fatal("a tmdb-identified playback was not seedable")
+	}
+	if plan.pendingKey != "" || plan.key != "movie:603" {
+		t.Fatalf("claim key = %q, pending = %q", plan.key, plan.pendingKey)
+	}
+	plan.submit()
+
+	if calls, _, _, _, _ := tmdb.observed(); calls != 0 {
+		t.Fatalf("resolver calls = %d, want 0", calls)
+	}
+	if body := relay.lastArchive(); body["tmdbId"] != "603" {
+		t.Fatalf("coordinates = %#v", body)
 	}
 }

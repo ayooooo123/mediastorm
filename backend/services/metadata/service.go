@@ -23,6 +23,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"novastream/internal/mediaidentity"
 	"novastream/internal/ytdlp"
 	"novastream/models"
 	"novastream/services/calendar"
@@ -1339,6 +1340,81 @@ func (s *Service) getTMDBIDForIMDBTV(ctx context.Context, imdbID string) int64 {
 		log.Printf("[metadata] failed to cache TMDB TV ID mapping: %v", err)
 	}
 
+	return tmdbID
+}
+
+// TMDBIDForExternalIDs recovers the numeric TMDB id of a title a client
+// identified with somebody else's ids, or 0 when it cannot be pinned down.
+//
+// Players here name titles by TVDB or IMDb — `tvdb:movie:343856`, with an
+// externalIds map of `{imdb, tvdb, titleId}` and no TMDB number anywhere — while
+// the p2p swarm keys every entity by TMDB id. A caller holding only a player's
+// ids therefore has nothing to publish or match under, and asking clients to
+// start sending one would need an app release for every install already out
+// there.
+//
+// IMDb is tried first: TMDB's /find on an IMDb id is exact and the mapping is
+// 1:1. A movie then falls back to a title/year search, which is the same order,
+// and the same helpers, the metadata layer already uses to identify a title it
+// only has a name for.
+//
+// contentKind is "movie" for a film and anything else for a series or episode,
+// whose TMDB id is its series' — the coordinate the swarm publishes an episode
+// under. An episode's own ids are deliberately not consulted: `episodeImdb`
+// names the episode, not the show.
+//
+// Every step memoises into the long-lived id cache, so a title costs at most one
+// external lookup however often it is asked for. That matters because the caller
+// is a playback heartbeat.
+func (s *Service) TMDBIDForExternalIDs(ctx context.Context, contentKind string, externalIDs map[string]string, title string, year int) int64 {
+	if s == nil {
+		return 0
+	}
+	ids := mediaidentity.NormalizeExternalIDs(externalIDs)
+	// A client that did send a TMDB id is answered without any lookup at all.
+	if parsed, err := strconv.ParseInt(strings.TrimSpace(ids["tmdb"]), 10, 64); err == nil && parsed > 0 {
+		return parsed
+	}
+	isMovie := mediaidentity.NormalizeMediaType(contentKind) == "movie"
+	if imdbID := strings.TrimSpace(ids["imdb"]); imdbID != "" {
+		if isMovie {
+			if tmdbID := s.getTMDBIDForIMDB(ctx, imdbID); tmdbID > 0 {
+				return tmdbID
+			}
+		} else if tmdbID := s.getTMDBIDForIMDBTV(ctx, imdbID); tmdbID > 0 {
+			return tmdbID
+		}
+	}
+	if isMovie {
+		return s.resolveTMDBMovieByTitleYear(ctx, strings.TrimSpace(title), year)
+	}
+	return s.resolveTMDBSeriesByTVDBID(ctx, strings.TrimSpace(ids["tvdb"]))
+}
+
+// resolveTMDBSeriesByTVDBID recovers a series' TMDB id from its TVDB id, cached
+// alongside every other id mapping. It is the last resort for an episode whose
+// client sent no IMDb id at all.
+func (s *Service) resolveTMDBSeriesByTVDBID(ctx context.Context, tvdbID string) int64 {
+	if s == nil || s.tmdb == nil || tvdbID == "" {
+		return 0
+	}
+	cacheID := cacheKey("id", "tvdb-to-tmdb", "tv", tvdbID)
+	var cached int64
+	if s.idCache != nil {
+		if ok, _ := s.idCache.get(cacheID, &cached); ok {
+			return cached
+		}
+	}
+	tmdbID, err := s.tmdb.findTVByTVDBID(ctx, tvdbID)
+	if err != nil {
+		log.Printf("[metadata] failed to fetch TMDB TV ID for TVDB %s: %v", tvdbID, err)
+		return 0
+	}
+	if s.idCache != nil {
+		if err := s.idCache.set(cacheID, tmdbID); err != nil {
+			log.Printf("[metadata] failed to cache TMDB TV ID mapping: %v", err)
+		}
+	}
 	return tmdbID
 }
 

@@ -829,6 +829,12 @@ func main() {
 	// the HLS keepalive is the web player behind a transcode; and a byte-range
 	// stream request opening a new playback is the only signal an app produces.
 	// One title still seeds once: the seeder claims by title, not by signal.
+	//
+	// The metadata service is handed over because no app client sends a TMDB id:
+	// it names titles by TVDB and IMDb, and the swarm keys every entity by TMDB
+	// number, so the id has to be recovered here rather than demanded of clients
+	// that are already in the field.
+	pearTubeHandler.SetTMDBResolver(metadataService)
 	historyHandler.SetAutoSeeder(pearTubeHandler)
 	videoHandler.GetHLSManager().AddPlaybackActivityObserver(pearTubeHandler)
 	handlers.GetStreamTracker().AddPlaybackActivityObserver(pearTubeHandler)
