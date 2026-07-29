@@ -15,23 +15,23 @@ func TestAggregatePopularTitlesCountsEligibleMediaItemViews(t *testing.T) {
 			"shared-a": {
 				"episode-1": {
 					MediaType: "episode", ItemID: "tvdb:10:s01e01", SeriesID: "tvdb:10",
-					SeriesName: "Shared Show", Watched: true, WatchedAt: now,
+					SeriesName: "Shared Show", Watched: true, WatchedAt: now, WatchedSeconds: 120,
 				},
 				"episode-2": {
 					MediaType: "episode", ItemID: "tvdb:10:s01e02", SeriesID: "tvdb:10",
-					SeriesName: "Shared Show", Watched: true, WatchedAt: now,
+					SeriesName: "Shared Show", Watched: true, WatchedAt: now, WatchedSeconds: 120,
 				},
 			},
 			"shared-b": {
 				"episode-1": {
 					MediaType: "episode", ItemID: "tvdb:10:s01e03", SeriesID: "tvdb:10",
-					SeriesName: "Shared Show", Watched: true, WatchedAt: now,
+					SeriesName: "Shared Show", Watched: true, WatchedAt: now, WatchedSeconds: 120,
 				},
 			},
 			"private": {
 				"movie": {
 					MediaType: "movie", ItemID: "tmdb:99", Name: "Private Movie",
-					Watched: true, WatchedAt: now,
+					Watched: true, WatchedAt: now, WatchedSeconds: 120,
 				},
 			},
 		},
@@ -53,7 +53,7 @@ func TestAggregatePopularTitlesCountsEveryCompletedEpisodeAsAView(t *testing.T) 
 		itemID := fmt.Sprintf("tvdb:353546:s01e%02d", episode)
 		episodes[itemID] = models.WatchHistoryItem{
 			MediaType: "episode", ItemID: itemID, SeriesID: "tvdb:353546",
-			SeriesName: "Bluey", EpisodeNumber: episode, Watched: true, WatchedAt: now,
+			SeriesName: "Bluey", EpisodeNumber: episode, Watched: true, WatchedAt: now, WatchedSeconds: 120,
 		}
 	}
 	service := &Service{watchHistory: map[string]map[string]models.WatchHistoryItem{"shared": episodes}}
@@ -64,6 +64,27 @@ func TestAggregatePopularTitlesCountsEveryCompletedEpisodeAsAView(t *testing.T) 
 	}
 }
 
+func TestAggregatePopularTitlesExcludesMarkedWatchedWithoutPlayback(t *testing.T) {
+	now := time.Now().UTC()
+	service := &Service{watchHistory: map[string]map[string]models.WatchHistoryItem{
+		"shared": {
+			"played": {
+				MediaType: "movie", ItemID: "tmdb:movie:1", Name: "Played",
+				Watched: true, WatchedAt: now, WatchedSeconds: 120,
+			},
+			"marked": {
+				MediaType: "movie", ItemID: "tmdb:movie:2", Name: "Marked Only",
+				Watched: true, WatchedAt: now,
+			},
+		},
+	}}
+
+	items := service.AggregatePopularTitles(map[string]bool{"shared": true}, 90, 1)
+	if len(items) != 1 || items[0].Name != "Played" {
+		t.Fatalf("expected only player-recorded watch, got %+v", items)
+	}
+}
+
 func TestAggregatePopularTitlesCanonicalizesProviderIDsAndFiltersSingleProfileItems(t *testing.T) {
 	now := time.Now().UTC()
 	service := &Service{
@@ -71,19 +92,19 @@ func TestAggregatePopularTitlesCanonicalizesProviderIDsAndFiltersSingleProfileIt
 			"shared-a": {
 				"bluey-tmdb": {
 					MediaType: "episode", ItemID: "tmdb:tv:82728:s01e01", SeriesID: "tmdb:tv:82728",
-					SeriesName: "Bluey", Watched: true, WatchedAt: now.Add(-time.Hour),
+					SeriesName: "Bluey", Watched: true, WatchedAt: now.Add(-time.Hour), WatchedSeconds: 120,
 					ExternalIDs: map[string]string{"imdb": "tt7678620", "tmdb": "82728"},
 				},
 				"single": {
 					MediaType: "movie", ItemID: "tmdb:movie:1", Name: "Only One Profile",
-					Watched: true, WatchedAt: now,
+					Watched: true, WatchedAt: now, WatchedSeconds: 120,
 					ExternalIDs: map[string]string{"imdb": "tt0000001"},
 				},
 			},
 			"shared-b": {
 				"bluey-tvdb": {
 					MediaType: "episode", ItemID: "tvdb:series:353546:s01e02", SeriesID: "tvdb:series:353546",
-					SeriesName: "Bluey", Watched: true, WatchedAt: now,
+					SeriesName: "Bluey", Watched: true, WatchedAt: now, WatchedSeconds: 120,
 					ExternalIDs: map[string]string{"imdb": "tt7678620", "tvdb": "353546"},
 				},
 			},
@@ -104,13 +125,17 @@ func TestListRecentWatchesHonorsCapAndAnonymity(t *testing.T) {
 	service := &Service{
 		watchHistory: map[string]map[string]models.WatchHistoryItem{
 			"anonymous": {
+				"manual": {
+					MediaType: "movie", ItemID: "tmdb:3", Name: "Marked Only",
+					Watched: true, WatchedAt: now.Add(time.Hour),
+				},
 				"new": {
 					MediaType: "movie", ItemID: "tmdb:2", Name: "Newest",
-					Watched: true, WatchedAt: now,
+					Watched: true, WatchedAt: now, WatchedSeconds: 120,
 				},
 				"old": {
 					MediaType: "movie", ItemID: "tmdb:1", Name: "Older",
-					Watched: true, WatchedAt: now.Add(-time.Hour),
+					Watched: true, WatchedAt: now.Add(-time.Hour), WatchedSeconds: 120,
 				},
 			},
 		},

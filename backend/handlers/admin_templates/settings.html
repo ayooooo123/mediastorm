@@ -7778,8 +7778,8 @@
 
         const isPopular = shelfId === 'popular-on-server';
         const description = isPopular
-            ? 'Ranks movies and series by completed media-item views from sharing profiles. Each completed movie or episode counts as one view, so multiple episodes of a series increase its total. Provider IDs are combined into one canonical title.'
-            : 'Shows completed watch events from sharing profiles in reverse chronological order. Profile privacy choices are always respected.';
+            ? 'Ranks movies and series by completed player-recorded views from sharing profiles. Each completed movie or episode with actual playback time counts as one view; manually marked and imported watched items are excluded. Provider IDs are combined into one canonical title.'
+            : 'Shows completed player-recorded watches from sharing profiles in reverse chronological order. Manually marked and imported watched items are excluded, and profile privacy choices are always respected.';
         const settingFields = isPopular
             ? `
                 <div style="margin-bottom:12px;">

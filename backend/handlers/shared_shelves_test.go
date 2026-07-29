@@ -14,6 +14,8 @@ type fakeSharedShelfHistory struct {
 	*fakeMetadataHistoryService
 	popularWindowDays   int
 	popularMinProfiles  int
+	popularItems        []models.PopularTitle
+	watchedItems        map[string]bool
 	recentWindowDays    int
 	recentMaxPerProfile int
 }
@@ -27,12 +29,22 @@ func (f *fakeSharedShelfHistory) AggregatePopularTitles(
 	if !eligible["shared"] {
 		return nil
 	}
+	if f.popularItems != nil {
+		return append([]models.PopularTitle(nil), f.popularItems...)
+	}
 	return []models.PopularTitle{{
 		MediaType:  "movie",
 		ItemID:     "tmdb:10",
 		Name:       "Shared Movie",
 		WatchCount: 1,
 	}}
+}
+
+func (f *fakeSharedShelfHistory) GetWatchHistoryItem(_, mediaType, itemID string) (*models.WatchHistoryItem, error) {
+	if f.watchedItems[mediaType+":"+itemID] {
+		return &models.WatchHistoryItem{MediaType: mediaType, ItemID: itemID, Watched: true}, nil
+	}
+	return f.fakeMetadataHistoryService.GetWatchHistoryItem("", mediaType, itemID)
 }
 
 func (f *fakeSharedShelfHistory) ListRecentWatches(
@@ -139,6 +151,39 @@ func TestPopularOnServerRequiresExplicitProfileOptIn(t *testing.T) {
 	}
 	if sharedPayload.Total != 1 || len(sharedPayload.Items) != 1 {
 		t.Fatalf("opted-in profile missing from response: %+v", sharedPayload)
+	}
+}
+
+func TestPopularOnServerFiltersWatchedBeforePaginationAndPreservesTotal(t *testing.T) {
+	history := &fakeSharedShelfHistory{
+		fakeMetadataHistoryService: &fakeMetadataHistoryService{},
+		popularItems: []models.PopularTitle{
+			{MediaType: "movie", ItemID: "tmdb:movie:1", Name: "Watched", WatchCount: 3},
+			{MediaType: "movie", ItemID: "tmdb:movie:2", Name: "Visible One", WatchCount: 2},
+			{MediaType: "movie", ItemID: "tmdb:movie:3", Name: "Visible Two", WatchCount: 1},
+		},
+		watchedItems: map[string]bool{"movie:tmdb:movie:1": true},
+	}
+	handler := NewMetadataHandler(&fakeMetadataService{}, nil)
+	handler.SetHistoryService(history)
+	handler.SetUsersService(&fakeSharedShelfUsers{users: []models.User{{
+		ID: "shared", Name: "Watcher", ActivityPrivacy: models.ActivityPrivacyShared,
+	}}})
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/api/discover/popular-on-server?userId=viewer&hideWatched=true&limit=1",
+		nil,
+	)
+	handler.PopularOnServer(response, request)
+
+	var payload PopularOnServerResponse
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Total != 2 || len(payload.Items) != 1 || payload.Items[0].Title.Name != "Visible One" {
+		t.Fatalf("expected two filtered candidates and one paged item, got %+v", payload)
 	}
 }
 

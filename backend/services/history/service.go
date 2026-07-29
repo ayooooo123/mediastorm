@@ -6402,7 +6402,7 @@ func (s *Service) AggregatePopularTitles(
 			continue
 		}
 		for _, item := range perUser {
-			if !item.Watched || item.WatchedAt.Before(cutoff) {
+			if !item.Watched || item.WatchedSeconds <= 0 || item.WatchedAt.Before(cutoff) {
 				continue
 			}
 			key := popularTitleKey(item)
@@ -6478,7 +6478,7 @@ func (s *Service) ListRecentWatches(eligibleUsers map[string]models.User, window
 			continue
 		}
 		for _, item := range perUser {
-			if !item.Watched || item.WatchedAt.Before(cutoff) {
+			if !item.Watched || item.WatchedSeconds <= 0 || item.WatchedAt.Before(cutoff) {
 				continue
 			}
 			allWatches = append(allWatches, userWatch{item: item, user: user})
