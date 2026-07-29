@@ -1005,7 +1005,12 @@ func isStartupFetchableCustomShelf(shelf models.ShelfConfig) bool {
 		_, _, ok := parseStartupDecadeShelfID(shelf.ID)
 		return ok
 	default:
-		return false
+		switch shelf.ID {
+		case "popular-on-server", "recently-watched":
+			return true
+		default:
+			return false
+		}
 	}
 }
 
@@ -1089,7 +1094,16 @@ func startupDisplayListQueryForShelf(shelf models.ShelfConfig, homeShelfLimit in
 		query.Set("lite", "true")
 		query.Set("artworkLimit", strconv.Itoa(minInt(limit, homeShelfLimit+startupExploreCollageItemCount)))
 	default:
-		return nil, false
+		switch shelf.ID {
+		case "popular-on-server":
+			query.Set("source", "popular-on-server")
+			return query, true
+		case "recently-watched":
+			query.Set("source", "recently-watched")
+			return query, true
+		default:
+			return nil, false
+		}
 	}
 	return query, true
 }
