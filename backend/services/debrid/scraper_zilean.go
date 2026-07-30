@@ -129,6 +129,7 @@ type zileanItem struct {
 	IMDBID     string        `json:"imdb_id"`
 	Category   string        `json:"category"`
 	Container  string        `json:"container"`
+	IngestedAt string        `json:"ingested_at"`
 }
 
 func (z *ZileanScraper) Search(ctx context.Context, req SearchRequest) ([]ScrapeResult, error) {
@@ -393,6 +394,10 @@ func (z *ZileanScraper) parseResponse(body []byte) ([]ScrapeResult, error) {
 			attrs["languages"] = strings.Join(item.Languages, ",")
 		}
 
+		// Zilean does not expose the tracker publication time, but its
+		// ingestion timestamp precisely records when the release became
+		// available to this source.
+		published := parseScraperPublishDate(item.IngestedAt)
 		result := ScrapeResult{
 			Title:       item.RawTitle,
 			Indexer:     z.Name(),
@@ -400,6 +405,7 @@ func (z *ZileanScraper) parseResponse(body []byte) ([]ScrapeResult, error) {
 			InfoHash:    infoHash,
 			FileIndex:   -1, // Zilean doesn't provide file index
 			SizeBytes:   sizeBytes,
+			PublishDate: published,
 			Seeders:     0, // Zilean doesn't provide seeder info
 			Provider:    z.Name(),
 			Languages:   item.Languages,
