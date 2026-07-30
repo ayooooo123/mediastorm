@@ -278,8 +278,15 @@ func TestAdminUIHandler_GetSchema(t *testing.T) {
 	if !ok {
 		t.Fatal("ranking schema missing fields")
 	}
-	if _, ok := rankingFields["newestReleaseFirst"]; !ok {
+	newestReleaseFirst, ok := rankingFields["newestReleaseFirst"].(map[string]interface{})
+	if !ok {
 		t.Fatal("ranking schema missing newestReleaseFirst")
+	}
+	description, _ := newestReleaseFirst["description"].(string)
+	for _, source := range []string{"Usenet/Newznab", "Jackett/Prowlarr", "Nyaa", "Internet Archive", "Zilean", "Torrentio", "Comet", "MediaFusion", "AIOStreams", "StremThru"} {
+		if !strings.Contains(description, source) {
+			t.Errorf("newestReleaseFirst description missing source %q: %q", source, description)
+		}
 	}
 }
 
