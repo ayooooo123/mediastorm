@@ -134,6 +134,40 @@ func TestValidatePrequeueVideoProbe(t *testing.T) {
 	}
 }
 
+func TestShouldPrepareTorrentCandidates(t *testing.T) {
+	tests := []struct {
+		name            string
+		candidate       models.NZBResult
+		alreadyPrepared bool
+		want            bool
+	}{
+		{
+			name:      "defers for usenet candidate",
+			candidate: models.NZBResult{Title: "Usenet", ServiceType: models.ServiceTypeUsenet},
+			want:      false,
+		},
+		{
+			name:      "runs for first eligible debrid candidate",
+			candidate: models.NZBResult{Title: "Debrid", ServiceType: models.ServiceTypeDebrid},
+			want:      true,
+		},
+		{
+			name:            "does not repeat for later debrid candidate",
+			candidate:       models.NZBResult{Title: "Debrid", ServiceType: models.ServiceTypeDebrid},
+			alreadyPrepared: true,
+			want:            false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldPrepareTorrentCandidates(tt.candidate, tt.alreadyPrepared); got != tt.want {
+				t.Fatalf("shouldPrepareTorrentCandidates() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 // mockMovieDetailsProvider implements MovieDetailsProvider for testing
 type mockMovieDetailsProvider struct {
 	title *models.Title

@@ -1677,19 +1677,21 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 	resolveStart := time.Now()
 	log.Printf("[prequeue] TIMING: starting resolution phase (%d results, elapsed: %v)",
 		len(allResults), time.Since(workerStart))
-	allResults = h.playbackSvc.PrepareTorrentCandidates(ctx, allResults)
+	debridCandidatesPrepared := false
 
 	// Cached probe result for DV checking (reused later for track selection)
 	var cachedProbeResult *VideoFullResult
 	var cachedMetadataResult *VideoMetadataResult
 
-	for i, result := range allResults {
+	for i := range allResults {
 		select {
 		case <-ctx.Done():
 			h.failPrequeue(prequeueID, "cancelled")
 			return
 		default:
 		}
+
+		result := allResults[i]
 
 		// Check episode match for anime absolute numbering
 		if targetEpisode != nil && targetEpisode.AbsoluteEpisodeNumber > 0 {
@@ -1705,6 +1707,20 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 					}
 				}
 			}
+		}
+
+		// Torrent preflight can spend several seconds downloading metainfo to
+		// discover hashes for TorBox cache checks. Defer that work until a
+		// debrid result is actually eligible for resolution so higher-ranked
+		// Usenet candidates can begin resolving immediately.
+		if shouldPrepareTorrentCandidates(result, debridCandidatesPrepared) {
+			preflightStart := time.Now()
+			preparedCandidates := h.playbackSvc.PrepareTorrentCandidates(ctx, allResults[i:])
+			copy(allResults[i:], preparedCandidates)
+			debridCandidatesPrepared = true
+			result = allResults[i]
+			log.Printf("[prequeue] TIMING: deferred debrid candidate preparation complete at result [%d] (elapsed: %v)",
+				i, time.Since(preflightStart))
 		}
 
 		h.updatePrequeueProgress(prequeueID, "resolving_candidate", result.Title, i+1, len(allResults))
@@ -2242,6 +2258,10 @@ func (h *PrequeueHandler) updatePrequeueProgress(prequeueID, stage, detail strin
 		e.ProgressCurrent = current
 		e.ProgressTotal = total
 	})
+}
+
+func shouldPrepareTorrentCandidates(candidate models.NZBResult, alreadyPrepared bool) bool {
+	return !alreadyPrepared && candidate.ServiceType == models.ServiceTypeDebrid
 }
 
 func logPrequeueCandidateList(scoredResults []models.ScoredNZBResult) {
