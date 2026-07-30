@@ -1057,7 +1057,20 @@ func (s *Service) externalQueueStatus(ctx context.Context, queueID int64) (*mode
 	status, err := engine.Status(ctx, job.EngineJobID)
 	if err != nil {
 		s.rememberExternalJobError(queueID, err)
-		return nil, true, fmt.Errorf("poll external usenet engine: %w", err)
+		// A status request can fail transiently while the engine continues
+		// processing the submitted NZB. Returning the error makes prequeue treat
+		// the candidate as failed and submit the next release, which can leave
+		// several live jobs resolving to duplicate WebDAV entries. Keep the
+		// existing job pending; only an explicit terminal failure status below
+		// should allow candidate fallback.
+		log.Printf("[playback] external usenet status poll failed; keeping existing job pending queueID=%d engineJobID=%q engine=%q type=%q error=%v",
+			queueID, job.EngineJobID, job.Engine.Name, job.Engine.Type, err)
+		return &models.PlaybackResolution{
+			QueueID:       queueID,
+			HealthStatus:  firstNonEmpty(job.LastStatus, "processing"),
+			FileSize:      job.FileSize,
+			SourceNZBPath: strings.TrimSpace(job.SourceNZBPath),
+		}, true, nil
 	}
 	if status == nil {
 		status = &usenetengine.JobStatus{JobID: job.EngineJobID, Status: usenetengine.StatusUnknown}
