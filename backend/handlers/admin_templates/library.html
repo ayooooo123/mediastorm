@@ -34,10 +34,32 @@
                         <select id="remoteAccount" class="form-select"></select>
                         <div class="form-hint">Accounts are managed on the Tools page.</div>
                     </div>
+                    <div id="plexServerFields" style="display: none; gap: 0.875rem;">
+                        <div class="form-group">
+                            <label class="form-label" for="remoteServer">Plex server</label>
+                            <div class="path-picker-row">
+                                <select id="remoteServer" class="form-select" style="flex: 1;"></select>
+                                <button class="btn btn-secondary" type="button" id="discoverServersBtn">Refresh</button>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="remoteServerAddress">Server address</label>
+                            <select id="remoteServerAddress" class="form-select"></select>
+                            <div class="form-hint">Choose an address Plex advertised, or enter a custom LAN, remote-access, reverse-proxy, or Tailscale address.</div>
+                        </div>
+                        <div class="form-group" id="customServerAddressField" style="display: none;">
+                            <label class="form-label" for="customServerAddress">Custom address</label>
+                            <input id="customServerAddress" class="form-input" type="url" placeholder="http://100.x.y.z:32400">
+                        </div>
+                        <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+                            <button class="btn btn-secondary" type="button" id="verifyRemoteServerBtn">Verify connection</button>
+                            <span id="remoteServerStatus" style="color: var(--text-muted); font-size: 0.85rem;">Select an address to verify.</span>
+                        </div>
+                    </div>
                     <div class="form-group">
                         <label class="form-label" for="remoteLibrary">Server library</label>
                         <div class="path-picker-row">
-                            <select id="remoteLibrary" class="form-select" style="flex: 1;"></select>
+                            <select id="remoteLibrary" class="form-select" style="flex: 1;" disabled></select>
                             <button class="btn btn-secondary" type="button" id="discoverRemoteBtn">Discover</button>
                         </div>
                     </div>
@@ -861,6 +883,8 @@ let expandedEpisodeGroups = new Set();
 let editingLibraryId = '';
 let activePosterDetails = null;
 let lockedScrollY = 0;
+let discoveredPlexServers = [];
+let verifiedRemoteServer = null;
 const libraryStateStorageKey = 'strmr.library.ui.v1';
 let lastSelectedLibraryScanStatus = '';
 
@@ -877,12 +901,20 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('browseDirsBtn').addEventListener('click', openDirectoryBrowser);
   document.getElementById('libraryType').addEventListener('change', syncLibraryFormSettings);
   document.getElementById('librarySource').addEventListener('change', onLibrarySourceChange);
-  document.getElementById('remoteAccount').addEventListener('change', discoverRemoteLibraries);
+  document.getElementById('remoteAccount').addEventListener('change', onRemoteAccountChange);
+  document.getElementById('remoteServer').addEventListener('change', populatePlexServerAddresses);
+  document.getElementById('remoteServerAddress').addEventListener('change', onPlexServerAddressChange);
+  document.getElementById('customServerAddress').addEventListener('input', invalidateVerifiedRemoteServer);
+  document.getElementById('discoverServersBtn').addEventListener('click', discoverPlexServers);
+  document.getElementById('verifyRemoteServerBtn').addEventListener('click', verifyPlexServer);
   document.getElementById('remoteLibrary').addEventListener('change', () => {
     const option = document.getElementById('remoteLibrary').selectedOptions[0];
     if (option) document.getElementById('libraryName').value = option.dataset.name || '';
   });
-  document.getElementById('discoverRemoteBtn').addEventListener('click', discoverRemoteLibraries);
+  document.getElementById('discoverRemoteBtn').addEventListener('click', () => {
+    if (document.getElementById('librarySource').value === 'plex') verifyPlexServer();
+    else discoverRemoteLibraries();
+  });
   document.getElementById('cancelLibraryEditBtn').addEventListener('click', resetLibraryForm);
   document.getElementById('closeDirBrowserBtn').addEventListener('click', closeDirectoryBrowser);
   document.getElementById('goDirBrowserBtn').addEventListener('click', () => loadDirectoryListing(document.getElementById('directoryBrowserPath').value.trim()));
@@ -968,7 +1000,17 @@ async function createLibrary(event) {
   if (source !== 'local') {
     const option = document.getElementById('remoteLibrary').selectedOptions[0];
     if (!option || !option.value) { showToast('Select a server library', 'error'); return; }
-    payload = { name: option.dataset.name || 'Remote Library', type: option.dataset.type, provider: source, accountId: document.getElementById('remoteAccount').value, serverId: option.dataset.serverId || '', serverName: option.dataset.serverName || '', externalLibraryId: option.value };
+    if (source === 'plex' && !verifiedRemoteServer) { showToast('Verify the Plex server connection first', 'error'); return; }
+    payload = {
+      name: option.dataset.name || 'Remote Library',
+      type: option.dataset.type,
+      provider: source,
+      accountId: document.getElementById('remoteAccount').value,
+      serverId: option.dataset.serverId || '',
+      serverName: option.dataset.serverName || '',
+      serverUrl: source === 'plex' ? verifiedRemoteServer.serverUrl : '',
+      externalLibraryId: option.value,
+    };
   }
   try {
     const isEditing = Boolean(editingLibraryId);
@@ -2237,18 +2279,135 @@ async function loadRemoteAccounts() {
     const data = await res.json();
     const accounts = (data.accounts || []).filter(account => account.connected);
     select.innerHTML = accounts.length ? accounts.map(account => `<option value="${escapeHtml(account.id)}">${escapeHtml(account.name || account.username || source)}</option>`).join('') : '<option value="">No connected accounts</option>';
-    if (accounts.length) discoverRemoteLibraries();
+    if (accounts.length) onRemoteAccountChange();
   } catch (error) { select.innerHTML = '<option value="">Unable to load accounts</option>'; showToast(error.message || 'Unable to load accounts', 'error'); }
 }
 
 function onLibrarySourceChange() {
   const source = document.getElementById('librarySource').value || 'local';
   const remote = source !== 'local';
+  const plex = source === 'plex';
   document.getElementById('remoteLibraryFields').style.display = remote ? 'grid' : 'none';
+  document.getElementById('plexServerFields').style.display = plex ? 'grid' : 'none';
+  document.getElementById('discoverRemoteBtn').style.display = plex ? 'none' : '';
+  document.getElementById('customServerAddress').required = plex && document.getElementById('remoteServerAddress').value === '__custom__';
   document.querySelectorAll('.local-library-field').forEach(element => element.style.display = remote ? 'none' : 'block');
   document.getElementById('libraryRootPath').required = !remote;
+  invalidateVerifiedRemoteServer();
   if (remote) loadRemoteAccounts();
   syncLibraryFormSettings();
+}
+
+function onRemoteAccountChange() {
+  invalidateVerifiedRemoteServer();
+  if (document.getElementById('librarySource').value === 'plex') discoverPlexServers();
+  else discoverRemoteLibraries();
+}
+
+function invalidateVerifiedRemoteServer() {
+  verifiedRemoteServer = null;
+  const librarySelect = document.getElementById('remoteLibrary');
+  librarySelect.disabled = true;
+  librarySelect.innerHTML = '<option value="">Verify a server connection first</option>';
+  const status = document.getElementById('remoteServerStatus');
+  if (status) {
+    status.textContent = 'Select an address to verify.';
+    status.style.color = 'var(--text-muted)';
+  }
+}
+
+async function discoverPlexServers() {
+  const accountId = document.getElementById('remoteAccount').value;
+  const serverSelect = document.getElementById('remoteServer');
+  discoveredPlexServers = [];
+  invalidateVerifiedRemoteServer();
+  if (!accountId) {
+    serverSelect.innerHTML = '<option value="">Select a connected account</option>';
+    return;
+  }
+  serverSelect.innerHTML = '<option value="">Discovering servers…</option>';
+  try {
+    const res = await fetch(basePath + '/api/library/remote/servers?provider=plex&accountId=' + encodeURIComponent(accountId));
+    if (!res.ok) throw new Error(await res.text());
+    discoveredPlexServers = await res.json();
+    serverSelect.innerHTML = discoveredPlexServers.length
+      ? discoveredPlexServers.map(server => `<option value="${escapeHtml(server.id)}">${escapeHtml(server.name)}${server.platform ? ` · ${escapeHtml(server.platform)}` : ''}${server.online ? '' : ' · Plex reports offline'}</option>`).join('')
+      : '<option value="">No Plex servers found</option>';
+    populatePlexServerAddresses();
+  } catch (error) {
+    serverSelect.innerHTML = '<option value="">Unable to discover servers</option>';
+    showToast(error.message || 'Unable to discover Plex servers', 'error');
+  }
+}
+
+function plexConnectionLabel(connection) {
+  const route = connection.relay ? 'Relay' : (connection.local ? 'Local' : 'Remote');
+  return `${route} · ${String(connection.protocol || '').toUpperCase()} · ${connection.uri}`;
+}
+
+function populatePlexServerAddresses() {
+  const serverId = document.getElementById('remoteServer').value;
+  const server = discoveredPlexServers.find(candidate => candidate.id === serverId);
+  const addressSelect = document.getElementById('remoteServerAddress');
+  const connections = server && Array.isArray(server.connections) ? server.connections : [];
+  addressSelect.innerHTML = connections.map(connection =>
+    `<option value="${escapeHtml(connection.uri)}">${escapeHtml(plexConnectionLabel(connection))}</option>`
+  ).join('') + '<option value="__custom__">Custom address…</option>';
+  addressSelect.value = connections.length ? connections[0].uri : '__custom__';
+  onPlexServerAddressChange();
+}
+
+function onPlexServerAddressChange() {
+  const custom = document.getElementById('remoteServerAddress').value === '__custom__';
+  document.getElementById('customServerAddressField').style.display = custom ? 'block' : 'none';
+  document.getElementById('customServerAddress').required = custom;
+  invalidateVerifiedRemoteServer();
+}
+
+function selectedPlexServerURL() {
+  const selected = document.getElementById('remoteServerAddress').value;
+  return selected === '__custom__'
+    ? document.getElementById('customServerAddress').value.trim()
+    : selected;
+}
+
+async function verifyPlexServer() {
+  const accountId = document.getElementById('remoteAccount').value;
+  const serverId = document.getElementById('remoteServer').value;
+  const serverUrl = selectedPlexServerURL();
+  const status = document.getElementById('remoteServerStatus');
+  const button = document.getElementById('verifyRemoteServerBtn');
+  invalidateVerifiedRemoteServer();
+  if (!accountId || !serverId) { showToast('Select a Plex server', 'error'); return; }
+  if (!serverUrl) { showToast('Enter a Plex server address', 'error'); return; }
+  status.textContent = 'Connecting…';
+  button.disabled = true;
+  try {
+    const res = await fetch(basePath + '/api/library/remote/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'plex', accountId, serverId, serverUrl }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    verifiedRemoteServer = await res.json();
+    status.textContent = `Connected to ${verifiedRemoteServer.serverName} at ${verifiedRemoteServer.serverUrl}`;
+    status.style.color = 'var(--success)';
+    populateRemoteLibraries(verifiedRemoteServer.libraries || []);
+  } catch (error) {
+    status.textContent = 'Connection failed';
+    status.style.color = 'var(--danger)';
+    showToast(error.message || 'Unable to connect to Plex server', 'error');
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function populateRemoteLibraries(libraries) {
+  const select = document.getElementById('remoteLibrary');
+  select.disabled = false;
+  select.innerHTML = libraries.length ? libraries.map(library => `<option value="${escapeHtml(library.id)}" data-name="${escapeHtml(library.name)}" data-type="${escapeHtml(library.type)}" data-server-id="${escapeHtml(library.serverId || '')}" data-server-name="${escapeHtml(library.serverName || '')}">${escapeHtml((library.serverName ? library.serverName + ' · ' : '') + library.name)} (${escapeHtml(library.type)})</option>`).join('') : '<option value="">No movie/show libraries found</option>';
+  const option = select.selectedOptions[0];
+  if (option && !document.getElementById('libraryName').value.trim()) document.getElementById('libraryName').value = option.dataset.name || '';
 }
 
 async function discoverRemoteLibraries() {
@@ -2261,8 +2420,7 @@ async function discoverRemoteLibraries() {
     const res = await fetch(basePath + '/api/library/remote/discover?provider=' + encodeURIComponent(provider) + '&accountId=' + encodeURIComponent(accountId));
     if (!res.ok) throw new Error(await res.text());
     const libraries = await res.json();
-    select.innerHTML = libraries.length ? libraries.map(library => `<option value="${escapeHtml(library.id)}" data-name="${escapeHtml(library.name)}" data-type="${escapeHtml(library.type)}" data-server-id="${escapeHtml(library.serverId || '')}" data-server-name="${escapeHtml(library.serverName || '')}">${escapeHtml((library.serverName ? library.serverName + ' · ' : '') + library.name)} (${escapeHtml(library.type)})</option>`).join('') : '<option value="">No movie/show libraries found</option>';
-    const option = select.selectedOptions[0]; if (option && !document.getElementById('libraryName').value.trim()) document.getElementById('libraryName').value = option.dataset.name || '';
+    populateRemoteLibraries(libraries);
   } catch (error) { select.innerHTML = '<option value="">Discovery failed</option>'; showToast(error.message || 'Discovery failed', 'error'); }
 }
 

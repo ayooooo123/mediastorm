@@ -65,6 +65,37 @@ func TestPlexServerResolverRefreshesForChangedTokenAndExpiry(t *testing.T) {
 	}
 }
 
+func TestPlexServerForLibraryPinsVerifiedAddress(t *testing.T) {
+	now := time.Now()
+	service := &Service{servers: plexServerResolver{entries: map[string]plexServerCacheEntry{
+		"account-1\x00server-1": {
+			server: plex.PlexResource{
+				ClientIdentifier: "server-1",
+				Connections:      []plex.PlexConnection{{Protocol: "http", URI: "http://192.0.2.1:32400", Local: true}},
+			},
+			authToken: "token-1",
+			expiresAt: now.Add(time.Minute),
+		},
+	}, now: func() time.Time { return now }}}
+	library := &models.RemoteMediaLibrary{
+		AccountID: "account-1",
+		ServerID:  "server-1",
+		ServerURL: "http://100.64.0.10:32400",
+	}
+
+	server, err := service.plexServerForLibrary(library, "token-1")
+	if err != nil {
+		t.Fatalf("plexServerForLibrary() error = %v", err)
+	}
+	got, err := plex.PreferredConnection(server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != library.ServerURL {
+		t.Fatalf("preferred connection=%q, want verified address %q", got, library.ServerURL)
+	}
+}
+
 func TestNormalizeJellyfinEpisodeVersions(t *testing.T) {
 	dateCreated := time.Date(2024, 5, 6, 7, 8, 9, 0, time.UTC)
 	library := &models.RemoteMediaLibrary{ID: "lib", Type: models.LocalMediaLibraryTypeShow, Provider: models.MediaSourceJellyfin}

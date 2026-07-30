@@ -3,6 +3,7 @@ package plex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -909,6 +910,23 @@ func (c *Client) GetAccessibleServers(authToken string) ([]PlexResource, error) 
 	return servers, nil
 }
 
+// GetVisibleServers returns every Plex Media Server visible to the token.
+// Presence is intentionally not enforced so a custom LAN, VPN, or reverse-proxy
+// address can be verified even when Plex Cloud considers the server offline.
+func (c *Client) GetVisibleServers(authToken string) ([]PlexResource, error) {
+	resources, err := c.GetResources(authToken)
+	if err != nil {
+		return nil, err
+	}
+	servers := []PlexResource{}
+	for _, resource := range resources {
+		if strings.Contains(resource.Provides, "server") {
+			servers = append(servers, resource)
+		}
+	}
+	return servers, nil
+}
+
 func PreferredConnection(server PlexResource) (string, error) {
 	for _, want := range []struct {
 		local, relay bool
@@ -926,17 +944,71 @@ func PreferredConnection(server PlexResource) (string, error) {
 	return "", fmt.Errorf("no available connection for server %s", server.Name)
 }
 
+// NormalizeServerURL validates and normalizes a user-selected Plex server base
+// URL. Paths are allowed for reverse-proxy deployments, but credentials,
+// queries, and fragments are not part of a server address.
+func NormalizeServerURL(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return "", fmt.Errorf("invalid Plex server address: %w", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", errors.New("Plex server address must use http or https")
+	}
+	if parsed.Host == "" {
+		return "", errors.New("Plex server address must include a host")
+	}
+	if parsed.User != nil {
+		return "", errors.New("Plex server address cannot include credentials")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", errors.New("Plex server address cannot include a query or fragment")
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	parsed.RawPath = ""
+	return strings.TrimRight(parsed.String(), "/"), nil
+}
+
+// WithConnection pins a Plex resource to a previously verified address.
+func WithConnection(server PlexResource, serverURL string) (PlexResource, error) {
+	normalized, err := NormalizeServerURL(serverURL)
+	if err != nil {
+		return PlexResource{}, err
+	}
+	parsed, _ := url.Parse(normalized)
+	port, _ := strconv.Atoi(parsed.Port())
+	server.Connections = []PlexConnection{{
+		Protocol: parsed.Scheme,
+		Address:  parsed.Hostname(),
+		Port:     port,
+		URI:      normalized,
+	}}
+	return server, nil
+}
+
 func (c *Client) GetServerLibraries(server PlexResource) ([]PlexLibrary, error) {
 	base, err := PreferredConnection(server)
 	if err != nil {
 		return nil, err
 	}
+	return c.GetServerLibrariesAt(context.Background(), server, base)
+}
+
+// GetServerLibrariesAt verifies a specific advertised or custom server address
+// and returns the movie/show libraries available through it.
+func (c *Client) GetServerLibrariesAt(ctx context.Context, server PlexResource, serverURL string) ([]PlexLibrary, error) {
+	pinned, err := WithConnection(server, serverURL)
+	if err != nil {
+		return nil, err
+	}
+	base, _ := PreferredConnection(pinned)
 	var result struct {
 		MediaContainer struct {
 			Directory []PlexLibrary `json:"Directory"`
 		} `json:"MediaContainer"`
 	}
-	if err := c.serverJSON(context.Background(), server, base+"/library/sections", nil, &result); err != nil {
+	if err := c.serverJSON(ctx, pinned, base+"/library/sections", nil, &result); err != nil {
 		return nil, err
 	}
 	libraries := []PlexLibrary{}

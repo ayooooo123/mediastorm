@@ -1123,6 +1123,8 @@ func main() {
 	r.HandleFunc("/admin/api/library/search", adminUIHandler.RequireAuth(adminUIHandler.SearchLocalMediaMetadata)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/library/fs", adminUIHandler.RequireAuth(adminUIHandler.BrowseLocalMediaDirectories)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/library/remote/discover", adminUIHandler.RequireMasterAuth(adminUIHandler.DiscoverRemoteMediaLibraries)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/api/library/remote/servers", adminUIHandler.RequireMasterAuth(adminUIHandler.DiscoverRemoteMediaServers)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/api/library/remote/verify", adminUIHandler.RequireMasterAuth(adminUIHandler.VerifyRemoteMediaServer)).Methods(http.MethodPost)
 	r.HandleFunc("/admin/api/library/items/{itemID}/match", adminUIHandler.RequireAuth(adminUIHandler.UpdateLocalMediaItemMatch)).Methods(http.MethodPut)
 	r.HandleFunc("/admin/api/library/items/{itemID}", adminUIHandler.RequireAuth(adminUIHandler.DeleteLocalMediaItem)).Methods(http.MethodDelete)
 	r.HandleFunc("/admin/api/profiles/reassign", adminUIHandler.RequireAuth(adminUIHandler.ReassignProfile)).Methods(http.MethodPut)
@@ -1466,6 +1468,8 @@ func main() {
 	r.HandleFunc("/account/api/library/search", adminUIHandler.RequireAuth(adminUIHandler.SearchLocalMediaMetadata)).Methods(http.MethodGet)
 	r.HandleFunc("/account/api/library/fs", adminUIHandler.RequireAuth(adminUIHandler.BrowseLocalMediaDirectories)).Methods(http.MethodGet)
 	r.HandleFunc("/account/api/library/remote/discover", adminUIHandler.RequireMasterAuth(adminUIHandler.DiscoverRemoteMediaLibraries)).Methods(http.MethodGet)
+	r.HandleFunc("/account/api/library/remote/servers", adminUIHandler.RequireMasterAuth(adminUIHandler.DiscoverRemoteMediaServers)).Methods(http.MethodGet)
+	r.HandleFunc("/account/api/library/remote/verify", adminUIHandler.RequireMasterAuth(adminUIHandler.VerifyRemoteMediaServer)).Methods(http.MethodPost)
 	r.HandleFunc("/account/api/library/items/{itemID}/match", adminUIHandler.RequireAuth(adminUIHandler.UpdateLocalMediaItemMatch)).Methods(http.MethodPut)
 	r.HandleFunc("/account/api/library/items/{itemID}", adminUIHandler.RequireAuth(adminUIHandler.DeleteLocalMediaItem)).Methods(http.MethodDelete)
 
