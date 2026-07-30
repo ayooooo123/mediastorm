@@ -20,11 +20,17 @@ import (
 // StreamTracker tracks active video streams for monitoring
 type StreamTracker struct {
 	streams          map[string]*TrackedStream
+	recentlyEnded    map[string]recentlyEndedStream
 	stopPlaybacks    map[string]time.Time
 	migrationSignals map[string]playbackMigrationSignal
 	mu               sync.RWMutex
 	counter          uint64
 	playbackObserver PlaybackActivityObserver
+}
+
+type recentlyEndedStream struct {
+	stream  *TrackedStream
+	endedAt time.Time
 }
 
 type playbackMigrationSignal struct {
@@ -227,6 +233,7 @@ var globalStreamTracker = &StreamTracker{
 
 const playbackStopSignalDuration = 2 * time.Minute
 const playbackMigrationSignalDuration = 30 * time.Second
+const playbackNotificationTeardownGrace = 30 * time.Second
 
 // GetStreamTracker returns the global stream tracker
 func GetStreamTracker() *StreamTracker {
@@ -269,6 +276,32 @@ func (t *StreamTracker) ObservePlaybackActivity(userID string, update models.Pla
 		}
 		if best == nil || stream.LastActivity.After(best.LastActivity) {
 			best = stream
+		}
+	}
+	if best == nil {
+		now := time.Now()
+		var bestEndedAt time.Time
+		for _, ended := range t.recentlyEnded {
+			if ended.stream == nil || now.Sub(ended.endedAt) > playbackNotificationTeardownGrace {
+				continue
+			}
+			matches := false
+			for _, key := range streamPlaybackControlKeys(ended.stream) {
+				if key == targetKey {
+					matches = true
+					break
+				}
+			}
+			if !matches {
+				continue
+			}
+			if update.SourcePath != "" && normalizeStreamFailurePath(ended.stream.Path) != normalizeStreamFailurePath(update.SourcePath) {
+				continue
+			}
+			if best == nil || ended.endedAt.After(bestEndedAt) {
+				best = ended.stream
+				bestEndedAt = ended.endedAt
+			}
 		}
 	}
 	if best != nil {
@@ -347,6 +380,7 @@ func (t *StreamTracker) StartStreamWithAccount(r *http.Request, path string, con
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.pruneStopSignalsLocked()
+	t.pruneRecentlyEndedLocked(time.Now())
 
 	id := generateStreamID(atomic.AddUint64(&t.counter, 1))
 
@@ -961,7 +995,8 @@ func (t *StreamTracker) EndStream(id string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if _, ok := t.streams[id]; ok {
+	if stream, ok := t.streams[id]; ok {
+		t.rememberEndedStreamLocked(stream, time.Now())
 		delete(t.streams, id)
 	}
 }
@@ -979,11 +1014,31 @@ func (t *StreamTracker) TerminateStream(id string) bool {
 		t.mu.Unlock()
 		return false
 	}
+	t.rememberEndedStreamLocked(stream, time.Now())
 	delete(t.streams, id)
 	t.mu.Unlock()
 
 	cancel()
 	return true
+}
+
+func (t *StreamTracker) rememberEndedStreamLocked(stream *TrackedStream, now time.Time) {
+	if stream == nil {
+		return
+	}
+	t.pruneRecentlyEndedLocked(now)
+	if t.recentlyEnded == nil {
+		t.recentlyEnded = make(map[string]recentlyEndedStream)
+	}
+	t.recentlyEnded[stream.ID] = recentlyEndedStream{stream: stream, endedAt: now}
+}
+
+func (t *StreamTracker) pruneRecentlyEndedLocked(now time.Time) {
+	for id, ended := range t.recentlyEnded {
+		if ended.stream == nil || now.Sub(ended.endedAt) > playbackNotificationTeardownGrace {
+			delete(t.recentlyEnded, id)
+		}
+	}
 }
 
 // GetActiveStreams returns all currently active streams
