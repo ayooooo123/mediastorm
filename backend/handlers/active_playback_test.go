@@ -159,3 +159,78 @@ func TestStreamTrackerObservePlaybackActivityUsesStablePlaybackIdentity(t *testi
 		t.Fatalf("PlaybackSessionID = %q", first.PlaybackSessionID)
 	}
 }
+
+func TestStreamTrackerObservePlaybackActivityAcceptsFinalHeartbeatAfterStreamEnds(t *testing.T) {
+	observer := &capturePlaybackActivityObserver{calls: make(chan models.PlaybackProgressUpdate, 1)}
+	tracker := newTestTracker()
+	tracker.playbackObserver = observer
+
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/video/stream?profileId=profile&mediaType=movie&itemId=tmdb:movie:1081003&movieName=Supergirl",
+		nil,
+	)
+	streamID, _, _ := tracker.StartStream(request, "/supergirl.mkv", 1000, 0, 999)
+	tracker.EndStream(streamID)
+
+	update := models.PlaybackProgressUpdate{
+		MediaType:     "movie",
+		ItemID:        "tmdb:movie:1081003",
+		PlaybackEnded: true,
+	}
+	if matched := tracker.ObservePlaybackActivity("profile", update, 95); matched != 1 {
+		t.Fatalf("ObservePlaybackActivity() matched %d streams, want recently ended stream", matched)
+	}
+
+	select {
+	case observed := <-observer.calls:
+		if observed.PlaybackSessionID != "direct:profile|movie:tmdb:movie:1081003" {
+			t.Fatalf("PlaybackSessionID = %q", observed.PlaybackSessionID)
+		}
+		if observed.MovieName != "Supergirl" {
+			t.Fatalf("MovieName = %q, want Supergirl", observed.MovieName)
+		}
+		if !observed.PlaybackEnded {
+			t.Fatal("final heartbeat lost PlaybackEnded")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for final playback observer update")
+	}
+}
+
+func TestStreamTrackerObservePlaybackActivityRejectsExpiredEndedStream(t *testing.T) {
+	observer := &capturePlaybackActivityObserver{calls: make(chan models.PlaybackProgressUpdate, 1)}
+	stream := &TrackedStream{
+		ID:        "ended-range",
+		ProfileID: "profile",
+		Path:      "/movie.mkv",
+		MediaMetadata: StreamMediaMetadata{
+			MediaType: "movie",
+			ItemID:    "tmdb:movie:1",
+		},
+	}
+	tracker := &StreamTracker{
+		streams: make(map[string]*TrackedStream),
+		recentlyEnded: map[string]recentlyEndedStream{
+			stream.ID: {
+				stream:  stream,
+				endedAt: time.Now().Add(-playbackNotificationTeardownGrace - time.Second),
+			},
+		},
+		playbackObserver: observer,
+	}
+
+	update := models.PlaybackProgressUpdate{
+		MediaType:     "movie",
+		ItemID:        "tmdb:movie:1",
+		PlaybackEnded: true,
+	}
+	if matched := tracker.ObservePlaybackActivity("profile", update, 95); matched != 0 {
+		t.Fatalf("ObservePlaybackActivity() matched %d streams, want expired stream ignored", matched)
+	}
+	select {
+	case observed := <-observer.calls:
+		t.Fatalf("expired stream reached observer: %+v", observed)
+	case <-time.After(25 * time.Millisecond):
+	}
+}
