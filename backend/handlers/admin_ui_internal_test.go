@@ -192,6 +192,29 @@ func TestProfileActivityPrivacyCopyIncludesDashboardShelf(t *testing.T) {
 	}
 }
 
+func TestAdminStatusActiveStreamsPreferSeriesPosters(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/status.html")
+	if err != nil {
+		t.Fatalf("read status template: %v", err)
+	}
+	source := string(templateBytes)
+
+	if strings.Contains(source, "title.poster?.url || title.backdrop?.url") {
+		t.Fatal("active-stream poster lookup still falls back to landscape backdrop artwork")
+	}
+
+	loadStart := strings.Index(source, "async function loadStreamPosters(streams)")
+	if loadStart < 0 {
+		t.Fatal("status template missing loadStreamPosters")
+	}
+	loadSource := source[loadStart:]
+	seriesLookup := strings.Index(loadSource, "mediaInfo.type === 'series'")
+	streamArtwork := strings.Index(loadSource, "if (mediaInfo.posterUrl)")
+	if seriesLookup < 0 || streamArtwork < 0 || seriesLookup > streamArtwork {
+		t.Fatal("episode cards must resolve the canonical series poster before using stream artwork")
+	}
+}
+
 func TestUsenetEngineStatusProbeJobIDUsesGUIDForNZBDav(t *testing.T) {
 	for _, engineType := range []string{"nzbdav", "nzbdavex"} {
 		t.Run(engineType, func(t *testing.T) {
