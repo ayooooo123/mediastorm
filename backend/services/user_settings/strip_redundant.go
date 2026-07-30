@@ -1012,6 +1012,10 @@ func stripRanking(r **models.UserRankingSettings, g config.RankingSettings) bool
 		(*r).SplitByService = nil
 		changed = true
 	}
+	if (*r).NewestReleaseFirst != nil && *(*r).NewestReleaseFirst == g.NewestReleaseFirst {
+		(*r).NewestReleaseFirst = nil
+		changed = true
+	}
 
 	debridGlobal := g
 	if g.SplitByService && g.Debrid != nil {
@@ -1059,7 +1063,7 @@ func userRankingCriteriaMatch(criteria []models.UserRankingCriterion, global []c
 }
 
 func userRankingSettingsEmpty(r *models.UserRankingSettings) bool {
-	return r == nil || (len(r.Criteria) == 0 && r.SplitByService == nil && r.Debrid == nil && r.Usenet == nil)
+	return r == nil || (len(r.Criteria) == 0 && r.NewestReleaseFirst == nil && r.SplitByService == nil && r.Debrid == nil && r.Usenet == nil)
 }
 
 // stripClientSettings removes client overrides that match their parent profile's effective value.
@@ -1314,6 +1318,16 @@ func stripClientSettings(cs *models.ClientFilterSettings, eff models.UserSetting
 	if cs.RankingCriteria != nil {
 		if clientRankingMatchesProfile(*cs.RankingCriteria, eff.Ranking) {
 			cs.RankingCriteria = nil
+			changed = true
+		}
+	}
+	if cs.NewestReleaseFirst != nil {
+		profileValue := false
+		if eff.Ranking != nil && eff.Ranking.NewestReleaseFirst != nil {
+			profileValue = *eff.Ranking.NewestReleaseFirst
+		}
+		if *cs.NewestReleaseFirst == profileValue {
+			cs.NewestReleaseFirst = nil
 			changed = true
 		}
 	}

@@ -84,6 +84,7 @@ type ClientFilterSettings struct {
 
 	// Ranking criteria overrides
 	RankingCriteria       *[]ClientRankingCriterion `json:"rankingCriteria,omitempty"`
+	NewestReleaseFirst    *bool                     `json:"newestReleaseFirst,omitempty"`
 	RankingSplitByService *bool                     `json:"rankingSplitByService,omitempty"`
 	DebridRankingCriteria *[]ClientRankingCriterion `json:"debridRankingCriteria,omitempty"`
 	UsenetRankingCriteria *[]ClientRankingCriterion `json:"usenetRankingCriteria,omitempty"`
@@ -166,6 +167,7 @@ func (c *ClientFilterSettings) IsEmpty() bool {
 		c.HomeBackendUrl == nil &&
 		c.RemoteBackendUrl == nil &&
 		c.RankingCriteria == nil &&
+		c.NewestReleaseFirst == nil &&
 		c.RankingSplitByService == nil &&
 		c.DebridRankingCriteria == nil &&
 		c.UsenetRankingCriteria == nil &&

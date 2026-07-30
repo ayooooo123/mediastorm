@@ -111,6 +111,87 @@ func (p mapClientSettingsProvider) Get(clientID string) (*models.ClientFilterSet
 	return p.settings[clientID], nil
 }
 
+type staticUserSettingsProvider struct {
+	settings *models.UserSettings
+}
+
+func (p staticUserSettingsProvider) Get(string) (*models.UserSettings, error) {
+	return p.settings, nil
+}
+
+func TestNewestReleaseFirstCascadeAndSort(t *testing.T) {
+	enabled := true
+	disabled := false
+	svc := &Service{
+		userSettings: staticUserSettingsProvider{
+			settings: &models.UserSettings{
+				Ranking: &models.UserRankingSettings{NewestReleaseFirst: &enabled},
+			},
+		},
+		clientSettings: mapClientSettingsProvider{
+			settings: map[string]*models.ClientFilterSettings{
+				"client": {NewestReleaseFirst: &disabled},
+			},
+		},
+	}
+	settings := config.DefaultSettings()
+	if !svc.getEffectiveRankingBundle("profile", "", settings).NewestReleaseFirst {
+		t.Fatal("profile override should enable newest-release sorting")
+	}
+	if svc.getEffectiveRankingBundle("profile", "client", settings).NewestReleaseFirst {
+		t.Fatal("client override should disable profile newest-release sorting")
+	}
+
+	oldest := time.Date(2024, time.January, 1, 0, 0, 0, 0, time.UTC)
+	newest := oldest.Add(24 * time.Hour)
+	results := []models.NZBResult{
+		{Title: "unknown"},
+		{Title: "old", PublishDate: oldest},
+		{Title: "new", PublishDate: newest},
+	}
+	sortResultsNewestReleaseFirst(results)
+	got := []string{results[0].Title, results[1].Title, results[2].Title}
+	want := []string{"new", "old", "unknown"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("newest sort = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestSearchNewestReleaseFirstSortsBeforeFinalResultLimit(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "settings.json")
+	mgr := config.NewManager(cfgPath)
+	settings := config.DefaultSettings()
+	settings.Streaming.ServiceMode = config.StreamingServiceModeDebrid
+	settings.Display.BypassFilteringForAIOStreamsOnly = false
+	settings.Ranking.NewestReleaseFirst = true
+	if err := mgr.Save(settings); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	oldest := time.Date(2024, time.January, 1, 0, 0, 0, 0, time.UTC)
+	newest := oldest.Add(24 * time.Hour)
+	svc := NewService(mgr, nil, maxAwareDebridSearchService{
+		results: []models.NZBResult{
+			{Title: "Movie.2024.old", PublishDate: oldest, ServiceType: models.ServiceTypeDebrid},
+			{Title: "Movie.2024.new", PublishDate: newest, ServiceType: models.ServiceTypeDebrid},
+		},
+	})
+	results, err := svc.Search(t.Context(), SearchOptions{
+		Query:      "Movie 2024",
+		MediaType:  "movie",
+		Year:       2024,
+		MaxResults: 1,
+	})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(results) != 1 || results[0].Title != "Movie.2024.new" {
+		t.Fatalf("results = %#v, want newest release only", results)
+	}
+}
+
 func TestSearchTorznab_IndexerCategories(t *testing.T) {
 	// Track the categories received by the mock server
 	var receivedCategories string

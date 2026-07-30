@@ -25,6 +25,7 @@ func TestInternetArchiveSearchReturnsPlayablePreResolvedStreams(t *testing.T) {
 				"metadata": {
 					"title": "The Archive Show",
 					"year": "1962",
+					"publicdate": "2026-07-30T18:34:00Z",
 					"licenseurl": "https://creativecommons.org/publicdomain/mark/1.0/",
 					"collection": ["classic_tv", "community"]
 				},
@@ -80,6 +81,9 @@ func TestInternetArchiveSearchReturnsPlayablePreResolvedStreams(t *testing.T) {
 	}
 	if first.Attributes["licenseurl"] == "" || first.Attributes["collection"] == "" {
 		t.Fatalf("expected archive metadata attrs, got %#v", first.Attributes)
+	}
+	if first.PublishDate.IsZero() {
+		t.Fatal("expected Internet Archive publicdate to be preserved")
 	}
 }
 

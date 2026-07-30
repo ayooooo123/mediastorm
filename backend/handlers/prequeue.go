@@ -357,12 +357,13 @@ type prequeueScopePlayback struct {
 }
 
 type prequeueScopeSignature struct {
-	Filtering         models.FilterSettings            `json:"filtering"`
-	AnimeFiltering    models.AnimeFilteringSettings    `json:"animeFiltering"`
-	Ranking           *models.UserRankingSettings      `json:"ranking,omitempty"`
-	ClientRanking     *[]models.ClientRankingCriterion `json:"clientRanking,omitempty"`
-	Playback          prequeueScopePlayback            `json:"playback"`
-	ContentPreference *models.ContentPreference        `json:"contentPreference,omitempty"`
+	Filtering          models.FilterSettings            `json:"filtering"`
+	AnimeFiltering     models.AnimeFilteringSettings    `json:"animeFiltering"`
+	Ranking            *models.UserRankingSettings      `json:"ranking,omitempty"`
+	ClientRanking      *[]models.ClientRankingCriterion `json:"clientRanking,omitempty"`
+	NewestReleaseFirst bool                             `json:"newestReleaseFirst,omitempty"`
+	Playback           prequeueScopePlayback            `json:"playback"`
+	ContentPreference  *models.ContentPreference        `json:"contentPreference,omitempty"`
 }
 
 func configFilterToUserFilter(f config.FilterSettings) models.FilterSettings {
@@ -460,6 +461,9 @@ func applyClientScopeOverrides(sig *prequeueScopeSignature, clientSettings *mode
 	if clientSettings.RankingCriteria != nil {
 		sig.ClientRanking = clientSettings.RankingCriteria
 	}
+	if clientSettings.NewestReleaseFirst != nil {
+		sig.NewestReleaseFirst = *clientSettings.NewestReleaseFirst
+	}
 }
 
 func prequeueScopeHash(sig prequeueScopeSignature) string {
@@ -481,6 +485,7 @@ func (h *PrequeueHandler) prequeueSettingsScopeKey(userID, clientID, titleID str
 			defaults.Playback = configPlaybackToUserPlayback(globalSettings.Playback)
 			global.Filtering = defaults.Filtering
 			global.AnimeFiltering = defaults.AnimeFiltering
+			global.NewestReleaseFirst = globalSettings.Ranking.NewestReleaseFirst
 			global.Playback = prequeueScopePlayback{
 				PreferredAudioLanguage:     defaults.Playback.PreferredAudioLanguage,
 				PreferredSubtitleLanguage:  defaults.Playback.PreferredSubtitleLanguage,
@@ -498,6 +503,9 @@ func (h *PrequeueHandler) prequeueSettingsScopeKey(userID, clientID, titleID str
 			effective.Filtering = userSettings.Filtering
 			effective.AnimeFiltering = userSettings.AnimeFiltering
 			effective.Ranking = userSettings.Ranking
+			if userSettings.Ranking != nil && userSettings.Ranking.NewestReleaseFirst != nil {
+				effective.NewestReleaseFirst = *userSettings.Ranking.NewestReleaseFirst
+			}
 			effective.Playback = prequeueScopePlayback{
 				PreferredAudioLanguage:     userSettings.Playback.PreferredAudioLanguage,
 				PreferredSubtitleLanguage:  userSettings.Playback.PreferredSubtitleLanguage,

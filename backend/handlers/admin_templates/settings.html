@@ -2490,6 +2490,7 @@
         'maxResultsPerResolution',
     ];
     const clientAnimeFilterFields = ['animeLanguageEnabled', 'animePreferredLanguage'];
+    const clientRankingFields = ['newestReleaseFirst'];
     // Map network field paths to client settings keys
     const clientNetworkFields = ['homeWifiSSID', 'homeBackendUrl', 'remoteBackendUrl'];
 
@@ -2519,6 +2520,9 @@
                 return keys[1];
             }
             if (keys[0] === 'animeFiltering' && clientAnimeFilterFields.includes(keys[1])) {
+                return keys[1];
+            }
+            if (keys[0] === 'ranking' && clientRankingFields.includes(keys[1])) {
                 return keys[1];
             }
             if (keys[0] === 'network' && clientNetworkFields.includes(keys[1])) {
@@ -2708,6 +2712,7 @@
         if (clientDisplayFields.includes(fieldKey)) return 'display';
         if (clientPlaybackFields.includes(fieldKey)) return 'playback';
         if (clientAnimeFilterFields.includes(fieldKey)) return 'animeFiltering';
+        if (clientRankingFields.includes(fieldKey)) return 'ranking';
         if (clientNetworkFields.includes(fieldKey)) return 'network';
         return 'filtering'; // fallback
     }
@@ -10214,7 +10219,7 @@
         let html = bannerHtml;
 
         // Sections that can be configured per-client (subset of perUserSections)
-        const clientSections = ['filtering', 'animeFiltering', 'network', 'display', 'playback'];
+        const clientSections = ['filtering', 'animeFiltering', 'network', 'display', 'playback', 'ranking'];
 
         let totalMatchingSections = 0;
 
