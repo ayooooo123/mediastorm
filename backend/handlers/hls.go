@@ -456,6 +456,7 @@ type HLSSession struct {
 	// Prequeue tracking
 	PrequeueType   string // "", "details" (details page), or "next_episode" (auto-play next)
 	CastMode       bool   // True when the session is being prepared for Chromecast-style HLS playback
+	DirectCastMode bool   // True when Cast should prefer direct/remux output over legacy compatibility transcode
 	PlaybackTarget string // Optional client target hint, e.g. "web"
 
 	// TonemappedToSDR is set when an HDR/DV source was tone mapped down to SDR
@@ -556,7 +557,7 @@ type castSegmentRestart struct {
 }
 
 func castSegmentRestartPlan(session *HLSSession, requestedSegment, highestAvailable int) (castSegmentRestart, bool) {
-	if session == nil || !session.CastMode || requestedSegment < 0 {
+	if session == nil || !session.usesStableCastTimeline() || requestedSegment < 0 {
 		return castSegmentRestart{}, false
 	}
 
@@ -683,6 +684,23 @@ func isLegacyCastCopyCompatibleVideo(probe *UnifiedProbeResult) bool {
 
 func castVideoMustTranscode(probe *UnifiedProbeResult) bool {
 	return !isLegacyCastCopyCompatibleVideo(probe)
+}
+
+func isDirectCastTarget(playbackTarget, castProfile string) bool {
+	switch strings.ToLower(strings.TrimSpace(castProfile)) {
+	case "direct":
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(playbackTarget)) {
+	case "cast-direct", "direct-cast":
+		return true
+	default:
+		return false
+	}
+}
+
+func (session *HLSSession) usesStableCastTimeline() bool {
+	return session != nil && session.CastMode && !session.DirectCastMode && !isDirectCastTarget(session.PlaybackTarget, "")
 }
 
 func legacyCastEncodeLimits(probe *UnifiedProbeResult) (maxWidth, maxHeight, maxFPS int) {
@@ -1495,6 +1513,8 @@ func (m *HLSManager) CreateSession(ctx context.Context, path string, originalPat
 	}
 
 	normalizedPlaybackTarget := strings.ToLower(strings.TrimSpace(playbackTarget))
+	directCastMode := castMode && isDirectCastTarget(normalizedPlaybackTarget, "")
+	stableCastMode := castMode && !directCastMode
 	subtitleStreamsForSeek := []subtitleStreamInfo(nil)
 	if probeData != nil {
 		subtitleStreamsForSeek = probeData.SubtitleStreams
@@ -1503,7 +1523,7 @@ func (m *HLSManager) CreateSession(ctx context.Context, path string, originalPat
 	now := time.Now()
 	// Use provided transcodingOffset if valid, otherwise default to startOffset
 	// transcodingOffset may differ from startOffset when probed keyframe position is used
-	actualTranscodingOffset := initialTranscodingOffset(startOffset, transcodingOffset, castMode)
+	actualTranscodingOffset := initialTranscodingOffset(startOffset, transcodingOffset, stableCastMode)
 	if startOffset > 0 && shouldPreferRequestedTranscodingOffset(normalizedPlaybackTarget, probeData, subtitleStreamsForSeek, subtitleTrackIndex) {
 		actualTranscodingOffset = startOffset
 		log.Printf("[hls] session %s: using requested start %.3fs instead of probed keyframe %.3fs for accurate web subtitle seek",
@@ -1541,6 +1561,7 @@ func (m *HLSManager) CreateSession(ctx context.Context, path string, originalPat
 		ProbeData:               probeData, // Cache unified probe results for startTranscoding
 		subtitleExtractOffsets:  make(map[int]float64),
 		CastMode:                castMode,
+		DirectCastMode:          directCastMode,
 		PrequeueType:            prequeueType, // "", "details", or "next_episode"
 		PlaybackTarget:          normalizedPlaybackTarget,
 	}
@@ -2388,8 +2409,9 @@ func (m *HLSManager) fixDVCodecTag(session *HLSSession) error {
 // startTranscoding begins FFmpeg HLS transcoding
 func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, forceAAC bool) error {
 	startTime := time.Now()
-	if session.CastMode {
-		// Cast output must not depend on receiver/TV Dolby passthrough support.
+	stableCastMode := session.usesStableCastTimeline()
+	if stableCastMode {
+		// Legacy Cast output must not depend on receiver/TV Dolby passthrough support.
 		forceAAC = true
 	}
 
@@ -2624,7 +2646,7 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 	// will be transcoded and whether a same-pass subtitle is being muxed, because both change the
 	// seek strategy needed to keep the subtitle aligned with the video.
 	videoWillTranscode := hlsWebVideoWillTranscode(session.PlaybackTarget, session.ProbeData)
-	if session.CastMode {
+	if stableCastMode {
 		// Stable Cast timelines require deterministic two-second keyframe
 		// boundaries so logical segment N always maps to the same media time.
 		videoWillTranscode = true
@@ -2641,7 +2663,7 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 	// global option BEFORE -i. The plan picks a GPU H.264 encoder when one is
 	// detected and working, and tone maps HDR/DV down to SDR for web and Cast.
 	var webEncodePlan videoEncodePlan
-	useWebEncodePlan := videoWillTranscode && (session.PlaybackTarget == "web" || session.CastMode)
+	useWebEncodePlan := videoWillTranscode && (session.PlaybackTarget == "web" || stableCastMode)
 	if useWebEncodePlan {
 		session.mu.RLock()
 		forceSoftwareEncode := session.forceSoftwareEncode
@@ -2652,7 +2674,7 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 		}
 		tonemapNeeded := session.HasDV || session.HasHDR
 		castMaxWidth, castMaxHeight, castMaxFPS := 0, 0, 0
-		if session.CastMode {
+		if stableCastMode {
 			castMaxWidth, castMaxHeight, castMaxFPS = legacyCastEncodeLimits(session.ProbeData)
 		}
 		sourceTransfer := ""
@@ -2688,7 +2710,7 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 	useOutputSeeking := session.TranscodingOffset > 0 &&
 		session.TranscodingOffset < outputSeekThreshold &&
 		!subtitleRenditionWanted &&
-		!session.CastMode
+		!stableCastMode
 
 	// For INPUT seeking, add -ss before -i.
 	// -noaccurate_seek keeps a copied video keyframe-friendly for normal playback. When web
@@ -2696,7 +2718,7 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 	// video, audio, and the same-pass WebVTT all share the requested timestamp anchor instead of the
 	// earlier keyframe.
 	if session.TranscodingOffset > 0 && !useOutputSeeking {
-		if videoWillTranscode && (subtitleRenditionWanted || session.CastMode) {
+		if videoWillTranscode && (subtitleRenditionWanted || stableCastMode) {
 			args = append(args, "-ss", fmt.Sprintf("%.3f", session.TranscodingOffset))
 			log.Printf("[hls] session %s: using accurate INPUT seeking to %.3fs", session.ID, session.TranscodingOffset)
 		} else {
@@ -2741,7 +2763,7 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 	session.mu.RLock()
 	castSegmentStartNumber := session.SegmentStartNumber
 	session.mu.RUnlock()
-	if session.CastMode && castSegmentStartNumber > 0 {
+	if stableCastMode && castSegmentStartNumber > 0 {
 		// FFmpeg rebases a seeked run to zero. Offset its output timestamps back
 		// into the receiver's stable HLS timeline.
 		args = append(args, "-output_ts_offset", fmt.Sprintf("%.3f", float64(castSegmentStartNumber)*hlsSegmentDuration))
@@ -2866,7 +2888,7 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 		videoCodec = session.ProbeData.VideoCodec
 		needsVideoTranscode = IsIncompatibleVideoCodec(videoCodec)
 	}
-	if session.CastMode {
+	if stableCastMode {
 		needsVideoTranscode = true
 		pixFmt, profile := "", ""
 		if session.ProbeData != nil {
@@ -2947,7 +2969,7 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 	// - HDR10: iOS AVPlayer can't properly decode HEVC in MPEG-TS segments
 	var segmentExt string
 	needsFmp4 := session.HasDV || session.HasHDR
-	if session.CastMode {
+	if stableCastMode {
 		needsFmp4 = false
 		segmentExt = ".ts"
 		log.Printf("[hls] session %s: using MPEG-TS segments for cast compatibility", session.ID)
@@ -3022,7 +3044,7 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 					// Note: -start_at_zero (set earlier) normalizes all stream timestamps for proper A/V sync
 					log.Printf("[hls] session %s: transcoding selected %s track to AAC", session.ID, audioStreams[i].Codec)
 					args = append(args, "-af", "aresample=async=1000")
-					args = appendAACTranscodeArgs(args, "", session.CastMode)
+					args = appendAACTranscodeArgs(args, "", stableCastMode)
 					audioCodecHandled = true
 				}
 				break
@@ -3036,8 +3058,8 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 			// Must specify channel_layout for iOS AVPlayer compatibility
 			// Use aresample filter with async for proper A/V sync during transcoding
 			args = append(args, "-af", "aresample=async=1000")
-			args = appendAACTranscodeArgs(args, ":0", session.CastMode)
-			if !session.CastMode {
+			args = appendAACTranscodeArgs(args, ":0", stableCastMode)
+			if !stableCastMode {
 				args = append(args, "-c:a:1", "copy")
 			}
 		} else if hasTrueHD && !hasCompatibleAudio {
@@ -3046,7 +3068,7 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 			// TrueHD has variable timing - use aresample filter with async to maintain A/V sync
 			log.Printf("[hls] session %s: transcoding TrueHD to AAC (no compatible alternative)", session.ID)
 			args = append(args, "-af", "aresample=async=1000")
-			args = appendAACTranscodeArgs(args, "", session.CastMode)
+			args = appendAACTranscodeArgs(args, "", stableCastMode)
 		} else {
 			// Copy compatible audio
 			args = append(args, "-c:a", "copy")
@@ -3103,7 +3125,7 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 	configuredSegmentStart := session.SegmentStartNumber
 	session.mu.RUnlock()
 
-	if session.CastMode && configuredSegmentStart > 0 {
+	if stableCastMode && configuredSegmentStart > 0 {
 		segmentStartNum = strconv.Itoa(configuredSegmentStart)
 		log.Printf("[hls] session %s: stable cast timeline - starting from logical segment %s", session.ID, segmentStartNum)
 	} else if isRecovery {
@@ -3121,7 +3143,7 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 
 	// HLS output settings
 	hlsInitTime := "1"
-	if session.CastMode {
+	if stableCastMode {
 		hlsInitTime = fmt.Sprintf("%.0f", hlsSegmentDuration)
 	}
 	if needsFmp4 {
@@ -4653,11 +4675,11 @@ func (m *HLSManager) ServePlaylist(w http.ResponseWriter, r *http.Request, sessi
 	session.mu.RLock()
 	seekGeneration := session.SeekGeneration
 	tonemappedToSDR := session.TonemappedToSDR
-	castMode := session.CastMode
+	stableCastMode := session.usesStableCastTimeline()
 	sessionDuration := session.Duration
 	session.mu.RUnlock()
 
-	if castMode && sessionDuration > 0 {
+	if stableCastMode && sessionDuration > 0 {
 		playlistContent = buildStableCastPlaylist(session)
 	}
 
@@ -4717,8 +4739,8 @@ func (m *HLSManager) ServePlaylist(w http.ResponseWriter, r *http.Request, sessi
 		lines := strings.Split(playlistContent, "\n")
 		// Determine segment extension based on actual session format
 		segmentExt := ".m4s"
-		if session.CastMode || (session.forceAAC && !session.HasDV && !session.HasHDR) {
-			segmentExt = ".ts" // Cast sessions use MPEG-TS for Chromecast compatibility
+		if session.usesStableCastTimeline() || (session.forceAAC && !session.HasDV && !session.HasHDR) {
+			segmentExt = ".ts" // Stable Cast and forceAAC sessions use MPEG-TS for compatibility
 		}
 		for _, line := range lines {
 			if strings.HasPrefix(line, "segment") && strings.HasSuffix(line, segmentExt) {
@@ -5080,7 +5102,7 @@ func (m *HLSManager) ServeSegment(w http.ResponseWriter, r *http.Request, sessio
 	}
 
 	segmentPath := filepath.Join(session.OutputDir, segmentName)
-	if session.CastMode {
+	if session.usesStableCastTimeline() {
 		if _, err := os.Stat(segmentPath); os.IsNotExist(err) {
 			m.restartCastTranscodingForSegment(session, segmentNum)
 		}
@@ -5092,7 +5114,7 @@ func (m *HLSManager) ServeSegment(w http.ResponseWriter, r *http.Request, sessio
 	segmentReady := false
 	var segmentSize int64
 	waitAttempts := 300
-	if session.CastMode {
+	if session.usesStableCastTimeline() {
 		waitAttempts = 1200 // 30 seconds at 25ms per attempt
 	}
 	for i := 0; i < waitAttempts; i++ {
@@ -5803,7 +5825,7 @@ func (m *HLSManager) Shutdown() {
 // deleteOldSegments removes old segment files to save disk space, only deleting segments the player no longer needs
 func (m *HLSManager) deleteOldSegments(session *HLSSession, justServedSegment string) {
 	session.mu.RLock()
-	castMode := session.CastMode
+	stableCastMode := session.usesStableCastTimeline()
 	outputDir := session.OutputDir
 	// TESTING: hasDV/hasHDR unused since we always use .m4s
 	_ = session.HasDV
@@ -5812,8 +5834,7 @@ func (m *HLSManager) deleteOldSegments(session *HLSSession, justServedSegment st
 	earliestBuffered := session.EarliestBufferedSegment
 	lastServedSegment := session.LastSegmentServed
 	session.mu.RUnlock()
-	if castMode {
-		// A Cast receiver can seek anywhere in the fixed VOD playlist without
+	if stableCastMode {
 		// consulting the sender first, so every generated logical segment must
 		// remain available for backward seeking.
 		return

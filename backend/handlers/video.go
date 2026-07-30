@@ -3418,6 +3418,10 @@ func (h *VideoHandler) StartHLSSession(w http.ResponseWriter, r *http.Request) {
 	forceAAC := r.URL.Query().Get("forceAAC") == "true"
 	castMode := r.URL.Query().Get("cast") == "true"
 	playbackTarget := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("target")))
+	castProfile := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("castProfile")))
+	if castMode && isDirectCastTarget(playbackTarget, castProfile) {
+		playbackTarget = "cast-direct"
+	}
 	durationHint := 0.0
 	if durationParam := strings.TrimSpace(r.URL.Query().Get("durationHint")); durationParam != "" {
 		if parsed, err := strconv.ParseFloat(durationParam, 64); err == nil {
@@ -3565,7 +3569,7 @@ func (h *VideoHandler) StartHLSSession(w http.ResponseWriter, r *http.Request) {
 		"startOffset":        session.StartOffset,
 		"actualStartOffset":  actualStartOffset,
 		"keyframeDelta":      keyframeDelta,
-		"stableCastTimeline": castMode && session.Duration > 0,
+		"stableCastTimeline": session.usesStableCastTimeline() && session.Duration > 0,
 	}
 
 	// Include duration if it was successfully probed
