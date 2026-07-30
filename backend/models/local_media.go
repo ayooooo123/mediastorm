@@ -290,6 +290,7 @@ type RemoteMediaLibrary struct {
 	AccountID          string                `json:"accountId"`
 	ServerID           string                `json:"serverId,omitempty"`
 	ServerName         string                `json:"serverName,omitempty"`
+	ServerURL          string                `json:"serverUrl,omitempty"`
 	ExternalLibraryID  string                `json:"externalLibraryId"`
 	CreatedAt          time.Time             `json:"createdAt"`
 	UpdatedAt          time.Time             `json:"updatedAt"`
@@ -307,6 +308,7 @@ type RemoteMediaLibraryCreateInput struct {
 	AccountID         string                `json:"accountId"`
 	ServerID          string                `json:"serverId,omitempty"`
 	ServerName        string                `json:"serverName,omitempty"`
+	ServerURL         string                `json:"serverUrl,omitempty"`
 	ExternalLibraryID string                `json:"externalLibraryId"`
 }
 

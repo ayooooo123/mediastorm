@@ -10728,6 +10728,7 @@ func (h *AdminUIHandler) CreateLocalMediaLibrary(w http.ResponseWriter, r *http.
 		AccountID         string `json:"accountId"`
 		ServerID          string `json:"serverId"`
 		ServerName        string `json:"serverName"`
+		ServerURL         string `json:"serverUrl"`
 		ExternalLibraryID string `json:"externalLibraryId"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
@@ -10739,7 +10740,7 @@ func (h *AdminUIHandler) CreateLocalMediaLibrary(w http.ResponseWriter, r *http.
 			http.Error(w, "remote media service unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		library, err := h.remoteMediaService.CreateLibrary(r.Context(), models.RemoteMediaLibraryCreateInput{Name: input.Name, Type: input.Type, Provider: input.Provider, AccountID: input.AccountID, ServerID: input.ServerID, ServerName: input.ServerName, ExternalLibraryID: input.ExternalLibraryID})
+		library, err := h.remoteMediaService.CreateLibrary(r.Context(), models.RemoteMediaLibraryCreateInput{Name: input.Name, Type: input.Type, Provider: input.Provider, AccountID: input.AccountID, ServerID: input.ServerID, ServerName: input.ServerName, ServerURL: input.ServerURL, ExternalLibraryID: input.ExternalLibraryID})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -10965,6 +10966,58 @@ func (h *AdminUIHandler) DiscoverRemoteMediaLibraries(w http.ResponseWriter, r *
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(libraries)
+}
+
+func (h *AdminUIHandler) DiscoverRemoteMediaServers(w http.ResponseWriter, r *http.Request) {
+	if !h.requireLocalMediaAdmin(w, r) {
+		return
+	}
+	if h.remoteMediaService == nil {
+		http.Error(w, "remote media service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if !strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("provider")), models.MediaSourcePlex) {
+		http.Error(w, "server discovery is only available for Plex", http.StatusBadRequest)
+		return
+	}
+	servers, err := h.remoteMediaService.DiscoverPlexServers(r.URL.Query().Get("accountId"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(servers)
+}
+
+func (h *AdminUIHandler) VerifyRemoteMediaServer(w http.ResponseWriter, r *http.Request) {
+	if !h.requireLocalMediaAdmin(w, r) {
+		return
+	}
+	if h.remoteMediaService == nil {
+		http.Error(w, "remote media service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var input struct {
+		Provider  string `json:"provider"`
+		AccountID string `json:"accountId"`
+		ServerID  string `json:"serverId"`
+		ServerURL string `json:"serverUrl"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if !strings.EqualFold(strings.TrimSpace(input.Provider), models.MediaSourcePlex) {
+		http.Error(w, "server verification is only available for Plex", http.StatusBadRequest)
+		return
+	}
+	verified, err := h.remoteMediaService.VerifyPlexServer(r.Context(), input.AccountID, input.ServerID, input.ServerURL)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(verified)
 }
 
 func (h *AdminUIHandler) SearchLocalMediaMetadata(w http.ResponseWriter, r *http.Request) {
