@@ -1,13 +1,11 @@
 package handlers
 
 import (
-	"context"
 	"errors"
 	"io"
 	"log"
 	"net/http"
 	"strings"
-	"time"
 
 	"novastream/services/streaming"
 )
@@ -50,10 +48,7 @@ func (h *WebDAVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rangeHeader := r.Header.Get("Range")
 	log.Printf("[webdav] request path=%q method=%s range=%q", cleanPath, r.Method, rangeHeader)
 
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
-	defer cancel()
-
-	resp, err := h.streamer.Stream(ctx, streaming.Request{
+	resp, err := h.streamer.Stream(r.Context(), streaming.Request{
 		Path:        cleanPath,
 		RangeHeader: rangeHeader,
 		Method:      r.Method,

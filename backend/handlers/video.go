@@ -516,7 +516,7 @@ func newVideoHandler(transmuxEnabled bool, ffmpegPath, ffprobePath, hlsTempDir s
 		externalRedirects:      make(map[string]cachedExternalRedirect),
 	}
 	h.externalProxyHTTPClient = requestsecurity.NewSafeHTTPClientWithPolicyProvider(
-		30*time.Minute,
+		0,
 		10,
 		func() requestsecurity.RestrictedHostPolicy {
 			return h.configuredExternalHostPolicy()
@@ -980,9 +980,9 @@ func (h *VideoHandler) streamViaProvider(w http.ResponseWriter, r *http.Request,
 	isLocalMediaPath := strings.HasPrefix(cleanPath, "localmedia:")
 	isDebridPath := isDebridStreamPath(cleanPath)
 
-	// Create a context with timeout to prevent hanging streams
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
-	defer cancel()
+	// A playback request may legitimately remain open for hours. The request
+	// context still cancels provider work as soon as the client disconnects.
+	ctx := r.Context()
 
 	rangeHeader := r.Header.Get("Range")
 	isPlaybackProbe := strings.TrimSpace(r.URL.Query().Get("_probe")) != ""
@@ -1611,9 +1611,9 @@ func (h *VideoHandler) streamWithTransmuxProvider(w http.ResponseWriter, r *http
 		return false, errors.New("ffmpeg path is not configured")
 	}
 
-	// Create a context with timeout for provider transmux operations
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
-	defer cancel()
+	// Keep the transmux alive for the full playback session. CommandContext and
+	// the provider both stop when the downstream request is cancelled.
+	ctx := r.Context()
 
 	if r.Method == http.MethodHead {
 		h.writeCommonHeaders(w)
@@ -5590,8 +5590,11 @@ func (h *VideoHandler) proxyExternalURL(w http.ResponseWriter, r *http.Request, 
 	}
 	validatedAt := time.Now()
 
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
-	defer cancel()
+	// http.Client.Timeout covers the response body as well as connection setup,
+	// so a fixed timeout here would terminate healthy long-running playback.
+	// Dialing remains bounded by the safe client's transport and this request
+	// context cancels the upstream request when the viewer disconnects.
+	ctx := r.Context()
 
 	rangeHeader := r.Header.Get("Range")
 	if startupExperiment && r.Method == http.MethodGet {
