@@ -1932,7 +1932,7 @@
     async function fetchPoster(mediaInfo) {
         if (!mediaInfo.externalIds) return null;
 
-        const cacheKey = JSON.stringify(mediaInfo.externalIds);
+        const cacheKey = `${mediaInfo.type}:${JSON.stringify(mediaInfo.externalIds)}`;
         if (metadataCache.has(cacheKey)) {
             return metadataCache.get(cacheKey);
         }
@@ -1958,7 +1958,7 @@
 
             const data = await response.json();
             const title = data.title || data;
-            const poster = title.poster?.url || title.backdrop?.url || null;
+            const poster = title.poster?.url || null;
 
             if (poster) {
                 metadataCache.set(cacheKey, poster);
@@ -2383,6 +2383,16 @@
 
             if (!posterEl) continue;
 
+            // Episode playback can carry a landscape episode/header image in
+            // posterUrl. Prefer the canonical series poster for dashboard cards.
+            if (mediaInfo.type === 'series' && mediaInfo.externalIds) {
+                const seriesPoster = await fetchPoster(mediaInfo);
+                if (seriesPoster) {
+                    posterEl.innerHTML = `<img class="stream-card-poster" src="${escapeHtml(seriesPoster)}" alt="${escapeHtml(mediaInfo.title)}" onerror="this.parentElement.innerHTML='<div class=\\'stream-card-poster-placeholder\\'><svg viewBox=\\'0 0 24 24\\' fill=\\'none\\' stroke=\\'currentColor\\' stroke-width=\\'1.5\\'><polygon points=\\'5 3 19 12 5 21 5 3\\'/></svg></div>'">`;
+                    continue;
+                }
+            }
+
             if (mediaInfo.posterUrl) {
                 posterEl.innerHTML = `<img class="stream-card-poster" src="${escapeHtml(mediaInfo.posterUrl)}" alt="${escapeHtml(mediaInfo.title)}" onerror="this.parentElement.innerHTML='<div class=\\'stream-card-poster-placeholder\\'><svg viewBox=\\'0 0 24 24\\' fill=\\'none\\' stroke=\\'currentColor\\' stroke-width=\\'1.5\\'><polygon points=\\'5 3 19 12 5 21 5 3\\'/></svg></div>'">`;
                 continue;
@@ -2390,6 +2400,7 @@
 
             // Skip metadata fetch if no external IDs are available.
             if (!mediaInfo.externalIds) continue;
+            if (mediaInfo.type === 'series') continue; // Already attempted above.
 
             const poster = await fetchPoster(mediaInfo);
             if (poster) {
