@@ -1033,13 +1033,15 @@ func TestShouldIncludeEmptyMoov(t *testing.T) {
 
 // testStreamProvider implements streaming.Provider for testing
 type testStreamProvider struct {
-	data       []byte
-	statusCode int
-	headers    http.Header
-	err        error
+	data        []byte
+	statusCode  int
+	headers     http.Header
+	err         error
+	hadDeadline bool
 }
 
 func (p *testStreamProvider) Stream(ctx context.Context, req streaming.Request) (*streaming.Response, error) {
+	_, p.hadDeadline = ctx.Deadline()
 	if p.err != nil {
 		return nil, p.err
 	}
@@ -1117,6 +1119,51 @@ func TestVideoHandler_StreamVideo_Success(t *testing.T) {
 	body := rr.Body.Bytes()
 	if !bytes.Equal(body, data) {
 		t.Errorf("body = %q, want %q", body, data)
+	}
+	if provider.hadDeadline {
+		t.Fatal("provider context has a deadline; playback must remain open until the client disconnects")
+	}
+}
+
+func TestProxyExternalURLHasNoWholePlaybackTimeout(t *testing.T) {
+	const origin = "http://127.0.0.1:3312"
+
+	handler := NewVideoHandler(false, "", "")
+	if handler.externalProxyHTTPClient.Timeout != 0 {
+		t.Fatalf("external proxy client timeout = %v, want no whole-request timeout", handler.externalProxyHTTPClient.Timeout)
+	}
+
+	settings := config.DefaultSettings()
+	settings.Server.AllowedPrivateMediaOrigins = []string{origin}
+	handler.SetConfigManager(staticVideoConfigProvider{settings: settings})
+
+	var upstreamHadDeadline bool
+	handler.externalProxyHTTPClient = &http.Client{
+		Transport: prequeueRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+			_, upstreamHadDeadline = r.Context().Deadline()
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("video")),
+				Header: http.Header{
+					"Content-Type":   []string{"video/x-matroska"},
+					"Content-Length": []string{"5"},
+				},
+				Request: r,
+			}, nil
+		}),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/video/stream", nil)
+	rec := httptest.NewRecorder()
+	handled, err := handler.proxyExternalURL(rec, req, origin+"/webdav/movie.mkv")
+	if err != nil || !handled {
+		t.Fatalf("proxyExternalURL: handled=%t err=%v", handled, err)
+	}
+	if upstreamHadDeadline {
+		t.Fatal("external proxy request has a deadline; response-body streaming would be cut off")
+	}
+	if got := rec.Body.String(); got != "video" {
+		t.Fatalf("body = %q, want %q", got, "video")
 	}
 }
 
