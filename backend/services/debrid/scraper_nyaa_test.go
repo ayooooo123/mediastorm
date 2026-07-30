@@ -154,6 +154,9 @@ func TestNyaaParseRSSResponse(t *testing.T) {
 	if first.Indexer != "Nyaa" {
 		t.Errorf("expected indexer 'Nyaa', got %q", first.Indexer)
 	}
+	if first.PublishDate.IsZero() {
+		t.Fatal("expected Nyaa pubDate to be preserved")
+	}
 
 	// Verify second result
 	second := results[1]

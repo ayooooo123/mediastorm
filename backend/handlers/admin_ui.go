@@ -525,6 +525,12 @@ var SettingsSchema = map[string]interface{}{
 		"group": "searchFiltering",
 		"order": 3,
 		"fields": map[string]interface{}{
+			"newestReleaseFirst": map[string]interface{}{
+				"type":        "boolean",
+				"label":       "Newest Release First",
+				"description": "Sort all search results by source-reported release time, newest first. When enabled, all other ranking criteria are ignored; results without a release time are placed last.",
+				"order":       0,
+			},
 			"splitByService": map[string]interface{}{"type": "boolean", "label": "Split Debrid/Usenet Ranking", "description": "Rank Debrid and Usenet results independently with their service-specific criteria, then merge the two ordered lists using the shared Overall Ranking criteria."},
 		},
 	},
@@ -2415,6 +2421,7 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 			"item_id":          stream.MediaMetadata.ItemID,
 			"profile_id":       stream.ProfileID,
 			"profile_name":     stream.ProfileName,
+			"account_id":       stream.AccountID,
 			"client_ip":        stream.ClientIP,
 			"created_at":       stream.StartTime,
 			"last_access":      stream.LastActivity,
@@ -2485,7 +2492,7 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 	liveUsage, liveUsageByUser, liveUsageBuckets := h.buildDashboardLiveUsage(isAdmin, scopedUsers, allowedProfileIDs)
 
 	// Build VOD stream usage by account
-	vodUsageByAccount := h.buildVODStreamUsage(isAdmin, scopedUsers, allowedProfileIDs)
+	vodUsageByAccount := h.buildVODStreamUsage(isAdmin, scopedUsers, allowedProfileIDs, streams)
 
 	// Global VOD stream limit
 	var globalVODLimit int
@@ -2494,7 +2501,7 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 			globalVODLimit = cfg.Playback.MaxConcurrentStreams
 		}
 	}
-	globalVODCurrent := tracker.CountPlaybackSlots()
+	globalVODCurrent := countDashboardVODStreams(streams)
 
 	return json.Marshal(map[string]interface{}{
 		"streams":           streams,

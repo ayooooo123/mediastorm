@@ -1667,10 +1667,11 @@ type RankingCriterion struct {
 
 // RankingSettings holds the ordered list of ranking criteria.
 type RankingSettings struct {
-	Criteria       []RankingCriterion `json:"criteria"`
-	SplitByService bool               `json:"splitByService,omitempty"`
-	Debrid         *RankingSettings   `json:"debrid,omitempty"`
-	Usenet         *RankingSettings   `json:"usenet,omitempty"`
+	Criteria           []RankingCriterion `json:"criteria"`
+	NewestReleaseFirst bool               `json:"newestReleaseFirst,omitempty"`
+	SplitByService     bool               `json:"splitByService,omitempty"`
+	Debrid             *RankingSettings   `json:"debrid,omitempty"`
+	Usenet             *RankingSettings   `json:"usenet,omitempty"`
 }
 
 // DefaultRankingCriteria returns the default ranking criteria in their default order.

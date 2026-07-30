@@ -435,6 +435,7 @@ func (j *JackettScraper) parseResponse(body []byte) ([]ScrapeResult, error) {
 			TorrentURL:  torrentURL,
 			FileIndex:   -1, // Jackett doesn't provide file index
 			SizeBytes:   size,
+			PublishDate: parseScraperPublishDate(item.PubDate),
 			Seeders:     seeders,
 			Provider:    tracker, // Keep the individual tracker/indexer name
 			Languages:   nil,     // Jackett doesn't typically provide language info

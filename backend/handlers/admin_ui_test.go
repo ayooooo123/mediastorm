@@ -270,6 +270,17 @@ func TestAdminUIHandler_GetSchema(t *testing.T) {
 			t.Errorf("%s showWhen = %#v, want ranking.splitByService=true", key, section["showWhen"])
 		}
 	}
+	ranking, ok := schema["ranking"].(map[string]interface{})
+	if !ok {
+		t.Fatal("schema missing ranking section")
+	}
+	rankingFields, ok := ranking["fields"].(map[string]interface{})
+	if !ok {
+		t.Fatal("ranking schema missing fields")
+	}
+	if _, ok := rankingFields["newestReleaseFirst"]; !ok {
+		t.Fatal("ranking schema missing newestReleaseFirst")
+	}
 }
 
 func TestAdminUIHandler_HasDefaultPassword(t *testing.T) {
