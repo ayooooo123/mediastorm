@@ -1,12 +1,26 @@
 {{template "base" .}}
 
-{{define "title"}}Tools - mediastorm Admin{{end}}
+{{define "title"}}{{if hasSuffix .CurrentPath "/tasks"}}Tasks{{else if hasSuffix .CurrentPath "/integrations"}}Connected Services{{else}}Maintenance{{end}} - mediastorm Admin{{end}}
 
 {{define "content"}}
 <div class="page-header">
-    <h1>Tools</h1>
-    <p>Import and manage your media library</p>
+    {{if hasSuffix .CurrentPath "/tasks"}}
+    <h1>Tasks</h1>
+    <p>Schedule recurring syncs, library scans, backups, and background preparation.</p>
+    {{else if hasSuffix .CurrentPath "/integrations"}}
+    <h1>Connected Services</h1>
+    <p>Connect external media services and choose which profiles use them.</p>
+    {{else}}
+    <h1>Maintenance</h1>
+    <p>Manage integrations, internal data, diagnostics, and server maintenance.</p>
+    {{end}}
 </div>
+
+{{if hasSuffix .CurrentPath "/tasks"}}
+<div id="tasksPageHost"></div>
+{{else if hasSuffix .CurrentPath "/integrations"}}
+<div id="integrationsPageHost"></div>
+{{end}}
 
 <!-- SYSTEM CATEGORY -->
 <div class="settings-group">
@@ -140,7 +154,7 @@
 </div>
 
 <!-- INTEGRATIONS CATEGORY -->
-<div class="settings-group">
+<div class="settings-group" id="integrationsGroup">
     <div class="group-title">Integrations</div>
 
     <!-- Scrobbling Accounts Section -->
@@ -530,6 +544,30 @@
             <p class="text-muted" style="margin-bottom: 1rem;">
                 Automate recurring tasks like syncing watchlists or importing data from connected services.
             </p>
+
+            <div class="task-toolbar">
+                <div class="form-group">
+                    <label class="form-label" for="taskProfileFilter">Profile</label>
+                    <select id="taskProfileFilter" class="form-select" onchange="applyTaskFilters()">
+                        <option value="">All profiles and server tasks</option>
+                        {{range .Users}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+                        <option value="__server__">Server tasks only</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="taskStatusFilter">Status</label>
+                    <select id="taskStatusFilter" class="form-select" onchange="applyTaskFilters()">
+                        <option value="">Any status</option>
+                        <option value="active">Active</option>
+                        <option value="paused">Paused</option>
+                        <option value="error">Needs attention</option>
+                    </select>
+                </div>
+                <div class="form-group task-search-group">
+                    <label class="form-label" for="taskSearchFilter">Find a task</label>
+                    <input id="taskSearchFilter" class="form-input" name="mediastorm-task-filter" type="search" placeholder="Name, service, or task type" autocomplete="off" autocapitalize="none" spellcheck="false" data-1p-ignore="true" data-lpignore="true" oninput="applyTaskFilters()">
+                </div>
+            </div>
 
             <!-- Scheduled Tasks List -->
             <div id="scheduledTasksList" style="margin-bottom: 1.5rem;">
@@ -1579,6 +1617,106 @@
 </div>
 
 <style>
+    {{if hasSuffix .CurrentPath "/tasks"}}
+    .settings-group { display: none; }
+    #tasksPageHost .settings-group { display: block; }
+    #tasksPageHost #scheduledTasksSection { display: block; }
+    #tasksPageHost .group-title { display: none; }
+    #tasksPageHost #scheduledTasksSection > .section-header { display: none; }
+    #tasksPageHost #scheduledTasksSection > .section-content { display: block; padding: 1.25rem; }
+    {{else if hasSuffix .CurrentPath "/integrations"}}
+    .settings-group { display: none; }
+    #integrationsPageHost .settings-group { display: block; }
+    #integrationsPageHost .group-title { display: none; }
+    {{else}}
+    #scheduledTasksSection { display: none; }
+    #integrationsGroup { display: none; }
+    {{end}}
+    .task-toolbar {
+        display: grid;
+        grid-template-columns: minmax(170px, 0.8fr) minmax(140px, 0.55fr) minmax(220px, 1fr);
+        gap: 0.75rem;
+        padding: 0.85rem;
+        margin-bottom: 1rem;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--bg-secondary);
+    }
+    .task-toolbar .form-group { margin: 0; }
+    #scheduledTasksList.task-card-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.85rem;
+    }
+    #scheduledTasksList .task-filter-empty { grid-column: 1 / -1; }
+    .task-card {
+        min-width: 0;
+        margin: 0;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--bg-secondary);
+        overflow: hidden;
+    }
+    .task-card .import-card-header { min-height: 66px; }
+    .task-card .import-card-body {
+        display: flex;
+        flex-direction: column;
+        height: calc(100% - 66px);
+        box-sizing: border-box;
+    }
+    .task-card-schedule {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.55rem;
+        margin-bottom: 0.75rem;
+    }
+    .task-schedule-stat {
+        min-width: 0;
+        padding: 0.65rem 0.75rem;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--bg-tertiary);
+    }
+    .task-schedule-label {
+        display: block;
+        margin-bottom: 0.2rem;
+        color: var(--text-muted);
+        font-size: 0.65rem;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+    }
+    .task-schedule-value {
+        display: block;
+        overflow: hidden;
+        color: var(--text-primary);
+        font-size: 0.9rem;
+        font-weight: 650;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .task-card-context {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem 0.7rem;
+        min-height: 1.35rem;
+        margin-bottom: 0.7rem;
+        color: var(--text-muted);
+        font-size: 0.8rem;
+    }
+    .task-card-runtime {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.45rem 0.65rem;
+        padding-top: 0.7rem;
+        border-top: 1px solid var(--border);
+    }
+    .task-card-actions { margin-top: auto !important; padding-top: 0.8rem; flex-wrap: wrap; }
+    @media (max-width: 760px) {
+        .task-toolbar { grid-template-columns: 1fr; }
+        #scheduledTasksList.task-card-grid { grid-template-columns: 1fr; }
+    }
     /* Link styling - consistent light grey with underline */
     a {
         color: #9ca3af;
@@ -2304,13 +2442,43 @@
 
     // ========== Scheduled Tasks State ==========
     let scheduledTasks = [];
+    const isTasksPage = {{if hasSuffix .CurrentPath "/tasks"}}true{{else}}false{{end}};
+    const isIntegrationsPage = {{if hasSuffix .CurrentPath "/integrations"}}true{{else}}false{{end}};
+    const requestedTaskProfileId = new URLSearchParams(window.location.search).get('profileId') || '';
 
     // ========== Initialize ==========
     document.addEventListener('DOMContentLoaded', async function() {
+        if (isTasksPage) {
+            const section = document.getElementById('scheduledTasksSection');
+            const host = document.getElementById('tasksPageHost');
+            if (section && host) {
+                const group = document.createElement('div');
+                group.className = 'settings-group';
+                group.appendChild(section);
+                host.appendChild(group);
+                section.classList.add('open');
+            }
+            const profileFilter = document.getElementById('taskProfileFilter');
+            if (profileFilter && requestedTaskProfileId && Array.from(profileFilter.options).some(option => option.value === requestedTaskProfileId)) {
+                profileFilter.value = requestedTaskProfileId;
+            }
+        } else if (isIntegrationsPage) {
+            const integrationsGroup = document.getElementById('integrationsGroup');
+            const host = document.getElementById('integrationsPageHost');
+            if (integrationsGroup && host) {
+                host.appendChild(integrationsGroup);
+            }
+        }
         // Load profiles first so client dropdowns are populated
         await loadUserProfiles();
         // Then load everything else in parallel
-        await Promise.all([loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadJellyfinAccounts(), loadLocalMediaLibraries(), loadBackendVersionInfo(), loadUpdateStatus(false), loadClients(), loadScheduledTasks(), loadWorkers(), loadShareLogsClients()]);
+        if (isTasksPage) {
+            await Promise.all([loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadJellyfinAccounts(), loadLocalMediaLibraries(), loadScheduledTasks()]);
+        } else if (isIntegrationsPage) {
+            await Promise.all([loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadJellyfinAccounts()]);
+        } else {
+            await Promise.all([loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadJellyfinAccounts(), loadLocalMediaLibraries(), loadBackendVersionInfo(), loadUpdateStatus(false), loadClients(), loadWorkers(), loadShareLogsClients()]);
+        }
     });
 
     async function loadLocalMediaLibraries() {
@@ -4793,6 +4961,8 @@
         // Only load if admin (the section won't exist for non-admins)
         if (!listContainer) return;
 
+        listContainer.classList.add('task-card-grid');
+
         try {
             const response = await fetch(basePath + '/api/scheduled-tasks');
             if (!response.ok) {
@@ -4849,11 +5019,35 @@
 
         if (emptyState) emptyState.style.display = 'none';
 
-        listContainer.innerHTML = scheduledTasks.map(task => {
+        const profileFilter = document.getElementById('taskProfileFilter')?.value || '';
+        const statusFilter = document.getElementById('taskStatusFilter')?.value || '';
+        const searchFilter = (document.getElementById('taskSearchFilter')?.value || '').trim().toLowerCase();
+        const visibleTasks = scheduledTasks.filter(task => {
+            const taskProfileId = task.config?.profileId || '';
+            if (profileFilter === '__server__' && taskProfileId) return false;
+            if (profileFilter && profileFilter !== '__server__' && taskProfileId !== profileFilter) return false;
+            if (statusFilter === 'active' && !task.enabled) return false;
+            if (statusFilter === 'paused' && task.enabled) return false;
+            if (statusFilter === 'error' && task.lastStatus !== 'error') return false;
+            if (searchFilter) {
+                const profile = userProfiles.find(item => item.id === taskProfileId);
+                const haystack = [task.name, getTaskTypeLabel(task.type), task.type, profile?.name].filter(Boolean).join(' ').toLowerCase();
+                if (!haystack.includes(searchFilter)) return false;
+            }
+            return true;
+        });
+
+        if (visibleTasks.length === 0) {
+            listContainer.innerHTML = '<div class="task-filter-empty">No tasks match these filters.</div>';
+            return;
+        }
+
+        listContainer.innerHTML = visibleTasks.map(task => {
             const statusClass = getStatusClass(task.lastStatus);
             const statusLabel = getStatusLabel(task.lastStatus);
             const frequencyLabel = getFrequencyLabel(task.frequency, task.type);
             const lastRunLabel = task.lastRunAt ? formatRelativeTime(task.lastRunAt) : 'Never';
+            const nextRunLabel = task.enabled ? getNextRunLabel(task) : 'Paused';
             const taskTypeLabel = getTaskTypeLabel(task.type);
 
             // Get account and profile names based on task type
@@ -4919,7 +5113,7 @@
             }
 
             return `
-                <div class="import-card" data-task-id="${task.id}" style="margin-bottom: 0.75rem;">
+                <div class="import-card task-card" data-task-id="${task.id}">
                     <div class="import-card-header">
                         <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; flex: 1;">
                             <h3 style="margin: 0;">${escapeHtml(task.name || taskTypeLabel)}</h3>
@@ -4937,28 +5131,31 @@
                         </label>
                     </div>
                     <div class="import-card-body" style="padding: 0.75rem 1rem;">
-                        <div style="display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; margin-bottom: 0.75rem;">
-                            <div style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem;">
-                                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="opacity: 0.6;">
-                                    <circle cx="12" cy="12" r="10"/>
-                                    <polyline points="12 6 12 12 16 14"/>
-                                </svg>
-                                <span>${frequencyLabel}</span>
+                        <div class="task-card-schedule">
+                            <div class="task-schedule-stat" title="${escapeHtml(frequencyLabel)}">
+                                <span class="task-schedule-label">Frequency</span>
+                                <span class="task-schedule-value">${escapeHtml(frequencyLabel)}</span>
                             </div>
+                            <div class="task-schedule-stat" title="${escapeHtml(nextRunLabel)}">
+                                <span class="task-schedule-label">Next run</span>
+                                <span class="task-schedule-value">${escapeHtml(nextRunLabel)}</span>
+                            </div>
+                        </div>
+                        <div class="task-card-context">
                             ${task.type.includes('sync') ? `
-                            <div style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; color: var(--text-muted);">
+                            <div style="display: flex; align-items: center; gap: 0.5rem;">
                                 <span>${accountSource}:</span>
                                 <strong>${escapeHtml(accountName)}</strong>
                                 <span>→</span>
                                 <strong>${escapeHtml(profileName)}</strong>
                             </div>
                             ` : task.type === 'local_media_scan' ? `
-                            <div style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; color: var(--text-muted);">
+                            <div style="display: flex; align-items: center; gap: 0.5rem;">
                                 <span>${accountSource}:</span>
                                 <strong>${escapeHtml(accountName)}</strong>
                             </div>
                             ` : task.type === 'prewarm' ? `
-                            <div style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; color: var(--text-muted);">
+                            <div style="display: flex; align-items: center; gap: 0.5rem;">
                                 <span>Shelves:</span>
                                 <strong>${escapeHtml(prewarmShelfSummary)}</strong>
                                 <span>· Stable re-resolve:</span>
@@ -4966,15 +5163,14 @@
                             </div>
                             ` : ''}
                         </div>
-                        <div style="display: flex; flex-wrap: wrap; gap: 1rem; align-items: center;">
+                        <div class="task-card-runtime">
                             <span class="status-badge ${statusClass}" style="font-size: 0.75rem;">${statusLabel}</span>
                             <span class="text-muted" style="font-size: 0.8125rem;">Last: ${lastRunLabel}</span>
-                            ${task.enabled ? `<span class="text-muted" style="font-size: 0.8125rem;">Next: ${getNextRunLabel(task)}</span>` : ''}
                             ${task.itemsImported > 0 && task.type !== 'backup' ? `<span class="text-muted" style="font-size: 0.8125rem;">${task.itemsImported} items ${task.type === 'prewarm' ? 'warmed' : 'synced'}</span>` : ''}
                             ${task.dryRunDetails ? `<button class="btn btn-sm" onclick="showDryRunResults('${task.id}')" style="padding: 0.15rem 0.5rem; font-size: 0.75rem; background: rgba(99, 102, 241, 0.2); color: var(--accent);">View Dry Run Results</button>` : ''}
                             ${task.lastError ? `<span style="color: var(--danger); font-size: 0.8125rem;">${escapeHtml(task.lastError)}</span>` : ''}
                         </div>
-                        <div style="display: flex; gap: 0.5rem; margin-top: 0.75rem;">
+                        <div class="task-card-actions" style="display: flex; gap: 0.5rem; margin-top: 0.75rem;">
                             <button class="btn btn-sm btn-secondary" onclick="runScheduledTaskNow('${task.id}')" ${task.lastStatus === 'running' ? 'disabled' : ''}>
                                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 0.25rem;">
                                     <polygon points="5 3 19 12 5 21 5 3"/>
@@ -5000,6 +5196,10 @@
                 </div>
             `;
         }).join('');
+    }
+
+    function applyTaskFilters() {
+        renderScheduledTasksList();
     }
 
     async function purgePrequeues() {
@@ -5301,6 +5501,21 @@
 
         // Reset visibility
         onTaskTypeChange();
+
+        const preferredProfileId = document.getElementById('taskProfileFilter')?.value || requestedTaskProfileId;
+        if (preferredProfileId && preferredProfileId !== '__server__') {
+            [
+                'newTaskProfile', 'newTaskTraktProfile', 'newTaskHistoryProfile',
+                'newTaskSimklHistoryProfile', 'newTaskMdblistWatchlistProfile',
+                'newTaskMdblistProfile', 'newTaskPlexHistoryProfile',
+                'newTaskJellyfinFavProfile', 'newTaskJellyfinHistProfile'
+            ].forEach(id => {
+                const select = document.getElementById(id);
+                if (select && Array.from(select.options).some(option => option.value === preferredProfileId)) {
+                    select.value = preferredProfileId;
+                }
+            });
+        }
 
         document.getElementById('addScheduledTaskModal').style.display = 'flex';
         document.body.style.overflow = 'hidden';

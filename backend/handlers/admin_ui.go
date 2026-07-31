@@ -208,22 +208,21 @@ func (s *adminSessionStore) revoke(token string) {
 
 // SettingsGroups defines the order and labels for settings groups
 var SettingsGroups = []map[string]string{
-	{"id": "providers", "label": "Providers"},
-	{"id": "sources", "label": "Sources"},
-	{"id": "searchFiltering", "label": "Search & Filtering"},
-	{"id": "services", "label": "Services"},
-	{"id": "experience", "label": "Experience"},
-	{"id": "server", "label": "Server"},
+	{"id": "providers", "label": "Streaming Setup"},
+	{"id": "searchFiltering", "label": "Playback & Results"},
+	{"id": "experience", "label": "Home & Appearance"},
+	{"id": "services", "label": "Content & Integrations"},
+	{"id": "server", "label": "Server & Network"},
 }
 
 // SettingsSchema defines the schema for dynamic form generation
 var SettingsSchema = map[string]interface{}{
 	"server": map[string]interface{}{
-		"label":       "Server Settings",
+		"label":       "Server Address",
 		"icon":        "server",
 		"group":       "server",
 		"order":       0,
-		"description": "Changing host, port, or base path requires a container restart to take effect. Other server settings apply when saved.",
+		"description": "These values control where mediastorm listens for connections. Address changes take effect after a container restart.",
 		"fields": map[string]interface{}{
 			"host":     map[string]interface{}{"type": "text", "label": "Host", "description": "Server bind address (leave empty to bind all interfaces)", "order": 0},
 			"port":     map[string]interface{}{"type": "number", "label": "Port", "description": "Server port (default: 7777)", "order": 1},
@@ -237,7 +236,7 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"network": map[string]interface{}{
-		"label": "Network URL Switching",
+		"label": "Home & Away Addresses",
 		"icon":  "wifi",
 		"group": "server",
 		"order": 1,
@@ -266,7 +265,7 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"streaming": map[string]interface{}{
-		"label": "Search & Resolution",
+		"label": "How Streams Are Found",
 		"icon":  "search",
 		"group": "searchFiltering",
 		"order": 0,
@@ -310,7 +309,7 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"debridProviders": map[string]interface{}{
-		"label":    "Debrid Providers",
+		"label":    "Debrid Services",
 		"icon":     "cloud",
 		"group":    "providers",
 		"order":    1,
@@ -332,7 +331,7 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"usenet": map[string]interface{}{
-		"label":    "Usenet Providers",
+		"label":    "Usenet Servers",
 		"icon":     "download",
 		"group":    "providers",
 		"order":    2,
@@ -349,8 +348,8 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"usenetEngines": map[string]interface{}{
-		"label":       "External Usenet Engines",
-		"description": "Optional SABnzbd-compatible NZB/WebDAV engines for Usenet playback. These can satisfy Usenet resolution without direct NNTP streaming.",
+		"label":       "Usenet Apps",
+		"description": "Connect an optional NZB/WebDAV app such as AltMount, NZBDav, or Decypharr for Usenet playback.",
 		"icon":        "download",
 		"group":       "providers",
 		"order":       3,
@@ -387,7 +386,7 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"filtering": map[string]interface{}{
-		"label": "Ranking & Filtering",
+		"label": "Result Quality",
 		"icon":  "filter",
 		"group": "searchFiltering",
 		"order": 1,
@@ -496,7 +495,7 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"animeFiltering": map[string]interface{}{
-		"label": "Anime Language",
+		"label": "Anime Preferences",
 		"icon":  "globe",
 		"group": "searchFiltering",
 		"order": 2,
@@ -520,7 +519,7 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"ranking": map[string]interface{}{
-		"label": "Overall Ranking",
+		"label": "Result Order",
 		"icon":  "list",
 		"group": "searchFiltering",
 		"order": 3,
@@ -603,7 +602,7 @@ var SettingsSchema = map[string]interface{}{
 	"live.sources": map[string]interface{}{
 		"label":    "Live TV",
 		"icon":     "tv",
-		"group":    "sources",
+		"group":    "providers",
 		"order":    2,
 		"is_array": true,
 		"parent":   "live",
@@ -642,9 +641,9 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"indexers": map[string]interface{}{
-		"label":    "Usenet Indexers",
+		"label":    "Usenet Search Sources",
 		"icon":     "search",
-		"group":    "sources",
+		"group":    "providers",
 		"order":    0,
 		"is_array": true,
 		"fields": map[string]interface{}{
@@ -664,10 +663,10 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"torrentScrapers": map[string]interface{}{
-		"label":       "Torrent & Stream Sources",
+		"label":       "Torrent & Streaming Sources",
 		"description": "Configure search addons used for debrid and direct playback discovery. Some sources return torrent candidates (Torrentio, Jackett, Zilean, Nyaa), while others may return ready-to-play direct stream URLs (AIOStreams, Comet, MediaFusion, Internet Archive). Streaming mode still controls whether playback uses Usenet, Debrid, or Hybrid resolution.",
 		"icon":        "magnet",
-		"group":       "sources",
+		"group":       "providers",
 		"order":       1,
 		"is_array":    true,
 		"fields": map[string]interface{}{
@@ -690,7 +689,7 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"playback": map[string]interface{}{
-		"label": "Playback",
+		"label": "Playback Experience",
 		"icon":  "play",
 		"group": "experience",
 		"order": 0,
@@ -734,7 +733,7 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"homeShelves": map[string]interface{}{
-		"label": "Home Shelves",
+		"label": "Home Screen",
 		"icon":  "layout",
 		"group": "experience",
 		"order": 1,
@@ -822,7 +821,7 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"display": map[string]interface{}{
-		"label": "Display",
+		"label": "Appearance & Branding",
 		"icon":  "eye",
 		"group": "experience",
 		"order": 2,
@@ -1083,7 +1082,7 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"metadata": map[string]interface{}{
-		"label":    "Metadata",
+		"label":    "Movie & Show Information",
 		"icon":     "film",
 		"group":    "services",
 		"order":    0,
@@ -1184,7 +1183,7 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"transmux": map[string]interface{}{
-		"label":       "Web Player Hardware Acceleration",
+		"label":       "Web Player Video",
 		"icon":        "film",
 		"group":       "server",
 		"order":       2,
@@ -1212,7 +1211,7 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"subtitles": map[string]interface{}{
-		"label":    "Subtitles",
+		"label":    "Subtitle Services",
 		"icon":     "key",
 		"group":    "services",
 		"order":    2,
@@ -1399,7 +1398,7 @@ var SettingsSchema = map[string]interface{}{
 	"liveTV.sources": map[string]interface{}{
 		"label":       "Live TV",
 		"icon":        "tv",
-		"group":       "sources",
+		"group":       "providers",
 		"order":       3,
 		"inheritFrom": "live.sources",
 		"is_array":    true,
@@ -10050,8 +10049,15 @@ func (h *AdminUIHandler) ToolsPage(w http.ResponseWriter, r *http.Request) {
 	}
 	usersList := h.getScopedUsers(isAdmin, accountID)
 
+	currentPath := basePath + "/tools"
+	if strings.HasSuffix(r.URL.Path, "/tasks") {
+		currentPath = basePath + "/tasks"
+	} else if strings.HasSuffix(r.URL.Path, "/integrations") {
+		currentPath = basePath + "/integrations"
+	}
+
 	data := AdminPageData{
-		CurrentPath:    basePath + "/tools",
+		CurrentPath:    currentPath,
 		BasePath:       basePath,
 		ServerBasePath: h.serverBasePath,
 		IsAdmin:        isAdmin,
