@@ -179,12 +179,31 @@ func (m *mockMovieDetailsProvider) MovieInfo(_ context.Context, _ models.MovieDe
 }
 
 type mockSeriesDetailsProvider struct {
-	details *models.SeriesDetails
-	err     error
+	details   *models.SeriesDetails
+	err       error
+	lastQuery models.SeriesDetailsQuery
 }
 
-func (m *mockSeriesDetailsProvider) SeriesDetails(_ context.Context, _ models.SeriesDetailsQuery) (*models.SeriesDetails, error) {
+func (m *mockSeriesDetailsProvider) SeriesDetails(_ context.Context, query models.SeriesDetailsQuery) (*models.SeriesDetails, error) {
+	m.lastQuery = query
 	return m.details, m.err
+}
+
+func TestCreateEpisodeResolverPropagatesResolvedIMDBID(t *testing.T) {
+	provider := &mockSeriesDetailsProvider{details: &models.SeriesDetails{
+		Title: models.Title{Name: "Captain Star", Year: 1997, IMDBID: "tt0143031"},
+	}}
+	handler := &PrequeueHandler{metadataSvc: provider}
+
+	got := handler.createEpisodeResolverAndLookupAbsoluteEp(
+		context.Background(), "tmdb:series:196", "Captain Star", 1997, "", nil,
+	)
+	if got.IMDBID != "tt0143031" {
+		t.Fatalf("resolved imdb id = %q, want tt0143031", got.IMDBID)
+	}
+	if provider.lastQuery.IMDBID != "" {
+		t.Fatalf("metadata query imdb id = %q, want empty input", provider.lastQuery.IMDBID)
+	}
 }
 
 func TestUnknownTrackPolicyRejects(t *testing.T) {
