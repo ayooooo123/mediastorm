@@ -2,12 +2,12 @@
 {{template "base" .}}
 {{end}}
 
-{{define "title"}}{{if .IsAdmin}}Accounts{{else}}Profiles{{end}} - {{if .IsAdmin}}mediastorm Admin{{else}}mediastorm account{{end}}{{end}}
+{{define "title"}}{{if .IsAdmin}}Users & Access{{else}}Profiles{{end}} - {{if .IsAdmin}}mediastorm Admin{{else}}mediastorm account{{end}}{{end}}
 
 {{define "content"}}
 <div class="page-header">
-    <h1>{{if .IsAdmin}}Account Management{{else}}Profile Management{{end}}</h1>
-    <p>{{if .IsAdmin}}Manage user accounts and profiles{{else}}Manage your profiles{{end}}</p>
+    <h1>{{if .IsAdmin}}Users &amp; Access{{else}}Profiles{{end}}</h1>
+    <p>{{if .IsAdmin}}Manage profiles, sign-in accounts, invitations, and profile automation{{else}}Manage your profiles{{end}}</p>
 </div>
 
 {{if .IsAdmin}}
@@ -15,8 +15,9 @@
 <div class="tabs" style="margin-bottom: 1.5rem;">
     <button class="tab active" onclick="switchTab('profiles')" id="tab-profiles">Profiles</button>
     <button class="tab" onclick="switchTab('accounts')" id="tab-accounts">Accounts</button>
-    <button class="tab" onclick="switchTab('invitations')" id="tab-invitations">Account Invites</button>
-    <button class="tab" onclick="switchTab('connections')" id="tab-connections">Connection Invites</button>
+    <button class="tab" onclick="switchTab('tasks')" id="tab-tasks">Profile Tasks</button>
+    <button class="tab" onclick="switchTab('invitations')" id="tab-invitations">User Invitations</button>
+    <button class="tab" onclick="switchTab('connections')" id="tab-connections">Remote Access</button>
 </div>
 {{end}}
 
@@ -47,6 +48,13 @@
 .connection-header-row > div { flex: 1; min-width: 0; }
 .remote-access-warning { margin-top: 0.75rem; padding: 0.65rem 0.75rem; border: 1px solid rgba(245, 158, 11, 0.35); border-radius: 6px; background: rgba(245, 158, 11, 0.08); color: var(--text-secondary); font-size: 0.8rem; }
 .remote-access-status-line { font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem; overflow-wrap: anywhere; }
+.task-summary-grid { display: grid; gap: 0.75rem; }
+.task-summary-card { padding: 1rem; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-secondary); }
+.task-summary-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.task-summary-list { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.75rem; }
+.task-summary-pill { display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.3rem 0.55rem; border-radius: 999px; background: var(--bg-tertiary); color: var(--text-secondary); font-size: 0.75rem; }
+.task-summary-pill.active::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
+.task-summary-pill.paused::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--text-muted); }
 @media (max-width: 600px) {
     .tabs { overflow-x: auto; padding-bottom: 0.25rem; -webkit-overflow-scrolling: touch; }
     .tab { flex: 0 0 auto; padding: 0.75rem 0.85rem; white-space: nowrap; }
@@ -79,6 +87,25 @@
 </div>
 
 {{if .IsAdmin}}
+<!-- Profile Tasks Tab (admin only) -->
+<div id="content-tasks" class="tab-content">
+    <div class="card" style="margin-bottom: 1rem;">
+        <div class="card-body">
+            <strong>Tasks follow profiles</strong>
+            <p style="margin: 0.35rem 0 0; color: var(--text-secondary); font-size: 0.85rem;">
+                A profile keeps its own sync tasks when it is reassigned. Account summaries below roll up the tasks belonging to each associated profile; server-wide tasks are managed on the Tasks page.
+            </p>
+        </div>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;margin-bottom:1rem;flex-wrap:wrap;">
+        <span id="profile-tasks-count" style="color:var(--text-muted);"></span>
+        <a class="btn btn-primary" href="{{.BasePath}}/tasks">Open All Tasks</a>
+    </div>
+    <div id="profile-tasks-summary" class="task-summary-grid">
+        <div style="display:flex;justify-content:center;padding:2rem;"><div class="spinner"></div></div>
+    </div>
+</div>
+
 <!-- Accounts Tab (admin only) -->
 <div id="content-accounts" class="tab-content">
     <div id="default-password-warning"></div>
@@ -171,6 +198,7 @@ let accounts = [];
 let profiles = [];
 let invitations = [];
 let connectionInvites = [];
+let scheduledTasks = [];
 let remoteAccessStatus = null;
 let hasDefaultPassword = false;
 const isAdmin = {{json .IsAdmin}};
@@ -218,13 +246,14 @@ function switchTab(tab) {
 async function loadData() {
     try {
         if (isAdmin) {
-            const [accountsRes, profilesRes, defaultPwdRes, invitationsRes, connectionInvitesRes, remoteAccessStatusRes] = await Promise.all([
+            const [accountsRes, profilesRes, defaultPwdRes, invitationsRes, connectionInvitesRes, remoteAccessStatusRes, scheduledTasksRes] = await Promise.all([
                 fetch(basePath + '/api/accounts').then(r => r.json()),
                 fetch(basePath + '/api/profiles').then(r => r.json()),
                 fetch(basePath + '/api/accounts/default-password').then(r => r.json()),
                 fetch(basePath + '/api/invitations').then(r => r.json()),
                 fetch(basePath + '/api/remote-access/invites').then(r => r.ok ? r.json() : []),
-                fetch(basePath + '/api/remote-access/status').then(r => r.ok ? r.json() : null)
+                fetch(basePath + '/api/remote-access/status').then(r => r.ok ? r.json() : null),
+                fetch(basePath + '/api/scheduled-tasks').then(r => r.ok ? r.json() : { tasks: [] })
             ]);
             accounts = accountsRes.accounts || [];
             profiles = profilesRes || [];
@@ -232,6 +261,7 @@ async function loadData() {
             invitations = invitationsRes.invitations || [];
             connectionInvites = Array.isArray(connectionInvitesRes) ? connectionInvitesRes : [];
             remoteAccessStatus = remoteAccessStatusRes;
+            scheduledTasks = scheduledTasksRes.tasks || [];
 
             // Enrich profiles with per-profile stream limits
             await Promise.all(profiles.map(async p => {
@@ -253,6 +283,7 @@ async function loadData() {
 
             renderProfiles();
             renderAccounts();
+            renderProfileTasksSummary();
             renderInvitations();
             renderConnectionInvites();
         } else {
@@ -290,6 +321,8 @@ function renderProfiles() {
         if (p.hasPin) badges.push('<span class="status-badge" style="font-size: 0.65rem;">PIN</span>');
         if (p._maxStreams > 0) badges.push(`<span class="status-badge" style="font-size: 0.65rem;">Max ${p._maxStreams} streams</span>`);
         if (isAdmin && p.allowShareLinks) badges.push('<span class="status-badge" style="font-size: 0.65rem;">Share</span>');
+        const profileTasks = scheduledTasks.filter(task => task.config?.profileId === p.id);
+        if (isAdmin && profileTasks.length > 0) badges.push(`<span class="status-badge" style="font-size: 0.65rem;">${profileTasks.filter(task => task.enabled).length}/${profileTasks.length} tasks active</span>`);
 
         const avatarHtml = p.hasIcon
             ? `<img class="profile-avatar" src="${basePath}/api/profiles/icon?profileId=${p.id}" alt="${escapeHtml(p.name)}" style="object-fit: cover;">`
@@ -312,6 +345,7 @@ function renderProfiles() {
                     <button class="btn btn-secondary btn-sm" onclick="showEditProfileModal('${p.id}')">Edit</button>
                     <a class="btn btn-secondary btn-sm" href="${basePath}/settings?profileId=${p.id}">Settings</a>
                     <a class="btn btn-secondary btn-sm" href="${basePath}/notifications?profileId=${p.id}">Notifications</a>
+                    ${isAdmin ? `<a class="btn btn-secondary btn-sm" href="${basePath}/tasks?profileId=${encodeURIComponent(p.id)}">Tasks</a>` : ''}
                     ${isAdmin ? `<button class="btn btn-secondary btn-sm" onclick="showProfileStreamsModal('${p.id}', '${escapeHtml(p.name)}', '${p.accountId}')">Streams</button>` : ''}
                     ${isAdmin ? `<button class="btn ${p.allowShareLinks ? 'btn-primary' : 'btn-secondary'} btn-sm" onclick="toggleProfileShareLinks('${p.id}', '${escapeHtml(p.name)}', ${p.allowShareLinks ? 'true' : 'false'})">Share Links: ${p.allowShareLinks ? '✓ On' : 'Off'}</button>` : ''}
                     ${isAdmin ? `<button class="btn btn-secondary btn-sm" onclick="showReassignModal('${p.id}')">Reassign</button>` : ''}
@@ -354,6 +388,8 @@ function renderAccounts() {
             ? a.profiles
             : profiles.filter(p => p.accountId === a.id);
         const profileCount = accountProfiles.length;
+        const accountProfileIds = new Set(accountProfiles.map(profile => profile.id));
+        const accountTasks = scheduledTasks.filter(task => accountProfileIds.has(task.config?.profileId));
         const profilesHtml = accountProfiles.length > 0
             ? `<div class="account-profiles-list">${accountProfiles.map(p => {
                 const initial = (p.name || 'P').charAt(0).toUpperCase();
@@ -380,6 +416,7 @@ function renderAccounts() {
                         <div style="font-size: 0.8rem; color: var(--text-muted);">
                             ${profileCount} profile${profileCount !== 1 ? 's' : ''}
                             ${a.maxStreams > 0 ? ` &middot; Max streams: ${a.maxStreams}` : ''}
+                            ${accountTasks.length > 0 ? ` &middot; ${accountTasks.length} profile task${accountTasks.length !== 1 ? 's' : ''}` : ''}
                         </div>
                     </div>
                     <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
@@ -396,6 +433,47 @@ function renderAccounts() {
             </div>
         `;
     }).join('');
+}
+
+function getTaskTypeLabelForSummary(type) {
+    const labels = {
+        plex_watchlist_sync: 'Plex watchlist', plex_history_sync: 'Plex history',
+        trakt_list_sync: 'Trakt list', trakt_history_sync: 'Trakt history',
+        simkl_history_sync: 'Simkl history', mdblist_watchlist_sync: 'MDBList watchlist',
+        mdblist_history_sync: 'MDBList history', jellyfin_favorites_sync: 'Jellyfin favorites',
+        jellyfin_history_sync: 'Jellyfin history', local_media_scan: 'Library scan',
+        backup: 'Backup', prewarm: 'Home pre-warm'
+    };
+    return labels[type] || String(type || 'Task').replaceAll('_', ' ');
+}
+
+function renderProfileTasksSummary() {
+    const container = document.getElementById('profile-tasks-summary');
+    if (!container) return;
+    const profileTasks = scheduledTasks.filter(task => task.config?.profileId);
+    const count = document.getElementById('profile-tasks-count');
+    if (count) count.textContent = `${profileTasks.length} profile task${profileTasks.length === 1 ? '' : 's'}`;
+
+    if (profiles.length === 0) {
+        container.innerHTML = '<div class="card"><div class="card-body text-muted">Create a profile before assigning profile-specific tasks.</div></div>';
+        return;
+    }
+
+    container.innerHTML = accounts.map(account => {
+        const accountProfiles = Array.isArray(account.profiles) ? account.profiles : profiles.filter(profile => profile.accountId === account.id);
+        if (accountProfiles.length === 0) return '';
+        const profileRows = accountProfiles.map(profile => {
+            const tasks = profileTasks.filter(task => task.config?.profileId === profile.id);
+            const pills = tasks.length > 0
+                ? tasks.map(task => `<span class="task-summary-pill ${task.enabled ? 'active' : 'paused'}">${escapeHtml(task.name || getTaskTypeLabelForSummary(task.type))}</span>`).join('')
+                : '<span class="text-muted" style="font-size:0.8rem;">No profile-specific tasks. Server-wide tasks may still apply.</span>';
+            return `<div style="padding-top:0.75rem;margin-top:0.75rem;border-top:1px solid var(--border);">
+                <div class="task-summary-heading"><strong>${escapeHtml(profile.name)}</strong><a class="btn btn-secondary btn-sm" href="${basePath}/tasks?profileId=${encodeURIComponent(profile.id)}">Manage Tasks</a></div>
+                <div class="task-summary-list">${pills}</div>
+            </div>`;
+        }).join('');
+        return `<div class="task-summary-card"><div class="task-summary-heading"><div><strong>${escapeHtml(account.username)}</strong><div class="text-muted" style="font-size:0.78rem;margin-top:0.2rem;">Rolled up from ${accountProfiles.length} associated profile${accountProfiles.length === 1 ? '' : 's'}</div></div></div>${profileRows}</div>`;
+    }).join('') || '<div class="card"><div class="card-body text-muted">No account profiles are available.</div></div>';
 }
 
 function showModal(html) {

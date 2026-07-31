@@ -283,13 +283,19 @@
         <p>Real-time monitoring and overview of your mediastorm server</p>
         <div id="backendUptime" class="dashboard-uptime" aria-live="polite">Backend uptime loading...</div>
     </div>
-    <button class="btn btn-secondary" onclick="refreshStatus()">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-            <polyline points="1 4 1 10 7 10"/>
-            <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
-        </svg>
-        Refresh
-    </button>
+    <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;">
+        <div class="view-toggle" style="display:flex;background:var(--bg-tertiary);border-radius:var(--radius);padding:2px;">
+            <button id="dashboardBasicBtn" class="view-toggle-btn dashboard-detail-btn" type="button" onclick="setDashboardDetail('basic')">Basic</button>
+            <button id="dashboardAdvancedBtn" class="view-toggle-btn dashboard-detail-btn" type="button" onclick="setDashboardDetail('advanced')">Advanced</button>
+        </div>
+        <button class="btn btn-secondary" onclick="refreshStatus()">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="1 4 1 10 7 10"/>
+                <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+            </svg>
+            Refresh
+        </button>
+    </div>
 </div>
 
 <!-- Active Streams -->
@@ -406,7 +412,7 @@
 </div>
 
 <!-- Usenet Activity -->
-<div class="card" style="margin-bottom: 1.5rem;">
+<div class="card dashboard-advanced-detail" style="margin-bottom: 1.5rem;">
     <div class="card-header">
         <h2>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -444,7 +450,7 @@
 </div>
 
 <!-- Live Stream Limits -->
-<div class="card live-limits-card" style="margin-bottom: 1.5rem;">
+<div class="card live-limits-card dashboard-advanced-detail" style="margin-bottom: 1.5rem;">
     <div class="card-header">
         <h2>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -479,6 +485,7 @@
 </div>
 
 <!-- VOD Stream Usage by Account -->
+<div class="dashboard-advanced-detail">
 <div class="card" id="vodUsageCard" style="margin-bottom: 1.5rem; display: none;">
     <div class="card-header">
         <h2>
@@ -507,10 +514,11 @@
         </div>
     </div>
 </div>
+</div>
 
 {{if .IsAdmin}}
 <!-- Service Health -->
-<div class="grid grid-2" style="margin-bottom: 1.5rem;">
+<div class="grid grid-2 dashboard-advanced-detail" style="margin-bottom: 1.5rem;">
     <div class="card">
         <div class="card-header">
             <h2>
@@ -629,7 +637,7 @@
 
 {{if .IsAdmin}}
 <!-- Endpoint Health -->
-<div class="card" style="margin-bottom: 1.5rem;">
+<div class="card dashboard-advanced-detail" style="margin-bottom: 1.5rem;">
     <div class="card-header">
         <h2>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -682,7 +690,7 @@
 </div>
 
 <!-- Configuration Summary -->
-<div class="card" style="margin-bottom: 1.5rem;">
+<div class="card dashboard-advanced-detail" style="margin-bottom: 1.5rem;">
     <div class="card-header">
         <h2>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -784,7 +792,7 @@
 </div>
 
 <!-- Indexers and Scrapers -->
-<div class="grid grid-2" style="margin-bottom: 1.5rem;">
+<div class="grid grid-2 dashboard-advanced-detail" style="margin-bottom: 1.5rem;">
     <div class="card">
         <div class="card-header">
             <h2>
@@ -913,6 +921,12 @@
     .view-toggle-btn.active {
         background: var(--accent);
         color: white;
+    }
+    .dashboard-detail-btn {
+        width: auto;
+        min-width: 64px;
+        padding: 0 0.65rem;
+        font-size: 0.75rem;
     }
     .view-toggle-btn svg {
         stroke: currentColor;
@@ -1597,6 +1611,17 @@
     }
 </style>
 <script>
+    let dashboardDetail = localStorage.getItem('mediastorm-dashboard-detail') === 'advanced' ? 'advanced' : 'basic';
+
+    function setDashboardDetail(level) {
+        dashboardDetail = level === 'advanced' ? 'advanced' : 'basic';
+        localStorage.setItem('mediastorm-dashboard-detail', dashboardDetail);
+        document.querySelectorAll('.dashboard-advanced-detail').forEach(element => {
+            element.style.display = dashboardDetail === 'advanced' ? '' : 'none';
+        });
+        document.getElementById('dashboardBasicBtn')?.classList.toggle('active', dashboardDetail === 'basic');
+        document.getElementById('dashboardAdvancedBtn')?.classList.toggle('active', dashboardDetail === 'advanced');
+    }
     const isAdmin = {{json .IsAdmin}};
     const donationBannerStorageKey = 'mediastormDonationBannerHidden';
     const dashboardUpdateDismissPrefix = 'mediastormDashboardUpdateDismissed:';
@@ -2955,6 +2980,7 @@
     }
 
     document.addEventListener('DOMContentLoaded', () => {
+        setDashboardDetail(dashboardDetail);
         setStreamView(currentStreamView);
         connectSSE();
         startInterpolation();

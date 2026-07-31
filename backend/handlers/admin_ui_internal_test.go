@@ -141,6 +141,101 @@ func TestAdminSettingsAddListIncludesSharedActivityShelves(t *testing.T) {
 	}
 }
 
+func TestAdminSettingsUsesCategoryAndDetailProgressiveDisclosure(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/settings.html")
+	if err != nil {
+		t.Fatalf("read settings template: %v", err)
+	}
+	source := string(templateBytes)
+
+	for _, marker := range []string{
+		`id="settingsCategoryNav"`,
+		`id="settingsBasicBtn" class="settings-level-btn" type="button" disabled`,
+		`id="settingsAdvancedBtn"`,
+		`name="mediastorm-settings-filter"`,
+		`autocomplete="off" autocapitalize="none" spellcheck="false"`,
+		`let settingsLevel = 'advanced';`,
+		`function setSettingsLevel(level)`,
+		`function setSettingsGroup(groupId)`,
+		`const advancedSections = new Set`,
+		`const friendlySettingsCopy = [`,
+		`'Streaming Method'`,
+		`'Adapt to Each Device'`,
+		`if (!searchTerm && activeSettingsGroup && group.id !== activeSettingsGroup) continue;`,
+		`settingsLevel === 'basic' && !searchTerm && advancedSections.has(key)`,
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("settings template missing progressive-disclosure marker %q", marker)
+		}
+	}
+}
+
+func TestAdminToolsProvidesFocusedTasksAndIntegrationsViews(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/tools.html")
+	if err != nil {
+		t.Fatalf("read tools template: %v", err)
+	}
+	source := string(templateBytes)
+
+	for _, marker := range []string{
+		`id="tasksPageHost"`,
+		`id="integrationsPageHost"`,
+		`id="taskProfileFilter"`,
+		`const isTasksPage =`,
+		`const isIntegrationsPage =`,
+		`function applyTaskFilters()`,
+		`requestedTaskProfileId`,
+		`name="mediastorm-task-filter"`,
+		`class="import-card task-card"`,
+		`class="task-schedule-label">Frequency`,
+		`class="task-schedule-label">Next run`,
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("tools template missing focused-view marker %q", marker)
+		}
+	}
+}
+
+func TestAdminDashboardBasicViewKeepsOnlyUserActivityCards(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/status.html")
+	if err != nil {
+		t.Fatalf("read status template: %v", err)
+	}
+	source := string(templateBytes)
+
+	for _, marker := range []string{
+		"<!-- Active Streams -->\n<div class=\"card\"",
+		"<!-- Usenet Activity -->\n<div class=\"card dashboard-advanced-detail\"",
+		`<div class="card live-limits-card dashboard-advanced-detail"`,
+		`<div class="grid grid-2 dashboard-advanced-detail"`,
+		`document.querySelectorAll('.dashboard-advanced-detail')`,
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("status template missing basic-dashboard marker %q", marker)
+		}
+	}
+}
+
+func TestAdminAccountsSurfacesProfileTaskContext(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/accounts.html")
+	if err != nil {
+		t.Fatalf("read accounts template: %v", err)
+	}
+	source := string(templateBytes)
+
+	for _, marker := range []string{
+		`id="tab-tasks"`,
+		`id="content-tasks"`,
+		`fetch(basePath + '/api/scheduled-tasks')`,
+		`function renderProfileTasksSummary()`,
+		`/tasks?profileId=`,
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("accounts template missing task-context marker %q", marker)
+		}
+	}
+}
+
 func TestAdminSettingsSharedActivityShelvesExposeAssociatedSettings(t *testing.T) {
 	templateBytes, err := adminTemplates.ReadFile("admin_templates/settings.html")
 	if err != nil {

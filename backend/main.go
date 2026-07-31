@@ -951,6 +951,8 @@ func main() {
 	r.HandleFunc("/admin/status", adminUIHandler.RequireAuth(adminUIHandler.StatusPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/history", adminUIHandler.RequireAuth(adminUIHandler.HistoryPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/tools", adminUIHandler.RequireAuth(adminUIHandler.ToolsPage)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/tasks", adminUIHandler.RequireMasterAuth(adminUIHandler.ToolsPage)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/integrations", adminUIHandler.RequireMasterAuth(adminUIHandler.ToolsPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/tools/hidden-items", adminUIHandler.RequireAuth(adminUIHandler.HiddenItemsPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/tools/resolved-nzbs", adminUIHandler.RequireAuth(adminUIHandler.ResolvedNZBsPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/tools/bad-streams", adminUIHandler.RequireMasterAuth(adminUIHandler.BadStreamsPage)).Methods(http.MethodGet)

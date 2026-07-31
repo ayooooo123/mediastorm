@@ -150,6 +150,88 @@
         grid-template-columns: 1fr;
     }
 }
+
+.settings-workspace-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    margin: -0.25rem 0 1rem;
+    padding: 0.75rem;
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    background: var(--bg-secondary);
+}
+.settings-category-nav { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+.settings-category-btn,
+.settings-level-btn {
+    border: 1px solid transparent;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--text-secondary);
+    padding: 0.48rem 0.7rem;
+    font-size: 0.8rem;
+    cursor: pointer;
+}
+.settings-category-btn:hover,
+.settings-level-btn:hover { color: var(--text-primary); background: var(--bg-tertiary); }
+.settings-category-btn.active,
+.settings-level-btn.active { color: var(--text-primary); background: var(--accent-bg); border-color: var(--accent); }
+.settings-level-switch { display: flex; gap: 0.25rem; padding: 0.2rem; border-radius: 8px; background: var(--bg-tertiary); }
+.settings-level-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.42;
+    color: var(--text-muted);
+    background: transparent;
+}
+.settings-level-btn:disabled:hover { color: var(--text-muted); background: transparent; }
+.settings-level-help { width: 100%; color: var(--text-muted); font-size: 0.76rem; }
+.page-header-controls .btn {
+    box-sizing: border-box;
+    height: 40px;
+    max-height: 40px;
+    white-space: nowrap;
+}
+#settingsContainer .settings-group { margin-bottom: 1rem; }
+#settingsContainer .group-title { margin: 0 0 0.55rem; font-size: 0.78rem; }
+#settingsContainer .section { margin-bottom: 0.45rem; }
+#settingsContainer .section-header { min-height: 48px; padding: 0.7rem 0.85rem; }
+#settingsContainer .section-content { padding: 0.9rem; }
+#settingsContainer .grid { gap: 0.75rem; }
+#settingsContainer .form-group { margin-bottom: 0.75rem; }
+#settingsContainer .form-hint { margin-top: 0.3rem; font-size: 0.74rem; line-height: 1.35; }
+#settingsContainer .field-subgroup { margin: 0.25rem 0 0.75rem; padding: 0.8rem; }
+.advanced-setting-badge {
+    display: inline-flex;
+    margin-left: 0.45rem;
+    padding: 0.12rem 0.38rem;
+    border-radius: 999px;
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+    font-size: 0.62rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.settings-related-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 0.75rem;
+    padding: 0.85rem 1rem;
+    border: 1px solid var(--border-color);
+    border-radius: 9px;
+    background: var(--bg-secondary);
+}
+.settings-related-card p { margin: 0.2rem 0 0; color: var(--text-muted); font-size: 0.78rem; }
+@media (max-width: 900px) {
+    .page-header-controls { flex-wrap: wrap; }
+    .settings-workspace-toolbar { align-items: stretch; }
+    .settings-category-nav { width: 100%; overflow-x: auto; flex-wrap: nowrap; padding-bottom: 0.2rem; }
+    .settings-category-btn { flex: 0 0 auto; }
+}
 </style>
 {{end}}
 
@@ -176,15 +258,15 @@
         <p>{{if .IsAdmin}}Configure your mediastorm server{{else}}Configure profile settings{{end}}</p>
     </div>
     <div class="page-header-controls" style="display: flex; gap: 0.5rem; align-items: center;">
-        <input type="text" id="settingsSearch" class="form-input" placeholder="Search settings..." oninput="handleSettingsSearch(this.value)" style="min-width: 200px;">
+        <input type="search" id="settingsSearch" class="form-input" name="mediastorm-settings-filter" placeholder="Search settings..." autocomplete="off" autocapitalize="none" spellcheck="false" data-1p-ignore="true" data-lpignore="true" oninput="handleSettingsSearch(this.value)" style="min-width: 200px;">
         <select id="userSelector" class="form-select" style="min-width: 180px;" onchange="handleUserChange(this.value)">
-            {{if .IsAdmin}}<option value="">Global Defaults</option>{{end}}
+            {{if .IsAdmin}}<option value="">Server defaults</option>{{end}}
             {{range .Users}}
             <option value="{{.ID}}">{{.Name}}</option>
             {{end}}
         </select>
         <select id="clientSelector" class="form-select" style="min-width: 180px; display: none;" onchange="handleClientChange(this.value)">
-            <option value="">Profile Defaults</option>
+            <option value="">Profile defaults</option>
         </select>
         <button id="identifyClientBtn" class="btn btn-secondary" style="display: none;" onclick="identifyClient()" title="Send ping to identify this device">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
@@ -199,14 +281,14 @@
                 <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
                 <path d="M3 3v5h5"/>
             </svg>
-            Revert
+            Use Parent Defaults
         </button>
         <button id="propagateBtn" class="btn btn-secondary" style="display: none;" onclick="propagateSettings()" title="Propagate settings to children">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M12 5v14"/>
                 <path d="M19 12l-7 7-7-7"/>
             </svg>
-            Propagate
+            Copy to Profiles
         </button>
         <button class="btn btn-primary" onclick="saveAllSettings()">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
@@ -217,6 +299,15 @@
             Save
         </button>
     </div>
+</div>
+
+<div class="settings-workspace-toolbar">
+    <div id="settingsCategoryNav" class="settings-category-nav" aria-label="Settings categories"></div>
+    <div class="settings-level-switch" aria-label="Settings detail level">
+        <button id="settingsBasicBtn" class="settings-level-btn" type="button" disabled aria-disabled="true" title="Basic view is being reviewed">Basic</button>
+        <button id="settingsAdvancedBtn" class="settings-level-btn" type="button" onclick="setSettingsLevel('advanced')">Advanced</button>
+    </div>
+    <div id="settingsLevelHelp" class="settings-level-help"></div>
 </div>
 
 <div id="settingsContainer">
@@ -381,6 +472,46 @@
     let schema = {{json .Schema}};
     let groups = {{json .Groups}};
     let presets = {{json .Presets}};
+    const friendlySettingsCopy = [
+        ['server', 'host', 'Listen Address', 'Usually left blank so mediastorm can accept connections on every network interface.'],
+        ['server', 'port', 'Web Port', 'The port used to open mediastorm. The default is 7777.'],
+        ['server', 'basePath', 'URL Prefix', 'Optional path used when mediastorm sits behind a reverse proxy.'],
+        ['network', 'homeWifiSSID', 'Home Wi-Fi Name', 'The Wi-Fi network that tells the app it is at home.'],
+        ['network', 'homeBackendUrl', 'Address at Home', 'The faster local address used while connected to home Wi-Fi.'],
+        ['network', 'remoteBackendUrl', 'Address Away from Home', 'The secure address used on mobile data or other networks.'],
+        ['streaming', 'serviceMode', 'Streaming Method', 'Choose Usenet, debrid, or both.'],
+        ['streaming', 'multiProviderMode', 'When More Than One Debrid Service Is Available', 'Choose the fastest service automatically or prefer the service order you set.'],
+        ['streaming', 'indexerTimeoutSec', 'Search Wait Time', 'How long to wait for search sources before showing available results.'],
+        ['streaming', 'healthCheckTimeoutSec', 'Connection Test Wait Time', 'How long a manual service test may run before it is stopped.'],
+        ['filtering', 'maxSizeMovieGb', 'Largest Movie', 'Ignore movie files larger than this. Use 0 for no limit.'],
+        ['filtering', 'maxSizeEpisodeGb', 'Largest Episode', 'Ignore episode files larger than this. Use 0 for no limit.'],
+        ['filtering', 'maxResolution', 'Highest Video Quality', 'Do not show results above this video quality. Leave blank for no limit.'],
+        ['filtering', 'hdrDvPolicy', 'HDR & Dolby Vision', 'Choose which HDR and Dolby Vision formats can be selected automatically.'],
+        ['filtering', 'adaptivePlaybackEnabled', 'Adapt to Each Device', 'Use each device\'s measured connection and display support to avoid streams it may struggle to play.'],
+        ['filtering', 'requiredTerms', 'Must Include', 'Keep only results containing at least one of these words or patterns.'],
+        ['filtering', 'filterOutTerms', 'Always Exclude', 'Remove results containing any of these words or patterns.'],
+        ['filtering', 'preferredTerms', 'Prefer', 'Move matching results higher. Larger weights have a stronger effect.'],
+        ['filtering', 'nonPreferredTerms', 'Prefer Less', 'Move matching results lower without hiding them completely.'],
+        ['filtering', 'servicePriority', 'Preferred Streaming Method', 'When enabled in result ordering, prefer Usenet or debrid results.'],
+        ['playback', 'preferredPlayer', 'Default Player', 'The player opened when playback starts.'],
+        ['playback', 'preferredAudioLanguage', 'Preferred Audio', 'The language to select first when it is available.'],
+        ['playback', 'preferredSubtitleLanguage', 'Preferred Subtitles', 'The subtitle language to select first when it is available.'],
+        ['playback', 'forceAacTranscoding', 'Make Surround Audio More Compatible', 'Convert surround audio to AAC for devices or headphones that cannot play it directly.'],
+        ['playback', 'disablePrequeue', 'Prepare Streams Only After Pressing Play', 'Reduces background work, but playback may take longer to start.'],
+        ['homeShelves', 'itemCap', 'Items Per Home Row', 'How many items appear before the Explore card.'],
+        ['homeShelves', 'excludeUpcomingFromContinue', 'Keep Unreleased Episodes Out of Continue Watching', 'Show unreleased next episodes in My Upcoming instead.'],
+        ['display', 'badgeVisibility', 'Information Shown on Posters', 'Choose the labels and progress information shown on media cards.'],
+        ['display', 'navigationTabVisibility', 'App Navigation', 'Choose which navigation tabs are visible in the apps.'],
+        ['metadata', 'tvdbApiKey', 'TVDB Key', 'Used to look up TV show and episode information.'],
+        ['metadata', 'tmdbApiKey', 'TMDB Key', 'Used to look up movie, show, and artwork information.'],
+        ['subtitles', 'enableTranslatedSubs', 'Translate Subtitles When Needed', 'Allow English subtitles to be translated into the profile\'s preferred subtitle language.']
+    ];
+    friendlySettingsCopy.forEach(([sectionKey, fieldKey, label, description]) => {
+        const field = schema[sectionKey]?.fields?.[fieldKey];
+        if (!field) return;
+        field.label = label;
+        field.description = description;
+    });
     let originalSettings = JSON.parse(JSON.stringify(currentSettings));
     let selectedUserId = '';
     let userSettings = null;
@@ -402,6 +533,72 @@
     const isAdmin = {{json .IsAdmin}};
     const settingsDebugSessionId = 'settings-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
     let editShelfEscapeHandler = null;
+    let activeSettingsGroup = localStorage.getItem('mediastorm-settings-category') || groups[0]?.id || '';
+    if (!groups.some(group => group.id === activeSettingsGroup)) activeSettingsGroup = groups[0]?.id || '';
+    // Basic mode remains visible as a roadmap affordance, but all settings stay
+    // available until its contents have been reviewed section by section.
+    let settingsLevel = 'advanced';
+    const advancedSections = new Set(['ranking', 'server', 'transmux']);
+    const advancedFieldPaths = new Set([
+        'streaming.multiProviderMode',
+        'streaming.usenetResolutionTimeoutSec',
+        'streaming.indexerTimeoutSec',
+        'streaming.healthCheckTimeoutSec',
+        'streaming.maxAlternateTitleSearches',
+        'playback.thumbnails.enabled',
+        'playback.thumbnails.workers',
+        'playback.youtubeProxyUrl',
+        'playback.ytdlpCookies',
+        'homeShelves.homeShelfScale',
+        'homeShelves.homeHeroScale',
+        'server.allowedPrivateMediaOrigins'
+    ]);
+    const advancedArrayFields = new Set([
+        'live.sources.proxyUrl', 'live.sources.playlistCacheTtlHours', 'live.sources.probeSizeMb', 'live.sources.analyzeDurationSec', 'live.sources.lowLatency',
+        'liveTV.sources.proxyUrl', 'liveTV.sources.playlistCacheTtlHours', 'liveTV.sources.probeSizeMb', 'liveTV.sources.analyzeDurationSec', 'liveTV.sources.lowLatency',
+        'usenetEngines.apiPath', 'usenetEngines.priority', 'usenetEngines.config.webdavPathPrefix', 'usenetEngines.pollIntervalSeconds', 'usenetEngines.timeoutSeconds'
+    ]);
+    const requestedSettingsSection = window.location.hash.replace(/^#/, '');
+    if (requestedSettingsSection && schema[requestedSettingsSection]?.group) {
+        activeSettingsGroup = schema[requestedSettingsSection].group;
+    }
+    if (advancedSections.has(requestedSettingsSection)) {
+        settingsLevel = 'advanced';
+    }
+
+    function setSettingsLevel(level) {
+        settingsLevel = 'advanced';
+        localStorage.setItem('mediastorm-settings-level', settingsLevel);
+        renderSettings();
+    }
+
+    function setSettingsGroup(groupId) {
+        activeSettingsGroup = groupId;
+        localStorage.setItem('mediastorm-settings-category', groupId);
+        renderSettings();
+    }
+
+    function renderSettingsWorkspaceNavigation() {
+        const nav = document.getElementById('settingsCategoryNav');
+        const availableGroups = groups.filter(group => Object.entries(schema).some(([key, def]) => {
+            if (def.group !== group.id || def.hidden) return false;
+            if (settingsLevel === 'basic' && advancedSections.has(key)) return false;
+            if (selectedClientId && !clientConfigSections.includes(key)) return false;
+            if (selectedUserId && !selectedClientId && !perUserSections.includes(key)) return false;
+            if (!selectedUserId && def.inheritFrom) return false;
+            return true;
+        }));
+        if (!availableGroups.some(group => group.id === activeSettingsGroup)) {
+            activeSettingsGroup = availableGroups[0]?.id || groups[0]?.id || '';
+        }
+        if (nav) {
+            nav.innerHTML = availableGroups.map(group => '<button type="button" class="settings-category-btn '+(group.id === activeSettingsGroup ? 'active' : '')+'" onclick="setSettingsGroup(\''+group.id+'\')">'+group.label+'</button>').join('');
+        }
+        document.getElementById('settingsBasicBtn')?.classList.toggle('active', settingsLevel === 'basic');
+        document.getElementById('settingsAdvancedBtn')?.classList.toggle('active', settingsLevel === 'advanced');
+        const help = document.getElementById('settingsLevelHelp');
+        if (help) help.textContent = 'All settings are currently shown. Basic view is disabled while its contents are reviewed.';
+    }
 
     function stringifyDebugArg(arg) {
         if (arg instanceof Error) {
@@ -634,6 +831,7 @@
     // Sections that are per-user (when a user is selected, only show these)
     // Per-user sections: liveTV IPTV source overrides are configured here; channel preferences use a custom manager.
     const perUserSections = ['playback', 'metadata', 'homeShelves', 'homeShelves.shelves', 'filtering', 'filtering.debrid', 'filtering.usenet', 'animeFiltering', 'liveTV', 'liveTV.sources', 'liveTV.playlistSources', 'display', 'network', 'ranking', 'ranking.criteria', 'ranking.debrid.criteria', 'ranking.usenet.criteria'];
+    const clientConfigSections = ['filtering', 'animeFiltering', 'network', 'display', 'playback', 'ranking'];
 
     // Validation state - stores errors by section and field
     let validationErrors = {};
@@ -5398,7 +5596,10 @@
             const fieldsHtml = Object.entries(sectionDef.fields)
                 .sort((a, b) => (a[1].order || 0) - (b[1].order || 0))
                 .map(([fieldKey, fieldDef]) => {
-                if (sectionKey === 'usenetEngines' && ['apiPath', 'priority', 'config.webdavPathPrefix', 'pollIntervalSeconds', 'timeoutSeconds', 'allowedProfiles'].includes(fieldKey)) {
+                if (settingsLevel === 'basic' && !searchTerm && advancedArrayFields.has(sectionKey + '.' + fieldKey)) {
+                    return '';
+                }
+                if (settingsLevel === 'basic' && sectionKey === 'usenetEngines' && ['apiPath', 'priority', 'config.webdavPathPrefix', 'pollIntervalSeconds', 'timeoutSeconds', 'allowedProfiles'].includes(fieldKey)) {
                     return '';
                 }
                 const showWhen = fieldDef.showWhen;
@@ -9160,6 +9361,8 @@
             .map(([fieldKey, fieldDef]) => {
                 // Skip hidden fields
                 if (fieldDef.hidden) return '';
+                const isAdvancedField = fieldDef.advanced || advancedFieldPaths.has(sectionKey + '.' + fieldKey);
+                if (settingsLevel === 'basic' && !searchTerm && isAdvancedField) return '';
                 // Skip global-only fields (like file uploads) when viewing profile/client settings
                 if (fieldDef.globalOnly && (selectedUserId || selectedClientId)) return '';
                 // When editing device settings, only show fields that support client overrides.
@@ -9207,7 +9410,7 @@
                     group: fieldDef.group || '',
                     groupLabel: fieldDef.groupLabel || '',
                     groupDescription: fieldDef.groupDescription || '',
-                    html: '<div class="form-group'+(fieldDef.type === 'boolean' ? ' form-group-toggle' : '')+invalidClass+inheritanceClass+'"><label class="form-label"><span>'+fieldDef.label+'</span>'+inheritanceBadge+'</label>'+renderInput(fieldKey, fieldDef, fieldValue, sectionKey, sectionKey)+(fieldDef.description ? '<p class="form-hint">'+fieldDef.description+'</p>' : '')+renderAdditionalFieldHint(sectionKey, fieldKey)+renderApiKeyFormatWarning(fieldKey, fieldValue)+errorHtml+'</div>',
+                    html: '<div class="form-group'+(fieldDef.type === 'boolean' ? ' form-group-toggle' : '')+invalidClass+inheritanceClass+'"><label class="form-label"><span>'+fieldDef.label+(isAdvancedField ? '<span class="advanced-setting-badge">Advanced</span>' : '')+'</span>'+inheritanceBadge+'</label>'+renderInput(fieldKey, fieldDef, fieldValue, sectionKey, sectionKey)+(fieldDef.description ? '<p class="form-hint">'+fieldDef.description+'</p>' : '')+renderAdditionalFieldHint(sectionKey, fieldKey)+renderApiKeyFormatWarning(fieldKey, fieldValue)+errorHtml+'</div>',
                 };
             })
             .filter(Boolean);
@@ -9447,7 +9650,8 @@
                 nestedHtml += renderNestedSectionPanel(nestedKey, nestedDef);
             }
         }
-        return '<div class="section '+(isOpen ? 'open' : '')+(hasChanges ? ' has-changes' : '')+disabledClass+'" id="section-'+sectionKey+'"><div class="section-header" onclick="toggleSection(this)"><div class="section-title">'+getIcon(sectionDef.icon)+sectionDef.label+warningBadge+'</div><div class="section-header-actions">'+saveBtn+'<svg class="section-toggle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg></div></div><div class="section-content">'+comingSoonHtml+messagesHtml+descriptionHtml+contentHtml+nestedHtml+'</div></div>';
+        const advancedBadge = advancedSections.has(sectionKey) ? '<span class="advanced-setting-badge">Advanced</span>' : '';
+        return '<div class="section '+(isOpen ? 'open' : '')+(hasChanges ? ' has-changes' : '')+disabledClass+'" id="section-'+sectionKey+'"><div class="section-header" onclick="toggleSection(this)"><div class="section-title">'+getIcon(sectionDef.icon)+sectionDef.label+advancedBadge+warningBadge+'</div><div class="section-header-actions">'+saveBtn+'<svg class="section-toggle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg></div></div><div class="section-content">'+comingSoonHtml+messagesHtml+descriptionHtml+contentHtml+nestedHtml+'</div></div>';
     }
 
     // Profile management functions
@@ -10183,6 +10387,7 @@
 
     function renderSettings() {
         const container = document.getElementById('settingsContainer');
+        renderSettingsWorkspaceNavigation();
 
         // Run validation before rendering
         validationErrors = validateSettings();
@@ -10219,19 +10424,19 @@
         let html = bannerHtml;
 
         // Sections that can be configured per-client (subset of perUserSections)
-        const clientSections = ['filtering', 'animeFiltering', 'network', 'display', 'playback', 'ranking'];
-
         let totalMatchingSections = 0;
 
         for (const group of groups) {
+            if (!searchTerm && activeSettingsGroup && group.id !== activeSettingsGroup) continue;
             const groupSections = Object.entries(schema).filter(([key, def]) => {
                 if (def.group !== group.id) return false;
                 // Skip hidden sections
                 if (def.hidden) return false;
+                if (settingsLevel === 'basic' && !searchTerm && advancedSections.has(key)) return false;
                 // If search is active, only show matching sections
                 if (filteredSections !== null && !filteredSections.has(key)) return false;
                 // If a client is selected, only show client-configurable sections
-                if (selectedClientId && !clientSections.includes(key)) return false;
+                if (selectedClientId && !clientConfigSections.includes(key)) return false;
                 // If a user is selected (but not client), show per-user sections
                 if (selectedUserId && !selectedClientId && !perUserSections.includes(key)) return false;
                 // Hide per-user-only sections (with inheritFrom) when viewing global settings
@@ -10242,7 +10447,10 @@
             if (groupSections.length === 0) continue;
 
             totalMatchingSections += groupSections.length;
-            html += '<div class="settings-group"><h2 class="group-title">'+group.label+'</h2><div class="group-sections">'+groupSections.map(([key, def]) => renderSection(key, def)).join('')+'</div></div>';
+            const relatedHtml = group.id === 'services' && isAdmin && !selectedUserId && !selectedClientId
+                ? '<div class="settings-related-card"><div><strong>Connected services</strong><p>Connect Trakt, Simkl, MDBList, Plex, or Jellyfin and assign them to profiles.</p></div><a class="btn btn-secondary btn-sm" href="'+basePath+'/integrations">Manage Services</a></div>'
+                : '';
+            html += '<div class="settings-group"><h2 class="group-title">'+group.label+'</h2><div class="group-sections">'+relatedHtml+groupSections.map(([key, def]) => renderSection(key, def)).join('')+'</div></div>';
         }
 
         // Show "no results" message if search found nothing
