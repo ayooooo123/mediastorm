@@ -557,6 +557,7 @@ func (h *MetadataHandler) SeriesDetails(w http.ResponseWriter, r *http.Request) 
 		Year:       trimAndParseInt(query.Get("year")),
 		TVDBID:     trimAndParseInt64(query.Get("tvdbId")),
 		TMDBID:     trimAndParseInt64(query.Get("tmdbId")),
+		IMDBID:     strings.TrimSpace(query.Get("imdbId")),
 		SeasonType: strings.ToLower(strings.TrimSpace(query.Get("seasonType"))),
 	}
 

@@ -473,6 +473,48 @@ func TestResolveIMDBIDRetriesWithoutStrictTVDBYear(t *testing.T) {
 	}
 }
 
+func TestResolveIMDBIDFallsBackToTMDBExternalID(t *testing.T) {
+	cache := newFileCache(t.TempDir(), 24)
+	idCache := newFileCache(t.TempDir(), 168)
+	svc := &Service{
+		client:  &tvdbClient{language: "eng"},
+		cache:   cache,
+		idCache: idCache,
+	}
+	if err := cache.set(cacheKey("tvdb", "search", "series", "Captain Star", "1997", ""), []tvdbSearchResult{
+		{Name: "Captain Star", Year: "1997", TVDBID: "78704"},
+	}); err != nil {
+		t.Fatalf("seed TVDB search cache: %v", err)
+	}
+	if err := cache.set(cacheKey("metadata", "search", "v6", "series", "Captain Star", "eng", "adult-blocked"), []models.SearchResult{
+		{Title: models.Title{Name: "Captain Star", Year: 1997, MediaType: "series", TMDBID: 196}},
+	}); err != nil {
+		t.Fatalf("seed metadata search cache: %v", err)
+	}
+	if err := idCache.set(cacheKey("id", "tmdb-to-imdb", "series", "196"), "tt0143031"); err != nil {
+		t.Fatalf("seed TMDB external ID cache: %v", err)
+	}
+
+	if got := svc.ResolveIMDBID(t.Context(), "Captain Star", "series", 1997); got != "tt0143031" {
+		t.Fatalf("resolved imdb id = %q, want tt0143031", got)
+	}
+}
+
+func TestBackfillSeriesIMDBIDUsesKnownTMDBID(t *testing.T) {
+	idCache := newFileCache(t.TempDir(), 168)
+	svc := &Service{idCache: idCache}
+	if err := idCache.set(cacheKey("id", "tmdb-to-imdb", "series", "196"), "tt0143031"); err != nil {
+		t.Fatalf("seed TMDB external ID cache: %v", err)
+	}
+	title := models.Title{TMDBID: 196}
+	if !svc.backfillSeriesIMDBID(t.Context(), &title, models.SeriesDetailsQuery{}) {
+		t.Fatal("expected title to be updated")
+	}
+	if title.IMDBID != "tt0143031" {
+		t.Fatalf("title imdb id = %q, want tt0143031", title.IMDBID)
+	}
+}
+
 func TestSelectIMDBResolutionTVDBSearchResultUsesTranslation(t *testing.T) {
 	result := tvdbSearchResultWithIMDB("இதயம் முரளி", "2025", "tt35723557")
 	result.Translations = map[string]string{

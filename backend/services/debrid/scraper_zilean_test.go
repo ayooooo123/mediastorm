@@ -1,9 +1,45 @@
 package debrid
 
 import (
+	"context"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
+
+type zileanRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn zileanRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
+}
+
+func TestZileanSearchSendsIMDBID(t *testing.T) {
+	var gotIMDBID string
+	client := &http.Client{Transport: zileanRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		gotIMDBID = r.URL.Query().Get("ImdbId")
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`[]`)),
+			Request:    r,
+		}, nil
+	})}
+
+	scraper := NewZileanScraper("https://zilean.test", "Zilean", client)
+	_, err := scraper.Search(context.Background(), SearchRequest{
+		Query:  "Captain Star S01E01",
+		IMDBID: "tt0143031",
+		Parsed: ParsedQuery{Title: "Captain Star", Season: 1, Episode: 1, MediaType: MediaTypeSeries},
+	})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if gotIMDBID != "tt0143031" {
+		t.Fatalf("ImdbId query = %q, want tt0143031", gotIMDBID)
+	}
+}
 
 func TestZileanParseResponsePreservesIngestedAt(t *testing.T) {
 	scraper := NewZileanScraper("https://zilean.test", "Zilean", nil)

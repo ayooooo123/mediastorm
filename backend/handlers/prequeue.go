@@ -1480,6 +1480,10 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 		isAnime = seriesMeta.IsAnime
 		targetAirDate = seriesMeta.TargetAirDate
 		episodeAirYear = seriesMeta.EpisodeAirYear
+		if imdbID == "" && seriesMeta.IMDBID != "" {
+			imdbID = seriesMeta.IMDBID
+			log.Printf("[prequeue] Populated IMDb ID %s from series metadata", imdbID)
+		}
 		if year == 0 && seriesMeta.Year > 0 {
 			year = seriesMeta.Year
 			log.Printf("[prequeue] Populated year %d from series metadata", year)
@@ -2433,6 +2437,7 @@ type SeriesMetadataResult struct {
 	EpisodeAirYear  int    // Year the target episode aired, used to allow later-season year tags
 	IsAnime         bool   // True for anime content - requires waiting for Nyaa scraper
 	Year            int    // Series premiere year from metadata (used when frontend doesn't provide it)
+	IMDBID          string // Resolved IMDb ID used by ID-aware search providers
 }
 
 // createEpisodeResolverAndLookupAbsoluteEp fetches series metadata, creates an episode resolver,
@@ -2452,6 +2457,7 @@ func (h *PrequeueHandler) createEpisodeResolverAndLookupAbsoluteEp(ctx context.C
 		TitleID: titleID,
 		Name:    titleName,
 		Year:    year,
+		IMDBID:  imdbID,
 	}
 
 	// Fetch series details from metadata service
@@ -2470,6 +2476,7 @@ func (h *PrequeueHandler) createEpisodeResolverAndLookupAbsoluteEp(ctx context.C
 	if details.Title.Year > 0 {
 		result.Year = details.Title.Year
 	}
+	result.IMDBID = strings.TrimSpace(details.Title.IMDBID)
 
 	// Check if this is a daily show from the metadata
 	result.IsDaily = details.Title.IsDaily
