@@ -272,8 +272,47 @@ type vodAccountUsageRow struct {
 	AtLimit     bool     `json:"atLimit"`
 }
 
+func isDashboardVODStream(stream map[string]interface{}) bool {
+	isLive, _ := stream["is_live"].(bool)
+	return !isLive
+}
+
+func countDashboardVODStreams(streams []map[string]interface{}) int {
+	count := 0
+	for _, stream := range streams {
+		if isDashboardVODStream(stream) {
+			count++
+		}
+	}
+	return count
+}
+
+func dashboardVODStreamsByAccount(streams []map[string]interface{}, users []models.User) map[string]int {
+	profileAccounts := make(map[string]string, len(users))
+	for _, user := range users {
+		profileAccounts[user.ID] = user.AccountID
+	}
+
+	counts := make(map[string]int)
+	for _, stream := range streams {
+		if !isDashboardVODStream(stream) {
+			continue
+		}
+
+		accountID, _ := stream["account_id"].(string)
+		if accountID == "" {
+			profileID, _ := stream["profile_id"].(string)
+			accountID = profileAccounts[profileID]
+		}
+		if accountID != "" {
+			counts[accountID]++
+		}
+	}
+	return counts
+}
+
 // buildVODStreamUsage builds per-account VOD stream usage data for the dashboard.
-func (h *AdminUIHandler) buildVODStreamUsage(isAdmin bool, scopedUsers []models.User, allowedProfileIDs map[string]bool) []vodAccountUsageRow {
+func (h *AdminUIHandler) buildVODStreamUsage(isAdmin bool, scopedUsers []models.User, allowedProfileIDs map[string]bool, streams []map[string]interface{}) []vodAccountUsageRow {
 	if h.accountsService == nil {
 		return nil
 	}
@@ -294,7 +333,7 @@ func (h *AdminUIHandler) buildVODStreamUsage(isAdmin bool, scopedUsers []models.
 		accountNames[acc.ID] = acc.Username
 	}
 
-	tracker := GetStreamTracker()
+	currentByAccount := dashboardVODStreamsByAccount(streams, scopedUsers)
 	var rows []vodAccountUsageRow
 
 	for _, acc := range accounts {
@@ -305,7 +344,11 @@ func (h *AdminUIHandler) buildVODStreamUsage(isAdmin bool, scopedUsers []models.
 			continue
 		}
 
-		usage := tracker.GetAccountStreamUsage(acc.ID, acc.MaxStreams)
+		current := currentByAccount[acc.ID]
+		available := acc.MaxStreams - current
+		if available < 0 {
+			available = 0
+		}
 		profiles := accountProfiles[acc.ID]
 		sort.Strings(profiles)
 
@@ -313,10 +356,10 @@ func (h *AdminUIHandler) buildVODStreamUsage(isAdmin bool, scopedUsers []models.
 			AccountID:   acc.ID,
 			AccountName: acc.Username,
 			Profiles:    profiles,
-			Current:     usage.CurrentStreams,
-			Max:         usage.MaxStreams,
-			Available:   usage.AvailableStreams,
-			AtLimit:     usage.AtLimit,
+			Current:     current,
+			Max:         acc.MaxStreams,
+			Available:   available,
+			AtLimit:     current >= acc.MaxStreams,
 		})
 	}
 
