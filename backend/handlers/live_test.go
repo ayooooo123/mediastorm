@@ -327,6 +327,75 @@ http://stream.example/sports`))
 	}
 }
 
+func TestGetChannelsPaginatesCategorySelectionAndFavorites(t *testing.T) {
+	playlistServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`#EXTM3U
+#EXTINF:-1 tvg-id="news-1" group-title="News",News One
+http://stream.example/news-1
+#EXTINF:-1 tvg-id="sports-1" group-title="Sports",Sports One
+http://stream.example/sports-1
+#EXTINF:-1 tvg-id="sports-2" group-title="Sports",Sports Two
+http://stream.example/sports-2
+#EXTINF:-1 tvg-id="sports-3" group-title="Sports",Sports Three
+http://stream.example/sports-3
+#EXTINF:-1 tvg-id="movie-1" group-title="Movies",Movie One
+http://stream.example/movie-1`))
+	}))
+	defer playlistServer.Close()
+
+	mgr := config.NewManager(filepath.Join(t.TempDir(), "settings.json"))
+	if err := mgr.Save(config.Settings{Live: config.LiveSettings{PlaylistURL: playlistServer.URL}}); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	h := NewLiveHandler(playlistServer.Client(), false, "", 24, 0, 0, false, mgr, nil)
+	req := httptest.NewRequest(http.MethodGet, "/live/channels?category=Sports&favoriteId=news-1&offset=1&limit=2", nil)
+	rec := httptest.NewRecorder()
+	h.GetChannels(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+
+	var resp LiveChannelsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.TotalBeforeFilter != 5 || resp.Total != 4 {
+		t.Fatalf("totals = before:%d selected:%d, want 5/4", resp.TotalBeforeFilter, resp.Total)
+	}
+	if resp.Offset != 1 || resp.Limit != 2 || !resp.HasMore {
+		t.Fatalf("pagination = offset:%d limit:%d hasMore:%v", resp.Offset, resp.Limit, resp.HasMore)
+	}
+	if len(resp.Channels) != 2 || resp.Channels[0].Name != "Sports One" || resp.Channels[1].Name != "Sports Two" {
+		t.Fatalf("channels = %+v, want second and third selected channels", resp.Channels)
+	}
+	if len(resp.AvailableCategories) != 3 {
+		t.Fatalf("available categories = %+v, want all three unselected categories", resp.AvailableCategories)
+	}
+
+	staleReq := httptest.NewRequest(http.MethodGet, "/live/channels?category=Missing&offset=0&limit=2", nil)
+	staleRec := httptest.NewRecorder()
+	h.GetChannels(staleRec, staleReq)
+	if err := json.Unmarshal(staleRec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode stale-category response: %v", err)
+	}
+	if resp.Total != 5 || len(resp.Channels) != 2 {
+		t.Fatalf("stale category should fall back to all channels, got total=%d page=%d", resp.Total, len(resp.Channels))
+	}
+}
+
+func TestGetChannelsRejectsInvalidPagination(t *testing.T) {
+	h := &LiveHandler{}
+	req := httptest.NewRequest(http.MethodGet, "/live/channels?limit=501", nil)
+	rec := httptest.NewRecorder()
+	h.GetChannels(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
 func TestGetChannelsSourceEmptyCategoryFilterOverridesGlobal(t *testing.T) {
 	playlistServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`#EXTM3U
