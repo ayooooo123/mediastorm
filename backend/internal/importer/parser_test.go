@@ -39,6 +39,64 @@ func TestIsRecoveryFile(t *testing.T) {
 	}
 }
 
+func TestRequiresEncryptedRarVolume(t *testing.T) {
+	encrypted := map[string]string{"password": "archive-secret"}
+
+	tests := []struct {
+		name     string
+		meta     map[string]string
+		filename string
+		subject  string
+		want     bool
+	}{
+		{
+			name:     "multipart rar filename",
+			meta:     encrypted,
+			filename: "movie.part122.rar",
+			want:     true,
+		},
+		{
+			name:    "rar found in subject before yenc filename",
+			meta:    encrypted,
+			subject: `[122/514] - "movie.part122.rar" yEnc (1/100)`,
+			want:    true,
+		},
+		{
+			name:     "old style rar volume",
+			meta:     encrypted,
+			filename: "movie.r15",
+			want:     true,
+		},
+		{
+			name:     "unencrypted rar keeps tolerant behavior",
+			meta:     nil,
+			filename: "movie.part122.rar",
+			want:     false,
+		},
+		{
+			name:     "recovery volume remains optional",
+			meta:     encrypted,
+			filename: "movie.part122.rev",
+			subject:  `"movie.part122.rev" yEnc`,
+			want:     false,
+		},
+		{
+			name:     "ordinary encrypted payload is unchanged",
+			meta:     encrypted,
+			filename: "movie.mkv",
+			want:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := requiresEncryptedRarVolume(tt.meta, tt.filename, tt.subject); got != tt.want {
+				t.Fatalf("requiresEncryptedRarVolume() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestNormalizeNzbSubjects(t *testing.T) {
 	// Malformed NZB: filename lives in poster, subject absent (the KRaLiMaRKo case).
 	malformed := []byte(`<nzb><file poster="&quot;movie.part001.rar&quot; - 74 GB - yEnc (1/2)" date="1"><groups><group>a.b.c</group></groups><segments><segment bytes="100" number="1">seg1@x</segment></segments></file>` +

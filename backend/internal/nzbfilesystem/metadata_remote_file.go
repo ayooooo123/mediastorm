@@ -14,6 +14,7 @@ import (
 	"novastream/config"
 	"novastream/internal/database"
 	"novastream/internal/encryption"
+	aesencryption "novastream/internal/encryption/aes"
 	"novastream/internal/encryption/rclone"
 	"novastream/internal/nzb/metadata"
 	metapb "novastream/internal/nzb/metadata/proto"
@@ -31,6 +32,7 @@ type MetadataRemoteFile struct {
 	poolManager      pool.Manager        // Pool manager for dynamic pool access
 	configGetter     config.ConfigGetter // Dynamic config access
 	rcloneCipher     encryption.Cipher   // For rclone encryption/decryption
+	aesCipher        encryption.Cipher   // For password-protected RAR payloads
 }
 
 // Configuration is now accessed dynamically through config.ConfigGetter
@@ -58,6 +60,7 @@ func NewMetadataRemoteFile(
 		poolManager:      poolManager,
 		configGetter:     configGetter,
 		rcloneCipher:     rcloneCipher,
+		aesCipher:        aesencryption.New(),
 	}
 }
 
@@ -147,6 +150,7 @@ func (mrf *MetadataRemoteFile) OpenFile(ctx context.Context, name string, r util
 		maxWorkers:       mrf.getMaxDownloadWorkers(),
 		maxCacheSizeMB:   mrf.getMaxCacheSizeMB(),
 		rcloneCipher:     mrf.rcloneCipher,
+		aesCipher:        mrf.aesCipher,
 		globalPassword:   mrf.getGlobalPassword(),
 		globalSalt:       mrf.getGlobalSalt(),
 	}
@@ -477,6 +481,7 @@ type MetadataVirtualFile struct {
 	maxWorkers       int
 	maxCacheSizeMB   int // Maximum cache size in MB for ahead downloads
 	rcloneCipher     encryption.Cipher
+	aesCipher        encryption.Cipher
 	globalPassword   string
 	globalSalt       string
 
@@ -871,6 +876,11 @@ func (mvf *MetadataVirtualFile) wrapWithEncryption(start, end int64) (io.ReadClo
 			return nil, ErrNoCipherConfig
 		}
 		cipher = mvf.rcloneCipher
+	case metapb.Encryption_HEADERS:
+		if mvf.aesCipher == nil {
+			return nil, ErrNoCipherConfig
+		}
+		cipher = mvf.aesCipher
 	default:
 		return nil, fmt.Errorf("unsupported encryption type: %v", mvf.fileMeta.Encryption)
 	}

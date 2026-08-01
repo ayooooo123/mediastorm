@@ -1,16 +1,37 @@
 package importer
 
 import (
+	"encoding/base64"
 	"testing"
 
-	metapb "novastream/internal/nzb/metadata/proto"
 	"github.com/javi11/rarlist"
 	"github.com/stretchr/testify/require"
+	metapb "novastream/internal/nzb/metadata/proto"
 )
 
 // helper to build segment of size with implicit 0-based offsets
 func seg(id string, size int64) *metapb.SegmentData {
 	return &metapb.SegmentData{Id: id, StartOffset: 0, EndOffset: size - 1, SegmentSize: size}
+}
+
+func TestArchivePasswordUsesNZBMetadata(t *testing.T) {
+	files := []ParsedFile{{Filename: "movie.part1.rar"}, {Filename: "movie.part2.rar", Password: " archive-secret "}}
+	require.Equal(t, "archive-secret", archivePassword(files))
+}
+
+func TestEncryptedRarMetadataStoresDerivedCredentials(t *testing.T) {
+	rp := &rarProcessor{}
+	content := rarContent{
+		Size:     1234,
+		Segments: []*metapb.SegmentData{seg("article", 16)},
+		AesKey:   []byte("0123456789abcdef0123456789abcdef"),
+		AesIV:    []byte("0123456789abcdef"),
+	}
+	meta := rp.CreateFileMetadataFromRarContent(content, "movie.nzb")
+	require.Equal(t, metapb.Encryption_HEADERS, meta.Encryption)
+	require.Equal(t, base64.StdEncoding.EncodeToString(content.AesKey), meta.Password)
+	require.Equal(t, base64.StdEncoding.EncodeToString(content.AesIV), meta.Salt)
+	require.NotEqual(t, "archive-secret", meta.Password)
 }
 
 func TestSlicePartSegmentsBasic(t *testing.T) {
