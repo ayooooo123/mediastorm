@@ -1448,56 +1448,22 @@
 <div class="settings-group">
     <div class="group-title">Devices</div>
 
-    <!-- Client Management Section -->
-    <div class="section" id="clientManagementSection">
-        <div class="section-header" onclick="toggleSection(this)">
+    <div class="section open">
+        <div class="section-header">
             <div class="section-title">
                 <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
                     <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
                     <line x1="8" y1="21" x2="16" y2="21"/>
                     <line x1="12" y1="17" x2="12" y2="21"/>
                 </svg>
-                Client Management
+                Device Management Has Moved
             </div>
-            <span id="clientCountBadge" class="status-badge"></span>
-            <svg class="section-toggle" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-                <polyline points="6 9 12 15 18 9"/>
-            </svg>
         </div>
         <div class="section-content">
             <p class="text-muted" style="margin-bottom: 1rem;">
-                Manage registered client devices. Ping to identify devices, reassign them to different profiles, or remove them.
+                Devices now appear with their person and household so the access hierarchy is clear.
             </p>
-
-            <!-- Filter by profile -->
-            <div class="form-group" style="margin-bottom: 1rem;">
-                <label class="form-label">Filter by Profile</label>
-                <select id="clientProfileFilter" class="form-select" style="max-width: 300px;" onchange="filterClientsByProfile()">
-                    <option value="">All Profiles</option>
-                    {{range .Users}}
-                    <option value="{{.ID}}">{{.Name}}</option>
-                    {{end}}
-                </select>
-            </div>
-
-            <!-- Clients List -->
-            <div id="clientsList" style="margin-bottom: 1rem;">
-                <div class="loading-box">
-                    <div class="spinner"></div>
-                    <span>Loading clients...</span>
-                </div>
-            </div>
-
-            <!-- Empty state -->
-            <div id="clientsEmptyState" style="display: none; text-align: center; padding: 2rem; color: var(--text-muted);">
-                <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity: 0.5; margin-bottom: 1rem;">
-                    <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
-                    <line x1="8" y1="21" x2="16" y2="21"/>
-                    <line x1="12" y1="17" x2="12" y2="21"/>
-                </svg>
-                <p>No client devices registered yet.</p>
-                <p style="font-size: 0.875rem;">Devices will appear here when they connect to the server.</p>
-            </div>
+            <a class="btn btn-primary" href="{{.BasePath}}/accounts">Open Households, People &amp; Devices</a>
         </div>
     </div>
 </div>
@@ -2435,11 +2401,6 @@
     // ========== Jellyfin State ==========
     let jellyfinAccounts = [];
 
-    // ========== Client Management State ==========
-    let allClients = [];
-    let filteredClients = [];
-    let backendVersionInfo = null;
-
     // ========== Scheduled Tasks State ==========
     let scheduledTasks = [];
     const isTasksPage = {{if hasSuffix .CurrentPath "/tasks"}}true{{else}}false{{end}};
@@ -2477,7 +2438,7 @@
         } else if (isIntegrationsPage) {
             await Promise.all([loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadJellyfinAccounts()]);
         } else {
-            await Promise.all([loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadJellyfinAccounts(), loadLocalMediaLibraries(), loadBackendVersionInfo(), loadUpdateStatus(false), loadClients(), loadWorkers(), loadShareLogsClients()]);
+            await Promise.all([loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadJellyfinAccounts(), loadLocalMediaLibraries(), loadUpdateStatus(false), loadWorkers(), loadShareLogsClients()]);
         }
     });
 
