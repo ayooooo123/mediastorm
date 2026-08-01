@@ -2,6 +2,7 @@ package importer
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"novastream/internal/pool"
 
 	"github.com/javi11/nntppool"
+	"github.com/javi11/rardecode/v2"
 	"github.com/javi11/rarlist"
 )
 
@@ -40,6 +42,8 @@ type rarContent struct {
 	Filename     string                `json:"filename"`
 	Size         int64                 `json:"size"`
 	Segments     []*metapb.SegmentData `json:"segments"`               // Segment data for this file
+	AesKey       []byte                `json:"-"`                      // Derived archive key; never log or expose
+	AesIV        []byte                `json:"-"`                      // Derived archive IV; never log or expose
 	IsDirectory  bool                  `json:"is_directory,omitempty"` // Indicates if this is a directory
 }
 
@@ -85,7 +89,7 @@ func (rh *rarProcessor) CreateFileMetadataFromRarContent(
 ) *metapb.FileMetadata {
 	now := time.Now().Unix()
 
-	return &metapb.FileMetadata{
+	meta := &metapb.FileMetadata{
 		FileSize:      rarContent.Size,
 		SourceNzbPath: sourceNzbPath,
 		Status:        metapb.FileStatus_FILE_STATUS_HEALTHY,
@@ -93,6 +97,14 @@ func (rh *rarProcessor) CreateFileMetadataFromRarContent(
 		ModifiedAt:    now,
 		SegmentData:   rarContent.Segments,
 	}
+	if len(rarContent.AesKey) > 0 {
+		// Encryption_HEADERS is the legacy metadata slot reserved for archive
+		// encryption. Store only the derived key and IV, not the NZB password.
+		meta.Encryption = metapb.Encryption_HEADERS
+		meta.Password = base64.StdEncoding.EncodeToString(rarContent.AesKey)
+		meta.Salt = base64.StdEncoding.EncodeToString(rarContent.AesIV)
+	}
+	return meta
 }
 
 // AnalyzeRarContentFromNzb analyzes a RAR archive directly from NZB data without downloading
@@ -195,6 +207,10 @@ func (rh *rarProcessor) analyzeRarWithStreamingProgressive(ctx context.Context, 
 
 	// Create Usenet filesystem for RAR access
 	ufs := NewUsenetFileSystem(ctx, cp, sortFiles, rh.maxWorkers, rh.maxCacheSizeMB)
+	password := archivePassword(sortFiles)
+	if password != "" {
+		return rh.analyzePasswordProtectedRar(ctx, ufs, sortFiles, mainRarFile, password, callback)
+	}
 
 	analysisStart := time.Now()
 
@@ -275,6 +291,102 @@ func (rh *rarProcessor) analyzeRarWithStreamingProgressive(ctx context.Context, 
 	}
 
 	return rarContents, nil
+}
+
+func archivePassword(files []ParsedFile) string {
+	for _, file := range files {
+		if password := strings.TrimSpace(file.Password); password != "" {
+			return password
+		}
+	}
+	return ""
+}
+
+// analyzePasswordProtectedRar mirrors AltMount's encrypted-RAR path. rarlist
+// intentionally does not support encrypted headers, while rardecode can use the
+// NZB password to derive the per-file AES key and IV needed for random access.
+func (rh *rarProcessor) analyzePasswordProtectedRar(
+	ctx context.Context,
+	ufs *UsenetFileSystem,
+	rarFiles []ParsedFile,
+	mainRarFile, password string,
+	callback FileDiscoveryCallback,
+) ([]rarContent, error) {
+	rh.log.Info("Analyzing password-protected RAR archive", "main_file", mainRarFile, "total_parts", len(rarFiles))
+	opts := []rardecode.Option{
+		rardecode.FileSystem(ufs),
+		rardecode.SkipCheck,
+		rardecode.ParallelRead(true),
+		rardecode.MaxConcurrentVolumes(max(rh.maxWorkers, 1)),
+		rardecode.Password(password),
+	}
+	files, err := rardecode.ListArchiveInfo(mainRarFile, opts...)
+	if err != nil {
+		return nil, NewNonRetryableError("failed to analyze password-protected RAR archive", err)
+	}
+	if len(files) == 0 {
+		return nil, NewNonRetryableError("no valid files found in password-protected RAR archive", nil)
+	}
+	for _, file := range files {
+		if file.Compressed {
+			return nil, NewNonRetryableError(fmt.Sprintf("compressed files are not supported: %s", file.Name), nil)
+		}
+	}
+
+	contents, err := rh.convertEncryptedFilesToRarContent(files, rarFiles)
+	if err != nil {
+		return nil, NewNonRetryableError("convert password-protected RAR contents", err)
+	}
+	for _, content := range contents {
+		if callback != nil && !callback(content) {
+			break
+		}
+	}
+	return contents, nil
+}
+
+func (rh *rarProcessor) convertEncryptedFilesToRarContent(files []rardecode.ArchiveFileInfo, rarFiles []ParsedFile) ([]rarContent, error) {
+	fileIndex := make(map[string]*ParsedFile, len(rarFiles)*2)
+	for i := range rarFiles {
+		file := &rarFiles[i]
+		fileIndex[file.Filename] = file
+		fileIndex[filepath.Base(file.Filename)] = file
+	}
+
+	contents := make([]rarContent, 0, len(files))
+	for _, file := range files {
+		content := rarContent{
+			InternalPath: strings.ReplaceAll(file.Name, "\\", "/"),
+			Filename:     filepath.Base(strings.ReplaceAll(file.Name, "\\", "/")),
+			Size:         file.TotalUnpackedSize,
+		}
+		if len(file.Parts) > 0 {
+			content.AesKey = append([]byte(nil), file.Parts[0].AesKey...)
+			content.AesIV = append([]byte(nil), file.Parts[0].AesIV...)
+		}
+		for _, part := range file.Parts {
+			if part.PackedSize <= 0 {
+				continue
+			}
+			parsed := fileIndex[part.Path]
+			if parsed == nil {
+				parsed = fileIndex[filepath.Base(part.Path)]
+			}
+			if parsed == nil {
+				return nil, fmt.Errorf("RAR part %q not found in NZB", part.Path)
+			}
+			sliced, covered, err := slicePartSegments(parsed.Segments, part.DataOffset, part.PackedSize)
+			if err != nil {
+				return nil, err
+			}
+			if covered != part.PackedSize {
+				return nil, fmt.Errorf("RAR part %q covers %d of %d bytes", part.Path, covered, part.PackedSize)
+			}
+			content.Segments = append(content.Segments, sliced...)
+		}
+		contents = append(contents, content)
+	}
+	return contents, nil
 }
 
 // shouldUseMemoryPreload determines if memory preloading should be used based on archive size
