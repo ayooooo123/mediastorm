@@ -159,12 +159,9 @@ def ass_to_vtt(ass_content: str) -> str:
                 vtt_start = convert_timestamp(start)
                 vtt_end = convert_timestamp(end)
 
-                # Preserve ASS styling tags - the frontend handles them for:
-                # - Positioning: {\an1} to {\an9} (numpad alignment)
-                # - Styling: {\i1}, {\b1}, {\u1} (italic, bold, underline)
-                # - Colors: {\c&HBBGGRR&} (primary color)
-                # The frontend will parse and render these appropriately.
-                # Only convert \N to actual newlines for VTT format.
+                # ASS override blocks are not valid WebVTT. Native VTT renderers
+                # display commands such as {\an4\pos(273,402)} literally.
+                text = re.sub(r'\{\\[^}]*\}', '', text)
                 text = text.replace('\\N', '\n').replace('\\n', '\n')
 
                 if text.strip():
@@ -209,8 +206,10 @@ def srt_to_vtt(srt_content: str) -> str:
         # Convert timestamp format (comma to dot for milliseconds)
         vtt_timestamp = timestamp_line.replace(',', '.')
 
-        # Get text lines
-        text_lines = lines[text_start:]
+        # Get text lines. Some SRT releases contain ASS/SSA override blocks
+        # (for example ``{\an4\pos(273,402)}``). Those commands are not valid
+        # WebVTT and native VTT renderers display them as literal cue text.
+        text_lines = [re.sub(r'\{\\[^}]*\}', '', line) for line in lines[text_start:]]
         if not text_lines:
             continue
 
