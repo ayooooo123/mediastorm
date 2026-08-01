@@ -151,34 +151,71 @@
     }
 }
 
+.settings-workspace {
+    display: grid;
+    grid-template-columns: minmax(190px, 220px) minmax(0, 1fr);
+    gap: 1rem;
+    align-items: start;
+}
+.settings-sidebar {
+    position: sticky;
+    top: 76px;
+    align-self: start;
+    min-width: 0;
+    max-height: calc(100vh - 92px);
+    overflow-y: auto;
+}
+.settings-main {
+    min-width: 0;
+}
 .settings-workspace-toolbar {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.75rem;
-    flex-wrap: wrap;
-    margin: -0.25rem 0 1rem;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.35rem;
+    margin: 0;
     padding: 0.75rem;
     border: 1px solid var(--border-color);
     border-radius: 10px;
     background: var(--bg-secondary);
 }
-.settings-category-nav { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+.settings-sidebar-label {
+    padding: 0.15rem 0.55rem 0.35rem;
+    color: var(--text-muted);
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+.settings-category-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+}
 .settings-category-btn,
 .settings-level-btn {
     border: 1px solid transparent;
     border-radius: 7px;
     background: transparent;
     color: var(--text-secondary);
-    padding: 0.48rem 0.7rem;
+    padding: 0.55rem 0.65rem;
     font-size: 0.8rem;
     cursor: pointer;
+}
+.settings-category-btn {
+    width: 100%;
+    text-align: left;
 }
 .settings-category-btn:hover,
 .settings-level-btn:hover { color: var(--text-primary); background: var(--bg-tertiary); }
 .settings-category-btn.active,
 .settings-level-btn.active { color: var(--text-primary); background: var(--accent-bg); border-color: var(--accent); }
-.settings-level-switch { display: flex; gap: 0.25rem; padding: 0.2rem; border-radius: 8px; background: var(--bg-tertiary); }
+.settings-level-section {
+    margin-top: 0.55rem;
+    padding-top: 0.7rem;
+    border-top: 1px solid var(--border-color);
+}
+.settings-level-switch { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.25rem; padding: 0.2rem; border-radius: 8px; background: var(--bg-tertiary); }
 .settings-level-btn:disabled {
     cursor: not-allowed;
     opacity: 0.42;
@@ -186,7 +223,7 @@
     background: transparent;
 }
 .settings-level-btn:disabled:hover { color: var(--text-muted); background: transparent; }
-.settings-level-help { width: 100%; color: var(--text-muted); font-size: 0.76rem; }
+.settings-level-help { margin-top: 0.45rem; color: var(--text-muted); font-size: 0.72rem; line-height: 1.4; }
 .page-header-controls .btn {
     box-sizing: border-box;
     height: 40px;
@@ -233,9 +270,15 @@
 .settings-related-card p { margin: 0.2rem 0 0; color: var(--text-muted); font-size: 0.78rem; }
 @media (max-width: 900px) {
     .page-header-controls { flex-wrap: wrap; }
-    .settings-workspace-toolbar { align-items: stretch; }
-    .settings-category-nav { width: 100%; overflow-x: auto; flex-wrap: nowrap; padding-bottom: 0.2rem; }
-    .settings-category-btn { flex: 0 0 auto; }
+    .settings-workspace { grid-template-columns: 1fr; }
+    .settings-sidebar { position: static; max-height: none; overflow: visible; }
+    .settings-workspace-toolbar { gap: 0.55rem; }
+    .settings-category-nav { flex-direction: row; width: 100%; overflow-x: auto; padding-bottom: 0.2rem; }
+    .settings-category-btn { flex: 0 0 auto; width: auto; white-space: nowrap; }
+    .settings-level-section { display: flex; align-items: center; gap: 0.6rem; margin-top: 0; padding-top: 0.6rem; }
+    .settings-level-section .settings-sidebar-label { padding: 0; }
+    .settings-level-switch { display: flex; }
+    .settings-level-help { margin: 0; }
 }
 </style>
 {{end}}
@@ -306,19 +349,28 @@
     </div>
 </div>
 
-<div class="settings-workspace-toolbar">
-    <div id="settingsCategoryNav" class="settings-category-nav" aria-label="Settings categories"></div>
-    <div class="settings-level-switch" aria-label="Settings detail level">
-        <button id="settingsBasicBtn" class="settings-level-btn" type="button" disabled aria-disabled="true" title="Basic view is being reviewed">Basic</button>
-        <button id="settingsAdvancedBtn" class="settings-level-btn" type="button" onclick="setSettingsLevel('advanced')">Advanced</button>
-    </div>
-    <div id="settingsLevelHelp" class="settings-level-help"></div>
-</div>
-
-<div id="settingsContainer">
-    <div style="display: flex; align-items: center; justify-content: center; padding: 2rem;">
-        <div class="spinner"></div>
-    </div>
+<div class="settings-workspace">
+    <aside class="settings-sidebar" aria-label="Settings navigation">
+        <div class="settings-workspace-toolbar">
+            <div class="settings-sidebar-label">Settings</div>
+            <div id="settingsCategoryNav" class="settings-category-nav" aria-label="Settings categories"></div>
+            <div class="settings-level-section">
+                <div class="settings-sidebar-label">View</div>
+                <div class="settings-level-switch" aria-label="Settings detail level">
+                    <button id="settingsBasicBtn" class="settings-level-btn" type="button" disabled aria-disabled="true" title="Basic view is being reviewed">Basic</button>
+                    <button id="settingsAdvancedBtn" class="settings-level-btn" type="button" onclick="setSettingsLevel('advanced')">Advanced</button>
+                </div>
+                <div id="settingsLevelHelp" class="settings-level-help"></div>
+            </div>
+        </div>
+    </aside>
+    <main class="settings-main">
+        <div id="settingsContainer">
+            <div style="display: flex; align-items: center; justify-content: center; padding: 2rem;">
+                <div class="spinner"></div>
+            </div>
+        </div>
+    </main>
 </div>
 
 <!-- Test Result Modal -->
@@ -597,7 +649,10 @@
             activeSettingsGroup = availableGroups[0]?.id || groups[0]?.id || '';
         }
         if (nav) {
-            nav.innerHTML = availableGroups.map(group => '<button type="button" class="settings-category-btn '+(group.id === activeSettingsGroup ? 'active' : '')+'" onclick="setSettingsGroup(\''+group.id+'\')">'+group.label+'</button>').join('');
+            nav.innerHTML = availableGroups.map(group => {
+                const isActive = group.id === activeSettingsGroup;
+                return '<button type="button" class="settings-category-btn '+(isActive ? 'active' : '')+'"'+(isActive ? ' aria-current="page"' : '')+' onclick="setSettingsGroup(\''+group.id+'\')">'+group.label+'</button>';
+            }).join('');
         }
         document.getElementById('settingsBasicBtn')?.classList.toggle('active', settingsLevel === 'basic');
         document.getElementById('settingsAdvancedBtn')?.classList.toggle('active', settingsLevel === 'advanced');
