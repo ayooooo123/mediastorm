@@ -242,11 +242,13 @@ func (s *Service) Reassign(profileID, newAccountID string) (models.User, error) 
 		return models.User{}, ErrUserNotFound
 	}
 
+	previous := user
 	user.AccountID = newAccountID
 	user.UpdatedAt = time.Now().UTC()
 	s.users[profileID] = user
 
 	if err := s.saveLocked(); err != nil {
+		s.users[profileID] = previous
 		return models.User{}, err
 	}
 

@@ -64,6 +64,37 @@ func TestServiceCreateRenameAndDelete(t *testing.T) {
 	}
 }
 
+func TestReassignRollsBackMemoryWhenPersistenceFails(t *testing.T) {
+	storageDir := t.TempDir()
+	svc, err := users.NewService(storageDir)
+	if err != nil {
+		t.Fatalf("failed to create service: %v", err)
+	}
+
+	profile, err := svc.CreateForAccount("source-account", "Test Profile")
+	if err != nil {
+		t.Fatalf("failed to create profile: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(storageDir, "users.json.tmp"), 0o755); err != nil {
+		t.Fatalf("failed to block temp-file creation: %v", err)
+	}
+
+	if _, err := svc.Reassign(profile.ID, "target-account"); err == nil {
+		t.Fatal("expected reassignment persistence to fail")
+	}
+
+	got, ok := svc.Get(profile.ID)
+	if !ok {
+		t.Fatal("expected profile to remain in memory")
+	}
+	if got.AccountID != "source-account" {
+		t.Fatalf("account ID = %q after failed reassignment, want source-account", got.AccountID)
+	}
+	if !got.UpdatedAt.Equal(profile.UpdatedAt) {
+		t.Fatalf("updated timestamp changed after failed reassignment: got %v, want %v", got.UpdatedAt, profile.UpdatedAt)
+	}
+}
+
 func TestSetAllowShareLinks(t *testing.T) {
 	svc, err := users.NewService(t.TempDir())
 	if err != nil {
