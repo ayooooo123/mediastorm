@@ -430,13 +430,49 @@ func (s *Service) RestoreBackup(filename string) error {
 		return errors.New("backup not found")
 	}
 
+	return s.restoreBackupFile(backupPath, filename)
+}
+
+// RestoreBackupUpload restores a backup supplied by the caller without adding it
+// to the managed backup list. The upload is staged on disk because archive/zip
+// requires random access to the archive.
+func (s *Service) RestoreBackupUpload(reader io.Reader, sourceName string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if reader == nil {
+		return errors.New("backup file is required")
+	}
+	if !strings.EqualFold(filepath.Ext(sourceName), ".zip") {
+		return errors.New("backup file must be a ZIP archive")
+	}
+
+	tmpFile, err := os.CreateTemp(s.backupDir, ".restore-upload-*.zip")
+	if err != nil {
+		return fmt.Errorf("stage uploaded backup: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := io.Copy(tmpFile, reader); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("stage uploaded backup: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("stage uploaded backup: %w", err)
+	}
+
+	return s.restoreBackupFile(tmpPath, filepath.Base(sourceName))
+}
+
+func (s *Service) restoreBackupFile(backupPath, sourceName string) error {
 	// Read and validate manifest
 	manifest, err := s.readManifest(backupPath)
 	if err != nil {
 		return fmt.Errorf("read manifest: %w", err)
 	}
 
-	log.Printf("[backup] Restoring from backup: %s (created %s)", filename, manifest.CreatedAt.Format(time.RFC3339))
+	log.Printf("[backup] Restoring from backup: %s (created %s)", sourceName, manifest.CreatedAt.Format(time.RFC3339))
 
 	// Open zip for reading
 	reader, err := zip.OpenReader(backupPath)
@@ -487,9 +523,13 @@ func (s *Service) RestoreBackup(filename string) error {
 		}
 
 		// Only restore known files
+		if !isRestorableBackupFile(file.Name) {
+			log.Printf("[backup] Skipping unknown file in backup: %s", file.Name)
+			continue
+		}
 		expectedChecksum, ok := manifest.Files[file.Name]
 		if !ok {
-			log.Printf("[backup] Skipping unknown file in backup: %s", file.Name)
+			log.Printf("[backup] Skipping file missing from manifest: %s", file.Name)
 			continue
 		}
 
@@ -532,8 +572,20 @@ func (s *Service) RestoreBackup(filename string) error {
 		log.Printf("[backup] Restored %s", file.Name)
 	}
 
-	log.Printf("[backup] Restore completed: %d files restored from %s", restoredCount, filename)
+	log.Printf("[backup] Restore completed: %d files restored from %s", restoredCount, sourceName)
 	return nil
+}
+
+func isRestorableBackupFile(name string) bool {
+	if name == "database.json" {
+		return true
+	}
+	for _, allowed := range backupFiles {
+		if name == allowed {
+			return true
+		}
+	}
+	return false
 }
 
 // extractFile extracts a file from the zip archive

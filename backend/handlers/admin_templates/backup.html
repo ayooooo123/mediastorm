@@ -49,6 +49,38 @@
         </div>
     </div>
 
+    <!-- Restore From File Section -->
+    <div class="section open" id="restoreFileSection">
+        <div class="section-header" onclick="toggleSection(this)">
+            <div class="section-title">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="17 8 12 3 7 8"/>
+                    <line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+                Restore from File
+            </div>
+            <svg class="section-toggle" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="6 9 12 15 18 9"/>
+            </svg>
+        </div>
+        <div class="section-content">
+            <p class="text-muted" style="margin-bottom: 1rem;">
+                Choose a previously downloaded backup ZIP from your device. The uploaded file is used for this restore only and will not be added to Available Backups.
+            </p>
+            <div class="restore-file-controls">
+                <input type="file" id="restoreFileInput" accept=".zip,application/zip" onchange="selectRestoreFile(this.files)">
+                <button class="btn btn-danger" id="restoreFileBtn" onclick="showFileRestoreModal()" disabled>
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 0.25rem;">
+                        <polyline points="1 4 1 10 7 10"/>
+                        <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+                    </svg>
+                    Restore Selected Backup
+                </button>
+            </div>
+        </div>
+    </div>
+
     <!-- Backup List Section -->
     <div class="section open" id="backupListSection">
         <div class="section-header" onclick="toggleSection(this)">
@@ -195,6 +227,17 @@
         align-items: center;
         gap: 0.25rem;
     }
+    .restore-file-controls {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+    }
+    .restore-file-controls input[type="file"] {
+        min-width: 240px;
+        max-width: 100%;
+        color: var(--text-secondary);
+    }
     @media (max-width: 480px) {
         .backup-card-header {
             flex-direction: column;
@@ -211,6 +254,8 @@
 <script>
     let backups = [];
     let restoreFilename = '';
+    let selectedRestoreFile = null;
+    let pendingRestoreFile = null;
 
     document.addEventListener('DOMContentLoaded', function() {
         loadBackups();
@@ -373,13 +418,28 @@
 
     function showRestoreModal(filename) {
         restoreFilename = filename;
+        pendingRestoreFile = null;
         document.getElementById('restoreFilename').textContent = filename;
+        document.getElementById('restoreModal').style.display = 'flex';
+    }
+
+    function selectRestoreFile(files) {
+        selectedRestoreFile = files && files.length ? files[0] : null;
+        document.getElementById('restoreFileBtn').disabled = !selectedRestoreFile;
+    }
+
+    function showFileRestoreModal() {
+        if (!selectedRestoreFile) return;
+        restoreFilename = selectedRestoreFile.name;
+        pendingRestoreFile = selectedRestoreFile;
+        document.getElementById('restoreFilename').textContent = selectedRestoreFile.name;
         document.getElementById('restoreModal').style.display = 'flex';
     }
 
     function hideRestoreModal() {
         document.getElementById('restoreModal').style.display = 'none';
         restoreFilename = '';
+        pendingRestoreFile = null;
     }
 
     async function confirmRestore() {
@@ -391,16 +451,32 @@
         btn.innerHTML = '<span class="spinner-small"></span> Restoring...';
 
         try {
-            const response = await fetch('{{.BasePath}}/api/backups/' + encodeURIComponent(restoreFilename) + '/restore', {
-                method: 'POST'
-            });
+            let response;
+            if (pendingRestoreFile) {
+                const formData = new FormData();
+                formData.append('backup', pendingRestoreFile);
+                response = await fetch('{{.BasePath}}/api/backups/restore', {
+                    method: 'POST',
+                    body: formData
+                });
+            } else {
+                response = await fetch('{{.BasePath}}/api/backups/' + encodeURIComponent(restoreFilename) + '/restore', {
+                    method: 'POST'
+                });
+            }
             const data = await response.json();
 
             if (!response.ok) {
                 throw new Error(data.error || 'Failed to restore backup');
             }
 
+            const restoredUpload = !!pendingRestoreFile;
             hideRestoreModal();
+            if (restoredUpload) {
+                selectedRestoreFile = null;
+                document.getElementById('restoreFileInput').value = '';
+                document.getElementById('restoreFileBtn').disabled = true;
+            }
             showToast('Backup restored successfully. Please restart the server to apply all changes.', 'success');
             await loadBackups();
         } catch (err) {
