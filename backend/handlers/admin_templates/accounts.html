@@ -2,21 +2,20 @@
 {{template "base" .}}
 {{end}}
 
-{{define "title"}}{{if .IsAdmin}}Users & Access{{else}}Profiles{{end}} - {{if .IsAdmin}}mediastorm Admin{{else}}mediastorm account{{end}}{{end}}
+{{define "title"}}{{if .IsAdmin}}Households, People & Devices{{else}}Profiles{{end}} - {{if .IsAdmin}}mediastorm Admin{{else}}mediastorm account{{end}}{{end}}
 
 {{define "content"}}
 <div class="page-header">
-    <h1>{{if .IsAdmin}}Users &amp; Access{{else}}Profiles{{end}}</h1>
-    <p>{{if .IsAdmin}}Manage profiles, sign-in accounts, invitations, and profile automation{{else}}Manage your profiles{{end}}</p>
+    <h1>{{if .IsAdmin}}Households, People &amp; Devices{{else}}Profiles{{end}}</h1>
+    <p>{{if .IsAdmin}}Manage who can sign in, the people in each household, and their registered devices{{else}}Manage your profiles{{end}}</p>
 </div>
 
 {{if .IsAdmin}}
 <!-- Tabs (admin only) -->
 <div class="tabs" style="margin-bottom: 1.5rem;">
-    <button class="tab active" onclick="switchTab('profiles')" id="tab-profiles">Profiles</button>
-    <button class="tab" onclick="switchTab('accounts')" id="tab-accounts">Accounts</button>
-    <button class="tab" onclick="switchTab('tasks')" id="tab-tasks">Profile Tasks</button>
-    <button class="tab" onclick="switchTab('invitations')" id="tab-invitations">User Invitations</button>
+    <button class="tab active" onclick="switchTab('households')" id="tab-households">Households</button>
+    <button class="tab" onclick="switchTab('tasks')" id="tab-tasks">Automations</button>
+    <button class="tab" onclick="switchTab('invitations')" id="tab-invitations">Invitations</button>
     <button class="tab" onclick="switchTab('connections')" id="tab-connections">Remote Access</button>
 </div>
 {{end}}
@@ -55,6 +54,47 @@
 .task-summary-pill { display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.3rem 0.55rem; border-radius: 999px; background: var(--bg-tertiary); color: var(--text-secondary); font-size: 0.75rem; }
 .task-summary-pill.active::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
 .task-summary-pill.paused::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--text-muted); }
+.hierarchy-guide { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; margin-bottom: 1.5rem; overflow: hidden; }
+.hierarchy-level { position: relative; padding: 1rem 2rem 1rem 1rem; background: var(--bg-secondary); border: 1px solid var(--border); }
+.hierarchy-level + .hierarchy-level { border-left: 0; }
+.hierarchy-level + .hierarchy-level::before { content: '›'; position: absolute; left: -0.45rem; top: 50%; transform: translateY(-50%); z-index: 1; width: 1.5rem; height: 1.5rem; display: grid; place-items: center; border-radius: 50%; background: var(--bg-primary); color: var(--accent); font-size: 1.3rem; }
+.hierarchy-level:first-child { border-radius: var(--radius) 0 0 var(--radius); }
+.hierarchy-level:last-child { border-radius: 0 var(--radius) var(--radius) 0; }
+.hierarchy-level-title { font-weight: 600; }
+.hierarchy-level-tech { color: var(--text-muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; margin-left: 0.35rem; }
+.hierarchy-level-copy { color: var(--text-secondary); font-size: 0.8rem; margin-top: 0.25rem; }
+.household-toolbar { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem; flex-wrap: wrap; }
+.household-toolbar .form-input { flex: 1; min-width: 220px; }
+.household-card { margin-bottom: 0.85rem; overflow: hidden; }
+.household-header { display: flex; align-items: center; gap: 1rem; padding: 1rem; cursor: pointer; }
+.household-header:hover { background: var(--bg-secondary); }
+.household-toggle { width: 18px; height: 18px; flex: 0 0 auto; transition: transform 0.2s; }
+.household-card.collapsed .household-toggle { transform: rotate(-90deg); }
+.household-card.collapsed .household-contents { display: none; }
+.household-icon { width: 44px; height: 44px; border-radius: 10px; background: var(--accent); color: white; display: grid; place-items: center; flex: 0 0 auto; }
+.household-summary { flex: 1; min-width: 140px; }
+.household-name { display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap; font-weight: 600; }
+.household-meta { margin-top: 0.2rem; color: var(--text-muted); font-size: 0.8rem; }
+.household-actions, .person-actions, .device-actions { display: flex; gap: 0.45rem; flex-wrap: wrap; }
+.household-contents { border-top: 1px solid var(--border); padding: 0 1rem 1rem 4.9rem; }
+.person-row { padding: 1rem 0; border-bottom: 1px solid var(--border); }
+.person-row:last-child { border-bottom: 0; padding-bottom: 0; }
+.person-heading { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+.person-avatar { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; color: white; font-weight: 600; object-fit: cover; flex: 0 0 auto; }
+.person-summary { flex: 1; min-width: 150px; }
+.person-name { font-weight: 600; display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.person-meta { color: var(--text-muted); font-size: 0.78rem; margin-top: 0.2rem; }
+.device-list { margin: 0.75rem 0 0 3.25rem; display: flex; flex-direction: column; gap: 0.4rem; }
+.device-row { display: flex; align-items: center; gap: 0.75rem; padding: 0.7rem 0.8rem; border-radius: var(--radius); background: var(--bg-secondary); border: 1px solid transparent; }
+.device-row.warning { border-color: rgba(245, 158, 11, 0.45); }
+.device-icon { width: 30px; height: 30px; color: var(--text-secondary); flex: 0 0 auto; }
+.device-summary { flex: 1; min-width: 130px; }
+.device-name { font-size: 0.875rem; font-weight: 500; display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.device-meta { color: var(--text-muted); font-size: 0.72rem; margin-top: 0.15rem; }
+.device-empty { margin: 0.75rem 0 0 3.25rem; color: var(--text-muted); font-size: 0.8rem; font-style: italic; }
+.attention-card { border-color: var(--warning); margin-bottom: 1rem; }
+.attention-title { color: var(--warning); font-weight: 600; }
+.client-version-warning { display: inline-flex; align-items: center; padding: 0.18rem 0.4rem; border-radius: 999px; font-size: 0.65rem; font-weight: 600; background: rgba(245, 158, 11, 0.14); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.35); }
 @media (max-width: 600px) {
     .tabs { overflow-x: auto; padding-bottom: 0.25rem; -webkit-overflow-scrolling: touch; }
     .tab { flex: 0 0 auto; padding: 0.75rem 0.85rem; white-space: nowrap; }
@@ -65,10 +105,66 @@
     .connection-header-row .btn { width: 100%; justify-content: center; }
     .connection-actions { width: 100%; }
     .connection-actions .btn { flex: 1 1 120px; justify-content: center; }
+    .hierarchy-guide { grid-template-columns: 1fr; }
+    .hierarchy-level, .hierarchy-level + .hierarchy-level { border: 1px solid var(--border); border-top: 0; padding: 0.8rem 1rem 0.8rem 2.5rem; }
+    .hierarchy-level:first-child { border-radius: var(--radius) var(--radius) 0 0; border-top: 1px solid var(--border); }
+    .hierarchy-level:last-child { border-radius: 0 0 var(--radius) var(--radius); }
+    .hierarchy-level + .hierarchy-level::before { left: 0.65rem; }
+    .household-header { align-items: flex-start; flex-wrap: wrap; }
+    .household-actions { width: 100%; padding-left: 2.1rem; }
+    .household-contents { padding-left: 1rem; }
+    .person-actions { width: 100%; margin-left: 3.25rem; }
+    .device-list, .device-empty { margin-left: 0; }
+    .device-row { flex-wrap: wrap; }
+    .device-actions { width: 100%; justify-content: flex-end; }
 }
 </style>
 
-<!-- Profiles Tab -->
+{{if .IsAdmin}}
+<!-- Household hierarchy (admin only) -->
+<div id="content-households" class="tab-content active">
+    <div class="hierarchy-guide" aria-label="Access hierarchy">
+        <div class="hierarchy-level">
+            <div><span class="hierarchy-level-title">Household</span><span class="hierarchy-level-tech">Account</span></div>
+            <div class="hierarchy-level-copy">The sign-in and shared access limits.</div>
+        </div>
+        <div class="hierarchy-level">
+            <div><span class="hierarchy-level-title">Person</span><span class="hierarchy-level-tech">Profile</span></div>
+            <div class="hierarchy-level-copy">Individual preferences, history and restrictions.</div>
+        </div>
+        <div class="hierarchy-level">
+            <div><span class="hierarchy-level-title">Device</span><span class="hierarchy-level-tech">Client</span></div>
+            <div class="hierarchy-level-copy">A TV, phone, tablet or computer assigned to one person.</div>
+        </div>
+    </div>
+
+    <div id="default-password-warning"></div>
+
+    <div class="card" style="margin-bottom: 1rem;">
+        <div class="card-body" style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
+            <div style="flex: 1; min-width: 200px;">
+                <div style="font-weight: 600; font-size: 0.875rem;">Server-wide Stream Limit</div>
+                <div style="font-size: 0.8rem; color: var(--text-muted);">Maximum concurrent streams across every household. 0 means unlimited.</div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                <input type="number" id="globalMaxStreams" class="form-input" style="width: 80px;" min="0" value="0" aria-label="Server-wide stream limit">
+                <button class="btn btn-secondary btn-sm" onclick="saveGlobalMaxStreams()">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="household-toolbar">
+        <input type="search" id="household-search" class="form-input" placeholder="Search households, people or devices…" oninput="renderHouseholds()">
+        <span id="households-count" style="color: var(--text-muted);"></span>
+        <button class="btn btn-primary" onclick="showCreateAccountModal()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width: 16px; height: 16px;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            Add Household
+        </button>
+    </div>
+    <div id="households-list"><div style="display:flex;justify-content:center;padding:2rem;"><div class="spinner"></div></div></div>
+</div>
+{{else}}
+<!-- Profiles (account portal) -->
 <div id="content-profiles" class="tab-content active">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
         <span id="profiles-count" style="color: var(--text-muted);"></span>
@@ -85,15 +181,16 @@
         </div>
     </div>
 </div>
+{{end}}
 
 {{if .IsAdmin}}
 <!-- Profile Tasks Tab (admin only) -->
 <div id="content-tasks" class="tab-content">
     <div class="card" style="margin-bottom: 1rem;">
         <div class="card-body">
-            <strong>Tasks follow profiles</strong>
+            <strong>Automations follow people</strong>
             <p style="margin: 0.35rem 0 0; color: var(--text-secondary); font-size: 0.85rem;">
-                A profile keeps its own sync tasks when it is reassigned. Account summaries below roll up the tasks belonging to each associated profile; server-wide tasks are managed on the Tasks page.
+                A person keeps their sync automations when moved to another household. Household summaries roll up automations from each person; server-wide tasks remain on the Tasks page.
             </p>
         </div>
     </div>
@@ -104,36 +201,6 @@
     <div id="profile-tasks-summary" class="task-summary-grid">
         <div style="display:flex;justify-content:center;padding:2rem;"><div class="spinner"></div></div>
     </div>
-</div>
-
-<!-- Accounts Tab (admin only) -->
-<div id="content-accounts" class="tab-content">
-    <div id="default-password-warning"></div>
-
-    <!-- Global Stream Limit -->
-    <div class="card" style="margin-bottom: 1rem;">
-        <div class="card-body" style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
-            <div style="flex: 1; min-width: 200px;">
-                <div style="font-weight: 600; font-size: 0.875rem;">Global Max Concurrent Streams</div>
-                <div style="font-size: 0.8rem; color: var(--text-muted);">Server-wide limit across all accounts. 0 = unlimited.</div>
-            </div>
-            <div style="display: flex; align-items: center; gap: 0.5rem;">
-                <input type="number" id="globalMaxStreams" class="form-input" style="width: 80px;" min="0" value="0">
-                <button class="btn btn-primary btn-sm" onclick="saveGlobalMaxStreams()">Save</button>
-            </div>
-        </div>
-    </div>
-
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-        <span id="accounts-count" style="color: var(--text-muted);"></span>
-        <button class="btn btn-primary" onclick="showCreateAccountModal()">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width: 16px; height: 16px;">
-                <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-            </svg>
-            Create Account
-        </button>
-    </div>
-    <div id="accounts-list"></div>
 </div>
 
 <!-- Invitations Tab (admin only) -->
@@ -199,6 +266,8 @@ let profiles = [];
 let invitations = [];
 let connectionInvites = [];
 let scheduledTasks = [];
+let clients = [];
+let backendVersionInfo = null;
 let remoteAccessStatus = null;
 let hasDefaultPassword = false;
 const isAdmin = {{json .IsAdmin}};
@@ -246,9 +315,11 @@ function switchTab(tab) {
 async function loadData() {
     try {
         if (isAdmin) {
-            const [accountsRes, profilesRes, defaultPwdRes, invitationsRes, connectionInvitesRes, remoteAccessStatusRes, scheduledTasksRes] = await Promise.all([
+            const [accountsRes, profilesRes, clientsRes, versionRes, defaultPwdRes, invitationsRes, connectionInvitesRes, remoteAccessStatusRes, scheduledTasksRes] = await Promise.all([
                 fetch(basePath + '/api/accounts').then(r => r.json()),
                 fetch(basePath + '/api/profiles').then(r => r.json()),
+                fetch(basePath + '/api/clients').then(r => r.ok ? r.json() : []),
+                fetch(basePath + '/api/version').then(r => r.ok ? r.json() : null),
                 fetch(basePath + '/api/accounts/default-password').then(r => r.json()),
                 fetch(basePath + '/api/invitations').then(r => r.json()),
                 fetch(basePath + '/api/remote-access/invites').then(r => r.ok ? r.json() : []),
@@ -257,6 +328,8 @@ async function loadData() {
             ]);
             accounts = accountsRes.accounts || [];
             profiles = profilesRes || [];
+            clients = Array.isArray(clientsRes) ? clientsRes : [];
+            backendVersionInfo = versionRes;
             hasDefaultPassword = defaultPwdRes.hasDefaultPassword || false;
             invitations = invitationsRes.invitations || [];
             connectionInvites = Array.isArray(connectionInvitesRes) ? connectionInvitesRes : [];
@@ -281,8 +354,7 @@ async function loadData() {
                 if (el) el.value = settingsRes?.playback?.maxConcurrentStreams || 0;
             } catch (e) { /* ignore */ }
 
-            renderProfiles();
-            renderAccounts();
+            renderHouseholds();
             renderProfileTasksSummary();
             renderInvitations();
             renderConnectionInvites();
@@ -294,7 +366,8 @@ async function loadData() {
         }
     } catch (err) {
         console.error('Failed to load data:', err);
-        document.getElementById('profiles-list').innerHTML = `<p style="color: var(--danger);">Failed to load: ${err.message}</p>`;
+        const container = document.getElementById(isAdmin ? 'households-list' : 'profiles-list');
+        if (container) container.innerHTML = `<p style="color: var(--danger);">Failed to load: ${escapeHtml(err.message)}</p>`;
     }
 }
 
@@ -356,9 +429,12 @@ function renderProfiles() {
     }).join('');
 }
 
-function renderAccounts() {
-    const container = document.getElementById('accounts-list');
-    document.getElementById('accounts-count').textContent = accounts.length + ' account' + (accounts.length !== 1 ? 's' : '');
+function renderHouseholds() {
+    const container = document.getElementById('households-list');
+    if (!container) return;
+    const search = (document.getElementById('household-search')?.value || '').trim().toLowerCase();
+    const count = document.getElementById('households-count');
+    if (count) count.textContent = `${accounts.length} household${accounts.length === 1 ? '' : 's'} · ${profiles.length} ${profiles.length === 1 ? 'person' : 'people'} · ${clients.length} device${clients.length === 1 ? '' : 's'}`;
 
     // Default password warning
     const warningEl = document.getElementById('default-password-warning');
@@ -383,56 +459,197 @@ function renderAccounts() {
         warningEl.innerHTML = '';
     }
 
-    container.innerHTML = accounts.map(a => {
+    const knownProfileIds = new Set(profiles.map(profile => profile.id));
+    const unassignedProfiles = profiles.filter(profile => !profile.accountId || !accounts.some(account => account.id === profile.accountId));
+    const orphanClients = clients.filter(client => !knownProfileIds.has(client.userId));
+    const attentionHtml = (unassignedProfiles.length > 0 || orphanClients.length > 0)
+        ? `<div class="card attention-card"><div class="card-body">
+            <div class="attention-title">Needs attention</div>
+            <div class="text-muted" style="font-size:0.8rem;margin-top:0.25rem;">These people or devices are not connected to the complete household hierarchy.</div>
+            ${unassignedProfiles.map(profile => renderPersonRow(profile)).join('')}
+            ${orphanClients.map(client => renderDeviceRow(client, true)).join('')}
+        </div></div>`
+        : '';
+
+    const householdHtml = accounts.map(a => {
         const accountProfiles = Array.isArray(a.profiles)
             ? a.profiles
             : profiles.filter(p => p.accountId === a.id);
         const profileCount = accountProfiles.length;
         const accountProfileIds = new Set(accountProfiles.map(profile => profile.id));
+        const accountClients = clients.filter(client => accountProfileIds.has(client.userId));
         const accountTasks = scheduledTasks.filter(task => accountProfileIds.has(task.config?.profileId));
-        const profilesHtml = accountProfiles.length > 0
-            ? `<div class="account-profiles-list">${accountProfiles.map(p => {
-                const initial = (p.name || 'P').charAt(0).toUpperCase();
-                const avatarHtml = p.hasIcon
-                    ? `<img class="account-profile-avatar" src="${basePath}/api/profiles/icon?profileId=${encodeURIComponent(p.id)}" alt="">`
-                    : `<span class="account-profile-avatar" style="background: ${p.color || '#6366f1'};">${escapeHtml(initial)}</span>`;
-                return `<span class="account-profile">${avatarHtml}<span>${escapeHtml(p.name || 'Unnamed profile')}</span>${p.isKidsProfile ? '<span class="status-badge warning" style="font-size: 0.6rem;">Kids</span>' : ''}</span>`;
-            }).join('')}</div>`
-            : '<div class="account-profiles-empty">No profiles associated with this account.</div>';
+        const matchesSearch = !search || [
+            a.username,
+            ...accountProfiles.flatMap(profile => [profile.name, ...clients.filter(client => client.userId === profile.id).flatMap(client => [client.name, client.deviceName, client.deviceType, client.os])])
+        ].some(value => String(value || '').toLowerCase().includes(search));
+        if (!matchesSearch) return '';
         return `
-            <div class="card" style="margin-bottom: 0.75rem;">
-                <div class="card-body" style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
-                    <div style="width: 48px; height: 48px; border-radius: 50%; background: var(--accent); display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" style="width: 24px; height: 24px;">
-                            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
-                        </svg>
+            <div class="card household-card" data-household-id="${escapeHtml(a.id)}">
+                <div class="household-header" onclick="toggleHousehold(event, '${escapeHtml(a.id)}')">
+                    <svg class="household-toggle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                    <div class="household-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:22px;height:22px;"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/></svg>
                     </div>
-                    <div style="flex: 1; min-width: 150px;">
-                        <div style="font-weight: 600; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+                    <div class="household-summary">
+                        <div class="household-name">
                             ${escapeHtml(a.username)}
                             ${a.isMaster ? '<span class="status-badge online" style="font-size: 0.65rem;">Admin</span>' : ''}
                             ${a.expiresAt ? formatExpiryBadge(a.expiresAt) : ''}
                         </div>
-                        <div style="font-size: 0.8rem; color: var(--text-muted);">
-                            ${profileCount} profile${profileCount !== 1 ? 's' : ''}
-                            ${a.maxStreams > 0 ? ` &middot; Max streams: ${a.maxStreams}` : ''}
-                            ${accountTasks.length > 0 ? ` &middot; ${accountTasks.length} profile task${accountTasks.length !== 1 ? 's' : ''}` : ''}
+                        <div class="household-meta">
+                            ${profileCount} ${profileCount === 1 ? 'person' : 'people'} · ${accountClients.length} device${accountClients.length === 1 ? '' : 's'}
+                            · ${a.maxStreams > 0 ? `Max ${a.maxStreams} streams` : 'Unlimited streams'}
+                            ${accountTasks.length > 0 ? ` · ${accountTasks.length} automation${accountTasks.length === 1 ? '' : 's'}` : ''}
                         </div>
                     </div>
-                    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                    <div class="household-actions" onclick="event.stopPropagation()">
+                        <button class="btn btn-primary btn-sm" onclick="showCreateProfileModal('${a.id}')">Add Person</button>
                         <button class="btn btn-secondary btn-sm" onclick="showRenameAccountModal('${a.id}', '${escapeHtml(a.username)}')">Rename</button>
-                        <button class="btn btn-secondary btn-sm" onclick="showMaxStreamsModal('${a.id}', '${escapeHtml(a.username)}', ${a.maxStreams || 0})">Streams</button>
+                        <button class="btn btn-secondary btn-sm" onclick="showMaxStreamsModal('${a.id}', '${escapeHtml(a.username)}', ${a.maxStreams || 0})">Limits</button>
                         <button class="btn btn-secondary btn-sm" onclick="showChangePasswordModal('${a.id}', '${escapeHtml(a.username)}')">Password</button>
                         ${!a.isMaster ? `<button class="btn btn-danger btn-sm" onclick="deleteAccount('${a.id}', '${escapeHtml(a.username)}')">Delete</button>` : ''}
                     </div>
-                    <div class="account-profiles">
-                        <div class="account-profiles-label">Associated profiles</div>
-                        ${profilesHtml}
-                    </div>
+                </div>
+                <div class="household-contents">
+                    ${accountProfiles.length > 0 ? accountProfiles.map(profile => renderPersonRow(profile)).join('') : '<div class="account-profiles-empty" style="padding-top:1rem;">No people yet. Add a person before signing in on a device.</div>'}
                 </div>
             </div>
         `;
     }).join('');
+
+    container.innerHTML = attentionHtml + householdHtml;
+    if (!attentionHtml && !householdHtml) {
+        container.innerHTML = `<div class="card"><div class="card-body" style="text-align:center;color:var(--text-muted);">${search ? 'No households, people or devices match your search.' : 'No households yet. Add one to get started.'}</div></div>`;
+    }
+}
+
+function renderPersonRow(profile) {
+    const profileClients = clients.filter(client => client.userId === profile.id);
+    const profileTasks = scheduledTasks.filter(task => task.config?.profileId === profile.id);
+    const initial = (profile.name || 'P').charAt(0).toUpperCase();
+    const avatarHtml = profile.hasIcon
+        ? `<img class="person-avatar" src="${basePath}/api/profiles/icon?profileId=${encodeURIComponent(profile.id)}" alt="${escapeHtml(profile.name)}">`
+        : `<div class="person-avatar" style="background:${profile.color || '#6366f1'};">${escapeHtml(initial)}</div>`;
+    const badges = [];
+    if (profile.isKidsProfile) badges.push('<span class="status-badge warning" style="font-size:0.62rem;">Kids</span>');
+    if (profile.hasPin) badges.push('<span class="status-badge" style="font-size:0.62rem;">PIN</span>');
+    if (profile.allowShareLinks) badges.push('<span class="status-badge" style="font-size:0.62rem;">Sharing</span>');
+    return `<div class="person-row">
+        <div class="person-heading">
+            ${avatarHtml}
+            <div class="person-summary">
+                <div class="person-name">${escapeHtml(profile.name || 'Unnamed person')}${badges.join('')}</div>
+                <div class="person-meta">${profileClients.length} device${profileClients.length === 1 ? '' : 's'}${profile._maxStreams > 0 ? ` · Max ${profile._maxStreams} streams` : ''}${profileTasks.length > 0 ? ` · ${profileTasks.length} automation${profileTasks.length === 1 ? '' : 's'}` : ''}</div>
+            </div>
+            <div class="person-actions">
+                <button class="btn btn-secondary btn-sm" onclick="showEditProfileModal('${profile.id}')">Manage</button>
+                <a class="btn btn-secondary btn-sm" href="${basePath}/settings?profileId=${encodeURIComponent(profile.id)}">Settings</a>
+                <a class="btn btn-secondary btn-sm" href="${basePath}/notifications?profileId=${encodeURIComponent(profile.id)}">Notifications</a>
+                <a class="btn btn-secondary btn-sm" href="${basePath}/tasks?profileId=${encodeURIComponent(profile.id)}">Automations</a>
+                <button class="btn btn-secondary btn-sm" onclick="showProfileStreamsModal('${profile.id}', '${escapeHtml(profile.name)}', '${profile.accountId}')">Limits</button>
+                <button class="btn ${profile.allowShareLinks ? 'btn-primary' : 'btn-secondary'} btn-sm" onclick="toggleProfileShareLinks('${profile.id}', '${escapeHtml(profile.name)}', ${profile.allowShareLinks ? 'true' : 'false'})">Sharing: ${profile.allowShareLinks ? 'On' : 'Off'}</button>
+                <button class="btn btn-secondary btn-sm" onclick="showReassignModal('${profile.id}')">Move</button>
+                <button class="btn btn-danger btn-sm" onclick="deleteProfile('${profile.id}', '${escapeHtml(profile.name)}')">Delete</button>
+            </div>
+        </div>
+        ${profileClients.length > 0 ? `<div class="device-list">${profileClients.map(client => renderDeviceRow(client, false)).join('')}</div>` : '<div class="device-empty">No devices have connected as this person yet.</div>'}
+    </div>`;
+}
+
+function renderDeviceRow(client, orphaned) {
+    const warning = getClientDatestampStatus(client);
+    return `<div class="device-row ${warning || orphaned ? 'warning' : ''}">
+        <svg class="device-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        <div class="device-summary">
+            <div class="device-name">${escapeHtml(client.name || 'Unknown device')}${warning ? `<span class="client-version-warning" title="${escapeHtml(warning.detail)}">${escapeHtml(warning.label)}</span>` : ''}${orphaned ? '<span class="client-version-warning">Unknown person</span>' : ''}</div>
+            <div class="device-meta">${[client.deviceName !== client.deviceType ? client.deviceName : '', client.deviceType, client.os, formatClientVersion(client.appVersion), `Seen ${formatRelativeTime(client.lastSeenAt)}`].filter(Boolean).map(escapeHtml).join(' · ')}</div>
+        </div>
+        <div class="device-actions">
+            <button class="btn btn-secondary btn-sm" onclick="pingClient('${client.id}')">Ping</button>
+            <select class="form-select" style="width:auto;max-width:180px;font-size:0.78rem;" aria-label="Move ${escapeHtml(client.name || 'device')} to another person" onchange="reassignClient('${client.id}', this.value, '${client.userId}')">
+                ${renderPersonOptions(client.userId)}
+            </select>
+            <button class="btn btn-danger btn-sm" onclick="deleteClient('${client.id}', '${escapeHtml(client.name || 'this device')}')">Remove</button>
+        </div>
+    </div>`;
+}
+
+function renderPersonOptions(selectedProfileId) {
+    return accounts.map(account => {
+        const householdProfiles = profiles.filter(profile => profile.accountId === account.id);
+        if (householdProfiles.length === 0) return '';
+        return `<optgroup label="${escapeHtml(account.username)}">${householdProfiles.map(profile => `<option value="${profile.id}" ${profile.id === selectedProfileId ? 'selected' : ''}>${escapeHtml(profile.name)}</option>`).join('')}</optgroup>`;
+    }).join('');
+}
+
+function toggleHousehold(event, householdId) {
+    if (event.target.closest('button, a, select, input')) return;
+    document.querySelector(`.household-card[data-household-id="${CSS.escape(householdId)}"]`)?.classList.toggle('collapsed');
+}
+
+function formatRelativeTime(dateStr) {
+    if (!dateStr) return 'never';
+    const diffMs = Date.now() - new Date(dateStr).getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+    if (diffMins < 1) return 'just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    if (diffHours < 24) return `${diffHours}h ago`;
+    if (diffDays < 7) return `${diffDays}d ago`;
+    return new Date(dateStr).toLocaleDateString();
+}
+
+function formatClientVersion(appVersion) {
+    if (!appVersion) return '';
+    const [version, build] = appVersion.split('+', 2);
+    return build ? `v${version} (${build})` : `v${version}`;
+}
+
+function getClientDatestampStatus(client) {
+    const backendBuild = String(backendVersionInfo?.buildId || '').trim();
+    const appVersion = String(client.appVersion || '').trim();
+    const clientBuild = appVersion.includes('+') ? appVersion.split('+')[1].trim() : '';
+    if (!clientBuild || !/^\d{8}$/.test(clientBuild)) return { label: 'No datestamp', detail: 'Client app version is missing a valid build datestamp.' };
+    if (/^\d{8}$/.test(backendBuild) && clientBuild !== backendBuild) return { label: 'Version mismatch', detail: `Client ${clientBuild} does not match backend ${backendBuild}.` };
+    return null;
+}
+
+async function pingClient(clientId) {
+    try {
+        const response = await fetch(basePath + '/api/clients/' + encodeURIComponent(clientId) + '/ping', { method: 'POST', credentials: 'same-origin' });
+        if (!response.ok) throw new Error((await response.json()).error || 'Failed to ping device');
+        showToast('Ping sent. If the device is active, it will flash.');
+    } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function reassignClient(clientId, newProfileId, originalProfileId) {
+    try {
+        const response = await fetch(basePath + '/api/clients/' + encodeURIComponent(clientId) + '/reassign', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ userId: newProfileId })
+        });
+        if (!response.ok) throw new Error((await response.json()).error || 'Failed to move device');
+        const updatedClient = await response.json();
+        const index = clients.findIndex(client => client.id === clientId);
+        if (index !== -1) clients[index] = updatedClient;
+        showToast('Device moved successfully');
+        renderHouseholds();
+    } catch (err) {
+        showToast(err.message, 'error');
+        renderHouseholds();
+    }
+}
+
+async function deleteClient(clientId, clientName) {
+    if (!confirm(`Remove "${clientName}"?\n\nThe device can register again the next time it connects.`)) return;
+    try {
+        const response = await fetch(basePath + '/api/clients/' + encodeURIComponent(clientId), { method: 'DELETE', credentials: 'same-origin' });
+        if (!response.ok && response.status !== 204) throw new Error((await response.json()).error || 'Failed to remove device');
+        clients = clients.filter(client => client.id !== clientId);
+        showToast('Device removed');
+        renderHouseholds();
+    } catch (err) { showToast(err.message, 'error'); }
 }
 
 function getTaskTypeLabelForSummary(type) {
@@ -500,19 +717,19 @@ function showCreateProfileModal(defaultAccountId) {
     ).join('');
 
     showModal(`
-        <div class="card-header"><h2>Create Profile</h2></div>
+        <div class="card-header"><h2>${isAdmin ? 'Add Person' : 'Create Profile'}</h2></div>
         <div class="card-body">
             <form onsubmit="createProfile(event)">
                 <div class="form-group">
-                    <label class="form-label">Profile Name</label>
+                    <label class="form-label">${isAdmin ? 'Person Name' : 'Profile Name'}</label>
                     <input type="text" name="name" class="form-input" required autofocus>
                 </div>
                 ${isAdmin ? `<div class="form-group">
-                    <label class="form-label">Account</label>
+                    <label class="form-label">Household</label>
                     <select name="accountId" class="form-select">${accountOptions}</select>
                 </div>` : ''}
                 <div class="form-group">
-                    <label class="form-label">Profile Icon URL <span style="color: var(--text-muted); font-size: 0.75rem;">(optional)</span></label>
+                    <label class="form-label">${isAdmin ? 'Person' : 'Profile'} Icon URL <span style="color: var(--text-muted); font-size: 0.75rem;">(optional)</span></label>
                     <input type="url" name="iconUrl" class="form-input" placeholder="https://example.com/icon.png" onchange="toggleCreateColorPicker(this.value)">
                     <p style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.25rem;">Enter URL to PNG/JPG image. When set, replaces color avatar.</p>
                 </div>
@@ -522,9 +739,9 @@ function showCreateProfileModal(defaultAccountId) {
                 </div>
                 <div class="form-group">
                     <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
-                        <input type="checkbox" name="isKids"> Kids Profile
+                        <input type="checkbox" name="isKids"> Kids ${isAdmin ? 'Person' : 'Profile'}
                     </label>
-                    <p style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.25rem; margin-left: 1.5rem;">Customize content restrictions via Edit Profile after creation</p>
+                    <p style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.25rem; margin-left: 1.5rem;">Customize content restrictions after creation</p>
                 </div>
                 <div style="display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 1.5rem;">
                     <button type="button" class="btn btn-secondary" onclick="hideModal()">Cancel</button>
@@ -659,11 +876,11 @@ function showEditProfileModal(profileId) {
     `;
 
     showModal(`
-        <div class="card-header"><h2>Edit Profile</h2></div>
+        <div class="card-header"><h2>${isAdmin ? 'Manage Person' : 'Edit Profile'}</h2></div>
         <div class="card-body">
             <form onsubmit="updateProfile(event, '${profileId}')">
                 <div class="form-group">
-                    <label class="form-label">Profile Name</label>
+                    <label class="form-label">${isAdmin ? 'Person Name' : 'Profile Name'}</label>
                     <input type="text" name="name" class="form-input" value="${escapeHtml(p.name)}" required>
                 </div>
                 ${iconSection}
@@ -881,17 +1098,17 @@ function showReassignModal(profileId) {
     ).join('');
 
     showModal(`
-        <div class="card-header"><h2>Reassign Profile</h2></div>
+        <div class="card-header"><h2>Move Person</h2></div>
         <div class="card-body">
-            <p style="margin-bottom: 1rem;">Move <strong>${escapeHtml(p.name)}</strong> to a different account:</p>
+            <p style="margin-bottom: 1rem;">Move <strong>${escapeHtml(p.name)}</strong> to a different household:</p>
             <form onsubmit="reassignProfile(event, '${profileId}')">
                 <div class="form-group">
-                    <label class="form-label">Account</label>
+                    <label class="form-label">Household</label>
                     <select name="accountId" class="form-select">${accountOptions}</select>
                 </div>
                 <div style="display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 1.5rem;">
                     <button type="button" class="btn btn-secondary" onclick="hideModal()">Cancel</button>
-                    <button type="submit" class="btn btn-primary">Reassign</button>
+                    <button type="submit" class="btn btn-primary">Move Person</button>
                 </div>
             </form>
         </div>
@@ -909,7 +1126,7 @@ async function reassignProfile(e, profileId) {
         });
         if (!res.ok) throw new Error(await res.text());
         hideModal();
-        showToast('Profile reassigned');
+        showToast('Person moved');
         loadData();
     } catch (err) {
         showToast('Error: ' + err.message, 'error');
@@ -917,11 +1134,11 @@ async function reassignProfile(e, profileId) {
 }
 
 async function deleteProfile(profileId, name) {
-    if (!confirm(`Delete profile "${name}"? This cannot be undone.`)) return;
+    if (!confirm(`Delete person "${name}"? This cannot be undone.`)) return;
     try {
         const res = await fetch(basePath + '/api/profiles?profileId=' + profileId, { method: 'DELETE' });
         if (!res.ok) throw new Error(await res.text());
-        showToast('Profile deleted');
+        showToast('Person deleted');
         loadData();
     } catch (err) {
         showToast('Error: ' + err.message, 'error');
@@ -931,7 +1148,7 @@ async function deleteProfile(profileId, name) {
 // Account functions
 function showCreateAccountModal() {
     showModal(`
-        <div class="card-header"><h2>Create Account</h2></div>
+        <div class="card-header"><h2>Add Household</h2></div>
         <div class="card-body">
             <form onsubmit="createAccount(event)">
                 <div class="form-group">
@@ -973,7 +1190,7 @@ async function createAccount(e) {
         });
         if (!res.ok) throw new Error(await res.text());
         hideModal();
-        showToast('Account created');
+        showToast('Household created');
         loadData();
     } catch (err) {
         showToast('Error: ' + err.message, 'error');
@@ -1026,11 +1243,11 @@ async function changePassword(e, accountId) {
 }
 
 async function deleteAccount(accountId, username) {
-    if (!confirm(`Delete account "${username}"? Associated profiles will be left unassigned and can be reassigned from the admin panel.`)) return;
+    if (!confirm(`Delete household "${username}"? Its people will be moved to Needs attention until assigned to another household.`)) return;
     try {
         const res = await fetch(basePath + '/api/accounts?accountId=' + accountId, { method: 'DELETE' });
         if (!res.ok) throw new Error(await res.text());
-        showToast('Account deleted');
+        showToast('Household deleted');
         loadData();
     } catch (err) {
         showToast('Error: ' + err.message, 'error');
@@ -1106,16 +1323,16 @@ async function showProfileStreamsModal(profileId, profileName, accountId) {
     } catch (e) { /* ignore */ }
 
     const capNote = accountMax > 0
-        ? `<p style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.25rem;">Account limit: ${accountMax}. Profile limit must be &le; account limit.</p>`
-        : `<p style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.25rem;">No account-level limit set. Set one on the Accounts tab first to enable per-profile limits.</p>`;
+        ? `<p style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.25rem;">Household limit: ${accountMax}. Person limit must be &le; household limit.</p>`
+        : `<p style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.25rem;">No household limit is set. Set one from the household header before adding a person limit.</p>`;
 
     showModal(`
-        <div class="card-header"><h2>Profile Stream Limit</h2></div>
+        <div class="card-header"><h2>Person Stream Limit</h2></div>
         <div class="card-body">
             <p style="margin-bottom: 1rem; color: var(--text-muted);">Set max concurrent VOD streams for <strong>${escapeHtml(profileName)}</strong></p>
             <form onsubmit="setProfileMaxStreams(event, '${profileId}', ${accountMax})">
                 <div class="form-group">
-                    <label class="form-label">Max Streams (0 = use account limit)</label>
+                    <label class="form-label">Max Streams (0 = use household limit)</label>
                     <input type="number" name="maxStreams" class="form-input" min="0" ${accountMax > 0 ? `max="${accountMax}"` : ''} value="${currentMax}" required autofocus>
                     ${capNote}
                 </div>
@@ -1154,7 +1371,7 @@ async function setProfileMaxStreams(e, profileId, accountMax) {
         if (!putRes.ok) throw new Error(await putRes.text());
 
         hideModal();
-        showToast('Profile stream limit updated');
+        showToast('Person stream limit updated');
         loadData();
     } catch (err) {
         showToast('Error: ' + err.message, 'error');
@@ -1163,7 +1380,7 @@ async function setProfileMaxStreams(e, profileId, accountMax) {
 
 function showRenameAccountModal(accountId, currentUsername) {
     showModal(`
-        <div class="card-header"><h2>Rename Account</h2></div>
+        <div class="card-header"><h2>Rename Household</h2></div>
         <div class="card-body">
             <form onsubmit="renameAccount(event, '${accountId}')">
                 <div class="form-group">
@@ -1193,7 +1410,7 @@ async function renameAccount(e, accountId) {
             throw new Error(data.error || 'Failed to rename account');
         }
         hideModal();
-        showToast('Account renamed');
+        showToast('Household renamed');
         loadData();
     } catch (err) {
         showToast('Error: ' + err.message, 'error');
