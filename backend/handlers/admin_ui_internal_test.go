@@ -155,6 +155,8 @@ func TestAdminSettingsUsesCategoryAndDetailProgressiveDisclosure(t *testing.T) {
 		`name="mediastorm-settings-filter"`,
 		`autocomplete="off" autocapitalize="none" spellcheck="false"`,
 		`let settingsLevel = 'advanced';`,
+		`.page-header-controls .form-select {`,
+		`height: 40px;`,
 		`function setSettingsLevel(level)`,
 		`function setSettingsGroup(groupId)`,
 		`const advancedSections = new Set`,
