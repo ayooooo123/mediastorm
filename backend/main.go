@@ -1277,6 +1277,7 @@ func main() {
 		r.HandleFunc("/admin/backup", adminUIHandler.RequireMasterAuth(adminUIHandler.BackupPage)).Methods(http.MethodGet)
 		r.HandleFunc("/admin/api/backups", adminUIHandler.RequireMasterAuth(backupHandler.ListBackups)).Methods(http.MethodGet)
 		r.HandleFunc("/admin/api/backups", adminUIHandler.RequireMasterAuth(backupHandler.CreateBackup)).Methods(http.MethodPost)
+		r.HandleFunc("/admin/api/backups/restore", adminUIHandler.RequireMasterAuth(backupHandler.RestoreBackupUpload)).Methods(http.MethodPost)
 		r.HandleFunc("/admin/api/backups/{filename}/download", adminUIHandler.RequireMasterAuth(backupHandler.DownloadBackup)).Methods(http.MethodGet)
 		r.HandleFunc("/admin/api/backups/{filename}/restore", adminUIHandler.RequireMasterAuth(backupHandler.RestoreBackup)).Methods(http.MethodPost)
 		r.HandleFunc("/admin/api/backups/{filename}", adminUIHandler.RequireMasterAuth(backupHandler.DeleteBackup)).Methods(http.MethodDelete)

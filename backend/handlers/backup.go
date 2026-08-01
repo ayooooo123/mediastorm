@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -18,6 +19,8 @@ import (
 type BackupHandler struct {
 	backupService *backup.Service
 }
+
+const maxBackupUploadSize = 1 << 30 // 1 GiB
 
 // NewBackupHandler creates a new backup handler
 func NewBackupHandler(backupService *backup.Service) *BackupHandler {
@@ -142,7 +145,7 @@ func (h *BackupHandler) RestoreBackup(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"error":           "Failed to restore backup: " + err.Error(),
+			"error":            "Failed to restore backup: " + err.Error(),
 			"preRestoreBackup": preRestoreBackup,
 		})
 		return
@@ -158,6 +161,68 @@ func (h *BackupHandler) RestoreBackup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// RestoreBackupUpload restores a backup uploaded from the administrator's device.
+// POST /admin/api/backups/restore
+func (h *BackupHandler) RestoreBackupUpload(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBackupUploadSize)
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		writeBackupError(w, http.StatusBadRequest, "Failed to read backup upload: "+err.Error(), nil)
+		return
+	}
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
+	}
+
+	file, header, err := r.FormFile("backup")
+	if err != nil {
+		writeBackupError(w, http.StatusBadRequest, "A backup file is required", nil)
+		return
+	}
+	defer file.Close()
+
+	if !strings.EqualFold(filepath.Ext(header.Filename), ".zip") {
+		writeBackupError(w, http.StatusBadRequest, "Backup file must be a ZIP archive", nil)
+		return
+	}
+
+	preRestoreBackup, err := h.backupService.CreateBackup(backup.BackupTypePreRestore)
+	if err != nil {
+		log.Printf("[backup] Warning: failed to create pre-restore backup: %v", err)
+	} else {
+		log.Printf("[backup] Created pre-restore backup: %s", preRestoreBackup.Filename)
+	}
+
+	if err := h.backupService.RestoreBackupUpload(file, header.Filename); err != nil {
+		status := http.StatusInternalServerError
+		if strings.Contains(strings.ToLower(err.Error()), "zip") ||
+			strings.Contains(err.Error(), "manifest") || strings.Contains(err.Error(), "checksum") {
+			status = http.StatusBadRequest
+		}
+		writeBackupError(w, status, "Failed to restore backup: "+err.Error(), preRestoreBackup)
+		return
+	}
+
+	response := map[string]interface{}{
+		"success": true,
+		"message": "Backup restored successfully. Restart the server to apply all changes.",
+	}
+	if preRestoreBackup != nil {
+		response["preRestoreBackup"] = preRestoreBackup
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func writeBackupError(w http.ResponseWriter, status int, message string, preRestoreBackup *backup.BackupInfo) {
+	response := map[string]interface{}{"error": message}
+	if preRestoreBackup != nil {
+		response["preRestoreBackup"] = preRestoreBackup
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(response)
 }
 
@@ -244,7 +309,7 @@ func (h *BackupHandler) ImportData(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"error":          "Failed to import data: " + err.Error(),
+			"error":           "Failed to import data: " + err.Error(),
 			"preImportBackup": preBackup,
 		})
 		return
