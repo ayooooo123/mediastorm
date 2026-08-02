@@ -152,7 +152,6 @@ func TestAdminSettingsUsesCategoryAndDetailProgressiveDisclosure(t *testing.T) {
 		`id="settingsCategoryNav"`,
 		`id="settingsBasicBtn" class="settings-level-btn" type="button" disabled`,
 		`id="settingsAdvancedBtn"`,
-		`name="mediastorm-settings-filter"`,
 		`autocomplete="off" autocapitalize="none" spellcheck="false"`,
 		`let settingsLevel = 'advanced';`,
 		`.page-header-controls .form-select {`,

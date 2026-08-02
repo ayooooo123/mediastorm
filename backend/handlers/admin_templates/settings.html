@@ -179,6 +179,59 @@
     border-radius: 10px;
     background: var(--bg-secondary);
 }
+.settings-scope-section {
+    padding-bottom: 0.7rem;
+    border-bottom: 1px solid var(--border-color);
+}
+.settings-scope-tree {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+}
+.settings-scope-row {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    width: 100%;
+    min-width: 0;
+    padding: 0.45rem 0.5rem;
+    border: 1px solid transparent;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--text-secondary);
+    text-align: left;
+    cursor: pointer;
+}
+.settings-scope-row:hover { color: var(--text-primary); background: var(--bg-tertiary); }
+.settings-scope-row.active { color: var(--text-primary); background: var(--accent-bg); border-color: var(--accent); }
+.settings-scope-row.household { color: var(--text-primary); font-weight: 600; }
+.settings-scope-row.person { padding-left: 1.35rem; }
+.settings-scope-row.device { padding-left: 2.2rem; }
+.settings-scope-chevron,
+.settings-scope-icon {
+    width: 15px;
+    height: 15px;
+    flex: 0 0 15px;
+}
+.settings-scope-chevron { transition: transform 0.15s ease; }
+.settings-scope-row.collapsed .settings-scope-chevron { transform: rotate(-90deg); }
+.settings-scope-copy { min-width: 0; flex: 1; }
+.settings-scope-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.78rem; }
+.settings-scope-meta { display: block; margin-top: 0.08rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: 0.65rem; font-weight: 400; }
+.settings-scope-dot { width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--accent); }
+.settings-stale-toggle {
+    align-self: flex-start;
+    margin: 0.1rem 0 0.25rem 2.2rem;
+    padding: 0.25rem 0.4rem;
+    border: 0;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 0.66rem;
+    cursor: pointer;
+}
+.settings-stale-toggle:hover { color: var(--text-primary); }
+.settings-scope-empty { padding: 0.35rem 0.5rem 0.35rem 1.35rem; color: var(--text-muted); font-size: 0.68rem; }
+.settings-navigation-section { padding-top: 0.7rem; }
 .settings-sidebar-label {
     padding: 0.15rem 0.55rem 0.35rem;
     color: var(--text-muted);
@@ -273,6 +326,7 @@
     .settings-workspace { grid-template-columns: 1fr; }
     .settings-sidebar { position: static; max-height: none; overflow: visible; }
     .settings-workspace-toolbar { gap: 0.55rem; }
+    .settings-scope-section { max-height: 320px; overflow-y: auto; }
     .settings-category-nav { flex-direction: row; width: 100%; overflow-x: auto; padding-bottom: 0.2rem; }
     .settings-category-btn { flex: 0 0 auto; width: auto; white-space: nowrap; }
     .settings-level-section { display: flex; align-items: center; gap: 0.6rem; margin-top: 0; padding-top: 0.6rem; }
@@ -306,16 +360,7 @@
         <p>{{if .IsAdmin}}Configure your mediastorm server{{else}}Configure profile settings{{end}}</p>
     </div>
     <div class="page-header-controls" style="display: flex; gap: 0.5rem; align-items: center;">
-        <input type="search" id="settingsSearch" class="form-input" name="mediastorm-settings-filter" placeholder="Search settings..." autocomplete="off" autocapitalize="none" spellcheck="false" data-1p-ignore="true" data-lpignore="true" oninput="handleSettingsSearch(this.value)" style="min-width: 200px;">
-        <select id="userSelector" class="form-select" style="min-width: 180px;" onchange="handleUserChange(this.value)">
-            {{if .IsAdmin}}<option value="">Server defaults</option>{{end}}
-            {{range .Users}}
-            <option value="{{.ID}}">{{.Name}}</option>
-            {{end}}
-        </select>
-        <select id="clientSelector" class="form-select" style="min-width: 180px; display: none;" onchange="handleClientChange(this.value)">
-            <option value="">Profile defaults</option>
-        </select>
+        <input type="search" id="settingsSearch" class="form-input" placeholder="Search settings..." autocomplete="off" autocapitalize="none" spellcheck="false" data-1p-ignore="true" data-lpignore="true" data-bwignore="true" data-protonpass-ignore="true" data-form-type="other" oninput="handleSettingsSearch(this.value)" style="min-width: 200px;">
         <button id="identifyClientBtn" class="btn btn-secondary" style="display: none;" onclick="identifyClient()" title="Send ping to identify this device">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
                 <circle cx="12" cy="12" r="10"/>
@@ -352,8 +397,21 @@
 <div class="settings-workspace">
     <aside class="settings-sidebar" aria-label="Settings navigation">
         <div class="settings-workspace-toolbar">
-            <div class="settings-sidebar-label">Settings</div>
-            <div id="settingsCategoryNav" class="settings-category-nav" aria-label="Settings categories"></div>
+            <div class="settings-scope-section">
+                <div class="settings-sidebar-label">Scope</div>
+                <div id="settingsScopeTree" class="settings-scope-tree" aria-label="Settings scope"></div>
+                <select id="userSelector" hidden aria-hidden="true" tabindex="-1">
+                    {{if .IsAdmin}}<option value="">Server defaults</option>{{end}}
+                    {{range .Users}}
+                    <option value="{{.ID}}">{{.Name}}</option>
+                    {{end}}
+                </select>
+                <select id="clientSelector" hidden aria-hidden="true" tabindex="-1"><option value="">Profile defaults</option></select>
+            </div>
+            <div class="settings-navigation-section">
+                <div class="settings-sidebar-label">Settings</div>
+                <div id="settingsCategoryNav" class="settings-category-nav" aria-label="Settings categories"></div>
+            </div>
             <div class="settings-level-section">
                 <div class="settings-sidebar-label">View</div>
                 <div class="settings-level-switch" aria-label="Settings detail level">
@@ -577,6 +635,7 @@
     let clientSettings = null;
     let originalClientSettings = null;
     let clientsForUser = []; // Clients for the selected user
+    let settingsScopeClients = []; // All visible clients used by the scope tree
     let profilesData = []; // Profiles with PIN status
     let accountsData = []; // User accounts with profiles
     let traktAccountsData = []; // Available Trakt accounts for the current admin/account scope
@@ -588,6 +647,12 @@
     let hardwareAccelerationStatus = null;
     let userOverrides = {{json .UserOverrides}}; // Map of userId -> hasOverrides
     const isAdmin = {{json .IsAdmin}};
+    const settingsScopeUsername = {{json .Username}};
+    const STALE_SETTINGS_DEVICE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+    const expandedSettingsHouseholds = new Set();
+    const expandedSettingsPeople = new Set();
+    const expandedSettingsStaleDevices = new Set();
+    let settingsScopeExpansionInitialized = false;
     const settingsDebugSessionId = 'settings-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
     let editShelfEscapeHandler = null;
     let activeSettingsGroup = localStorage.getItem('mediastorm-settings-category') || groups[0]?.id || '';
@@ -636,6 +701,7 @@
     }
 
     function renderSettingsWorkspaceNavigation() {
+        renderSettingsScopeTree();
         const nav = document.getElementById('settingsCategoryNav');
         const availableGroups = groups.filter(group => Object.entries(schema).some(([key, def]) => {
             if (def.group !== group.id || def.hidden) return false;
@@ -658,6 +724,114 @@
         document.getElementById('settingsAdvancedBtn')?.classList.toggle('active', settingsLevel === 'advanced');
         const help = document.getElementById('settingsLevelHelp');
         if (help) help.textContent = 'All settings are currently shown. Basic view is disabled while its contents are reviewed.';
+    }
+
+    function settingsScopeIcon(kind) {
+        if (kind === 'server') return '<svg class="settings-scope-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="3" width="16" height="7" rx="2"/><rect x="4" y="14" width="16" height="7" rx="2"/><path d="M8 6.5h.01M8 17.5h.01"/></svg>';
+        if (kind === 'household') return '<svg class="settings-scope-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10M9 20v-6h6v6"/></svg>';
+        if (kind === 'person') return '<svg class="settings-scope-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>';
+        return '<svg class="settings-scope-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>';
+    }
+
+    function settingsScopeChevron() {
+        return '<svg class="settings-scope-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>';
+    }
+
+    function isSettingsDeviceStale(client) {
+        if (!client.lastSeenAt) return true;
+        const lastSeen = new Date(client.lastSeenAt).getTime();
+        return !Number.isFinite(lastSeen) || Date.now() - lastSeen > STALE_SETTINGS_DEVICE_AGE_MS;
+    }
+
+    function settingsScopeHouseholds() {
+        const accounts = Array.isArray(accountsData) ? accountsData : [];
+        if (accounts.length > 0) return accounts;
+        const accountIds = [...new Set(profilesData.map(profile => profile.accountId).filter(Boolean))];
+        if (accountIds.length > 0) {
+            return accountIds.map((id, index) => ({ id, username: index === 0 && settingsScopeUsername ? settingsScopeUsername : 'Household' }));
+        }
+        return [{ id: '__household__', username: settingsScopeUsername || 'Household' }];
+    }
+
+    function renderSettingsScopeTree() {
+        const tree = document.getElementById('settingsScopeTree');
+        if (!tree) return;
+        const households = settingsScopeHouseholds();
+        if (!settingsScopeExpansionInitialized) {
+            households.forEach(account => expandedSettingsHouseholds.add(account.id));
+            settingsScopeExpansionInitialized = true;
+        }
+        let html = '';
+        if (isAdmin) {
+            html += `<button type="button" class="settings-scope-row ${!selectedUserId ? 'active' : ''}" onclick="selectSettingsScope('server', '')">${settingsScopeIcon('server')}<span class="settings-scope-copy"><span class="settings-scope-name">Server defaults</span><span class="settings-scope-meta">All households</span></span>${!selectedUserId ? '<span class="settings-scope-dot"></span>' : ''}</button>`;
+        }
+
+        for (const household of households) {
+            const householdId = household.id || '__household__';
+            const people = profilesData.filter(profile => householdId === '__household__' || profile.accountId === householdId);
+            const isExpanded = expandedSettingsHouseholds.has(householdId);
+            html += `<button type="button" class="settings-scope-row household ${isExpanded ? '' : 'collapsed'}" onclick="toggleSettingsHousehold(decodeURIComponent('${encodeURIComponent(householdId)}'))" aria-expanded="${isExpanded}">${settingsScopeChevron()}${settingsScopeIcon('household')}<span class="settings-scope-copy"><span class="settings-scope-name">${escapeHtml(household.username || household.name || 'Household')}</span><span class="settings-scope-meta">${people.length} ${people.length === 1 ? 'person' : 'people'}</span></span></button>`;
+            if (!isExpanded) continue;
+            if (people.length === 0) {
+                html += '<div class="settings-scope-empty">No people in this household</div>';
+                continue;
+            }
+            for (const profile of people) html += renderSettingsPersonScope(profile);
+        }
+        tree.innerHTML = html;
+    }
+
+    function renderSettingsPersonScope(profile) {
+        const profileClients = settingsScopeClients.filter(client => client.userId === profile.id);
+        const activeClients = profileClients.filter(client => !isSettingsDeviceStale(client));
+        const staleClients = profileClients.filter(isSettingsDeviceStale);
+        const showStale = expandedSettingsStaleDevices.has(profile.id);
+        const visibleClients = showStale ? [...activeClients, ...staleClients] : activeClients;
+        const isExpanded = expandedSettingsPeople.has(profile.id);
+        const isActive = selectedUserId === profile.id && !selectedClientId;
+        let html = `<button type="button" class="settings-scope-row person ${isExpanded ? '' : 'collapsed'} ${isActive ? 'active' : ''}" onclick="selectSettingsScope('person', decodeURIComponent('${encodeURIComponent(profile.id)}'))" aria-expanded="${isExpanded}">${settingsScopeChevron()}${settingsScopeIcon('person')}<span class="settings-scope-copy"><span class="settings-scope-name">${escapeHtml(profile.name || 'Unnamed person')}</span><span class="settings-scope-meta">Profile defaults · ${profileClients.length} ${profileClients.length === 1 ? 'device' : 'devices'}</span></span>${isActive ? '<span class="settings-scope-dot"></span>' : ''}</button>`;
+        if (!isExpanded) return html;
+        for (const client of visibleClients) {
+            const deviceActive = selectedClientId === client.id;
+            const detail = [client.deviceType, client.os, isSettingsDeviceStale(client) ? 'Not seen in 7+ days' : 'Active'].filter(Boolean).join(' · ');
+            html += `<button type="button" class="settings-scope-row device ${deviceActive ? 'active' : ''}" onclick="selectSettingsScope('device', decodeURIComponent('${encodeURIComponent(profile.id)}'), decodeURIComponent('${encodeURIComponent(client.id)}'))">${settingsScopeIcon('device')}<span class="settings-scope-copy"><span class="settings-scope-name">${escapeHtml(client.name || client.deviceName || 'Unknown device')}</span><span class="settings-scope-meta">${escapeHtml(detail)}</span></span>${deviceActive ? '<span class="settings-scope-dot"></span>' : ''}</button>`;
+        }
+        if (profileClients.length === 0) html += '<div class="settings-scope-empty" style="padding-left:2.2rem;">No devices yet</div>';
+        if (staleClients.length > 0) html += `<button type="button" class="settings-stale-toggle" onclick="toggleSettingsStaleDevices(event, decodeURIComponent('${encodeURIComponent(profile.id)}'))">${showStale ? 'Hide' : 'Show'} ${staleClients.length} device${staleClients.length === 1 ? '' : 's'} not seen in 7+ days</button>`;
+        return html;
+    }
+
+    function toggleSettingsHousehold(householdId) {
+        if (expandedSettingsHouseholds.has(householdId)) expandedSettingsHouseholds.delete(householdId);
+        else expandedSettingsHouseholds.add(householdId);
+        renderSettingsScopeTree();
+    }
+
+    function toggleSettingsStaleDevices(event, profileId) {
+        event.stopPropagation();
+        if (expandedSettingsStaleDevices.has(profileId)) expandedSettingsStaleDevices.delete(profileId);
+        else expandedSettingsStaleDevices.add(profileId);
+        renderSettingsScopeTree();
+    }
+
+    async function selectSettingsScope(kind, profileId, clientId = '') {
+        if (kind === 'server') {
+            const selector = document.getElementById('userSelector');
+            if (selector) selector.value = '';
+            await handleUserChange('');
+            return;
+        }
+        const selectingCurrentPerson = kind === 'person' && selectedUserId === profileId && !selectedClientId;
+        if (selectingCurrentPerson && expandedSettingsPeople.has(profileId)) expandedSettingsPeople.delete(profileId);
+        else expandedSettingsPeople.add(profileId);
+        const selector = document.getElementById('userSelector');
+        if (selector) selector.value = profileId;
+        await handleUserChange(profileId);
+        if (kind === 'device' && clientId) {
+            const clientSelector = document.getElementById('clientSelector');
+            if (clientSelector) clientSelector.value = clientId;
+            await handleClientChange(clientId);
+        }
     }
 
     function stringifyDebugArg(arg) {
@@ -9730,12 +9904,23 @@
         }
     }
 
+    async function loadSettingsScopeClients() {
+        try {
+            const response = await fetch(basePath + '/api/clients', { credentials: 'same-origin' });
+            settingsScopeClients = response.ok ? (await response.json() || []) : [];
+        } catch (e) {
+            console.warn('Failed to load devices for settings scope tree:', e);
+            settingsScopeClients = [];
+        }
+    }
+
     // Account management functions
     async function loadAccounts() {
         try {
             const response = await fetch(basePath + '/api/accounts');
             if (response.ok) {
-                accountsData = await response.json();
+                const data = await response.json();
+                accountsData = Array.isArray(data) ? data : (data.accounts || []);
             } else {
                 console.error('Failed to load accounts');
                 accountsData = [];
@@ -10654,7 +10839,7 @@
 
         if (isAdmin) {
             void loadHardwareAccelerationStatus();
-            await Promise.all([loadProfiles(), loadAccounts(), loadTraktAccounts(), loadSimklAccounts(), loadLetterboxdLists(), loadMediaLibraries(), checkDefaultPassword()]);
+            await Promise.all([loadProfiles(), loadAccounts(), loadSettingsScopeClients(), loadTraktAccounts(), loadSimklAccounts(), loadLetterboxdLists(), loadMediaLibraries(), checkDefaultPassword()]);
             const selector = document.getElementById('userSelector');
             // Pre-select from query param if provided
             if (urlProfileId && selector) {
@@ -10674,7 +10859,7 @@
             // This fixes the indicator showing for profiles with saved settings that match global
             await recalculateAllUserOverrides();
         } else {
-            await Promise.all([loadProfiles(), loadTraktAccounts(), loadMediaLibraries()]);
+            await Promise.all([loadProfiles(), loadSettingsScopeClients(), loadTraktAccounts(), loadMediaLibraries()]);
             const selector = document.getElementById('userSelector');
             // Pre-select from query param if provided
             if (urlProfileId && selector) {
