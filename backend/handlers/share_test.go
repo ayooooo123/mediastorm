@@ -12,6 +12,7 @@ import (
 
 	"novastream/internal/auth"
 	"novastream/models"
+	"novastream/services/libraryaccess"
 )
 
 type fakeShareSessions struct {
@@ -78,6 +79,21 @@ func TestShareCreateDeniedWithoutProfilePermission(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403 (body: %s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestShareCreateDeniedForInaccessibleLibrary(t *testing.T) {
+	h, _ := newTestShareHandler()
+	h.SetLibraryAccessService(libraryaccess.New(&fakeLibraryAccessRepo{policies: map[string]models.LibraryAccessPolicy{
+		"library-1": {LibraryID: "library-1", AccessMode: models.LibraryAccessModeRestricted, AllowedAccountIDs: []string{"other-account"}},
+	}}, fakeLibraryAccessLocalItems{item: &models.LocalMediaItem{ID: "item-1", LibraryID: "library-1"}}, nil))
+	body, _ := json.Marshal(map[string]string{"sourcePath": "localmedia:item-1/Movie.mkv", "profileId": "p1"})
+	req := httptest.NewRequest(http.MethodPost, "/api/share/create", strings.NewReader(string(body)))
+	req = req.WithContext(context.WithValue(req.Context(), auth.ContextKeyAccountID, "acct1"))
+	rec := httptest.NewRecorder()
+	h.Create(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (body: %s)", rec.Code, rec.Body.String())
 	}
 }
 

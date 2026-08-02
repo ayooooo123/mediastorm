@@ -107,7 +107,10 @@ func (ds *DataStore) FileHealth() FileHealthRepository   { return &pgFileHealthR
 func (ds *DataStore) MediaFiles() MediaFileRepository    { return &pgMediaFileRepo{pool: ds.pool} }
 func (ds *DataStore) LocalMedia() LocalMediaRepository   { return &pgLocalMediaRepo{pool: ds.pool} }
 func (ds *DataStore) RemoteMedia() RemoteMediaRepository { return &pgRemoteMediaRepo{pool: ds.pool} }
-func (ds *DataStore) Recordings() RecordingRepository    { return &pgRecordingRepo{pool: ds.pool} }
+func (ds *DataStore) LibraryAccess() LibraryAccessRepository {
+	return &pgLibraryAccessRepo{pool: ds.pool}
+}
+func (ds *DataStore) Recordings() RecordingRepository { return &pgRecordingRepo{pool: ds.pool} }
 func (ds *DataStore) Notifications() NotificationRepository {
 	return &pgNotificationRepo{pool: ds.pool}
 }
@@ -159,14 +162,15 @@ func (t *Tx) ContentPreferences() ContentPreferencesRepository {
 func (t *Tx) SeriesOrdering() SeriesOrderingRepository {
 	return &pgSeriesOrderingRepo{pool: t.tx}
 }
-func (t *Tx) Prequeue() PrequeueRepository       { return &pgPrequeueRepo{pool: t.tx} }
-func (t *Tx) Prewarm() PrewarmRepository         { return &pgPrewarmRepo{pool: t.tx} }
-func (t *Tx) ImportQueue() ImportQueueRepository { return &pgImportQueueRepo{pool: t.tx} }
-func (t *Tx) FileHealth() FileHealthRepository   { return &pgFileHealthRepo{pool: t.tx} }
-func (t *Tx) MediaFiles() MediaFileRepository    { return &pgMediaFileRepo{pool: t.tx} }
-func (t *Tx) LocalMedia() LocalMediaRepository   { return &pgLocalMediaRepo{pool: t.tx} }
-func (t *Tx) RemoteMedia() RemoteMediaRepository { return &pgRemoteMediaRepo{pool: t.tx} }
-func (t *Tx) Recordings() RecordingRepository    { return &pgRecordingRepo{pool: t.tx} }
+func (t *Tx) Prequeue() PrequeueRepository           { return &pgPrequeueRepo{pool: t.tx} }
+func (t *Tx) Prewarm() PrewarmRepository             { return &pgPrewarmRepo{pool: t.tx} }
+func (t *Tx) ImportQueue() ImportQueueRepository     { return &pgImportQueueRepo{pool: t.tx} }
+func (t *Tx) FileHealth() FileHealthRepository       { return &pgFileHealthRepo{pool: t.tx} }
+func (t *Tx) MediaFiles() MediaFileRepository        { return &pgMediaFileRepo{pool: t.tx} }
+func (t *Tx) LocalMedia() LocalMediaRepository       { return &pgLocalMediaRepo{pool: t.tx} }
+func (t *Tx) RemoteMedia() RemoteMediaRepository     { return &pgRemoteMediaRepo{pool: t.tx} }
+func (t *Tx) LibraryAccess() LibraryAccessRepository { return &pgLibraryAccessRepo{pool: t.tx} }
+func (t *Tx) Recordings() RecordingRepository        { return &pgRecordingRepo{pool: t.tx} }
 func (t *Tx) Notifications() NotificationRepository {
 	return &pgNotificationRepo{pool: t.tx}
 }

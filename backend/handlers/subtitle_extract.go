@@ -766,6 +766,9 @@ func (h *VideoHandler) ProbeSubtitleTracks(w http.ResponseWriter, r *http.Reques
 	} else if strings.HasPrefix(cleanPath, "webdav/") {
 		cleanPath = "/" + strings.TrimPrefix(cleanPath, "webdav/")
 	}
+	if !h.requireLibraryStreamAccess(w, r, cleanPath) {
+		return
+	}
 
 	if h.subtitleExtractManager == nil {
 		http.Error(w, "subtitle extraction not configured", http.StatusServiceUnavailable)
@@ -1169,6 +1172,9 @@ func (h *VideoHandler) StartSubtitleExtract(w http.ResponseWriter, r *http.Reque
 	path := strings.TrimSpace(r.URL.Query().Get("path"))
 	if path == "" {
 		http.Error(w, "missing path parameter", http.StatusBadRequest)
+		return
+	}
+	if !h.requireLibraryStreamAccess(w, r, path) {
 		return
 	}
 

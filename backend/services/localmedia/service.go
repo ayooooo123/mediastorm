@@ -119,6 +119,10 @@ func (s *Service) ListLibraries(ctx context.Context) ([]models.LocalMediaLibrary
 	return s.repo.ListLibraries(ctx)
 }
 
+func (s *Service) GetLibrary(ctx context.Context, libraryID string) (*models.LocalMediaLibrary, error) {
+	return s.repo.GetLibrary(ctx, strings.TrimSpace(libraryID))
+}
+
 func (s *Service) FindMatches(ctx context.Context, query models.LocalMediaMatchQuery) ([]models.LocalMediaMatchedGroup, error) {
 	libraries, err := s.repo.ListLibraries(ctx)
 	if err != nil {

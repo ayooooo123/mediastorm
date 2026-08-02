@@ -764,6 +764,9 @@ func (h *VideoHandler) StartThumbnails(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing path parameter", http.StatusBadRequest)
 		return
 	}
+	if !h.requireLibraryStreamAccess(w, r, cleanPath) {
+		return
+	}
 	thumbnailSettings := h.thumbnailGenerationSettings()
 	log.Printf("[thumbnails] start request key=%s enabled=%t workers=%d path=%q", thumbnailKey(cleanPath), thumbnailSettings.Enabled, thumbnailSettings.Workers, cleanPath)
 	if !thumbnailSettings.Enabled {
@@ -841,6 +844,9 @@ func (h *VideoHandler) GetThumbnailsStatus(w http.ResponseWriter, r *http.Reques
 	cleanPath := cleanVideoPathParam(r.URL.Query().Get("path"))
 	if cleanPath == "" {
 		http.Error(w, "missing path parameter", http.StatusBadRequest)
+		return
+	}
+	if !h.requireLibraryStreamAccess(w, r, cleanPath) {
 		return
 	}
 	key := thumbnailKey(cleanPath)
