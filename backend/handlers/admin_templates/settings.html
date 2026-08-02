@@ -953,6 +953,14 @@
         renderSettingsScopeTree();
     }
 
+    function expandSettingsScopeToProfile(profileId) {
+        const profile = profilesData.find(candidate => candidate.id === profileId);
+        if (!profile) return;
+        settingsScopeServerExpanded = true;
+        const householdId = profile.accountId || '__household__';
+        expandedSettingsHouseholds.add(householdId);
+    }
+
     async function selectSettingsScope(kind, profileId, clientId = '') {
         if (kind === 'server') {
             const selector = document.getElementById('userSelector');
@@ -11135,6 +11143,7 @@
             if (urlProfileId && selector) {
                 const opt = Array.from(selector.options).find(o => o.value === urlProfileId);
                 if (opt) {
+                    expandSettingsScopeToProfile(urlProfileId);
                     selector.value = urlProfileId;
                     await handleUserChange(urlProfileId);
                     return;
@@ -11155,6 +11164,7 @@
             if (urlProfileId && selector) {
                 const opt = Array.from(selector.options).find(o => o.value === urlProfileId);
                 if (opt) {
+                    expandSettingsScopeToProfile(urlProfileId);
                     selector.value = urlProfileId;
                     selectedUserId = urlProfileId;
                     await handleUserChange(urlProfileId);
