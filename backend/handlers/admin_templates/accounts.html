@@ -488,7 +488,7 @@ function renderHouseholds() {
         ].some(value => String(value || '').toLowerCase().includes(search));
         if (!matchesSearch) return '';
         return `
-            <div class="card household-card" data-household-id="${escapeHtml(a.id)}">
+            <div class="card household-card${search ? '' : ' collapsed'}" data-household-id="${escapeHtml(a.id)}">
                 <div class="household-header" onclick="toggleHousehold(event, '${escapeHtml(a.id)}')">
                     <svg class="household-toggle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
                     <div class="household-icon">

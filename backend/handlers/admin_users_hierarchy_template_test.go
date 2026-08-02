@@ -40,6 +40,9 @@ func TestAdminUsersPageExplainsAndRendersAccessHierarchy(t *testing.T) {
 	if strings.Contains(source, `id="tab-accounts"`) || strings.Contains(source, `id="tab-profiles">Profiles</button>`) {
 		t.Fatal("admin Users page still exposes separate Accounts or Profiles tabs")
 	}
+	if !strings.Contains(source, `household-card${search ? '' : ' collapsed'}`) {
+		t.Fatal("admin Users page households do not start collapsed when no search is active")
+	}
 }
 
 func TestAdminUsesAutomationTerminologyAndAlignedFilters(t *testing.T) {
@@ -109,6 +112,10 @@ func TestAdminSettingsUsesHierarchyScopeTree(t *testing.T) {
 		`function selectSettingsScope(kind, profileId, clientId = '')`,
 		`function toggleSettingsServer(event)`,
 		`function toggleSettingsPerson(event, profileId)`,
+		`function expandSettingsScopeToProfile(profileId)`,
+		`settingsScopeServerExpanded = true;`,
+		`expandedSettingsHouseholds.add(householdId);`,
+		`expandSettingsScopeToProfile(urlProfileId);`,
 		`let settingsScopeServerExpanded = false;`,
 		`class="settings-scope-server-line"`,
 		`const STALE_SETTINGS_DEVICE_AGE_MS = 7 * 24 * 60 * 60 * 1000`,
