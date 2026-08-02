@@ -852,7 +852,7 @@
             return clientRankingFields.filter(field => clientFieldDiffersFromInherited(clientSettings, 'ranking', field)).length;
         }
         if (!selectedUserId || !userSettings) return 0;
-        return (buildProfileOverrideDetails(userSettings)['Result Ranking'] || []).length;
+        return (buildProfileOverrideDetails(userSettings).ranking || []).length;
     }
 
     function settingsSectionCustomizationCount(sectionKey) {
@@ -860,18 +860,18 @@
         if (sectionKey === 'ranking') return rankingCustomizationCount();
 
         if (!selectedClientId && selectedUserId && userSettings) {
-            const sectionLabel = {
-                playback: 'Playback',
-                metadata: 'Metadata',
-                filtering: 'Result Quality',
-                animeFiltering: 'Anime Language',
-                display: 'Display',
-                homeShelves: 'Home Shelves',
-                liveTV: 'Live TV',
-                network: 'Network',
+            const groupKey = {
+                playback: 'playback',
+                metadata: 'metadata',
+                filtering: 'contentFiltering',
+                animeFiltering: 'animeFiltering',
+                display: 'display',
+                homeShelves: 'homeShelves',
+                liveTV: 'liveTV',
+                network: 'network',
             }[sectionKey];
-            if (sectionLabel) {
-                return (buildProfileOverrideDetails(userSettings)[sectionLabel] || []).length;
+            if (groupKey) {
+                return (buildProfileOverrideDetails(userSettings)[groupKey] || []).length;
             }
         }
 
@@ -1656,14 +1656,14 @@
 
     // Sections to check for overrides and their global mapping
     const overrideSections = [
-        { key: 'playback', globalKey: 'playback', label: 'Playback' },
-        { key: 'metadata', globalKey: 'metadata', label: 'Metadata' },
-        { key: 'filtering', globalKey: 'filtering', label: 'Result Quality' },
-        { key: 'animeFiltering', globalKey: 'animeFiltering', label: 'Anime Language' },
-        { key: 'display', globalKey: 'display', label: 'Display' },
-        { key: 'homeShelves', globalKey: 'homeShelves', label: 'Home Shelves' },
-        { key: 'liveTV', globalKey: 'live', label: 'Live TV' },
-        { key: 'network', globalKey: 'network', label: 'Network' },
+        { key: 'playback', groupKey: 'playback' },
+        { key: 'metadata', groupKey: 'metadata' },
+        { key: 'filtering', groupKey: 'contentFiltering' },
+        { key: 'animeFiltering', groupKey: 'animeFiltering' },
+        { key: 'display', groupKey: 'display' },
+        { key: 'homeShelves', groupKey: 'homeShelves' },
+        { key: 'liveTV', groupKey: 'liveTV' },
+        { key: 'network', groupKey: 'network' },
     ];
 
     // LiveTV fields that are inherently per-user (channel preferences), never overrides
@@ -1720,6 +1720,7 @@
         for (const sec of overrideSections) {
             const profileSection = settings[sec.key];
             if (!profileSection) continue;
+            const groupKey = sec.groupKey;
 
             if (sec.key === 'homeShelves') {
                 const profileShelves = profileSection.shelves;
@@ -1736,7 +1737,7 @@
                             diffs.push(shelf.name || shelf.id);
                         }
                     }
-                    if (diffs.length > 0) details[sec.label] = diffs;
+                    if (diffs.length > 0) details[groupKey] = diffs;
                 }
                 for (const fieldKey of Object.keys(profileSection)) {
                     if (fieldKey === 'shelves') continue;
@@ -1744,8 +1745,8 @@
                     if (profileValue === null) continue;
                     const globalValue = normalizeForComparisonForField(sec.key, fieldKey, getGlobalValue(sec.key + '.' + fieldKey));
                     if (!deepEqual(profileValue, globalValue)) {
-                        if (!details[sec.label]) details[sec.label] = [];
-                        details[sec.label].push(getFieldLabel(sec.key, fieldKey));
+                        if (!details[groupKey]) details[groupKey] = [];
+                        details[groupKey].push(getFieldLabel(sec.key, fieldKey));
                     }
                 }
                 continue;
@@ -1759,7 +1760,7 @@
                 const globalValue = normalizeForComparisonForField(sec.key, fieldKey, getGlobalValue(sec.key + '.' + fieldKey));
                 if (!deepEqual(profileValue, globalValue)) diffFields.push(getFieldLabel(sec.key, fieldKey));
             }
-            if (diffFields.length > 0) details[sec.label] = diffFields;
+            if (diffFields.length > 0) details[groupKey] = diffFields;
         }
 
         if (settings.ranking) {
@@ -1781,7 +1782,7 @@
                 const criteria = getAtPath(settings.ranking, path);
                 if (Array.isArray(criteria) && criteria.length > 0) rankingDiffs.push(label);
             }
-            if (rankingDiffs.length > 0) details['Result Ranking'] = rankingDiffs;
+            if (rankingDiffs.length > 0) details.ranking = rankingDiffs;
         }
 
         for (const fields of Object.values(details)) {
@@ -2286,20 +2287,15 @@
     function propagationGroupsForOverrideDetails(details) {
         if (!details || Object.keys(details).length === 0) return [];
         return propagationGroups.map(group => {
-            const fields = details[group.detailSection];
-            const matchingFields = Array.isArray(fields)
-                ? (group.matchAllDetailFields ? fields : fields.filter(field => group.detailFields.includes(field)))
-                : [];
-            if (matchingFields.length === 0) return null;
+            const fields = details[group.key];
+            if (!Array.isArray(fields) || fields.length === 0) return null;
             settingsPropagationLog('group eligible from override details', {
                 group: group.key,
-                section: group.detailSection,
-                matchingFields,
-                allFields: fields,
+                fields,
             });
             return {
                 ...group,
-                description: matchingFields.join(', '),
+                description: fields.join(', '),
             };
         }).filter(Boolean);
     }
