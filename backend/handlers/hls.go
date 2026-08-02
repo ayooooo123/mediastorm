@@ -710,16 +710,33 @@ func castVideoMustTranscode(probe *UnifiedProbeResult) bool {
 	return !isLegacyCastCopyCompatibleVideo(probe)
 }
 
-func canAttemptDirectCastCopyVideo(probe *UnifiedProbeResult) bool {
-	return probe != nil &&
-		strings.TrimSpace(probe.VideoCodec) != "" &&
-		!IsIncompatibleVideoCodec(probe.VideoCodec)
-}
-func (session *HLSSession) disableUnsafeDirectCast() bool {
-	if session == nil || !session.CastMode || !session.DirectCastMode || canAttemptDirectCastCopyVideo(session.ProbeData) {
+// canAttemptDirectCastCopyVideo reports whether the source may be sent to a
+// receiver without re-encoding the video. The bar is the Cast copy envelope
+// (H.264, Level 4.1, 1080p30/720p60), not merely "a codec we understand":
+// receivers accept a LOAD for 4K HEVC, fetch a few segments, and then stall
+// forever with no error, and second-generation Chromecasts cannot decode HEVC
+// at any resolution. Anything outside the envelope belongs on the
+// compatibility transcode, which every receiver tested so far plays.
+//
+// caps widens this per receiver once a capability probe has proven the device
+// handles more; without a probe result the envelope is the safe answer.
+func canAttemptDirectCastCopyVideo(probe *UnifiedProbeResult, caps *castcaps.Capabilities) bool {
+	if probe == nil || strings.TrimSpace(probe.VideoCodec) == "" || IsIncompatibleVideoCodec(probe.VideoCodec) {
 		return false
 	}
-	log.Printf("[hls] session %s: cast direct video codec is not copy-compatible; falling back to deterministic H.264 compatibility transcode", session.ID)
+	if !castVideoMustTranscode(probe) {
+		return true
+	}
+	// Outside the legacy envelope: only a receiver that has proven it plays
+	// fMP4 has any chance with an HEVC/4K copy.
+	return caps.Supports(castcaps.VariantFMP4)
+}
+
+func (session *HLSSession) disableUnsafeDirectCast(caps *castcaps.Capabilities) bool {
+	if session == nil || !session.CastMode || !session.DirectCastMode || canAttemptDirectCastCopyVideo(session.ProbeData, caps) {
+		return false
+	}
+	log.Printf("[hls] session %s: cast direct video is outside the receiver copy envelope; falling back to deterministic H.264 compatibility transcode", session.ID)
 	session.DirectCastMode = false
 	if isDirectCastTarget(session.PlaybackTarget, "") {
 		session.PlaybackTarget = "web"
@@ -1668,7 +1685,7 @@ func (m *HLSManager) CreateSession(ctx context.Context, path string, originalPat
 
 	normalizedPlaybackTarget := strings.ToLower(strings.TrimSpace(playbackTarget))
 	requestedDirectCastMode := castMode && isDirectCastTarget(normalizedPlaybackTarget, "")
-	directCastMode := requestedDirectCastMode && canAttemptDirectCastCopyVideo(probeData)
+	directCastMode := requestedDirectCastMode && canAttemptDirectCastCopyVideo(probeData, m.lookupCastCapabilities(castReceiverHost))
 	if requestedDirectCastMode && !directCastMode && isDirectCastTarget(normalizedPlaybackTarget, "") {
 		normalizedPlaybackTarget = "web"
 	}
@@ -2568,7 +2585,7 @@ func (m *HLSManager) fixDVCodecTag(session *HLSSession) error {
 // startTranscoding begins FFmpeg HLS transcoding
 func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, forceAAC bool) error {
 	startTime := time.Now()
-	session.disableUnsafeDirectCast()
+	session.disableUnsafeDirectCast(m.castCapabilities(session))
 	stableCastMode := session.usesStableCastTimeline()
 	if stableCastMode {
 		// Legacy Cast output must not depend on receiver/TV Dolby passthrough support.
@@ -6377,8 +6394,10 @@ func (m *HLSManager) SetCastCapabilities(store *castcaps.Store) {
 	m.castCaps = store
 }
 
-func (m *HLSManager) castCapabilities(session *HLSSession) *castcaps.Capabilities {
-	if m == nil || session == nil || session.CastReceiverHost == "" {
+// lookupCastCapabilities answers from cache for a receiver address. Session
+// creation needs this before an HLSSession exists.
+func (m *HLSManager) lookupCastCapabilities(host string) *castcaps.Capabilities {
+	if m == nil || strings.TrimSpace(host) == "" {
 		return nil
 	}
 	m.castCapsMu.RLock()
@@ -6387,5 +6406,12 @@ func (m *HLSManager) castCapabilities(session *HLSSession) *castcaps.Capabilitie
 	if store == nil {
 		return nil
 	}
-	return store.Lookup(session.CastReceiverHost)
+	return store.Lookup(host)
+}
+
+func (m *HLSManager) castCapabilities(session *HLSSession) *castcaps.Capabilities {
+	if session == nil {
+		return nil
+	}
+	return m.lookupCastCapabilities(session.CastReceiverHost)
 }

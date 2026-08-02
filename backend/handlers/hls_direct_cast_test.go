@@ -134,6 +134,10 @@ func TestDirectCastH264RemuxesToMpegTSWithoutLegacyCastForcing(t *testing.T) {
 			VideoCodec:         "h264",
 			VideoPixFmt:        "yuv420p",
 			VideoProfile:       "High",
+			VideoWidth:         1920,
+			VideoHeight:        1080,
+			VideoLevel:         41,
+			AvgFrameRate:       "24000/1001",
 			AudioStreams:       []audioStreamInfo{{Index: 1, Codec: "aac"}},
 			HasCompatibleAudio: true,
 		},
@@ -156,7 +160,10 @@ func TestDirectCastH264RemuxesToMpegTSWithoutLegacyCastForcing(t *testing.T) {
 	}
 }
 
-func TestDirectCastHEVCMain10UsesOriginalQualityFMP4(t *testing.T) {
+// A gen2 Chromecast cannot decode HEVC at any resolution, and every receiver
+// tested so far stalls silently on an fMP4 HLS load. An unprobed receiver
+// therefore gets the compatibility transcode rather than an HEVC copy.
+func TestDirectCastHEVCFallsBackToCompatibilityWithoutCapabilityProof(t *testing.T) {
 	args, logs := runCastArgPlanTest(t, &HLSSession{
 		ID:             "direct-cast-hevc",
 		Path:           "movie.mkv",
@@ -171,22 +178,57 @@ func TestDirectCastHEVCMain10UsesOriginalQualityFMP4(t *testing.T) {
 			VideoCodec:         "hevc",
 			VideoPixFmt:        "yuv420p10le",
 			VideoProfile:       "Main 10",
+			VideoWidth:         3840,
+			VideoHeight:        2160,
+			VideoLevel:         153,
+			AvgFrameRate:       "24000/1001",
 			AudioStreams:       []audioStreamInfo{{Index: 1, Codec: "aac"}},
 			HasCompatibleAudio: true,
 		},
 	}, false)
 
-	if strings.Contains(logs, "falling back to deterministic H.264 compatibility transcode") {
-		t.Fatalf("HEVC direct cast fell back to compatibility; logs=%s", logs)
+	if !strings.Contains(logs, "outside the receiver copy envelope") {
+		t.Fatalf("HEVC direct cast did not fall back to compatibility; logs=%s", logs)
+	}
+	if argPair(args, "-c:v", "copy") {
+		t.Fatalf("HEVC direct cast copied 4K video a receiver cannot decode; args=%v", args)
+	}
+	if !argPair(args, "-hls_segment_type", "mpegts") {
+		t.Fatalf("compatibility fallback must use MPEG-TS; args=%v", args)
+	}
+}
+
+func TestDirectCast1080pH264StillCopies(t *testing.T) {
+	args, logs := runCastArgPlanTest(t, &HLSSession{
+		ID:             "direct-cast-1080p",
+		Path:           "movie.mkv",
+		OriginalPath:   "movie.mkv",
+		OutputDir:      t.TempDir(),
+		CastMode:       true,
+		DirectCastMode: true,
+		PlaybackTarget: "cast-direct",
+		ProbeData: &UnifiedProbeResult{
+			Duration:           120,
+			VideoCodec:         "h264",
+			VideoPixFmt:        "yuv420p",
+			VideoProfile:       "High",
+			VideoWidth:         1920,
+			VideoHeight:        1080,
+			VideoLevel:         41,
+			AvgFrameRate:       "24000/1001",
+			AudioStreams:       []audioStreamInfo{{Index: 1, Codec: "aac"}},
+			HasCompatibleAudio: true,
+		},
+	}, false)
+
+	if strings.Contains(logs, "outside the receiver copy envelope") {
+		t.Fatalf("in-envelope H.264 must keep the copy path; logs=%s", logs)
 	}
 	if !argPair(args, "-c:v", "copy") {
-		t.Fatalf("HEVC direct cast did not copy video; args=%v", args)
+		t.Fatalf("1080p H.264 direct cast did not copy video; args=%v", args)
 	}
-	if !argPair(args, "-hls_segment_type", "fmp4") {
-		t.Fatalf("HEVC direct cast did not use fMP4 segments; args=%v", args)
-	}
-	if argPair(args, "-hls_segment_type", "mpegts") {
-		t.Fatalf("HEVC direct cast used legacy MPEG-TS segments; args=%v", args)
+	if !argPair(args, "-hls_segment_type", "mpegts") {
+		t.Fatalf("direct cast copy must remux into MPEG-TS; args=%v", args)
 	}
 }
 
@@ -204,6 +246,10 @@ func TestDirectCastNonAACAudioReEncodesAudioOnlyInMpegTS(t *testing.T) {
 			VideoCodec:         "h264",
 			VideoPixFmt:        "yuv420p",
 			VideoProfile:       "High",
+			VideoWidth:         1920,
+			VideoHeight:        1080,
+			VideoLevel:         41,
+			AvgFrameRate:       "24000/1001",
 			AudioStreams:       []audioStreamInfo{{Index: 1, Codec: "eac3"}},
 			HasCompatibleAudio: true,
 		},
@@ -251,7 +297,7 @@ func TestDirectCastIncompatibleVideoFallsBackToCompatibilityTranscode(t *testing
 		},
 	}, false)
 
-	if !strings.Contains(logs, "session direct-cast-incompatible: cast direct video codec is not copy-compatible") {
+	if !strings.Contains(logs, "session direct-cast-incompatible: cast direct video is outside the receiver copy envelope") {
 		t.Fatalf("incompatible direct cast did not log compatibility fallback; logs=%s", logs)
 	}
 	if argPair(args, "-c:v", "copy") {
