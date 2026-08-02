@@ -16,9 +16,13 @@ const (
 	// VariantTSAACStereo is the universal baseline. If this fails, the receiver
 	// is unreachable or busy rather than picky.
 	VariantTSAACStereo Variant = "ts-aac-stereo"
-	// VariantFMP4 decides whether direct copy can keep HEVC/DV quality or has
-	// to remux/transcode into MPEG-TS.
+	// VariantFMP4 decides whether the fMP4 container is accepted at all. The
+	// asset is H.264, so it proves the container and nothing about codecs.
 	VariantFMP4 Variant = "fmp4-aac-stereo"
+	// VariantHEVCFMP4 decides whether HEVC video can be copied to the receiver
+	// instead of re-encoded to H.264. Container support does not imply this:
+	// a second-generation Chromecast accepts fMP4 and cannot decode HEVC.
+	VariantHEVCFMP4 Variant = "fmp4-hevc"
 	// VariantTSAC3 decides whether Dolby audio can be passed through untouched.
 	VariantTSAC3 Variant = "ts-ac3"
 	// VariantTSAACMultichannel decides whether re-encoded audio can stay 5.1.
@@ -27,7 +31,7 @@ const (
 
 // AllVariants is the probe order: baseline first so an unreachable or busy
 // receiver is detected before spending time on the rest.
-var AllVariants = []Variant{VariantTSAACStereo, VariantFMP4, VariantTSAC3, VariantTSAACMultichannel}
+var AllVariants = []Variant{VariantTSAACStereo, VariantFMP4, VariantHEVCFMP4, VariantTSAC3, VariantTSAACMultichannel}
 
 // Verdict is what a probe learned about one variant.
 type Verdict string

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"novastream/services/castcaps"
 	"novastream/services/streaming"
 )
 
@@ -460,4 +461,49 @@ func castFilterArg(args []string) string {
 		}
 	}
 	return ""
+}
+
+// Capability widening must prove the exact thing it permits. VariantFMP4 is an
+// H.264 asset: it says the container is accepted, nothing about HEVC decode.
+func TestDirectCastCopyWideningRequiresMatchingProof(t *testing.T) {
+	hevc4K := &UnifiedProbeResult{
+		VideoCodec:   "hevc",
+		VideoWidth:   3840,
+		VideoHeight:  2160,
+		VideoLevel:   153,
+		AvgFrameRate: "24000/1001",
+	}
+	h264Above := &UnifiedProbeResult{
+		VideoCodec:   "h264",
+		VideoWidth:   3840,
+		VideoHeight:  2160,
+		VideoLevel:   51,
+		AvgFrameRate: "24000/1001",
+	}
+	caps := func(variants ...castcaps.Variant) *castcaps.Capabilities {
+		c := &castcaps.Capabilities{Variants: map[castcaps.Variant]castcaps.Verdict{}}
+		for _, v := range variants {
+			c.Variants[v] = castcaps.VerdictSupported
+		}
+		return c
+	}
+
+	for _, tc := range []struct {
+		name  string
+		probe *UnifiedProbeResult
+		caps  *castcaps.Capabilities
+		want  bool
+	}{
+		{"unprobed receiver refuses 4K HEVC", hevc4K, nil, false},
+		{"container proof alone refuses HEVC", hevc4K, caps(castcaps.VariantFMP4), false},
+		{"HEVC proof without container refuses", hevc4K, caps(castcaps.VariantHEVCFMP4), false},
+		{"both proofs allow HEVC copy", hevc4K, caps(castcaps.VariantFMP4, castcaps.VariantHEVCFMP4), true},
+		{"no variant measures 4K H.264", h264Above, caps(castcaps.VariantFMP4, castcaps.VariantHEVCFMP4), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := canAttemptDirectCastCopyVideo(tc.probe, tc.caps); got != tc.want {
+				t.Fatalf("canAttemptDirectCastCopyVideo = %v, want %v", got, tc.want)
+			}
+		})
+	}
 }

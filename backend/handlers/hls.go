@@ -727,9 +727,20 @@ func canAttemptDirectCastCopyVideo(probe *UnifiedProbeResult, caps *castcaps.Cap
 	if !castVideoMustTranscode(probe) {
 		return true
 	}
-	// Outside the legacy envelope: only a receiver that has proven it plays
-	// fMP4 has any chance with an HEVC/4K copy.
-	return caps.Supports(castcaps.VariantFMP4)
+	// Outside the legacy envelope. Widening requires proof of the specific
+	// thing being asked for, not merely of the container: VariantFMP4 is an
+	// H.264 asset, so it says nothing about HEVC decode.
+	if !caps.Supports(castcaps.VariantFMP4) {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(probe.VideoCodec)) {
+	case "hevc", "h265", "hev1", "hvc1":
+		return caps.Supports(castcaps.VariantHEVCFMP4)
+	default:
+		// H.264 above the legacy box (4K, high level, 1080p60). No probe
+		// variant measures resolution, so this stays on the safe transcode.
+		return false
+	}
 }
 
 func (session *HLSSession) disableUnsafeDirectCast(caps *castcaps.Capabilities) bool {

@@ -46,6 +46,13 @@ var probeVariantSpecs = map[castcaps.Variant][]string{
 		"-c:a", "aac", "-ac", "2", "-b:a", "128k", "-profile:a", "aac_low",
 		"-hls_segment_type", "fmp4", "-hls_fmp4_init_filename", "init.mp4",
 	},
+	// Real HEVC video: the only honest way to learn whether a receiver decodes
+	// it. Kept at the same tiny resolution as the rest so the encode is cheap.
+	castcaps.VariantHEVCFMP4: {
+		"-c:v", "libx265", "-preset", "ultrafast", "-tag:v", "hvc1", "-pix_fmt", "yuv420p",
+		"-c:a", "aac", "-ac", "2", "-b:a", "128k", "-profile:a", "aac_low",
+		"-hls_segment_type", "fmp4", "-hls_fmp4_init_filename", "init.mp4",
+	},
 	castcaps.VariantTSAC3: {
 		"-c:v", "libx264", "-preset", "veryfast", "-profile:v", "high", "-level", "4.0", "-pix_fmt", "yuv420p",
 		"-c:a", "ac3", "-ac", "6", "-b:a", "384k",
