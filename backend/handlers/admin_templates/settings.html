@@ -295,6 +295,21 @@
     width: 100%;
     text-align: left;
 }
+.settings-category-btn-copy { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.settings-customization-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.2rem;
+    padding: 0.1rem 0.35rem;
+    border-radius: 999px;
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+    font-size: 0.62rem;
+    font-weight: 700;
+    line-height: 1.25;
+}
+.section-customization-count { margin-left: 0.45rem; }
 .settings-category-btn:hover,
 .settings-level-btn:hover { color: var(--text-primary); background: var(--bg-tertiary); }
 .settings-category-btn.active,
@@ -747,10 +762,12 @@
             activeSettingsGroup = '';
         }
         if (nav) {
-            const allButton = '<button type="button" class="settings-category-btn '+(!activeSettingsGroup ? 'active' : '')+'"'+(!activeSettingsGroup ? ' aria-current="page"' : '')+' onclick="setSettingsGroup(\'\')">All</button>';
+            const allCustomizationCount = availableGroups.reduce((total, group) => total + settingsGroupCustomizationCount(group.id), 0);
+            const allButton = '<button type="button" class="settings-category-btn '+(!activeSettingsGroup ? 'active' : '')+'"'+(!activeSettingsGroup ? ' aria-current="page"' : '')+' onclick="setSettingsGroup(\'\')"><span class="settings-category-btn-copy"><span>All</span>'+renderCustomizationCount(allCustomizationCount)+'</span></button>';
             nav.innerHTML = allButton + availableGroups.map(group => {
                 const isActive = group.id === activeSettingsGroup;
-                return '<button type="button" class="settings-category-btn '+(isActive ? 'active' : '')+'"'+(isActive ? ' aria-current="page"' : '')+' onclick="setSettingsGroup(\''+group.id+'\')">'+group.label+'</button>';
+                const customizationCount = settingsGroupCustomizationCount(group.id);
+                return '<button type="button" class="settings-category-btn '+(isActive ? 'active' : '')+'"'+(isActive ? ' aria-current="page"' : '')+' onclick="setSettingsGroup(\''+group.id+'\')"><span class="settings-category-btn-copy"><span>'+group.label+'</span>'+renderCustomizationCount(customizationCount)+'</span></button>';
             }).join('');
         }
         document.getElementById('settingsBasicBtn')?.classList.toggle('active', settingsLevel === 'basic');
@@ -823,6 +840,60 @@
         if (!count) return '';
         const text = typeof count === 'number' && count > 1 ? `${count} ${label}` : label.charAt(0).toUpperCase() + label.slice(1);
         return `<span class="settings-scope-custom" title="This scope has settings that differ from its parent">${escapeHtml(text)}</span>`;
+    }
+
+    function renderCustomizationCount(count, extraClass = '') {
+        if (!count) return '';
+        return `<span class="settings-customization-count ${extraClass}" title="${count} custom setting${count === 1 ? '' : 's'}">${count}</span>`;
+    }
+
+    function rankingCustomizationCount() {
+        if (selectedClientId && clientSettings) {
+            return clientRankingFields.filter(field => clientFieldDiffersFromInherited(clientSettings, 'ranking', field)).length;
+        }
+        if (!selectedUserId || !userSettings?.ranking) return 0;
+        let count = 0;
+        for (const field of ['newestReleaseFirst', 'splitByService']) {
+            if (isProfileValueDifferent(`ranking.${field}`)) count++;
+        }
+        for (const path of ['ranking.criteria', 'ranking.debrid.criteria', 'ranking.usenet.criteria']) {
+            const criteria = getAtPath(userSettings, path);
+            if (Array.isArray(criteria) && criteria.length > 0) count++;
+        }
+        return count;
+    }
+
+    function settingsSectionCustomizationCount(sectionKey) {
+        if (!selectedUserId && !selectedClientId) return 0;
+        if (sectionKey === 'ranking') return rankingCustomizationCount();
+
+        const paths = new Set();
+        const collectFields = (key, def) => {
+            if (!def || def.is_array) return;
+            for (const fieldKey of Object.keys(def.fields || {})) {
+                const path = `${key}.${fieldKey}`;
+                if (selectedClientId && !getClientSettingsKey(path)) continue;
+                if (getInheritanceInfo(path).isOverridden) paths.add(path);
+            }
+        };
+
+        collectFields(sectionKey, schema[sectionKey]);
+        for (const [nestedKey, nestedDef] of Object.entries(schema)) {
+            if (nestedDef.parent !== sectionKey || nestedDef.group) continue;
+            if (nestedDef.is_array) {
+                if (!selectedClientId && isProfileValueDifferent(nestedKey)) paths.add(nestedKey);
+                continue;
+            }
+            collectFields(nestedKey, nestedDef);
+        }
+        return paths.size;
+    }
+
+    function settingsGroupCustomizationCount(groupId) {
+        if (!selectedUserId && !selectedClientId) return 0;
+        return Object.entries(schema)
+            .filter(([, def]) => def.group === groupId && !def.hidden)
+            .reduce((total, [sectionKey]) => total + settingsSectionCustomizationCount(sectionKey), 0);
     }
 
     function renderSettingsPersonScope(profile) {
@@ -1146,10 +1217,33 @@
         const keys = globalPath.split('.');
         let val = currentSettings;
         for (const key of keys) {
-            if (val === undefined || val === null) return undefined;
+            if (val === undefined || val === null) return getSchemaZeroDefault(path);
             val = val[key];
         }
-        return val;
+        return val === undefined ? getSchemaZeroDefault(path) : val;
+    }
+
+    // JSON omits false/zero global values, but scoped comparisons need their
+    // effective zero values so an explicit false does not become a fake override.
+    function getSchemaZeroDefault(path) {
+        const parts = path.split('.');
+        let sectionDef = null;
+        let fieldKey = '';
+        for (let split = parts.length - 1; split >= 1; split--) {
+            const sectionKey = parts.slice(0, split).join('.');
+            if (schema[sectionKey]) {
+                sectionDef = schema[sectionKey];
+                fieldKey = parts.slice(split).join('.');
+                break;
+            }
+        }
+        const fieldDef = sectionDef?.fields?.[fieldKey];
+        if (!fieldDef) return undefined;
+        if (fieldDef.type === 'boolean') return false;
+        if (fieldDef.type === 'number') return 0;
+        if (['tags', 'weighted-tags', 'multiselect'].includes(fieldDef.type)) return [];
+        if (['text', 'password', 'select'].includes(fieldDef.type)) return '';
+        return undefined;
     }
 
     // Check if a value is empty/missing
@@ -1359,7 +1453,7 @@
         if (userId) {
             // Load user-specific settings
             try {
-                const response = await fetch(basePath + '/api/user-settings?userId=' + encodeURIComponent(userId));
+                const response = await fetch(basePath + '/api/user-settings?userId=' + encodeURIComponent(userId) + '&raw=true');
                 if (response.ok) {
                     userSettings = await response.json();
                     originalUserSettings = JSON.parse(JSON.stringify(userSettings));
@@ -1525,6 +1619,14 @@
                             }
                         }
                     }
+                    if (!hasActualOverrides) {
+                        for (const key of clientRankingFields) {
+                            if (clientFieldDiffersFromInherited(settings, 'ranking', key)) {
+                                hasActualOverrides = true;
+                                break;
+                            }
+                        }
+                    }
                     client.hasOverrides = hasActualOverrides;
                     clientOverrideGroupsById[client.id] = propagationGroupsForClientSettings(settings);
                 } else {
@@ -1548,7 +1650,7 @@
     const overrideSections = [
         { key: 'playback', globalKey: 'playback', label: 'Playback' },
         { key: 'metadata', globalKey: 'metadata', label: 'Metadata' },
-        { key: 'filtering', globalKey: 'filtering', label: 'Content Filtering' },
+        { key: 'filtering', globalKey: 'filtering', label: 'Result Quality' },
         { key: 'animeFiltering', globalKey: 'animeFiltering', label: 'Anime Language' },
         { key: 'display', globalKey: 'display', label: 'Display' },
         { key: 'homeShelves', globalKey: 'homeShelves', label: 'Home Shelves' },
@@ -1569,6 +1671,14 @@
     }
 
     function getClientPropagationFieldLabel(fieldKey) {
+        const rankingLabels = {
+            newestReleaseFirst: 'Newest Release First',
+            rankingSplitByService: 'Split Debrid/Usenet Ranking',
+            rankingCriteria: 'Overall Ranking Criteria',
+            debridRankingCriteria: 'Debrid Ranking Criteria',
+            usenetRankingCriteria: 'Usenet Ranking Criteria',
+        };
+        if (rankingLabels[fieldKey]) return rankingLabels[fieldKey];
         const section = getClientFieldSection(fieldKey);
         if (section === 'display' && fieldKey.startsWith('appearance.')) return 'appearance';
         return getFieldLabel(section, fieldKey.split('.')[0]);
@@ -1656,7 +1766,7 @@
                             if (fieldKey === 'shelves') continue;
                             const profileVal = normalizeForComparisonForField(sec.key, fieldKey, profileSection[fieldKey]);
                             if (profileVal === null) continue;
-                            const globalVal = normalizeForComparisonForField(sec.key, fieldKey, globalSection[fieldKey]);
+                            const globalVal = normalizeForComparisonForField(sec.key, fieldKey, getGlobalValue(sec.key + '.' + fieldKey));
                             if (!deepEqual(profileVal, globalVal)) {
                                 if (!details[sec.label]) details[sec.label] = [];
                                 details[sec.label].push(getFieldLabel(sec.key, fieldKey));
@@ -1669,9 +1779,9 @@
                     for (const fieldKey of Object.keys(profileSection)) {
                         // Skip inherently per-user LiveTV fields
                         if (sec.key === 'liveTV' && liveTVPerUserFields.has(fieldKey)) continue;
-                        const profileVal = normalizeForComparison(profileSection[fieldKey]);
+                        const profileVal = normalizeForComparisonForField(sec.key, fieldKey, profileSection[fieldKey]);
                         if (profileVal === null) continue;
-                        const globalVal = normalizeForComparison(globalSection[fieldKey]);
+                        const globalVal = normalizeForComparisonForField(sec.key, fieldKey, getGlobalValue(sec.key + '.' + fieldKey));
                         if (!deepEqual(profileVal, globalVal)) {
                             if (sec.key === 'display') {
                                 settingsPropagationLog('recalc display field differs from raw profile settings', {
@@ -1692,14 +1802,27 @@
                     }
                 }
 
-                // Check ranking separately (nested structure)
-                if (settings.ranking && settings.ranking.criteria) {
+                // Check every ranking override, including service-specific criteria.
+                if (settings.ranking) {
                     const globalRanking = currentSettings.ranking || {};
-                    const globalCriteria = globalRanking.criteria || [];
-                    const profileCriteria = settings.ranking.criteria;
-                    if (!deepEqual(normalizeForComparison(profileCriteria), normalizeForComparison(globalCriteria))) {
-                        details['Result Ranking'] = ['Ranking criteria'];
+                    const rankingDiffs = [];
+                    for (const [fieldKey, label] of [
+                        ['newestReleaseFirst', 'Newest Release First'],
+                        ['splitByService', 'Split Debrid/Usenet Ranking'],
+                    ]) {
+                        const profileValue = normalizeForComparison(settings.ranking[fieldKey]);
+                        const globalValue = normalizeForComparison(getGlobalValue('ranking.' + fieldKey));
+                        if (profileValue !== null && !deepEqual(profileValue, globalValue)) rankingDiffs.push(label);
                     }
+                    for (const [path, label] of [
+                        ['criteria', 'Overall Ranking Criteria'],
+                        ['debrid.criteria', 'Debrid Ranking Criteria'],
+                        ['usenet.criteria', 'Usenet Ranking Criteria'],
+                    ]) {
+                        const profileCriteria = getAtPath(settings.ranking, path);
+                        if (Array.isArray(profileCriteria) && profileCriteria.length > 0) rankingDiffs.push(label);
+                    }
+                    if (rankingDiffs.length > 0) details['Result Ranking'] = rankingDiffs;
                 }
 
                 const hasOverrides = Object.keys(details).length > 0;
@@ -1995,9 +2118,9 @@
         },
         {
             key: 'contentFiltering',
-            label: 'Content Filtering',
+            label: 'Result Quality',
             description: 'Max Movie Size (GB), Max Episode Size (GB), Max Resolution, HDR/DV Policy, Unknown Track Preference, Required Terms, Filter Out Terms, Preferred Terms, Non-Preferred Terms, Download Preferred Terms',
-            detailSection: 'Content Filtering',
+            detailSection: 'Result Quality',
             detailFields: ['Max Movie Size (GB)', 'Max Episode Size (GB)', 'Max Resolution', 'HDR/DV Policy', 'Unknown Track Preference', 'Required Terms', 'Filter Out Terms', 'Preferred Terms', 'Non-Preferred Terms', 'Download Preferred Terms'],
             userPaths: [
                 'filtering.maxSizeMovieGb',
@@ -2141,13 +2264,23 @@
         {
             key: 'ranking',
             label: 'Result Ranking',
-            description: 'Ranking criteria',
+            description: 'Release ordering, shared ranking criteria, and service-specific ranking criteria',
             detailSection: 'Result Ranking',
-            detailFields: ['Ranking criteria'],
+            detailFields: ['Newest Release First', 'Split Debrid/Usenet Ranking', 'Overall Ranking Criteria', 'Debrid Ranking Criteria', 'Usenet Ranking Criteria'],
             userPaths: [
+                'ranking.newestReleaseFirst',
+                'ranking.splitByService',
                 'ranking.criteria',
+                'ranking.debrid.criteria',
+                'ranking.usenet.criteria',
             ],
-            clientPaths: [],
+            clientPaths: [
+                'newestReleaseFirst',
+                'rankingSplitByService',
+                'rankingCriteria',
+                'debridRankingCriteria',
+                'usenetRankingCriteria',
+            ],
         },
     ];
 
@@ -2577,7 +2710,7 @@
                 // Reset selected profile groups so they inherit current global defaults.
                 for (const [userId, selectedGroups] of selectionsByTarget.entries()) {
                     try {
-                        const loadResponse = await fetch(basePath + '/api/user-settings?userId=' + encodeURIComponent(userId), {
+                        const loadResponse = await fetch(basePath + '/api/user-settings?userId=' + encodeURIComponent(userId) + '&raw=true', {
                             credentials: 'same-origin'
                         });
                         if (!loadResponse.ok) {
@@ -2609,7 +2742,7 @@
                             body: JSON.stringify(strippedSettings)
                         });
                         if (response.ok) {
-                            const savedResponse = await fetch(basePath + '/api/user-settings?userId=' + encodeURIComponent(userId), {
+                            const savedResponse = await fetch(basePath + '/api/user-settings?userId=' + encodeURIComponent(userId) + '&raw=true', {
                                 credentials: 'same-origin'
                             });
                             if (savedResponse.ok) {
@@ -2723,76 +2856,9 @@
             if (userOverrides) userOverrides[userId] = false;
             return;
         }
-
-        // Check all per-user sections for any actual differences
-        let hasActualOverrides = false;
-
-        // Check filtering section
-        if (userSettings.filtering) {
-            const globalFiltering = currentSettings.filtering || {};
-            for (const key of Object.keys(userSettings.filtering)) {
-                const profileVal = normalizeForComparison(userSettings.filtering[key]);
-                // If profile value is null (empty/inherit), skip - not an override
-                if (profileVal === null) continue;
-                const globalVal = normalizeForComparison(globalFiltering[key]);
-                if (!deepEqual(profileVal, globalVal)) {
-                    hasActualOverrides = true;
-                    break;
-                }
-            }
-        }
-
-        // Check anime filtering section
-        if (!hasActualOverrides && userSettings.animeFiltering) {
-            const globalAnimeFiltering = currentSettings.animeFiltering || {};
-            for (const key of Object.keys(userSettings.animeFiltering)) {
-                const profileVal = normalizeForComparison(userSettings.animeFiltering[key]);
-                if (profileVal === null) continue;
-                const globalVal = normalizeForComparison(globalAnimeFiltering[key]);
-                if (!deepEqual(profileVal, globalVal)) {
-                    hasActualOverrides = true;
-                    break;
-                }
-            }
-        }
-
-        // Check playback section
-        if (!hasActualOverrides && userSettings.playback) {
-            const globalPlayback = currentSettings.playback || {};
-            for (const key of Object.keys(userSettings.playback)) {
-                const profileVal = normalizeForComparison(userSettings.playback[key]);
-                // If profile value is null (empty/inherit), skip - not an override
-                if (profileVal === null) continue;
-                const globalVal = normalizeForComparison(globalPlayback[key]);
-                if (!deepEqual(profileVal, globalVal)) {
-                    hasActualOverrides = true;
-                    break;
-                }
-            }
-        }
-
-        // Check liveTV section (inherits from global "live" section)
-        if (!hasActualOverrides && userSettings.liveTV) {
-            const globalLive = currentSettings.live || {};
-            for (const key of Object.keys(userSettings.liveTV)) {
-                const profileVal = normalizeForComparison(userSettings.liveTV[key]);
-                if (profileVal === null) continue;
-                const globalVal = normalizeForComparison(globalLive[key]);
-                if (!deepEqual(profileVal, globalVal)) {
-                    hasActualOverrides = true;
-                    break;
-                }
-            }
-        }
-
-        // Check homeShelves section - use lenient comparison for shelves
-        if (!hasActualOverrides && userSettings.homeShelves) {
-            const globalHomeShelves = currentSettings.homeShelves || {};
-            if (!homeShelvesEqual(userSettings.homeShelves, globalHomeShelves)) {
-                hasActualOverrides = true;
-            }
-        }
-
+        const hasActualOverrides = Object.entries(schema)
+            .filter(([, def]) => def.group && !def.hidden)
+            .some(([sectionKey]) => settingsSectionCustomizationCount(sectionKey) > 0);
         if (userOverrides) userOverrides[userId] = hasActualOverrides;
     }
 
@@ -2908,6 +2974,15 @@
             }
         }
 
+        if (!hasActualOverrides) {
+            for (const key of clientRankingFields) {
+                if (clientFieldDiffersFromInherited(clientSettings, 'ranking', key)) {
+                    hasActualOverrides = true;
+                    break;
+                }
+            }
+        }
+
         client.hasOverrides = hasActualOverrides;
         clientOverrideGroupsById[clientId] = propagationGroupsForClientSettings(clientSettings);
     }
@@ -2993,7 +3068,7 @@
         'maxResultsPerResolution',
     ];
     const clientAnimeFilterFields = ['animeLanguageEnabled', 'animePreferredLanguage'];
-    const clientRankingFields = ['newestReleaseFirst'];
+    const clientRankingFields = ['newestReleaseFirst', 'rankingSplitByService', 'rankingCriteria', 'debridRankingCriteria', 'usenetRankingCriteria'];
     // Map network field paths to client settings keys
     const clientNetworkFields = ['homeWifiSSID', 'homeBackendUrl', 'remoteBackendUrl'];
 
@@ -3025,8 +3100,16 @@
             if (keys[0] === 'animeFiltering' && clientAnimeFilterFields.includes(keys[1])) {
                 return keys[1];
             }
-            if (keys[0] === 'ranking' && clientRankingFields.includes(keys[1])) {
-                return keys[1];
+            if (keys[0] === 'ranking') {
+                const rankingKey = keys.slice(1).join('.');
+                const rankingClientKeys = {
+                    newestReleaseFirst: 'newestReleaseFirst',
+                    splitByService: 'rankingSplitByService',
+                    criteria: 'rankingCriteria',
+                    'debrid.criteria': 'debridRankingCriteria',
+                    'usenet.criteria': 'usenetRankingCriteria',
+                };
+                if (rankingClientKeys[rankingKey]) return rankingClientKeys[rankingKey];
             }
             if (keys[0] === 'network' && clientNetworkFields.includes(keys[1])) {
                 return keys[1];
@@ -3221,6 +3304,16 @@
     }
 
     function getClientFieldSettingsPath(section, fieldKey) {
+        if (section === 'ranking') {
+            const rankingPaths = {
+                newestReleaseFirst: 'ranking.newestReleaseFirst',
+                rankingSplitByService: 'ranking.splitByService',
+                rankingCriteria: 'ranking.criteria',
+                debridRankingCriteria: 'ranking.debrid.criteria',
+                usenetRankingCriteria: 'ranking.usenet.criteria',
+            };
+            if (rankingPaths[fieldKey]) return rankingPaths[fieldKey];
+        }
         return section + '.' + fieldKey;
     }
 
@@ -5125,7 +5218,7 @@
             const profiles = hiddenChannelsManager.profiles || [];
             const loadedProfiles = await Promise.all(profiles.map(async (profile) => {
                 if (profile.settings) return profile;
-                const response = await fetch(basePath + '/api/user-settings?userId=' + encodeURIComponent(profile.id), {
+                const response = await fetch(basePath + '/api/user-settings?userId=' + encodeURIComponent(profile.id) + '&raw=true', {
                     credentials: 'same-origin'
                 });
                 if (!response.ok) throw new Error(await response.text() || 'Failed to load profile settings');
@@ -5178,7 +5271,7 @@
 
         try {
             const loadedProfiles = await Promise.all(profiles.map(async (profile) => {
-                const response = await fetch(basePath + '/api/user-settings?userId=' + encodeURIComponent(profile.id), {
+                const response = await fetch(basePath + '/api/user-settings?userId=' + encodeURIComponent(profile.id) + '&raw=true', {
                     credentials: 'same-origin'
                 });
                 if (!response.ok) throw new Error(await response.text() || 'Failed to load profile settings');
@@ -5216,7 +5309,7 @@
 
         await Promise.all(hiddenChannelsScopeManager.profiles.map(async (profile) => {
             try {
-                const response = await fetch(basePath + '/api/user-settings?userId=' + encodeURIComponent(profile.id), {
+                const response = await fetch(basePath + '/api/user-settings?userId=' + encodeURIComponent(profile.id) + '&raw=true', {
                     credentials: 'same-origin'
                 });
                 if (!response.ok) throw new Error(await response.text() || 'Failed to load profile settings');
@@ -5460,7 +5553,7 @@
                 await Promise.all(profiles.map(async (profile) => {
                     let settings = profile.settings;
                     if (!settings) {
-                        const loadResponse = await fetch(basePath + '/api/user-settings?userId=' + encodeURIComponent(profile.id), {
+                        const loadResponse = await fetch(basePath + '/api/user-settings?userId=' + encodeURIComponent(profile.id) + '&raw=true', {
                             credentials: 'same-origin'
                         });
                         if (!loadResponse.ok) throw new Error(await loadResponse.text() || 'Failed to load profile settings');
@@ -5679,7 +5772,7 @@
                     if (keepLiveSourceOverride) sectionStripped[key] = true;
                     continue;
                 }
-                const globalValue = globalSection[key];
+                const globalValue = getGlobalValue(section + '.' + key);
                 // Normalize before comparing - treat empty strings/arrays as "inherit from global"
                 const normValue = normalizeForComparisonForField(section, key, value);
                 const normGlobal = normalizeForComparisonForField(section, key, globalValue);
@@ -9362,6 +9455,14 @@
         return merged;
     }
 
+    function clientRankingKeyForPath(criteriaPath) {
+        return {
+            'ranking.criteria': 'rankingCriteria',
+            'ranking.debrid.criteria': 'debridRankingCriteria',
+            'ranking.usenet.criteria': 'usenetRankingCriteria',
+        }[criteriaPath] || '';
+    }
+
     function effectiveRankingCriteriaForUI(criteriaPath) {
         const sharedGlobal = currentSettings.ranking?.criteria || [];
         if (!selectedUserId || !userSettings) {
@@ -9371,19 +9472,30 @@
 
         const sharedProfile = userSettings.ranking?.criteria || [];
         const effectiveShared = mergeRankingCriteriaForUI(sharedGlobal, sharedProfile);
-        if (criteriaPath === 'ranking.criteria') return effectiveShared;
+        let effectiveProfile = effectiveShared;
+        if (criteriaPath !== 'ranking.criteria') {
+            const service = criteriaPath.split('.')[1];
+            const globalServiceCriteria = currentSettings.ranking?.[service]?.criteria;
+            const base = currentSettings.ranking?.splitByService && Array.isArray(globalServiceCriteria) && globalServiceCriteria.length > 0
+                ? globalServiceCriteria
+                : effectiveShared;
+            const profileServiceCriteria = userSettings.ranking?.[service]?.criteria || [];
+            effectiveProfile = mergeRankingCriteriaForUI(base, profileServiceCriteria);
+        }
 
-        const service = criteriaPath.split('.')[1];
-        const globalServiceCriteria = currentSettings.ranking?.[service]?.criteria;
-        const base = currentSettings.ranking?.splitByService && Array.isArray(globalServiceCriteria) && globalServiceCriteria.length > 0
-            ? globalServiceCriteria
-            : effectiveShared;
-        const profileServiceCriteria = userSettings.ranking?.[service]?.criteria || [];
-        return mergeRankingCriteriaForUI(base, profileServiceCriteria);
+        if (!selectedClientId || !clientSettings) return effectiveProfile;
+        const clientKey = clientRankingKeyForPath(criteriaPath);
+        const clientCriteria = clientKey ? clientSettings[clientKey] : [];
+        return mergeRankingCriteriaForUI(effectiveProfile, clientCriteria || []);
     }
 
     function rankingCriteriaIsInherited(criteriaPath) {
         if (!selectedUserId || !userSettings) return false;
+        if (selectedClientId && clientSettings) {
+            const clientKey = clientRankingKeyForPath(criteriaPath);
+            const direct = clientKey ? clientSettings[clientKey] : undefined;
+            return !Array.isArray(direct) || direct.length === 0;
+        }
         const direct = getAtPath(userSettings, criteriaPath);
         return !Array.isArray(direct) || direct.length === 0;
     }
@@ -9400,9 +9512,14 @@
         let inheritanceBadgeHtml = '';
         if (selectedUserId) {
             if (isInherited) {
-                inheritanceBadgeHtml = '<span class="inheritance-badge inherited" title="Using inherited ranking criteria" style="margin-left:8px;font-size:11px;padding:2px 8px;background:rgba(100,100,100,0.3);border-radius:4px;color:#aaa;">Inherited</span>';
+                const profileCriteria = getAtPath(userSettings, criteriaPath);
+                const inheritedLabel = selectedClientId
+                    ? (Array.isArray(profileCriteria) && profileCriteria.length > 0 ? 'From Profile' : 'From Global')
+                    : 'From Global';
+                inheritanceBadgeHtml = '<span class="inheritance-badge inherited" title="Using inherited ranking criteria" style="margin-left:8px;font-size:11px;padding:2px 8px;background:rgba(100,100,100,0.3);border-radius:4px;color:#aaa;">'+inheritedLabel+'</span>';
             } else {
-                inheritanceBadgeHtml = '<span class="inheritance-badge overridden" title="Profile has custom configuration" style="margin-left:8px;font-size:11px;padding:2px 8px;background:rgba(138,43,226,0.3);border-radius:4px;color:#c9a0dc;">Profile</span>' +
+                const sourceLabel = selectedClientId ? 'Device' : 'Profile';
+                inheritanceBadgeHtml = '<span class="inheritance-badge overridden" title="'+sourceLabel+' has custom configuration" style="margin-left:8px;font-size:11px;padding:2px 8px;background:rgba(138,43,226,0.3);border-radius:4px;color:#c9a0dc;">'+sourceLabel+'</span>' +
                     '<button type="button" class="inheritance-reset" onclick="resetRankingToInherited(\''+criteriaPath+'\')" title="Reset to inherited defaults" style="margin-left:4px;background:none;border:none;color:#888;cursor:pointer;font-size:14px;">↩</button>';
             }
         }
@@ -9463,11 +9580,13 @@
     }
 
     function ensureEditableRankingCriteria(criteriaPath = 'ranking.criteria') {
-        const target = selectedUserId && userSettings ? userSettings : currentSettings;
-        let criteria = getAtPath(target, criteriaPath);
+        const clientKey = selectedClientId ? clientRankingKeyForPath(criteriaPath) : '';
+        const target = selectedClientId && clientSettings ? clientSettings : (selectedUserId && userSettings ? userSettings : currentSettings);
+        let criteria = clientKey ? target[clientKey] : getAtPath(target, criteriaPath);
         if (!Array.isArray(criteria) || criteria.length === 0) {
             criteria = JSON.parse(JSON.stringify(effectiveRankingCriteriaForUI(criteriaPath)));
-            setAtPath(target, criteriaPath, criteria);
+            if (clientKey) target[clientKey] = criteria;
+            else setAtPath(target, criteriaPath, criteria);
         }
         return criteria;
     }
@@ -9479,7 +9598,12 @@
 
     function resetRankingToInherited(criteriaPath = 'ranking.criteria') {
         if (!selectedUserId || !userSettings) return;
-        deleteAtPath(userSettings, criteriaPath);
+        if (selectedClientId && clientSettings) {
+            const clientKey = clientRankingKeyForPath(criteriaPath);
+            if (clientKey) delete clientSettings[clientKey];
+        } else {
+            deleteAtPath(userSettings, criteriaPath);
+        }
         renderSettings();
     }
 
@@ -9931,6 +10055,7 @@
     function renderSection(sectionKey, sectionDef) {
         const isOpen = window.location.hash === '#'+sectionKey;
         const errorCount = getSectionErrorCount(sectionKey);
+        const customizationCount = settingsSectionCustomizationCount(sectionKey);
         const sectionMessages = validationErrors[sectionKey]?.messages || [];
         const hasChanges = sectionHasChanges(sectionKey);
 
@@ -9988,7 +10113,7 @@
             }
         }
         const advancedBadge = advancedSections.has(sectionKey) ? '<span class="advanced-setting-badge">Advanced</span>' : '';
-        return '<div class="section '+(isOpen ? 'open' : '')+(hasChanges ? ' has-changes' : '')+disabledClass+'" id="section-'+sectionKey+'"><div class="section-header" onclick="toggleSection(this)"><div class="section-title">'+getIcon(sectionDef.icon)+sectionDef.label+advancedBadge+warningBadge+'</div><div class="section-header-actions">'+saveBtn+'<svg class="section-toggle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg></div></div><div class="section-content">'+comingSoonHtml+messagesHtml+descriptionHtml+contentHtml+nestedHtml+'</div></div>';
+        return '<div class="section '+(isOpen ? 'open' : '')+(hasChanges ? ' has-changes' : '')+disabledClass+'" id="section-'+sectionKey+'"><div class="section-header" onclick="toggleSection(this)"><div class="section-title">'+getIcon(sectionDef.icon)+sectionDef.label+advancedBadge+renderCustomizationCount(customizationCount, 'section-customization-count')+warningBadge+'</div><div class="section-header-actions">'+saveBtn+'<svg class="section-toggle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg></div></div><div class="section-content">'+comingSoonHtml+messagesHtml+descriptionHtml+contentHtml+nestedHtml+'</div></div>';
     }
 
     // Profile management functions
