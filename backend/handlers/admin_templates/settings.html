@@ -1649,7 +1649,7 @@
         }
     }
 
-    // Per-profile override details: { userId: { sectionLabel: [fieldLabel, ...] } }
+    // Per-profile override details: { userId: { groupKey: [fieldLabel, ...] } }
     let userOverrideDetails = {};
     let clientOverrideGroupsById = {};
     let overrideImpactNotice = null;
@@ -1664,6 +1664,7 @@
         { key: 'homeShelves', groupKey: 'homeShelves' },
         { key: 'liveTV', groupKey: 'liveTV' },
         { key: 'network', groupKey: 'network' },
+        { key: 'ranking', groupKey: 'ranking' },
     ];
 
     // LiveTV fields that are inherently per-user (channel preferences), never overrides
@@ -1687,6 +1688,7 @@
             usenetRankingCriteria: 'Usenet Ranking Criteria',
         };
         if (rankingLabels[fieldKey]) return rankingLabels[fieldKey];
+        if (fieldKey === 'useLoadingScreen') return 'Loading Screen';
         const section = getClientFieldSection(fieldKey);
         if (section === 'display' && fieldKey.startsWith('appearance.')) return 'appearance';
         return getFieldLabel(section, fieldKey.split('.')[0]);
@@ -1717,6 +1719,16 @@
         if (!settings || Object.keys(settings).length === 0) return {};
         const details = {};
 
+        const addFieldDifference = (groupKey, sectionKey, fieldKey, fullPath, label = '') => {
+            if (!hasOwnAtPath(settings, fullPath)) return;
+            const profileValue = normalizeForComparisonForField(sectionKey, fieldKey, getAtPath(settings, fullPath));
+            if (profileValue === null) return;
+            const globalValue = normalizeForComparisonForField(sectionKey, fieldKey, getGlobalValue(fullPath));
+            if (deepEqual(profileValue, globalValue)) return;
+            if (!details[groupKey]) details[groupKey] = [];
+            details[groupKey].push(label || getFieldLabel(sectionKey, fieldKey));
+        };
+
         for (const sec of overrideSections) {
             const profileSection = settings[sec.key];
             if (!profileSection) continue;
@@ -1739,50 +1751,43 @@
                     }
                     if (diffs.length > 0) details[groupKey] = diffs;
                 }
-                for (const fieldKey of Object.keys(profileSection)) {
-                    if (fieldKey === 'shelves') continue;
-                    const profileValue = normalizeForComparisonForField(sec.key, fieldKey, profileSection[fieldKey]);
-                    if (profileValue === null) continue;
-                    const globalValue = normalizeForComparisonForField(sec.key, fieldKey, getGlobalValue(sec.key + '.' + fieldKey));
-                    if (!deepEqual(profileValue, globalValue)) {
-                        if (!details[groupKey]) details[groupKey] = [];
-                        details[groupKey].push(getFieldLabel(sec.key, fieldKey));
-                    }
+            }
+
+            for (const [fieldKey, fieldDef] of Object.entries(schema[sec.key]?.fields || {})) {
+                if (fieldDef.globalOnly || (sec.key === 'liveTV' && liveTVPerUserFields.has(fieldKey))) continue;
+                addFieldDifference(groupKey, sec.key, fieldKey, `${sec.key}.${fieldKey}`);
+            }
+
+            for (const [nestedKey, nestedDef] of Object.entries(schema)) {
+                if (nestedDef.parent !== sec.key || nestedDef.is_array || nestedDef.group) continue;
+                for (const [fieldKey, fieldDef] of Object.entries(nestedDef.fields || {})) {
+                    if (fieldDef.globalOnly) continue;
+                    addFieldDifference(groupKey, nestedKey, fieldKey, `${nestedKey}.${fieldKey}`,
+                        `${nestedDef.label || nestedKey}: ${fieldDef.label || fieldKey}`);
                 }
-                continue;
             }
 
-            const diffFields = [];
-            for (const fieldKey of Object.keys(profileSection)) {
-                if (sec.key === 'liveTV' && liveTVPerUserFields.has(fieldKey)) continue;
-                const profileValue = normalizeForComparisonForField(sec.key, fieldKey, profileSection[fieldKey]);
-                if (profileValue === null) continue;
-                const globalValue = normalizeForComparisonForField(sec.key, fieldKey, getGlobalValue(sec.key + '.' + fieldKey));
-                if (!deepEqual(profileValue, globalValue)) diffFields.push(getFieldLabel(sec.key, fieldKey));
+            if (sec.key === 'liveTV' && profileSection.sourcesOverride === true) {
+                const profileSources = Array.isArray(profileSection.sources) ? profileSection.sources : [];
+                const globalSources = getGlobalValue('liveTV.sources') || [];
+                if (!deepEqual(profileSources, globalSources)) {
+                    if (!details[groupKey]) details[groupKey] = [];
+                    details[groupKey].push('Live TV Sources');
+                }
             }
-            if (diffFields.length > 0) details[groupKey] = diffFields;
-        }
 
-        if (settings.ranking) {
-            const rankingDiffs = [];
-            for (const [fieldKey, label] of [
-                ['newestReleaseFirst', 'Newest Release First'],
-                ['splitByService', 'Split Debrid/Usenet Ranking'],
-            ]) {
-                const profileValue = normalizeForComparisonForField('ranking', fieldKey, settings.ranking[fieldKey]);
-                if (profileValue === null) continue;
-                const globalValue = normalizeForComparisonForField('ranking', fieldKey, getGlobalValue('ranking.' + fieldKey));
-                if (!deepEqual(profileValue, globalValue)) rankingDiffs.push(label);
-            }
+            if (sec.key !== 'ranking') continue;
             for (const [path, label] of [
                 ['criteria', 'Overall Ranking Criteria'],
                 ['debrid.criteria', 'Debrid Ranking Criteria'],
                 ['usenet.criteria', 'Usenet Ranking Criteria'],
             ]) {
                 const criteria = getAtPath(settings.ranking, path);
-                if (Array.isArray(criteria) && criteria.length > 0) rankingDiffs.push(label);
+                if (Array.isArray(criteria) && criteria.length > 0) {
+                    if (!details[groupKey]) details[groupKey] = [];
+                    details[groupKey].push(label);
+                }
             }
-            if (rankingDiffs.length > 0) details.ranking = rankingDiffs;
         }
 
         for (const fields of Object.values(details)) {
@@ -2103,6 +2108,7 @@
                 'streamMigrationEnabled',
                 'creditsAutoSkip',
                 'maxResultsPerResolution',
+                'useLoadingScreen',
             ],
         },
         {
@@ -2145,6 +2151,7 @@
                 'preferredTerms',
                 'nonPreferredTerms',
                 'downloadPreferredTerms',
+                'splitByService',
             ],
         },
         {
@@ -2300,6 +2307,27 @@
         }).filter(Boolean);
     }
 
+    function profileComparisonPathsForGroup(groupKey) {
+        const section = overrideSections.find(candidate => candidate.groupKey === groupKey);
+        if (!section) return [];
+        const paths = [];
+        for (const [fieldKey, fieldDef] of Object.entries(schema[section.key]?.fields || {})) {
+            if (!fieldDef.globalOnly) paths.push(`${section.key}.${fieldKey}`);
+        }
+        for (const [nestedKey, nestedDef] of Object.entries(schema)) {
+            if (nestedDef.parent !== section.key || nestedDef.group) continue;
+            if (nestedDef.is_array) {
+                paths.push(nestedKey);
+                continue;
+            }
+            for (const [fieldKey, fieldDef] of Object.entries(nestedDef.fields || {})) {
+                if (!fieldDef.globalOnly) paths.push(`${nestedKey}.${fieldKey}`);
+            }
+        }
+        if (section.key === 'liveTV') paths.push('liveTV.sources');
+        return Array.from(new Set(paths));
+    }
+
     function changedPropagationGroupKeys(beforeSettings, afterSettings) {
         if (!beforeSettings || !afterSettings) {
             const fallbackGroups = new Set(propagationGroups.map(group => group.key));
@@ -2313,7 +2341,7 @@
         const changed = new Set();
         const changedDetails = [];
         for (const group of propagationGroups) {
-            for (const userPath of group.userPaths || []) {
+            for (const userPath of profileComparisonPathsForGroup(group.key)) {
                 const globalPath = getGlobalPath(userPath);
                 const keys = globalPath.split('.');
                 const sectionKey = keys[0];
@@ -2406,9 +2434,31 @@
     }
 
     function clearProfilePropagationGroup(targetSettings, group) {
-        for (const path of group.userPaths) {
-            deleteAtPath(targetSettings, path);
+        const sectionKey = {
+            playback: 'playback',
+            metadata: 'metadata',
+            contentFiltering: 'filtering',
+            display: 'display',
+            homeShelves: 'homeShelves',
+            liveTV: 'liveTV',
+            animeFiltering: 'animeFiltering',
+            network: 'network',
+            ranking: 'ranking',
+        }[group.key];
+        if (!sectionKey) return;
+
+        if (sectionKey === 'liveTV') {
+            const personalPreferences = {};
+            for (const fieldKey of liveTVPerUserFields) {
+                if (Object.prototype.hasOwnProperty.call(targetSettings.liveTV || {}, fieldKey)) {
+                    personalPreferences[fieldKey] = targetSettings.liveTV[fieldKey];
+                }
+            }
+            if (Object.keys(personalPreferences).length > 0) targetSettings.liveTV = personalPreferences;
+            else delete targetSettings.liveTV;
+            return;
         }
+        delete targetSettings[sectionKey];
     }
 
     function clearClientPropagationGroup(targetSettings, group) {
@@ -3121,6 +3171,16 @@
             val = val[key];
         }
         return val;
+    }
+
+    function hasOwnAtPath(obj, path) {
+        if (!obj || !path) return false;
+        let value = obj;
+        for (const key of path.split('.')) {
+            if (value === null || typeof value !== 'object' || !Object.prototype.hasOwnProperty.call(value, key)) return false;
+            value = value[key];
+        }
+        return true;
     }
 
     function setAtPath(obj, path, value) {
@@ -5735,7 +5795,10 @@
 
         const stripped = {};
         // Only process per-user sections (top-level only, skip nested like 'homeShelves.shelves')
-        const topLevelPerUserSections = ['playback', 'metadata', 'homeShelves', 'filtering', 'liveTV', 'display'];
+        const topLevelPerUserSections = [
+            'playback', 'metadata', 'homeShelves', 'filtering', 'animeFiltering',
+            'liveTV', 'display', 'network', 'ranking', 'calendar',
+        ];
 
         for (const section of topLevelPerUserSections) {
             if (!userSettings[section]) continue;
