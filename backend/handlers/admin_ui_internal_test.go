@@ -159,7 +159,7 @@ func TestAdminSettingsUsesCategoryAndDetailProgressiveDisclosure(t *testing.T) {
 		`function setSettingsLevel(level)`,
 		`function setSettingsGroup(groupId)`,
 		`let activeSettingsGroup = '';`,
-		`onclick="setSettingsGroup(\'\')">All</button>`,
+		`onclick="setSettingsGroup(\'\')"><span class="settings-category-btn-copy"><span>All</span>`,
 		`const advancedSections = new Set`,
 		`const friendlySettingsCopy = [`,
 		`'Streaming Method'`,

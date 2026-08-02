@@ -169,6 +169,16 @@ func TestAdminSettingsSurfacesAndReviewsScopedCustomizations(t *testing.T) {
 		`if (selectedClientId && clientSettings !== null)`,
 		`'/api/clients/' + encodeURIComponent(selectedClientId) + '/settings'`,
 		`showToast('Device settings saved successfully')`,
+		`function settingsSectionCustomizationCount(sectionKey)`,
+		`function settingsGroupCustomizationCount(groupId)`,
+		`class="settings-customization-count`,
+		`renderCustomizationCount(customizationCount, 'section-customization-count')`,
+		`['debrid.criteria', 'Debrid Ranking Criteria']`,
+		`['usenet.criteria', 'Usenet Ranking Criteria']`,
+		`rankingCriteria: 'Overall Ranking Criteria'`,
+		`function clientRankingKeyForPath(criteriaPath)`,
+		`function getSchemaZeroDefault(path)`,
+		`encodeURIComponent(userId) + '&raw=true'`,
 	} {
 		if !strings.Contains(source, marker) {
 			t.Fatalf("settings template missing scoped-customization marker %q", marker)
