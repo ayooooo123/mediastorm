@@ -117,6 +117,8 @@ func TestAdminSettingsUsesHierarchyScopeTree(t *testing.T) {
 		`function handleSettingsSearchInput(input)`,
 		`data-bwignore="true" data-protonpass-ignore="true" data-form-type="other"`,
 		`#clientSelector { display: none !important; }`,
+		`.settings-scope-tree::-webkit-scrollbar-thumb`,
+		`scrollbar-color: var(--border-color) transparent`,
 	} {
 		if !strings.Contains(source, marker) {
 			t.Fatalf("settings template missing hierarchy scope marker %q", marker)
@@ -132,5 +134,8 @@ func TestAdminSettingsUsesHierarchyScopeTree(t *testing.T) {
 	}
 	if strings.Contains(source, `const selectingCurrentPerson =`) {
 		t.Fatal("selecting a person still toggles that person's device branch")
+	}
+	if strings.Contains(source, `households.forEach(account => expandedSettingsHouseholds.add(account.id))`) {
+		t.Fatal("settings households are still expanded on initial render")
 	}
 }
