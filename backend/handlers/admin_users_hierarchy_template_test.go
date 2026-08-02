@@ -107,12 +107,16 @@ func TestAdminSettingsUsesHierarchyScopeTree(t *testing.T) {
 		`function renderSettingsScopeTree()`,
 		`function renderSettingsPersonScope(profile)`,
 		`function selectSettingsScope(kind, profileId, clientId = '')`,
+		`function toggleSettingsPerson(event, profileId)`,
 		`const STALE_SETTINGS_DEVICE_AGE_MS = 7 * 24 * 60 * 60 * 1000`,
 		`function isSettingsDeviceStale(client)`,
 		`not seen in 7+ days`,
 		`loadSettingsScopeClients()`,
 		`id="settingsSearch" class="form-input" placeholder="Search settings..." autocomplete="off"`,
+		`readonly aria-autocomplete="none"`,
+		`function handleSettingsSearchInput(input)`,
 		`data-bwignore="true" data-protonpass-ignore="true" data-form-type="other"`,
+		`#clientSelector { display: none !important; }`,
 	} {
 		if !strings.Contains(source, marker) {
 			t.Fatalf("settings template missing hierarchy scope marker %q", marker)
@@ -125,5 +129,8 @@ func TestAdminSettingsUsesHierarchyScopeTree(t *testing.T) {
 	}
 	if strings.Contains(source, `name="mediastorm-settings-filter"`) {
 		t.Fatal("settings search retains a stable field name that autofill can target")
+	}
+	if strings.Contains(source, `const selectingCurrentPerson =`) {
+		t.Fatal("selecting a person still toggles that person's device branch")
 	}
 }

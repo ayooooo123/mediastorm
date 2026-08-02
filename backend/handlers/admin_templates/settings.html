@@ -205,7 +205,20 @@
 .settings-scope-row:hover { color: var(--text-primary); background: var(--bg-tertiary); }
 .settings-scope-row.active { color: var(--text-primary); background: var(--accent-bg); border-color: var(--accent); }
 .settings-scope-row.household { color: var(--text-primary); font-weight: 600; }
-.settings-scope-row.person { padding-left: 1.35rem; }
+.settings-scope-person-line { display: flex; align-items: stretch; padding-left: 0.85rem; }
+.settings-scope-person-line .settings-scope-row.person { flex: 1; width: auto; padding-left: 0.15rem; }
+.settings-scope-toggle {
+    display: grid;
+    place-items: center;
+    width: 24px;
+    flex: 0 0 24px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+.settings-scope-toggle:hover { color: var(--text-primary); }
 .settings-scope-row.device { padding-left: 2.2rem; }
 .settings-scope-chevron,
 .settings-scope-icon {
@@ -214,7 +227,8 @@
     flex: 0 0 15px;
 }
 .settings-scope-chevron { transition: transform 0.15s ease; }
-.settings-scope-row.collapsed .settings-scope-chevron { transform: rotate(-90deg); }
+.settings-scope-row.collapsed .settings-scope-chevron,
+.settings-scope-toggle.collapsed .settings-scope-chevron { transform: rotate(-90deg); }
 .settings-scope-copy { min-width: 0; flex: 1; }
 .settings-scope-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.78rem; }
 .settings-scope-meta { display: block; margin-top: 0.08rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: 0.65rem; font-weight: 400; }
@@ -232,6 +246,8 @@
 .settings-stale-toggle:hover { color: var(--text-primary); }
 .settings-scope-empty { padding: 0.35rem 0.5rem 0.35rem 1.35rem; color: var(--text-muted); font-size: 0.68rem; }
 .settings-navigation-section { padding-top: 0.7rem; }
+#userSelector,
+#clientSelector { display: none !important; }
 .settings-sidebar-label {
     padding: 0.15rem 0.55rem 0.35rem;
     color: var(--text-muted);
@@ -360,7 +376,7 @@
         <p>{{if .IsAdmin}}Configure your mediastorm server{{else}}Configure profile settings{{end}}</p>
     </div>
     <div class="page-header-controls" style="display: flex; gap: 0.5rem; align-items: center;">
-        <input type="search" id="settingsSearch" class="form-input" placeholder="Search settings..." autocomplete="off" autocapitalize="none" spellcheck="false" data-1p-ignore="true" data-lpignore="true" data-bwignore="true" data-protonpass-ignore="true" data-form-type="other" oninput="handleSettingsSearch(this.value)" style="min-width: 200px;">
+        <input type="search" id="settingsSearch" class="form-input" placeholder="Search settings..." autocomplete="off" autocapitalize="none" spellcheck="false" readonly aria-autocomplete="none" data-1p-ignore="true" data-lpignore="true" data-bwignore="true" data-protonpass-ignore="true" data-form-type="other" onpointerdown="activateSettingsSearch(this)" onkeydown="activateSettingsSearch(this)" onbeforeinput="activateSettingsSearch(this)" oninput="handleSettingsSearchInput(this)" style="min-width: 200px;">
         <button id="identifyClientBtn" class="btn btn-secondary" style="display: none;" onclick="identifyClient()" title="Send ping to identify this device">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
                 <circle cx="12" cy="12" r="10"/>
@@ -789,7 +805,7 @@
         const visibleClients = showStale ? [...activeClients, ...staleClients] : activeClients;
         const isExpanded = expandedSettingsPeople.has(profile.id);
         const isActive = selectedUserId === profile.id && !selectedClientId;
-        let html = `<button type="button" class="settings-scope-row person ${isExpanded ? '' : 'collapsed'} ${isActive ? 'active' : ''}" onclick="selectSettingsScope('person', decodeURIComponent('${encodeURIComponent(profile.id)}'))" aria-expanded="${isExpanded}">${settingsScopeChevron()}${settingsScopeIcon('person')}<span class="settings-scope-copy"><span class="settings-scope-name">${escapeHtml(profile.name || 'Unnamed person')}</span><span class="settings-scope-meta">Profile defaults · ${profileClients.length} ${profileClients.length === 1 ? 'device' : 'devices'}</span></span>${isActive ? '<span class="settings-scope-dot"></span>' : ''}</button>`;
+        let html = `<div class="settings-scope-person-line"><button type="button" class="settings-scope-toggle ${isExpanded ? '' : 'collapsed'}" onclick="toggleSettingsPerson(event, decodeURIComponent('${encodeURIComponent(profile.id)}'))" aria-expanded="${isExpanded}" aria-label="${isExpanded ? 'Collapse' : 'Expand'} devices for ${escapeHtml(profile.name || 'person')}">${settingsScopeChevron()}</button><button type="button" class="settings-scope-row person ${isActive ? 'active' : ''}" onclick="selectSettingsScope('person', decodeURIComponent('${encodeURIComponent(profile.id)}'))">${settingsScopeIcon('person')}<span class="settings-scope-copy"><span class="settings-scope-name">${escapeHtml(profile.name || 'Unnamed person')}</span><span class="settings-scope-meta">Profile defaults · ${profileClients.length} ${profileClients.length === 1 ? 'device' : 'devices'}</span></span>${isActive ? '<span class="settings-scope-dot"></span>' : ''}</button></div>`;
         if (!isExpanded) return html;
         for (const client of visibleClients) {
             const deviceActive = selectedClientId === client.id;
@@ -814,6 +830,13 @@
         renderSettingsScopeTree();
     }
 
+    function toggleSettingsPerson(event, profileId) {
+        event.stopPropagation();
+        if (expandedSettingsPeople.has(profileId)) expandedSettingsPeople.delete(profileId);
+        else expandedSettingsPeople.add(profileId);
+        renderSettingsScopeTree();
+    }
+
     async function selectSettingsScope(kind, profileId, clientId = '') {
         if (kind === 'server') {
             const selector = document.getElementById('userSelector');
@@ -821,9 +844,6 @@
             await handleUserChange('');
             return;
         }
-        const selectingCurrentPerson = kind === 'person' && selectedUserId === profileId && !selectedClientId;
-        if (selectingCurrentPerson && expandedSettingsPeople.has(profileId)) expandedSettingsPeople.delete(profileId);
-        else expandedSettingsPeople.add(profileId);
         const selector = document.getElementById('userSelector');
         if (selector) selector.value = profileId;
         await handleUserChange(profileId);
@@ -1061,6 +1081,7 @@
     let searchTerm = '';
     let filteredSections = null; // null = no filter, Set = filtered section keys
     let filteredFields = null; // null = no filter, Map of sectionKey -> Set of matching field keys
+    let settingsSearchActivated = false;
 
     // Sections that are per-user (when a user is selected, only show these)
     // Per-user sections: liveTV IPTV source overrides are configured here; channel preferences use a custom manager.
@@ -1214,6 +1235,22 @@
     }
 
     // Search/filter settings
+    function activateSettingsSearch(input) {
+        if (settingsSearchActivated) return;
+        settingsSearchActivated = true;
+        input.value = '';
+        input.readOnly = false;
+        handleSettingsSearch('');
+    }
+
+    function handleSettingsSearchInput(input) {
+        if (!settingsSearchActivated) {
+            input.value = '';
+            return;
+        }
+        handleSettingsSearch(input.value);
+    }
+
     function handleSettingsSearch(term) {
         searchTerm = term.toLowerCase().trim();
 
