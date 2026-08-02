@@ -415,7 +415,7 @@
                 <path d="M12 5v14"/>
                 <path d="M19 12l-7 7-7-7"/>
             </svg>
-            Copy to Profiles
+            <span id="propagateBtnLabel">Copy to Profiles</span>
         </button>
         <button class="btn btn-primary" onclick="saveAllSettings()">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
@@ -688,8 +688,7 @@
     const expandedSettingsStaleDevices = new Set();
     const settingsDebugSessionId = 'settings-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
     let editShelfEscapeHandler = null;
-    let activeSettingsGroup = localStorage.getItem('mediastorm-settings-category') || groups[0]?.id || '';
-    if (!groups.some(group => group.id === activeSettingsGroup)) activeSettingsGroup = groups[0]?.id || '';
+    let activeSettingsGroup = '';
     // Basic mode remains visible as a roadmap affordance, but all settings stay
     // available until its contents have been reviewed section by section.
     let settingsLevel = 'advanced';
@@ -729,7 +728,6 @@
 
     function setSettingsGroup(groupId) {
         activeSettingsGroup = groupId;
-        localStorage.setItem('mediastorm-settings-category', groupId);
         renderSettings();
     }
 
@@ -744,11 +742,12 @@
             if (!selectedUserId && def.inheritFrom) return false;
             return true;
         }));
-        if (!availableGroups.some(group => group.id === activeSettingsGroup)) {
-            activeSettingsGroup = availableGroups[0]?.id || groups[0]?.id || '';
+        if (activeSettingsGroup && !availableGroups.some(group => group.id === activeSettingsGroup)) {
+            activeSettingsGroup = '';
         }
         if (nav) {
-            nav.innerHTML = availableGroups.map(group => {
+            const allButton = '<button type="button" class="settings-category-btn '+(!activeSettingsGroup ? 'active' : '')+'"'+(!activeSettingsGroup ? ' aria-current="page"' : '')+' onclick="setSettingsGroup(\'\')">All</button>';
+            nav.innerHTML = allButton + availableGroups.map(group => {
                 const isActive = group.id === activeSettingsGroup;
                 return '<button type="button" class="settings-category-btn '+(isActive ? 'active' : '')+'"'+(isActive ? ' aria-current="page"' : '')+' onclick="setSettingsGroup(\''+group.id+'\')">'+group.label+'</button>';
             }).join('');
@@ -1756,6 +1755,7 @@
     function updateRevertButtonVisibility() {
         const revertBtn = document.getElementById('revertBtn');
         const propagateBtn = document.getElementById('propagateBtn');
+        const propagateBtnLabel = document.getElementById('propagateBtnLabel');
 
         let showRevert = false;
         let hasOverrides = false;
@@ -1793,6 +1793,7 @@
                 }
             }
             propagateBtn.style.display = showPropagate ? 'inline-flex' : 'none';
+            if (propagateBtnLabel) propagateBtnLabel.textContent = selectedUserId ? 'Copy to Devices' : 'Copy to Profiles';
             propagateBtn.title = selectedUserId
                 ? 'Propagate profile settings to all devices'
                 : 'Propagate global settings to all profiles and devices';
