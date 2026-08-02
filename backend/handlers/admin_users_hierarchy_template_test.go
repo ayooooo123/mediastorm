@@ -21,11 +21,15 @@ func TestAdminUsersPageExplainsAndRendersAccessHierarchy(t *testing.T) {
 		`Device</span><span class="hierarchy-level-tech">Client`,
 		`fetch(basePath + '/api/clients')`,
 		`function renderHouseholds()`,
-		`function renderPersonRow(profile)`,
+		`function renderPersonRow(profile, forceShowStale = false)`,
 		`function renderDeviceRow(client, orphaned)`,
 		`function reassignClient(clientId, newProfileId`,
 		`function pingClient(clientId)`,
 		`function deleteClient(clientId, clientName)`,
+		`const STALE_DEVICE_AGE_MS = 7 * 24 * 60 * 60 * 1000`,
+		`function isClientStale(client)`,
+		`function toggleStaleDevices(profileId)`,
+		`not seen in 7+ days`,
 		`Needs attention`,
 	} {
 		if !strings.Contains(source, marker) {
@@ -35,6 +39,36 @@ func TestAdminUsersPageExplainsAndRendersAccessHierarchy(t *testing.T) {
 
 	if strings.Contains(source, `id="tab-accounts"`) || strings.Contains(source, `id="tab-profiles">Profiles</button>`) {
 		t.Fatal("admin Users page still exposes separate Accounts or Profiles tabs")
+	}
+}
+
+func TestAdminUsesAutomationTerminologyAndAlignedFilters(t *testing.T) {
+	toolsBytes, err := adminTemplates.ReadFile("admin_templates/tools.html")
+	if err != nil {
+		t.Fatalf("read tools template: %v", err)
+	}
+	baseBytes, err := adminTemplates.ReadFile("admin_templates/base.html")
+	if err != nil {
+		t.Fatalf("read base template: %v", err)
+	}
+	toolsSource := string(toolsBytes)
+	baseSource := string(baseBytes)
+
+	for _, marker := range []string{
+		`<h1>Automations</h1>`,
+		`Find an automation`,
+		`Name, service, or automation type`,
+		`Add Automation`,
+		`.task-toolbar .form-input,`,
+		`height: 2.5rem;`,
+		`min-height: 2.5rem;`,
+	} {
+		if !strings.Contains(toolsSource, marker) {
+			t.Fatalf("tools template missing automation UX marker %q", marker)
+		}
+	}
+	if !strings.Contains(baseSource, "Automations") {
+		t.Fatal("admin navigation does not use Automations terminology")
 	}
 }
 

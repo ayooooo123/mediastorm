@@ -1101,6 +1101,10 @@ func (h *PrequeueHandler) AdoptMigration(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "streamPath is required", http.StatusBadRequest)
 		return
 	}
+	if isM2TSStreamPath(req.StreamPath) {
+		http.Error(w, "unsupported .m2ts migration source", http.StatusUnprocessableEntity)
+		return
+	}
 	if isExternalStreamPath(req.StreamPath) {
 		checkCtx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		err := h.ValidateExternalURL(checkCtx, req.StreamPath)
