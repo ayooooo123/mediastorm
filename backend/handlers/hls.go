@@ -1686,7 +1686,17 @@ func (m *HLSManager) CreateSession(ctx context.Context, path string, originalPat
 	normalizedPlaybackTarget := strings.ToLower(strings.TrimSpace(playbackTarget))
 	requestedDirectCastMode := castMode && isDirectCastTarget(normalizedPlaybackTarget, "")
 	directCastMode := requestedDirectCastMode && canAttemptDirectCastCopyVideo(probeData, m.lookupCastCapabilities(castReceiverHost))
-	if requestedDirectCastMode && !directCastMode && isDirectCastTarget(normalizedPlaybackTarget, "") {
+	if requestedDirectCastMode && !directCastMode {
+		// Say so at creation. The startTranscoding-side guard cannot log this
+		// case: the session is already built as compatibility by then, so
+		// without this line a downgraded direct request is indistinguishable
+		// from one the client sent as compatibility.
+		codec, width, height := "", 0, 0
+		if probeData != nil {
+			codec, width, height = probeData.VideoCodec, probeData.VideoWidth, probeData.VideoHeight
+		}
+		log.Printf("[hls] session %s: direct Cast requested but %s %dx%d is outside the receiver copy envelope (receiver=%q); using compatibility transcode",
+			sessionID, codec, width, height, castReceiverHost)
 		normalizedPlaybackTarget = "web"
 	}
 	stableCastMode := castMode && !directCastMode
