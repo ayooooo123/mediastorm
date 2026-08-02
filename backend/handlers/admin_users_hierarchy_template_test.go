@@ -93,3 +93,37 @@ func TestToolsPagePointsDeviceManagementToUsersHierarchy(t *testing.T) {
 		t.Fatal("Tools page still renders the old client management interface")
 	}
 }
+
+func TestAdminSettingsUsesHierarchyScopeTree(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/settings.html")
+	if err != nil {
+		t.Fatalf("read settings template: %v", err)
+	}
+	source := string(templateBytes)
+
+	for _, marker := range []string{
+		`id="settingsScopeTree"`,
+		`class="settings-scope-tree"`,
+		`function renderSettingsScopeTree()`,
+		`function renderSettingsPersonScope(profile)`,
+		`function selectSettingsScope(kind, profileId, clientId = '')`,
+		`const STALE_SETTINGS_DEVICE_AGE_MS = 7 * 24 * 60 * 60 * 1000`,
+		`function isSettingsDeviceStale(client)`,
+		`not seen in 7+ days`,
+		`loadSettingsScopeClients()`,
+		`id="settingsSearch" class="form-input" placeholder="Search settings..." autocomplete="off"`,
+		`data-bwignore="true" data-protonpass-ignore="true" data-form-type="other"`,
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("settings template missing hierarchy scope marker %q", marker)
+		}
+	}
+
+	if strings.Contains(source, `<select id="userSelector" class="form-select"`) ||
+		strings.Contains(source, `<select id="clientSelector" class="form-select"`) {
+		t.Fatal("settings page still exposes dropdown scope selectors")
+	}
+	if strings.Contains(source, `name="mediastorm-settings-filter"`) {
+		t.Fatal("settings search retains a stable field name that autofill can target")
+	}
+}
