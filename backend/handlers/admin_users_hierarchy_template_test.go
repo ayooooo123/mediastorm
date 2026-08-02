@@ -172,12 +172,24 @@ func TestAdminSettingsSurfacesAndReviewsScopedCustomizations(t *testing.T) {
 		`function settingsSectionCustomizationCount(sectionKey)`,
 		`function settingsGroupCustomizationCount(groupId)`,
 		`function buildProfileOverrideDetails(settings)`,
+		`function hasOwnAtPath(obj, path)`,
+		`{ key: 'ranking', groupKey: 'ranking' }`,
+		`Object.entries(schema[sec.key]?.fields || {})`,
+		`nestedDef.parent !== sec.key || nestedDef.is_array || nestedDef.group`,
+		`details[groupKey].push('Live TV Sources')`,
+		`if (fieldKey === 'useLoadingScreen') return 'Loading Screen'`,
 		`return (buildProfileOverrideDetails(userSettings).ranking || []).length`,
 		`filtering: 'contentFiltering'`,
 		`return (buildProfileOverrideDetails(userSettings)[groupKey] || []).length`,
 		`Array.isArray(profileShelves) && profileShelves.length > 0 && !shelvesEqual(profileShelves, globalShelves)`,
 		`const details = buildProfileOverrideDetails(settings);`,
 		`const fields = details[group.key];`,
+		`function profileComparisonPathsForGroup(groupKey)`,
+		`for (const userPath of profileComparisonPathsForGroup(group.key))`,
+		`contentFiltering: 'filtering'`,
+		`for (const fieldKey of liveTVPerUserFields)`,
+		`delete targetSettings[sectionKey]`,
+		`'liveTV', 'display', 'network', 'ranking', 'calendar'`,
 		`class="settings-customization-count`,
 		`renderCustomizationCount(customizationCount, 'section-customization-count')`,
 		`['debrid.criteria', 'Debrid Ranking Criteria']`,
@@ -197,5 +209,9 @@ func TestAdminSettingsSurfacesAndReviewsScopedCustomizations(t *testing.T) {
 	}
 	if strings.Contains(source, `fetch(basePath + '/api/settings/propagate'`) {
 		t.Fatal("settings page still invokes the legacy bulk propagation endpoint")
+	}
+	if strings.Contains(source, `for (const path of group.userPaths) {
+            deleteAtPath(targetSettings, path);`) {
+		t.Fatal("profile reset still relies on an incomplete hand-maintained field list")
 	}
 }
