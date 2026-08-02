@@ -231,6 +231,28 @@
 .settings-scope-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.78rem; }
 .settings-scope-meta { display: block; margin-top: 0.08rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: 0.65rem; font-weight: 400; }
 .settings-scope-dot { width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--accent); }
+.settings-scope-custom {
+    flex: 0 0 auto;
+    padding: 0.12rem 0.38rem;
+    border-radius: 999px;
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+    font-size: 0.58rem;
+    font-weight: 650;
+    line-height: 1.2;
+}
+.settings-impact-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 1rem;
+    padding: 0.8rem 1rem;
+    border: 1px solid var(--border-color);
+    border-radius: 9px;
+    background: var(--bg-secondary);
+}
+.settings-impact-banner p { margin: 0.2rem 0 0; color: var(--text-muted); font-size: 0.78rem; }
 .settings-stale-toggle {
     align-self: flex-start;
     margin: 0.1rem 0 0.25rem 2.2rem;
@@ -388,12 +410,12 @@
             </svg>
             Use Parent Defaults
         </button>
-        <button id="propagateBtn" class="btn btn-secondary" style="display: none;" onclick="propagateSettings()" title="Propagate settings to children">
+        <button id="propagateBtn" class="btn btn-secondary" style="display: none;" onclick="propagateSettings()" title="Review child scopes with custom settings">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M12 5v14"/>
                 <path d="M19 12l-7 7-7-7"/>
             </svg>
-            <span id="propagateBtnLabel">Copy to Profiles</span>
+            <span id="propagateBtnLabel">Review Customizations</span>
         </button>
         <button class="btn btn-primary" onclick="saveAllSettings()">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
@@ -477,7 +499,7 @@
     </div>
 </div>
 
-<!-- Propagate Prompt Modal -->
+<!-- Override Review Modal -->
 <div id="propagateModal" class="test-modal" onclick="closePropagateModal()">
     <div class="test-modal-content" onclick="event.stopPropagation()" style="max-width: 480px;">
         <div class="test-modal-header">
@@ -485,7 +507,7 @@
                 <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M12 5v14"/><path d="M19 12l-7 7-7-7"/>
                 </svg>
-                <span id="propagateModalTitle">Propagate settings?</span>
+                <span id="propagateModalTitle">Review custom settings</span>
             </h3>
             <button class="test-modal-close" onclick="closePropagateModal()">
                 <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
@@ -499,12 +521,12 @@
             <p id="propagateModalNote" style="color: var(--text-secondary); font-size: 0.85rem;"></p>
         </div>
         <div class="test-modal-footer" style="display: flex; gap: 0.5rem; justify-content: flex-end;">
-            <button class="btn btn-secondary" onclick="closePropagateModal()">Skip</button>
+            <button class="btn btn-secondary" onclick="closePropagateModal()">Close</button>
             <button id="propagateConfirmBtn" class="btn btn-primary" onclick="confirmPropagate()">
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M12 5v14"/><path d="M19 12l-7 7-7-7"/>
                 </svg>
-                Propagate
+                Use Parent Defaults
             </button>
         </div>
     </div>
@@ -792,6 +814,17 @@
         tree.innerHTML = html;
     }
 
+    function profileCustomizationCount(profileId) {
+        const details = userOverrideDetails[profileId] || {};
+        return Object.values(details).reduce((total, fields) => total + (Array.isArray(fields) ? fields.length : 0), 0);
+    }
+
+    function settingsScopeCustomizationBadge(count, label = 'custom') {
+        if (!count) return '';
+        const text = typeof count === 'number' && count > 1 ? `${count} ${label}` : label.charAt(0).toUpperCase() + label.slice(1);
+        return `<span class="settings-scope-custom" title="This scope has settings that differ from its parent">${escapeHtml(text)}</span>`;
+    }
+
     function renderSettingsPersonScope(profile) {
         const profileClients = settingsScopeClients.filter(client => client.userId === profile.id);
         const activeClients = profileClients.filter(client => !isSettingsDeviceStale(client));
@@ -800,12 +833,15 @@
         const visibleClients = showStale ? [...activeClients, ...staleClients] : activeClients;
         const isExpanded = expandedSettingsPeople.has(profile.id);
         const isActive = selectedUserId === profile.id && !selectedClientId;
-        let html = `<div class="settings-scope-person-line"><button type="button" class="settings-scope-toggle ${isExpanded ? '' : 'collapsed'}" onclick="toggleSettingsPerson(event, decodeURIComponent('${encodeURIComponent(profile.id)}'))" aria-expanded="${isExpanded}" aria-label="${isExpanded ? 'Collapse' : 'Expand'} devices for ${escapeHtml(profile.name || 'person')}">${settingsScopeChevron()}</button><button type="button" class="settings-scope-row person ${isActive ? 'active' : ''}" onclick="selectSettingsScope('person', decodeURIComponent('${encodeURIComponent(profile.id)}'))">${settingsScopeIcon('person')}<span class="settings-scope-copy"><span class="settings-scope-name">${escapeHtml(profile.name || 'Unnamed person')}</span><span class="settings-scope-meta">Profile defaults · ${profileClients.length} ${profileClients.length === 1 ? 'device' : 'devices'}</span></span>${isActive ? '<span class="settings-scope-dot"></span>' : ''}</button></div>`;
+        const customizationCount = profileCustomizationCount(profile.id);
+        let html = `<div class="settings-scope-person-line"><button type="button" class="settings-scope-toggle ${isExpanded ? '' : 'collapsed'}" onclick="toggleSettingsPerson(event, decodeURIComponent('${encodeURIComponent(profile.id)}'))" aria-expanded="${isExpanded}" aria-label="${isExpanded ? 'Collapse' : 'Expand'} devices for ${escapeHtml(profile.name || 'person')}">${settingsScopeChevron()}</button><button type="button" class="settings-scope-row person ${isActive ? 'active' : ''}" onclick="selectSettingsScope('person', decodeURIComponent('${encodeURIComponent(profile.id)}'))">${settingsScopeIcon('person')}<span class="settings-scope-copy"><span class="settings-scope-name">${escapeHtml(profile.name || 'Unnamed person')}</span><span class="settings-scope-meta">Profile defaults · ${profileClients.length} ${profileClients.length === 1 ? 'device' : 'devices'}</span></span>${settingsScopeCustomizationBadge(customizationCount)}${isActive ? '<span class="settings-scope-dot"></span>' : ''}</button></div>`;
         if (!isExpanded) return html;
         for (const client of visibleClients) {
             const deviceActive = selectedClientId === client.id;
+            const loadedClient = clientsForUser.find(candidate => candidate.id === client.id);
             const detail = [client.deviceType, client.os, isSettingsDeviceStale(client) ? 'Not seen in 7+ days' : 'Active'].filter(Boolean).join(' · ');
-            html += `<button type="button" class="settings-scope-row device ${deviceActive ? 'active' : ''}" onclick="selectSettingsScope('device', decodeURIComponent('${encodeURIComponent(profile.id)}'), decodeURIComponent('${encodeURIComponent(client.id)}'))">${settingsScopeIcon('device')}<span class="settings-scope-copy"><span class="settings-scope-name">${escapeHtml(client.name || client.deviceName || 'Unknown device')}</span><span class="settings-scope-meta">${escapeHtml(detail)}</span></span>${deviceActive ? '<span class="settings-scope-dot"></span>' : ''}</button>`;
+            const hasOverrides = loadedClient ? loadedClient.hasOverrides : client.hasOverrides;
+            html += `<button type="button" class="settings-scope-row device ${deviceActive ? 'active' : ''}" onclick="selectSettingsScope('device', decodeURIComponent('${encodeURIComponent(profile.id)}'), decodeURIComponent('${encodeURIComponent(client.id)}'))">${settingsScopeIcon('device')}<span class="settings-scope-copy"><span class="settings-scope-name">${escapeHtml(client.name || client.deviceName || 'Unknown device')}</span><span class="settings-scope-meta">${escapeHtml(detail)}</span></span>${settingsScopeCustomizationBadge(hasOverrides ? 1 : 0)}${deviceActive ? '<span class="settings-scope-dot"></span>' : ''}</button>`;
         }
         if (profileClients.length === 0) html += '<div class="settings-scope-empty" style="padding-left:2.2rem;">No devices yet</div>';
         if (staleClients.length > 0) html += `<button type="button" class="settings-stale-toggle" onclick="toggleSettingsStaleDevices(event, decodeURIComponent('${encodeURIComponent(profile.id)}'))">${showStale ? 'Hide' : 'Show'} ${staleClients.length} device${staleClients.length === 1 ? '' : 's'} not seen in 7+ days</button>`;
@@ -1306,6 +1342,7 @@
     }
 
     async function handleUserChange(userId) {
+        overrideImpactNotice = null;
         selectedUserId = userId;
         // Clear client selection when user changes
         selectedClientId = '';
@@ -1505,6 +1542,7 @@
     // Per-profile override details: { userId: { sectionLabel: [fieldLabel, ...] } }
     let userOverrideDetails = {};
     let clientOverrideGroupsById = {};
+    let overrideImpactNotice = null;
 
     // Sections to check for overrides and their global mapping
     const overrideSections = [
@@ -1678,9 +1716,12 @@
                 console.warn('Failed to load settings for user', userId, e);
             }
         }
+        renderSettingsScopeTree();
+        updateRevertButtonVisibility();
     }
 
     async function handleClientChange(clientId) {
+        overrideImpactNotice = null;
         selectedClientId = clientId;
         const identifyBtn = document.getElementById('identifyClientBtn');
         if (clientId) {
@@ -1766,26 +1807,21 @@
                 : 'Reset all profile settings to global defaults';
         }
 
-        // Propagate button: show at global level or profile level (not client level)
-        // Only show for admin users
+        // Review button: show when child scopes have custom settings.
         if (propagateBtn && isAdmin) {
             let showPropagate = false;
             if (!selectedClientId) {
-                // At global level (no user selected) or profile level (user selected)
-                // Show propagate if there are profiles/clients to propagate to
                 if (!selectedUserId) {
-                    // Global level - always show if there are users
-                    showPropagate = true;
+                    showPropagate = Object.values(userOverrides || {}).some(Boolean);
                 } else {
-                    // Profile level - show if there are clients for this user
-                    showPropagate = clientsForUser.length > 0;
+                    showPropagate = clientsForUser.some(client => client.hasOverrides);
                 }
             }
             propagateBtn.style.display = showPropagate ? 'inline-flex' : 'none';
-            if (propagateBtnLabel) propagateBtnLabel.textContent = selectedUserId ? 'Copy to Devices' : 'Copy to Profiles';
+            if (propagateBtnLabel) propagateBtnLabel.textContent = 'Review Customizations';
             propagateBtn.title = selectedUserId
-                ? 'Propagate profile settings to all devices'
-                : 'Propagate global settings to all profiles and devices';
+                ? 'Review devices with settings that differ from this profile'
+                : 'Review profiles with settings that differ from server defaults';
         }
     }
 
@@ -1854,67 +1890,10 @@
         }
     }
 
-    // Propagate settings from global to all profiles+clients, or from profile to its clients
+    // Open the explicit review flow for child scopes with custom settings.
     async function propagateSettings() {
-        const isProfileLevel = !!selectedUserId;
-        const targetDesc = isProfileLevel
-            ? 'all devices for this profile'
-            : 'all profiles and their devices';
-
-        if (!confirm(`Are you sure you want to propagate current settings to ${targetDesc}? This will overwrite their filter settings.`)) {
-            return;
-        }
-
-        const btn = document.getElementById('propagateBtn');
-        const originalHTML = btn.innerHTML;
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-small"></span> Propagating...';
-
-        try {
-            let url = basePath + '/api/settings/propagate';
-            if (isProfileLevel) {
-                url += '?userId=' + encodeURIComponent(selectedUserId);
-            }
-
-            const response = await fetch(url, {
-                method: 'POST',
-                credentials: 'same-origin'
-            });
-
-            if (response.ok) {
-                const result = await response.json();
-                showToast(result.message || 'Settings propagated successfully');
-
-                // Refresh the view to show updated states
-                if (isProfileLevel) {
-                    // Reload clients for this user
-                    await loadClientsForUser(selectedUserId);
-                    updateClientDropdownIndicators();
-                } else {
-                    // At global level, all profiles now have overrides
-                    // Mark all users as having overrides
-                    const userSelector = document.getElementById('userSelector');
-                    if (userSelector) {
-                        Array.from(userSelector.options).forEach(option => {
-                            if (option.value) {
-                                userOverrides[option.value] = true;
-                            }
-                        });
-                    }
-                    updateUserDropdownIndicators();
-                }
-
-                updateRevertButtonVisibility();
-            } else {
-                const err = await response.text();
-                showToast('Failed to propagate settings: ' + err, 'error');
-            }
-        } catch (e) {
-            showToast('Failed to propagate settings: ' + e.message, 'error');
-        } finally {
-            btn.disabled = false;
-            btn.innerHTML = originalHTML;
-        }
+        if (selectedUserId) await openClientOverrideReview();
+        else await openProfileOverrideReview();
     }
 
     // Track which propagation level the modal is showing for
@@ -2050,7 +2029,7 @@
             label: 'Display',
             description: 'Badge Icon Style, navigation tabs, TV home/details layout, unreleased visibility, filtering bypass, episode privacy, appearance',
             detailSection: 'Display',
-            detailFields: ['Badge Icon Style', 'Navigation Tabs', 'Include Unreleased Movies in Lists', 'Include Unreleased Shows in Lists', 'Include Unreleased Movies in Search', 'Include Unreleased Shows in Search', 'Bypass Filtering for AIOStreams Only', 'Hide Continue Watching Hero Details', 'Move Details Ratings Up', 'Hide Details Poster', 'Hide TV Drawer Rail', 'Blur Unwatched Episode Thumbnails', 'Blur Unwatched Episode Overview', 'appearance', 'Show Parsed Metadata Badges', 'Badge Visibility'],
+            detailFields: ['Badge Icon Style', 'Navigation Tabs', 'Include Unreleased Movies in Lists', 'Include Unreleased Shows in Lists', 'Include Unreleased Movies in Search', 'Include Unreleased Shows in Search', 'Bypass Filtering for AIOStreams Only', 'Enable Application Animations', 'Enable Hero Art Panning', 'Enable Hero Art Rotation', 'Hide Continue Watching Hero Details', 'Move Details Ratings Up', 'Hide Details Poster', 'Hide TV Drawer Rail', 'Blur Unwatched Episode Thumbnails', 'Blur Unwatched Episode Overview', 'appearance', 'Show Parsed Metadata Badges', 'Badge Visibility'],
             userPaths: [
                 'display.watchStateIconStyle',
                 'display.navigationTabVisibility',
@@ -2059,6 +2038,9 @@
                 'display.includeUnreleasedMoviesInSearch',
                 'display.includeUnreleasedShowsInSearch',
                 'display.bypassFilteringForAioStreamsOnly',
+                'display.enableAnimations',
+                'display.enableHeroArtPanning',
+                'display.enableHeroArtRotation',
                 'display.hideContinueWatchingHeroMetadata',
                 'display.moveDetailsRatingsToMetadata',
                 'display.hideDetailsPoster',
@@ -2078,6 +2060,9 @@
                 'includeUnreleasedMoviesInSearch',
                 'includeUnreleasedShowsInSearch',
                 'bypassFilteringForAioStreamsOnly',
+                'enableAnimations',
+                'enableHeroArtPanning',
+                'enableHeroArtRotation',
                 'hideContinueWatchingHeroMetadata',
                 'moveDetailsRatingsToMetadata',
                 'hideDetailsPoster',
@@ -2375,8 +2360,8 @@
         };
     }
 
-    // After saving global settings, check which profiles have overrides and prompt to propagate
-    async function promptPropagateIfNeeded(changedGroupKeys = null) {
+    // Build the explicit server-to-profile customization review.
+    async function openProfileOverrideReview(changedGroupKeys = null) {
         settingsPropagationLog('prompt check started', {
             selectedUserId,
             selectedClientId,
@@ -2411,17 +2396,18 @@
 
         if (profilesWithOverrides.length === 0) {
             settingsPropagationLog('prompt skipped: no profiles with overrides');
+            showToast('No profile customizations to review');
             return;
         }
 
         // Configure modal for global→profiles propagation
         propagateLevel = 'global';
         propagateUserId = '';
-        document.getElementById('propagateModalTitle').textContent = 'Propagate to profiles?';
+        document.getElementById('propagateModalTitle').textContent = 'Review profile customizations';
         document.getElementById('propagateModalDesc').textContent =
-            'These profiles have overrides that differ from the new global settings. Select which groups to overwrite within each profile:';
+            'These profiles have settings that differ from server defaults. Select only the groups that should resume using server defaults:';
         document.getElementById('propagateModalNote').textContent =
-            'A profile checkbox toggles all groups inside that profile. All propagation selections start off.';
+            'Unchecked settings remain custom. Nothing changes until you choose Use Parent Defaults.';
 
         const list = document.getElementById('propagateTargetList');
         const hasChangedGroupFilter = changedGroupKeys instanceof Set && changedGroupKeys.size > 0;
@@ -2449,6 +2435,7 @@
                     details: p.details,
                 })),
             });
+            showToast('No custom settings in the selected groups');
             return;
         }
 
@@ -2466,7 +2453,7 @@
                     <input type="checkbox" class="propagate-check" value="${p.id}" onchange="syncPropagateTargetGroups(this.value)" style="margin-top: 0.2rem; flex-shrink: 0;">
                     <div style="min-width: 0;">
                         <label style="font-weight: 500; cursor: pointer;">
-                            <span>${p.name}</span>
+                            <span>${escapeHtml(p.name)}</span>
                         </label>
                         <div style="display: grid; gap: 0.4rem; margin-top: 0.55rem;">${renderPropagationGroupToggles(p.id, p.propagationGroups)}</div>
                     </div>
@@ -2479,8 +2466,8 @@
         updatePropagateConfirmState();
     }
 
-    // After saving profile settings, check which clients have overrides and prompt to propagate
-    async function promptPropagateClientsIfNeeded() {
+    // Build the explicit profile-to-device customization review.
+    async function openClientOverrideReview() {
         if (!selectedUserId) return;
 
         // Reload clients and recalculate their override status
@@ -2489,16 +2476,19 @@
         const clientsWithOverrides = clientsForUser
             .map(c => ({ ...c, propagationGroups: clientOverrideGroupsById[c.id] || [] }))
             .filter(c => c.hasOverrides && c.propagationGroups.length > 0);
-        if (clientsWithOverrides.length === 0) return;
+        if (clientsWithOverrides.length === 0) {
+            showToast('No supported device customizations to review');
+            return;
+        }
 
         // Configure modal for profile→clients propagation
         propagateLevel = 'profile';
         propagateUserId = selectedUserId;
-        document.getElementById('propagateModalTitle').textContent = 'Propagate to devices?';
+        document.getElementById('propagateModalTitle').textContent = 'Review device customizations';
         document.getElementById('propagateModalDesc').textContent =
-            'These devices have custom overrides that differ from this profile\u2019s settings. Select which groups to reset within each device:';
+            'These devices have settings that differ from this profile. Select only the groups that should resume using profile defaults:';
         document.getElementById('propagateModalNote').textContent =
-            'A device checkbox toggles all supported groups inside that device. All propagation selections start off.';
+            'Unchecked settings remain custom. Nothing changes until you choose Use Parent Defaults.';
 
         const list = document.getElementById('propagateTargetList');
         list.innerHTML = clientsWithOverrides.map(c =>
@@ -2506,7 +2496,7 @@
                 <div style="display: flex; align-items: flex-start; gap: 0.5rem; margin: 0;">
                     <input type="checkbox" class="propagate-check" value="${c.id}" onchange="syncPropagateTargetGroups(this.value)" style="margin-top: 0.2rem; flex-shrink: 0;">
                     <span style="min-width: 0;">
-                        <span style="display: block; font-weight: 500;">${c.name || c.deviceType || c.id}</span>
+                        <span style="display: block; font-weight: 500;">${escapeHtml(c.name || c.deviceType || c.id)}</span>
                         <span style="display: grid; gap: 0.4rem; margin-top: 0.55rem;">${renderPropagationGroupToggles(c.id, c.propagationGroups)}</span>
                     </span>
                 </div>
@@ -2523,6 +2513,45 @@
         document.body.style.overflow = '';
     }
 
+    async function updateProfileSaveImpact(changedGroupKeys) {
+        await recalculateAllUserOverrides();
+        const hasChangedFilter = changedGroupKeys instanceof Set && changedGroupKeys.size > 0;
+        const affected = profilesData.filter(profile => {
+            const groups = propagationGroupsForOverrideDetails(userOverrideDetails[profile.id] || {});
+            return groups.some(group => !hasChangedFilter || changedGroupKeys.has(group.key));
+        });
+        if (affected.length === 0) {
+            overrideImpactNotice = null;
+            return;
+        }
+        overrideImpactNotice = {
+            level: 'global',
+            title: `${affected.length} profile${affected.length === 1 ? '' : 's'} keep custom settings`,
+            description: 'Those custom values remain unchanged and continue to take precedence over server defaults.',
+        };
+    }
+
+    async function updateClientSaveImpact() {
+        if (!selectedUserId) return;
+        await recalculateAllUserOverrides();
+        await loadClientsForUser(selectedUserId);
+        const affected = clientsForUser.filter(client => client.hasOverrides);
+        if (affected.length === 0) {
+            overrideImpactNotice = null;
+            return;
+        }
+        overrideImpactNotice = {
+            level: 'profile',
+            title: `${affected.length} device${affected.length === 1 ? '' : 's'} keep custom settings`,
+            description: 'Those device values remain unchanged and continue to take precedence over profile defaults.',
+        };
+    }
+
+    function reviewOverrideImpact() {
+        if (overrideImpactNotice?.level === 'profile') openClientOverrideReview();
+        else openProfileOverrideReview();
+    }
+
     async function confirmPropagate() {
         const selectionsByTarget = getPropagationSelectionsByTarget();
         if (selectionsByTarget.size === 0) {
@@ -2537,7 +2566,7 @@
         const btn = document.getElementById('propagateConfirmBtn');
         const originalHTML = btn.innerHTML;
         btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-small"></span> Propagating...';
+        btn.innerHTML = '<span class="spinner-small"></span> Updating...';
 
         try {
             let successCount = 0;
@@ -2655,9 +2684,9 @@
             }
 
             if (failCount === 0) {
-                showToast(`Settings propagated to ${successCount} ${propagateLevel === 'global' ? 'profile' : 'device'}${successCount !== 1 ? 's' : ''}`);
+                showToast(`Updated ${successCount} ${propagateLevel === 'global' ? 'profile' : 'device'}${successCount !== 1 ? 's' : ''} to use parent defaults`);
             } else {
-                showToast(`Propagated to ${successCount}, failed for ${failCount}`, 'error');
+                showToast(`Updated ${successCount}, failed for ${failCount}`, 'error');
             }
 
             if (propagateLevel === 'global') {
@@ -2671,8 +2700,10 @@
                 renderSettings();
             }
             updateRevertButtonVisibility();
+            overrideImpactNotice = null;
+            renderSettingsScopeTree();
         } catch (e) {
-            showToast('Failed to propagate: ' + e.message, 'error');
+            showToast('Failed to update parent defaults: ' + e.message, 'error');
         } finally {
             btn.disabled = false;
             btn.innerHTML = originalHTML;
@@ -5692,7 +5723,18 @@
 
         let hasDirectChanges = false;
 
-        if (selectedUserId && isPerUserSection) {
+        if (selectedClientId && clientSettings !== null && originalClientSettings !== null) {
+            const fieldsBySection = {
+                filtering: clientFilterFields,
+                display: clientDisplayFields,
+                playback: clientPlaybackFields,
+                animeFiltering: clientAnimeFilterFields,
+                ranking: clientRankingFields,
+                network: clientNetworkFields,
+            };
+            const fields = fieldsBySection[sectionKey] || fieldsBySection[parentKey] || [];
+            hasDirectChanges = fields.some(field => !deepEqual(getAtPath(clientSettings, field), getAtPath(originalClientSettings, field)));
+        } else if (selectedUserId && isPerUserSection) {
             // Compare user settings
             if (!userSettings || !originalUserSettings) return false;
 
@@ -5746,7 +5788,28 @@
         btn.innerHTML = '<span class="spinner-small"></span>';
 
         try {
-            if (selectedUserId && userSettings) {
+            if (selectedClientId && clientSettings !== null) {
+                const response = await fetch(basePath + '/api/clients/' + encodeURIComponent(selectedClientId) + '/settings', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify(clientSettings)
+                });
+                if (response.ok) {
+                    originalClientSettings = JSON.parse(JSON.stringify(clientSettings));
+                    recalculateClientOverrides(selectedClientId);
+                    btn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>';
+                    showToast('Device settings saved successfully');
+                    updateRevertButtonVisibility();
+                    renderSettingsScopeTree();
+                    setTimeout(() => renderSettings(), 500);
+                } else {
+                    const result = await response.json().catch(() => ({}));
+                    showToast(result.error || 'Failed to save device settings', 'error');
+                    btn.innerHTML = originalHtml;
+                    btn.disabled = false;
+                }
+            } else if (selectedUserId && userSettings) {
                 // Save user-specific settings (strip values matching global to keep as inherited)
                 const strippedSettings = stripInheritedValues(userSettings, currentSettings);
                 console.log('Saving user settings - before strip:', JSON.stringify(userSettings));
@@ -5768,8 +5831,8 @@
                     updateClientDropdownIndicators();
                     updateRevertButtonVisibility();
                     setTimeout(() => renderSettings(), 500);
-                    // Check if any clients for this profile have overrides
-                    await promptPropagateClientsIfNeeded();
+                    await updateClientSaveImpact();
+                    renderSettings();
                 } else {
                     const result = await response.text();
                     showToast(result || 'Failed to save settings', 'error');
@@ -5792,8 +5855,8 @@
                     showToast('Settings saved successfully');
                     void loadHardwareAccelerationStatus();
                     setTimeout(() => renderSettings(), 500);
-                    // Check if any profiles have overrides
-                    await promptPropagateIfNeeded(changedGroups);
+                    await updateProfileSaveImpact(changedGroups);
+                    renderSettings();
                 } else {
                     const result = await response.json();
                     showToast(result.error || 'Failed to save settings', 'error');
@@ -10686,6 +10749,9 @@
 
         // Add info banner when user or client is selected
         let bannerHtml = '';
+        if (overrideImpactNotice) {
+            bannerHtml += '<div class="settings-impact-banner"><div><strong>' + escapeHtml(overrideImpactNotice.title) + '</strong><p>' + escapeHtml(overrideImpactNotice.description) + '</p></div><button type="button" class="btn btn-secondary btn-sm" onclick="reviewOverrideImpact()">Review customizations</button></div>';
+        }
         if (selectedClientId) {
             const client = clientsForUser.find(c => c.id === selectedClientId);
             const clientName = client ? client.name : selectedClientId;
@@ -10807,6 +10873,7 @@
                     if (clientInList) clientInList.hasOverrides = hasOverrides;
                     updateClientDropdownIndicators();
                     updateRevertButtonVisibility();
+                    renderSettingsScopeTree();
                 } else {
                     const result = await response.json().catch(() => ({}));
                     showToast(result.error || 'Failed to save client settings', 'error');
@@ -10830,8 +10897,8 @@
                     updateClientDropdownIndicators(); // Update "Profile Defaults" indicator
                     updateRevertButtonVisibility();
                     renderSettings(); // Re-render to update inherited field styling
-                    // Check if any clients for this profile have overrides and offer to propagate
-                    await promptPropagateClientsIfNeeded();
+                    await updateClientSaveImpact();
+                    renderSettings();
                 } else {
                     const result = await response.text();
                     showToast(result || 'Failed to save user settings', 'error');
@@ -10851,8 +10918,8 @@
                     showToast('Settings saved successfully');
                     void loadHardwareAccelerationStatus();
                     if (committedPendingTextArrays) renderSettings();
-                    // Check if any profiles have overrides and offer to propagate
-                    await promptPropagateIfNeeded(changedGroups);
+                    await updateProfileSaveImpact(changedGroups);
+                    renderSettings();
                 } else {
                     const result = await response.json();
                     showToast(result.error || 'Failed to save settings', 'error');

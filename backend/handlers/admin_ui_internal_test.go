@@ -165,7 +165,7 @@ func TestAdminSettingsUsesCategoryAndDetailProgressiveDisclosure(t *testing.T) {
 		`'Streaming Method'`,
 		`'Adapt to Each Device'`,
 		`if (!searchTerm && activeSettingsGroup && group.id !== activeSettingsGroup) continue;`,
-		`propagateBtnLabel.textContent = selectedUserId ? 'Copy to Devices' : 'Copy to Profiles'`,
+		`propagateBtnLabel.textContent = 'Review Customizations'`,
 		`settingsLevel === 'basic' && !searchTerm && advancedSections.has(key)`,
 	} {
 		if !strings.Contains(source, marker) {

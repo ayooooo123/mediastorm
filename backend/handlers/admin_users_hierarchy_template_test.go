@@ -145,3 +145,40 @@ func TestAdminSettingsUsesHierarchyScopeTree(t *testing.T) {
 		t.Fatal("settings scope hierarchy still creates an internal scroll container")
 	}
 }
+
+func TestAdminSettingsSurfacesAndReviewsScopedCustomizations(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/settings.html")
+	if err != nil {
+		t.Fatalf("read settings template: %v", err)
+	}
+	source := string(templateBytes)
+
+	for _, marker := range []string{
+		`class="settings-scope-custom"`,
+		`function profileCustomizationCount(profileId)`,
+		`function settingsScopeCustomizationBadge(count, label = 'custom')`,
+		`Review Customizations`,
+		`Review profile customizations`,
+		`Review device customizations`,
+		`Use Parent Defaults`,
+		`function updateProfileSaveImpact(changedGroupKeys)`,
+		`function updateClientSaveImpact()`,
+		`class="settings-impact-banner"`,
+		`Those custom values remain unchanged and continue to take precedence over server defaults.`,
+		`Those device values remain unchanged and continue to take precedence over profile defaults.`,
+		`if (selectedClientId && clientSettings !== null)`,
+		`'/api/clients/' + encodeURIComponent(selectedClientId) + '/settings'`,
+		`showToast('Device settings saved successfully')`,
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("settings template missing scoped-customization marker %q", marker)
+		}
+	}
+
+	if strings.Contains(source, `Copy to Profiles`) || strings.Contains(source, `Copy to Devices`) {
+		t.Fatal("settings page still describes resetting child overrides as copying settings")
+	}
+	if strings.Contains(source, `fetch(basePath + '/api/settings/propagate'`) {
+		t.Fatal("settings page still invokes the legacy bulk propagation endpoint")
+	}
+}
