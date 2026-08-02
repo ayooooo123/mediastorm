@@ -255,6 +255,33 @@
     </div>
 </div>
 
+<div id="libraryAccessModal" class="dir-modal" aria-hidden="true">
+    <div class="dir-modal-card card library-access-card" style="max-width: 720px;">
+        <div class="card-header">
+            <div>
+                <h2 id="libraryAccessTitle">Library Access</h2>
+                <div style="color: var(--text-muted); font-size: 0.85rem; margin-top: 0.25rem;">Choose which households and people can discover and play this library.</div>
+            </div>
+            <button class="btn btn-secondary btn-sm" type="button" id="closeLibraryAccessBtn">Close</button>
+        </div>
+        <div class="card-body" style="display:grid;gap:1rem;">
+            <label style="display:flex;gap:.65rem;align-items:flex-start;cursor:pointer;">
+                <input type="radio" name="libraryAccessMode" value="all">
+                <span><strong>All households</strong><span style="display:block;color:var(--text-muted);font-size:.82rem;margin-top:.15rem;">Every authenticated household and profile can use this library.</span></span>
+            </label>
+            <label style="display:flex;gap:.65rem;align-items:flex-start;cursor:pointer;">
+                <input type="radio" name="libraryAccessMode" value="restricted" checked>
+                <span><strong>Selected households and people</strong><span style="display:block;color:var(--text-muted);font-size:.82rem;margin-top:.15rem;">With no selections, only the master account can use the library.</span></span>
+            </label>
+            <div id="libraryAccessSubjects" style="display:grid;gap:.65rem;"></div>
+            <div style="display:flex;justify-content:flex-end;gap:.5rem;">
+                <button class="btn btn-secondary" type="button" id="cancelLibraryAccessBtn">Cancel</button>
+                <button class="btn btn-primary" type="button" id="saveLibraryAccessBtn">Save Access</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <style>
 .path-picker-row {
     display: flex;
@@ -300,6 +327,30 @@
     flex: 1;
     min-height: 0;
     overflow: auto;
+}
+
+.library-access-card {
+    display: flex;
+    flex-direction: column;
+}
+
+.library-access-card .card-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+}
+
+@media (max-width: 640px) {
+    #libraryAccessModal {
+        padding: max(0.5rem, env(safe-area-inset-top)) max(0.5rem, env(safe-area-inset-right)) max(0.5rem, env(safe-area-inset-bottom)) max(0.5rem, env(safe-area-inset-left));
+    }
+
+    .library-access-card {
+        max-height: calc(100dvh - 1rem);
+        margin-top: 0;
+    }
 }
 
 .dir-list {
@@ -887,6 +938,8 @@ let discoveredPlexServers = [];
 let verifiedRemoteServer = null;
 const libraryStateStorageKey = 'strmr.library.ui.v1';
 let lastSelectedLibraryScanStatus = '';
+let accessAccounts = [];
+let accessLibraryId = '';
 
 if (!isAdmin) {
   document.addEventListener('DOMContentLoaded', () => {
@@ -917,6 +970,10 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   document.getElementById('cancelLibraryEditBtn').addEventListener('click', resetLibraryForm);
   document.getElementById('closeDirBrowserBtn').addEventListener('click', closeDirectoryBrowser);
+  document.getElementById('closeLibraryAccessBtn').addEventListener('click', closeLibraryAccess);
+  document.getElementById('cancelLibraryAccessBtn').addEventListener('click', closeLibraryAccess);
+  document.getElementById('saveLibraryAccessBtn').addEventListener('click', saveLibraryAccess);
+  document.querySelectorAll('input[name="libraryAccessMode"]').forEach(input => input.addEventListener('change', renderLibraryAccessSubjects));
   document.getElementById('goDirBrowserBtn').addEventListener('click', () => loadDirectoryListing(document.getElementById('directoryBrowserPath').value.trim()));
   document.getElementById('dirBrowserUpBtn').addEventListener('click', browseParentDirectory);
   document.getElementById('dirBrowserUseBtn').addEventListener('click', useCurrentBrowseDirectory);
@@ -981,6 +1038,7 @@ document.addEventListener('DOMContentLoaded', () => {
   syncLibraryFormSettings();
   resetLibraryForm();
   loadRemoteAccounts();
+  loadLibraryAccessSubjects();
   loadLibraries();
   librariesPollHandle = window.setInterval(loadLibraries, 4000);
 });
@@ -1023,9 +1081,11 @@ async function createLibrary(event) {
       body: JSON.stringify(payload),
     });
     if (!res.ok) throw new Error(await res.text());
+    const savedLibrary = await res.json();
     showToast(isEditing ? 'Library updated' : 'Library added');
     resetLibraryForm();
     await loadLibraries();
+    if (!isEditing && savedLibrary && savedLibrary.id) manageLibraryAccess(savedLibrary.id);
   } catch (err) {
     showToast(err.message || (editingLibraryId ? 'Failed to update library' : 'Failed to create library'), 'error');
   }
@@ -1090,6 +1150,7 @@ function renderLibraries(container) {
             ${library.lastScanStatus === 'scanning' && library.lastScanTotal ? `<span>${Math.min(100, Math.round(((library.lastScanDiscovered || 0) / library.lastScanTotal) * 100))}% complete</span>` : ''}
             <span>${library.lastScanMatched || 0} matched</span>
             <span>${library.lastScanLowConfidence || 0} low confidence</span>
+            <span>Access: ${escapeHtml(libraryAccessSummary(library))}</span>
             <span>${formatLastScanLabel(library)}</span>
           </div>
           ${renderScanProgress(library)}
@@ -1097,12 +1158,117 @@ function renderLibraries(container) {
           <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;" onclick="event.stopPropagation()">
             <button class="btn btn-primary btn-sm" onclick="scanLibrary('${library.id}')" ${library.lastScanStatus === 'scanning' ? 'disabled' : ''}>${library.lastScanStatus === 'scanning' ? 'Working...' : (library.sourceType && library.sourceType !== 'local' ? 'Sync' : 'Scan')}</button>
             ${!library.sourceType || library.sourceType === 'local' ? `<button class="btn btn-secondary btn-sm" onclick="editLibrary('${library.id}')">Edit</button>` : ''}
+            <button class="btn btn-secondary btn-sm" onclick="manageLibraryAccess('${library.id}')">Access</button>
             <button class="btn btn-danger btn-sm" onclick="deleteLibrary('${library.id}')">Delete</button>
           </div>
         </div>
       </div>
     `;
   }).join('');
+}
+
+function libraryAccessSummary(library) {
+  const access = library && library.access;
+  if (access && access.accessMode === 'all') return 'Everyone';
+  const accountCount = access && Array.isArray(access.allowedAccountIds) ? access.allowedAccountIds.length : 0;
+  const profileCount = access && Array.isArray(access.allowedProfileIds) ? access.allowedProfileIds.length : 0;
+  if (!accountCount && !profileCount) return 'Master only';
+  const parts = [];
+  if (accountCount) parts.push(`${accountCount} household${accountCount === 1 ? '' : 's'}`);
+  if (profileCount) parts.push(`${profileCount} ${profileCount === 1 ? 'person' : 'people'}`);
+  return parts.join(' · ');
+}
+
+async function loadLibraryAccessSubjects() {
+  try {
+    const res = await fetch(basePath + '/api/accounts');
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    accessAccounts = Array.isArray(data.accounts) ? data.accounts : [];
+  } catch (error) {
+    accessAccounts = [];
+    console.error('Unable to load library access subjects', error);
+  }
+}
+
+async function manageLibraryAccess(libraryId) {
+  const library = libraries.find(entry => entry.id === libraryId);
+  if (!library) return;
+  if (!accessAccounts.length) await loadLibraryAccessSubjects();
+  accessLibraryId = libraryId;
+  document.getElementById('libraryAccessTitle').textContent = `Access · ${library.name || 'Library'}`;
+  const mode = library.access && library.access.accessMode === 'all' ? 'all' : 'restricted';
+  const modeInput = document.querySelector(`input[name="libraryAccessMode"][value="${mode}"]`);
+  if (modeInput) modeInput.checked = true;
+  renderLibraryAccessSubjects();
+  const modal = document.getElementById('libraryAccessModal');
+  modal.classList.add('open');
+  modal.setAttribute('aria-hidden', 'false');
+  lockBackgroundScroll();
+}
+
+function renderLibraryAccessSubjects() {
+  const container = document.getElementById('libraryAccessSubjects');
+  if (!container) return;
+  const library = libraries.find(entry => entry.id === accessLibraryId);
+  const access = library && library.access ? library.access : {};
+  const accountIDs = new Set(Array.isArray(access.allowedAccountIds) ? access.allowedAccountIds : []);
+  const profileIDs = new Set(Array.isArray(access.allowedProfileIds) ? access.allowedProfileIds : []);
+  const restricted = document.querySelector('input[name="libraryAccessMode"]:checked')?.value !== 'all';
+  container.style.display = restricted ? 'grid' : 'none';
+  container.innerHTML = accessAccounts.map(account => {
+    const profiles = Array.isArray(account.profiles) ? account.profiles : [];
+    return `<div style="border:1px solid var(--border);border-radius:.65rem;padding:.75rem;display:grid;gap:.55rem;">
+      <label style="display:flex;gap:.55rem;align-items:center;cursor:pointer;font-weight:600;">
+        <input class="library-access-account" type="checkbox" value="${escapeHtml(account.id)}" ${accountIDs.has(account.id) ? 'checked' : ''} onchange="toggleLibraryAccessAccount(decodeURIComponent('${encodeURIComponent(account.id)}'), this.checked)">
+        ${escapeHtml(account.username || 'Household')}${account.isMaster ? ' · Master' : ''}
+      </label>
+      <div style="display:grid;gap:.4rem;padding-left:1.55rem;">
+        ${profiles.map(profile => `<label style="display:flex;gap:.5rem;align-items:center;cursor:pointer;color:var(--text-secondary);">
+          <input class="library-access-profile" data-account-id="${escapeHtml(account.id)}" type="checkbox" value="${escapeHtml(profile.id)}" ${profileIDs.has(profile.id) ? 'checked' : ''} ${accountIDs.has(account.id) ? 'disabled' : ''}>
+          ${escapeHtml(profile.name || 'Person')}
+        </label>`).join('') || '<span style="color:var(--text-muted);font-size:.82rem;">No profiles</span>'}
+      </div>
+    </div>`;
+  }).join('') || '<div style="color:var(--text-muted);">No households are available.</div>';
+}
+
+function toggleLibraryAccessAccount(accountID, checked) {
+  document.querySelectorAll('.library-access-profile').forEach(input => {
+    if (input.dataset.accountId === accountID) input.disabled = checked;
+  });
+}
+
+function closeLibraryAccess() {
+  accessLibraryId = '';
+  const modal = document.getElementById('libraryAccessModal');
+  modal.classList.remove('open');
+  modal.setAttribute('aria-hidden', 'true');
+  unlockBackgroundScroll();
+}
+
+async function saveLibraryAccess() {
+  if (!accessLibraryId) return;
+  const accessMode = document.querySelector('input[name="libraryAccessMode"]:checked')?.value || 'restricted';
+  const allowedAccountIds = accessMode === 'restricted'
+    ? Array.from(document.querySelectorAll('.library-access-account:checked')).map(input => input.value)
+    : [];
+  const allowedProfileIds = accessMode === 'restricted'
+    ? Array.from(document.querySelectorAll('.library-access-profile:checked:not(:disabled)')).map(input => input.value)
+    : [];
+  try {
+    const res = await fetch(basePath + '/api/library/libraries/' + encodeURIComponent(accessLibraryId) + '/access', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accessMode, allowedAccountIds, allowedProfileIds }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    showToast('Library access updated');
+    closeLibraryAccess();
+    await loadLibraries();
+  } catch (error) {
+    showToast(error.message || 'Unable to update library access', 'error');
+  }
 }
 
 function selectLibrary(id) {

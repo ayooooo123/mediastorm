@@ -47,6 +47,7 @@ import (
 	"novastream/services/debrid"
 	"novastream/services/history"
 	"novastream/services/invitations"
+	"novastream/services/libraryaccess"
 	"novastream/services/localmedia"
 	"novastream/services/metadata"
 	"novastream/services/notifications"
@@ -1478,6 +1479,7 @@ type AdminUIHandler struct {
 	debridSearchService   *debrid.SearchService
 	localMediaService     *localmedia.Service
 	remoteMediaService    *remotemedia.Service
+	libraryAccessService  *libraryaccess.Service
 	calendarService       *calendar.Service
 	clientsService        clientsService
 	clientSettingsService clientSettingsService
@@ -1540,6 +1542,10 @@ func (h *AdminUIHandler) SetLocalMediaService(ls *localmedia.Service) {
 
 func (h *AdminUIHandler) SetRemoteMediaService(service *remotemedia.Service) {
 	h.remoteMediaService = service
+}
+
+func (h *AdminUIHandler) SetLibraryAccessService(service *libraryaccess.Service) {
+	h.libraryAccessService = service
 }
 
 // SetAccountsService sets the accounts service for account management
@@ -10727,6 +10733,20 @@ func (h *AdminUIHandler) ListLocalMediaLibraries(w http.ResponseWriter, r *http.
 			libraries = append(libraries, models.LocalMediaLibrary{ID: remote.ID, Name: remote.Name, Type: remote.Type, CreatedAt: remote.CreatedAt, UpdatedAt: remote.UpdatedAt, LastScanStartedAt: remote.LastSyncStartedAt, LastScanFinishedAt: remote.LastSyncFinishedAt, LastScanStatus: remote.LastSyncStatus, LastScanError: remote.LastSyncError, LastScanDiscovered: remote.LastSyncTotal, LastScanTotal: remote.LastSyncTotal, LastScanMatched: remote.LastSyncTotal, SourceType: remote.Provider, SourceName: strings.Title(remote.Provider), SourceServerName: remote.ServerName})
 		}
 	}
+	if h.libraryAccessService != nil {
+		policies, accessErr := h.libraryAccessService.List(r.Context())
+		if accessErr != nil {
+			http.Error(w, accessErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		for i := range libraries {
+			policy, exists := policies[libraries[i].ID]
+			if !exists {
+				policy = models.LibraryAccessPolicy{LibraryID: libraries[i].ID, AccessMode: models.LibraryAccessModeRestricted, AllowedAccountIDs: []string{}, AllowedProfileIDs: []string{}}
+			}
+			libraries[i].Access = &policy
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(libraries)
 }
@@ -10758,6 +10778,13 @@ func (h *AdminUIHandler) CreateLocalMediaLibrary(w http.ResponseWriter, r *http.
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		if h.libraryAccessService != nil {
+			if err := h.libraryAccessService.Set(r.Context(), models.LibraryAccessPolicy{LibraryID: library.ID, AccessMode: models.LibraryAccessModeRestricted}); err != nil {
+				_ = h.remoteMediaService.DeleteLibrary(r.Context(), library.ID)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(library)
 		return
@@ -10767,8 +10794,56 @@ func (h *AdminUIHandler) CreateLocalMediaLibrary(w http.ResponseWriter, r *http.
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if h.libraryAccessService != nil {
+		if err := h.libraryAccessService.Set(r.Context(), models.LibraryAccessPolicy{LibraryID: library.ID, AccessMode: models.LibraryAccessModeRestricted}); err != nil {
+			_ = h.localMediaService.DeleteLibrary(r.Context(), library.ID)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(library)
+}
+
+func (h *AdminUIHandler) SetLibraryAccess(w http.ResponseWriter, r *http.Request) {
+	if !h.requireLocalMediaAdmin(w, r) {
+		return
+	}
+	if h.libraryAccessService == nil {
+		http.Error(w, "library access service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	libraryID := strings.TrimSpace(mux.Vars(r)["libraryID"])
+	exists := false
+	if library, _ := h.localMediaService.GetLibrary(r.Context(), libraryID); library != nil {
+		exists = true
+	}
+	if !exists && h.remoteMediaService != nil {
+		if library, _ := h.remoteMediaService.GetLibrary(r.Context(), libraryID); library != nil {
+			exists = true
+		}
+	}
+	if !exists {
+		http.Error(w, "library not found", http.StatusNotFound)
+		return
+	}
+	var policy models.LibraryAccessPolicy
+	if err := json.NewDecoder(r.Body).Decode(&policy); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	policy.LibraryID = libraryID
+	if err := h.libraryAccessService.Set(r.Context(), policy); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	saved, err := h.libraryAccessService.Get(r.Context(), libraryID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(saved)
 }
 
 func (h *AdminUIHandler) UpdateLocalMediaLibrary(w http.ResponseWriter, r *http.Request) {

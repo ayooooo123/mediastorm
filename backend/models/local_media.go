@@ -2,6 +2,20 @@ package models
 
 import "time"
 
+const (
+	LibraryAccessModeAll        = "all"
+	LibraryAccessModeRestricted = "restricted"
+)
+
+// LibraryAccessPolicy controls which mediastorm households and profiles may
+// discover and play a configured local, Plex, or Jellyfin library.
+type LibraryAccessPolicy struct {
+	LibraryID         string   `json:"libraryId"`
+	AccessMode        string   `json:"accessMode"`
+	AllowedAccountIDs []string `json:"allowedAccountIds"`
+	AllowedProfileIDs []string `json:"allowedProfileIds"`
+}
+
 type LocalMediaLibraryType string
 
 const (
@@ -48,6 +62,7 @@ type LocalMediaLibrary struct {
 	SourceType         string                `json:"sourceType"`
 	SourceName         string                `json:"sourceName"`
 	SourceServerName   string                `json:"sourceServerName,omitempty"`
+	Access             *LibraryAccessPolicy  `json:"access,omitempty"`
 }
 
 type LocalMediaProbe struct {

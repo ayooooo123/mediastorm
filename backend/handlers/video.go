@@ -39,6 +39,7 @@ import (
 	"novastream/models"
 	"novastream/services/credits"
 	"novastream/services/debrid"
+	"novastream/services/libraryaccess"
 	"novastream/services/playback"
 	"novastream/services/streaming"
 
@@ -117,6 +118,7 @@ type VideoHandler struct {
 	failures      *streamFailureRegistry
 	prequeueStore *playback.PrequeueStore
 	prewarmSvc    PrewarmService
+	libraryAccess *libraryaccess.Service
 
 	// External playback URLs commonly redirect through an addon before reaching
 	// the debrid CDN. Keep one hardened client alive for connection reuse and
@@ -592,6 +594,42 @@ func (h *VideoHandler) SetAccountsService(svc AccountsProvider) {
 	h.accountsSvc = svc
 }
 
+func (h *VideoHandler) SetLibraryAccessService(svc *libraryaccess.Service) {
+	h.libraryAccess = svc
+}
+
+func (h *VideoHandler) requireLibraryStreamAccess(w http.ResponseWriter, r *http.Request, streamPath string) bool {
+	if h.libraryAccess == nil {
+		return true
+	}
+	accountID := auth.GetAccountID(r)
+	profileID := strings.TrimSpace(r.URL.Query().Get("profileId"))
+	if profileID == "" {
+		profileID = strings.TrimSpace(r.URL.Query().Get("userId"))
+	}
+	if profileID != "" {
+		if h.usersSvc == nil {
+			http.Error(w, "stream not found", http.StatusNotFound)
+			return false
+		}
+		profile, ok := h.usersSvc.Get(profileID)
+		if !ok || profile.AccountID != accountID {
+			http.Error(w, "stream not found", http.StatusNotFound)
+			return false
+		}
+	}
+	recognized, allowed, err := h.libraryAccess.CanAccessStream(r.Context(), streamPath, accountID, profileID, auth.IsMaster(r) && profileID == "")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return false
+	}
+	if recognized && !allowed {
+		http.Error(w, "stream not found", http.StatusNotFound)
+		return false
+	}
+	return true
+}
+
 // SetPrequeueStore lets playback failures invalidate ready prequeue entries.
 func (h *VideoHandler) SetPrequeueStore(store *playback.PrequeueStore) {
 	h.prequeueStore = store
@@ -647,6 +685,9 @@ func (h *VideoHandler) DetectCredits(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.requireAllowedExternalPath(w, r, streamPath) {
+		return
+	}
+	if !h.requireLibraryStreamAccess(w, r, streamPath) {
 		return
 	}
 
@@ -817,6 +858,9 @@ func (h *VideoHandler) StreamVideo(w http.ResponseWriter, r *http.Request) {
 		cleanPath = strings.TrimPrefix(cleanPath, "/webdav")
 	} else if strings.HasPrefix(cleanPath, "webdav/") {
 		cleanPath = "/" + strings.TrimPrefix(cleanPath, "webdav/")
+	}
+	if !h.requireLibraryStreamAccess(w, r, cleanPath) {
+		return
 	}
 
 	// Enforce global concurrent stream limit (VOD only).
@@ -2086,6 +2130,9 @@ func (h *VideoHandler) ProbeVideo(w http.ResponseWriter, r *http.Request) {
 		cleanPath = strings.TrimPrefix(cleanPath, "/webdav")
 	} else if strings.HasPrefix(cleanPath, "webdav/") {
 		cleanPath = "/" + strings.TrimPrefix(cleanPath, "webdav/")
+	}
+	if !h.requireLibraryStreamAccess(w, r, cleanPath) {
+		return
 	}
 
 	videoTracef("[video] ProbeVideo: after cleaning, path=%q", cleanPath)
@@ -3408,6 +3455,9 @@ func (h *VideoHandler) StartHLSSession(w http.ResponseWriter, r *http.Request) {
 		cleanPath = strings.TrimPrefix(cleanPath, "/webdav")
 	} else if strings.HasPrefix(cleanPath, "webdav/") {
 		cleanPath = "/" + strings.TrimPrefix(cleanPath, "webdav/")
+	}
+	if !h.requireLibraryStreamAccess(w, r, cleanPath) {
+		return
 	}
 
 	// Check for Dolby Vision and HDR10 flags
@@ -6248,6 +6298,9 @@ func (h *VideoHandler) GetDirectURL(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing path parameter", http.StatusBadRequest)
 		return
 	}
+	if !h.requireLibraryStreamAccess(w, r, path) {
+		return
+	}
 
 	// Check if provider supports direct URLs
 	directProvider, ok := h.streamer.(streaming.DirectURLProvider)
@@ -6379,6 +6432,9 @@ func (h *VideoHandler) CropDetect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cleanPath := cleanCropDetectPath(filePath)
+	if !h.requireLibraryStreamAccess(w, r, cleanPath) {
+		return
+	}
 
 	// Resolve a seekable URL for the file
 	probeURL, err := h.resolveSeekableURL(r.Context(), cleanPath)

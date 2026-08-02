@@ -278,6 +278,14 @@ type RemoteMediaRepository interface {
 	MarkItemsMissingNotSeenInSync(ctx context.Context, libraryID, syncID string) error
 }
 
+// LibraryAccessRepository manages access policies shared by local and remote libraries.
+type LibraryAccessRepository interface {
+	Get(ctx context.Context, libraryID string) (*models.LibraryAccessPolicy, error)
+	List(ctx context.Context) (map[string]models.LibraryAccessPolicy, error)
+	Set(ctx context.Context, policy models.LibraryAccessPolicy) error
+	Delete(ctx context.Context, libraryID string) error
+}
+
 type RecordingRepository interface {
 	Get(ctx context.Context, id string) (*models.Recording, error)
 	List(ctx context.Context, filter models.RecordingListFilter) ([]models.Recording, error)
