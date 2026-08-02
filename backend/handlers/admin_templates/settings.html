@@ -851,21 +851,29 @@
         if (selectedClientId && clientSettings) {
             return clientRankingFields.filter(field => clientFieldDiffersFromInherited(clientSettings, 'ranking', field)).length;
         }
-        if (!selectedUserId || !userSettings?.ranking) return 0;
-        let count = 0;
-        for (const field of ['newestReleaseFirst', 'splitByService']) {
-            if (isProfileValueDifferent(`ranking.${field}`)) count++;
-        }
-        for (const path of ['ranking.criteria', 'ranking.debrid.criteria', 'ranking.usenet.criteria']) {
-            const criteria = getAtPath(userSettings, path);
-            if (Array.isArray(criteria) && criteria.length > 0) count++;
-        }
-        return count;
+        if (!selectedUserId || !userSettings) return 0;
+        return (buildProfileOverrideDetails(userSettings)['Result Ranking'] || []).length;
     }
 
     function settingsSectionCustomizationCount(sectionKey) {
         if (!selectedUserId && !selectedClientId) return 0;
         if (sectionKey === 'ranking') return rankingCustomizationCount();
+
+        if (!selectedClientId && selectedUserId && userSettings) {
+            const sectionLabel = {
+                playback: 'Playback',
+                metadata: 'Metadata',
+                filtering: 'Result Quality',
+                animeFiltering: 'Anime Language',
+                display: 'Display',
+                homeShelves: 'Home Shelves',
+                liveTV: 'Live TV',
+                network: 'Network',
+            }[sectionKey];
+            if (sectionLabel) {
+                return (buildProfileOverrideDetails(userSettings)[sectionLabel] || []).length;
+            }
+        }
 
         const paths = new Set();
         const collectFields = (key, def) => {
@@ -1702,6 +1710,89 @@
         }).filter(Boolean);
     }
 
+    // Build one canonical view of a profile's stored differences. Section
+    // badges, scope-tree totals, and the review dialog must all use this same
+    // result so inherited/materialized values cannot be reported differently.
+    function buildProfileOverrideDetails(settings) {
+        if (!settings || Object.keys(settings).length === 0) return {};
+        const details = {};
+
+        for (const sec of overrideSections) {
+            const profileSection = settings[sec.key];
+            if (!profileSection) continue;
+
+            if (sec.key === 'homeShelves') {
+                const profileShelves = profileSection.shelves;
+                const globalShelves = getGlobalValue('homeShelves.shelves') || [];
+                if (Array.isArray(profileShelves) && profileShelves.length > 0 && !shelvesEqual(profileShelves, globalShelves)) {
+                    const globalById = {};
+                    for (const shelf of globalShelves) globalById[shelf.id] = shelf;
+                    const diffs = [];
+                    for (const shelf of profileShelves) {
+                        const globalShelf = globalById[shelf.id];
+                        if (!globalShelf) {
+                            diffs.push((shelf.name || shelf.id) + ' (added)');
+                        } else if (!shelfEqual(shelf, globalShelf)) {
+                            diffs.push(shelf.name || shelf.id);
+                        }
+                    }
+                    if (diffs.length > 0) details[sec.label] = diffs;
+                }
+                for (const fieldKey of Object.keys(profileSection)) {
+                    if (fieldKey === 'shelves') continue;
+                    const profileValue = normalizeForComparisonForField(sec.key, fieldKey, profileSection[fieldKey]);
+                    if (profileValue === null) continue;
+                    const globalValue = normalizeForComparisonForField(sec.key, fieldKey, getGlobalValue(sec.key + '.' + fieldKey));
+                    if (!deepEqual(profileValue, globalValue)) {
+                        if (!details[sec.label]) details[sec.label] = [];
+                        details[sec.label].push(getFieldLabel(sec.key, fieldKey));
+                    }
+                }
+                continue;
+            }
+
+            const diffFields = [];
+            for (const fieldKey of Object.keys(profileSection)) {
+                if (sec.key === 'liveTV' && liveTVPerUserFields.has(fieldKey)) continue;
+                const profileValue = normalizeForComparisonForField(sec.key, fieldKey, profileSection[fieldKey]);
+                if (profileValue === null) continue;
+                const globalValue = normalizeForComparisonForField(sec.key, fieldKey, getGlobalValue(sec.key + '.' + fieldKey));
+                if (!deepEqual(profileValue, globalValue)) diffFields.push(getFieldLabel(sec.key, fieldKey));
+            }
+            if (diffFields.length > 0) details[sec.label] = diffFields;
+        }
+
+        if (settings.ranking) {
+            const rankingDiffs = [];
+            for (const [fieldKey, label] of [
+                ['newestReleaseFirst', 'Newest Release First'],
+                ['splitByService', 'Split Debrid/Usenet Ranking'],
+            ]) {
+                const profileValue = normalizeForComparisonForField('ranking', fieldKey, settings.ranking[fieldKey]);
+                if (profileValue === null) continue;
+                const globalValue = normalizeForComparisonForField('ranking', fieldKey, getGlobalValue('ranking.' + fieldKey));
+                if (!deepEqual(profileValue, globalValue)) rankingDiffs.push(label);
+            }
+            for (const [path, label] of [
+                ['criteria', 'Overall Ranking Criteria'],
+                ['debrid.criteria', 'Debrid Ranking Criteria'],
+                ['usenet.criteria', 'Usenet Ranking Criteria'],
+            ]) {
+                const criteria = getAtPath(settings.ranking, path);
+                if (Array.isArray(criteria) && criteria.length > 0) rankingDiffs.push(label);
+            }
+            if (rankingDiffs.length > 0) details['Result Ranking'] = rankingDiffs;
+        }
+
+        for (const fields of Object.values(details)) {
+            if (Array.isArray(fields)) {
+                const uniqueFields = Array.from(new Set(fields));
+                fields.splice(0, fields.length, ...uniqueFields);
+            }
+        }
+        return details;
+    }
+
     // Recalculate overrides for all users — fetches each profile's stored settings
     // and compares field-by-field against global to build detailed override info.
     async function recalculateAllUserOverrides() {
@@ -1731,99 +1822,7 @@
                     continue;
                 }
 
-                const details = {};
-
-                for (const sec of overrideSections) {
-                    const profileSection = settings[sec.key];
-                    if (!profileSection) continue;
-                    const globalSection = currentSettings[sec.globalKey] || {};
-                    if (sec.key === 'display') {
-                        settingsPropagationLog('recalc display section start from raw profile settings', {
-                            userId,
-                            profileDisplay: profileSection,
-                            globalDisplay: globalSection,
-                        });
-                    }
-
-                    // Special case: homeShelves — compare shelves array
-                    if (sec.key === 'homeShelves') {
-                        const profileShelves = profileSection.shelves;
-                        const globalShelves = globalSection.shelves;
-                        if (profileShelves && globalShelves && !shelvesEqual(profileShelves, globalShelves)) {
-                            // Find which shelves differ
-                            const globalById = {};
-                            for (const gs of globalShelves) globalById[gs.id] = gs;
-                            const diffs = [];
-                            for (const ps of profileShelves) {
-                                const gs = globalById[ps.id];
-                                if (!gs) { diffs.push(ps.name + ' (added)'); continue; }
-                                if (!shelfEqual(ps, gs)) diffs.push(ps.name);
-                            }
-                            if (diffs.length > 0) details[sec.label] = diffs;
-                        }
-                        // Also check non-shelves fields (e.g. exploreCardPosition)
-                        for (const fieldKey of Object.keys(profileSection)) {
-                            if (fieldKey === 'shelves') continue;
-                            const profileVal = normalizeForComparisonForField(sec.key, fieldKey, profileSection[fieldKey]);
-                            if (profileVal === null) continue;
-                            const globalVal = normalizeForComparisonForField(sec.key, fieldKey, getGlobalValue(sec.key + '.' + fieldKey));
-                            if (!deepEqual(profileVal, globalVal)) {
-                                if (!details[sec.label]) details[sec.label] = [];
-                                details[sec.label].push(getFieldLabel(sec.key, fieldKey));
-                            }
-                        }
-                        continue;
-                    }
-
-                    const diffFields = [];
-                    for (const fieldKey of Object.keys(profileSection)) {
-                        // Skip inherently per-user LiveTV fields
-                        if (sec.key === 'liveTV' && liveTVPerUserFields.has(fieldKey)) continue;
-                        const profileVal = normalizeForComparisonForField(sec.key, fieldKey, profileSection[fieldKey]);
-                        if (profileVal === null) continue;
-                        const globalVal = normalizeForComparisonForField(sec.key, fieldKey, getGlobalValue(sec.key + '.' + fieldKey));
-                        if (!deepEqual(profileVal, globalVal)) {
-                            if (sec.key === 'display') {
-                                settingsPropagationLog('recalc display field differs from raw profile settings', {
-                                    userId,
-                                    fieldKey,
-                                    fieldLabel: getFieldLabel(sec.key, fieldKey),
-                                    rawProfile: profileSection[fieldKey],
-                                    rawGlobal: globalSection[fieldKey],
-                                    normalizedProfile: profileVal,
-                                    normalizedGlobal: globalVal,
-                                });
-                            }
-                            diffFields.push(getFieldLabel(sec.key, fieldKey));
-                        }
-                    }
-                    if (diffFields.length > 0) {
-                        details[sec.label] = diffFields;
-                    }
-                }
-
-                // Check every ranking override, including service-specific criteria.
-                if (settings.ranking) {
-                    const globalRanking = currentSettings.ranking || {};
-                    const rankingDiffs = [];
-                    for (const [fieldKey, label] of [
-                        ['newestReleaseFirst', 'Newest Release First'],
-                        ['splitByService', 'Split Debrid/Usenet Ranking'],
-                    ]) {
-                        const profileValue = normalizeForComparison(settings.ranking[fieldKey]);
-                        const globalValue = normalizeForComparison(getGlobalValue('ranking.' + fieldKey));
-                        if (profileValue !== null && !deepEqual(profileValue, globalValue)) rankingDiffs.push(label);
-                    }
-                    for (const [path, label] of [
-                        ['criteria', 'Overall Ranking Criteria'],
-                        ['debrid.criteria', 'Debrid Ranking Criteria'],
-                        ['usenet.criteria', 'Usenet Ranking Criteria'],
-                    ]) {
-                        const profileCriteria = getAtPath(settings.ranking, path);
-                        if (Array.isArray(profileCriteria) && profileCriteria.length > 0) rankingDiffs.push(label);
-                    }
-                    if (rankingDiffs.length > 0) details['Result Ranking'] = rankingDiffs;
-                }
+                const details = buildProfileOverrideDetails(settings);
 
                 const hasOverrides = Object.keys(details).length > 0;
                 settingsPropagationLog('recalc profile result from raw profile settings', {
