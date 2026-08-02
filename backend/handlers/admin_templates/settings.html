@@ -221,6 +221,8 @@
 }
 .settings-scope-row:hover { color: var(--text-primary); background: var(--bg-tertiary); }
 .settings-scope-row.active { color: var(--text-primary); background: var(--accent-bg); border-color: var(--accent); }
+.settings-scope-server-line { display: flex; align-items: stretch; }
+.settings-scope-server-line .settings-scope-row { flex: 1; width: auto; padding-left: 0.15rem; }
 .settings-scope-row.household { color: var(--text-primary); font-weight: 600; }
 .settings-scope-person-line { display: flex; align-items: stretch; padding-left: 0.85rem; }
 .settings-scope-person-line .settings-scope-row.person { flex: 1; width: auto; padding-left: 0.15rem; }
@@ -686,6 +688,7 @@
     const expandedSettingsHouseholds = new Set();
     const expandedSettingsPeople = new Set();
     const expandedSettingsStaleDevices = new Set();
+    let settingsScopeServerExpanded = false;
     const settingsDebugSessionId = 'settings-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
     let editShelfEscapeHandler = null;
     let activeSettingsGroup = '';
@@ -791,7 +794,11 @@
         const households = settingsScopeHouseholds();
         let html = '';
         if (isAdmin) {
-            html += `<button type="button" class="settings-scope-row ${!selectedUserId ? 'active' : ''}" onclick="selectSettingsScope('server', '')">${settingsScopeIcon('server')}<span class="settings-scope-copy"><span class="settings-scope-name">Server defaults</span><span class="settings-scope-meta">All households</span></span>${!selectedUserId ? '<span class="settings-scope-dot"></span>' : ''}</button>`;
+            html += `<div class="settings-scope-server-line"><button type="button" class="settings-scope-toggle ${settingsScopeServerExpanded ? '' : 'collapsed'}" onclick="toggleSettingsServer(event)" aria-expanded="${settingsScopeServerExpanded}" aria-label="${settingsScopeServerExpanded ? 'Collapse' : 'Expand'} households">${settingsScopeChevron()}</button><button type="button" class="settings-scope-row ${!selectedUserId ? 'active' : ''}" onclick="selectSettingsScope('server', '')">${settingsScopeIcon('server')}<span class="settings-scope-copy"><span class="settings-scope-name">Server defaults</span><span class="settings-scope-meta">All households</span></span>${!selectedUserId ? '<span class="settings-scope-dot"></span>' : ''}</button></div>`;
+            if (!settingsScopeServerExpanded) {
+                tree.innerHTML = html;
+                return;
+            }
         }
 
         for (const household of households) {
@@ -832,6 +839,12 @@
     function toggleSettingsHousehold(householdId) {
         if (expandedSettingsHouseholds.has(householdId)) expandedSettingsHouseholds.delete(householdId);
         else expandedSettingsHouseholds.add(householdId);
+        renderSettingsScopeTree();
+    }
+
+    function toggleSettingsServer(event) {
+        event.stopPropagation();
+        settingsScopeServerExpanded = !settingsScopeServerExpanded;
         renderSettingsScopeTree();
     }
 
