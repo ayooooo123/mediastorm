@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"novastream/services/castcaps"
 	"time"
 
 	"novastream/config"
@@ -657,6 +658,52 @@ func TestHLSManager_ServePlaylist_CastUsesTransportStreamSegments(t *testing.T) 
 	}
 }
 
+func TestHLSManager_ServePlaylist_DirectForceAACKeepsFMP4Segments(t *testing.T) {
+	tmpDir := t.TempDir()
+	manager := NewHLSManager(tmpDir, "", "", nil)
+	defer manager.Shutdown()
+
+	sessionID := "direct-force-aac-playlist-session"
+	outputDir := filepath.Join(tmpDir, sessionID)
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	playlist := "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:EVENT\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:2.000000,\nsegment0.m4s\n"
+	if err := os.WriteFile(filepath.Join(outputDir, "stream.m3u8"), []byte(playlist), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	session := &HLSSession{
+		ID:             sessionID,
+		OutputDir:      outputDir,
+		CreatedAt:      time.Now(),
+		LastAccess:     time.Now(),
+		Duration:       6,
+		CastMode:       true,
+		DirectCastMode: true,
+		forceAAC:       true,
+	}
+	manager.mu.Lock()
+	manager.sessions[sessionID] = session
+	manager.mu.Unlock()
+
+	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/video/hls/%s/stream.m3u8", sessionID), nil)
+	rr := httptest.NewRecorder()
+	manager.ServePlaylist(rr, req, sessionID)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusOK, rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "segment1.m4s") || !strings.Contains(body, "segment2.m4s") {
+		t.Fatalf("direct forceAAC playlist did not extend using fMP4 segments: %s", body)
+	}
+	if strings.Contains(body, "segment1.ts") {
+		t.Fatalf("direct forceAAC playlist used MPEG-TS extension: %s", body)
+	}
+}
+
 func TestHLSManager_ServePlaylist_CastTimelineStaysAnchoredAfterTranscodingJump(t *testing.T) {
 	tmpDir := t.TempDir()
 	manager := NewHLSManager(tmpDir, "", "", nil)
@@ -732,6 +779,21 @@ func TestCastSegmentRestartPlanUsesStableTimelineCoordinates(t *testing.T) {
 	}
 }
 
+func TestCastSegmentRestartPlanWaitsForSequentialSegmentAfterStaleFutureFiles(t *testing.T) {
+	session := &HLSSession{
+		Duration:           7000,
+		StartOffset:        356.356,
+		TranscodingOffset:  5236.356,
+		SegmentStartNumber: 2440,
+		LastSegmentServed:  2447,
+		CastMode:           true,
+	}
+
+	if plan, ok := castSegmentRestartPlan(session, 2448, 2629); ok {
+		t.Fatalf("expected current transcode to satisfy next segment, got restart plan %+v", plan)
+	}
+}
+
 func TestHLSManager_DeleteOldSegmentsRetainsCastTimeline(t *testing.T) {
 	outputDir := t.TempDir()
 	segmentPath := filepath.Join(outputDir, "segment0.ts")
@@ -752,6 +814,30 @@ func TestHLSManager_DeleteOldSegmentsRetainsCastTimeline(t *testing.T) {
 
 	if _, err := os.Stat(segmentPath); err != nil {
 		t.Fatalf("cast segment was deleted even though backward seeking requires a stable timeline: %v", err)
+	}
+}
+
+func TestHLSManager_DeleteOldSegmentsRetainsStartupSegmentsForReceiverRereads(t *testing.T) {
+	outputDir := t.TempDir()
+	segmentPath := filepath.Join(outputDir, "segment0.m4s")
+	if err := os.WriteFile(segmentPath, []byte("segment"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := &HLSManager{}
+	session := &HLSSession{
+		ID:                      "direct-cast-startup-reread",
+		OutputDir:               outputDir,
+		CastMode:                true,
+		DirectCastMode:          true,
+		EarliestBufferedSegment: -1,
+		LastSegmentServed:       9,
+	}
+
+	manager.deleteOldSegments(session, "segment9.m4s")
+
+	if _, err := os.Stat(segmentPath); err != nil {
+		t.Fatalf("startup segment was deleted before receiver duplicate reads finished: %v", err)
 	}
 }
 
@@ -921,8 +1007,79 @@ func TestLegacyCastCompatibilityEnvelope(t *testing.T) {
 	}
 }
 
+func TestLegacyCastEncodeLimitsHDR4KClampsTo1080p30(t *testing.T) {
+	probe := &UnifiedProbeResult{
+		VideoWidth:     3840,
+		VideoHeight:    2160,
+		AvgFrameRate:   "24000/1001",
+		HasDolbyVision: true,
+		HasHDR10:       true,
+		ColorTransfer:  "smpte2084",
+		VideoCodec:     "hevc",
+		VideoPixFmt:    "yuv420p10le",
+		VideoProfile:   "main 10",
+	}
+
+	maxWidth, maxHeight, maxFPS := legacyCastEncodeLimits(probe, 0)
+	if maxWidth != legacyCastMaxWidth || maxHeight != legacyCastMaxHeight || maxFPS != legacyCastMaxFPSFull {
+		t.Fatalf("default legacyCastEncodeLimits() = %dx%d@%d, want %dx%d@%d",
+			maxWidth, maxHeight, maxFPS,
+			legacyCastMaxWidth, legacyCastMaxHeight, legacyCastMaxFPSFull)
+	}
+
+	maxWidth, maxHeight, maxFPS = legacyCastEncodeLimits(probe, legacyCastHDMaxHeight)
+	if maxWidth != legacyCastHDMaxWidth || maxHeight != legacyCastHDMaxHeight || maxFPS != legacyCastMaxFPSFull {
+		t.Fatalf("capped legacyCastEncodeLimits() = %dx%d@%d, want %dx%d@%d",
+			maxWidth, maxHeight, maxFPS,
+			legacyCastHDMaxWidth, legacyCastHDMaxHeight, legacyCastMaxFPSFull)
+	}
+}
+
+func TestLegacyCastEncodeLimits720pSourceKeeps60fps(t *testing.T) {
+	probe := &UnifiedProbeResult{
+		VideoWidth:   1280,
+		VideoHeight:  720,
+		AvgFrameRate: "60000/1001",
+		VideoCodec:   "h264",
+		VideoPixFmt:  "yuv420p",
+		VideoProfile: "high",
+	}
+
+	if _, _, maxFPS := legacyCastEncodeLimits(probe, 0); maxFPS != legacyCastMaxFPSHD {
+		t.Fatalf("720p source fps allowance = %d, want %d", maxFPS, legacyCastMaxFPSHD)
+	}
+	if _, _, maxFPS := legacyCastEncodeLimits(probe, legacyCastHDMaxHeight); maxFPS != legacyCastMaxFPSHD {
+		t.Fatalf("capped 720p source fps allowance = %d, want %d", maxFPS, legacyCastMaxFPSHD)
+	}
+}
+
+func TestCastServeIsSlowUsesSegmentRealTime(t *testing.T) {
+	const segmentBytes = 1_500_000
+	if castServeIsSlow(400*time.Millisecond, segmentBytes) {
+		t.Fatal("a segment delivered in 0.4s must not count as slow")
+	}
+	if !castServeIsSlow(1800*time.Millisecond, segmentBytes) {
+		t.Fatal("a 2s segment taking 1.8s to deliver must count as slow")
+	}
+	if castServeIsSlow(1800*time.Millisecond, 0) {
+		t.Fatal("an empty segment carries no bandwidth signal")
+	}
+}
+
+func TestCastShouldDropToFallbackHeightOnlyOncePerSession(t *testing.T) {
+	if castShouldDropToFallbackHeight(castSlowServeStreak-1, 0) {
+		t.Fatal("must not drop before the slow-serve streak is reached")
+	}
+	if !castShouldDropToFallbackHeight(castSlowServeStreak, 0) {
+		t.Fatal("a full slow-serve streak at 1080p must drop to 720p")
+	}
+	if castShouldDropToFallbackHeight(castSlowServeStreak+2, legacyCastHDMaxHeight) {
+		t.Fatal("a session already at 720p must not restart again")
+	}
+}
+
 func TestAppendAACTranscodeArgs_LegacyCastUsesStereoAACLC(t *testing.T) {
-	args := appendAACTranscodeArgs(nil, ":0", true)
+	args := appendAACTranscodeArgs(nil, ":0", castAudioEnvelope{castSafe: true})
 	joined := strings.Join(args, " ")
 
 	for _, required := range []string{
@@ -939,6 +1096,46 @@ func TestAppendAACTranscodeArgs_LegacyCastUsesStereoAACLC(t *testing.T) {
 	if strings.Contains(joined, "5.1") || strings.Contains(joined, "-ac:a:0 6") {
 		t.Fatalf("legacy cast audio args retained surround output: %s", joined)
 	}
+}
+
+func TestCastCapabilitiesDecisionRules(t *testing.T) {
+	t.Run("Container Decision", func(t *testing.T) {
+		probe := &UnifiedProbeResult{VideoCodec: "h264"}
+		session := &HLSSession{ProbeData: probe}
+
+		// Unknown / empty caps defaults to MPEG-TS
+		if !castPrefersMpegTS(session, nil) {
+			t.Error("expected missing caps to prefer MPEG-TS")
+		}
+
+		emptyCaps := &castcaps.Capabilities{Variants: map[castcaps.Variant]castcaps.Verdict{}}
+		if !castPrefersMpegTS(session, emptyCaps) {
+			t.Error("expected empty caps to prefer MPEG-TS")
+		}
+
+		fmp4Caps := &castcaps.Capabilities{Variants: map[castcaps.Variant]castcaps.Verdict{
+			castcaps.VariantFMP4: castcaps.VerdictSupported,
+		}}
+		if castPrefersMpegTS(session, fmp4Caps) {
+			t.Error("expected fMP4-capable receiver to not prefer MPEG-TS")
+		}
+	})
+
+	t.Run("Audio Envelope Decision", func(t *testing.T) {
+		// Unknown caps drops to stereo AAC-LC
+		args := appendAACTranscodeArgs(nil, ":0", castAudioEnvelope{castSafe: true, allowMultichannel: false})
+		joined := strings.Join(args, " ")
+		if !strings.Contains(joined, "-ac:a:0 2") || !strings.Contains(joined, "-profile:a:0 aac_low") {
+			t.Errorf("expected stereo AAC-LC for unknown caps, got %s", joined)
+		}
+
+		// Multichannel capable caps keeps 5.1 but still uses aac_low
+		args = appendAACTranscodeArgs(nil, ":0", castAudioEnvelope{castSafe: true, allowMultichannel: true})
+		joined = strings.Join(args, " ")
+		if !strings.Contains(joined, "-ac:a:0 6") || !strings.Contains(joined, "-profile:a:0 aac_low") {
+			t.Errorf("expected 5.1 AAC-LC for multichannel caps, got %s", joined)
+		}
+	})
 }
 
 func TestParseUnifiedProbeOutputRetainsLegacyCastVideoLimits(t *testing.T) {

@@ -29,7 +29,7 @@ func (p directCastTestProvider) GetDirectURL(context.Context, string) (string, e
 	return p.directURL, nil
 }
 
-func TestStartHLSSessionDirectCastProfilesAreNotStableCastTimeline(t *testing.T) {
+func TestStartHLSSessionDirectCastWithoutProbeFallsBackToStableTimeline(t *testing.T) {
 	inputPath := filepath.Join(t.TempDir(), "movie.mkv")
 	if err := os.WriteFile(inputPath, []byte("not a real media file"), 0644); err != nil {
 		t.Fatalf("write input fixture: %v", err)
@@ -78,8 +78,8 @@ func TestStartHLSSessionDirectCastProfilesAreNotStableCastTimeline(t *testing.T)
 			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 				t.Fatalf("decode response: %v", err)
 			}
-			if body.StableCastTimeline {
-				t.Fatalf("stableCastTimeline = true, want false for direct cast profile")
+			if !body.StableCastTimeline {
+				t.Fatalf("stableCastTimeline = false, want true when direct cast safety cannot be verified")
 			}
 		})
 	}
@@ -120,14 +120,51 @@ func TestStartHLSSessionCompatibilityCastRemainsStableTimeline(t *testing.T) {
 	}
 }
 
-func TestDirectCastHDRTranscodingArgsUseRemuxFMP4WithoutLegacyCastForcing(t *testing.T) {
+func TestDirectCastH264RemuxesToMpegTSWithoutLegacyCastForcing(t *testing.T) {
 	args, logs := runCastArgPlanTest(t, &HLSSession{
 		ID:             "direct-cast",
 		Path:           "movie.mkv",
 		OriginalPath:   "movie.mkv",
 		OutputDir:      t.TempDir(),
+		CastMode:       true,
+		DirectCastMode: true,
+		PlaybackTarget: "cast-direct",
+		ProbeData: &UnifiedProbeResult{
+			Duration:           120,
+			VideoCodec:         "h264",
+			VideoPixFmt:        "yuv420p",
+			VideoProfile:       "High",
+			AudioStreams:       []audioStreamInfo{{Index: 1, Codec: "aac"}},
+			HasCompatibleAudio: true,
+		},
+	}, false)
+
+	if strings.Contains(logs, "session direct-cast: cast stable timeline requires deterministic H.264 segments") {
+		t.Fatalf("direct cast produced legacy stable timeline transcode log; logs=%s", logs)
+	}
+	if !argPair(args, "-c:v", "copy") {
+		t.Fatalf("direct cast args did not copy H.264 video; args=%v", args)
+	}
+	// Receivers built into TVs accept an fMP4 HLS load and then never start
+	// playing; H.264 remuxes into MPEG-TS with no re-encode, so direct Cast
+	// keeps the copy path in the container every receiver understands.
+	if !argPair(args, "-hls_segment_type", "mpegts") {
+		t.Fatalf("direct cast args did not use MPEG-TS segments; args=%v", args)
+	}
+	if argPair(args, "-hls_segment_type", "fmp4") {
+		t.Fatalf("direct cast args used fMP4 segments; args=%v", args)
+	}
+}
+
+func TestDirectCastHEVCMain10UsesOriginalQualityFMP4(t *testing.T) {
+	args, logs := runCastArgPlanTest(t, &HLSSession{
+		ID:             "direct-cast-hevc",
+		Path:           "movie.mkv",
+		OriginalPath:   "movie.mkv",
+		OutputDir:      t.TempDir(),
 		HasHDR:         true,
 		CastMode:       true,
+		DirectCastMode: true,
 		PlaybackTarget: "cast-direct",
 		ProbeData: &UnifiedProbeResult{
 			Duration:           120,
@@ -139,17 +176,89 @@ func TestDirectCastHDRTranscodingArgsUseRemuxFMP4WithoutLegacyCastForcing(t *tes
 		},
 	}, false)
 
-	if strings.Contains(logs, "session direct-cast: cast stable timeline requires deterministic H.264 segments") {
-		t.Fatalf("direct cast produced legacy stable timeline transcode log; logs=%s", logs)
+	if strings.Contains(logs, "falling back to deterministic H.264 compatibility transcode") {
+		t.Fatalf("HEVC direct cast fell back to compatibility; logs=%s", logs)
 	}
 	if !argPair(args, "-c:v", "copy") {
-		t.Fatalf("direct cast args did not copy HEVC video; args=%v", args)
+		t.Fatalf("HEVC direct cast did not copy video; args=%v", args)
 	}
 	if !argPair(args, "-hls_segment_type", "fmp4") {
-		t.Fatalf("direct cast args did not use fMP4 segments; args=%v", args)
+		t.Fatalf("HEVC direct cast did not use fMP4 segments; args=%v", args)
 	}
 	if argPair(args, "-hls_segment_type", "mpegts") {
-		t.Fatalf("direct cast args used legacy MPEG-TS segments; args=%v", args)
+		t.Fatalf("HEVC direct cast used legacy MPEG-TS segments; args=%v", args)
+	}
+}
+
+func TestDirectCastNonAACAudioReEncodesAudioOnlyInMpegTS(t *testing.T) {
+	args, logs := runCastArgPlanTest(t, &HLSSession{
+		ID:             "direct-cast-aac",
+		Path:           "movie.mkv",
+		OriginalPath:   "movie.mkv",
+		OutputDir:      t.TempDir(),
+		CastMode:       true,
+		DirectCastMode: true,
+		PlaybackTarget: "cast-direct",
+		ProbeData: &UnifiedProbeResult{
+			Duration:           120,
+			VideoCodec:         "h264",
+			VideoPixFmt:        "yuv420p",
+			VideoProfile:       "High",
+			AudioStreams:       []audioStreamInfo{{Index: 1, Codec: "eac3"}},
+			HasCompatibleAudio: true,
+		},
+	}, false)
+
+	if strings.Contains(logs, "cast stable timeline requires deterministic H.264 segments") {
+		t.Fatalf("direct forceAAC cast unexpectedly used stable timeline; logs=%s", logs)
+	}
+	if !argPair(args, "-c:v", "copy") {
+		t.Fatalf("direct forceAAC cast did not copy video; args=%v", args)
+	}
+	if !argPair(args, "-c:a:0", "aac") {
+		t.Fatalf("direct cast did not re-encode E-AC-3 audio the receiver may not decode; args=%v", args)
+	}
+	if !argPair(args, "-ac:a:0", "2") || !argPair(args, "-profile:a:0", "aac_low") {
+		t.Fatalf("direct cast audio must be stereo AAC-LC; receivers reject multichannel AAC; args=%v", args)
+	}
+	if argPair(args, "-c:a:1", "copy") {
+		t.Fatalf("direct cast must not carry a second, undecodable audio track; args=%v", args)
+	}
+	if !strings.Contains(logs, "direct Cast audio is not AAC") {
+		t.Fatalf("direct cast did not log the audio-only re-encode; logs=%s", logs)
+	}
+	if !argPair(args, "-hls_segment_type", "mpegts") {
+		t.Fatalf("direct cast should remux into MPEG-TS; args=%v", args)
+	}
+}
+
+func TestDirectCastIncompatibleVideoFallsBackToCompatibilityTranscode(t *testing.T) {
+	args, logs := runCastArgPlanTest(t, &HLSSession{
+		ID:             "direct-cast-incompatible",
+		Path:           "movie.mkv",
+		OriginalPath:   "movie.mkv",
+		OutputDir:      t.TempDir(),
+		CastMode:       true,
+		DirectCastMode: true,
+		PlaybackTarget: "cast-direct",
+		ProbeData: &UnifiedProbeResult{
+			Duration:           120,
+			VideoCodec:         "mpeg4",
+			VideoPixFmt:        "yuv420p",
+			VideoProfile:       "Simple Profile",
+			AudioStreams:       []audioStreamInfo{{Index: 1, Codec: "aac"}},
+			HasCompatibleAudio: true,
+		},
+	}, false)
+
+	if !strings.Contains(logs, "session direct-cast-incompatible: cast direct video codec is not copy-compatible") {
+		t.Fatalf("incompatible direct cast did not log compatibility fallback; logs=%s", logs)
+	}
+	if argPair(args, "-c:v", "copy") {
+		t.Fatalf("incompatible direct cast copied video instead of transcoding; args=%v", args)
+	}
+	if !argPair(args, "-hls_segment_type", "mpegts") {
+		t.Fatalf("incompatible direct cast did not use MPEG-TS compatibility segments; args=%v", args)
 	}
 }
 
@@ -241,4 +350,68 @@ func argPair(args []string, key, value string) bool {
 		}
 	}
 	return false
+}
+
+func TestCompatibilityCastTranscodesAt1080pByDefault(t *testing.T) {
+	args, _ := runCastArgPlanTest(t, &HLSSession{
+		ID:             "compat-cast-1080",
+		Path:           "movie.mkv",
+		OriginalPath:   "movie.mkv",
+		OutputDir:      t.TempDir(),
+		CastMode:       true,
+		PlaybackTarget: "web",
+		ProbeData: &UnifiedProbeResult{
+			Duration:           120,
+			VideoCodec:         "h264",
+			VideoPixFmt:        "yuv420p",
+			VideoProfile:       "High",
+			VideoWidth:         1920,
+			VideoHeight:        1080,
+			AvgFrameRate:       "24000/1001",
+			AudioStreams:       []audioStreamInfo{{Index: 1, Codec: "aac"}},
+			HasCompatibleAudio: true,
+		},
+	}, true)
+
+	filter := castFilterArg(args)
+	if !strings.Contains(filter, "min(1920,iw)") || !strings.Contains(filter, "min(1080,ih)") {
+		t.Fatalf("compatibility cast did not encode at 1080p; filter=%q args=%v", filter, args)
+	}
+}
+
+func TestCompatibilityCastHonoursSlowLinkHeightCap(t *testing.T) {
+	args, _ := runCastArgPlanTest(t, &HLSSession{
+		ID:             "compat-cast-720",
+		Path:           "movie.mkv",
+		OriginalPath:   "movie.mkv",
+		OutputDir:      t.TempDir(),
+		CastMode:       true,
+		PlaybackTarget: "web",
+		CastMaxHeight:  legacyCastHDMaxHeight,
+		ProbeData: &UnifiedProbeResult{
+			Duration:           120,
+			VideoCodec:         "h264",
+			VideoPixFmt:        "yuv420p",
+			VideoProfile:       "High",
+			VideoWidth:         1920,
+			VideoHeight:        1080,
+			AvgFrameRate:       "24000/1001",
+			AudioStreams:       []audioStreamInfo{{Index: 1, Codec: "aac"}},
+			HasCompatibleAudio: true,
+		},
+	}, true)
+
+	filter := castFilterArg(args)
+	if !strings.Contains(filter, "min(1280,iw)") || !strings.Contains(filter, "min(720,ih)") {
+		t.Fatalf("slow-link cap did not drop the encode to 720p; filter=%q args=%v", filter, args)
+	}
+}
+
+func castFilterArg(args []string) string {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "-vf" {
+			return args[i+1]
+		}
+	}
+	return ""
 }

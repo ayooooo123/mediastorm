@@ -249,12 +249,7 @@ func detectHWAccel(ffmpegPath, pref string) HWAccelCaps {
 	var candidates []HWAccelKind
 	switch pref {
 	case "auto":
-		// NVENC and QSV/VAAPI are the common Docker passthrough cases;
-		// VideoToolbox covers macOS hosts.
-		candidates = []HWAccelKind{HWNVENC, HWQSV, HWVAAPI}
-		if runtime.GOOS == "darwin" {
-			candidates = append([]HWAccelKind{HWVideoToolbox}, candidates...)
-		}
+		candidates = autoEncodeCandidates(encoders)
 	case string(HWNVENC):
 		candidates = []HWAccelKind{HWNVENC}
 	case string(HWQSV):
@@ -282,6 +277,19 @@ func detectHWAccel(ffmpegPath, pref string) HWAccelCaps {
 
 	log.Printf("[hwaccel] no usable hardware encoder found for preference=%s candidates=%v; using libx264", pref, candidates)
 	return caps
+}
+
+// autoEncodeCandidates orders the "auto" preference probes. NVENC and QSV/VAAPI
+// are the common Docker passthrough cases; VideoToolbox covers macOS hosts.
+// Candidacy follows the encoder the configured ffmpeg actually reports rather
+// than this process's GOOS, so a build that exposes VideoToolbox is always
+// tried first. Every candidate still has to pass a real test encode.
+func autoEncodeCandidates(encoders map[string]bool) []HWAccelKind {
+	candidates := []HWAccelKind{HWNVENC, HWQSV, HWVAAPI}
+	if encoders[hwEncoderName(HWVideoToolbox)] || runtime.GOOS == "darwin" {
+		candidates = append([]HWAccelKind{HWVideoToolbox}, candidates...)
+	}
+	return candidates
 }
 
 // detectTonemap returns the best verified tone-mapping implementation.

@@ -13,6 +13,7 @@ import (
 	"log"
 	"math"
 	"net"
+	"novastream/services/castcaps"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
@@ -117,6 +118,10 @@ type VideoHandler struct {
 	failures      *streamFailureRegistry
 	prequeueStore *playback.PrequeueStore
 	prewarmSvc    PrewarmService
+
+	// castCaps answers "what can this receiver actually decode" from cache.
+	// Never probes on this path: a cast start must not wait on a device.
+	castCaps *castcaps.Store
 
 	// External playback URLs commonly redirect through an addon before reaching
 	// the debrid CDN. Keep one hardened client alive for connection reuse and
@@ -3422,6 +3427,14 @@ func (h *VideoHandler) StartHLSSession(w http.ResponseWriter, r *http.Request) {
 	if castMode && isDirectCastTarget(playbackTarget, castProfile) {
 		playbackTarget = "cast-direct"
 	}
+
+	var castReceiverHost string
+	if castMode {
+		if ip := net.ParseIP(strings.TrimSpace(r.URL.Query().Get("castDeviceIp"))); ip != nil {
+			castReceiverHost = ip.String()
+		}
+	}
+
 	durationHint := 0.0
 	if durationParam := strings.TrimSpace(r.URL.Query().Get("durationHint")); durationParam != "" {
 		if parsed, err := strconv.ParseFloat(durationParam, 64); err == nil {
@@ -3538,7 +3551,7 @@ func (h *VideoHandler) StartHLSSession(w http.ResponseWriter, r *http.Request) {
 	videoTracef("[video] creating HLS session for path=%q dv=%v dvProfile=%q hdr=%v start=%.3fs transcodingOffset=%.3fs audioTrack=%d subtitleTrack=%d",
 		cleanPath, hasDV, dvProfile, hasHDR, startSeconds, transcodingOffset, audioTrackIndex, subtitleTrackIndex)
 
-	session, err := h.hlsManager.CreateSession(r.Context(), cleanPath, path, hasDV, dvProfile, hasHDR, forceAAC, startSeconds, transcodingOffset, audioTrackIndex, subtitleTrackIndex, profileID, profileName, getClientIP(r), castMode, "", playbackTarget, durationHint)
+	session, err := h.hlsManager.CreateSession(r.Context(), cleanPath, path, hasDV, dvProfile, hasHDR, forceAAC, startSeconds, transcodingOffset, audioTrackIndex, subtitleTrackIndex, profileID, profileName, getClientIP(r), castMode, "", playbackTarget, durationHint, castReceiverHost)
 	if err != nil {
 		log.Printf("[video] failed to create HLS session: %v", err)
 		if errors.Is(err, streaming.ErrStaleTorrent) {
@@ -5069,7 +5082,7 @@ func (h *VideoHandler) CreateHLSSession(ctx context.Context, path string, hasDV 
 		}
 	}
 
-	session, err := h.hlsManager.CreateSession(ctx, path, path, hasDV, dvProfile, hasHDR, false, startOffset, 0, audioTrackIndex, subtitleTrackIndex, profileID, "", "", false, prequeueType, "", 0)
+	session, err := h.hlsManager.CreateSession(ctx, path, path, hasDV, dvProfile, hasHDR, false, startOffset, 0, audioTrackIndex, subtitleTrackIndex, profileID, "", "", false, prequeueType, "", 0, "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HLS session: %w", err)
 	}
@@ -6552,6 +6565,7 @@ func (h *VideoHandler) CropDetect(w http.ResponseWriter, r *http.Request) {
 		sort.Float64s(topFractions)
 		sort.Float64s(bottomFractions)
 		medianTop := topFractions[len(topFractions)/2]
+
 		medianBottom := bottomFractions[len(bottomFractions)/2]
 
 		// Asymmetry check: if top and bottom differ by more than 3%, discard both
@@ -6596,9 +6610,20 @@ func (h *VideoHandler) resolveSeekableURL(ctx context.Context, cleanPath string)
 	}
 
 	// Try WebDAV URL (usenet)
+
 	if webdavURL := h.buildWebDAVURL(cleanPath); webdavURL != "" {
 		return webdavURL, nil
 	}
 
 	return "", fmt.Errorf("no seekable URL available")
+}
+
+func (h *VideoHandler) SetCastCapabilities(store *castcaps.Store) {
+	if h == nil {
+		return
+	}
+	h.castCaps = store
+	if h.hlsManager != nil {
+		h.hlsManager.SetCastCapabilities(store)
+	}
 }

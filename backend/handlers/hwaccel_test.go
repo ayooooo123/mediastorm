@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -143,6 +144,26 @@ func TestBuildVideoEncodePlanVideoToolbox(t *testing.T) {
 	}
 	if len(plan.GlobalArgs) != 0 {
 		t.Fatalf("videotoolbox needs no device init, got %v", plan.GlobalArgs)
+	}
+}
+
+func TestAutoEncodeCandidatesPrefersVideoToolboxWhenFFmpegReportsIt(t *testing.T) {
+	// The configured ffmpeg exposes the macOS encoder; probe order must follow
+	// the binary, not the platform this process happens to be built for.
+	candidates := autoEncodeCandidates(map[string]bool{"h264_videotoolbox": true})
+	if len(candidates) == 0 || candidates[0] != HWVideoToolbox {
+		t.Fatalf("expected videotoolbox probed first, got %v", candidates)
+	}
+}
+
+func TestAutoEncodeCandidatesSkipsVideoToolboxWhenAbsent(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		t.Skip("macOS hosts always probe VideoToolbox")
+	}
+	for _, kind := range autoEncodeCandidates(map[string]bool{"h264_nvenc": true}) {
+		if kind == HWVideoToolbox {
+			t.Fatalf("videotoolbox must not be probed when ffmpeg lacks the encoder")
+		}
 	}
 }
 
