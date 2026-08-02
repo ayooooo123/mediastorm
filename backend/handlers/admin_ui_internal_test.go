@@ -158,11 +158,14 @@ func TestAdminSettingsUsesCategoryAndDetailProgressiveDisclosure(t *testing.T) {
 		`height: 40px;`,
 		`function setSettingsLevel(level)`,
 		`function setSettingsGroup(groupId)`,
+		`let activeSettingsGroup = '';`,
+		`onclick="setSettingsGroup(\'\')">All</button>`,
 		`const advancedSections = new Set`,
 		`const friendlySettingsCopy = [`,
 		`'Streaming Method'`,
 		`'Adapt to Each Device'`,
 		`if (!searchTerm && activeSettingsGroup && group.id !== activeSettingsGroup) continue;`,
+		`propagateBtnLabel.textContent = selectedUserId ? 'Copy to Devices' : 'Copy to Profiles'`,
 		`settingsLevel === 'basic' && !searchTerm && advancedSections.has(key)`,
 	} {
 		if !strings.Contains(source, marker) {
