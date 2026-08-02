@@ -1,0 +1,16 @@
+{
+  "build_version": "270120",
+  "cast_build_revision": "1.68.cast_20250829_0200_RC13.800768591",
+  "closed_caption": {},
+  "connected": true,
+  "has_update": false,
+  "locale": "en-US",
+  "name": "[LG] webOS TV OLED65C2PUA",
+  "public_key": "trimmed",
+  "release_track": "stable-channel",
+  "ssdp_udn": "1b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9",
+  "time_format": 1,
+  "timezone": "America/Los_Angeles",
+  "uptime": 48213.5,
+  "version": 9
+}

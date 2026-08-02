@@ -471,6 +471,19 @@ type HLSSession struct {
 	// when deciding whether to copy/remux or fall back to safe transcode limits.
 	CastReceiverHost string
 
+	// Cast capability observation. castVariants is the fingerprint of what this
+	// session actually asks the receiver to decode, derived once the ffmpeg arg
+	// plan is final. The rest is the receiver's own fetch timeline, which the
+	// grader reads to turn assumptions into verdicts. castVariantsGraded caps
+	// the whole session at one recorded verdict and frees the fetch set.
+	castVariants        castVariantFingerprint
+	castPlaylistFetched bool
+	castFirstFetch      time.Time
+	castLastFetch       time.Time
+	castLastKeepalive   time.Time
+	castFetchedSegments map[int]struct{}
+	castVariantsGraded  bool
+
 	// TonemappedToSDR is set when an HDR/DV source was tone mapped down to SDR
 	// H.264 during transcode. The HLS playlist must then advertise SDR rather
 	// than PQ video range.
@@ -717,9 +730,11 @@ func castVideoMustTranscode(probe *UnifiedProbeResult) bool {
 // forever with no error, and second-generation Chromecasts cannot decode HEVC
 // at any resolution. Anything outside the envelope belongs on the
 // compatibility transcode, which every receiver tested so far plays.
-//
-// caps widens this per receiver once a capability probe has proven the device
-// handles more; without a probe result the envelope is the safe answer.
+// caps widens this per receiver. Widening uses Allows, not Supports: a model
+// prior that says "this panel decodes HEVC" is worth an attempt, and the cost
+// of being wrong is one session that falls back. Everything whose failure mode
+// is a silent stall with no way back - the fMP4 container choice, AC-3
+// passthrough, multichannel AAC - still requires proven support.
 func canAttemptDirectCastCopyVideo(probe *UnifiedProbeResult, caps *castcaps.Capabilities) bool {
 	if probe == nil || strings.TrimSpace(probe.VideoCodec) == "" || IsIncompatibleVideoCodec(probe.VideoCodec) {
 		return false
@@ -727,18 +742,19 @@ func canAttemptDirectCastCopyVideo(probe *UnifiedProbeResult, caps *castcaps.Cap
 	if !castVideoMustTranscode(probe) {
 		return true
 	}
-	// Outside the legacy envelope. Widening requires proof of the specific
-	// thing being asked for, not merely of the container: VariantFMP4 is an
-	// H.264 asset, so it says nothing about HEVC decode.
-	if !caps.Supports(castcaps.VariantFMP4) {
+	// Outside the legacy envelope. Widening requires an answer about the
+	// specific thing being asked for, not merely about the container:
+	// VariantFMP4 is an H.264 variant and says nothing about HEVC decode. An
+	// unidentified receiver has neither, so it stays inside the envelope.
+	if !caps.Allows(castcaps.VariantFMP4) {
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(probe.VideoCodec)) {
 	case "hevc", "h265", "hev1", "hvc1":
-		return caps.Supports(castcaps.VariantHEVCFMP4)
+		return caps.Allows(castcaps.VariantHEVCFMP4)
 	default:
-		// H.264 above the legacy box (4K, high level, 1080p60). No probe
-		// variant measures resolution, so this stays on the safe transcode.
+		// H.264 above the legacy box (4K, high level, 1080p60). No variant
+		// measures resolution, so this stays on the safe transcode.
 		return false
 	}
 }
@@ -817,42 +833,46 @@ func castPrefersMpegTS(session *HLSSession, caps *castcaps.Capabilities) bool {
 	return !caps.Supports(castcaps.VariantFMP4)
 }
 
+// selectedAudioStream returns the audio track this session will actually send.
+// A negative index means "whatever ffmpeg maps first", which is stream 0.
+func selectedAudioStream(audioStreams []audioStreamInfo, audioTrackIndex int) (audioStreamInfo, bool) {
+	if len(audioStreams) == 0 {
+		return audioStreamInfo{}, false
+	}
+	if audioTrackIndex >= 0 {
+		for _, stream := range audioStreams {
+			if stream.Index == audioTrackIndex {
+				return stream, true
+			}
+		}
+	}
+	return audioStreams[0], true
+}
+
 // directCastAudioNeedsAAC reports whether a direct Cast session must re-encode
 // its audio. Direct copy exists to skip the *video* re-encode; Dolby audio is
 // the most common reason a receiver accepts the load and then never starts
 // playing (TV-integrated receivers frequently cannot decode AC-3/E-AC-3), and
 // re-encoding audio alone is cheap. Multichannel AAC keeps surround intact.
 func directCastAudioNeedsAAC(audioStreams []audioStreamInfo, audioTrackIndex int) bool {
-	if len(audioStreams) == 0 {
+	selected, ok := selectedAudioStream(audioStreams, audioTrackIndex)
+	if !ok {
 		return false
-	}
-	selected := audioStreams[0]
-	if audioTrackIndex >= 0 {
-		for _, stream := range audioStreams {
-			if stream.Index == audioTrackIndex {
-				selected = stream
-				break
-			}
-		}
 	}
 	return !strings.EqualFold(strings.TrimSpace(selected.Codec), "aac")
 }
 
 func isSelectedAudioDolby(audioStreams []audioStreamInfo, audioTrackIndex int) bool {
-	if len(audioStreams) == 0 {
+	selected, ok := selectedAudioStream(audioStreams, audioTrackIndex)
+	if !ok {
 		return false
 	}
-	selected := audioStreams[0]
-	if audioTrackIndex >= 0 {
-		for _, stream := range audioStreams {
-			if stream.Index == audioTrackIndex {
-				selected = stream
-				break
-			}
-		}
+	switch strings.ToLower(strings.TrimSpace(selected.Codec)) {
+	case "ac3", "ac-3", "eac3", "eac-3":
+		return true
+	default:
+		return false
 	}
-	codec := strings.ToLower(strings.TrimSpace(selected.Codec))
-	return codec == "ac3" || codec == "eac3" || codec == "eac-3" || codec == "ac-3"
 }
 
 const (
@@ -895,13 +915,14 @@ type castAudioEnvelope struct {
 // get 5.1 AAC.
 func appendAACTranscodeArgs(args []string, streamSpecifier string, env castAudioEnvelope) []string {
 	option := func(name string) string { return name + streamSpecifier }
-	channels, layout := "6", "5.1"
-	if env.castSafe && !env.allowMultichannel {
-		channels, layout = "2", "stereo"
+	channels := castAACChannels(env)
+	layout := "5.1"
+	if channels == 2 {
+		layout = "stereo"
 	}
 	args = append(args,
 		option("-c:a"), "aac",
-		option("-ac:a"), channels,
+		option("-ac:a"), strconv.Itoa(channels),
 		option("-ar:a"), "48000",
 		option("-channel_layout:a"), layout,
 		option("-b:a"), "192k",
@@ -910,6 +931,15 @@ func appendAACTranscodeArgs(args []string, streamSpecifier string, env castAudio
 		args = append(args, option("-profile:a"), "aac_low")
 	}
 	return args
+}
+
+// castAACChannels mirrors the channel count appendAACTranscodeArgs writes, so
+// the capability fingerprint describes the same audio the receiver is handed.
+func castAACChannels(env castAudioEnvelope) int {
+	if env.castSafe && !env.allowMultichannel {
+		return 2
+	}
+	return 6
 }
 
 func hlsWebVideoWillTranscode(playbackTarget string, probe *UnifiedProbeResult) bool {
@@ -3253,6 +3283,9 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 
 	// Audio handling
 	audioCodecHandled := false
+	// The audio the receiver actually decodes. Channels are only known when we
+	// encode it ourselves; a copied track's channel count is not probed.
+	castPlanAudioCodec, castPlanAudioChannels := "", 0
 
 	// Check if a specific incompatible audio track was selected (TrueHD, DTS, etc.)
 	if mappedSpecificAudio && session.AudioTrackIndex >= 0 {
@@ -3269,6 +3302,7 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 					caps := m.castCapabilities(session)
 					env := castAudioEnvelope{castSafe: session.CastMode, allowMultichannel: caps.Supports(castcaps.VariantTSAACMultichannel)}
 					args = appendAACTranscodeArgs(args, "", env)
+					castPlanAudioCodec, castPlanAudioChannels = "aac", castAACChannels(env)
 					audioCodecHandled = true
 				}
 				break
@@ -3284,6 +3318,7 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 			caps := m.castCapabilities(session)
 			env := castAudioEnvelope{castSafe: session.CastMode, allowMultichannel: caps.Supports(castcaps.VariantTSAACMultichannel)}
 			args = appendAACTranscodeArgs(args, ":0", env)
+			castPlanAudioCodec, castPlanAudioChannels = "aac", castAACChannels(env)
 			if !session.CastMode {
 				args = append(args, "-c:a:1", "copy")
 			}
@@ -3295,9 +3330,13 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 			caps := m.castCapabilities(session)
 			env := castAudioEnvelope{castSafe: session.CastMode, allowMultichannel: caps.Supports(castcaps.VariantTSAACMultichannel)}
 			args = appendAACTranscodeArgs(args, "", env)
+			castPlanAudioCodec, castPlanAudioChannels = "aac", castAACChannels(env)
 		} else {
 			// Copy compatible audio
 			args = append(args, "-c:a", "copy")
+			if selected, ok := selectedAudioStream(audioStreams, session.AudioTrackIndex); ok {
+				castPlanAudioCodec = selected.Codec
+			}
 		}
 	}
 
@@ -3414,6 +3453,32 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 
 		if len(sidecarSubtitles) > 0 {
 			log.Printf("[hls] session %s: %d subtitle tracks will be extracted on demand", session.ID, len(sidecarSubtitles))
+		}
+	}
+
+	// The output plan is final here, so this is the one place that knows exactly
+	// what the receiver will be handed. Record it on the session; the fetch
+	// timeline grades it later without ever asking the device anything.
+	if session.CastMode {
+		castPlanVideoCodec := videoCodec
+		if needsVideoTranscode {
+			castPlanVideoCodec = "h264"
+		}
+		fingerprint := castVariantsForPlan(castVariantPlan{
+			Fmp4:          needsFmp4,
+			VideoCodec:    castPlanVideoCodec,
+			AudioCodec:    castPlanAudioCodec,
+			AudioChannels: castPlanAudioChannels,
+		})
+		session.mu.Lock()
+		session.castVariants = fingerprint
+		session.mu.Unlock()
+		if fingerprint.empty() {
+			log.Printf("[hls] session %s: cast output (fmp4=%v video=%q audio=%q channels=%d) matches no capability variant; playback will not be graded",
+				session.ID, needsFmp4, castPlanVideoCodec, castPlanAudioCodec, castPlanAudioChannels)
+		} else {
+			log.Printf("[hls] session %s: cast output exercises variant %s (fmp4=%v video=%q audio=%q channels=%d)",
+				session.ID, fingerprint.Primary, needsFmp4, castPlanVideoCodec, castPlanAudioCodec, castPlanAudioChannels)
 		}
 	}
 
@@ -4418,6 +4483,11 @@ func (m *HLSManager) KeepAlive(w http.ResponseWriter, r *http.Request, sessionID
 	sourcePath := session.Path
 	session.mu.Unlock()
 
+	// A receiver that accepted the load and then stalled produces no further
+	// segment fetches, so the sender's keepalive is the only clock that can
+	// notice the silence.
+	m.noteCastKeepalive(session, now)
+
 	if hasPlaybackPosition {
 		m.mu.RLock()
 		observer := m.playbackObserver
@@ -4833,6 +4903,7 @@ func (m *HLSManager) ServePlaylist(w http.ResponseWriter, r *http.Request, sessi
 	session.mu.Lock()
 	session.LastSegmentRequest = time.Now()
 	session.mu.Unlock()
+	m.noteCastReceiverPlaylist(session, r)
 
 	playlistPath := filepath.Join(session.OutputDir, "stream.m3u8")
 
@@ -5075,6 +5146,7 @@ func (m *HLSManager) ServeMasterPlaylist(w http.ResponseWriter, r *http.Request,
 	session.mu.Lock()
 	session.LastSegmentRequest = time.Now()
 	session.mu.Unlock()
+	m.noteCastReceiverPlaylist(session, r)
 
 	if !m.shouldServeMasterPlaylist(session) {
 		http.Redirect(w, r, fmt.Sprintf("/video/hls/%s/stream.m3u8", sessionID), http.StatusTemporaryRedirect)
@@ -5393,6 +5465,11 @@ func (m *HLSManager) ServeSegment(w http.ResponseWriter, r *http.Request, sessio
 	session.SegmentRequestCount++
 	requestCount := session.SegmentRequestCount
 	session.mu.Unlock()
+
+	// Grade the receiver's own pull rate against what this session is asking it
+	// to decode. Nothing here contacts the device; it only reads the timeline
+	// the receiver produces by fetching what the user asked to play.
+	m.noteCastReceiverFetch(session, r, segmentName)
 
 	log.Printf("[hls] segment request #%d: session=%s segment=%s", requestCount, sessionID, segmentName)
 
@@ -6435,4 +6512,260 @@ func (m *HLSManager) castCapabilities(session *HLSSession) *castcaps.Capabilitie
 		return nil
 	}
 	return m.lookupCastCapabilities(session.CastReceiverHost)
+}
+
+// castVariantFingerprint is what a Cast session actually asks its receiver to
+// play. It is derived from the ffmpeg arg plan rather than from the source
+// file, so it describes the bytes the receiver really has to decode.
+type castVariantFingerprint struct {
+	// Primary is the variant this session is direct evidence for. A stall is
+	// blamed on it and on nothing else.
+	Primary castcaps.Variant
+	// Implied are variants that sustained playback also proves, because Primary
+	// strictly contains them. They are never blamed for a stall.
+	Implied []castcaps.Variant
+}
+
+func (f castVariantFingerprint) empty() bool { return f.Primary == "" }
+
+// castVariantPlan is the receiver-facing shape of one ffmpeg output.
+type castVariantPlan struct {
+	Fmp4          bool   // container: fMP4 when true, MPEG-TS when false
+	VideoCodec    string // codec the receiver decodes, after any transcode
+	AudioCodec    string // codec the receiver decodes, after any transcode
+	AudioChannels int    // 0 when audio is copied and the count is unknown
+}
+
+// castVariantsForPlan maps an output plan onto the capability matrix. Each
+// container has exactly one interesting axis: an fMP4 output is decided by its
+// video codec (a receiver that plays fMP4 at all plays H.264 in it), and an
+// MPEG-TS output is decided by its audio codec (H.264 in TS is the universal
+// Cast baseline). A plan whose deciding axis is unknown - copied audio, whose
+// channel count nothing in the probe reports - maps to no variant at all: a
+// guess here becomes a cached verdict that silently steers every later session
+// against this receiver.
+func castVariantsForPlan(plan castVariantPlan) castVariantFingerprint {
+	if plan.Fmp4 {
+		switch strings.ToLower(strings.TrimSpace(plan.VideoCodec)) {
+		case "hevc", "h265", "hev1", "hvc1":
+			return castVariantFingerprint{
+				Primary: castcaps.VariantHEVCFMP4,
+				Implied: []castcaps.Variant{castcaps.VariantFMP4},
+			}
+		case "h264", "avc", "avc1":
+			return castVariantFingerprint{Primary: castcaps.VariantFMP4}
+		}
+		return castVariantFingerprint{}
+	}
+	switch strings.ToLower(strings.TrimSpace(plan.AudioCodec)) {
+	case "ac3", "ac-3", "eac3", "eac-3":
+		return castVariantFingerprint{Primary: castcaps.VariantTSAC3}
+	case "aac":
+		if plan.AudioChannels > 2 {
+			return castVariantFingerprint{
+				Primary: castcaps.VariantTSAACMultichannel,
+				Implied: []castcaps.Variant{castcaps.VariantTSAACStereo},
+			}
+		}
+		if plan.AudioChannels > 0 {
+			return castVariantFingerprint{Primary: castcaps.VariantTSAACStereo}
+		}
+	}
+	return castVariantFingerprint{}
+}
+
+const (
+	// A receiver that has pulled this much media over this long a wall-clock
+	// window is playing it. Anything shorter is indistinguishable from the
+	// buffer burst a receiver performs before deciding it cannot decode.
+	castProvenMediaSeconds = 20.0
+	castProvenElapsed      = 15 * time.Second
+
+	// Accept-then-stall, as measured on real hardware: the receiver takes the
+	// playlist and a handful of segments, then goes silent forever with no
+	// error while the sender keeps the session alive.
+	castStallMaxSegments = 6
+	castStallSilence     = 20 * time.Second
+
+	// Without a recent keepalive the sender is gone too, so receiver silence
+	// says nothing about what the receiver can decode.
+	castStallKeepaliveWindow = 30 * time.Second
+)
+
+// castPlaybackObservation is the receiver-side fetch timeline of one cast
+// session: what the device pulled, and when.
+type castPlaybackObservation struct {
+	Now       time.Time
+	Alive     bool      // session still running: not stopped, completed, or failed
+	Keepalive time.Time // last sender keepalive; zero when none has arrived
+	Playlist  bool      // the receiver fetched a media playlist
+	First     time.Time // receiver's first segment fetch
+	Last      time.Time // receiver's most recent segment fetch
+	Segments  int       // distinct segments the receiver fetched
+}
+
+// gradeCastPlayback turns a fetch timeline into a capability verdict. It
+// answers VerdictUnknown whenever the evidence is ambiguous: a verdict is
+// cached and then silently steers every later session on that receiver, so
+// saying nothing is always the cheaper mistake.
+func gradeCastPlayback(obs castPlaybackObservation) (castcaps.Verdict, string) {
+	if obs.Segments <= 0 || obs.First.IsZero() || obs.Last.IsZero() {
+		return castcaps.VerdictUnknown, ""
+	}
+
+	mediaSeconds := float64(obs.Segments) * hlsSegmentDuration
+	elapsed := obs.Last.Sub(obs.First)
+	if mediaSeconds >= castProvenMediaSeconds && elapsed > castProvenElapsed {
+		return castcaps.VerdictSupported, fmt.Sprintf(
+			"receiver fetched %d segments (%.0fs of media) spread over %s",
+			obs.Segments, mediaSeconds, elapsed.Round(time.Second))
+	}
+
+	if !obs.Alive || !obs.Playlist || obs.Segments >= castStallMaxSegments {
+		return castcaps.VerdictUnknown, ""
+	}
+	if obs.Keepalive.IsZero() || obs.Now.Sub(obs.Keepalive) > castStallKeepaliveWindow {
+		return castcaps.VerdictUnknown, ""
+	}
+	silence := obs.Now.Sub(obs.Last)
+	if silence < castStallSilence {
+		return castcaps.VerdictUnknown, ""
+	}
+	return castcaps.VerdictRejected, fmt.Sprintf(
+		"receiver took the playlist and %d segment(s) then fetched nothing for %s while the session stayed alive",
+		obs.Segments, silence.Round(time.Second))
+}
+
+// castRequestIsFromReceiver reports whether an HTTP request came from the Cast
+// receiver itself rather than the sender app warming the backlog. Only the
+// receiver's own fetches say anything about what it can decode.
+func castRequestIsFromReceiver(session *HLSSession, r *http.Request) bool {
+	if session == nil || r == nil {
+		return false
+	}
+	session.mu.RLock()
+	host := strings.TrimSpace(session.CastReceiverHost)
+	castMode := session.CastMode
+	session.mu.RUnlock()
+	if host == "" || !castMode {
+		return false
+	}
+	remote := strings.TrimSpace(r.RemoteAddr)
+	if hostOnly, _, err := net.SplitHostPort(remote); err == nil {
+		remote = hostOnly
+	}
+	return remote == host
+}
+
+// noteCastReceiverPlaylist records that the receiver pulled a media playlist.
+// A stall verdict requires this: a receiver that never even read the playlist
+// was never given the chance to reject the stream.
+func (m *HLSManager) noteCastReceiverPlaylist(session *HLSSession, r *http.Request) {
+	if !castRequestIsFromReceiver(session, r) {
+		return
+	}
+	session.mu.Lock()
+	session.castPlaylistFetched = true
+	session.mu.Unlock()
+}
+
+// noteCastReceiverFetch records one segment fetch by the receiver and regrades
+// the session. Fetches are counted at request time, not after a successful
+// serve: a request the server could not satisfy is still the receiver asking.
+func (m *HLSManager) noteCastReceiverFetch(session *HLSSession, r *http.Request, segmentName string) {
+	if !castRequestIsFromReceiver(session, r) {
+		return
+	}
+	var segmentNum int
+	if _, err := fmt.Sscanf(segmentName, "segment%d.", &segmentNum); err != nil {
+		return
+	}
+
+	now := time.Now()
+	session.mu.Lock()
+	if session.castVariantsGraded {
+		session.mu.Unlock()
+		return
+	}
+	if session.castFetchedSegments == nil {
+		session.castFetchedSegments = make(map[int]struct{})
+	}
+	session.castFetchedSegments[segmentNum] = struct{}{}
+	if session.castFirstFetch.IsZero() {
+		session.castFirstFetch = now
+	}
+	session.castLastFetch = now
+	session.mu.Unlock()
+
+	m.gradeCastSession(session, now)
+}
+
+// noteCastKeepalive records that the sender still wants this session, then
+// regrades. A stall produces no further segment fetches, so the keepalive is
+// the only clock that can ever notice it.
+func (m *HLSManager) noteCastKeepalive(session *HLSSession, now time.Time) {
+	if session == nil {
+		return
+	}
+	session.mu.Lock()
+	skip := session.castVariantsGraded || !session.CastMode || strings.TrimSpace(session.CastReceiverHost) == ""
+	if !skip {
+		session.castLastKeepalive = now
+	}
+	session.mu.Unlock()
+	if skip {
+		return
+	}
+	m.gradeCastSession(session, now)
+}
+
+// gradeCastSession records a verdict for the variants this session exercises,
+// at most once per session. Sessions with no receiver address, no cast mode, or
+// no recognizable variant are never graded.
+func (m *HLSManager) gradeCastSession(session *HLSSession, now time.Time) {
+	if m == nil || session == nil {
+		return
+	}
+	m.castCapsMu.RLock()
+	store := m.castCaps
+	m.castCapsMu.RUnlock()
+	if store == nil {
+		return
+	}
+
+	session.mu.Lock()
+	host := strings.TrimSpace(session.CastReceiverHost)
+	fingerprint := session.castVariants
+	if session.castVariantsGraded || host == "" || !session.CastMode || fingerprint.empty() {
+		session.mu.Unlock()
+		return
+	}
+	verdict, evidence := gradeCastPlayback(castPlaybackObservation{
+		Now:       now,
+		Alive:     !session.Stopped && !session.Completed && session.FatalError == "",
+		Keepalive: session.castLastKeepalive,
+		Playlist:  session.castPlaylistFetched,
+		First:     session.castFirstFetch,
+		Last:      session.castLastFetch,
+		Segments:  len(session.castFetchedSegments),
+	})
+	if verdict == castcaps.VerdictUnknown {
+		session.mu.Unlock()
+		return
+	}
+	session.castVariantsGraded = true
+	// The timeline has done its job and the fetch set only grows from here.
+	session.castFetchedSegments = nil
+	sessionID := session.ID
+	session.mu.Unlock()
+
+	variants := []castcaps.Variant{fingerprint.Primary}
+	if verdict == castcaps.VerdictSupported {
+		variants = append(variants, fingerprint.Implied...)
+	}
+	for _, variant := range variants {
+		store.Record(host, variant, verdict)
+		log.Printf("[hls] session %s: receiver %s recorded %s=%s (%s)",
+			sessionID, host, variant, verdict, evidence)
+	}
 }

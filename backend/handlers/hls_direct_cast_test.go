@@ -480,12 +480,18 @@ func TestDirectCastCopyWideningRequiresMatchingProof(t *testing.T) {
 		VideoLevel:   51,
 		AvgFrameRate: "24000/1001",
 	}
-	caps := func(variants ...castcaps.Variant) *castcaps.Capabilities {
+	caps := func(verdict castcaps.Verdict, variants ...castcaps.Variant) *castcaps.Capabilities {
 		c := &castcaps.Capabilities{Variants: map[castcaps.Variant]castcaps.Verdict{}}
 		for _, v := range variants {
-			c.Variants[v] = castcaps.VerdictSupported
+			c.Variants[v] = verdict
 		}
 		return c
+	}
+	proven := func(variants ...castcaps.Variant) *castcaps.Capabilities {
+		return caps(castcaps.VerdictSupported, variants...)
+	}
+	assumed := func(variants ...castcaps.Variant) *castcaps.Capabilities {
+		return caps(castcaps.VerdictAssumed, variants...)
 	}
 
 	for _, tc := range []struct {
@@ -494,11 +500,21 @@ func TestDirectCastCopyWideningRequiresMatchingProof(t *testing.T) {
 		caps  *castcaps.Capabilities
 		want  bool
 	}{
-		{"unprobed receiver refuses 4K HEVC", hevc4K, nil, false},
-		{"container proof alone refuses HEVC", hevc4K, caps(castcaps.VariantFMP4), false},
-		{"HEVC proof without container refuses", hevc4K, caps(castcaps.VariantHEVCFMP4), false},
-		{"both proofs allow HEVC copy", hevc4K, caps(castcaps.VariantFMP4, castcaps.VariantHEVCFMP4), true},
-		{"no variant measures 4K H.264", h264Above, caps(castcaps.VariantFMP4, castcaps.VariantHEVCFMP4), false},
+		{"unidentified receiver refuses 4K HEVC", hevc4K, nil, false},
+		{"identified receiver with no verdicts refuses 4K HEVC", hevc4K, caps(castcaps.VerdictUnknown), false},
+		{"container proof alone refuses HEVC", hevc4K, proven(castcaps.VariantFMP4), false},
+		{"HEVC proof without container refuses", hevc4K, proven(castcaps.VariantHEVCFMP4), false},
+		{"both proofs allow HEVC copy", hevc4K, proven(castcaps.VariantFMP4, castcaps.VariantHEVCFMP4), true},
+		// A model prior is worth one attempt: the cost of being wrong is a
+		// session that falls back, not a session that silently never starts.
+		{"model prior allows an HEVC copy attempt", hevc4K, assumed(castcaps.VariantFMP4, castcaps.VariantHEVCFMP4), true},
+		{"container prior alone refuses HEVC", hevc4K, assumed(castcaps.VariantFMP4), false},
+		{"an observed rejection outranks the container prior", hevc4K, func() *castcaps.Capabilities {
+			c := assumed(castcaps.VariantFMP4)
+			c.Variants[castcaps.VariantHEVCFMP4] = castcaps.VerdictRejected
+			return c
+		}(), false},
+		{"no variant measures 4K H.264", h264Above, proven(castcaps.VariantFMP4, castcaps.VariantHEVCFMP4), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := canAttemptDirectCastCopyVideo(tc.probe, tc.caps); got != tc.want {

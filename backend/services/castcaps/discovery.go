@@ -2,116 +2,38 @@ package castcaps
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net"
-	"net/http"
-	"strings"
 	"sync"
 	"time"
 )
 
-// Device is a Cast receiver found on the local network.
-type Device struct {
-	Host         string `json:"host"`
-	Name         string `json:"name"`
-	Model        string `json:"model"`
-	BuildVersion string `json:"buildVersion"`
-	UUID         string `json:"uuid"`
-	Idle         bool   `json:"idle"`
-}
+// dialProbeTimeout bounds the TCP connect used to decide whether a LAN address
+// is worth an HTTP request at all.
+const dialProbeTimeout = 700 * time.Millisecond
 
-// ID is the cache key. The UUID survives DHCP churn; the host is the fallback
-// for receivers that do not report one.
-func (d Device) ID() string {
-	if strings.TrimSpace(d.UUID) != "" {
-		return d.UUID
-	}
-	return d.Host
-}
+// discoveryConcurrency bounds the sweep so a /24 finishes quickly without
+// flooding a home router's connection table.
+const discoveryConcurrency = 64
 
-// eurekaInfo is the subset of /setup/eureka_info worth keeping.
-type eurekaInfo struct {
-	Name              string `json:"name"`
-	SSDPUDN           string `json:"ssdp_udn"`
-	CastBuildRevision string `json:"cast_build_revision"`
-	BuildVersion      string `json:"build_version"`
-	Detail            struct {
-		ModelName string `json:"model_name"`
-	} `json:"detail"`
-	Settings struct {
-		Name string `json:"name"`
-	} `json:"settings"`
-}
-
-// Describe reads a receiver's identity over its setup endpoint. Cast devices
-// serve it on 8008 (plain) and 8443 (self-signed TLS); try the cheap one first.
-func Describe(ctx context.Context, host string) (Device, error) {
-	device := Device{Host: host}
-	client := &http.Client{
-		Timeout: 3 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: insecureTLSConfig(),
-		},
-	}
-	var lastErr error
-	for _, url := range []string{
-		fmt.Sprintf("http://%s:8008/setup/eureka_info", host),
-		fmt.Sprintf("https://%s:8443/setup/eureka_info", host),
-	} {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		var info eurekaInfo
-		err = json.NewDecoder(resp.Body).Decode(&info)
-		_ = resp.Body.Close()
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		device.Name = firstNonEmpty(info.Name, info.Settings.Name, host)
-		device.Model = info.Detail.ModelName
-		device.BuildVersion = firstNonEmpty(info.CastBuildRevision, info.BuildVersion)
-		device.UUID = info.SSDPUDN
-		return device, nil
-	}
-	if lastErr == nil {
-		lastErr = fmt.Errorf("no setup endpoint answered")
-	}
-	return device, lastErr
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
-}
-
-// Discover scans a /24 for open Cast ports and describes what answers. mDNS is
-// filtered on plenty of home networks (and inside containers), so a bounded
-// port sweep is the dependable way to find receivers.
-func Discover(ctx context.Context, cidr string) []Device {
+// Discover sweeps a /24 for hosts serving the Cast setup port and describes the
+// ones that answer. mDNS is filtered on plenty of home networks (and inside
+// containers), so a bounded port sweep is the dependable way to find receivers.
+//
+// Passive throughout: a TCP connect to 8008 and two HTTP GETs. Nothing is
+// launched and nothing is played.
+func Discover(ctx context.Context, cidr string) []Identity {
 	hosts, err := hostsInCIDR(cidr)
 	if err != nil {
 		return nil
 	}
 
 	var (
-		mu      sync.Mutex
-		devices []Device
-		wg      sync.WaitGroup
+		mu         sync.Mutex
+		identities []Identity
+		wg         sync.WaitGroup
 	)
-	limit := make(chan struct{}, 64)
+	limit := make(chan struct{}, discoveryConcurrency)
 	for _, host := range hosts {
 		wg.Add(1)
 		go func(host string) {
@@ -119,24 +41,24 @@ func Discover(ctx context.Context, cidr string) []Device {
 			limit <- struct{}{}
 			defer func() { <-limit }()
 
-			dialer := net.Dialer{Timeout: 700 * time.Millisecond}
-			conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(host, fmt.Sprint(castPort)))
+			dialer := net.Dialer{Timeout: dialProbeTimeout}
+			conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(host, fmt.Sprint(setupPort)))
 			if err != nil {
 				return
 			}
 			_ = conn.Close()
 
-			device, err := Describe(ctx, host)
+			identity, err := Describe(ctx, host)
 			if err != nil {
 				return
 			}
 			mu.Lock()
-			devices = append(devices, device)
+			identities = append(identities, identity)
 			mu.Unlock()
 		}(host)
 	}
 	wg.Wait()
-	return devices
+	return identities
 }
 
 func hostsInCIDR(cidr string) ([]string, error) {

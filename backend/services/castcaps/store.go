@@ -2,175 +2,331 @@ package castcaps
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
 
-// recheckAfter re-probes a receiver whose answers have gone stale. Firmware
-// updates change what a receiver accepts, and the build version check below
-// catches most of those immediately; this is the backstop.
-const recheckAfter = 30 * 24 * time.Hour
+const (
+	// recordPrefix/recordSuffix bracket the per-receiver cache file name.
+	recordPrefix = "receiver-"
+	recordSuffix = ".json"
+	// legacyCacheFile is the single-file cache the probing version of this
+	// package wrote. Read once for its host and variant verdicts, never written.
+	legacyCacheFile = "cast-capabilities.json"
+)
 
-func insecureTLSConfig() *tls.Config {
-	return &tls.Config{
-		InsecureSkipVerify: true, // #nosec G402 - device-local self-signed certs
-		MaxVersion:         tls.VersionTLS12,
-	}
-}
-
-// Store keeps probe results across restarts and makes sure a receiver is only
-// probed once at a time.
+// Store keeps what is known about each receiver across restarts.
+//
+// Everything it does is passive: it reads identity over HTTP and accepts
+// observations from real playback. No method here can start playback.
 type Store struct {
-	path string
+	dir string
 
-	mu       sync.RWMutex
-	byID     map[string]Capabilities
-	inFlight map[string]bool
+	mu     sync.RWMutex
+	byHost map[string]Capabilities
 
-	// URLForVariant builds the probe stream URL the receiver should fetch.
-	URLForVariant func(Variant) string
+	// describeFn is the identity source, swapped in tests so the suite never
+	// touches a receiver somebody is watching.
+	describeFn func(ctx context.Context, host string) (Identity, error)
 }
 
-func NewStore(cacheDir string) *Store {
+// NewStore opens (and creates on first write) a capability cache in dir.
+func NewStore(dir string) *Store {
 	store := &Store{
-		path:     filepath.Join(cacheDir, "cast-capabilities.json"),
-		byID:     map[string]Capabilities{},
-		inFlight: map[string]bool{},
+		dir:        dir,
+		byHost:     map[string]Capabilities{},
+		describeFn: Describe,
 	}
 	store.load()
 	return store
 }
 
+// legacyRecord reads a cache entry written by the probing version of this
+// package. Its identity fields had different names and its timestamp was
+// probedAt; the embedded Capabilities picks up everything that did not move.
+type legacyRecord struct {
+	Capabilities
+	Model        string    `json:"model"`
+	BuildVersion string    `json:"buildVersion"`
+	ProbedAt     time.Time `json:"probedAt"`
+}
+
 func (s *Store) load() {
-	data, err := os.ReadFile(s.path)
+	entries, err := os.ReadDir(s.dir)
+	if err == nil {
+		for _, entry := range entries {
+			name := entry.Name()
+			if entry.IsDir() || !strings.HasPrefix(name, recordPrefix) || !strings.HasSuffix(name, recordSuffix) {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(s.dir, name))
+			if err != nil {
+				continue
+			}
+			var record Capabilities
+			if err := json.Unmarshal(data, &record); err != nil {
+				log.Printf("[castcaps] ignoring unreadable capability cache %s: %v", name, err)
+				continue
+			}
+			s.adopt(record)
+		}
+	}
+	s.loadLegacy()
+	if len(s.byHost) > 0 {
+		log.Printf("[castcaps] loaded capabilities for %d receiver(s)", len(s.byHost))
+	}
+}
+
+// loadLegacy folds in the old single-file cache. Entries that also exist as a
+// per-receiver file lose: that file is newer by construction.
+func (s *Store) loadLegacy() {
+	data, err := os.ReadFile(filepath.Join(s.dir, legacyCacheFile))
 	if err != nil {
 		return
 	}
-	var records []Capabilities
+	var records []legacyRecord
 	if err := json.Unmarshal(data, &records); err != nil {
-		log.Printf("[castcaps] ignoring unreadable capability cache: %v", err)
+		log.Printf("[castcaps] ignoring unreadable legacy capability cache: %v", err)
 		return
 	}
 	for _, record := range records {
-		s.byID[record.ReceiverID] = record
+		caps := record.Capabilities
+		if caps.ModelName == "" {
+			caps.ModelName = record.Model
+		}
+		if caps.BuildRevision == "" {
+			caps.BuildRevision = record.BuildVersion
+		}
+		if caps.UpdatedAt.IsZero() {
+			caps.UpdatedAt = record.ProbedAt
+		}
+		if _, exists := s.byHost[strings.TrimSpace(caps.Host)]; exists {
+			continue
+		}
+		s.adopt(caps)
 	}
-	log.Printf("[castcaps] loaded capabilities for %d receiver(s)", len(records))
 }
 
-func (s *Store) save() {
-	s.mu.RLock()
-	records := make([]Capabilities, 0, len(s.byID))
-	for _, record := range s.byID {
-		records = append(records, record)
+// adopt normalizes a decoded record into the cache. Verdict strings from older
+// builds - "unknown", or anything a future build invents - degrade to
+// VerdictUnknown rather than leaking through as a fourth state.
+func (s *Store) adopt(record Capabilities) {
+	host := strings.TrimSpace(record.Host)
+	if host == "" {
+		return
 	}
-	s.mu.RUnlock()
+	record.Host = host
+	normalized := make(map[Variant]Verdict, len(record.Variants))
+	for variant, verdict := range record.Variants {
+		if strings.TrimSpace(string(variant)) == "" {
+			continue
+		}
+		normalized[variant] = normalizeVerdict(verdict)
+	}
+	record.Variants = normalized
+	s.byHost[host] = record
+}
 
-	data, err := json.MarshalIndent(records, "", "  ")
+func (s *Store) persist(record Capabilities) {
+	if s.dir == "" {
+		return
+	}
+	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+		log.Printf("[castcaps] failed to create cache dir: %v", err)
+		return
+	}
+	data, err := json.MarshalIndent(record, "", "  ")
 	if err != nil {
 		return
 	}
-	tmp := s.path + ".tmp"
+	path := filepath.Join(s.dir, recordFileName(record.Host))
+	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		log.Printf("[castcaps] failed to write capability cache: %v", err)
 		return
 	}
-	if err := os.Rename(tmp, s.path); err != nil {
+	if err := os.Rename(tmp, path); err != nil {
 		log.Printf("[castcaps] failed to replace capability cache: %v", err)
 	}
 }
 
-// Lookup returns cached capabilities for a receiver address. Callers on the
-// cast start path use this and nothing else: it never blocks on a probe.
+// recordFileName keeps one file per receiver, named after its address with
+// anything path-unsafe folded to an underscore.
+func recordFileName(host string) string {
+	safe := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			return r
+		case r == '.' || r == '-':
+			return r
+		default:
+			return '_'
+		}
+	}, host)
+	return recordPrefix + safe + recordSuffix
+}
+
+// Lookup returns cached capabilities for a receiver address, or nil. It never
+// performs I/O, so the path that starts a cast can call it freely.
 func (s *Store) Lookup(host string) *Capabilities {
+	if s == nil {
+		return nil
+	}
+	host = strings.TrimSpace(host)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	for _, record := range s.byID {
-		if record.Host == host {
-			copied := record
-			return &copied
-		}
+	record, ok := s.byHost[host]
+	if !ok {
+		return nil
 	}
-	return nil
+	copied := record.clone()
+	return &copied
 }
 
 // All returns every cached record.
 func (s *Store) All() []Capabilities {
+	if s == nil {
+		return nil
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	records := make([]Capabilities, 0, len(s.byID))
-	for _, record := range s.byID {
-		records = append(records, record)
+	records := make([]Capabilities, 0, len(s.byHost))
+	for _, record := range s.byHost {
+		records = append(records, record.clone())
 	}
 	return records
 }
 
-func (s *Store) put(caps Capabilities) {
+// Ensure reads a receiver's identity, folds in the prior it implies, and caches
+// the result. Observed verdicts always survive: a prior can fill a gap but never
+// argue with a measurement.
+//
+// A receiver that answers nothing is not written to the cache - there is no
+// identity to attach - but a record already on file is returned instead, since a
+// sleeping TV does not forget what it played yesterday.
+func (s *Store) Ensure(ctx context.Context, host string) (*Capabilities, error) {
+	if s == nil {
+		return nil, errors.New("castcaps: nil store")
+	}
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return nil, errors.New("castcaps: empty receiver host")
+	}
+	identity, err := s.describe(ctx, host)
+	if err != nil {
+		if cached := s.Lookup(host); cached != nil {
+			return cached, nil
+		}
+		return nil, err
+	}
+	caps := s.applyIdentity(identity)
+	return &caps, nil
+}
+
+func (s *Store) describe(ctx context.Context, host string) (Identity, error) {
+	if s.describeFn == nil {
+		return Describe(ctx, host)
+	}
+	return s.describeFn(ctx, host)
+}
+
+// applyIdentity refreshes identity and priors for one receiver and persists it.
+func (s *Store) applyIdentity(identity Identity) Capabilities {
 	s.mu.Lock()
-	s.byID[caps.ReceiverID] = caps
-	s.mu.Unlock()
-	s.save()
-}
-
-// NeedsProbe reports whether a device has no usable answer on file.
-func (s *Store) NeedsProbe(device Device) bool {
-	s.mu.RLock()
-	record, ok := s.byID[device.ID()]
-	s.mu.RUnlock()
-	if !ok || record.Partial {
-		return true
+	record, existed := s.byHost[identity.Host]
+	if record.Variants == nil {
+		record.Variants = map[Variant]Verdict{}
 	}
-	if device.BuildVersion != "" && record.BuildVersion != device.BuildVersion {
-		return true
+	// A firmware update changes what a receiver accepts, which is the only
+	// honest way out of a recorded rejection. Start the observations over.
+	if existed && record.BuildRevision != "" && identity.BuildRevision != "" && record.BuildRevision != identity.BuildRevision {
+		log.Printf("[castcaps] %s firmware changed %s -> %s: discarding observed verdicts",
+			identity.Host, record.BuildRevision, identity.BuildRevision)
+		record.Variants = map[Variant]Verdict{}
 	}
-	return time.Since(record.ProbedAt) > recheckAfter
-}
-
-// Probe runs the variant matrix against a device and caches the result. It
-// refuses to run twice concurrently for the same receiver.
-func (s *Store) Probe(ctx context.Context, device Device) (Capabilities, error) {
-	if s.URLForVariant == nil {
-		return Capabilities{}, fmt.Errorf("probe URL builder is not configured")
-	}
-	id := device.ID()
-
-	s.mu.Lock()
-	if s.inFlight[id] {
-		s.mu.Unlock()
-		return Capabilities{}, fmt.Errorf("probe already running for %s", device.Host)
-	}
-	s.inFlight[id] = true
-	s.mu.Unlock()
-	defer func() {
-		s.mu.Lock()
-		delete(s.inFlight, id)
-		s.mu.Unlock()
-	}()
-
-	log.Printf("[castcaps] probing receiver %q (%s, %s)", device.Name, device.Host, device.Model)
-	caps := ProbeReceiver(ctx, device, s.URLForVariant)
-	s.put(caps)
-	return caps, nil
-}
-
-// RefreshInBackground discovers receivers and probes the ones with no usable
-// answer. Deliberately not called from any cast start path: probing takes over
-// a receiver for a few seconds, so it only runs on demand or on a schedule
-// while nothing is being cast.
-func (s *Store) RefreshInBackground(ctx context.Context, cidr string) {
-	devices := Discover(ctx, cidr)
-	log.Printf("[castcaps] discovery found %d Cast receiver(s) on %s", len(devices), cidr)
-	for _, device := range devices {
-		if !s.NeedsProbe(device) {
+	record.Identity = identity
+	for variant, prior := range PriorFor(identity) {
+		if observed(normalizeVerdict(record.Variants[variant])) {
 			continue
 		}
-		if _, err := s.Probe(ctx, device); err != nil {
-			log.Printf("[castcaps] probe of %s failed: %v", device.Host, err)
-		}
+		record.Variants[variant] = prior
+	}
+	record.UpdatedAt = time.Now().UTC()
+	s.byHost[identity.Host] = record
+	copied := record.clone()
+	s.mu.Unlock()
+
+	s.persist(copied)
+	return copied
+}
+
+// Record folds an observation from real playback into the cache.
+//
+// Precedence, in one sentence: a verdict only ever wins if it is more certain
+// than what is already on file, ordered unknown < assumed < supported <
+// rejected. So an observation overwrites a prior, a prior never overwrites an
+// observation, and a rejection sticks even over an earlier success - a stall is
+// a stall, and the user watches it happen. Ensure clears observations when the
+// firmware revision changes, which is how a fixed receiver recovers.
+func (s *Store) Record(host string, variant Variant, verdict Verdict) {
+	if s == nil {
+		return
+	}
+	host = strings.TrimSpace(host)
+	if host == "" || strings.TrimSpace(string(variant)) == "" {
+		return
+	}
+	verdict = normalizeVerdict(verdict)
+	if verdict == VerdictUnknown {
+		return // learned nothing
+	}
+
+	s.mu.Lock()
+	record, existed := s.byHost[host]
+	if !existed {
+		record.Identity = Identity{Host: host, Name: host}
+	}
+	if record.Variants == nil {
+		record.Variants = map[Variant]Verdict{}
+	}
+	current := normalizeVerdict(record.Variants[variant])
+	if verdictRank(verdict) <= verdictRank(current) {
+		s.mu.Unlock()
+		return
+	}
+	record.Variants[variant] = verdict
+	record.UpdatedAt = time.Now().UTC()
+	s.byHost[host] = record
+	copied := record.clone()
+	s.mu.Unlock()
+
+	log.Printf("[castcaps] %s: %s %s -> %s", host, variant, orUnknown(current), verdict)
+	s.persist(copied)
+}
+
+func orUnknown(v Verdict) Verdict {
+	if v == VerdictUnknown {
+		return "unknown"
+	}
+	return v
+}
+
+// RefreshInBackground describes every receiver it can find on cidr and caches
+// the priors their identities imply. Safe to run at any time, including mid-cast:
+// it only issues HTTP GETs.
+func (s *Store) RefreshInBackground(ctx context.Context, cidr string) {
+	if s == nil {
+		return
+	}
+	identities := Discover(ctx, cidr)
+	log.Printf("[castcaps] discovery found %d Cast receiver(s) on %s", len(identities), cidr)
+	for _, identity := range identities {
+		s.applyIdentity(identity)
 	}
 }
