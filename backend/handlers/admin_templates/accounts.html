@@ -92,6 +92,7 @@
 .device-name { font-size: 0.875rem; font-weight: 500; display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
 .device-meta { color: var(--text-muted); font-size: 0.72rem; margin-top: 0.15rem; }
 .device-empty { margin: 0.75rem 0 0 3.25rem; color: var(--text-muted); font-size: 0.8rem; font-style: italic; }
+.stale-device-toggle { margin: 0.75rem 0 0 3.25rem; }
 .attention-card { border-color: var(--warning); margin-bottom: 1rem; }
 .attention-title { color: var(--warning); font-weight: 600; }
 .client-version-warning { display: inline-flex; align-items: center; padding: 0.18rem 0.4rem; border-radius: 999px; font-size: 0.65rem; font-weight: 600; background: rgba(245, 158, 11, 0.14); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.35); }
@@ -114,7 +115,7 @@
     .household-actions { width: 100%; padding-left: 2.1rem; }
     .household-contents { padding-left: 1rem; }
     .person-actions { width: 100%; margin-left: 3.25rem; }
-    .device-list, .device-empty { margin-left: 0; }
+    .device-list, .device-empty, .stale-device-toggle { margin-left: 0; }
     .device-row { flex-wrap: wrap; }
     .device-actions { width: 100%; justify-content: flex-end; }
 }
@@ -190,13 +191,13 @@
         <div class="card-body">
             <strong>Automations follow people</strong>
             <p style="margin: 0.35rem 0 0; color: var(--text-secondary); font-size: 0.85rem;">
-                A person keeps their sync automations when moved to another household. Household summaries roll up automations from each person; server-wide tasks remain on the Tasks page.
+                A person keeps their automations when moved to another household. Household summaries roll up automations from each person; server-wide automations remain on the full Automations page.
             </p>
         </div>
     </div>
     <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;margin-bottom:1rem;flex-wrap:wrap;">
         <span id="profile-tasks-count" style="color:var(--text-muted);"></span>
-        <a class="btn btn-primary" href="{{.BasePath}}/tasks">Open All Tasks</a>
+        <a class="btn btn-primary" href="{{.BasePath}}/tasks">Open All Automations</a>
     </div>
     <div id="profile-tasks-summary" class="task-summary-grid">
         <div style="display:flex;justify-content:center;padding:2rem;"><div class="spinner"></div></div>
@@ -268,6 +269,8 @@ let connectionInvites = [];
 let scheduledTasks = [];
 let clients = [];
 let backendVersionInfo = null;
+const expandedStaleDeviceProfiles = new Set();
+const STALE_DEVICE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 let remoteAccessStatus = null;
 let hasDefaultPassword = false;
 const isAdmin = {{json .IsAdmin}};
@@ -395,7 +398,7 @@ function renderProfiles() {
         if (p._maxStreams > 0) badges.push(`<span class="status-badge" style="font-size: 0.65rem;">Max ${p._maxStreams} streams</span>`);
         if (isAdmin && p.allowShareLinks) badges.push('<span class="status-badge" style="font-size: 0.65rem;">Share</span>');
         const profileTasks = scheduledTasks.filter(task => task.config?.profileId === p.id);
-        if (isAdmin && profileTasks.length > 0) badges.push(`<span class="status-badge" style="font-size: 0.65rem;">${profileTasks.filter(task => task.enabled).length}/${profileTasks.length} tasks active</span>`);
+        if (isAdmin && profileTasks.length > 0) badges.push(`<span class="status-badge" style="font-size: 0.65rem;">${profileTasks.filter(task => task.enabled).length}/${profileTasks.length} automations active</span>`);
 
         const avatarHtml = p.hasIcon
             ? `<img class="profile-avatar" src="${basePath}/api/profiles/icon?profileId=${p.id}" alt="${escapeHtml(p.name)}" style="object-fit: cover;">`
@@ -418,7 +421,7 @@ function renderProfiles() {
                     <button class="btn btn-secondary btn-sm" onclick="showEditProfileModal('${p.id}')">Edit</button>
                     <a class="btn btn-secondary btn-sm" href="${basePath}/settings?profileId=${p.id}">Settings</a>
                     <a class="btn btn-secondary btn-sm" href="${basePath}/notifications?profileId=${p.id}">Notifications</a>
-                    ${isAdmin ? `<a class="btn btn-secondary btn-sm" href="${basePath}/tasks?profileId=${encodeURIComponent(p.id)}">Tasks</a>` : ''}
+                    ${isAdmin ? `<a class="btn btn-secondary btn-sm" href="${basePath}/tasks?profileId=${encodeURIComponent(p.id)}">Automations</a>` : ''}
                     ${isAdmin ? `<button class="btn btn-secondary btn-sm" onclick="showProfileStreamsModal('${p.id}', '${escapeHtml(p.name)}', '${p.accountId}')">Streams</button>` : ''}
                     ${isAdmin ? `<button class="btn ${p.allowShareLinks ? 'btn-primary' : 'btn-secondary'} btn-sm" onclick="toggleProfileShareLinks('${p.id}', '${escapeHtml(p.name)}', ${p.allowShareLinks ? 'true' : 'false'})">Share Links: ${p.allowShareLinks ? '✓ On' : 'Off'}</button>` : ''}
                     ${isAdmin ? `<button class="btn btn-secondary btn-sm" onclick="showReassignModal('${p.id}')">Reassign</button>` : ''}
@@ -467,7 +470,7 @@ function renderHouseholds() {
             <div class="attention-title">Needs attention</div>
             <div class="text-muted" style="font-size:0.8rem;margin-top:0.25rem;">These people or devices are not connected to the complete household hierarchy.</div>
             ${unassignedProfiles.map(profile => renderPersonRow(profile)).join('')}
-            ${orphanClients.map(client => renderDeviceRow(client, true)).join('')}
+            ${renderOrphanDevices(orphanClients)}
         </div></div>`
         : '';
 
@@ -512,7 +515,7 @@ function renderHouseholds() {
                     </div>
                 </div>
                 <div class="household-contents">
-                    ${accountProfiles.length > 0 ? accountProfiles.map(profile => renderPersonRow(profile)).join('') : '<div class="account-profiles-empty" style="padding-top:1rem;">No people yet. Add a person before signing in on a device.</div>'}
+                    ${accountProfiles.length > 0 ? accountProfiles.map(profile => renderPersonRow(profile, Boolean(search))).join('') : '<div class="account-profiles-empty" style="padding-top:1rem;">No people yet. Add a person before signing in on a device.</div>'}
                 </div>
             </div>
         `;
@@ -524,8 +527,12 @@ function renderHouseholds() {
     }
 }
 
-function renderPersonRow(profile) {
+function renderPersonRow(profile, forceShowStale = false) {
     const profileClients = clients.filter(client => client.userId === profile.id);
+    const activeClients = profileClients.filter(client => !isClientStale(client));
+    const staleClients = profileClients.filter(isClientStale);
+    const showStale = forceShowStale || expandedStaleDeviceProfiles.has(profile.id);
+    const visibleClients = showStale ? [...activeClients, ...staleClients] : activeClients;
     const profileTasks = scheduledTasks.filter(task => task.config?.profileId === profile.id);
     const initial = (profile.name || 'P').charAt(0).toUpperCase();
     const avatarHtml = profile.hasIcon
@@ -553,8 +560,31 @@ function renderPersonRow(profile) {
                 <button class="btn btn-danger btn-sm" onclick="deleteProfile('${profile.id}', '${escapeHtml(profile.name)}')">Delete</button>
             </div>
         </div>
-        ${profileClients.length > 0 ? `<div class="device-list">${profileClients.map(client => renderDeviceRow(client, false)).join('')}</div>` : '<div class="device-empty">No devices have connected as this person yet.</div>'}
+        ${visibleClients.length > 0 ? `<div class="device-list">${visibleClients.map(client => renderDeviceRow(client, false)).join('')}</div>` : (profileClients.length === 0 ? '<div class="device-empty">No devices have connected as this person yet.</div>' : '')}
+        ${staleClients.length > 0 && !forceShowStale ? `<button class="btn btn-secondary btn-sm stale-device-toggle" onclick="toggleStaleDevices('${profile.id}')">${showStale ? 'Hide' : 'Show'} ${staleClients.length} device${staleClients.length === 1 ? '' : 's'} not seen in 7+ days</button>` : ''}
     </div>`;
+}
+
+function renderOrphanDevices(orphanClients) {
+    if (orphanClients.length === 0) return '';
+    const activeClients = orphanClients.filter(client => !isClientStale(client));
+    const staleClients = orphanClients.filter(isClientStale);
+    const showStale = expandedStaleDeviceProfiles.has('__orphaned__');
+    return `${activeClients.map(client => renderDeviceRow(client, true)).join('')}
+        ${showStale ? staleClients.map(client => renderDeviceRow(client, true)).join('') : ''}
+        ${staleClients.length > 0 ? `<button class="btn btn-secondary btn-sm stale-device-toggle" onclick="toggleStaleDevices('__orphaned__')">${showStale ? 'Hide' : 'Show'} ${staleClients.length} unassigned device${staleClients.length === 1 ? '' : 's'} not seen in 7+ days</button>` : ''}`;
+}
+
+function isClientStale(client) {
+    if (!client.lastSeenAt) return true;
+    const lastSeen = new Date(client.lastSeenAt).getTime();
+    return !Number.isFinite(lastSeen) || Date.now() - lastSeen > STALE_DEVICE_AGE_MS;
+}
+
+function toggleStaleDevices(profileId) {
+    if (expandedStaleDeviceProfiles.has(profileId)) expandedStaleDeviceProfiles.delete(profileId);
+    else expandedStaleDeviceProfiles.add(profileId);
+    renderHouseholds();
 }
 
 function renderDeviceRow(client, orphaned) {
@@ -669,10 +699,10 @@ function renderProfileTasksSummary() {
     if (!container) return;
     const profileTasks = scheduledTasks.filter(task => task.config?.profileId);
     const count = document.getElementById('profile-tasks-count');
-    if (count) count.textContent = `${profileTasks.length} profile task${profileTasks.length === 1 ? '' : 's'}`;
+    if (count) count.textContent = `${profileTasks.length} automation${profileTasks.length === 1 ? '' : 's'}`;
 
     if (profiles.length === 0) {
-        container.innerHTML = '<div class="card"><div class="card-body text-muted">Create a profile before assigning profile-specific tasks.</div></div>';
+        container.innerHTML = '<div class="card"><div class="card-body text-muted">Create a person before assigning person-specific automations.</div></div>';
         return;
     }
 
@@ -683,9 +713,9 @@ function renderProfileTasksSummary() {
             const tasks = profileTasks.filter(task => task.config?.profileId === profile.id);
             const pills = tasks.length > 0
                 ? tasks.map(task => `<span class="task-summary-pill ${task.enabled ? 'active' : 'paused'}">${escapeHtml(task.name || getTaskTypeLabelForSummary(task.type))}</span>`).join('')
-                : '<span class="text-muted" style="font-size:0.8rem;">No profile-specific tasks. Server-wide tasks may still apply.</span>';
+                : '<span class="text-muted" style="font-size:0.8rem;">No person-specific automations. Server-wide automations may still apply.</span>';
             return `<div style="padding-top:0.75rem;margin-top:0.75rem;border-top:1px solid var(--border);">
-                <div class="task-summary-heading"><strong>${escapeHtml(profile.name)}</strong><a class="btn btn-secondary btn-sm" href="${basePath}/tasks?profileId=${encodeURIComponent(profile.id)}">Manage Tasks</a></div>
+                <div class="task-summary-heading"><strong>${escapeHtml(profile.name)}</strong><a class="btn btn-secondary btn-sm" href="${basePath}/tasks?profileId=${encodeURIComponent(profile.id)}">Manage Automations</a></div>
                 <div class="task-summary-list">${pills}</div>
             </div>`;
         }).join('');

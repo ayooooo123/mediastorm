@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/gorilla/mux"
+
 	"novastream/models"
 	"novastream/services/badstreams"
 )
@@ -123,6 +125,48 @@ func TestResolve_AllowsMarkedBadStreamWithManualOverride(t *testing.T) {
 	}
 	if !resolveCalled {
 		t.Fatal("expected marked bad stream override to continue to resolve")
+	}
+}
+
+func TestResolve_RejectsM2TSPlaybackSource(t *testing.T) {
+	h := NewPlaybackHandler(&mockPlaybackService{
+		resolveFunc: func(ctx context.Context, candidate models.NZBResult) (*models.PlaybackResolution, error) {
+			return &models.PlaybackResolution{
+				WebDAVPath: "/debrid/torbox/torrent/file/2/Disc/BDMV/STREAM/00060.m2ts",
+			}, nil
+		},
+	})
+
+	body, _ := json.Marshal(map[string]interface{}{"result": models.NZBResult{Title: "Blu-ray disc"}})
+	req := httptest.NewRequest(http.MethodPost, "/api/playback/resolve", bytes.NewBuffer(body))
+	rec := httptest.NewRecorder()
+	h.Resolve(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusUnprocessableEntity, rec.Code, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != "unsupported .m2ts playback source\n" {
+		t.Fatalf("body = %q", got)
+	}
+}
+
+func TestQueueStatus_RejectsM2TSPlaybackSource(t *testing.T) {
+	h := NewPlaybackHandler(&mockPlaybackService{
+		queueStatusFunc: func(ctx context.Context, queueID int64) (*models.PlaybackResolution, error) {
+			return &models.PlaybackResolution{
+				QueueID:    queueID,
+				WebDAVPath: "/debrid/torbox/torrent/file/2/Disc/BDMV/STREAM/00060.M2TS?token=test",
+			}, nil
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/playback/queue/42", nil)
+	req = mux.SetURLVars(req, map[string]string{"queueID": "42"})
+	rec := httptest.NewRecorder()
+	h.QueueStatus(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusUnprocessableEntity, rec.Code, rec.Body.String())
 	}
 }
 

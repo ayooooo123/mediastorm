@@ -831,6 +831,43 @@ func TestAdoptMigrationReplacesPrequeueStream(t *testing.T) {
 	}
 }
 
+func TestAdoptMigrationRejectsM2TSStream(t *testing.T) {
+	store := playback.NewPrequeueStore(time.Hour)
+	entry, created := store.Create("movie:1", "Example", "user1", "movie", 2024, nil, "details")
+	if !created {
+		t.Fatal("Create returned created=false")
+	}
+	store.Update(entry.ID, func(e *playback.PrequeueEntry) {
+		e.Status = playback.PrequeueStatusReady
+		e.StreamPath = "/debrid/torbox/original.mkv"
+	})
+
+	reqBody, err := json.Marshal(adoptMigrationRequest{
+		StreamPath: "/debrid/torbox/torrent/file/2/Disc/BDMV/STREAM/00060.m2ts",
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	handler := &PrequeueHandler{store: store}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/playback/prequeue/"+entry.ID+"/adopt-migration", bytes.NewReader(reqBody))
+	req = mux.SetURLVars(req, map[string]string{"prequeueID": entry.ID})
+
+	handler.AdoptMigration(rec, req)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	got, ok := store.Get(entry.ID)
+	if !ok {
+		t.Fatal("prequeue disappeared")
+	}
+	if got.StreamPath != "/debrid/torbox/original.mkv" || got.MigrationAdopted {
+		t.Fatalf("prequeue mutated after rejected migration: %#v", got)
+	}
+}
+
 func TestPrequeueReusesAdoptedMigrationWithoutTrackMetadata(t *testing.T) {
 	store := playback.NewPrequeueStore(time.Hour)
 	entry, created := store.Create("movie:1", "Example", "user1", "movie", 2024, nil, "details")

@@ -35,6 +35,15 @@ func NewPlaybackHandler(s playbackService) *PlaybackHandler {
 	return &PlaybackHandler{Service: s}
 }
 
+func rejectM2TSPlaybackResolution(w http.ResponseWriter, resolution *models.PlaybackResolution) bool {
+	if resolution == nil || !isM2TSStreamPath(resolution.WebDAVPath) {
+		return false
+	}
+	log.Printf("[playback-handler] refusing unsupported .m2ts playback source: %q", resolution.WebDAVPath)
+	http.Error(w, "unsupported .m2ts playback source", http.StatusUnprocessableEntity)
+	return true
+}
+
 // SetSubtitleExtractor sets the subtitle extractor for pre-extraction
 func (h *PlaybackHandler) SetSubtitleExtractor(extractor SubtitlePreExtractor) {
 	h.SubtitleExtractor = extractor
@@ -91,6 +100,9 @@ func (h *PlaybackHandler) Resolve(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("[playback-handler] TIMING: resolve failed after %v: %v", time.Since(handlerStart), err)
 		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	if rejectM2TSPlaybackResolution(w, resolution) {
 		return
 	}
 	log.Printf("[playback-handler] TIMING: resolve complete (took: %v)", time.Since(handlerStart))
@@ -162,6 +174,9 @@ func (h *PlaybackHandler) QueueStatus(w http.ResponseWriter, r *http.Request) {
 		default:
 			http.Error(w, err.Error(), http.StatusBadGateway)
 		}
+		return
+	}
+	if rejectM2TSPlaybackResolution(w, status) {
 		return
 	}
 
