@@ -841,11 +841,12 @@ var SettingsSchema = map[string]interface{}{
 			},
 			"navigationTabVisibility": map[string]interface{}{
 				"type":        "checkboxes",
-				"label":       "Visible Navigation Tabs",
-				"description": "Choose which app navigation tabs are shown to this scope. Admin is web only.",
+				"label":       "Visible Navigation Items",
+				"description": "Choose which drawer and tab-bar items are shown to this scope. Admin is web only.",
 				"order":       1,
 				"options": []map[string]interface{}{
 					{"value": "home", "label": "Home"},
+					{"value": "watchlist", "label": "Watchlist"},
 					{"value": "search", "label": "Search"},
 					{"value": "lists", "label": "Discovery"},
 					{"value": "live", "label": "Live"},

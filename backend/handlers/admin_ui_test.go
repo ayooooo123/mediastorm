@@ -2591,6 +2591,31 @@ func TestHardwareAccelerationSchemaIsVisibleUnderServerSettings(t *testing.T) {
 	}
 }
 
+func TestNavigationVisibilitySchemaIncludesWatchlist(t *testing.T) {
+	section, ok := handlers.SettingsSchema["display"].(map[string]interface{})
+	if !ok {
+		t.Fatal("display settings schema is missing")
+	}
+	fields, ok := section["fields"].(map[string]interface{})
+	if !ok {
+		t.Fatal("display fields schema is missing")
+	}
+	field, ok := fields["navigationTabVisibility"].(map[string]interface{})
+	if !ok {
+		t.Fatal("navigationTabVisibility field is missing")
+	}
+	options, ok := field["options"].([]map[string]interface{})
+	if !ok {
+		t.Fatalf("unexpected navigation options type: %T", field["options"])
+	}
+	for _, option := range options {
+		if option["value"] == "watchlist" {
+			return
+		}
+	}
+	t.Fatal("navigation visibility options do not include Watchlist")
+}
+
 // multipartWriter creates a multipart form with a file field
 func multipartWriter(t *testing.T, body *bytes.Buffer, fieldName, fileName, content string) *multipart.Writer {
 	t.Helper()

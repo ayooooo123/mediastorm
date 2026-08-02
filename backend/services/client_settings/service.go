@@ -48,6 +48,15 @@ func sanitizeAllowedTrackLanguages(settings *models.ClientFilterSettings) {
 	settings.AllowedTrackLanguages = &cleaned
 }
 
+func markNavigationVisibilityMigrated(settings *models.ClientFilterSettings) {
+	if settings.NavigationTabVisibility == nil {
+		return
+	}
+	migrated := true
+	settings.NavigationTabVisibilityIncludesSystemTabs = &migrated
+	settings.NavigationTabVisibilityIncludesWatchlist = &migrated
+}
+
 // useDB returns true when the service is backed by PostgreSQL.
 func (s *Service) useDB() bool { return s.store != nil }
 
@@ -110,6 +119,7 @@ func (s *Service) Update(clientID string, settings models.ClientFilterSettings) 
 		return ErrClientIDRequired
 	}
 	sanitizeAllowedTrackLanguages(&settings)
+	markNavigationVisibilityMigrated(&settings)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -145,6 +155,7 @@ func (s *Service) UpdateBatch(settings map[string]models.ClientFilterSettings) e
 	cleaned := make(map[string]models.ClientFilterSettings, len(settings))
 	for k, v := range settings {
 		sanitizeAllowedTrackLanguages(&v)
+		markNavigationVisibilityMigrated(&v)
 		if !v.IsEmpty() {
 			cleaned[k] = v
 		}
@@ -208,7 +219,7 @@ func (s *Service) load() error {
 		if err != nil {
 			return fmt.Errorf("load client settings from db: %w", err)
 		}
-		needsSave := normalizeNavigationTabVisibilitySystemTabs(settings)
+		needsSave := normalizeNavigationTabVisibility(settings)
 		s.settings = settings
 		if needsSave {
 			if err := s.saveLocked(); err != nil {
@@ -242,7 +253,7 @@ func (s *Service) load() error {
 		return fmt.Errorf("decode client settings: %w", err)
 	}
 
-	needsSave := normalizeNavigationTabVisibilitySystemTabs(settings)
+	needsSave := normalizeNavigationTabVisibility(settings)
 	s.settings = settings
 	if needsSave {
 		if err := s.saveLocked(); err != nil {
@@ -252,21 +263,34 @@ func (s *Service) load() error {
 	return nil
 }
 
-func normalizeNavigationTabVisibilitySystemTabs(settings map[string]models.ClientFilterSettings) bool {
+func normalizeNavigationTabVisibility(settings map[string]models.ClientFilterSettings) bool {
 	needsSave := false
 	for clientID, cs := range settings {
-		if cs.NavigationTabVisibilityIncludesSystemTabs != nil && *cs.NavigationTabVisibilityIncludesSystemTabs {
-			continue
-		}
-		if cs.NavigationTabVisibility != nil {
-			if tabs, changed := models.AddMissingSystemNavigationTabs(*cs.NavigationTabVisibility); changed {
-				cs.NavigationTabVisibility = &tabs
+		changed := false
+		if cs.NavigationTabVisibilityIncludesSystemTabs == nil || !*cs.NavigationTabVisibilityIncludesSystemTabs {
+			if cs.NavigationTabVisibility != nil {
+				if tabs, tabsChanged := models.AddMissingSystemNavigationTabs(*cs.NavigationTabVisibility); tabsChanged {
+					cs.NavigationTabVisibility = &tabs
+				}
 			}
+			migrated := true
+			cs.NavigationTabVisibilityIncludesSystemTabs = &migrated
+			changed = true
 		}
-		migrated := true
-		cs.NavigationTabVisibilityIncludesSystemTabs = &migrated
-		settings[clientID] = cs
-		needsSave = true
+		if cs.NavigationTabVisibilityIncludesWatchlist == nil || !*cs.NavigationTabVisibilityIncludesWatchlist {
+			if cs.NavigationTabVisibility != nil {
+				if tabs, tabsChanged := models.AddMissingWatchlistNavigationTab(*cs.NavigationTabVisibility); tabsChanged {
+					cs.NavigationTabVisibility = &tabs
+				}
+			}
+			migrated := true
+			cs.NavigationTabVisibilityIncludesWatchlist = &migrated
+			changed = true
+		}
+		if changed {
+			settings[clientID] = cs
+			needsSave = true
+		}
 	}
 	return needsSave
 }
