@@ -158,12 +158,8 @@
     align-items: start;
 }
 .settings-sidebar {
-    position: sticky;
-    top: 76px;
     align-self: start;
     min-width: 0;
-    max-height: calc(100vh - 92px);
-    overflow-y: auto;
 }
 .settings-main {
     min-width: 0;
@@ -187,23 +183,6 @@
     display: flex;
     flex-direction: column;
     gap: 0.15rem;
-    max-height: min(42vh, 440px);
-    padding-right: 0.3rem;
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    scrollbar-width: thin;
-    scrollbar-color: var(--border-color) transparent;
-}
-.settings-scope-tree::-webkit-scrollbar { width: 8px; }
-.settings-scope-tree::-webkit-scrollbar-track { background: transparent; }
-.settings-scope-tree::-webkit-scrollbar-thumb {
-    min-height: 36px;
-    border: 2px solid var(--bg-secondary);
-    border-radius: 999px;
-    background: var(--border-color);
-}
-.settings-scope-tree::-webkit-scrollbar-thumb:hover {
-    background: var(--accent);
 }
 .settings-scope-row {
     display: flex;
@@ -359,10 +338,7 @@
 @media (max-width: 900px) {
     .page-header-controls { flex-wrap: wrap; }
     .settings-workspace { grid-template-columns: 1fr; }
-    .settings-sidebar { position: static; max-height: none; overflow: visible; }
     .settings-workspace-toolbar { gap: 0.55rem; }
-    .settings-scope-section { max-height: none; overflow: visible; }
-    .settings-scope-tree { max-height: 320px; }
     .settings-category-nav { flex-direction: row; width: 100%; overflow-x: auto; padding-bottom: 0.2rem; }
     .settings-category-btn { flex: 0 0 auto; width: auto; white-space: nowrap; }
     .settings-level-section { display: flex; align-items: center; gap: 0.6rem; margin-top: 0; padding-top: 0.6rem; }

@@ -120,8 +120,6 @@ func TestAdminSettingsUsesHierarchyScopeTree(t *testing.T) {
 		`function handleSettingsSearchInput(input)`,
 		`data-bwignore="true" data-protonpass-ignore="true" data-form-type="other"`,
 		`#clientSelector { display: none !important; }`,
-		`.settings-scope-tree::-webkit-scrollbar-thumb`,
-		`scrollbar-color: var(--border-color) transparent`,
 	} {
 		if !strings.Contains(source, marker) {
 			t.Fatalf("settings template missing hierarchy scope marker %q", marker)
@@ -140,5 +138,10 @@ func TestAdminSettingsUsesHierarchyScopeTree(t *testing.T) {
 	}
 	if strings.Contains(source, `households.forEach(account => expandedSettingsHouseholds.add(account.id))`) {
 		t.Fatal("settings households are still expanded on initial render")
+	}
+	if strings.Contains(source, `.settings-scope-tree::-webkit-scrollbar`) ||
+		strings.Contains(source, `max-height: calc(100vh - 92px)`) ||
+		strings.Contains(source, `.settings-scope-tree { max-height:`) {
+		t.Fatal("settings scope hierarchy still creates an internal scroll container")
 	}
 }
