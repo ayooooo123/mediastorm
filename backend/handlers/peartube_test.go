@@ -53,13 +53,15 @@ type seedCapture struct {
 	body   []byte
 	// json is the decoded body of a URL seed; refusal, when set, is the error
 	// envelope the relay answers a URL seed with instead of 202.
-	json    map[string]any
-	refusal string
+	json            map[string]any
+	refusal         string
+	idempotencyKeys []string
 }
 
 func newSeedRelay(t *testing.T, capture *seedCapture) *peartube.Client {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capture.idempotencyKeys = append(capture.idempotencyKeys, r.Header.Get("Idempotency-Key"))
 		if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
 			capture.json = map[string]any{}
 			body, _ := io.ReadAll(r.Body)
@@ -326,6 +328,24 @@ func TestSeedResolvesAStreamPathToACurrentURL(t *testing.T) {
 	}
 	if capture.json["url"] != "https://cdn.example.net/d/FRESH-TOKEN/movie.mkv" {
 		t.Fatalf("url = %#v", capture.json["url"])
+	}
+	firstKey := capture.idempotencyKeys[0]
+	if firstKey == "" {
+		t.Fatal("stream seed did not carry an idempotency key")
+	}
+
+	resolver.url = "https://cdn.example.net/d/ROTATED-TOKEN/movie.mkv"
+	second := postSeed(t, handler, SeedRequest{
+		StreamPath:  "/debrid/torbox/12345/file/9/movie.mkv",
+		ContentKind: "movie",
+		TMDBID:      "9522",
+		TMDBTitle:   "Wedding Crashers",
+	})
+	if second.Code != http.StatusAccepted {
+		t.Fatalf("second status = %d, body = %s", second.Code, second.Body.String())
+	}
+	if capture.idempotencyKeys[1] != firstKey {
+		t.Fatalf("rotating CDN URL changed idempotency key: %q != %q", capture.idempotencyKeys[1], firstKey)
 	}
 }
 

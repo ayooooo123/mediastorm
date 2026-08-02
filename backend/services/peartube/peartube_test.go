@@ -35,12 +35,13 @@ const catalogBody = `{
 }`
 
 type stubRelay struct {
-	server        *httptest.Server
-	catalogCalls  int
-	archiveCalls  int
-	archiveFields map[string]string
-	archiveBytes  []byte
-	archiveName   string
+	server                *httptest.Server
+	catalogCalls          int
+	archiveCalls          int
+	archiveFields         map[string]string
+	archiveBytes          []byte
+	archiveName           string
+	archiveIdempotencyKey string
 	// archiveJSON is the decoded body of a URL seed, and archiveRefusal is a
 	// verbatim error envelope the relay answers a URL seed with instead of 202.
 	archiveJSON    map[string]any
@@ -53,6 +54,7 @@ const gateBody = `{"error":{"code":"OPEN_ACCESS_NOT_ENABLED","message":"the rela
 
 func (stub *stubRelay) handleArchive(w http.ResponseWriter, r *http.Request) {
 	stub.archiveCalls++
+	stub.archiveIdempotencyKey = r.Header.Get("Idempotency-Key")
 	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
 		stub.archiveJSON = map[string]any{}
 		body, _ := io.ReadAll(r.Body)
@@ -189,6 +191,42 @@ func TestSearchMatchesEpisodeCoordinates(t *testing.T) {
 	}
 	if len(wrong) != 0 {
 		t.Fatalf("a request for s01e03 matched %d sources", len(wrong))
+	}
+}
+
+func TestSearchMatchesOpaqueEntityBySourceCoordinates(t *testing.T) {
+	body := `{
+	  "entities": [{
+	    "entityId": "3f66949c3f1d9fead2b43da629a0c5d43ae74b4eb46f03a70f625bfecdb7fb33",
+	    "entityKind": "series",
+	    "title": "Game of Thrones",
+	    "sources": [{
+	      "publicationId": "pub-opaque",
+	      "publisherId": "0123",
+	      "renditionId": "rend-opaque",
+	      "byteLength": 2048,
+	      "contentKind": "episode",
+	      "mediaProvider": "tmdb",
+	      "mediaId": "1399",
+	      "seasonNumber": 1,
+	      "episodeNumber": 2
+	    }]
+	  }],
+	  "nextCursor": null
+	}`
+	_, client := newRelay(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, body)
+	})
+
+	results, err := client.Search(context.Background(), SearchRequest{
+		Title: "Game of Thrones", TMDBID: "1399", Season: 1, Episode: 2,
+	})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 1 || results[0].Attributes["publicationId"] != "pub-opaque" {
+		t.Fatalf("source coordinates did not match the opaque entity: %+v", results)
 	}
 }
 
@@ -346,7 +384,8 @@ func TestArchiveURLSendsMovieCoordinatesWithoutEpisodeFields(t *testing.T) {
 	stub, client := newStubRelay(t)
 
 	job, err := client.ArchiveURL(context.Background(), ArchiveURLRequest{
-		SourceURL: "https://cdn.example.net/d/TOKEN/Wedding.Crashers.2005.mkv",
+		SourceURL:      "https://cdn.example.net/d/TOKEN/Wedding.Crashers.2005.mkv",
+		IdempotencyKey: "mediastorm-v1:movie-9522-source-a",
 		ArchiveCoordinates: ArchiveCoordinates{
 			ContentKind: "movie",
 			TMDBID:      "9522",
@@ -361,6 +400,9 @@ func TestArchiveURLSendsMovieCoordinatesWithoutEpisodeFields(t *testing.T) {
 	}
 	if job.JobID != "arch_0123456789abcdef" || job.Status != "queued" || job.EntityHint != "movie:9522" {
 		t.Fatalf("job = %+v", job)
+	}
+	if stub.archiveIdempotencyKey != "mediastorm-v1:movie-9522-source-a" {
+		t.Fatalf("Idempotency-Key = %q", stub.archiveIdempotencyKey)
 	}
 	if stub.archiveBytes != nil {
 		t.Fatalf("a URL seed uploaded %d bytes", len(stub.archiveBytes))

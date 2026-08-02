@@ -51,6 +51,36 @@ func parseEntityCoordinates(entityID string) (entityCoordinates, bool) {
 	return entityCoordinates{}, false
 }
 
+func sourceCoordinates(source CatalogSource) (entityCoordinates, bool) {
+	if !strings.EqualFold(strings.TrimSpace(source.MediaProvider), "tmdb") {
+		return entityCoordinates{}, false
+	}
+	id := strings.TrimSpace(source.MediaID)
+	if id == "" {
+		return entityCoordinates{}, false
+	}
+	switch source.ContentKind {
+	case "movie":
+		return entityCoordinates{TMDBID: id, Kind: "movie"}, true
+	case "episode":
+		if source.SeasonNumber > 0 && source.EpisodeNumber > 0 {
+			return entityCoordinates{
+				TMDBID: id, Season: source.SeasonNumber, Episode: source.EpisodeNumber, Kind: "episode",
+			}, true
+		}
+	}
+	return entityCoordinates{}, false
+}
+
+func coordinatesForSource(entity CatalogEntity, source CatalogSource) (entityCoordinates, bool) {
+	if coordinates, ok := sourceCoordinates(source); ok {
+		return coordinates, true
+	}
+	// Backward compatibility for relay catalogs produced before source
+	// coordinates were explicit.
+	return parseEntityCoordinates(entity.EntityID)
+}
+
 // SearchRequest is what the indexer pipeline knows about the title a user is
 // trying to play.
 type SearchRequest struct {
@@ -84,10 +114,10 @@ func (c *Client) Search(ctx context.Context, req SearchRequest) ([]models.NZBRes
 
 	var results []models.NZBResult
 	for _, entity := range entities {
-		if !matches(entity, req) {
-			continue
-		}
 		for _, source := range entity.Sources {
+			if !matches(entity, source, req) {
+				continue
+			}
 			if source.PublicationID == "" || source.RenditionID == "" {
 				// A source without a rendition cannot be addressed by the
 				// stream endpoint, so offering it would hand the player a URL
@@ -106,8 +136,8 @@ func (c *Client) Search(ctx context.Context, req SearchRequest) ([]models.NZBRes
 	return results, nil
 }
 
-func matches(entity CatalogEntity, req SearchRequest) bool {
-	coords, hasCoords := parseEntityCoordinates(entity.EntityID)
+func matches(entity CatalogEntity, source CatalogSource, req SearchRequest) bool {
+	coords, hasCoords := coordinatesForSource(entity, source)
 
 	if hasCoords && req.TMDBID != "" {
 		if coords.TMDBID != req.TMDBID {
@@ -145,7 +175,7 @@ func (c *Client) buildResult(entity CatalogEntity, source CatalogSource, req Sea
 	if title == "" {
 		title = strings.TrimSpace(req.Title)
 	}
-	if coords, ok := parseEntityCoordinates(entity.EntityID); ok && coords.Kind == "episode" {
+	if coords, ok := coordinatesForSource(entity, source); ok && coords.Kind == "episode" {
 		title = fmt.Sprintf("%s S%02dE%02d", title, coords.Season, coords.Episode)
 	} else if entity.Year > 0 {
 		title = fmt.Sprintf("%s %d", title, entity.Year)

@@ -107,6 +107,32 @@ func TestCatalogHasEntityMatchesPublishedCoordinates(t *testing.T) {
 	}
 }
 
+func TestCatalogHasEntityUsesSourceCoordinatesForOpaqueEntities(t *testing.T) {
+	body := `{"entities":[{
+	  "entityId":"3f66949c3f1d9fead2b43da629a0c5d43ae74b4eb46f03a70f625bfecdb7fb33",
+	  "title":"Game of Thrones",
+	  "sources":[{
+	    "publicationId":"pub-opaque",
+	    "renditionId":"rend-opaque",
+	    "contentKind":"episode",
+	    "mediaProvider":"tmdb",
+	    "mediaId":"1399",
+	    "seasonNumber":1,
+	    "episodeNumber":2
+	  }]
+	}]}`
+	relay := newCatalogRelay(t, body, http.StatusOK)
+	published, err := relay.CatalogHasEntity(t.Context(), ArchiveCoordinates{
+		ContentKind: "episode", TMDBID: "1399", TMDBSeason: 1, TMDBEpisode: 2,
+	})
+	if err != nil {
+		t.Fatalf("CatalogHasEntity: %v", err)
+	}
+	if !published {
+		t.Fatal("opaque entity source coordinates were reported as absent")
+	}
+}
+
 // A relay that cannot answer must not be read as "the swarm does not have this".
 // Turning a catalog failure into an absence is what would make every playback
 // re-seed the same file.

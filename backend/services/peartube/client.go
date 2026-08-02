@@ -222,6 +222,11 @@ type CatalogSource struct {
 	CoreKey       string `json:"coreKey"`
 	CoreLength    int64  `json:"coreLength"`
 	ByteLength    int64  `json:"byteLength"`
+	ContentKind   string `json:"contentKind"`
+	MediaProvider string `json:"mediaProvider"`
+	MediaID       string `json:"mediaId"`
+	SeasonNumber  int    `json:"seasonNumber"`
+	EpisodeNumber int    `json:"episodeNumber"`
 }
 
 // CatalogEntity is one title (a movie, or a single episode) the swarm can serve.
@@ -547,7 +552,8 @@ func (c ArchiveCoordinates) Validate() error {
 // ArchiveRequest describes a local file to publish into the swarm. The relay
 // receives the bytes.
 type ArchiveRequest struct {
-	FilePath string
+	FilePath       string
+	IdempotencyKey string
 	ArchiveCoordinates
 }
 
@@ -562,7 +568,8 @@ func (r ArchiveRequest) Validate() error {
 // makes a debrid or usenet stream seedable: this backend never holds those
 // bytes, so it hands over an address instead of a body.
 type ArchiveURLRequest struct {
-	SourceURL string
+	SourceURL      string
+	IdempotencyKey string
 	ArchiveCoordinates
 }
 
@@ -620,6 +627,9 @@ func (c *Client) Archive(ctx context.Context, req ArchiveRequest) (*ArchiveJob, 
 	}
 	httpReq.Header.Set("Content-Type", form.FormDataContentType())
 	httpReq.Header.Set("Accept", "application/json")
+	if key := strings.TrimSpace(req.IdempotencyKey); key != "" {
+		httpReq.Header.Set("Idempotency-Key", key)
+	}
 
 	resp, err := c.uploads.Do(httpReq)
 	if err != nil {
@@ -696,6 +706,9 @@ func (c *Client) ArchiveURL(ctx context.Context, req ArchiveURLRequest) (*Archiv
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
+	if key := strings.TrimSpace(req.IdempotencyKey); key != "" {
+		httpReq.Header.Set("Idempotency-Key", key)
+	}
 
 	resp, err := c.http.Do(httpReq)
 	if err != nil {

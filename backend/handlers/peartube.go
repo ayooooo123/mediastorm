@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -747,6 +749,23 @@ func seedCoordinates(req SeedRequest) peartube.ArchiveCoordinates {
 	}
 }
 
+// seedIdempotencyKey binds one logical media source to one durable relay job.
+// The source identity is the stable MediaStorm path/item, never a short-lived
+// debrid CDN URL. Hashing keeps provider tokens and local paths out of headers
+// and relay metadata.
+func seedIdempotencyKey(coordinates peartube.ArchiveCoordinates, sourceIdentity string) string {
+	parts := []string{
+		"mediastorm.seed.v1",
+		strings.TrimSpace(coordinates.ContentKind),
+		strings.TrimSpace(coordinates.TMDBID),
+		strconv.Itoa(coordinates.TMDBSeason),
+		strconv.Itoa(coordinates.TMDBEpisode),
+		strings.TrimSpace(sourceIdentity),
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return "mediastorm-v1:" + hex.EncodeToString(sum[:])
+}
+
 // planSeed picks the relay transport a seed request needs and validates
 // everything that can be checked without a round trip. Only the returned
 // closure talks to the relay, so a caller mistake stays a client error.
@@ -766,6 +785,11 @@ func (h *PearTubeHandler) planSeed(ctx context.Context, relay *peartube.Client, 
 			return nil, err
 		}
 		archive := peartube.ArchiveURLRequest{SourceURL: source, ArchiveCoordinates: coordinates}
+		sourceIdentity := "url:" + strings.TrimSpace(req.SourceURL)
+		if streamPath := strings.TrimSpace(req.StreamPath); streamPath != "" {
+			sourceIdentity = "stream:" + streamPath
+		}
+		archive.IdempotencyKey = seedIdempotencyKey(archive.ArchiveCoordinates, sourceIdentity)
 		if err := archive.Validate(); err != nil {
 			return nil, err
 		}
@@ -780,6 +804,11 @@ func (h *PearTubeHandler) planSeed(ctx context.Context, relay *peartube.Client, 
 		if err != nil {
 			return nil, err
 		}
+		sourceIdentity := "file:" + archive.FilePath
+		if itemID := strings.TrimSpace(req.LocalMediaItemID); itemID != "" {
+			sourceIdentity = "local:" + itemID
+		}
+		archive.IdempotencyKey = seedIdempotencyKey(archive.ArchiveCoordinates, sourceIdentity)
 		log.Printf("[peartube] seeding %s tmdb=%s title=%q path=%q",
 			archive.ContentKind, archive.TMDBID, archive.TMDBTitle, archive.FilePath)
 		return func(ctx context.Context) (*peartube.ArchiveJob, error) {
