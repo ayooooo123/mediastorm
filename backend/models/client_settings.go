@@ -46,6 +46,7 @@ type ClientFilterSettings struct {
 	BlurUnwatchedEpisodeOverviewsIncludeCurrent  *bool               `json:"blurUnwatchedEpisodeOverviewsIncludeCurrent,omitempty"`
 	NavigationTabVisibility                      *[]string           `json:"navigationTabVisibility,omitempty"`
 	NavigationTabVisibilityIncludesSystemTabs    *bool               `json:"navigationTabVisibilityIncludesSystemTabs,omitempty"`
+	NavigationTabVisibilityIncludesWatchlist     *bool               `json:"navigationTabVisibilityIncludesWatchlist,omitempty"`
 	Appearance                                   *AppearanceSettings `json:"appearance,omitempty"`
 
 	// Playback overrides

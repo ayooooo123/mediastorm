@@ -561,6 +561,10 @@ func (s *Service) Update(userID string, settings models.UserSettings) error {
 	settings.Playback.AllowedTrackLanguages = sanitizeLanguageCodes(settings.Playback.AllowedTrackLanguages)
 	settings.Playback.PreferredSubtitleMode = strings.TrimSpace(strings.Trim(settings.Playback.PreferredSubtitleMode, "'\""))
 	settings.Metadata.PrimaryLanguage = sanitizeLanguageCode(settings.Metadata.PrimaryLanguage)
+	if len(settings.Display.NavigationTabVisibility) > 0 {
+		settings.Display.NavigationTabVisibilityIncludesSystemTabs = true
+		settings.Display.NavigationTabVisibilityIncludesWatchlist = true
+	}
 
 	log.Printf("[user-settings] Update(%q): subMode=%q, audioLang=%q, subLang=%q",
 		userID, settings.Playback.PreferredSubtitleMode, settings.Playback.PreferredAudioLanguage, settings.Playback.PreferredSubtitleLanguage)
@@ -926,6 +930,14 @@ func (s *Service) load() error {
 				us.Display.NavigationTabVisibility = tabs
 			}
 			us.Display.NavigationTabVisibilityIncludesSystemTabs = true
+			changed = true
+			needsSave = true
+		}
+		if !us.Display.NavigationTabVisibilityIncludesWatchlist {
+			if tabs, tabsChanged := models.AddMissingWatchlistNavigationTab(us.Display.NavigationTabVisibility); tabsChanged {
+				us.Display.NavigationTabVisibility = tabs
+			}
+			us.Display.NavigationTabVisibilityIncludesWatchlist = true
 			changed = true
 			needsSave = true
 		}

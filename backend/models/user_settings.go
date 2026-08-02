@@ -90,10 +90,12 @@ type DisplaySettings struct {
 	// Valid values: "watchProgress", "releaseStatus", "watchState", "unwatchedCount"
 	BadgeVisibility []string `json:"badgeVisibility"`
 	// NavigationTabVisibility controls which navigation tabs are shown in the client UI.
-	// Valid values: "home", "search", "lists", "live", "profiles", "downloads", "settings", "admin"
+	// Valid values: "home", "watchlist", "search", "lists", "live", "profiles", "downloads", "settings", "admin"
 	NavigationTabVisibility []string `json:"navigationTabVisibility,omitempty"`
 	// NavigationTabVisibilityIncludesSystemTabs marks the one-time migration that added settings/admin to existing visibility lists.
 	NavigationTabVisibilityIncludesSystemTabs bool `json:"navigationTabVisibilityIncludesSystemTabs,omitempty"`
+	// NavigationTabVisibilityIncludesWatchlist marks the one-time migration that added Watchlist to existing visibility lists.
+	NavigationTabVisibilityIncludesWatchlist bool `json:"navigationTabVisibilityIncludesWatchlist,omitempty"`
 	// WatchStateIconStyle controls the color of watch state icons.
 	// "colored" (default) = green/yellow circles, "white" = all white circles
 	WatchStateIconStyle string `json:"watchStateIconStyle,omitempty"`
@@ -159,6 +161,21 @@ func AddMissingSystemNavigationTabs(tabs []string) ([]string, bool) {
 	}
 
 	return tabs, changed
+}
+
+// AddMissingWatchlistNavigationTab enables the newly introduced Watchlist item
+// once for existing explicit visibility lists; its migration marker preserves
+// later user choices to hide it.
+func AddMissingWatchlistNavigationTab(tabs []string) ([]string, bool) {
+	if len(tabs) == 0 {
+		return tabs, false
+	}
+	for _, tab := range tabs {
+		if tab == "watchlist" {
+			return tabs, false
+		}
+	}
+	return append(tabs, "watchlist"), true
 }
 
 // AppearanceSettings controls app-wide visual accessibility and theming preferences.
@@ -962,8 +979,9 @@ func DefaultUserSettings() UserSettings {
 		},
 		Display: DisplaySettings{
 			BadgeVisibility:                           []string{"watchProgress"},
-			NavigationTabVisibility:                   []string{"home", "search", "lists", "live", "profiles", "downloads", "settings", "admin"},
+			NavigationTabVisibility:                   []string{"home", "watchlist", "search", "lists", "live", "profiles", "downloads", "settings", "admin"},
 			NavigationTabVisibilityIncludesSystemTabs: true,
+			NavigationTabVisibilityIncludesWatchlist:  true,
 			WatchStateIconStyle:                       "colored",
 			IncludeUnreleasedMoviesInLists:            BoolPtr(true),
 			IncludeUnreleasedShowsInLists:             BoolPtr(true),

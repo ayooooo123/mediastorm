@@ -1,11 +1,75 @@
 package client_settings
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
 	"novastream/models"
 )
+
+func TestLoadMigratesWatchlistNavigationVisibility(t *testing.T) {
+	dir := t.TempDir()
+	raw := `{"client-1":{"navigationTabVisibility":["home","search","lists"],"navigationTabVisibilityIncludesSystemTabs":true}}`
+	if err := os.WriteFile(filepath.Join(dir, "client_settings.json"), []byte(raw), 0o600); err != nil {
+		t.Fatalf("write client settings: %v", err)
+	}
+
+	svc, err := NewService(dir)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	got, err := svc.Get("client-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got == nil || got.NavigationTabVisibility == nil {
+		t.Fatal("expected migrated client navigation visibility")
+	}
+	if !containsNavigationTab(*got.NavigationTabVisibility, "watchlist") {
+		t.Fatalf("navigationTabVisibility = %#v, want Watchlist added", *got.NavigationTabVisibility)
+	}
+	if got.NavigationTabVisibilityIncludesWatchlist == nil || !*got.NavigationTabVisibilityIncludesWatchlist {
+		t.Fatal("expected Watchlist navigation migration marker")
+	}
+}
+
+func TestUpdatePreservesExplicitlyHiddenWatchlistAcrossReload(t *testing.T) {
+	dir := t.TempDir()
+	svc, err := NewService(dir)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tabs := []string{"home", "search", "lists"}
+	if err := svc.Update("client-1", models.ClientFilterSettings{NavigationTabVisibility: &tabs}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	reloaded, err := NewService(dir)
+	if err != nil {
+		t.Fatalf("reload service: %v", err)
+	}
+	got, err := reloaded.Get("client-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got == nil || got.NavigationTabVisibility == nil {
+		t.Fatal("expected client navigation visibility")
+	}
+	if containsNavigationTab(*got.NavigationTabVisibility, "watchlist") {
+		t.Fatalf("navigationTabVisibility = %#v, Watchlist should remain hidden", *got.NavigationTabVisibility)
+	}
+}
+
+func containsNavigationTab(tabs []string, want string) bool {
+	for _, tab := range tabs {
+		if tab == want {
+			return true
+		}
+	}
+	return false
+}
 
 func TestServiceSanitizesAllowedTrackLanguages(t *testing.T) {
 	dir := t.TempDir()

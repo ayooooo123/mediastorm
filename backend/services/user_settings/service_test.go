@@ -163,6 +163,77 @@ func TestLoad_RemovesCleanPostersOverrides(t *testing.T) {
 	}
 }
 
+func TestLoad_MigratesWatchlistNavigationVisibility(t *testing.T) {
+	dir := t.TempDir()
+	raw := `{
+  "user-1": {
+    "display": {
+      "navigationTabVisibility": ["home", "search", "lists"],
+      "navigationTabVisibilityIncludesSystemTabs": true
+    }
+  }
+}`
+	if err := os.WriteFile(filepath.Join(dir, "user_settings.json"), []byte(raw), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	svc, err := NewService(dir)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	got, err := svc.Get("user-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected migrated user settings")
+	}
+	if !containsNavigationTab(got.Display.NavigationTabVisibility, "watchlist") {
+		t.Fatalf("navigationTabVisibility = %#v, want Watchlist added", got.Display.NavigationTabVisibility)
+	}
+	if !got.Display.NavigationTabVisibilityIncludesWatchlist {
+		t.Fatal("expected Watchlist navigation migration marker")
+	}
+}
+
+func TestUpdate_PreservesExplicitlyHiddenWatchlistAcrossReload(t *testing.T) {
+	dir := t.TempDir()
+	svc, err := NewService(dir)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	settings := models.UserSettings{Display: models.DisplaySettings{
+		NavigationTabVisibility: []string{"home", "search", "lists"},
+	}}
+	if err := svc.Update("user-1", settings); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	reloaded, err := NewService(dir)
+	if err != nil {
+		t.Fatalf("reload service: %v", err)
+	}
+	got, err := reloaded.Get("user-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected user navigation visibility")
+	}
+	if containsNavigationTab(got.Display.NavigationTabVisibility, "watchlist") {
+		t.Fatalf("navigationTabVisibility = %#v, Watchlist should remain hidden", got.Display.NavigationTabVisibility)
+	}
+}
+
+func containsNavigationTab(tabs []string, want string) bool {
+	for _, tab := range tabs {
+		if tab == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestGetWithDefaults_DefaultsBlankAudioLanguageToEnglish(t *testing.T) {
 	dir := t.TempDir()
 	svc, err := NewService(dir)
