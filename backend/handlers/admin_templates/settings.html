@@ -1281,11 +1281,49 @@
         return hasEnabledItem(currentSettings.usenet || []) || hasEnabledItem(currentSettings.usenetEngines || []);
     }
 
+    function apparentRegexFormatError(terms) {
+        if (!Array.isArray(terms)) return '';
+        for (let i = 0; i < terms.length; i++) {
+            const raw = String(terms[i] || '').trim();
+            if (!raw) continue;
+            const term = parseWeightedTerm(raw).term;
+            const startsSlash = term.startsWith('/');
+            const endsSlash = term.endsWith('/');
+            if (startsSlash !== endsSlash || (startsSlash && term.length < 3)) {
+                return 'Term ' + (i + 1) + ' looks like a regex but is not wrapped correctly. Use /pattern/, for example /\\bREMUX\\b/.';
+            }
+        }
+        return '';
+    }
+
+    function addFilteringRegexErrors(errors, sectionKey, filtering) {
+        if (!filtering) return;
+        const fields = ['requiredTerms', 'filterOutTerms', 'preferredTerms', 'nonPreferredTerms', 'downloadPreferredTerms'];
+        for (const field of fields) {
+            const message = apparentRegexFormatError(filtering[field]);
+            if (message) {
+                if (!errors[sectionKey]) errors[sectionKey] = {fields: {}, messages: []};
+                errors[sectionKey].fields[field] = message;
+            }
+        }
+    }
+
+    function validateFilteringRegexFormatting(errors, filtering) {
+        addFilteringRegexErrors(errors, 'filtering', filtering);
+        addFilteringRegexErrors(errors, 'filtering.debrid', filtering?.debrid);
+        addFilteringRegexErrors(errors, 'filtering.usenet', filtering?.usenet);
+    }
+
     // Validate all settings and return errors object
     function validateSettings() {
         const errors = {};
 
-        // Skip validation for user-specific settings or non-admin users
+        const activeFiltering = selectedClientId
+            ? clientSettings
+            : (selectedUserId ? userSettings?.filtering : currentSettings.filtering);
+        validateFilteringRegexFormatting(errors, activeFiltering);
+
+        // The remaining validation applies only to global admin settings.
         if (selectedUserId || !isAdmin) return errors;
 
         const serviceMode = currentSettings.streaming?.serviceMode || 'hybrid';

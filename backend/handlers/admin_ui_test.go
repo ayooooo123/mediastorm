@@ -257,6 +257,17 @@ func TestAdminUIHandler_GetSchema(t *testing.T) {
 		t.Fatal("cleanPosters should be hidden from the admin settings schema")
 	}
 
+	filtering, ok := schema["filtering"].(map[string]interface{})
+	if !ok {
+		t.Fatal("schema missing filtering section")
+	}
+	regexNotice, _ := filtering["description"].(string)
+	for _, text := range []string{"Regex format:", `/\bREMUX\b/`, "/pattern/i", "case-insensitive"} {
+		if !strings.Contains(regexNotice, text) {
+			t.Errorf("filtering regex notice missing %q: %q", text, regexNotice)
+		}
+	}
+
 	for _, key := range []string{"ranking.debrid.criteria", "ranking.usenet.criteria"} {
 		section, ok := schema[key].(map[string]interface{})
 		if !ok {
