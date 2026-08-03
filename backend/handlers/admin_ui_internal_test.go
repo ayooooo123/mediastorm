@@ -314,6 +314,47 @@ func TestAdminStatusActiveStreamsPreferSeriesPosters(t *testing.T) {
 	}
 }
 
+func TestAdminStatusActiveStreamRowsKeepMediaOnOneLineAndShowService(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/status.html")
+	if err != nil {
+		t.Fatalf("read status template: %v", err)
+	}
+	source := string(templateBytes)
+
+	for _, marker := range []string{
+		`<th>Media</th><th>Service</th>`,
+		`class="stream-table-media-subtitle"`,
+		`renderStreamServiceBadge(stream, true)`,
+		`function getStreamServiceType(stream)`,
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("status template missing active-stream row marker %q", marker)
+		}
+	}
+}
+
+func TestDashboardStreamServiceType(t *testing.T) {
+	tests := []struct {
+		name   string
+		live   bool
+		paths  []string
+		wanted string
+	}{
+		{name: "live TV", live: true, paths: []string{"https://provider.test/channel.ts"}, wanted: "stream"},
+		{name: "debrid path", paths: []string{"/debrid/realdebrid/torrent/file/0/movie.mkv"}, wanted: "debrid"},
+		{name: "webdav debrid path", paths: []string{"/webdav/debrid/torbox/torrent/file/0/movie.mkv"}, wanted: "debrid"},
+		{name: "original debrid path", paths: []string{"https://cdn.test/file", "/debrid/realdebrid/torrent/file/0/movie.mkv"}, wanted: "debrid"},
+		{name: "usenet path", paths: []string{"/nzbs/job/movie.mkv"}, wanted: "usenet"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := dashboardStreamServiceType(tt.live, tt.paths...); got != tt.wanted {
+				t.Fatalf("dashboardStreamServiceType() = %q, want %q", got, tt.wanted)
+			}
+		})
+	}
+}
+
 func TestUsenetEngineStatusProbeJobIDUsesGUIDForNZBDav(t *testing.T) {
 	for _, engineType := range []string{"nzbdav", "nzbdavex"} {
 		t.Run(engineType, func(t *testing.T) {
