@@ -2283,12 +2283,13 @@ func logPrequeueCandidateList(scoredResults []models.ScoredNZBResult) {
 	for i := 0; i < limit; i++ {
 		result := scoredResults[i]
 		badStream := strings.Contains(strings.ToLower(result.FilterReason), "marked bad stream")
-		log.Printf("[prequeue] candidate #%d title=%q provider=%q service=%q status=%q badStream=%v score=%d reason=%q",
+		log.Printf("[prequeue] candidate #%d title=%q provider=%q service=%q status=%q sourceCacheStatus=%q badStream=%v score=%d reason=%q",
 			i+1,
 			result.Title,
 			result.Indexer,
 			result.ServiceType,
 			result.FilterStatus,
+			result.Attributes["sourceCacheStatus"],
 			badStream,
 			result.TotalScore,
 			result.FilterReason,
