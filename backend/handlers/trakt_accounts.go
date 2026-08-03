@@ -783,9 +783,14 @@ func (h *TraktAccountsHandler) GetLists(w http.ResponseWriter, r *http.Request) 
 		jsonError(w, "Failed to fetch lists: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	smartLists, err := h.traktClient.GetUserSmartLists(accessToken)
+	if err != nil {
+		jsonError(w, "Failed to fetch smart lists: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	// Convert to normalized format
-	normalizedLists := make([]map[string]interface{}, 0, len(lists))
+	normalizedLists := make([]map[string]interface{}, 0, len(lists)+len(smartLists))
 	for _, list := range lists {
 		normalized := map[string]interface{}{
 			"id":          list.IDs.Slug,
@@ -796,6 +801,20 @@ func (h *TraktAccountsHandler) GetLists(w http.ResponseWriter, r *http.Request) 
 			"itemCount":   list.ItemCount,
 			"createdAt":   list.CreatedAt,
 			"updatedAt":   list.UpdatedAt,
+		}
+		normalizedLists = append(normalizedLists, normalized)
+	}
+	for _, list := range smartLists {
+		normalized := map[string]interface{}{
+			"id":        trakt.EncodeSmartListID(list.MediaType, list.IDs.Slug),
+			"traktId":   list.IDs.Trakt,
+			"name":      list.Name,
+			"privacy":   list.Privacy,
+			"createdAt": list.CreatedAt,
+			"updatedAt": list.UpdatedAt,
+			"smart":     true,
+			"source":    list.Source,
+			"mediaType": list.MediaType,
 		}
 		normalizedLists = append(normalizedLists, normalized)
 	}

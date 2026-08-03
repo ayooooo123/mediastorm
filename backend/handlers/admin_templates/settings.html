@@ -6970,7 +6970,7 @@
         }
         select.innerHTML = lists.map((list) => {
             const selected = list.id === selectedValue ? 'selected' : '';
-            return `<option value="${list.id}" ${selected}>${list.name}</option>`;
+            return `<option value="${list.id}" ${selected}>${list.name}${list.smart ? ' (Smart list)' : ''}</option>`;
         }).join('');
         if (!selectedValue && select.options.length > 0) {
             select.value = select.options[0].value;
