@@ -514,6 +514,10 @@ func (h *IndexerHandler) getSeriesSearchMetadata(ctx context.Context, query stri
 							result.AbsoluteEpisodeNumber = ep.AbsoluteEpisodeNumber
 							log.Printf("[indexer] Found absolute episode number %d for S%02dE%02d",
 								result.AbsoluteEpisodeNumber, parsed.Season, parsed.Episode)
+						} else if inferred := inferAbsoluteEpisodeNumber(details.Seasons, ep); inferred > 0 {
+							result.AbsoluteEpisodeNumber = inferred
+							log.Printf("[indexer] Inferred absolute episode number %d for S%02dE%02d from adjacent episodes",
+								result.AbsoluteEpisodeNumber, parsed.Season, parsed.Episode)
 						}
 						if ep.AiredDate != "" {
 							if result.IsDaily {
