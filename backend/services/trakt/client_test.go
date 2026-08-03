@@ -79,6 +79,103 @@ func TestScrobbleStart(t *testing.T) {
 	}
 }
 
+func TestGetUserListsPaginates(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/users/me/lists" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("limit") != "100" {
+			t.Errorf("expected limit 100, got %q", r.URL.Query().Get("limit"))
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Pagination-Page-Count", "2")
+		switch r.URL.Query().Get("page") {
+		case "1":
+			_, _ = w.Write([]byte(`[{"name":"First","ids":{"trakt":1,"slug":"first"}}]`))
+		case "2":
+			_, _ = w.Write([]byte(`[{"name":"Second","ids":{"trakt":2,"slug":"second"}}]`))
+		default:
+			t.Fatalf("unexpected page: %s", r.URL.Query().Get("page"))
+		}
+	}))
+	defer server.Close()
+
+	origURL := traktAPIBaseURL
+	defer func() { setBaseURL(origURL) }()
+	setBaseURL(server.URL)
+
+	lists, err := NewClient("test-client-id", "test-secret").GetUserLists("test-token")
+	if err != nil {
+		t.Fatalf("GetUserLists returned error: %v", err)
+	}
+	if len(lists) != 2 || lists[0].IDs.Slug != "first" || lists[1].IDs.Slug != "second" {
+		t.Fatalf("unexpected lists: %+v", lists)
+	}
+}
+
+func TestGetUserSmartLists(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/users/me/smart-lists" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer test-token" {
+			t.Errorf("expected bearer token")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{
+			"name":"New Releases",
+			"privacy":"private",
+			"source":"discover",
+			"media_type":"movies",
+			"ids":{"trakt":42,"slug":"new-releases"}
+		}]`))
+	}))
+	defer server.Close()
+
+	origURL := traktAPIBaseURL
+	defer func() { setBaseURL(origURL) }()
+	setBaseURL(server.URL)
+
+	lists, err := NewClient("test-client-id", "test-secret").GetUserSmartLists("test-token")
+	if err != nil {
+		t.Fatalf("GetUserSmartLists returned error: %v", err)
+	}
+	if len(lists) != 1 || lists[0].IDs.Slug != "new-releases" || lists[0].MediaType != "movies" {
+		t.Fatalf("unexpected smart lists: %+v", lists)
+	}
+	if got := EncodeSmartListID(lists[0].MediaType, lists[0].IDs.Slug); got != "smart:movies:new-releases" {
+		t.Fatalf("unexpected encoded smart list ID: %q", got)
+	}
+}
+
+func TestGetAllListItemsUsesSmartListEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/smart-lists/new-releases/items/movies/rank/asc" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("page") != "1" || r.URL.Query().Get("limit") != "100" {
+			t.Fatalf("unexpected pagination: %s", r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Pagination-Item-Count", "1")
+		_, _ = w.Write([]byte(`[{"rank":1,"type":"movie","movie":{"title":"Example","year":2026,"ids":{"trakt":99}}}]`))
+	}))
+	defer server.Close()
+
+	origURL := traktAPIBaseURL
+	defer func() { setBaseURL(origURL) }()
+	setBaseURL(server.URL)
+
+	items, err := NewClient("test-client-id", "test-secret").GetAllListItems("test-token", "smart:movies:new-releases")
+	if err != nil {
+		t.Fatalf("GetAllListItems returned error: %v", err)
+	}
+	if len(items) != 1 || items[0].Movie == nil || items[0].Movie.Title != "Example" {
+		t.Fatalf("unexpected smart list items: %+v", items)
+	}
+}
+
 func TestAddEpisodeToHistoryUsesSeasonEpisodeNumberAndEpisodeIDs(t *testing.T) {
 	var receivedBody SyncHistoryRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

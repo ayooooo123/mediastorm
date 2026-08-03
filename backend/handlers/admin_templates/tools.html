@@ -5678,7 +5678,7 @@
                 select.innerHTML = '<option value="">No custom lists found</option>';
             } else {
                 select.innerHTML = lists.map(list =>
-                    `<option value="${list.id}">${escapeHtml(list.name)} (${list.itemCount} items)</option>`
+                    `<option value="${list.id}">${escapeHtml(list.name)}${list.smart ? ' (Smart list)' : ` (${list.itemCount} items)`}</option>`
                 ).join('');
             }
         } catch (err) {

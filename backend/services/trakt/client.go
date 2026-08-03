@@ -8,7 +8,9 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -839,6 +841,42 @@ type UserList struct {
 	User *UserProfile `json:"user,omitempty"`
 }
 
+// SmartList represents a Trakt dynamic list (called a Smart List by the API).
+// Smart Lists are VIP-enhanced and resolve their items from saved filters.
+type SmartList struct {
+	Name      string    `json:"name"`
+	Privacy   string    `json:"privacy"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Source    string    `json:"source"`
+	MediaType string    `json:"media_type"`
+	IDs       struct {
+		Trakt int    `json:"trakt"`
+		Slug  string `json:"slug"`
+	} `json:"ids"`
+}
+
+const smartListIDPrefix = "smart:"
+
+// EncodeSmartListID returns an opaque list ID that can travel through the
+// existing custom-list settings without changing saved personal-list slugs.
+func EncodeSmartListID(mediaType, slug string) string {
+	return smartListIDPrefix + strings.TrimSpace(mediaType) + ":" + strings.TrimSpace(slug)
+}
+
+func decodeSmartListID(listID string) (mediaType, slug string, ok bool) {
+	if !strings.HasPrefix(listID, smartListIDPrefix) {
+		return "", "", false
+	}
+
+	parts := strings.SplitN(strings.TrimPrefix(listID, smartListIDPrefix), ":", 2)
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+		return "", "", false
+	}
+
+	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), true
+}
+
 // ListItem represents an item from a Trakt custom list
 type ListItem struct {
 	Rank     int       `json:"rank"`
@@ -969,11 +1007,54 @@ func (c *Client) GetAllFavorites(accessToken string) ([]FavoriteItem, error) {
 	return allItems, nil
 }
 
-// GetUserLists retrieves all custom lists for the authenticated user
+// GetUserLists retrieves all personal lists for the authenticated user.
 func (c *Client) GetUserLists(accessToken string) ([]UserList, error) {
-	url := fmt.Sprintf("%s/users/me/lists", traktAPIBaseURL)
+	const limit = 100
+	var allLists []UserList
 
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	for page := 1; ; page++ {
+		requestURL := fmt.Sprintf("%s/users/me/lists?page=%d&limit=%d", traktAPIBaseURL, page, limit)
+
+		req, err := http.NewRequest(http.MethodGet, requestURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("create request: %w", err)
+		}
+
+		c.setTraktHeaders(req, accessToken)
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("trakt api request: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			respBody, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("trakt user lists failed: %s - %s", resp.Status, string(respBody))
+		}
+
+		var lists []UserList
+		decodeErr := json.NewDecoder(resp.Body).Decode(&lists)
+		resp.Body.Close()
+		if decodeErr != nil {
+			return nil, fmt.Errorf("decode response: %w", decodeErr)
+		}
+
+		allLists = append(allLists, lists...)
+		pageCount, _ := strconv.Atoi(resp.Header.Get("X-Pagination-Page-Count"))
+		if len(lists) == 0 || (pageCount > 0 && page >= pageCount) || (pageCount == 0 && len(lists) < limit) {
+			break
+		}
+	}
+
+	return allLists, nil
+}
+
+// GetUserSmartLists retrieves all dynamic Smart Lists for the authenticated user.
+func (c *Client) GetUserSmartLists(accessToken string) ([]SmartList, error) {
+	requestURL := fmt.Sprintf("%s/users/me/smart-lists", traktAPIBaseURL)
+
+	req, err := http.NewRequest(http.MethodGet, requestURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -988,15 +1069,58 @@ func (c *Client) GetUserLists(accessToken string) ([]UserList, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("trakt user lists failed: %s - %s", resp.Status, string(respBody))
+		return nil, fmt.Errorf("trakt user smart lists failed: %s - %s", resp.Status, string(respBody))
 	}
 
-	var lists []UserList
+	var lists []SmartList
 	if err := json.NewDecoder(resp.Body).Decode(&lists); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 
 	return lists, nil
+}
+
+// GetSmartListItems retrieves one page of items resolved by a Smart List.
+func (c *Client) GetSmartListItems(accessToken, slug, mediaType string, page, limit int) ([]ListItem, int, error) {
+	itemType := strings.TrimSpace(mediaType)
+	if itemType == "" || itemType == "media" {
+		itemType = "media"
+	}
+
+	requestURL := fmt.Sprintf(
+		"%s/smart-lists/%s/items/%s/rank/asc?page=%d&limit=%d",
+		traktAPIBaseURL,
+		url.PathEscape(slug),
+		url.PathEscape(itemType),
+		page,
+		limit,
+	)
+
+	req, err := http.NewRequest(http.MethodGet, requestURL, nil)
+	if err != nil {
+		return nil, 0, fmt.Errorf("create request: %w", err)
+	}
+
+	c.setTraktHeaders(req, accessToken)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("trakt api request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, 0, fmt.Errorf("trakt smart list items failed: %s - %s", resp.Status, string(respBody))
+	}
+
+	totalCount, _ := strconv.Atoi(resp.Header.Get("X-Pagination-Item-Count"))
+	var items []ListItem
+	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+		return nil, 0, fmt.Errorf("decode response: %w", err)
+	}
+
+	return items, totalCount, nil
 }
 
 // GetListItems retrieves items from a specific user list
@@ -1039,16 +1163,24 @@ func (c *Client) GetAllListItems(accessToken string, listID string) ([]ListItem,
 	var allItems []ListItem
 	page := 1
 	limit := 100
+	mediaType, smartListSlug, isSmartList := decodeSmartListID(listID)
 
 	for {
-		items, totalCount, err := c.GetListItems(accessToken, listID, page, limit)
+		var items []ListItem
+		var totalCount int
+		var err error
+		if isSmartList {
+			items, totalCount, err = c.GetSmartListItems(accessToken, smartListSlug, mediaType, page, limit)
+		} else {
+			items, totalCount, err = c.GetListItems(accessToken, listID, page, limit)
+		}
 		if err != nil {
 			return nil, err
 		}
 
 		allItems = append(allItems, items...)
 
-		if len(allItems) >= totalCount || len(items) == 0 {
+		if len(items) == 0 || (totalCount > 0 && len(allItems) >= totalCount) || (totalCount == 0 && len(items) < limit) {
 			break
 		}
 
