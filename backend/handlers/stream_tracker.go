@@ -250,6 +250,42 @@ func (t *StreamTracker) SetPlaybackActivityObserver(observer PlaybackActivityObs
 	t.mu.Unlock()
 }
 
+// AssociateClientWithPlayback binds the authenticated app client sending a
+// playback heartbeat to its active direct transport connections. Older native
+// app bundles did not include clientId in the media URL, even though their API
+// heartbeats carry X-Client-ID, so the dashboard could not resolve a device.
+func (t *StreamTracker) AssociateClientWithPlayback(userID string, update models.PlaybackProgressUpdate, clientID string) int {
+	if t == nil || strings.TrimSpace(clientID) == "" {
+		return 0
+	}
+	targetKey := playbackControlKey(userID, update.MediaType, update.ItemID)
+	if targetKey == "" {
+		return 0
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	matched := 0
+	for _, stream := range t.streams {
+		matches := false
+		for _, key := range streamPlaybackControlKeys(stream) {
+			if key == targetKey {
+				matches = true
+				break
+			}
+		}
+		if !matches {
+			continue
+		}
+		if update.SourcePath != "" && normalizeStreamFailurePath(stream.Path) != normalizeStreamFailurePath(update.SourcePath) {
+			continue
+		}
+		stream.ClientID = strings.TrimSpace(clientID)
+		matched++
+	}
+	return matched
+}
+
 // ObservePlaybackActivity matches a player heartbeat to the most recently
 // active direct stream before forwarding it to the notification observer.
 func (t *StreamTracker) ObservePlaybackActivity(userID string, update models.PlaybackProgressUpdate, percentWatched float64) int {

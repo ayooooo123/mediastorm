@@ -583,6 +583,7 @@ func (h *HistoryHandler) UpdatePlaybackProgress(w http.ResponseWriter, r *http.R
 		http.Error(w, err.Error(), watchHistoryErrorStatus(err))
 		return
 	}
+	GetStreamTracker().AssociateClientWithPlayback(userID, update, requestClientID(r))
 	allowedToContinue := !GetStreamTracker().ShouldStopPlayback(userID, update)
 	progress.AllowedToContinue = &allowedToContinue
 	// Bind the release's required bitrate to the exact active source. Provider
