@@ -627,6 +627,80 @@ func TestCreateEpisodeResolverNormalizesLegacyAbsoluteEpisode(t *testing.T) {
 	}
 }
 
+func TestCreateEpisodeResolverInfersMissingAbsoluteEpisodeFromSeason(t *testing.T) {
+	handler := &PrequeueHandler{
+		metadataSvc: &mockSeriesDetailsProvider{
+			details: &models.SeriesDetails{
+				Title: models.Title{Name: "One Piece", Year: 1999, Genres: []string{"Animation"}},
+				Seasons: []models.SeriesSeason{
+					{
+						Number:       23,
+						EpisodeCount: 17,
+						Episodes: []models.SeriesEpisode{
+							{SeasonNumber: 23, EpisodeNumber: 16, AbsoluteEpisodeNumber: 1171},
+							{SeasonNumber: 23, EpisodeNumber: 17, AiredDate: "2026-08-02"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	got := handler.createEpisodeResolverAndLookupAbsoluteEp(
+		context.Background(),
+		"tmdb:tv:37854",
+		"One Piece",
+		1999,
+		"tt0388629",
+		&models.EpisodeReference{SeasonNumber: 23, EpisodeNumber: 17},
+	)
+
+	if got.TargetEpisode == nil {
+		t.Fatal("TargetEpisode is nil")
+	}
+	if got.TargetEpisode.AbsoluteEpisodeNumber != 1172 {
+		t.Fatalf("AbsoluteEpisodeNumber = %d, want 1172", got.TargetEpisode.AbsoluteEpisodeNumber)
+	}
+}
+
+func TestInferAbsoluteEpisodeNumberRejectsConflictingAnchors(t *testing.T) {
+	seasons := []models.SeriesSeason{
+		{
+			Number: 23,
+			Episodes: []models.SeriesEpisode{
+				{SeasonNumber: 23, EpisodeNumber: 15, AbsoluteEpisodeNumber: 1170},
+				{SeasonNumber: 23, EpisodeNumber: 16, AbsoluteEpisodeNumber: 999},
+			},
+		},
+	}
+
+	got := inferAbsoluteEpisodeNumber(seasons, models.SeriesEpisode{SeasonNumber: 23, EpisodeNumber: 17})
+	if got != 0 {
+		t.Fatalf("inferAbsoluteEpisodeNumber() = %d, want 0 for conflicting anchors", got)
+	}
+}
+
+func TestAnnotateResultEpisodeClonesCachedAttributesAndAddsAbsoluteHint(t *testing.T) {
+	cachedAttributes := map[string]string{"source": "cached"}
+	result := models.NZBResult{Attributes: cachedAttributes}
+
+	annotateResultEpisode(&result, &models.EpisodeReference{
+		SeasonNumber:          23,
+		EpisodeNumber:         17,
+		AbsoluteEpisodeNumber: 1172,
+	})
+
+	if result.Attributes["targetEpisodeCode"] != "S23E17" {
+		t.Fatalf("targetEpisodeCode = %q, want S23E17", result.Attributes["targetEpisodeCode"])
+	}
+	if result.Attributes["absoluteEpisodeNumber"] != "1172" {
+		t.Fatalf("absoluteEpisodeNumber = %q, want 1172", result.Attributes["absoluteEpisodeNumber"])
+	}
+	if _, mutated := cachedAttributes["absoluteEpisodeNumber"]; mutated {
+		t.Fatal("annotateResultEpisode mutated cached attributes")
+	}
+}
+
 func TestPrequeueMovieAnimeDetection_SeriesSkipped(t *testing.T) {
 	handler := &PrequeueHandler{
 		movieMetadataSvc: &mockMovieDetailsProvider{
