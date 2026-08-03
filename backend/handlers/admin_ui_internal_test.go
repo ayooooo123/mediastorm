@@ -343,6 +343,9 @@ func TestAdminStatusActiveStreamsShowDeviceAndCompactEpisodeLabel(t *testing.T) 
 	for _, marker := range []string{
 		`function getDeviceDisplay(stream)`,
 		`class="stream-card-device"`,
+		`class="stream-card-profile-name"`,
+		`class="stream-table-profile"`,
+		`class="stream-table-device"`,
 		`const episodeCode = `,
 		`[stream.year ? String(stream.year) : '', episodeCode]`,
 	} {
