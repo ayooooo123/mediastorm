@@ -8293,15 +8293,45 @@ func customListItemTitleID(item mdblistItem, mediaType string) string {
 func (s *Service) enrichLiteCustomListItem(ctx context.Context, item mdblistItem) models.TrendingItem {
 	result := buildLiteCustomListItem(item)
 	title := &result.Title
+	if s != nil && s.client != nil {
+		title.Language = s.client.language
+	}
 	if item.TVDBID == nil || *item.TVDBID <= 0 {
 		s.applyTMDBGenreFallback(ctx, title)
 		return result
 	}
 
 	tvdbID := *item.TVDBID
+	var translation *tvdbSeriesTranslation
+	translationDone := make(chan struct{})
+	go func() {
+		defer close(translationDone)
+		if s == nil || s.client == nil || s.cache == nil || strings.TrimSpace(s.client.apiKey) == "" {
+			return
+		}
+		if title.MediaType == "movie" {
+			translation, _ = s.cachedMovieTranslations(tvdbID, s.client.language)
+			return
+		}
+		translation, _ = s.cachedSeriesTranslations(tvdbID, s.client.language)
+	}()
+	applyTranslation := func() {
+		<-translationDone
+		if translation == nil {
+			return
+		}
+		if translation.Name != "" {
+			title.Name = translation.Name
+		}
+		if translation.Overview != "" {
+			title.Overview = translation.Overview
+		}
+	}
+
 	if title.MediaType == "movie" {
 		ext, err := s.cachedMovieExtended(tvdbID, []string{"artwork"})
 		if err != nil {
+			applyTranslation()
 			s.applyTMDBGenreFallback(ctx, title)
 			return result
 		}
@@ -8313,12 +8343,14 @@ func (s *Service) enrichLiteCustomListItem(ctx context.Context, item mdblistItem
 		}
 		applyTVDBMovieExtendedMetadata(title, ext)
 		applyTVDBRemoteIDs(title, ext.RemoteIDs)
+		applyTranslation()
 		s.applyTMDBGenreFallback(ctx, title)
 		return result
 	}
 
 	ext, err := s.cachedSeriesExtended(tvdbID, []string{"artworks"})
 	if err != nil {
+		applyTranslation()
 		s.applyTMDBGenreFallback(ctx, title)
 		return result
 	}
@@ -8337,6 +8369,7 @@ func (s *Service) enrichLiteCustomListItem(ctx context.Context, item mdblistItem
 	if genres := tvdbGenreNames(ext.Genres); len(genres) > 0 {
 		title.Genres = genres
 	}
+	applyTranslation()
 	s.applyTMDBGenreFallback(ctx, title)
 	return result
 }
@@ -9192,7 +9225,7 @@ func (s *Service) GetCustomList(ctx context.Context, listURL string, opts Custom
 	}
 
 	// Check full-list cache first (only populated when no filtering was applied)
-	cacheID := cacheKey("mdblist", "custom", "v7", cacheMode, listURL, s.client.language)
+	cacheID := cacheKey("mdblist", "custom", "v8", cacheMode, listURL, s.client.language)
 	var cached []models.TrendingItem
 	if ok, _ := s.cache.get(cacheID, &cached); ok && len(cached) > 0 {
 		log.Printf("[metadata] custom list cache hit for %s (%d items)", listURL, len(cached))
