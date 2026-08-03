@@ -233,6 +233,67 @@ func TestEnrichLiteCustomListItemKeepsGenres(t *testing.T) {
 	}
 }
 
+func TestEnrichLiteCustomListItemAppliesConfiguredLanguageTranslations(t *testing.T) {
+	svc := &Service{
+		client: &tvdbClient{apiKey: "test-key", language: "eng"},
+		cache:  newFileCache(t.TempDir(), 24),
+	}
+
+	movieTVDBID := int64(300)
+	if err := svc.cache.set(cacheKey("tvdb", "movie", "extended", "v1", "300", "artwork"), tvdbMovieExtendedData{
+		Name:     "映画原題",
+		Overview: "日本語のあらすじ",
+	}); err != nil {
+		t.Fatalf("set movie extended cache: %v", err)
+	}
+	if err := svc.cache.set(cacheKey("tvdb", "movie", "translations", "v1", "300", "eng"), tvdbSeriesTranslation{
+		Language: "eng",
+		Name:     "Localized Movie",
+		Overview: "Localized movie overview",
+	}); err != nil {
+		t.Fatalf("set movie translation cache: %v", err)
+	}
+
+	movie := svc.enrichLiteCustomListItem(context.Background(), mdblistItem{
+		Title:     "Raw Movie",
+		TVDBID:    &movieTVDBID,
+		MediaType: "movie",
+	})
+	if movie.Title.Name != "Localized Movie" || movie.Title.Overview != "Localized movie overview" {
+		t.Fatalf("localized movie metadata = %q / %q", movie.Title.Name, movie.Title.Overview)
+	}
+	if movie.Title.Language != "eng" {
+		t.Fatalf("movie language = %q, want eng", movie.Title.Language)
+	}
+
+	seriesTVDBID := int64(400)
+	if err := svc.cache.set(cacheKey("tvdb", "series", "extended", "v1", "400", "artworks"), tvdbSeriesExtendedData{
+		Name:     "番組原題",
+		Overview: "日本語の番組あらすじ",
+	}); err != nil {
+		t.Fatalf("set series extended cache: %v", err)
+	}
+	if err := svc.cache.set(cacheKey("tvdb", "series", "translations", "v1", "400", "eng"), tvdbSeriesTranslation{
+		Language: "eng",
+		Name:     "Localized Series",
+		Overview: "Localized series overview",
+	}); err != nil {
+		t.Fatalf("set series translation cache: %v", err)
+	}
+
+	series := svc.enrichLiteCustomListItem(context.Background(), mdblistItem{
+		Title:     "Raw Series",
+		TVDBID:    &seriesTVDBID,
+		MediaType: "show",
+	})
+	if series.Title.Name != "Localized Series" || series.Title.Overview != "Localized series overview" {
+		t.Fatalf("localized series metadata = %q / %q", series.Title.Name, series.Title.Overview)
+	}
+	if series.Title.Language != "eng" {
+		t.Fatalf("series language = %q, want eng", series.Title.Language)
+	}
+}
+
 func TestEnrichLiteCustomListItemUsesFirstAiredWithoutEpisodes(t *testing.T) {
 	svc := &Service{
 		client: &tvdbClient{language: "eng"},
