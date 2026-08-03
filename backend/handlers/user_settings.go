@@ -97,6 +97,10 @@ func (h *UserSettingsHandler) PutSettings(w http.ResponseWriter, r *http.Request
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if err := validateUserFilterTerms("filtering", &settings.Filtering); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	if err := h.Service.Update(userID, settings); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

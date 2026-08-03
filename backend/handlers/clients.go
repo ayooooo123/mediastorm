@@ -357,6 +357,10 @@ func (h *ClientsHandler) UpdateSettings(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
+	if err := validateClientFilterTerms("filtering", &settings); err != nil {
+		writeJSONError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	if err := h.settings.Update(clientID, settings); err != nil {
 		writeJSONError(w, err.Error(), http.StatusInternalServerError)
