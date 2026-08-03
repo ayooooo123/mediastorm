@@ -2098,9 +2098,11 @@
     }
 
     function getDeviceDisplay(stream) {
+        const nickname = String(stream.device_nickname || '').trim();
         const name = String(stream.device_name || '').trim();
         const type = String(stream.device_type || '').trim();
         const os = String(stream.device_os || '').trim();
+        if (nickname) return nickname;
         if (name && type && name.toLowerCase() !== type.toLowerCase()) return `${name} · ${type}`;
         return name || type || os;
     }

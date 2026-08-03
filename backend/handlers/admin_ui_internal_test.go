@@ -374,6 +374,9 @@ func TestAddDashboardDeviceInfoPrefersNickname(t *testing.T) {
 	if got := stream["device_name"]; got != "Living Room" {
 		t.Fatalf("device_name = %v, want nickname", got)
 	}
+	if got := stream["device_nickname"]; got != "Living Room" {
+		t.Fatalf("device_nickname = %v, want nickname", got)
+	}
 	if got := stream["device_type"]; got != "iPhone" {
 		t.Fatalf("device_type = %v, want iPhone", got)
 	}
