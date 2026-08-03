@@ -2178,7 +2178,11 @@ func addDashboardDeviceInfo(stream map[string]interface{}, clientID string, clie
 	if !ok {
 		return
 	}
-	displayName := strings.TrimSpace(client.Nickname)
+	nickname := strings.TrimSpace(client.Nickname)
+	if nickname != "" {
+		stream["device_nickname"] = nickname
+	}
+	displayName := nickname
 	if displayName == "" {
 		displayName = strings.TrimSpace(client.Name)
 	}
