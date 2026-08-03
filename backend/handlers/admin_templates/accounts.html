@@ -484,7 +484,7 @@ function renderHouseholds() {
         const accountTasks = scheduledTasks.filter(task => accountProfileIds.has(task.config?.profileId));
         const matchesSearch = !search || [
             a.username,
-            ...accountProfiles.flatMap(profile => [profile.name, ...clients.filter(client => client.userId === profile.id).flatMap(client => [client.name, client.deviceName, client.deviceType, client.os])])
+            ...accountProfiles.flatMap(profile => [profile.name, ...clients.filter(client => client.userId === profile.id).flatMap(client => [client.nickname, client.name, client.deviceName, client.deviceType, client.os])])
         ].some(value => String(value || '').toLowerCase().includes(search));
         if (!matchesSearch) return '';
         return `
@@ -592,15 +592,15 @@ function renderDeviceRow(client, orphaned) {
     return `<div class="device-row ${warning || orphaned ? 'warning' : ''}">
         <svg class="device-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
         <div class="device-summary">
-            <div class="device-name">${escapeHtml(client.name || 'Unknown device')}${warning ? `<span class="client-version-warning" title="${escapeHtml(warning.detail)}">${escapeHtml(warning.label)}</span>` : ''}${orphaned ? '<span class="client-version-warning">Unknown person</span>' : ''}</div>
+            <div class="device-name">${escapeHtml(client.nickname || client.name || 'Unknown device')}${warning ? `<span class="client-version-warning" title="${escapeHtml(warning.detail)}">${escapeHtml(warning.label)}</span>` : ''}${orphaned ? '<span class="client-version-warning">Unknown person</span>' : ''}</div>
             <div class="device-meta">${[client.deviceName !== client.deviceType ? client.deviceName : '', client.deviceType, client.os, formatClientVersion(client.appVersion), `Seen ${formatRelativeTime(client.lastSeenAt)}`].filter(Boolean).map(escapeHtml).join(' · ')}</div>
         </div>
         <div class="device-actions">
             <button class="btn btn-secondary btn-sm" onclick="pingClient('${client.id}')">Ping</button>
-            <select class="form-select" style="width:auto;max-width:180px;font-size:0.78rem;" aria-label="Move ${escapeHtml(client.name || 'device')} to another person" onchange="reassignClient('${client.id}', this.value, '${client.userId}')">
+            <select class="form-select" style="width:auto;max-width:180px;font-size:0.78rem;" aria-label="Move ${escapeHtml(client.nickname || client.name || 'device')} to another person" onchange="reassignClient('${client.id}', this.value, '${client.userId}')">
                 ${renderPersonOptions(client.userId)}
             </select>
-            <button class="btn btn-danger btn-sm" onclick="deleteClient('${client.id}', '${escapeHtml(client.name || 'this device')}')">Remove</button>
+            <button class="btn btn-danger btn-sm" onclick="deleteClient('${client.id}', '${escapeHtml(client.nickname || client.name || 'this device')}')">Remove</button>
         </div>
     </div>`;
 }

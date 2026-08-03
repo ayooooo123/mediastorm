@@ -17,11 +17,12 @@ import (
 )
 
 type clientsService interface {
-	Register(id, userID, deviceType, os, appVersion, deviceName string) (models.Client, error)
+	Register(id, userID, deviceType, os, appVersion, deviceName, nickname string) (models.Client, error)
 	Get(id string) (*models.Client, error)
 	List() []models.Client
 	ListByUser(userID string) []models.Client
 	Rename(id, name string) (models.Client, error)
+	SetNickname(id, nickname string) (models.Client, error)
 	SetFilterEnabled(id string, enabled bool) (models.Client, error)
 	ReassignUser(id, newUserID string) (models.Client, error)
 	UpdateLastSeen(id string) error
@@ -109,6 +110,7 @@ type ClientRegistrationRequest struct {
 	ID         string `json:"id"`
 	UserID     string `json:"userId"`
 	DeviceName string `json:"deviceName"`
+	Nickname   string `json:"nickname"`
 	DeviceType string `json:"deviceType"`
 	OS         string `json:"os"`
 	AppVersion string `json:"appVersion"`
@@ -139,7 +141,7 @@ func (h *ClientsHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client, err := h.clients.Register(req.ID, req.UserID, req.DeviceType, req.OS, req.AppVersion, req.DeviceName)
+	client, err := h.clients.Register(req.ID, req.UserID, req.DeviceType, req.OS, req.AppVersion, req.DeviceName, req.Nickname)
 	if err != nil {
 		if errors.Is(err, clients.ErrUserNotFound) {
 			writeJSONError(w, "user not found: "+req.UserID, http.StatusBadRequest)
@@ -219,6 +221,7 @@ func (h *ClientsHandler) Get(w http.ResponseWriter, r *http.Request) {
 // ClientUpdateRequest is the request body for updating a client
 type ClientUpdateRequest struct {
 	Name          *string `json:"name,omitempty"`
+	Nickname      *string `json:"nickname,omitempty"`
 	FilterEnabled *bool   `json:"filterEnabled,omitempty"`
 }
 
@@ -249,6 +252,15 @@ func (h *ClientsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		updated, err := h.clients.Rename(clientID, *req.Name)
 		if err != nil {
 			writeJSONError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		client = &updated
+	}
+
+	if req.Nickname != nil {
+		updated, err := h.clients.SetNickname(clientID, *req.Nickname)
+		if err != nil {
+			writeJSONError(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		client = &updated
