@@ -868,6 +868,21 @@ func compareDownloadPreferredTerms(i, j models.NZBResult, terms []filter.Compile
 	return 0
 }
 
+// compareEpisodeYearMatch gives targeted episode results with a confirmed
+// close year precedence over lenient yearless matches. Filtering only sets the
+// tag after both the title identity and target episode have been validated.
+func compareEpisodeYearMatch(i, j models.NZBResult) int {
+	iMatch := i.Attributes["episodeYearMatch"] == "true"
+	jMatch := j.Attributes["episodeYearMatch"] == "true"
+	if iMatch && !jMatch {
+		return -1
+	}
+	if !iMatch && jMatch {
+		return 1
+	}
+	return 0
+}
+
 func compareDeterministicTieBreaker(i, j models.NZBResult) int {
 	valuesI := []string{
 		strings.ToLower(strings.TrimSpace(i.Title)),
@@ -893,6 +908,10 @@ func compareDeterministicTieBreaker(i, j models.NZBResult) int {
 }
 
 func compareByRankingCriteria(i, j models.NZBResult, scoringCtx ScoringContext) int {
+	if cmp := compareEpisodeYearMatch(i, j); cmp != 0 {
+		return cmp
+	}
+
 	if scoringCtx.UseDownloadRanking {
 		if cmp := compareDownloadPreferredTerms(i, j, scoringCtx.DownloadPreferredTerms); cmp != 0 {
 			return cmp

@@ -436,6 +436,13 @@ func ResultsWithDetails(results []models.NZBResult, opts Options) []FilteredResu
 					continue
 				}
 				result.Attributes["yearMatch"] = "true"
+				// A confirmed year is especially valuable for a targeted episode
+				// search because otherwise same-named reboots with yearless release
+				// titles can rank alongside the intended series. Keep the broader
+				// yearMatch tag diagnostic-only; this narrower tag drives ranking.
+				if !opts.IsMovie && (opts.TargetEpisode > 0 || opts.TargetAbsoluteEpisode > 0 || opts.TargetAirDate != "") {
+					result.Attributes["episodeYearMatch"] = "true"
+				}
 				if episodeYearMatch && yearDiff > MaxYearDifference {
 					log.Printf("[filter] Accepted %q: year %d matches episode air year %d (series year: %d)",
 						result.Title, parsedYear, opts.EpisodeAirYear, opts.ExpectedYear)

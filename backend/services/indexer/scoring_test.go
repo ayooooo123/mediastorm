@@ -324,6 +324,34 @@ func TestSortResultsByScore_YearMatchAloneDoesNotSupersedeCriteria(t *testing.T)
 	}
 }
 
+func TestSortResultsByScore_TargetEpisodeYearMatchSupersedesCriteria(t *testing.T) {
+	ctx := ScoringContext{
+		RankingCriteria: []config.RankingCriterion{
+			{ID: config.RankingResolution, Name: "Resolution", Enabled: true, Order: 0},
+			{ID: config.RankingSize, Name: "Size", Enabled: true, Order: 1},
+		},
+	}
+
+	matchingYearTitle := "Little.House.On.The.Prairie.1974.S01E01.720p.BluRay.x264"
+	results := filter.Results([]models.NZBResult{
+		{Title: "Little.House.On.The.Prairie.S01E01.2160p.BluRay.x265", SizeBytes: 20 * 1024 * 1024 * 1024},
+		{Title: matchingYearTitle, SizeBytes: 2 * 1024 * 1024 * 1024},
+	}, filter.Options{
+		ExpectedTitle: "Little House on the Prairie",
+		ExpectedYear:  1974,
+		IsMovie:       false,
+		TargetSeason:  1,
+		TargetEpisode: 1,
+	})
+	if len(results) != 2 {
+		t.Fatalf("expected both Little House episode results to pass filtering, got %d", len(results))
+	}
+	(&Service{}).sortResultsByScore(results, ctx)
+	if results[0].Title != matchingYearTitle {
+		t.Fatalf("expected matching-year target episode to receive priority boost, got %q", results[0].Title)
+	}
+}
+
 func TestScoreResult_BoundedScore(t *testing.T) {
 	ctx := ScoringContext{
 		RankingCriteria: []config.RankingCriterion{
