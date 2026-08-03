@@ -50,7 +50,9 @@ func NewPlaybackService(cfg *config.Manager, healthService *HealthService) *Play
 // For debrid, we add the torrent, select files, and get the download link.
 func (s *PlaybackService) Resolve(ctx context.Context, candidate models.NZBResult) (*models.PlaybackResolution, error) {
 	resolveStart := time.Now()
-	log.Printf("[debrid-playback] TIMING: resolve start title=%q link=%q", strings.TrimSpace(candidate.Title), safeURLForLog(candidate.Link))
+	cacheHint := strings.TrimSpace(candidate.Attributes[directCacheStatusAttribute])
+	cacheEvidence := strings.TrimSpace(candidate.Attributes[directCacheEvidenceAttribute])
+	log.Printf("[debrid-playback] TIMING: resolve start title=%q link=%q sourceCacheStatus=%q sourceCacheEvidence=%q", strings.TrimSpace(candidate.Title), safeURLForLog(candidate.Link), cacheHint, cacheEvidence)
 
 	// Check if this is a pre-resolved stream (e.g., from AIOStreams)
 	// Pre-resolved streams already have a direct playback URL, but we need to verify they're cached
@@ -77,10 +79,10 @@ func (s *PlaybackService) Resolve(ctx context.Context, candidate models.NZBResul
 				return nil, fmt.Errorf("health check failed: %w", err)
 			}
 			if !healthCheck.Healthy || !healthCheck.Cached {
-				log.Printf("[debrid-playback] pre-resolved stream not cached: %s", healthCheck.ErrorMessage)
+				log.Printf("[debrid-playback] pre-resolved stream not cached: sourceCacheStatus=%q actualStatus=%q actualCached=%t error=%s", cacheHint, healthCheck.Status, healthCheck.Cached, healthCheck.ErrorMessage)
 				return nil, fmt.Errorf("stream not cached: %s", healthCheck.ErrorMessage)
 			}
-			log.Printf("[debrid-playback] pre-resolved stream verified as cached")
+			log.Printf("[debrid-playback] pre-resolved stream verified as cached: sourceCacheStatus=%q actualStatus=%q actualCached=%t", cacheHint, healthCheck.Status, healthCheck.Cached)
 		}
 
 		// Extract filename from attributes or URL

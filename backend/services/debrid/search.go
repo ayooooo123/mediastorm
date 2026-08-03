@@ -740,6 +740,7 @@ func normalizeScrapeResult(res ScrapeResult) models.NZBResult {
 		}
 		result.Attributes[key] = value
 	}
+	annotateDirectStreamCacheHint(result.Attributes)
 	return result
 }
 
