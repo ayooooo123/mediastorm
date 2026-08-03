@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"novastream/config"
+	"novastream/models"
 )
 
 func TestNotificationsTemplateLoads(t *testing.T) {
@@ -330,6 +331,51 @@ func TestAdminStatusActiveStreamRowsKeepMediaOnOneLineAndShowService(t *testing.
 		if !strings.Contains(source, marker) {
 			t.Fatalf("status template missing active-stream row marker %q", marker)
 		}
+	}
+}
+
+func TestAdminStatusActiveStreamsShowDeviceAndCompactEpisodeLabel(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/status.html")
+	if err != nil {
+		t.Fatalf("read status template: %v", err)
+	}
+	source := string(templateBytes)
+	for _, marker := range []string{
+		`function getDeviceDisplay(stream)`,
+		`class="stream-card-device"`,
+		`const episodeCode = `,
+		`[stream.year ? String(stream.year) : '', episodeCode]`,
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("status template missing device/episode marker %q", marker)
+		}
+	}
+	if strings.Contains(source, `S${stream.season_number}E${stream.episode_number} - ${stream.episode_name}`) {
+		t.Fatal("episode display still includes the episode name")
+	}
+}
+
+func TestAddDashboardDeviceInfoPrefersNickname(t *testing.T) {
+	stream := map[string]interface{}{}
+	addDashboardDeviceInfo(stream, "client-1", map[string]models.Client{
+		"client-1": {
+			ID:         "client-1",
+			Nickname:   "Living Room",
+			Name:       "Admin name",
+			DeviceName: "Liam's iPhone",
+			DeviceType: "iPhone",
+			OS:         "iOS",
+		},
+	})
+
+	if got := stream["device_name"]; got != "Living Room" {
+		t.Fatalf("device_name = %v, want nickname", got)
+	}
+	if got := stream["device_type"]; got != "iPhone" {
+		t.Fatalf("device_type = %v, want iPhone", got)
+	}
+	if got := stream["client_id"]; got != "client-1" {
+		t.Fatalf("client_id = %v, want client-1", got)
 	}
 }
 

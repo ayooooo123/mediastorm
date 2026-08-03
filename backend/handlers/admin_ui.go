@@ -2167,12 +2167,43 @@ func (h *AdminUIHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // buildStreamsPayload builds the streams JSON payload for both the REST and SSE endpoints.
+func addDashboardDeviceInfo(stream map[string]interface{}, clientID string, clientsByID map[string]models.Client) {
+	clientID = strings.TrimSpace(clientID)
+	if clientID == "" {
+		return
+	}
+	stream["client_id"] = clientID
+	client, ok := clientsByID[clientID]
+	if !ok {
+		return
+	}
+	displayName := strings.TrimSpace(client.Nickname)
+	if displayName == "" {
+		displayName = strings.TrimSpace(client.Name)
+	}
+	if displayName == "" {
+		displayName = strings.TrimSpace(client.DeviceName)
+	}
+	if displayName == "" {
+		displayName = strings.TrimSpace(client.DeviceType)
+	}
+	stream["device_name"] = displayName
+	stream["device_type"] = strings.TrimSpace(client.DeviceType)
+	stream["device_os"] = strings.TrimSpace(client.OS)
+}
+
 func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]byte, error) {
 	// Pause detection thresholds
 	const heartbeatEndedThreshold = 25 * time.Second
 	const transportPauseThreshold = 30 * time.Second
 	const transportHideThreshold = 60 * time.Second
 	now := time.Now()
+	clientsByID := make(map[string]models.Client)
+	if h.clientsService != nil {
+		for _, client := range h.clientsService.List() {
+			clientsByID[client.ID] = client
+		}
+	}
 
 	// Get allowed profile IDs for this account (for filtering)
 	scopedUsers := h.getScopedUsers(isAdmin, accountID)
@@ -2241,6 +2272,9 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 			var position, percent float64
 			mediaType := session.MediaMetadata.MediaType
 			title := session.MediaMetadata.Title
+			if mediaType == "episode" && session.MediaMetadata.SeriesName != "" {
+				title = session.MediaMetadata.SeriesName
+			}
 			episodeName := session.MediaMetadata.EpisodeName
 			seasonNumber := session.MediaMetadata.SeasonNumber
 			episodeNumber := session.MediaMetadata.EpisodeNumber
@@ -2320,6 +2354,7 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 				"posterUrl":      posterURL,
 				"externalIds":    externalIDs,
 			}
+			addDashboardDeviceInfo(hlsStreamData, session.ClientID, clientsByID)
 			// Prefer fresh progress heartbeats; once they go stale (e.g. a client
 			// stops scrobbling after crossing the 90% watched threshold) fall back
 			// to raw transport activity so the dashboard keeps advancing via
@@ -2389,6 +2424,9 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 		var position, percent, duration float64
 		mediaType := stream.MediaMetadata.MediaType
 		title := stream.MediaMetadata.Title
+		if mediaType == "episode" && stream.MediaMetadata.SeriesName != "" {
+			title = stream.MediaMetadata.SeriesName
+		}
 		episodeName := stream.MediaMetadata.EpisodeName
 		seasonNumber := stream.MediaMetadata.SeasonNumber
 		episodeNumber := stream.MediaMetadata.EpisodeNumber
@@ -2451,6 +2489,7 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 			"posterUrl":      posterURL,
 			"externalIds":    externalIDs,
 		}
+		addDashboardDeviceInfo(streamData, stream.ClientID, clientsByID)
 		// Prefer fresh progress heartbeats; once they go stale (e.g. a client
 		// stops scrobbling after crossing the 90% watched threshold) fall back to
 		// raw transport activity so the dashboard keeps advancing via
