@@ -33,6 +33,27 @@ func TestStartStreamTracksClientID(t *testing.T) {
 	}
 }
 
+func TestPlaybackHeartbeatAssociatesClientID(t *testing.T) {
+	tracker := newTestTracker()
+	req := httptest.NewRequest(http.MethodGet, "/video/stream?profileId=p1&mediaType=movie&itemId=tmdb:movie:17200", nil)
+	id, _, _ := tracker.StartStreamWithAccount(req, "/test/file.mkv", 1000, 0, 0, "acct1")
+
+	matched := tracker.AssociateClientWithPlayback("p1", models.PlaybackProgressUpdate{
+		MediaType: "movie",
+		ItemID:    "tmdb:movie:17200",
+	}, "iphone-client")
+	if matched != 1 {
+		t.Fatalf("matched = %d, want 1", matched)
+	}
+	stream, ok := tracker.GetStream(id)
+	if !ok || stream == nil {
+		t.Fatal("expected tracked stream")
+	}
+	if stream.ClientID != "iphone-client" {
+		t.Fatalf("ClientID = %q, want iphone-client", stream.ClientID)
+	}
+}
+
 func TestUpstreamStarvationWaitsForPlayerBufferPressure(t *testing.T) {
 	tracker := newTestTracker()
 	req := httptest.NewRequest(http.MethodGet, "/video/stream?profileId=p1&mediaType=movie&itemId=tmdb:movie:14160", nil)
