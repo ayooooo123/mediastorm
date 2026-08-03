@@ -1599,7 +1599,9 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 		if scored.FilterStatus == "filtered" {
 			continue
 		}
-		allResults = append(allResults, scored.NZBResult)
+		candidate := scored.NZBResult
+		annotateResultEpisode(&candidate, targetEpisode)
+		allResults = append(allResults, candidate)
 	}
 	if len(allResults) > searchOpts.MaxResults {
 		allResults = allResults[:searchOpts.MaxResults]
@@ -2357,6 +2359,34 @@ func annotateResultProfile(result *models.NZBResult, userID string) {
 	result.Attributes["profileId"] = userID
 }
 
+func annotateResultEpisode(result *models.NZBResult, episode *models.EpisodeReference) {
+	if result == nil || episode == nil {
+		return
+	}
+
+	// Search results may come from the raw-result cache. Clone the attributes so
+	// request-specific episode hints do not mutate the cached result shared by
+	// other searches.
+	attributes := make(map[string]string, len(result.Attributes)+4)
+	for key, value := range result.Attributes {
+		attributes[key] = value
+	}
+	result.Attributes = attributes
+
+	if episode.SeasonNumber > 0 {
+		attributes["targetSeason"] = strconv.Itoa(episode.SeasonNumber)
+	}
+	if episode.EpisodeNumber > 0 {
+		attributes["targetEpisode"] = strconv.Itoa(episode.EpisodeNumber)
+	}
+	if episode.SeasonNumber > 0 && episode.EpisodeNumber > 0 {
+		attributes["targetEpisodeCode"] = fmt.Sprintf("S%02dE%02d", episode.SeasonNumber, episode.EpisodeNumber)
+	}
+	if episode.AbsoluteEpisodeNumber > 0 {
+		attributes["absoluteEpisodeNumber"] = strconv.Itoa(episode.AbsoluteEpisodeNumber)
+	}
+}
+
 // StartSubtitlesRequest is the request body for starting subtitle extraction
 type StartSubtitlesRequest struct {
 	StartOffset float64 `json:"startOffset"` // Resume position in seconds
@@ -2561,6 +2591,13 @@ func (h *PrequeueHandler) createEpisodeResolverAndLookupAbsoluteEp(ctx context.C
 
 	// Update targetEpisode with canonical season/episode and absolute number if found
 	if foundCanonicalEpisode != nil && targetEpisode != nil {
+		if foundAbsoluteEp == 0 && targetEpisode.AbsoluteEpisodeNumber == 0 {
+			foundAbsoluteEp = inferAbsoluteEpisodeNumber(details.Seasons, *foundCanonicalEpisode)
+			if foundAbsoluteEp > 0 {
+				log.Printf("[prequeue] Inferred absolute episode number %d for S%02dE%02d from adjacent TVDB episodes",
+					foundAbsoluteEp, foundCanonicalEpisode.SeasonNumber, foundCanonicalEpisode.EpisodeNumber)
+			}
+		}
 		// Create a copy to avoid modifying the original
 		updatedEpisode := &models.EpisodeReference{
 			SeasonNumber:          foundCanonicalEpisode.SeasonNumber,
@@ -2597,6 +2634,34 @@ func (h *PrequeueHandler) createEpisodeResolverAndLookupAbsoluteEp(ctx context.C
 
 	result.EpisodeResolver = filter.NewSeriesEpisodeResolver(seasonCounts)
 	return result
+}
+
+// inferAbsoluteEpisodeNumber uses known absolute numbers in the target season as
+// anchors. Providers can publish a newly aired episode before TVDB fills its
+// absoluteEpisodeNumber field, while adjacent episodes already establish the
+// season's absolute numbering offset.
+func inferAbsoluteEpisodeNumber(seasons []models.SeriesSeason, target models.SeriesEpisode) int {
+	inferred := 0
+	for _, season := range seasons {
+		if season.Number != target.SeasonNumber {
+			continue
+		}
+		for _, episode := range season.Episodes {
+			if episode.AbsoluteEpisodeNumber <= 0 || episode.EpisodeNumber <= 0 {
+				continue
+			}
+			candidate := episode.AbsoluteEpisodeNumber + target.EpisodeNumber - episode.EpisodeNumber
+			if candidate <= 0 {
+				continue
+			}
+			if inferred != 0 && inferred != candidate {
+				return 0
+			}
+			inferred = candidate
+		}
+		break
+	}
+	return inferred
 }
 
 // findAudioTrackByLanguage wraps the helper function for backward compatibility
