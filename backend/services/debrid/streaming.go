@@ -531,11 +531,19 @@ func (p *StreamingProvider) streamWithProviderInfo(ctx context.Context, req stre
 		}, nil
 	}
 
+	streamBody := io.ReadCloser(&drainOnCloseBody{body: resp.Body})
+	// Keyed by cacheKey, not the download URL: the CDN URL rotates whenever the
+	// link is re-unrestricted, and a rotating key would hand every reader a
+	// fresh connection budget and defeat the cap.
+	if parallel := maybeParallelBody(ctx, p.httpClient, downloadURL, cacheKey, resp, rarOffset); parallel != nil {
+		streamBody = parallel
+	}
+
 	return &streaming.Response{
 		Status:        resp.StatusCode,
 		Headers:       headers,
 		ContentLength: contentLength,
-		Body:          &drainOnCloseBody{body: resp.Body},
+		Body:          streamBody,
 		Filename:      filename,
 	}, nil
 }
