@@ -371,6 +371,7 @@ type HLSSession struct {
 	ProfileID      string
 	ProfileName    string
 	ClientIP       string
+	ClientID       string
 	ViaShareLink   bool // session authenticated by a one-time share link
 	MediaMetadata  StreamMediaMetadata
 	SharePosition  float64

@@ -3598,6 +3598,7 @@ func (h *VideoHandler) StartHLSSession(w http.ResponseWriter, r *http.Request) {
 	}
 	session.mu.Lock()
 	session.MediaMetadata = mediaMetadata
+	session.ClientID = clientID
 	session.ViaShareLink = auth.IsShareLinkRequest(r)
 	session.mu.Unlock()
 
@@ -3728,6 +3729,7 @@ func (h *VideoHandler) StartYouTubeHLSSession(w http.ResponseWriter, r *http.Req
 		return
 	}
 	session.mu.Lock()
+	session.ClientID = requestClientID(r)
 	session.MediaMetadata = parseStreamMediaMetadata(r)
 	session.mu.Unlock()
 
@@ -4495,6 +4497,9 @@ func (h *VideoHandler) StartLiveHLSSession(w http.ResponseWriter, r *http.Reques
 		if profileName != "" {
 			proxyParams.Set("profileName", profileName)
 		}
+		if clientID := requestClientID(r); clientID != "" {
+			proxyParams.Set("clientId", clientID)
+		}
 		if targetParam := strings.TrimSpace(r.URL.Query().Get("target")); targetParam != "" {
 			proxyParams.Set("target", targetParam)
 		}
@@ -4551,6 +4556,7 @@ func (h *VideoHandler) StartLiveHLSSession(w http.ResponseWriter, r *http.Reques
 	}
 	session.mu.Lock()
 	session.MediaMetadata = mediaMetadata
+	session.ClientID = requestClientID(r)
 	session.mu.Unlock()
 
 	response := map[string]interface{}{

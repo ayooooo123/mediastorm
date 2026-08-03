@@ -61,6 +61,7 @@ type TrackedStream struct {
 	Path            string
 	Filename        string
 	ClientIP        string
+	ClientID        string
 	ProfileID       string
 	ProfileName     string
 	AccountID       string
@@ -407,6 +408,7 @@ func (t *StreamTracker) StartStreamWithAccount(r *http.Request, path string, con
 		Path:            path,
 		Filename:        filename,
 		ClientIP:        clientIP,
+		ClientID:        requestClientID(r),
 		ProfileID:       profileID,
 		ProfileName:     profileName,
 		AccountID:       accountID,
@@ -877,6 +879,7 @@ func (t *StreamTracker) GetStream(id string) (*TrackedStream, bool) {
 		Path:           stream.Path,
 		Filename:       stream.Filename,
 		ClientIP:       stream.ClientIP,
+		ClientID:       stream.ClientID,
 		ProfileID:      stream.ProfileID,
 		ProfileName:    stream.ProfileName,
 		AccountID:      stream.AccountID,
@@ -1062,6 +1065,7 @@ func (t *StreamTracker) GetActiveStreams() []*TrackedStream {
 			Path:           s.Path,
 			Filename:       s.Filename,
 			ClientIP:       s.ClientIP,
+			ClientID:       s.ClientID,
 			ProfileID:      s.ProfileID,
 			ProfileName:    s.ProfileName,
 			AccountID:      s.AccountID,
