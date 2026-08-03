@@ -31,6 +31,7 @@ func TestAdminUsersPageExplainsAndRendersAccessHierarchy(t *testing.T) {
 		`function toggleStaleDevices(profileId)`,
 		`not seen in 7+ days`,
 		`Needs attention`,
+		`client.nickname || client.name || 'Unknown device'`,
 	} {
 		if !strings.Contains(source, marker) {
 			t.Fatalf("accounts template missing hierarchy marker %q", marker)
@@ -118,6 +119,7 @@ func TestAdminSettingsUsesHierarchyScopeTree(t *testing.T) {
 		`expandSettingsScopeToProfile(urlProfileId);`,
 		`let settingsScopeServerExpanded = false;`,
 		`class="settings-scope-server-line"`,
+		`client.nickname || client.name || client.deviceName || 'Unknown device'`,
 		`const STALE_SETTINGS_DEVICE_AGE_MS = 7 * 24 * 60 * 60 * 1000`,
 		`function isSettingsDeviceStale(client)`,
 		`not seen in 7+ days`,
