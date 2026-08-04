@@ -6224,6 +6224,69 @@
             '</div>';
     }
 
+    function effectiveResultSourcePriority() {
+        const providers = (currentSettings.streaming?.debridProviders || [])
+            .filter(provider => provider?.enabled)
+            .map(provider => ({
+                key: 'debrid:' + String(provider.provider || '').toLowerCase().replace('real-debrid', 'realdebrid'),
+                label: provider.name || provider.provider || 'Debrid',
+            }))
+            .filter(provider => provider.key !== 'debrid:');
+        const providerKeys = providers.map(provider => provider.key);
+        const labels = Object.fromEntries(providers.map(provider => [provider.key, provider.label]));
+        labels.usenet = 'Usenet';
+
+        const available = [...providerKeys, 'usenet'];
+        const configured = currentSettings.filtering?.sourcePriority || [];
+        const expanded = [];
+        for (const rawSource of configured) {
+            const source = String(rawSource || '').toLowerCase().replace('real-debrid', 'realdebrid');
+            const candidates = source === 'debrid' ? providerKeys : [source];
+            for (const candidate of candidates) {
+                if (available.includes(candidate) && !expanded.includes(candidate)) expanded.push(candidate);
+            }
+        }
+        if (expanded.length === 0) {
+            const legacy = currentSettings.filtering?.servicePriority;
+            if (legacy === 'usenet') expanded.push('usenet', ...providerKeys);
+            else expanded.push(...providerKeys, 'usenet');
+        }
+        for (const source of available) {
+            if (!expanded.includes(source)) expanded.push(source);
+        }
+        return { sources: expanded, labels };
+    }
+
+    function moveResultSourcePriority(index, delta) {
+        const state = effectiveResultSourcePriority();
+        const destination = index + delta;
+        if (destination < 0 || destination >= state.sources.length) return;
+        const [moved] = state.sources.splice(index, 1);
+        state.sources.splice(destination, 0, moved);
+        if (!currentSettings.filtering) currentSettings.filtering = {};
+        currentSettings.filtering.sourcePriority = state.sources;
+        renderSettings();
+    }
+
+    function renderResultSourcePriorityUI() {
+        if ((currentSettings.streaming?.serviceMode || 'hybrid') !== 'hybrid') return '';
+        const state = effectiveResultSourcePriority();
+        if (state.sources.length < 2) return '';
+        const rows = state.sources.map((source, index) =>
+            '<div class="priority-row">' +
+                '<span class="priority-num">'+(index + 1)+'.</span>' +
+                '<span class="priority-name">'+escapeHtml(state.labels[source] || source)+'</span>' +
+                '<button type="button" class="btn btn-sm btn-secondary" '+(index === 0 ? 'disabled' : '')+' onclick="moveResultSourcePriority('+index+', -1)">↑</button>' +
+                '<button type="button" class="btn btn-sm btn-secondary" '+(index === state.sources.length - 1 ? 'disabled' : '')+' onclick="moveResultSourcePriority('+index+', 1)">↓</button>' +
+            '</div>'
+        ).join('');
+        return '<div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border-color);">' +
+            '<label class="form-label">Result Source Priority</label>' +
+            '<p class="form-hint" style="margin-bottom:8px;">Orders cached Debrid-provider results and Usenet results when Service Priority ranking is enabled. Provider-aware ordering performs cache availability checks during search.</p>' +
+            '<div class="priority-container">'+rows+'</div>' +
+        '</div>';
+    }
+
     function isAdminVisibleHomeShelf(shelf) {
         return shelf && shelf.id !== 'tonight';
     }
@@ -10017,6 +10080,9 @@
         let customHtml = '';
         if (sectionKey === 'streaming') {
             customHtml = renderProviderPriorityUI();
+        }
+        if (sectionKey === 'filtering') {
+            customHtml = renderResultSourcePriorityUI();
         }
         if (sectionKey === 'display') {
             customHtml = renderThemeQuickSelect();

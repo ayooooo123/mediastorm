@@ -384,12 +384,25 @@ const (
 )
 
 type DebridProviderSettings struct {
-	Name            string            `json:"name"`
-	Provider        string            `json:"provider"`
-	APIKey          string            `json:"apiKey"`
-	Enabled         bool              `json:"enabled"`
-	Config          map[string]string `json:"config,omitempty"` // Provider-specific settings (e.g., "autoClearQueue": "true" for Torbox)
-	AllowedProfiles []string          `json:"allowedProfiles,omitempty"`
+	Name            string                  `json:"name"`
+	Provider        string                  `json:"provider"`
+	APIKey          string                  `json:"apiKey"`
+	Enabled         bool                    `json:"enabled"`
+	Config          map[string]string       `json:"config,omitempty"` // Provider-specific settings (e.g., "autoClearQueue": "true" for Torbox)
+	Filtering       *ProviderFilterSettings `json:"filtering,omitempty"`
+	AllowedProfiles []string                `json:"allowedProfiles,omitempty"`
+}
+
+// ProviderFilterSettings contains optional overrides layered on top of the
+// effective Debrid filters. Pointer fields preserve inheritance when a value
+// is omitted while still allowing explicit zero/empty values.
+type ProviderFilterSettings struct {
+	MaxSizeMovieGB   *float64     `json:"maxSizeMovieGb,omitempty"`
+	MaxSizeEpisodeGB *float64     `json:"maxSizeEpisodeGb,omitempty"`
+	MaxResolution    *string      `json:"maxResolution,omitempty"`
+	HDRDVPolicy      *HDRDVPolicy `json:"hdrDvPolicy,omitempty"`
+	RequiredTerms    []string     `json:"requiredTerms"`
+	FilterOutTerms   []string     `json:"filterOutTerms"`
 }
 
 // MultiProviderMode determines how multiple debrid providers are used
@@ -1164,7 +1177,8 @@ type FilterSettings struct {
 	NonPreferredTerms      []string                 `json:"nonPreferredTerms"`                // Terms to derank in results (case-insensitive match in title, ranked lower but not removed)
 	DownloadPreferredTerms []string                 `json:"downloadPreferredTerms,omitempty"` // Terms to strongly prioritize only for download/prequeue selection
 	PreferredScraper       string                   `json:"preferredScraper,omitempty"`       // Name of the preferred torrent scraper (empty = none)
-	ServicePriority        StreamingServicePriority `json:"servicePriority"`                  // Priority for service type in search results
+	ServicePriority        StreamingServicePriority `json:"servicePriority"`                  // Legacy binary priority; SourcePriority takes precedence when configured
+	SourcePriority         []string                 `json:"sourcePriority,omitempty"`         // Ordered result sources: usenet, debrid, or debrid:<provider>
 	UnknownTrackPolicy     UnknownTrackPolicy       `json:"unknownTrackPolicy,omitempty"`     // Post-probe automatic selection preference for files with known audio/subtitle language metadata
 	// AdaptivePlaybackEnabled lets each client auto-cap stream size (from its measured
 	// connection speed) and HDR/DV policy (from its display capability). Clients report

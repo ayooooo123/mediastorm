@@ -1719,6 +1719,36 @@ func TestServiceSpecificRankingCriteria(t *testing.T) {
 	}
 }
 
+func TestProviderSourcePriorityCanInterleaveUsenet(t *testing.T) {
+	criteria := []config.RankingCriterion{
+		{ID: config.RankingServicePriority, Name: "Service Priority", Enabled: true, Order: 0},
+	}
+	ctx := ScoringContext{
+		RankingCriteria: criteria,
+		SourcePriority:  []string{"debrid:torbox", "usenet", "debrid:realdebrid"},
+	}
+	results := []models.NZBResult{
+		{Title: "RD", ServiceType: models.ServiceTypeDebrid, Attributes: map[string]string{"provider": "realdebrid"}},
+		{Title: "Usenet", ServiceType: models.ServiceTypeUsenet},
+		{Title: "Torbox", ServiceType: models.ServiceTypeDebrid, Attributes: map[string]string{"provider": "torbox"}},
+	}
+
+	sortResultsByRankingBundle(results, ctx, effectiveRankingBundle{Default: criteria, Debrid: criteria, Usenet: criteria})
+	if results[0].Title != "Torbox" || results[1].Title != "Usenet" || results[2].Title != "RD" {
+		t.Fatalf("provider source order = %q, %q, %q", results[0].Title, results[1].Title, results[2].Title)
+	}
+}
+
+func TestGenericDebridSourcePriorityRemainsBackwardCompatible(t *testing.T) {
+	priority := []string{"debrid", "usenet"}
+	rd := models.NZBResult{ServiceType: models.ServiceTypeDebrid, Attributes: map[string]string{"provider": "realdebrid"}}
+	torbox := models.NZBResult{ServiceType: models.ServiceTypeDebrid, Attributes: map[string]string{"provider": "torbox"}}
+	usenet := models.NZBResult{ServiceType: models.ServiceTypeUsenet}
+	if resultSourceRank(rd, priority) != 0 || resultSourceRank(torbox, priority) != 0 || resultSourceRank(usenet, priority) != 1 {
+		t.Fatalf("generic debrid migration did not preserve binary service priority")
+	}
+}
+
 func TestServiceSpecificRankingPreservedDuringOverallMerge(t *testing.T) {
 	rankings := effectiveRankingBundle{
 		Default: []config.RankingCriterion{
