@@ -589,6 +589,11 @@ func (s *SearchService) Search(ctx context.Context, opts SearchOptions) ([]model
 		return nil, errors.Join(errs...)
 	}
 
+	// Provider-aware ordering/filtering needs cache ownership before the final
+	// result pipeline runs. This is opt-in and leaves the legacy generic debrid
+	// path untouched when no provider-specific settings are configured.
+	aggregate = s.expandProviderAwareResults(ctx, settings, aggregate)
+
 	// Check if filtering should be bypassed for AIOStreams-only mode
 	bypassFiltering := bypassForAIO &&
 		!shouldUseUsenet(settings.Streaming.ServiceMode) &&
@@ -609,27 +614,32 @@ func (s *SearchService) Search(ctx context.Context, opts SearchOptions) ([]model
 		}
 		log.Printf("[debrid] Applying filter with title=%q, year=%d, mediaType=%s, hasEpisodeResolver=%v, targetS%02dE%02d, absoluteEp=%d",
 			expectedTitle, parsed.Year, parsed.MediaType, hasResolver, parsed.Season, parsed.Episode, opts.AbsoluteEpisodeNumber)
-		filterOpts := FilterOptions{
-			ExpectedTitle:         expectedTitle,
-			ExpectedYear:          parsed.Year,
-			EpisodeAirYear:        opts.EpisodeAirYear,
-			MediaType:             parsed.MediaType,
-			MaxSizeMovieGB:        models.FloatVal(filterSettings.MaxSizeMovieGB, 0),
-			MaxSizeEpisodeGB:      models.FloatVal(filterSettings.MaxSizeEpisodeGB, 0),
-			MaxResolution:         filterSettings.MaxResolution,
-			HDRDVPolicy:           filter.HDRDVPolicy(filterSettings.HDRDVPolicy),
-			AlternateTitles:       alternateTitles,
-			RequiredTerms:         filterSettings.RequiredTerms,
-			FilterOutTerms:        filterSettings.FilterOutTerms,
-			TotalSeriesEpisodes:   opts.TotalSeriesEpisodes,
-			EpisodeResolver:       opts.EpisodeResolver,
-			TargetSeason:          parsed.Season,
-			TargetEpisode:         parsed.Episode,
-			TargetAbsoluteEpisode: opts.AbsoluteEpisodeNumber,
-			IsDaily:               opts.IsDaily,
-			TargetAirDate:         opts.TargetAirDate,
+		filtered := make([]models.NZBResult, 0, len(aggregate))
+		for _, result := range aggregate {
+			resultFilters := providerFilterSettings(filterSettings, settings.Streaming.DebridProviders, result)
+			filterOpts := FilterOptions{
+				ExpectedTitle:         expectedTitle,
+				ExpectedYear:          parsed.Year,
+				EpisodeAirYear:        opts.EpisodeAirYear,
+				MediaType:             parsed.MediaType,
+				MaxSizeMovieGB:        models.FloatVal(resultFilters.MaxSizeMovieGB, 0),
+				MaxSizeEpisodeGB:      models.FloatVal(resultFilters.MaxSizeEpisodeGB, 0),
+				MaxResolution:         resultFilters.MaxResolution,
+				HDRDVPolicy:           filter.HDRDVPolicy(resultFilters.HDRDVPolicy),
+				AlternateTitles:       alternateTitles,
+				RequiredTerms:         resultFilters.RequiredTerms,
+				FilterOutTerms:        resultFilters.FilterOutTerms,
+				TotalSeriesEpisodes:   opts.TotalSeriesEpisodes,
+				EpisodeResolver:       opts.EpisodeResolver,
+				TargetSeason:          parsed.Season,
+				TargetEpisode:         parsed.Episode,
+				TargetAbsoluteEpisode: opts.AbsoluteEpisodeNumber,
+				IsDaily:               opts.IsDaily,
+				TargetAirDate:         opts.TargetAirDate,
+			}
+			filtered = append(filtered, FilterResults([]models.NZBResult{result}, filterOpts)...)
 		}
-		aggregate = FilterResults(aggregate, filterOpts)
+		aggregate = filtered
 	}
 
 	// Apply MaxResults limit after filtering

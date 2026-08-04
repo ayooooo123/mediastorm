@@ -222,9 +222,10 @@ type effectiveOverrides struct {
 }
 
 type effectiveFilterBundle struct {
-	Default models.FilterSettings
-	Debrid  models.FilterSettings
-	Usenet  models.FilterSettings
+	Default   models.FilterSettings
+	Debrid    models.FilterSettings
+	Usenet    models.FilterSettings
+	Providers map[string]models.FilterSettings
 }
 
 type effectiveRankingBundle struct {
@@ -327,6 +328,17 @@ func filterBundleForService(bundle effectiveFilterBundle, serviceType models.Con
 	default:
 		return bundle.Default
 	}
+}
+
+func filterBundleForResult(bundle effectiveFilterBundle, result models.NZBResult) models.FilterSettings {
+	if result.ServiceType == models.ServiceTypeDebrid {
+		if provider := normalizedDebridProvider(result); provider != "" {
+			if settings, ok := bundle.Providers[provider]; ok {
+				return settings
+			}
+		}
+	}
+	return filterBundleForService(bundle, result.ServiceType)
 }
 
 // getEffectiveFilterSettings returns the filtering settings to use for a search.
@@ -541,7 +553,39 @@ func (s *Service) getEffectiveFilterBundle(userID, clientID string, globalSettin
 	caps.ApplyTo(&bundle.Debrid)
 	caps.ApplyTo(&bundle.Usenet)
 
+	bundle.Providers = make(map[string]models.FilterSettings)
+	for _, provider := range globalSettings.Streaming.DebridProviders {
+		if provider.Filtering == nil {
+			continue
+		}
+		providerSettings := bundle.Debrid
+		applyProviderFilterOverrides(&providerSettings, *provider.Filtering)
+		caps.ApplyTo(&providerSettings)
+		bundle.Providers[canonicalDebridProvider(provider.Provider)] = providerSettings
+	}
+
 	return bundle, animeSettings, overrides
+}
+
+func applyProviderFilterOverrides(dst *models.FilterSettings, src config.ProviderFilterSettings) {
+	if src.MaxSizeMovieGB != nil {
+		dst.MaxSizeMovieGB = src.MaxSizeMovieGB
+	}
+	if src.MaxSizeEpisodeGB != nil {
+		dst.MaxSizeEpisodeGB = src.MaxSizeEpisodeGB
+	}
+	if src.MaxResolution != nil {
+		dst.MaxResolution = *src.MaxResolution
+	}
+	if src.HDRDVPolicy != nil {
+		dst.HDRDVPolicy = models.HDRDVPolicy(*src.HDRDVPolicy)
+	}
+	if src.RequiredTerms != nil {
+		dst.RequiredTerms = append([]string(nil), src.RequiredTerms...)
+	}
+	if src.FilterOutTerms != nil {
+		dst.FilterOutTerms = append([]string(nil), src.FilterOutTerms...)
+	}
 }
 
 // getEffectiveRankingCriteria returns the ranking criteria to use for sorting search results.
@@ -751,7 +795,103 @@ func applyClientRankingOverrides(base []config.RankingCriterion, overrides []mod
 
 // Comparison functions return -1 if i wins, 0 if tie, 1 if j wins.
 
-func compareServicePriority(i, j models.NZBResult, priority config.StreamingServicePriority) int {
+func normalizeResultSource(source string) string {
+	source = strings.ToLower(strings.TrimSpace(source))
+	if strings.HasPrefix(source, "debrid:") {
+		return "debrid:" + canonicalDebridProvider(strings.TrimPrefix(source, "debrid:"))
+	}
+	return source
+}
+
+func canonicalDebridProvider(provider string) string {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	compact := strings.NewReplacer("-", "", "_", "", " ", "", "+", "").Replace(provider)
+	switch compact {
+	case "rd", "realdebrid", "realdebridcom":
+		return "realdebrid"
+	case "tb", "torbox", "torboxapp":
+		return "torbox"
+	case "ad", "alldebrid", "alldebridcom":
+		return "alldebrid"
+	case "pm", "premiumize", "premiumizeme":
+		return "premiumize"
+	default:
+		return compact
+	}
+}
+
+func normalizedSourcePriority(priority []string) []string {
+	seen := make(map[string]struct{}, len(priority))
+	out := make([]string, 0, len(priority))
+	for _, source := range priority {
+		source = normalizeResultSource(source)
+		if source != "usenet" && source != "debrid" && !strings.HasPrefix(source, "debrid:") {
+			continue
+		}
+		if _, exists := seen[source]; exists {
+			continue
+		}
+		seen[source] = struct{}{}
+		out = append(out, source)
+	}
+	return out
+}
+
+func normalizedDebridProvider(result models.NZBResult) string {
+	for _, key := range []string{"provider", "debridProvider", "resolverProvider"} {
+		if provider := canonicalDebridProvider(result.Attributes[key]); provider != "" {
+			return provider
+		}
+	}
+	return ""
+}
+
+func resultSourceKey(result models.NZBResult) string {
+	if result.ServiceType == models.ServiceTypeUsenet {
+		return "usenet"
+	}
+	if result.ServiceType == models.ServiceTypeDebrid {
+		if provider := normalizedDebridProvider(result); provider != "" {
+			return "debrid:" + provider
+		}
+		return "debrid"
+	}
+	return normalizeResultSource(string(result.ServiceType))
+}
+
+func resultSourceRank(result models.NZBResult, priority []string) int {
+	source := resultSourceKey(result)
+	generic := source
+	if strings.HasPrefix(source, "debrid:") {
+		generic = "debrid"
+	}
+	for index, configured := range priority {
+		if configured == source {
+			return index
+		}
+	}
+	if generic != source {
+		for index, configured := range priority {
+			if configured == generic {
+				return index
+			}
+		}
+	}
+	return len(priority)
+}
+
+func compareServicePriority(i, j models.NZBResult, priority config.StreamingServicePriority, sourcePriority []string) int {
+	if len(sourcePriority) > 0 {
+		iRank := resultSourceRank(i, sourcePriority)
+		jRank := resultSourceRank(j, sourcePriority)
+		if iRank < jRank {
+			return -1
+		}
+		if iRank > jRank {
+			return 1
+		}
+		return 0
+	}
 	if priority == config.StreamingServicePriorityNone {
 		return 0
 	}
@@ -926,7 +1066,7 @@ func compareByRankingCriteria(i, j models.NZBResult, scoringCtx ScoringContext) 
 		var cmp int
 		switch criterion.ID {
 		case config.RankingServicePriority:
-			cmp = compareServicePriority(i, j, scoringCtx.ServicePriority)
+			cmp = compareServicePriority(i, j, scoringCtx.ServicePriority, scoringCtx.SourcePriority)
 		case config.RankingPreferredTerms:
 			cmp = comparePreferredTerms(i, j, scoringCtx.PreferredTerms)
 		case config.RankingNonPreferredTerms:
@@ -1098,6 +1238,7 @@ func (s *Service) buildScoringContextWithCriteria(opts SearchOptions, settings c
 	return ScoringContext{
 		RankingCriteria:        rankingCriteria,
 		ServicePriority:        settings.Filtering.ServicePriority,
+		SourcePriority:         normalizedSourcePriority(settings.Filtering.SourcePriority),
 		PreferredTerms:         preferredTerms,
 		NonPreferredTerms:      nonPreferredTerms,
 		DownloadPreferredTerms: filter.CompileTerms(filterSettings.DownloadPreferredTerms),
@@ -1108,7 +1249,7 @@ func (s *Service) buildScoringContextWithCriteria(opts SearchOptions, settings c
 }
 
 func (s *Service) buildScoringContextForResult(opts SearchOptions, settings config.Settings, filters effectiveFilterBundle, rankings effectiveRankingBundle, animeSettings models.AnimeFilteringSettings, result models.NZBResult) ScoringContext {
-	return s.buildScoringContextWithCriteria(opts, settings, filterBundleForService(filters, result.ServiceType), animeSettings, rankingBundleForService(rankings, result.ServiceType))
+	return s.buildScoringContextWithCriteria(opts, settings, filterBundleForResult(filters, result), animeSettings, rankingBundleForService(rankings, result.ServiceType))
 }
 
 func rankingBundleForService(bundle effectiveRankingBundle, serviceType models.ContentServiceType) []config.RankingCriterion {
@@ -1193,6 +1334,7 @@ type searchMetadataSettings struct {
 type searchRankingSettings struct {
 	PreferredScraper string
 	ServicePriority  config.StreamingServicePriority
+	SourcePriority   []string
 }
 
 type searchCacheOptions struct {
@@ -1262,6 +1404,7 @@ func buildSearchRankingSettings(settings config.Settings) searchRankingSettings 
 	return searchRankingSettings{
 		PreferredScraper: settings.Filtering.PreferredScraper,
 		ServicePriority:  settings.Filtering.ServicePriority,
+		SourcePriority:   append([]string(nil), settings.Filtering.SourcePriority...),
 	}
 }
 
@@ -1683,17 +1826,9 @@ func (s *Service) SearchWithScoring(ctx context.Context, opts SearchOptions) ([]
 			filterBundle.Usenet.FilterOutTerms = append(filterBundle.Usenet.FilterOutTerms, animeFilterOut...)
 		}
 	}
-	filterOptsByService := map[models.ContentServiceType]filter.Options{
-		models.ServiceTypeDebrid:  s.buildFilterOptions(rawOpts, filterBundle.Debrid),
-		models.ServiceTypeUsenet:  s.buildFilterOptions(rawOpts, filterBundle.Usenet),
-		models.ServiceTypeUnknown: s.buildFilterOptions(rawOpts, filterBundle.Default),
-	}
 	detailed := make([]filter.FilteredResult, 0, len(rawResults))
 	for _, raw := range rawResults {
-		filterOpts, ok := filterOptsByService[raw.ServiceType]
-		if !ok {
-			filterOpts = filterOptsByService[models.ServiceTypeUnknown]
-		}
+		filterOpts := s.buildFilterOptions(rawOpts, filterBundleForResult(filterBundle, raw))
 		resultDetails := filter.ResultsWithDetails([]models.NZBResult{raw}, filterOpts)
 		if len(resultDetails) > 0 {
 			detailed = append(detailed, resultDetails[0])

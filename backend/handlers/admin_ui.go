@@ -329,6 +329,15 @@ var SettingsSchema = map[string]interface{}{
 				"order":       5,
 				"showWhen":    "provider=torbox",
 			},
+			"filtering.maxSizeMovieGb":   map[string]interface{}{"type": "number", "label": "Provider Max Movie Size (GB)", "description": "Optional provider-specific movie size cap. Leave unset to inherit Debrid filtering.", "order": 20},
+			"filtering.maxSizeEpisodeGb": map[string]interface{}{"type": "number", "label": "Provider Max Episode Size (GB)", "description": "Optional provider-specific episode size cap. Leave unset to inherit Debrid filtering.", "order": 21},
+			"filtering.maxResolution":    map[string]interface{}{"type": "select", "label": "Provider Max Resolution", "options": []string{"", "480p", "720p", "1080p", "2160p"}, "description": "Provider-specific resolution cap.", "order": 22},
+			"filtering.hdrDvPolicy": map[string]interface{}{
+				"type": "select", "label": "Provider HDR/DV Policy", "description": "Provider-specific HDR/DV inclusion policy.", "order": 23,
+				"options": []map[string]string{{"value": "hdr_dv", "label": "All content"}, {"value": "hdr", "label": "SDR + HDR only"}, {"value": "none", "label": "SDR only"}},
+			},
+			"filtering.requiredTerms":  map[string]interface{}{"type": "tags", "label": "Provider Required Terms", "description": "Replace inherited required terms for this provider.", "order": 24},
+			"filtering.filterOutTerms": map[string]interface{}{"type": "tags", "label": "Provider Filter Out Terms", "description": "Exclude matching releases only when served by this provider.", "order": 25},
 		},
 	},
 	"usenet": map[string]interface{}{
