@@ -196,6 +196,23 @@ func TestWebPlaybackTemplateSendsFinalHeartbeatOnTeardown(t *testing.T) {
 	}
 }
 
+func TestWebPlaybackTemplateForwardsClientIdentity(t *testing.T) {
+	body, err := webTemplates.ReadFile("web_templates/playback.html")
+	if err != nil {
+		t.Fatalf("read web playback template: %v", err)
+	}
+
+	rendered := string(body)
+	for _, want := range []string{
+		"const CLIENT_ID = routeParam('clientId');",
+		"...(CLIENT_ID ? { 'X-Client-ID': CLIENT_ID } : {}),",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("web playback template missing client identity forwarding %q", want)
+		}
+	}
+}
+
 func TestWebPlaybackHandlerRedirectsWithoutValidSession(t *testing.T) {
 	handler := NewWebPlaybackHandler(fakeWebPlaybackUsers{
 		users: []models.User{{ID: "profile-1", Name: "Main"}},
