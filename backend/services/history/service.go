@@ -40,6 +40,7 @@ const (
 	traktStopWatchThreshold             = 80.0
 	continueWatchingComingSoonWindow    = 7 * 24 * time.Hour
 	liveTVRecordingPathSegment          = "/live/recordings/"
+	slowPlaybackProgressThreshold       = time.Second
 )
 
 // MetadataService provides series and movie metadata for continue watching generation.
@@ -127,6 +128,8 @@ type Service struct {
 	continueWatchingTTL    time.Duration
 	changeMu               sync.RWMutex
 	watchStateChanged      func(userID string)
+	playbackProgressGate   chan struct{}
+	playbackProgressOnce   sync.Once
 }
 
 type continueWatchingRevisionStats struct {
@@ -4535,9 +4538,56 @@ func progressSeriesMatchesIdentity(progress models.PlaybackProgress, target medi
 
 // Playback Progress Methods
 
-// UpdatePlaybackProgress updates the playback progress for a media item.
-// Automatically marks items as watched when they reach 90% completion.
+// UpdatePlaybackProgress updates the playback progress for a media item using
+// a background context for compatibility with non-HTTP callers.
 func (s *Service) UpdatePlaybackProgress(userID string, update models.PlaybackProgressUpdate) (models.PlaybackProgress, error) {
+	return s.UpdatePlaybackProgressContext(context.Background(), userID, update)
+}
+
+// acquirePlaybackProgressGate keeps heartbeat writers out of the shared history
+// mutex queue until they are the next writer. Unlike sync.RWMutex.Lock, the gate
+// wait is interruptible, so disconnected clients disappear immediately instead
+// of accumulating behind a slow persistence operation. Once admitted, at most
+// one heartbeat can be waiting on the history mutex, preserving RWMutex writer
+// fairness without a polling TryLock loop.
+func (s *Service) acquirePlaybackProgressGate(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.playbackProgressOnce.Do(func() {
+		s.playbackProgressGate = make(chan struct{}, 1)
+	})
+	select {
+	case s.playbackProgressGate <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *Service) releasePlaybackProgressGate() {
+	<-s.playbackProgressGate
+}
+
+// UpdatePlaybackProgressContext updates playback progress and propagates caller
+// cancellation through lock acquisition and PostgreSQL persistence. It
+// automatically marks items as watched when they reach 90% completion.
+func (s *Service) UpdatePlaybackProgressContext(ctx context.Context, userID string, update models.PlaybackProgressUpdate) (models.PlaybackProgress, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	startedAt := time.Now()
+	lockWaitStartedAt := startedAt
+	lockWait := time.Duration(0)
+	persistDuration := time.Duration(0)
+	defer func() {
+		total := time.Since(startedAt)
+		if total >= slowPlaybackProgressThreshold {
+			log.Printf("[history] slow playback progress update user=%s mediaType=%s itemID=%s total=%s lockWait=%s persist=%s",
+				userID, update.MediaType, update.ItemID, total.Round(time.Millisecond), lockWait.Round(time.Millisecond), persistDuration.Round(time.Millisecond))
+		}
+	}()
+
 	userID = strings.TrimSpace(userID)
 	if userID == "" {
 		return models.PlaybackProgress{}, ErrUserIDRequired
@@ -4557,8 +4607,17 @@ func (s *Service) UpdatePlaybackProgress(userID string, update models.PlaybackPr
 	}
 	isLiveProgress := isLiveProgressUpdate(update)
 
+	if err := s.acquirePlaybackProgressGate(ctx); err != nil {
+		lockWait = time.Since(lockWaitStartedAt)
+		return models.PlaybackProgress{}, err
+	}
+	defer s.releasePlaybackProgressGate()
 	s.mu.Lock()
+	lockWait = time.Since(lockWaitStartedAt)
 	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return models.PlaybackProgress{}, err
+	}
 
 	perUser := s.ensurePlaybackProgressUserLocked(userID)
 	staleWatchedEpisodeUpdate := s.isWatchedEpisodeProgressUpdateLocked(userID, update)
@@ -4721,9 +4780,12 @@ func (s *Service) UpdatePlaybackProgress(userID string, update models.PlaybackPr
 		}
 	}
 
-	if err := s.savePlaybackProgressLocked(); err != nil {
+	persistStartedAt := time.Now()
+	if err := s.savePlaybackProgressLockedContext(ctx); err != nil {
+		persistDuration = time.Since(persistStartedAt)
 		return models.PlaybackProgress{}, err
 	}
+	persistDuration = time.Since(persistStartedAt)
 
 	if !isLiveProgress {
 		// Invalidate continue watching cache for this user since VOD progress changed.
@@ -5266,8 +5328,12 @@ func (s *Service) loadPlaybackProgress() error {
 }
 
 func (s *Service) savePlaybackProgressLocked() error {
+	return s.savePlaybackProgressLockedContext(context.Background())
+}
+
+func (s *Service) savePlaybackProgressLockedContext(ctx context.Context) error {
 	if s.useDB() {
-		return s.syncProgressToDB()
+		return s.syncProgressToDBContext(ctx)
 	}
 
 	// Convert to array format for storage
@@ -5458,7 +5524,13 @@ func (s *Service) syncWatchedToDB() error {
 
 // syncProgressToDB writes only changed and deleted playback-progress rows.
 func (s *Service) syncProgressToDB() error {
-	ctx := context.Background()
+	return s.syncProgressToDBContext(context.Background())
+}
+
+func (s *Service) syncProgressToDBContext(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	upserts, deletes, err := planPlaybackProgressPersistence(s.playbackProgress, s.persistedPlaybackProgress)
 	if err != nil {
 		return fmt.Errorf("plan playback progress persistence: %w", err)
