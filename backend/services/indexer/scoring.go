@@ -14,7 +14,6 @@ import (
 type ScoringContext struct {
 	RankingCriteria        []config.RankingCriterion
 	ServicePriority        config.StreamingServicePriority
-	SourcePriority         []string
 	PreferredTerms         []filter.CompiledTerm
 	NonPreferredTerms      []filter.CompiledTerm
 	DownloadPreferredTerms []filter.CompiledTerm
@@ -65,7 +64,7 @@ func ScoreResult(result models.NZBResult, ctx ScoringContext) (int, []models.Sco
 
 		switch criterion.ID {
 		case config.RankingServicePriority:
-			level, reason = scoreServicePriority(result, ctx.ServicePriority, ctx.SourcePriority)
+			level, reason = scoreServicePriority(result, ctx.ServicePriority)
 		case config.RankingPreferredTerms:
 			level, reason = scorePreferredTerms(result, ctx.PreferredTerms)
 		case config.RankingNonPreferredTerms:
@@ -133,14 +132,7 @@ func clampLevel(v int) int {
 // Each scorer returns a normalized "level" in [-levelMax, levelMax]. The caller
 // multiplies the level by the criterion's priority band weight.
 
-func scoreServicePriority(r models.NZBResult, priority config.StreamingServicePriority, sourcePriority []string) (int, string) {
-	if len(sourcePriority) > 0 {
-		rank := resultSourceRank(r, sourcePriority)
-		if rank >= len(sourcePriority) {
-			return 0, "source not present in configured priority"
-		}
-		return len(sourcePriority) - rank, fmt.Sprintf("source priority #%d (%s)", rank+1, resultSourceKey(r))
-	}
+func scoreServicePriority(r models.NZBResult, priority config.StreamingServicePriority) (int, string) {
 	if priority == config.StreamingServicePriorityNone {
 		return 0, "no service priority configured"
 	}

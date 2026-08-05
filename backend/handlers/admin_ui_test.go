@@ -267,19 +267,6 @@ func TestAdminUIHandler_GetSchema(t *testing.T) {
 			t.Errorf("filtering regex notice missing %q: %q", text, regexNotice)
 		}
 	}
-	debridProviders, ok := schema["debridProviders"].(map[string]interface{})
-	if !ok {
-		t.Fatal("schema missing debridProviders section")
-	}
-	providerFields, ok := debridProviders["fields"].(map[string]interface{})
-	if !ok {
-		t.Fatal("debridProviders schema missing fields")
-	}
-	for _, key := range []string{"filtering.filterOutTerms", "filtering.requiredTerms", "filtering.maxResolution"} {
-		if _, exists := providerFields[key]; !exists {
-			t.Errorf("debridProviders schema missing %s", key)
-		}
-	}
 
 	for _, key := range []string{"ranking.debrid.criteria", "ranking.usenet.criteria"} {
 		section, ok := schema[key].(map[string]interface{})

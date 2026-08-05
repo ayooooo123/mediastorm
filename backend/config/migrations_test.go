@@ -64,45 +64,6 @@ func TestMigratePrewarmContinueWatchingOnly(t *testing.T) {
 	}
 }
 
-func TestMigrateServicePriorityToGenericSourcePriority(t *testing.T) {
-	raw := map[string]interface{}{
-		"filtering": map[string]interface{}{"servicePriority": "usenet"},
-		"streaming": map[string]interface{}{
-			"debridProviders": []interface{}{
-				map[string]interface{}{"provider": "torbox"},
-				map[string]interface{}{"provider": "realdebrid"},
-			},
-		},
-	}
-
-	MigrateRawSettings(raw)
-	priority := raw["filtering"].(map[string]interface{})["sourcePriority"].([]interface{})
-	if len(priority) != 2 || priority[0] != "usenet" || priority[1] != "debrid" {
-		t.Fatalf("sourcePriority = %#v, want generic usenet/debrid lanes", priority)
-	}
-
-	MigrateRawSettings(raw)
-	priority = raw["filtering"].(map[string]interface{})["sourcePriority"].([]interface{})
-	if len(priority) != 2 {
-		t.Fatalf("second migration changed sourcePriority: %#v", priority)
-	}
-}
-
-func TestMigrateServicePriorityPreservesExplicitSourcePriority(t *testing.T) {
-	raw := map[string]interface{}{
-		"filtering": map[string]interface{}{
-			"servicePriority": "debrid",
-			"sourcePriority":  []interface{}{"debrid:torbox", "usenet", "debrid:realdebrid"},
-		},
-	}
-
-	MigrateRawSettings(raw)
-	priority := raw["filtering"].(map[string]interface{})["sourcePriority"].([]interface{})
-	if len(priority) != 3 || priority[1] != "usenet" {
-		t.Fatalf("explicit sourcePriority was not preserved: %#v", priority)
-	}
-}
-
 func TestMigrateGlobalLiveProxyToDefaultSourcePreservesExistingDefaultProxy(t *testing.T) {
 	settings := DefaultSettings()
 	settings.Live.ProxyURL = "socks5://global-proxy:1080"

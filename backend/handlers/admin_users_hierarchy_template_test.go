@@ -206,8 +206,6 @@ func TestAdminSettingsSurfacesAndReviewsScopedCustomizations(t *testing.T) {
 		`rankingCriteria: 'Overall Ranking Criteria'`,
 		`function clientRankingKeyForPath(criteriaPath)`,
 		`function getSchemaZeroDefault(path)`,
-		`function renderResultSourcePriorityUI()`,
-		`currentSettings.filtering.sourcePriority = state.sources`,
 		`encodeURIComponent(userId) + '&raw=true'`,
 	} {
 		if !strings.Contains(source, marker) {
