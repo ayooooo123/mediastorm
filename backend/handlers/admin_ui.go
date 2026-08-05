@@ -7613,17 +7613,18 @@ type AdminAccountWithProfiles struct {
 
 // GetUserAccounts returns all user accounts with their profiles
 func (h *AdminUIHandler) GetUserAccounts(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdminScope(w, r) {
-		return
-	}
 	if h.accountsService == nil {
 		http.Error(w, "Accounts service not available", http.StatusInternalServerError)
 		return
 	}
 
+	isAdmin, accountID, _, _ := h.getPageRoleInfo(r)
 	accountsList := h.accountsService.List()
 	result := make([]AdminAccountWithProfiles, 0, len(accountsList))
 	for _, acc := range accountsList {
+		if !isAdmin && acc.ID != accountID {
+			continue
+		}
 		profiles := h.usersService.ListForAccount(acc.ID)
 		result = append(result, AdminAccountWithProfiles{
 			ID:         acc.ID,
@@ -7745,9 +7746,6 @@ type ResetPasswordRequest struct {
 
 // ResetUserAccountPassword resets an account's password
 func (h *AdminUIHandler) ResetUserAccountPassword(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdminScope(w, r) {
-		return
-	}
 	if h.accountsService == nil {
 		http.Error(w, "Accounts service not available", http.StatusInternalServerError)
 		return
@@ -7756,6 +7754,11 @@ func (h *AdminUIHandler) ResetUserAccountPassword(w http.ResponseWriter, r *http
 	accountID := r.URL.Query().Get("accountId")
 	if accountID == "" {
 		http.Error(w, "accountId parameter required", http.StatusBadRequest)
+		return
+	}
+	isAdmin, ownedAccountID, _, _ := h.getPageRoleInfo(r)
+	if !isAdmin && accountID != ownedAccountID {
+		http.Error(w, "account not found", http.StatusNotFound)
 		return
 	}
 
@@ -7900,9 +7903,6 @@ type RenameAccountRequest struct {
 
 // RenameUserAccount changes an account's username
 func (h *AdminUIHandler) RenameUserAccount(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdminScope(w, r) {
-		return
-	}
 	if h.accountsService == nil {
 		http.Error(w, "Accounts service not available", http.StatusInternalServerError)
 		return
@@ -7911,6 +7911,11 @@ func (h *AdminUIHandler) RenameUserAccount(w http.ResponseWriter, r *http.Reques
 	accountID := r.URL.Query().Get("accountId")
 	if accountID == "" {
 		http.Error(w, "accountId parameter required", http.StatusBadRequest)
+		return
+	}
+	isAdmin, ownedAccountID, _, _ := h.getPageRoleInfo(r)
+	if !isAdmin && accountID != ownedAccountID {
+		http.Error(w, "account not found", http.StatusNotFound)
 		return
 	}
 

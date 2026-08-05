@@ -1,12 +1,12 @@
 {{template "base" .}}
 
-{{define "title"}}{{if hasSuffix .CurrentPath "/tasks"}}Automations{{else if hasSuffix .CurrentPath "/integrations"}}Connected Services{{else}}Maintenance{{end}} - mediastorm Admin{{end}}
+{{define "title"}}{{if hasSuffix .CurrentPath "/tasks"}}Automations{{else if hasSuffix .CurrentPath "/integrations"}}Connected Services{{else}}Maintenance{{end}} - {{if .IsAdmin}}mediastorm Admin{{else}}mediastorm account{{end}}{{end}}
 
 {{define "content"}}
 <div class="page-header">
     {{if hasSuffix .CurrentPath "/tasks"}}
     <h1>Automations</h1>
-    <p>Schedule recurring syncs, library scans, backups, and background preparation.</p>
+    <p>Schedule recurring syncs{{if .IsAdmin}}, library scans, backups, and background preparation{{end}}.</p>
     {{else if hasSuffix .CurrentPath "/integrations"}}
     <h1>Connected Services</h1>
     <p>Connect external media services and choose which profiles use them.</p>
@@ -174,7 +174,7 @@
         </div>
         <div class="section-content">
             <p class="text-muted" style="margin-bottom: 1rem;">
-                Register Trakt, Simkl, and MDBList accounts here, then link them to profiles in the <strong style="color: var(--text-secondary);">Profile Scrobbling</strong> section below.
+                Register {{if .IsAdmin}}Trakt, Simkl, and MDBList{{else}}Trakt{{end}} accounts here, then link them to profiles in the <strong style="color: var(--text-secondary);">Profile Scrobbling</strong> section below.
                 Scrobbling pushes watched items to the linked service. To pull watch history, create a sync automation.
             </p>
 
@@ -229,6 +229,7 @@
                 </div>
             </div>
 
+            {{if .IsAdmin}}
             <!-- Simkl Accounts -->
             <h4 style="font-size: 0.9rem; font-weight: 600; margin: 1.5rem 0 0.5rem; color: var(--text-secondary);">Simkl</h4>
             <p class="text-muted" style="font-size: 0.8rem; margin-bottom: 0.75rem;">
@@ -318,6 +319,7 @@
                     <button class="btn btn-primary" onclick="createMdblistAccount()">Create Account</button>
                 </div>
             </div>
+            {{end}}
         </div>
     </div>
 
@@ -338,7 +340,7 @@
         </div>
         <div class="section-content">
             <p class="text-muted" style="margin-bottom: 1rem;">
-                Link each profile to Trakt, Simkl, and/or MDBList. When a profile watches content, it will automatically scrobble to their linked services (one-way push).
+                Link each profile to {{if .IsAdmin}}Trakt, Simkl, and/or MDBList{{else}}Trakt{{end}}. When a profile watches content, it will automatically scrobble to their linked services (one-way push).
                 To sync history in the other direction (e.g. items watched in other apps), use a <strong style="color: var(--text-secondary);">Trakt History Sync</strong> automation.
             </p>
             <div id="profileTraktLinkingList">
@@ -407,6 +409,7 @@
         </div>
     </div>
 
+    {{if .IsAdmin}}
     <!-- Jellyfin Accounts Section -->
     <div class="section" id="jellyfinAccountsSection">
         <div class="section-header" onclick="toggleSection(this)">
@@ -461,6 +464,7 @@
             </button>
         </div>
     </div>
+    {{end}}
 
 </div>
 
@@ -542,16 +546,18 @@
         </div>
         <div class="section-content">
             <p class="text-muted" style="margin-bottom: 1rem;">
-                Schedule recurring syncs, imports, scans, backups, and background preparation.
+                Schedule recurring syncs and imports{{if .IsAdmin}}, scans, backups, and background preparation{{end}}.
             </p>
 
             <div class="task-toolbar">
                 <div class="form-group">
                     <label class="form-label" for="taskProfileFilter">Profile</label>
                     <select id="taskProfileFilter" class="form-select" onchange="applyTaskFilters()">
-                        <option value="">All profiles and server automations</option>
+                        <option value="">All profiles{{if .IsAdmin}} and server automations{{end}}</option>
                         {{range .Users}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+                        {{if .IsAdmin}}
                         <option value="__server__">Server automations only</option>
+                        {{end}}
                     </select>
                 </div>
                 <div class="form-group">
@@ -607,6 +613,7 @@
                             <option value="plex_history_sync">Plex Watch History Sync</option>
                             <option value="trakt_list_sync">Trakt List Sync</option>
                             <option value="trakt_history_sync">Trakt History Sync</option>
+                            {{if .IsAdmin}}
                             <option value="simkl_history_sync">Simkl History Sync</option>
                             <option value="mdblist_watchlist_sync">MDBList Watchlist Sync</option>
                             <option value="mdblist_history_sync">MDBList History Sync</option>
@@ -615,6 +622,7 @@
                             <option value="local_media_scan">Local Media Library Scan</option>
                             <option value="backup">System Backup</option>
                             <option value="prewarm">Pre-warm Home Shelves</option>
+                            {{end}}
                         </select>
                     </div>
 
@@ -989,6 +997,7 @@
                             <option value="plex_history_sync">Plex Watch History Sync</option>
                             <option value="trakt_list_sync">Trakt List Sync</option>
                             <option value="trakt_history_sync">Trakt History Sync</option>
+                            {{if .IsAdmin}}
                             <option value="simkl_history_sync">Simkl History Sync</option>
                             <option value="mdblist_watchlist_sync">MDBList Watchlist Sync</option>
                             <option value="mdblist_history_sync">MDBList History Sync</option>
@@ -997,6 +1006,7 @@
                             <option value="local_media_scan">Local Media Library Scan</option>
                             <option value="backup">System Backup</option>
                             <option value="prewarm">Pre-warm Home Shelves</option>
+                            {{end}}
                         </select>
                         <small class="text-muted">Automation type cannot be changed</small>
                     </div>
@@ -2412,6 +2422,7 @@
     let taskSearchActivated = false;
     const isTasksPage = {{if hasSuffix .CurrentPath "/tasks"}}true{{else}}false{{end}};
     const isIntegrationsPage = {{if hasSuffix .CurrentPath "/integrations"}}true{{else}}false{{end}};
+    const isAdmin = {{json .IsAdmin}};
     const requestedTaskProfileId = new URLSearchParams(window.location.search).get('profileId') || '';
 
     // ========== Initialize ==========
@@ -2441,9 +2452,15 @@
         await loadUserProfiles();
         // Then load everything else in parallel
         if (isTasksPage) {
-            await Promise.all([loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadJellyfinAccounts(), loadLocalMediaLibraries(), loadScheduledTasks()]);
+            const accountLoads = isAdmin
+                ? [loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadJellyfinAccounts(), loadLocalMediaLibraries()]
+                : [loadPlexAccounts(), loadTraktAccounts()];
+            await Promise.all([...accountLoads, loadScheduledTasks()]);
         } else if (isIntegrationsPage) {
-            await Promise.all([loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadJellyfinAccounts()]);
+            const accountLoads = isAdmin
+                ? [loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadJellyfinAccounts()]
+                : [loadPlexAccounts(), loadTraktAccounts()];
+            await Promise.all(accountLoads);
         } else {
             await Promise.all([loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadJellyfinAccounts(), loadLocalMediaLibraries(), loadUpdateStatus(false), loadWorkers(), loadShareLogsClients()]);
         }
@@ -3209,8 +3226,8 @@
             const currentSimklId = profile.simklAccountId || '';
             const currentAccountExists = currentTraktId && traktAccounts.some(a => a.id === currentTraktId);
             const orphanedLink = currentTraktId && !currentAccountExists;
-            const mdblistOrphaned = currentMdblistId && !mdblistAccounts.some(a => a.id === currentMdblistId);
-            const simklOrphaned = currentSimklId && !simklAccounts.some(a => a.id === currentSimklId);
+            const mdblistOrphaned = isAdmin && currentMdblistId && !mdblistAccounts.some(a => a.id === currentMdblistId);
+            const simklOrphaned = isAdmin && currentSimklId && !simklAccounts.some(a => a.id === currentSimklId);
 
             return `
                 <div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; padding: 0.75rem; margin-bottom: 0.5rem; background: var(--bg-surface); border-radius: 8px; border: 1px solid var(--border); gap: 0.5rem;">
@@ -3231,7 +3248,7 @@
                                 </option>
                             `).join('')}
                         </select>
-                        ${simklOrphaned ? `<span class="status-badge" style="background: var(--warning); color: #000; font-size: 0.7rem;">Orphaned Simkl</span>` : ''}
+                        ${isAdmin ? `${simklOrphaned ? `<span class="status-badge" style="background: var(--warning); color: #000; font-size: 0.7rem;">Orphaned Simkl</span>` : ''}
                         <select class="form-select" style="max-width: 180px; min-width: 140px;" onchange="updateProfileSimklLink('${profile.id}', this.value)" title="Simkl account">
                             <option value="" ${!currentSimklId ? 'selected' : ''}>No Simkl</option>
                             ${simklOrphaned ? `<option value="${currentSimklId}" selected style="color: var(--warning);">Unknown</option>` : ''}
@@ -3250,7 +3267,7 @@
                                     ${escapeHtml(acc.name || 'MDBList Account')}
                                 </option>
                             `).join('')}
-                        </select>
+                        </select>` : ''}
                     </div>
                 </div>
             `;

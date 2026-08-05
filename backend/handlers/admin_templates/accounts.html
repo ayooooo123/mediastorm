@@ -2,23 +2,22 @@
 {{template "base" .}}
 {{end}}
 
-{{define "title"}}{{if .IsAdmin}}Households, People & Devices{{else}}Profiles{{end}} - {{if .IsAdmin}}mediastorm Admin{{else}}mediastorm account{{end}}{{end}}
+{{define "title"}}Users - {{if .IsAdmin}}mediastorm Admin{{else}}mediastorm account{{end}}{{end}}
 
 {{define "content"}}
 <div class="page-header">
-    <h1>{{if .IsAdmin}}Households, People &amp; Devices{{else}}Profiles{{end}}</h1>
-    <p>{{if .IsAdmin}}Manage who can sign in, the people in each household, and their registered devices{{else}}Manage your profiles{{end}}</p>
+    <h1>Users</h1>
+    <p>Manage sign-in, people, and registered devices{{if not .IsAdmin}} for your household{{end}}</p>
 </div>
 
-{{if .IsAdmin}}
-<!-- Tabs (admin only) -->
 <div class="tabs" style="margin-bottom: 1.5rem;">
-    <button class="tab active" onclick="switchTab('households')" id="tab-households">Households</button>
+    <button class="tab active" onclick="switchTab('households')" id="tab-households">{{if .IsAdmin}}Households{{else}}Household{{end}}</button>
     <button class="tab" onclick="switchTab('tasks')" id="tab-tasks">Automations</button>
+    {{if .IsAdmin}}
     <button class="tab" onclick="switchTab('invitations')" id="tab-invitations">Invitations</button>
     <button class="tab" onclick="switchTab('connections')" id="tab-connections">Remote Access</button>
+    {{end}}
 </div>
-{{end}}
 
 <style>
 .tabs { display: flex; gap: 0.5rem; border-bottom: 1px solid var(--border); padding-bottom: 0; }
@@ -57,7 +56,7 @@
 .hierarchy-guide { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; margin-bottom: 1.5rem; overflow: hidden; }
 .hierarchy-level { position: relative; padding: 1rem 2rem 1rem 1rem; background: var(--bg-secondary); border: 1px solid var(--border); }
 .hierarchy-level + .hierarchy-level { border-left: 0; }
-.hierarchy-level + .hierarchy-level::before { content: '›'; position: absolute; left: -0.45rem; top: 50%; transform: translateY(-50%); z-index: 1; width: 1.5rem; height: 1.5rem; display: grid; place-items: center; border-radius: 50%; background: var(--bg-primary); color: var(--accent); font-size: 1.3rem; }
+.hierarchy-level + .hierarchy-level::before { content: '›'; position: absolute; left: 0; top: 50%; transform: translate(-50%, -50%); z-index: 1; width: 1.5rem; height: 1.5rem; display: grid; place-items: center; border-radius: 50%; background: var(--bg-primary); color: var(--accent); font-size: 1.3rem; line-height: 1; }
 .hierarchy-level:first-child { border-radius: var(--radius) 0 0 var(--radius); }
 .hierarchy-level:last-child { border-radius: 0 var(--radius) var(--radius) 0; }
 .hierarchy-level-title { font-weight: 600; }
@@ -110,7 +109,7 @@
     .hierarchy-level, .hierarchy-level + .hierarchy-level { border: 1px solid var(--border); border-top: 0; padding: 0.8rem 1rem 0.8rem 2.5rem; }
     .hierarchy-level:first-child { border-radius: var(--radius) var(--radius) 0 0; border-top: 1px solid var(--border); }
     .hierarchy-level:last-child { border-radius: 0 0 var(--radius) var(--radius); }
-    .hierarchy-level + .hierarchy-level::before { left: 0.65rem; }
+    .hierarchy-level + .hierarchy-level::before { left: 50%; top: 0; transform: translate(-50%, -50%) rotate(90deg); }
     .household-header { align-items: flex-start; flex-wrap: wrap; }
     .household-actions { width: 100%; padding-left: 2.1rem; }
     .household-contents { padding-left: 1rem; }
@@ -121,8 +120,6 @@
 }
 </style>
 
-{{if .IsAdmin}}
-<!-- Household hierarchy (admin only) -->
 <div id="content-households" class="tab-content active">
     <div class="hierarchy-guide" aria-label="Access hierarchy">
         <div class="hierarchy-level">
@@ -141,7 +138,7 @@
 
     <div id="default-password-warning"></div>
 
-    <div class="card" style="margin-bottom: 1rem;">
+    {{if .IsAdmin}}<div class="card" style="margin-bottom: 1rem;">
         <div class="card-body" style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
             <div style="flex: 1; min-width: 200px;">
                 <div style="font-weight: 600; font-size: 0.875rem;">Server-wide Stream Limit</div>
@@ -152,40 +149,19 @@
                 <button class="btn btn-secondary btn-sm" onclick="saveGlobalMaxStreams()">Save</button>
             </div>
         </div>
-    </div>
+    </div>{{end}}
 
     <div class="household-toolbar">
         <input type="search" id="household-search" class="form-input" placeholder="Search households, people or devices…" oninput="renderHouseholds()">
         <span id="households-count" style="color: var(--text-muted);"></span>
-        <button class="btn btn-primary" onclick="showCreateAccountModal()">
+        {{if .IsAdmin}}<button class="btn btn-primary" onclick="showCreateAccountModal()">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width: 16px; height: 16px;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
             Add Household
-        </button>
+        </button>{{end}}
     </div>
     <div id="households-list"><div style="display:flex;justify-content:center;padding:2rem;"><div class="spinner"></div></div></div>
 </div>
-{{else}}
-<!-- Profiles (account portal) -->
-<div id="content-profiles" class="tab-content active">
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-        <span id="profiles-count" style="color: var(--text-muted);"></span>
-        <button class="btn btn-primary" onclick="showCreateProfileModal()">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width: 16px; height: 16px;">
-                <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-            </svg>
-            Create Profile
-        </button>
-    </div>
-    <div id="profiles-list">
-        <div style="display: flex; justify-content: center; padding: 2rem;">
-            <div class="spinner"></div>
-        </div>
-    </div>
-</div>
-{{end}}
 
-{{if .IsAdmin}}
-<!-- Profile Tasks Tab (admin only) -->
 <div id="content-tasks" class="tab-content">
     <div class="card" style="margin-bottom: 1rem;">
         <div class="card-body">
@@ -204,6 +180,7 @@
     </div>
 </div>
 
+{{if .IsAdmin}}
 <!-- Invitations Tab (admin only) -->
 <div id="content-invitations" class="tab-content">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 1rem;">
@@ -362,14 +339,28 @@ async function loadData() {
             renderInvitations();
             renderConnectionInvites();
         } else {
-            // Non-admin: only load profiles (already scoped to their account)
-            const profilesRes = await fetch(basePath + '/api/profiles').then(r => r.json());
+            const [accountsRes, profilesRes, clientsRes, scheduledTasksRes] = await Promise.all([
+                fetch(basePath + '/api/accounts').then(r => r.json()),
+                fetch(basePath + '/api/profiles').then(r => r.json()),
+                fetch(basePath + '/api/clients').then(r => r.ok ? r.json() : []),
+                fetch(basePath + '/api/scheduled-tasks').then(r => r.ok ? r.json() : { tasks: [] })
+            ]);
+            accounts = accountsRes.accounts || [];
             profiles = profilesRes || [];
-            renderProfiles();
+            clients = Array.isArray(clientsRes) ? clientsRes : [];
+            scheduledTasks = scheduledTasksRes.tasks || [];
+            await Promise.all(profiles.map(async p => {
+                try {
+                    const response = await fetch(basePath + '/api/user-settings?userId=' + encodeURIComponent(p.id));
+                    if (response.ok) p._maxStreams = (await response.json())?.playback?.maxConcurrentStreams || 0;
+                } catch (_) { p._maxStreams = 0; }
+            }));
+            renderHouseholds();
+            renderProfileTasksSummary();
         }
     } catch (err) {
         console.error('Failed to load data:', err);
-        const container = document.getElementById(isAdmin ? 'households-list' : 'profiles-list');
+        const container = document.getElementById('households-list');
         if (container) container.innerHTML = `<p style="color: var(--danger);">Failed to load: ${escapeHtml(err.message)}</p>`;
     }
 }
@@ -509,9 +500,9 @@ function renderHouseholds() {
                     <div class="household-actions" onclick="event.stopPropagation()">
                         <button class="btn btn-primary btn-sm" onclick="showCreateProfileModal('${a.id}')">Add Person</button>
                         <button class="btn btn-secondary btn-sm" onclick="showRenameAccountModal('${a.id}', '${escapeHtml(a.username)}')">Rename</button>
-                        <button class="btn btn-secondary btn-sm" onclick="showMaxStreamsModal('${a.id}', '${escapeHtml(a.username)}', ${a.maxStreams || 0})">Limits</button>
+                        ${isAdmin ? `<button class="btn btn-secondary btn-sm" onclick="showMaxStreamsModal('${a.id}', '${escapeHtml(a.username)}', ${a.maxStreams || 0})">Limits</button>` : ''}
                         <button class="btn btn-secondary btn-sm" onclick="showChangePasswordModal('${a.id}', '${escapeHtml(a.username)}')">Password</button>
-                        ${!a.isMaster ? `<button class="btn btn-danger btn-sm" onclick="deleteAccount('${a.id}', '${escapeHtml(a.username)}')">Delete</button>` : ''}
+                        ${isAdmin && !a.isMaster ? `<button class="btn btn-danger btn-sm" onclick="deleteAccount('${a.id}', '${escapeHtml(a.username)}')">Delete</button>` : ''}
                     </div>
                 </div>
                 <div class="household-contents">
@@ -555,8 +546,8 @@ function renderPersonRow(profile, forceShowStale = false) {
                 <a class="btn btn-secondary btn-sm" href="${basePath}/notifications?profileId=${encodeURIComponent(profile.id)}">Notifications</a>
                 <a class="btn btn-secondary btn-sm" href="${basePath}/tasks?profileId=${encodeURIComponent(profile.id)}">Automations</a>
                 <button class="btn btn-secondary btn-sm" onclick="showProfileStreamsModal('${profile.id}', '${escapeHtml(profile.name)}', '${profile.accountId}')">Limits</button>
-                <button class="btn ${profile.allowShareLinks ? 'btn-primary' : 'btn-secondary'} btn-sm" onclick="toggleProfileShareLinks('${profile.id}', '${escapeHtml(profile.name)}', ${profile.allowShareLinks ? 'true' : 'false'})">Sharing: ${profile.allowShareLinks ? 'On' : 'Off'}</button>
-                <button class="btn btn-secondary btn-sm" onclick="showReassignModal('${profile.id}')">Move</button>
+                ${isAdmin ? `<button class="btn ${profile.allowShareLinks ? 'btn-primary' : 'btn-secondary'} btn-sm" onclick="toggleProfileShareLinks('${profile.id}', '${escapeHtml(profile.name)}', ${profile.allowShareLinks ? 'true' : 'false'})">Sharing: ${profile.allowShareLinks ? 'On' : 'Off'}</button>` : ''}
+                ${isAdmin ? `<button class="btn btn-secondary btn-sm" onclick="showReassignModal('${profile.id}')">Move</button>` : ''}
                 <button class="btn btn-danger btn-sm" onclick="deleteProfile('${profile.id}', '${escapeHtml(profile.name)}')">Delete</button>
             </div>
         </div>

@@ -13,6 +13,7 @@ import (
 	"github.com/gorilla/mux"
 
 	"novastream/config"
+	"novastream/internal/auth"
 	"novastream/models"
 	"novastream/services/prewarm"
 	"novastream/services/scheduler"
@@ -53,10 +54,99 @@ func newTestScheduledTasksHandler(t *testing.T) *ScheduledTasksHandler {
 	})
 	users := &fakeScheduledTaskUsersProvider{
 		users: map[string]models.User{
-			"prof-1": {ID: "prof-1", Name: models.DefaultUserName},
+			"prof-1": {ID: "prof-1", AccountID: "acct-1", Name: models.DefaultUserName},
+			"prof-2": {ID: "prof-2", AccountID: "acct-2", Name: "Other"},
 		},
 	}
 	return NewScheduledTasksHandler(mgr, svc, users)
+}
+
+func withScheduledTaskAccount(req *http.Request, accountID string) *http.Request {
+	ctx := context.WithValue(req.Context(), auth.ContextKeyAccountID, accountID)
+	ctx = context.WithValue(ctx, auth.ContextKeyIsMaster, false)
+	return req.WithContext(ctx)
+}
+
+func TestScheduledTasksAreScopedToOwnedProfiles(t *testing.T) {
+	h := newTestScheduledTasksHandler(t)
+	settings, err := h.configManager.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.ScheduledTasks.Tasks = []config.ScheduledTask{
+		{ID: "owned", Type: config.ScheduledTaskTypePlexHistorySync, Config: map[string]string{"profileId": "prof-1", "plexAccountId": "plex-owned"}},
+		{ID: "foreign", Type: config.ScheduledTaskTypePlexHistorySync, Config: map[string]string{"profileId": "prof-2", "plexAccountId": "plex-foreign"}},
+		{ID: "server", Type: config.ScheduledTaskTypeBackup},
+	}
+	settings.Plex.Accounts = []config.PlexAccount{
+		{ID: "plex-owned", OwnerAccountID: "acct-1"},
+		{ID: "plex-foreign", OwnerAccountID: "acct-2"},
+	}
+	if err := h.configManager.Save(settings); err != nil {
+		t.Fatal(err)
+	}
+
+	req := withScheduledTaskAccount(httptest.NewRequest(http.MethodGet, "/account/api/scheduled-tasks", nil), "acct-1")
+	rec := httptest.NewRecorder()
+	h.ListTasks(rec, req)
+	var response struct {
+		Tasks []config.ScheduledTask `json:"tasks"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Tasks) != 1 || response.Tasks[0].ID != "owned" {
+		t.Fatalf("got tasks %#v, want only owned task", response.Tasks)
+	}
+
+	deleteReq := withScheduledTaskAccount(httptest.NewRequest(http.MethodDelete, "/account/api/scheduled-tasks/foreign", nil), "acct-1")
+	deleteReq = mux.SetURLVars(deleteReq, map[string]string{"taskID": "foreign"})
+	deleteRec := httptest.NewRecorder()
+	h.DeleteTask(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusNotFound {
+		t.Fatalf("foreign delete status = %d, want 404", deleteRec.Code)
+	}
+}
+
+func TestNonAdminCannotCreateServerOrForeignAutomation(t *testing.T) {
+	h := newTestScheduledTasksHandler(t)
+	settings, err := h.configManager.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.Plex.Accounts = []config.PlexAccount{
+		{ID: "plex", OwnerAccountID: "acct-1"},
+		{ID: "foreign-plex", OwnerAccountID: "acct-2"},
+	}
+	if err := h.configManager.Save(settings); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name   string
+		config map[string]string
+	}{
+		{name: "server automation", config: nil},
+		{name: "foreign profile", config: map[string]string{"plexAccountId": "plex", "profileId": "prof-2"}},
+		{name: "foreign integration", config: map[string]string{"plexAccountId": "foreign-plex", "profileId": "prof-1"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			body, _ := json.Marshal(map[string]interface{}{
+				"type": config.ScheduledTaskTypeBackup, "name": test.name, "config": test.config,
+			})
+			if test.config != nil {
+				body, _ = json.Marshal(map[string]interface{}{
+					"type": config.ScheduledTaskTypePlexHistorySync, "name": test.name, "config": test.config,
+				})
+			}
+			req := withScheduledTaskAccount(httptest.NewRequest(http.MethodPost, "/account/api/scheduled-tasks", bytes.NewReader(body)), "acct-1")
+			rec := httptest.NewRecorder()
+			h.CreateTask(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403: %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
 }
 
 // postCreateTask is a helper that sends a POST to CreateTask and returns the recorder.
