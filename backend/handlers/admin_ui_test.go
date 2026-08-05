@@ -453,6 +453,52 @@ func TestAdminUIHandler_GetUserAccounts(t *testing.T) {
 	}
 }
 
+func TestAdminUIHandler_GetUserAccountsScopesRegularAccount(t *testing.T) {
+	handler, tmpDir := setupAdminUIHandler(t)
+	accountsService, err := accounts.NewService(tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionsService, err := sessions.NewService(tmpDir, sessions.DefaultSessionDuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler.SetAccountsService(accountsService)
+	handler.SetSessionsService(sessionsService)
+	owned, err := accountsService.Create("owned", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign, err := accountsService.Create("foreign", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := createAuthenticatedRequest(t, http.MethodGet, "/account/api/accounts", nil, sessionsService, owned.ID, false)
+	rec := httptest.NewRecorder()
+	handler.RequireAuth(handler.GetUserAccounts)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GetUserAccounts status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Accounts []handlers.AdminAccountWithProfiles `json:"accounts"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Accounts) != 1 || response.Accounts[0].ID != owned.ID {
+		t.Fatalf("accounts = %+v, want only %q", response.Accounts, owned.ID)
+	}
+
+	body, _ := json.Marshal(map[string]string{"username": "hijacked"})
+	renameReq := createAuthenticatedRequest(t, http.MethodPatch, "/account/api/accounts?accountId="+foreign.ID, body, sessionsService, owned.ID, false)
+	renameRec := httptest.NewRecorder()
+	handler.RequireAuth(handler.RenameUserAccount)(renameRec, renameReq)
+	if renameRec.Code != http.StatusNotFound {
+		t.Fatalf("foreign rename status = %d, want 404", renameRec.Code)
+	}
+}
+
 func TestAdminUIHandler_CreateUserAccount(t *testing.T) {
 	handler, tmpDir := setupAdminUIHandler(t)
 

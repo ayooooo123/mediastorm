@@ -14,6 +14,7 @@ import (
 	"github.com/gorilla/mux"
 
 	"novastream/config"
+	"novastream/internal/auth"
 	"novastream/models"
 	"novastream/services/prewarm"
 	"novastream/services/scheduler"
@@ -24,6 +25,74 @@ type ScheduledTasksHandler struct {
 	configManager    *config.Manager
 	schedulerService *scheduler.Service
 	usersService     scheduledTaskUsersProvider
+}
+
+func (h *ScheduledTasksHandler) canAccessTask(r *http.Request, task config.ScheduledTask) bool {
+	if auth.IsMaster(r) {
+		return true
+	}
+	accountID := auth.GetAccountID(r)
+	// These handlers are always mounted behind authentication. Treat an absent
+	// auth context as an internal/direct invocation (primarily package tests).
+	if accountID == "" {
+		return true
+	}
+	profileID := strings.TrimSpace(task.Config["profileId"])
+	if profileID == "" || h.usersService == nil {
+		return false
+	}
+	for _, user := range h.usersService.ListAll() {
+		if user.ID == profileID {
+			if user.AccountID != accountID {
+				return false
+			}
+			return h.taskIntegrationBelongsToAccount(task, accountID)
+		}
+	}
+	return false
+}
+
+func (h *ScheduledTasksHandler) taskIntegrationBelongsToAccount(task config.ScheduledTask, accountID string) bool {
+	settings, err := h.configManager.Load()
+	if err != nil {
+		return false
+	}
+	switch task.Type {
+	case config.ScheduledTaskTypePlexWatchlistSync, config.ScheduledTaskTypePlexHistorySync:
+		integrationID := strings.TrimSpace(task.Config["plexAccountId"])
+		for _, account := range settings.Plex.Accounts {
+			if account.ID == integrationID {
+				return account.OwnerAccountID == accountID
+			}
+		}
+	case config.ScheduledTaskTypeTraktListSync, config.ScheduledTaskTypeTraktHistorySync:
+		integrationID := strings.TrimSpace(task.Config["traktAccountId"])
+		for _, account := range settings.Trakt.Accounts {
+			if account.ID == integrationID {
+				return account.OwnerAccountID == accountID
+			}
+		}
+	}
+	return false
+}
+
+func (h *ScheduledTasksHandler) findAccessibleTask(r *http.Request, taskID string) (config.ScheduledTask, bool) {
+	settings, err := h.configManager.Load()
+	if err != nil {
+		return config.ScheduledTask{}, false
+	}
+	for _, task := range settings.ScheduledTasks.Tasks {
+		if task.ID == taskID && h.canAccessTask(r, task) {
+			return task, true
+		}
+	}
+	return config.ScheduledTask{}, false
+}
+
+func writeTaskNotFound(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusNotFound)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"error": "Task not found"})
 }
 
 type scheduledTaskUsersProvider interface {
@@ -185,6 +254,15 @@ func rejectScheduledTaskProfileDeletion(w http.ResponseWriter, configManager *co
 // GET /admin/api/scheduled-tasks
 func (h *ScheduledTasksHandler) ListTasks(w http.ResponseWriter, r *http.Request) {
 	tasks := h.schedulerService.GetTaskStatus()
+	if !auth.IsMaster(r) {
+		scoped := make([]config.ScheduledTask, 0, len(tasks))
+		for _, task := range tasks {
+			if h.canAccessTask(r, task) {
+				scoped = append(scoped, task)
+			}
+		}
+		tasks = scoped
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -261,6 +339,10 @@ func (h *ScheduledTasksHandler) CreateTask(w http.ResponseWriter, r *http.Reques
 		Enabled:    req.Enabled,
 		LastStatus: config.ScheduledTaskStatusPending,
 		CreatedAt:  time.Now().UTC(),
+	}
+	if !h.canAccessTask(r, task) {
+		http.Error(w, "automation must belong to one of your profiles", http.StatusForbidden)
+		return
 	}
 
 	settings, err := h.configManager.Load()
@@ -340,6 +422,10 @@ func (h *ScheduledTasksHandler) UpdateTask(w http.ResponseWriter, r *http.Reques
 	var updatedTask *config.ScheduledTask
 	for i := range settings.ScheduledTasks.Tasks {
 		if settings.ScheduledTasks.Tasks[i].ID == taskID {
+			if !h.canAccessTask(r, settings.ScheduledTasks.Tasks[i]) {
+				writeTaskNotFound(w)
+				return
+			}
 			if req.Name != "" {
 				settings.ScheduledTasks.Tasks[i].Name = req.Name
 			}
@@ -386,6 +472,10 @@ func (h *ScheduledTasksHandler) UpdateTask(w http.ResponseWriter, r *http.Reques
 		})
 		return
 	}
+	if !h.canAccessTask(r, *updatedTask) {
+		http.Error(w, "automation must belong to one of your profiles", http.StatusForbidden)
+		return
+	}
 
 	if err := h.configManager.Save(settings); err != nil {
 		w.Header().Set("Content-Type", "application/json")
@@ -413,6 +503,10 @@ func (h *ScheduledTasksHandler) DeleteTask(w http.ResponseWriter, r *http.Reques
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"error": "Task ID is required",
 		})
+		return
+	}
+	if _, ok := h.findAccessibleTask(r, taskID); !ok {
+		writeTaskNotFound(w)
 		return
 	}
 
@@ -484,6 +578,10 @@ func (h *ScheduledTasksHandler) RunTaskNow(w http.ResponseWriter, r *http.Reques
 		})
 		return
 	}
+	if _, ok := h.findAccessibleTask(r, taskID); !ok {
+		writeTaskNotFound(w)
+		return
+	}
 
 	if err := h.schedulerService.RunTaskNow(taskID); err != nil {
 		w.Header().Set("Content-Type", "application/json")
@@ -512,6 +610,10 @@ func (h *ScheduledTasksHandler) ToggleTask(w http.ResponseWriter, r *http.Reques
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"error": "Task ID is required",
 		})
+		return
+	}
+	if _, ok := h.findAccessibleTask(r, taskID); !ok {
+		writeTaskNotFound(w)
 		return
 	}
 

@@ -13,7 +13,7 @@ func TestAdminUsersPageExplainsAndRendersAccessHierarchy(t *testing.T) {
 	source := string(templateBytes)
 
 	for _, marker := range []string{
-		`Households, People &amp; Devices`,
+		`<h1>Users</h1>`,
 		`id="tab-households"`,
 		`class="hierarchy-guide"`,
 		`Household</span><span class="hierarchy-level-tech">Account`,
