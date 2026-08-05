@@ -20,35 +20,6 @@ func MigrateRawSettings(raw map[string]interface{}) {
 	migratePrewarmFrequencyClear(raw)
 	migratePrewarmContinueWatchingOnly(raw)
 	migrateGeminiAISettings(raw)
-	migrateServicePriorityToSourcePriority(raw)
-}
-
-// migrateServicePriorityToSourcePriority preserves the legacy binary service
-// preference in the ordered source model. It intentionally uses the generic
-// "debrid" lane so existing installs do not opt into provider availability
-// probes until they explicitly configure provider-aware ordering or filters.
-func migrateServicePriorityToSourcePriority(raw map[string]interface{}) {
-	filtering, ok := raw["filtering"].(map[string]interface{})
-	if !ok {
-		filtering = map[string]interface{}{}
-		raw["filtering"] = filtering
-	}
-	if existing, ok := filtering["sourcePriority"].([]interface{}); ok && len(existing) > 0 {
-		return
-	}
-
-	priority, _ := filtering["servicePriority"].(string)
-	if strings.TrimSpace(priority) == "" {
-		if streaming, ok := raw["streaming"].(map[string]interface{}); ok {
-			priority, _ = streaming["servicePriority"].(string)
-		}
-	}
-	switch strings.ToLower(strings.TrimSpace(priority)) {
-	case string(StreamingServicePriorityUsenet):
-		filtering["sourcePriority"] = []interface{}{"usenet", "debrid"}
-	case string(StreamingServicePriorityDebrid):
-		filtering["sourcePriority"] = []interface{}{"debrid", "usenet"}
-	}
 }
 
 // migratePrewarmContinueWatchingOnly temporarily removes speculative home
