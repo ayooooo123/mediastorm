@@ -2553,8 +2553,9 @@ func (h *PrequeueHandler) createEpisodeResolverAndLookupAbsoluteEp(ctx context.C
 				if ep.EpisodeNumber == targetEpisode.EpisodeNumber {
 					epCopy := ep
 					foundCanonicalEpisode = &epCopy
-					// Get absolute episode number if not set
-					if targetEpisode.AbsoluteEpisodeNumber == 0 && ep.AbsoluteEpisodeNumber > 0 {
+					// Keep the provider value as a fallback. Release-style numbering is
+					// derived below after all positive-season counts are available.
+					if ep.AbsoluteEpisodeNumber > 0 {
 						foundAbsoluteEp = ep.AbsoluteEpisodeNumber
 						log.Printf("[prequeue] Found absolute episode number %d for S%02dE%02d from TVDB",
 							foundAbsoluteEp, targetEpisode.SeasonNumber, targetEpisode.EpisodeNumber)
@@ -2592,7 +2593,17 @@ func (h *PrequeueHandler) createEpisodeResolverAndLookupAbsoluteEp(ctx context.C
 
 	// Update targetEpisode with canonical season/episode and absolute number if found
 	if foundCanonicalEpisode != nil && targetEpisode != nil {
-		if foundAbsoluteEp == 0 && targetEpisode.AbsoluteEpisodeNumber == 0 {
+		providerAbsoluteEp := foundAbsoluteEp
+		if providerAbsoluteEp == 0 {
+			providerAbsoluteEp = targetEpisode.AbsoluteEpisodeNumber
+		}
+		if releaseAbsolute := releaseAbsoluteEpisodeNumber(details.Seasons, *foundCanonicalEpisode); releaseAbsolute > 0 {
+			foundAbsoluteEp = releaseAbsolute
+			if providerAbsoluteEp > 0 && providerAbsoluteEp != releaseAbsolute {
+				log.Printf("[prequeue] Using release-style absolute episode %d for S%02dE%02d instead of provider absolute %d",
+					releaseAbsolute, foundCanonicalEpisode.SeasonNumber, foundCanonicalEpisode.EpisodeNumber, providerAbsoluteEp)
+			}
+		} else if foundAbsoluteEp == 0 && targetEpisode.AbsoluteEpisodeNumber == 0 {
 			foundAbsoluteEp = inferAbsoluteEpisodeNumber(details.Seasons, *foundCanonicalEpisode)
 			if foundAbsoluteEp > 0 {
 				log.Printf("[prequeue] Inferred absolute episode number %d for S%02dE%02d from adjacent TVDB episodes",

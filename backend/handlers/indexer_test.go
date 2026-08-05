@@ -379,6 +379,45 @@ func TestIndexerHandler_SearchSeriesInfersMissingAbsoluteEpisode(t *testing.T) {
 	}
 }
 
+func TestIndexerHandler_SearchSeriesUsesReleaseAbsoluteEpisode(t *testing.T) {
+	fake := &fakeIndexerService{results: []models.NZBResult{}}
+	seriesSvc := &fakeSeriesMetadataService{
+		details: &models.SeriesDetails{
+			Title: models.Title{Name: "Kaiju No. 8", Year: 2024, Genres: []string{"Anime"}},
+			Seasons: []models.SeriesSeason{
+				{
+					Number:       0,
+					EpisodeCount: 1,
+					Episodes: []models.SeriesEpisode{
+						{Name: "Hoshina's Day Off", SeasonNumber: 0, EpisodeNumber: 1, AbsoluteEpisodeNumber: 13},
+					},
+				},
+				{Number: 1, EpisodeCount: 12},
+				{
+					Number:       2,
+					EpisodeCount: 11,
+					Episodes: []models.SeriesEpisode{
+						{Name: "Kaiju Weapon", SeasonNumber: 2, EpisodeNumber: 1, AbsoluteEpisodeNumber: 14},
+					},
+				},
+			},
+		},
+	}
+	handler := NewIndexerHandler(fake, false)
+	handler.SetMetadataService(seriesSvc)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/indexers/search?q=Kaiju+No.+8+S02E01&mediaType=series&year=2024", nil)
+	rec := httptest.NewRecorder()
+	handler.Search(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d", http.StatusOK, rec.Code)
+	}
+	if fake.lastOpts.AbsoluteEpisodeNumber != 13 {
+		t.Fatalf("AbsoluteEpisodeNumber = %d, want release-style 13", fake.lastOpts.AbsoluteEpisodeNumber)
+	}
+}
+
 func TestIndexerHandler_SearchTest(t *testing.T) {
 	fake := &fakeIndexerService{
 		results: []models.NZBResult{
