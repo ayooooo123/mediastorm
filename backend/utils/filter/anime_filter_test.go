@@ -317,6 +317,48 @@ func TestAnimeFilter_OnePiece_AbsoluteEpisodeRange(t *testing.T) {
 // DR. STONE TESTS
 // =============================================================================
 
+func TestAnimeFilter_NadesicoAbsoluteFallbackResults(t *testing.T) {
+	resolver := NewSeriesEpisodeResolver(map[int]int{1: 26})
+	tests := []struct {
+		name       string
+		title      string
+		shouldPass bool
+	}{
+		{name: "hyphenated absolute episode", title: "[Moozzi2] Kidou Senkan Nadesico-01 [BD 1440x1080 x.264 Flac]", shouldPass: true},
+		{name: "dotted hyphenated absolute episode", title: "Kidou.Senkan.Nadesico-01.[x265.10.bit.1440x1080.AAC]", shouldPass: true},
+		{name: "space separated absolute episode", title: "Martian Successor Nadesico 01 [BD-rip 960x720 x264 FLAC]", shouldPass: true},
+		{name: "wrong inferred absolute episode", title: "[Moozzi2] Kidou Senkan Nadesico-02 [BD 1440x1080 x.264 Flac]", shouldPass: false},
+		{name: "exact title series pack", title: "Kidou Senkan Nadesico [x265 10 bit 1440x1080 AAC]", shouldPass: true},
+		{name: "explicit batch with both titles", title: "[Nii-sama] Kidou Senkan Nadesico (Martian Successor Nadesico) [1080p][BD][HEVC][10bit][AAC][BATCH]", shouldPass: true},
+		{name: "named sequel movie", title: "Kidou Senkan Nadesico The Prince of Darkness [x265 10 bit 1920x1036 5.1 EAC3]", shouldPass: false},
+		{name: "opening and ending collection", title: "[MoeDesuDesu] Kidou Senkan Nadesico OP-ED [1440x1080-Flac]", shouldPass: false},
+		{name: "ova", title: "[project-gxs] Kidou Senkan Nadesico - OVA [10bit DVD 480p] [1410B2FB]", shouldPass: false},
+		{name: "different title bundled with ova", title: "Kidou Senkan Nadesico The Prince of Darkness + Gekiganger 3 Nekketsu Daikessen OVA [x265 10 bit]", shouldPass: false},
+		{name: "mixed series film and music bundle", title: "[pwh] Martian Successor Nadesico (series + film) 1080p HEVC, JP5.1, EN2.0, EN subs, Music CDs, etc", shouldPass: false},
+	}
+
+	opts := Options{
+		ExpectedTitle:         "Martian Successor Nadesico",
+		AlternateTitles:       []string{"Kidou Senkan Nadesico"},
+		ExpectedYear:          1996,
+		EpisodeAirYear:        1996,
+		TargetSeason:          1,
+		TargetEpisode:         1,
+		TargetAbsoluteEpisode: 1,
+		EpisodeResolver:       resolver,
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			filtered := Results([]models.NZBResult{{Title: tt.title}}, opts)
+			passed := len(filtered) == 1
+			if passed != tt.shouldPass {
+				t.Fatalf("Results(%q) pass = %v, want %v", tt.title, passed, tt.shouldPass)
+			}
+		})
+	}
+}
+
 func TestAnimeFilter_DrStone_SeasonMatching(t *testing.T) {
 	// Test: Looking for S03E10, should only accept Season 3 content
 	resolver := NewSeriesEpisodeResolver(drStoneSeasonCounts)
