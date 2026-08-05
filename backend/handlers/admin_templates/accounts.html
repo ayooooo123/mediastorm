@@ -79,6 +79,10 @@
 .person-row { padding: 1rem 0; border-bottom: 1px solid var(--border); }
 .person-row:last-child { border-bottom: 0; padding-bottom: 0; }
 .person-heading { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+.person-toggle { width: 18px; height: 18px; padding: 0; border: 0; background: transparent; color: inherit; cursor: pointer; flex: 0 0 auto; transition: transform 0.2s; }
+.person-toggle svg { width: 100%; height: 100%; display: block; }
+.person-row.collapsed .person-toggle { transform: rotate(-90deg); }
+.person-row.collapsed .person-contents { display: none; }
 .person-avatar { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; color: white; font-weight: 600; object-fit: cover; flex: 0 0 auto; }
 .person-summary { flex: 1; min-width: 150px; }
 .person-name { font-weight: 600; display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
@@ -247,6 +251,8 @@ let scheduledTasks = [];
 let clients = [];
 let backendVersionInfo = null;
 const expandedStaleDeviceProfiles = new Set();
+const expandedHouseholds = new Set();
+const expandedPeople = new Set();
 const STALE_DEVICE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 let remoteAccessStatus = null;
 let hasDefaultPassword = false;
@@ -478,8 +484,9 @@ function renderHouseholds() {
             ...accountProfiles.flatMap(profile => [profile.name, ...clients.filter(client => client.userId === profile.id).flatMap(client => [client.nickname, client.name, client.deviceName, client.deviceType, client.os])])
         ].some(value => String(value || '').toLowerCase().includes(search));
         if (!matchesSearch) return '';
+        const isExpanded = Boolean(search) || expandedHouseholds.has(a.id);
         return `
-            <div class="card household-card${search ? '' : ' collapsed'}" data-household-id="${escapeHtml(a.id)}">
+            <div class="card household-card${isExpanded ? '' : ' collapsed'}" data-household-id="${escapeHtml(a.id)}">
                 <div class="household-header" onclick="toggleHousehold(event, '${escapeHtml(a.id)}')">
                     <svg class="household-toggle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
                     <div class="household-icon">
@@ -533,8 +540,12 @@ function renderPersonRow(profile, forceShowStale = false) {
     if (profile.isKidsProfile) badges.push('<span class="status-badge warning" style="font-size:0.62rem;">Kids</span>');
     if (profile.hasPin) badges.push('<span class="status-badge" style="font-size:0.62rem;">PIN</span>');
     if (profile.allowShareLinks) badges.push('<span class="status-badge" style="font-size:0.62rem;">Sharing</span>');
-    return `<div class="person-row">
+    const isExpanded = forceShowStale || expandedPeople.has(profile.id);
+    return `<div class="person-row${isExpanded ? '' : ' collapsed'}" data-profile-id="${escapeHtml(profile.id)}">
         <div class="person-heading">
+            <button type="button" class="person-toggle" onclick="togglePerson(event, decodeURIComponent('${encodeURIComponent(profile.id)}'))" aria-expanded="${isExpanded}" aria-label="${isExpanded ? 'Collapse' : 'Expand'} devices for ${escapeHtml(profile.name || 'person')}">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
             ${avatarHtml}
             <div class="person-summary">
                 <div class="person-name">${escapeHtml(profile.name || 'Unnamed person')}${badges.join('')}</div>
@@ -551,8 +562,10 @@ function renderPersonRow(profile, forceShowStale = false) {
                 <button class="btn btn-danger btn-sm" onclick="deleteProfile('${profile.id}', '${escapeHtml(profile.name)}')">Delete</button>
             </div>
         </div>
-        ${visibleClients.length > 0 ? `<div class="device-list">${visibleClients.map(client => renderDeviceRow(client, false)).join('')}</div>` : (profileClients.length === 0 ? '<div class="device-empty">No devices have connected as this person yet.</div>' : '')}
-        ${staleClients.length > 0 && !forceShowStale ? `<button class="btn btn-secondary btn-sm stale-device-toggle" onclick="toggleStaleDevices('${profile.id}')">${showStale ? 'Hide' : 'Show'} ${staleClients.length} device${staleClients.length === 1 ? '' : 's'} not seen in 7+ days</button>` : ''}
+        <div class="person-contents">
+            ${visibleClients.length > 0 ? `<div class="device-list">${visibleClients.map(client => renderDeviceRow(client, false)).join('')}</div>` : (profileClients.length === 0 ? '<div class="device-empty">No devices have connected as this person yet.</div>' : '')}
+            ${staleClients.length > 0 && !forceShowStale ? `<button class="btn btn-secondary btn-sm stale-device-toggle" onclick="toggleStaleDevices('${profile.id}')">${showStale ? 'Hide' : 'Show'} ${staleClients.length} device${staleClients.length === 1 ? '' : 's'} not seen in 7+ days</button>` : ''}
+        </div>
     </div>`;
 }
 
@@ -575,6 +588,13 @@ function isClientStale(client) {
 function toggleStaleDevices(profileId) {
     if (expandedStaleDeviceProfiles.has(profileId)) expandedStaleDeviceProfiles.delete(profileId);
     else expandedStaleDeviceProfiles.add(profileId);
+    renderHouseholds();
+}
+
+function togglePerson(event, profileId) {
+    event.stopPropagation();
+    if (expandedPeople.has(profileId)) expandedPeople.delete(profileId);
+    else expandedPeople.add(profileId);
     renderHouseholds();
 }
 
@@ -606,7 +626,11 @@ function renderPersonOptions(selectedProfileId) {
 
 function toggleHousehold(event, householdId) {
     if (event.target.closest('button, a, select, input')) return;
-    document.querySelector(`.household-card[data-household-id="${CSS.escape(householdId)}"]`)?.classList.toggle('collapsed');
+    const household = document.querySelector(`.household-card[data-household-id="${CSS.escape(householdId)}"]`);
+    const isExpanded = household?.classList.contains('collapsed');
+    if (isExpanded) expandedHouseholds.add(householdId);
+    else expandedHouseholds.delete(householdId);
+    household?.classList.toggle('collapsed', !isExpanded);
 }
 
 function formatRelativeTime(dateStr) {
