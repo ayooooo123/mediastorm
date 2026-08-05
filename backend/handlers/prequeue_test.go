@@ -663,6 +663,49 @@ func TestCreateEpisodeResolverInfersMissingAbsoluteEpisodeFromSeason(t *testing.
 	}
 }
 
+func TestCreateEpisodeResolverUsesReleaseAbsoluteEpisodeInsteadOfSpecialShift(t *testing.T) {
+	handler := &PrequeueHandler{
+		metadataSvc: &mockSeriesDetailsProvider{
+			details: &models.SeriesDetails{
+				Title: models.Title{Name: "Kaiju No. 8", Year: 2024, Genres: []string{"Anime"}},
+				Seasons: []models.SeriesSeason{
+					{
+						Number:       0,
+						EpisodeCount: 1,
+						Episodes: []models.SeriesEpisode{
+							{Name: "Hoshina's Day Off", SeasonNumber: 0, EpisodeNumber: 1, AbsoluteEpisodeNumber: 13},
+						},
+					},
+					{Number: 1, EpisodeCount: 12},
+					{
+						Number:       2,
+						EpisodeCount: 11,
+						Episodes: []models.SeriesEpisode{
+							{Name: "Kaiju Weapon", SeasonNumber: 2, EpisodeNumber: 1, AbsoluteEpisodeNumber: 14},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	got := handler.createEpisodeResolverAndLookupAbsoluteEp(
+		context.Background(),
+		"tvdb:series:358612",
+		"Kaiju No. 8",
+		2024,
+		"tt21975436",
+		&models.EpisodeReference{SeasonNumber: 2, EpisodeNumber: 1, AbsoluteEpisodeNumber: 14},
+	)
+
+	if got.TargetEpisode == nil {
+		t.Fatal("TargetEpisode is nil")
+	}
+	if got.TargetEpisode.AbsoluteEpisodeNumber != 13 {
+		t.Fatalf("AbsoluteEpisodeNumber = %d, want release-style 13", got.TargetEpisode.AbsoluteEpisodeNumber)
+	}
+}
+
 func TestInferAbsoluteEpisodeNumberRejectsConflictingAnchors(t *testing.T) {
 	seasons := []models.SeriesSeason{
 		{

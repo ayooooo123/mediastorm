@@ -510,7 +510,16 @@ func (h *IndexerHandler) getSeriesSearchMetadata(ctx context.Context, query stri
 			if season.Number == parsed.Season {
 				for _, ep := range season.Episodes {
 					if ep.EpisodeNumber == parsed.Episode {
-						if ep.AbsoluteEpisodeNumber > 0 {
+						if releaseAbsolute := releaseAbsoluteEpisodeNumber(details.Seasons, ep); releaseAbsolute > 0 {
+							result.AbsoluteEpisodeNumber = releaseAbsolute
+							if ep.AbsoluteEpisodeNumber > 0 && ep.AbsoluteEpisodeNumber != releaseAbsolute {
+								log.Printf("[indexer] Using release-style absolute episode %d for S%02dE%02d instead of provider absolute %d",
+									releaseAbsolute, parsed.Season, parsed.Episode, ep.AbsoluteEpisodeNumber)
+							} else {
+								log.Printf("[indexer] Derived release-style absolute episode number %d for S%02dE%02d",
+									releaseAbsolute, parsed.Season, parsed.Episode)
+							}
+						} else if ep.AbsoluteEpisodeNumber > 0 {
 							result.AbsoluteEpisodeNumber = ep.AbsoluteEpisodeNumber
 							log.Printf("[indexer] Found absolute episode number %d for S%02dE%02d",
 								result.AbsoluteEpisodeNumber, parsed.Season, parsed.Episode)
