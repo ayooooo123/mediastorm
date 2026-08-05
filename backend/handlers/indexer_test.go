@@ -288,6 +288,46 @@ func TestIndexerHandler_SearchSeriesAbsoluteEpisode(t *testing.T) {
 	}
 }
 
+func TestIndexerHandler_SearchNadesicoUsesPreservedAnimeMetadata(t *testing.T) {
+	fake := &fakeIndexerService{results: []models.NZBResult{}}
+	seriesSvc := &fakeSeriesMetadataService{
+		details: &models.SeriesDetails{
+			Title: models.Title{
+				Name:         "Martian Successor Nadesico",
+				OriginalName: "機動戦艦ナデシコ",
+				Language:     "eng",
+				Year:         1996,
+				Genres:       []string{"Animation", "Comedy", "Anime"},
+			},
+			Seasons: []models.SeriesSeason{
+				{
+					Number: 1,
+					Episodes: []models.SeriesEpisode{
+						{SeasonNumber: 1, EpisodeNumber: 1, AbsoluteEpisodeNumber: 1, AiredDate: "1996-10-01"},
+					},
+				},
+			},
+		},
+	}
+	handler := NewIndexerHandler(fake, false)
+	handler.SetMetadataService(seriesSvc)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/indexers/search?q=Martian+Successor+Nadesico+S01E01&mediaType=series&year=1996", nil)
+	rec := httptest.NewRecorder()
+
+	handler.Search(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d", http.StatusOK, rec.Code)
+	}
+	if !fake.lastOpts.IsAnime {
+		t.Fatal("expected preserved TVDB Anime genre to classify Nadesico as anime")
+	}
+	if fake.lastOpts.AbsoluteEpisodeNumber != 1 {
+		t.Fatalf("expected absolute episode 1, got %d", fake.lastOpts.AbsoluteEpisodeNumber)
+	}
+}
+
 func TestIndexerHandler_SearchSeriesInfersMissingAbsoluteEpisode(t *testing.T) {
 	fake := &fakeIndexerService{results: []models.NZBResult{}}
 	seriesSvc := &fakeSeriesMetadataService{

@@ -1026,6 +1026,17 @@ func TestBuildSearchQueries_AnimeAbsoluteEpisode(t *testing.T) {
 
 	queries := buildSearchQueries(opts, debrid.ParseQuery(opts.Query), nil)
 
+	foundStandard := false
+	for _, query := range queries {
+		if query == "One Piece S23E06" {
+			foundStandard = true
+			break
+		}
+	}
+	if !foundStandard {
+		t.Fatalf("expected multi-season standard query to remain in %v", queries)
+	}
+
 	for _, expected := range []string{"One Piece 1161", "One Piece EP1161", "One Piece E1161"} {
 		found := false
 		for _, query := range queries {
@@ -1425,6 +1436,43 @@ func TestResolveAlternateTitles_LanguagePriorityWithCap(t *testing.T) {
 	}
 	if aliases[1] != "Chinese Title" {
 		t.Errorf("expected Chinese alias second, got %q", aliases[1])
+	}
+}
+
+func TestResolveAlternateTitles_PrefersRomanizedReleaseTitleBeforeCap(t *testing.T) {
+	mock := &mockMetadataSearchOnly{
+		results: []models.SearchResult{
+			{
+				Title: models.Title{
+					Name:         "Martian Successor Nadesico",
+					OriginalName: "機動戦艦ナデシコ",
+					TVDBID:       71313,
+					IMDBID:       "tt0115263",
+					MediaType:    "series",
+					Year:         1996,
+					AlternateTitles: []string{
+						"機動戦艦ナデシコ",
+						"Kidou Senkan Nadesico",
+						"Nadesico Martian Successor",
+					},
+				},
+			},
+		},
+	}
+
+	svc := &Service{metadata: mock}
+	aliases := svc.resolveAlternateTitles(context.Background(), SearchOptions{
+		Query:     "Martian Successor Nadesico S01E01",
+		MediaType: "series",
+		Year:      1996,
+		IMDBID:    "tt0115263",
+	}, "eng", 1)
+
+	if len(aliases) != 1 {
+		t.Fatalf("expected one capped alias, got %d: %v", len(aliases), aliases)
+	}
+	if aliases[0] != "Kidou Senkan Nadesico" {
+		t.Fatalf("expected romanized release title to survive cap, got %q", aliases[0])
 	}
 }
 
