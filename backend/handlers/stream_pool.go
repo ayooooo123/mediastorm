@@ -856,6 +856,32 @@ func (p *streamPool) getOrCreateInternal(waitCtx context.Context, path string, r
 		totalSize = parseTotalSizeFromContentRange(contentRange)
 	}
 
+	// Trust the offset the upstream actually served, never the one we asked for.
+	// The debrid layer can legitimately shift a window (RAR offset rewriting,
+	// parallel-fetch realignment) and a provider may ignore Range entirely. Filing
+	// the body under reqPos regardless leaves every reader of this slot reading
+	// shifted data while the response advertises the requested range — the client
+	// sees a corrupt container, which is exactly how this surfaced on a renderer.
+	servedStart := reqPos
+	if contentRange != "" {
+		if parsed, ok := parseContentRangeStart(contentRange); ok {
+			servedStart = parsed
+		}
+	} else if resp.Status == http.StatusOK {
+		// A 200 for "bytes=N-" means the range was ignored: the body starts at 0.
+		servedStart = 0
+	}
+	if servedStart > reqPos {
+		// The buffer would begin past what this reader needs, so it can never be
+		// satisfied from this slot. Refuse to pool and let the caller fall back to
+		// a direct stream rather than serve bytes from the wrong place.
+		log.Printf("[stream-pool] refusing slot: upstream served bytes from %d but %d was requested path=%q range=%q",
+			servedStart, reqPos, path, contentRange)
+		cancel()
+		_ = resp.Close()
+		return nil, 0, fmt.Errorf("upstream served offset %d for requested %d", servedStart, reqPos)
+	}
+
 	contentType := resp.Headers.Get("Content-Type")
 	if contentType == "" {
 		contentType = "video/mp4"
@@ -863,7 +889,7 @@ func (p *streamPool) getOrCreateInternal(waitCtx context.Context, path string, r
 
 	slot = &poolSlot{
 		path:          path,
-		startByte:     reqPos,
+		startByte:     servedStart,
 		data:          make([]byte, 0, 1024*1024), // start 1MB, grows as needed
 		ctx:           ctx,
 		cancel:        cancel,
@@ -1133,4 +1159,28 @@ func (p *streamPool) Stats() PoolStats {
 	}
 	stats.TotalBufferMB /= 1024 * 1024
 	return stats
+}
+
+// parseContentRangeStart reports the first byte offset an upstream actually
+// served, from a "bytes START-END/TOTAL" header. The pool must confirm this
+// matches the window it asked for: filing a body that starts somewhere else
+// under the requested offset corrupts every later read of that slot.
+func parseContentRangeStart(value string) (int64, bool) {
+	spec := strings.TrimSpace(value)
+	if !strings.HasPrefix(strings.ToLower(spec), "bytes ") {
+		return 0, false
+	}
+	spec = strings.TrimSpace(spec[len("bytes "):])
+	if slash := strings.IndexByte(spec, '/'); slash >= 0 {
+		spec = spec[:slash]
+	}
+	dash := strings.IndexByte(spec, '-')
+	if dash <= 0 {
+		return 0, false
+	}
+	start, err := strconv.ParseInt(strings.TrimSpace(spec[:dash]), 10, 64)
+	if err != nil || start < 0 {
+		return 0, false
+	}
+	return start, true
 }
