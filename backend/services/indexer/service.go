@@ -2299,9 +2299,22 @@ func (s *Service) resolveAlternateTitles(ctx context.Context, opts SearchOptions
 		chosen = &results[0].Title
 	}
 
+	type alternateTitleCandidate struct {
+		value         string
+		languageMatch bool
+		releaseReady  bool
+	}
+
 	seen := make(map[string]struct{})
-	var aliases []string
-	add := func(value string) {
+	// The canonical/query titles are already searched and should not consume an
+	// alternate-title slot when an aliases endpoint returns them again.
+	seen[strings.ToLower(query)] = struct{}{}
+	if canonical := strings.TrimSpace(chosen.Name); canonical != "" {
+		seen[strings.ToLower(canonical)] = struct{}{}
+	}
+
+	var candidates []alternateTitleCandidate
+	add := func(value string, languageMatch bool) {
 		trimmed := strings.TrimSpace(value)
 		if trimmed == "" {
 			return
@@ -2311,11 +2324,15 @@ func (s *Service) resolveAlternateTitles(ctx context.Context, opts SearchOptions
 			return
 		}
 		seen[lowered] = struct{}{}
-		aliases = append(aliases, trimmed)
+		candidates = append(candidates, alternateTitleCandidate{
+			value:         trimmed,
+			languageMatch: languageMatch,
+			releaseReady:  isReleaseFriendlyTitle(trimmed),
+		})
 	}
-	add(chosen.OriginalName)
+	add(chosen.OriginalName, false)
 	for _, alt := range chosen.AlternateTitles {
-		add(alt)
+		add(alt, false)
 	}
 
 	// Fetch full TVDB aliases (international titles) if the metadata service
@@ -2334,11 +2351,32 @@ func (s *Service) resolveAlternateTitles(ctx context.Context, opts SearchOptions
 			}
 		}
 		for _, a := range langMatched {
-			add(a)
+			add(a, true)
 		}
 		for _, a := range others {
-			add(a)
+			add(a, false)
 		}
+	}
+
+	// Alias APIs often return a native-script original before a provider-supplied
+	// romanized title. Generic transliteration of CJK text can produce the wrong
+	// reading for release searches (for example Japanese kanji transliterated as
+	// Chinese). Prefer the user's metadata language first, then titles that are
+	// already written in a release-friendly Latin form. Stable sorting preserves
+	// provider order within each quality tier.
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].languageMatch != candidates[j].languageMatch {
+			return candidates[i].languageMatch
+		}
+		if candidates[i].releaseReady != candidates[j].releaseReady {
+			return candidates[i].releaseReady
+		}
+		return false
+	})
+
+	aliases := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		aliases = append(aliases, candidate.value)
 	}
 
 	if maxAlternates > 0 && len(aliases) > maxAlternates {
@@ -2350,6 +2388,20 @@ func (s *Service) resolveAlternateTitles(ctx context.Context, opts SearchOptions
 		return nil
 	}
 	return aliases
+}
+
+func isReleaseFriendlyTitle(value string) bool {
+	hasLetter := false
+	for _, r := range value {
+		if !unicode.IsLetter(r) {
+			continue
+		}
+		hasLetter = true
+		if !unicode.In(r, unicode.Latin) {
+			return false
+		}
+	}
+	return hasLetter
 }
 
 func buildSearchQueries(opts SearchOptions, parsed debrid.ParsedQuery, alternateTitles []string) []string {

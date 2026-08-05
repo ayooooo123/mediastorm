@@ -46,6 +46,41 @@ func TestApplyTVDBMovieExtendedMetadataCopiesGenresWithoutExternalIDs(t *testing
 	}
 }
 
+func TestApplyTVDBSeriesIdentityPreservesAnimeSignals(t *testing.T) {
+	title := models.Title{
+		Name:     "Martian Successor Nadesico",
+		Language: "eng",
+		Genres:   []string{"Animation", "Comedy"},
+	}
+
+	applyTVDBSeriesIdentity(&title, tvdbSeriesExtendedData{
+		Name: "機動戦艦ナデシコ",
+		Genres: []tvdbGenre{
+			{Name: "Science Fiction"},
+			{Name: "Animation"},
+			{Name: "Anime"},
+		},
+	})
+
+	if title.OriginalName != "機動戦艦ナデシコ" {
+		t.Fatalf("OriginalName = %q, want Japanese provider title", title.OriginalName)
+	}
+	if got := strings.Join(title.Genres, ","); got != "Animation,Comedy,Science Fiction,Anime" {
+		t.Fatalf("Genres = %q, want merged TVDB identity genres", got)
+	}
+}
+
+func TestMergeMetadataGenresIsCaseInsensitiveAndStable(t *testing.T) {
+	got := mergeMetadataGenres(
+		[]string{"Animation", "Anime"},
+		[]string{"animation", "Comedy", " anime "},
+	)
+
+	if joined := strings.Join(got, ","); joined != "Animation,Anime,Comedy" {
+		t.Fatalf("merged genres = %q, want stable case-insensitive merge", joined)
+	}
+}
+
 func TestGetCuratedListChecksRawCacheBeforeResolvingIDs(t *testing.T) {
 	cache := newFileCache(t.TempDir(), 24)
 	rt := &countingRoundTripper{body: `{"results":[]}`}
@@ -1193,7 +1228,7 @@ func TestSeriesDetailsLiteFallsBackToTMDBAndKeepsLogoOnCachedProviderMismatch(t 
 	if err := cache.set(seriesTVDBResolutionCacheKey(107124), int64(375642)); err != nil {
 		t.Fatalf("seed resolution cache: %v", err)
 	}
-	liteCacheID := cacheKey("tvdb", "series", "details", "v13-lite", "eng", "375642", "default")
+	liteCacheID := cacheKey("tvdb", "series", "details", "v14-lite", "eng", "375642", "default")
 	if err := cache.set(liteCacheID, models.SeriesDetails{
 		Title: models.Title{
 			ID:        "tvdb:series:375642",

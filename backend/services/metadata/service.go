@@ -1390,7 +1390,39 @@ func seriesDetailsCacheKey(lang string, tvdbID int64, seasonType string) string 
 	if st == "" {
 		st = "default"
 	}
-	return cacheKey("tvdb", "series", "details", "v13", lang, strconv.FormatInt(tvdbID, 10), st)
+	return cacheKey("tvdb", "series", "details", "v14", lang, strconv.FormatInt(tvdbID, 10), st)
+}
+
+func applyTVDBSeriesIdentity(title *models.Title, extended tvdbSeriesExtendedData) {
+	if title == nil {
+		return
+	}
+
+	originalName := strings.TrimSpace(extended.Name)
+	if originalName != "" && !strings.EqualFold(originalName, strings.TrimSpace(title.Name)) {
+		title.OriginalName = originalName
+	}
+	title.Genres = mergeMetadataGenres(title.Genres, tvdbGenreNames(extended.Genres))
+}
+
+func mergeMetadataGenres(groups ...[]string) []string {
+	seen := make(map[string]struct{})
+	var merged []string
+	for _, genres := range groups {
+		for _, genre := range genres {
+			trimmed := strings.TrimSpace(genre)
+			if trimmed == "" {
+				continue
+			}
+			key := strings.ToLower(trimmed)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			merged = append(merged, trimmed)
+		}
+	}
+	return merged
 }
 
 // ShelfLoadOptions configures fast shelf rendering for list-style endpoints.
@@ -4006,6 +4038,7 @@ func (s *Service) SeriesDetails(ctx context.Context, req models.SeriesDetailsQue
 		MediaType: "series",
 		TVDBID:    tvdbID,
 	}
+	applyTVDBSeriesIdentity(&seriesTitle, extended)
 
 	log.Printf("[metadata] series title constructed tvdbId=%d finalName=%q translatedName=%q baseName=%q", tvdbID, finalName, translatedName, base.Name)
 
@@ -4336,7 +4369,7 @@ func (s *Service) SeriesDetails(ctx context.Context, req models.SeriesDetailsQue
 	// Fetch genres from TMDB if configured
 	if tmdbIDForEnrichment > 0 && s.tmdb != nil && s.tmdb.isConfigured() {
 		if genres, err := s.tmdb.fetchSeriesGenres(ctx, tmdbIDForEnrichment); err == nil && len(genres) > 0 {
-			seriesTitle.Genres = genres
+			seriesTitle.Genres = mergeMetadataGenres(seriesTitle.Genres, genres)
 			log.Printf("[metadata] fetched %d genres for series tmdbId=%d", len(genres), tmdbIDForEnrichment)
 
 			// Also check for daily show genres from TMDB if not already detected
@@ -4553,7 +4586,7 @@ func (s *Service) SeriesDetailsLite(ctx context.Context, req models.SeriesDetail
 	if liteSeasonType == "" {
 		liteSeasonType = "default"
 	}
-	cacheID := cacheKey("tvdb", "series", "details", "v13-lite", s.client.language, strconv.FormatInt(tvdbID, 10), liteSeasonType)
+	cacheID := cacheKey("tvdb", "series", "details", "v14-lite", s.client.language, strconv.FormatInt(tvdbID, 10), liteSeasonType)
 	var cached models.SeriesDetails
 	if ok, _ := s.cache.get(cacheID, &cached); ok && len(cached.Seasons) > 0 {
 		normalizeSeriesDetailsReleaseStatus(&cached)
@@ -4677,6 +4710,7 @@ func (s *Service) SeriesDetailsLite(ctx context.Context, req models.SeriesDetail
 		MediaType: "series",
 		TVDBID:    tvdbID,
 	}
+	applyTVDBSeriesIdentity(&seriesTitle, extended)
 
 	// Extract IMDB and TMDB IDs from remote IDs
 	for _, remote := range extended.RemoteIDs {
@@ -5515,6 +5549,7 @@ func (s *Service) SeriesInfo(ctx context.Context, req models.SeriesDetailsQuery)
 		MediaType: "series",
 		TVDBID:    tvdbID,
 	}
+	applyTVDBSeriesIdentity(&seriesTitle, extended)
 
 	// Extract IMDB ID and TMDB ID from remote IDs
 	for _, remote := range extended.RemoteIDs {
