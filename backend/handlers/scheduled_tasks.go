@@ -72,6 +72,27 @@ func (h *ScheduledTasksHandler) taskIntegrationBelongsToAccount(task config.Sche
 				return account.OwnerAccountID == accountID
 			}
 		}
+	case config.ScheduledTaskTypeSimklHistorySync:
+		integrationID := strings.TrimSpace(task.Config["simklAccountId"])
+		for _, account := range settings.Simkl.Accounts {
+			if account.ID == integrationID {
+				return account.OwnerAccountID == accountID
+			}
+		}
+	case config.ScheduledTaskTypeMDBListWatchlistSync, config.ScheduledTaskTypeMDBListHistorySync:
+		integrationID := strings.TrimSpace(task.Config["mdblistAccountId"])
+		for _, account := range settings.MDBList.Accounts {
+			if account.ID == integrationID {
+				return account.OwnerAccountID == accountID
+			}
+		}
+	case config.ScheduledTaskTypeJellyfinFavoritesSync, config.ScheduledTaskTypeJellyfinHistorySync:
+		integrationID := strings.TrimSpace(task.Config["jellyfinAccountId"])
+		for _, account := range settings.Jellyfin.Accounts {
+			if account.ID == integrationID {
+				return account.OwnerAccountID == accountID
+			}
+		}
 	}
 	return false
 }

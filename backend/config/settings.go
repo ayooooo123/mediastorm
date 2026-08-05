@@ -1297,9 +1297,10 @@ type SubtitleSettings struct {
 
 // MDBListAccount represents a registered MDBList account with its API key.
 type MDBListAccount struct {
-	ID     string `json:"id"`     // UUID for this account
-	Name   string `json:"name"`   // Display name
-	APIKey string `json:"apiKey"` // MDBList API key
+	ID             string `json:"id"`                       // UUID for this account
+	Name           string `json:"name"`                     // Display name
+	APIKey         string `json:"apiKey"`                   // MDBList API key
+	OwnerAccountID string `json:"ownerAccountId,omitempty"` // Login account that owns this integration
 }
 
 // MDBListSettings defines MDBList integration for aggregated ratings and scrobbling.
@@ -1373,12 +1374,13 @@ type TraktSettings struct {
 
 // SimklAccount represents a registered Simkl account with app credentials and a user token.
 type SimklAccount struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	ClientID     string `json:"clientId"`
-	ClientSecret string `json:"clientSecret,omitempty"`
-	AccessToken  string `json:"accessToken,omitempty"`
-	Username     string `json:"username,omitempty"`
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	OwnerAccountID string `json:"ownerAccountId,omitempty"`
+	ClientID       string `json:"clientId"`
+	ClientSecret   string `json:"clientSecret,omitempty"`
+	AccessToken    string `json:"accessToken,omitempty"`
+	Username       string `json:"username,omitempty"`
 }
 
 // SimklSettings defines Simkl integration configuration.
@@ -1503,12 +1505,13 @@ func (p *PlexSettings) RemoveAccount(id string) bool {
 
 // JellyfinAccount represents a connected Jellyfin server account.
 type JellyfinAccount struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	ServerURL string `json:"serverUrl"`
-	Token     string `json:"token,omitempty"`
-	UserID    string `json:"userId,omitempty"`
-	Username  string `json:"username,omitempty"`
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	OwnerAccountID string `json:"ownerAccountId,omitempty"`
+	ServerURL      string `json:"serverUrl"`
+	Token          string `json:"token,omitempty"`
+	UserID         string `json:"userId,omitempty"`
+	Username       string `json:"username,omitempty"`
 }
 
 // JellyfinSettings contains Jellyfin integration configuration.

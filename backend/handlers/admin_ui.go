@@ -4048,6 +4048,26 @@ func (h *AdminUIHandler) profileBelongsToAccount(profileID, accountID string) bo
 	return h.usersService.BelongsToAccount(profileID, accountID)
 }
 
+func (h *AdminUIHandler) canAccessOwnedIntegration(r *http.Request, ownerAccountID string, linkedUsers []models.User) bool {
+	isAdmin, accountID, _, _ := h.getPageRoleInfo(r)
+	if isAdmin || accountID == "" {
+		return true
+	}
+	if ownerAccountID != "" {
+		return ownerAccountID == accountID
+	}
+	// Preserve access to legacy integrations created before ownership metadata
+	// existed when they are already linked to one of this account's profiles.
+	linkedToAccount := false
+	for _, user := range linkedUsers {
+		if user.AccountID != accountID {
+			return false
+		}
+		linkedToAccount = true
+	}
+	return linkedToAccount
+}
+
 func (h *AdminUIHandler) requireAdminScope(w http.ResponseWriter, r *http.Request) bool {
 	isAdmin, _, _, _ := h.getPageRoleInfo(r)
 	if !isAdmin {
@@ -8990,8 +9010,15 @@ func (h *AdminUIHandler) GetMDBListAccounts(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	result := make([]config.MDBListAccount, 0, len(settings.MDBList.Accounts))
+	for _, account := range settings.MDBList.Accounts {
+		linkedUsers := h.usersService.GetUsersByMdblistAccountID(account.ID)
+		if h.canAccessOwnedIntegration(r, account.OwnerAccountID, linkedUsers) {
+			result = append(result, account)
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(settings.MDBList.Accounts)
+	json.NewEncoder(w).Encode(result)
 }
 
 // CreateMDBListAccount adds a new MDBList account.
@@ -9022,6 +9049,9 @@ func (h *AdminUIHandler) CreateMDBListAccount(w http.ResponseWriter, r *http.Req
 		ID:     uuid.New().String(),
 		Name:   req.Name,
 		APIKey: req.APIKey,
+	}
+	if isAdmin, accountID, _, _ := h.getPageRoleInfo(r); !isAdmin {
+		account.OwnerAccountID = accountID
 	}
 
 	if account.Name == "" {
@@ -9055,9 +9085,14 @@ func (h *AdminUIHandler) DeleteMDBListAccount(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	if !settings.MDBList.RemoveAccount(accountID) {
+	account := settings.MDBList.GetAccountByID(accountID)
+	if account == nil || !h.canAccessOwnedIntegration(r, account.OwnerAccountID, h.usersService.GetUsersByMdblistAccountID(accountID)) {
 		http.Error(w, "Account not found", http.StatusNotFound)
 		return
+	}
+	settings.MDBList.RemoveAccount(accountID)
+	for _, user := range h.usersService.GetUsersByMdblistAccountID(accountID) {
+		_, _ = h.usersService.ClearMdblistAccountID(user.ID)
 	}
 
 	if err := h.configManager.Save(settings); err != nil {
@@ -9094,7 +9129,7 @@ func (h *AdminUIHandler) UpdateMDBListAccount(w http.ResponseWriter, r *http.Req
 	}
 
 	account := settings.MDBList.GetAccountByID(accountID)
-	if account == nil {
+	if account == nil || !h.canAccessOwnedIntegration(r, account.OwnerAccountID, h.usersService.GetUsersByMdblistAccountID(accountID)) {
 		http.Error(w, "Account not found", http.StatusNotFound)
 		return
 	}
@@ -9134,6 +9169,9 @@ func (h *AdminUIHandler) GetSimklAccounts(w http.ResponseWriter, r *http.Request
 	resp := make([]simklAccountResponse, 0, len(settings.Simkl.Accounts))
 	for _, account := range settings.Simkl.Accounts {
 		users := h.usersService.GetUsersBySimklAccountID(account.ID)
+		if !h.canAccessOwnedIntegration(r, account.OwnerAccountID, users) {
+			continue
+		}
 		linkedProfiles := make([]string, 0, len(users))
 		for _, user := range users {
 			linkedProfiles = append(linkedProfiles, user.ID)
@@ -9186,6 +9224,9 @@ func (h *AdminUIHandler) CreateSimklAccount(w http.ResponseWriter, r *http.Reque
 		AccessToken:  req.AccessToken,
 		Username:     req.Username,
 	}
+	if isAdmin, accountID, _, _ := h.getPageRoleInfo(r); !isAdmin {
+		account.OwnerAccountID = accountID
+	}
 	if account.Name == "" {
 		account.Name = "Simkl Account"
 	}
@@ -9214,10 +9255,12 @@ func (h *AdminUIHandler) DeleteSimklAccount(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "Failed to load settings", http.StatusInternalServerError)
 		return
 	}
-	if !settings.Simkl.RemoveAccount(accountID) {
+	account := settings.Simkl.GetAccountByID(accountID)
+	if account == nil || !h.canAccessOwnedIntegration(r, account.OwnerAccountID, h.usersService.GetUsersBySimklAccountID(accountID)) {
 		http.Error(w, "Account not found", http.StatusNotFound)
 		return
 	}
+	settings.Simkl.RemoveAccount(accountID)
 	for _, user := range h.usersService.GetUsersBySimklAccountID(accountID) {
 		_, _ = h.usersService.ClearSimklAccountID(user.ID)
 	}
@@ -9256,7 +9299,7 @@ func (h *AdminUIHandler) UpdateSimklAccount(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	account := settings.Simkl.GetAccountByID(accountID)
-	if account == nil {
+	if account == nil || !h.canAccessOwnedIntegration(r, account.OwnerAccountID, h.usersService.GetUsersBySimklAccountID(accountID)) {
 		http.Error(w, "Account not found", http.StatusNotFound)
 		return
 	}
@@ -9293,7 +9336,7 @@ func (h *AdminUIHandler) StartSimklAuth(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	account := settings.Simkl.GetAccountByID(accountID)
-	if account == nil {
+	if account == nil || !h.canAccessOwnedIntegration(r, account.OwnerAccountID, h.usersService.GetUsersBySimklAccountID(accountID)) {
 		http.Error(w, "Account not found", http.StatusNotFound)
 		return
 	}
@@ -9332,7 +9375,7 @@ func (h *AdminUIHandler) CheckSimklAuth(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	account := settings.Simkl.GetAccountByID(accountID)
-	if account == nil {
+	if account == nil || !h.canAccessOwnedIntegration(r, account.OwnerAccountID, h.usersService.GetUsersBySimklAccountID(accountID)) {
 		http.Error(w, "Account not found", http.StatusNotFound)
 		return
 	}
@@ -9375,7 +9418,7 @@ func (h *AdminUIHandler) DisconnectSimklAccount(w http.ResponseWriter, r *http.R
 		return
 	}
 	account := settings.Simkl.GetAccountByID(accountID)
-	if account == nil {
+	if account == nil || !h.canAccessOwnedIntegration(r, account.OwnerAccountID, h.usersService.GetUsersBySimklAccountID(accountID)) {
 		http.Error(w, "Account not found", http.StatusNotFound)
 		return
 	}

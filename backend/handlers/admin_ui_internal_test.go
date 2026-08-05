@@ -262,6 +262,47 @@ func TestAdminAccountsSurfacesProfileTaskContext(t *testing.T) {
 	}
 }
 
+func TestRegularAccountToolsExposeAutomationsAndAllIntegrations(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/tools.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(templateBytes)
+	for _, marker := range []string{
+		"<!-- AUTOMATION CATEGORY -->\n<div class=\"settings-group\">",
+		`id="scheduledTasksSection"`,
+		`id="simklAccountsList"`,
+		`id="mdblistAccountsList"`,
+		`id="jellyfinAccountsSection"`,
+		`[loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadJellyfinAccounts()]`,
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("tools template missing regular-account marker %q", marker)
+		}
+	}
+}
+
+func TestOwnedIntegrationAccessSupportsOwnersAndLegacyProfileLinks(t *testing.T) {
+	handler := &AdminUIHandler{}
+	req := httptest.NewRequest(http.MethodGet, "/account/integrations", nil)
+	req = req.WithContext(context.WithValue(req.Context(), adminSessionContextKey{}, &models.Session{
+		AccountID: "acct-1",
+		IsMaster:  false,
+	}))
+	if !handler.canAccessOwnedIntegration(req, "acct-1", nil) {
+		t.Fatal("regular account could not access its owned integration")
+	}
+	if handler.canAccessOwnedIntegration(req, "acct-2", nil) {
+		t.Fatal("regular account accessed another account's integration")
+	}
+	if !handler.canAccessOwnedIntegration(req, "", []models.User{{AccountID: "acct-1"}}) {
+		t.Fatal("regular account could not access a linked legacy integration")
+	}
+	if handler.canAccessOwnedIntegration(req, "", []models.User{{AccountID: "acct-2"}}) {
+		t.Fatal("regular account accessed an unowned legacy integration")
+	}
+}
+
 func TestAdminSettingsSharedActivityShelvesExposeAssociatedSettings(t *testing.T) {
 	templateBytes, err := adminTemplates.ReadFile("admin_templates/settings.html")
 	if err != nil {

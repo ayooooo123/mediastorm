@@ -2,6 +2,7 @@ package handlers_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 
 	"novastream/config"
 	"novastream/handlers"
+	"novastream/internal/auth"
 	"novastream/services/jellyfin"
 )
 
@@ -23,6 +25,31 @@ func setupJellyfinHandler(t *testing.T) (*handlers.JellyfinAccountsHandler, *con
 	client := jellyfin.NewClient()
 	h := handlers.NewJellyfinAccountsHandler(mgr, client)
 	return h, mgr
+}
+
+func TestListJellyfinAccountsScopesRegularAccount(t *testing.T) {
+	h, mgr := setupJellyfinHandler(t)
+	saveSettingsWithAccounts(t, mgr, []config.JellyfinAccount{
+		{ID: "owned", Name: "Owned", OwnerAccountID: "acct-1"},
+		{ID: "foreign", Name: "Foreign", OwnerAccountID: "acct-2"},
+		{ID: "legacy", Name: "Legacy"},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/account/api/jellyfin/accounts", nil)
+	ctx := context.WithValue(req.Context(), auth.ContextKeyAccountID, "acct-1")
+	ctx = context.WithValue(ctx, auth.ContextKeyIsMaster, false)
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+	h.ListAccounts(rec, req)
+
+	var response struct {
+		Accounts []handlers.JellyfinAccountResponse `json:"accounts"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Accounts) != 1 || response.Accounts[0].ID != "owned" {
+		t.Fatalf("accounts = %+v, want only owned integration", response.Accounts)
+	}
 }
 
 // saveSettingsWithAccounts persists settings containing the given Jellyfin accounts.
@@ -146,7 +173,7 @@ func TestCreateJellyfinAccount_Success(t *testing.T) {
 	}
 
 	var resp struct {
-		Success bool                              `json:"success"`
+		Success bool                             `json:"success"`
 		Account handlers.JellyfinAccountResponse `json:"account"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
