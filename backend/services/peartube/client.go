@@ -42,8 +42,11 @@ const (
 	// EnabledEnv force-enables (with the default URL) or force-disables the
 	// integration independently of the URL.
 	EnabledEnv = "PEARTUBE_ENABLED"
-	// DefaultRelayURL is where `peartube relay` listens out of the box.
-	DefaultRelayURL = "http://127.0.0.1:8178"
+	// DefaultRelayURL is where `peartube relay` listens out of the box: the
+	// archive UI host and port default to 127.0.0.1:8174
+	// (peartube packages/cli/src/constants.js), and the JSON API is served on
+	// the same socket under /api/v1.
+	DefaultRelayURL = "http://127.0.0.1:8174"
 
 	apiPrefix = "/api/v1"
 
