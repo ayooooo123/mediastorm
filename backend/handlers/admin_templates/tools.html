@@ -565,7 +565,7 @@
                 </div>
                 <div class="form-group task-search-group">
                     <label class="form-label" for="taskSearchFilter">Find an automation</label>
-                    <input id="taskSearchFilter" class="form-input" name="mediastorm-task-filter" type="search" placeholder="Name, service, or automation type" autocomplete="off" autocapitalize="none" spellcheck="false" data-1p-ignore="true" data-lpignore="true" oninput="applyTaskFilters()">
+                    <input id="taskSearchFilter" class="form-input" name="mediastorm-task-filter" type="search" placeholder="Name, service, or automation type" autocomplete="off" autocapitalize="none" spellcheck="false" readonly aria-autocomplete="none" data-1p-ignore="true" data-lpignore="true" data-bwignore="true" data-protonpass-ignore="true" data-form-type="other" onpointerdown="activateTaskSearch(this)" onkeydown="activateTaskSearch(this)" onbeforeinput="activateTaskSearch(this)" oninput="handleTaskSearchInput(this)">
                 </div>
             </div>
 
@@ -2409,6 +2409,7 @@
 
     // ========== Scheduled Tasks State ==========
     let scheduledTasks = [];
+    let taskSearchActivated = false;
     const isTasksPage = {{if hasSuffix .CurrentPath "/tasks"}}true{{else}}false{{end}};
     const isIntegrationsPage = {{if hasSuffix .CurrentPath "/integrations"}}true{{else}}false{{end}};
     const requestedTaskProfileId = new URLSearchParams(window.location.search).get('profileId') || '';
@@ -5163,6 +5164,22 @@
                 </div>
             `;
         }).join('');
+    }
+
+    function activateTaskSearch(input) {
+        if (taskSearchActivated) return;
+        taskSearchActivated = true;
+        input.value = '';
+        input.readOnly = false;
+        applyTaskFilters();
+    }
+
+    function handleTaskSearchInput(input) {
+        if (!taskSearchActivated) {
+            input.value = '';
+            return;
+        }
+        applyTaskFilters();
     }
 
     function applyTaskFilters() {
