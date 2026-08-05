@@ -90,10 +90,12 @@ type DisplaySettings struct {
 	// Valid values: "watchProgress", "releaseStatus", "watchState", "unwatchedCount"
 	BadgeVisibility []string `json:"badgeVisibility"`
 	// NavigationTabVisibility controls which navigation tabs are shown in the client UI.
-	// Valid values: "home", "search", "lists", "live", "profiles", "downloads", "settings", "admin"
+	// Valid values: "home", "watchlist", "search", "lists", "live", "profiles", "downloads", "settings", "admin"
 	NavigationTabVisibility []string `json:"navigationTabVisibility,omitempty"`
 	// NavigationTabVisibilityIncludesSystemTabs marks the one-time migration that added settings/admin to existing visibility lists.
 	NavigationTabVisibilityIncludesSystemTabs bool `json:"navigationTabVisibilityIncludesSystemTabs,omitempty"`
+	// NavigationTabVisibilityIncludesWatchlist marks the one-time migration that added Watchlist to existing visibility lists.
+	NavigationTabVisibilityIncludesWatchlist bool `json:"navigationTabVisibilityIncludesWatchlist,omitempty"`
 	// WatchStateIconStyle controls the color of watch state icons.
 	// "colored" (default) = green/yellow circles, "white" = all white circles
 	WatchStateIconStyle string `json:"watchStateIconStyle,omitempty"`
@@ -159,6 +161,21 @@ func AddMissingSystemNavigationTabs(tabs []string) ([]string, bool) {
 	}
 
 	return tabs, changed
+}
+
+// AddMissingWatchlistNavigationTab enables the newly introduced Watchlist item
+// once for existing explicit visibility lists; its migration marker preserves
+// later user choices to hide it.
+func AddMissingWatchlistNavigationTab(tabs []string) ([]string, bool) {
+	if len(tabs) == 0 {
+		return tabs, false
+	}
+	for _, tab := range tabs {
+		if tab == "watchlist" {
+			return tabs, false
+		}
+	}
+	return append(tabs, "watchlist"), true
 }
 
 // AppearanceSettings controls app-wide visual accessibility and theming preferences.
@@ -428,6 +445,9 @@ type ShelfConfig struct {
 	LetterboxdListID       string                 `json:"letterboxdListId,omitempty"`       // MDBList external-list ID for an imported Letterboxd list
 	LetterboxdListURL      string                 `json:"letterboxdListUrl,omitempty"`      // Public Letterboxd list URL
 	Limit                  int                    `json:"limit,omitempty"`                  // Optional limit on number of items returned (0 = no limit)
+	ActivityWindowDays     int                    `json:"activityWindowDays,omitempty"`     // Shared-activity lookback window for backend activity shelves
+	MinimumProfiles        int                    `json:"minimumProfiles,omitempty"`        // Minimum completed media-item views required by Popular on This Server
+	MaxItemsPerProfile     int                    `json:"maxItemsPerProfile,omitempty"`     // Per-profile contribution cap for Recently Watched
 	HideUnreleased         bool                   `json:"hideUnreleased,omitempty"`         // Filter out unreleased/in-theaters content
 	Sort                   string                 `json:"sort,omitempty"`                   // Optional shelf-specific sort mode
 	CalendarSources        CalendarSettings       `json:"calendarSources,omitempty"`        // Optional source filter for calendar-backed shelves
@@ -498,6 +518,9 @@ func DefaultHomeShelfConfigs() []ShelfConfig {
 		{ID: "trending-tv", Name: "Trending TV Shows", Enabled: true, Order: 9},
 		{ID: "streaming-services", Name: "Streaming Services", Enabled: true, Order: 10},
 		{ID: "live-favorites", Name: "Favorite Channels", Enabled: false, Order: 11},
+		{ID: "popular-on-server", Name: "Popular on This Server", Enabled: false, Order: 12, Limit: 20, ActivityWindowDays: 90, MinimumProfiles: 2},
+		{ID: "recently-watched", Name: "Recently Watched", Enabled: false, Order: 13, Limit: 20, ActivityWindowDays: 14, MaxItemsPerProfile: 3},
+		{ID: "dashboard", Name: "Dashboard", Enabled: false, Order: 14},
 	}
 }
 
@@ -731,6 +754,127 @@ func EnsureDefaultHomeShelves(shelves []ShelfConfig) ([]ShelfConfig, bool) {
 		changed = true
 	}
 
+	if !hasShelf("popular-on-server") {
+		insertOrder := -1
+		for _, shelf := range nextShelves {
+			if shelf.ID == "live-favorites" {
+				insertOrder = shelf.Order + 1
+				break
+			}
+			if shelf.Order > insertOrder {
+				insertOrder = shelf.Order + 1
+			}
+		}
+		if insertOrder < 0 {
+			insertOrder = 0
+		}
+		for i := range nextShelves {
+			if nextShelves[i].Order >= insertOrder {
+				nextShelves[i].Order++
+			}
+		}
+		nextShelves = append(nextShelves, ShelfConfig{
+			ID:                 "popular-on-server",
+			Name:               "Popular on This Server",
+			Enabled:            false,
+			Order:              insertOrder,
+			Limit:              20,
+			ActivityWindowDays: 90,
+			MinimumProfiles:    2,
+		})
+		changed = true
+	}
+
+	if !hasShelf("recently-watched") {
+		insertOrder := -1
+		for _, shelf := range nextShelves {
+			if shelf.ID == "popular-on-server" {
+				insertOrder = shelf.Order + 1
+				break
+			}
+			if shelf.Order > insertOrder {
+				insertOrder = shelf.Order + 1
+			}
+		}
+		if insertOrder < 0 {
+			insertOrder = 0
+		}
+		for i := range nextShelves {
+			if nextShelves[i].Order >= insertOrder {
+				nextShelves[i].Order++
+			}
+		}
+		nextShelves = append(nextShelves, ShelfConfig{
+			ID:                 "recently-watched",
+			Name:               "Recently Watched",
+			Enabled:            false,
+			Order:              insertOrder,
+			Limit:              20,
+			ActivityWindowDays: 14,
+			MaxItemsPerProfile: 3,
+		})
+		changed = true
+	}
+
+	if !hasShelf("dashboard") {
+		insertOrder := -1
+		for _, shelf := range nextShelves {
+			if shelf.ID == "recently-watched" {
+				insertOrder = shelf.Order + 1
+				break
+			}
+			if shelf.Order > insertOrder {
+				insertOrder = shelf.Order + 1
+			}
+		}
+		if insertOrder < 0 {
+			insertOrder = 0
+		}
+		for i := range nextShelves {
+			if nextShelves[i].Order >= insertOrder {
+				nextShelves[i].Order++
+			}
+		}
+		nextShelves = append(nextShelves, ShelfConfig{
+			ID:      "dashboard",
+			Name:    "Dashboard",
+			Enabled: false,
+			Order:   insertOrder,
+		})
+		changed = true
+	}
+
+	for i := range nextShelves {
+		switch nextShelves[i].ID {
+		case "popular-on-server":
+			if nextShelves[i].Limit <= 0 {
+				nextShelves[i].Limit = 20
+				changed = true
+			}
+			if nextShelves[i].ActivityWindowDays < 7 || nextShelves[i].ActivityWindowDays > 365 {
+				nextShelves[i].ActivityWindowDays = 90
+				changed = true
+			}
+			if nextShelves[i].MinimumProfiles < 1 || nextShelves[i].MinimumProfiles > 100 {
+				nextShelves[i].MinimumProfiles = 2
+				changed = true
+			}
+		case "recently-watched":
+			if nextShelves[i].Limit <= 0 {
+				nextShelves[i].Limit = 20
+				changed = true
+			}
+			if nextShelves[i].ActivityWindowDays < 1 || nextShelves[i].ActivityWindowDays > 90 {
+				nextShelves[i].ActivityWindowDays = 14
+				changed = true
+			}
+			if nextShelves[i].MaxItemsPerProfile < 1 || nextShelves[i].MaxItemsPerProfile > 20 {
+				nextShelves[i].MaxItemsPerProfile = 3
+				changed = true
+			}
+		}
+	}
+
 	return nextShelves, changed
 }
 
@@ -835,8 +979,9 @@ func DefaultUserSettings() UserSettings {
 		},
 		Display: DisplaySettings{
 			BadgeVisibility:                           []string{"watchProgress"},
-			NavigationTabVisibility:                   []string{"home", "search", "lists", "live", "profiles", "downloads", "settings", "admin"},
+			NavigationTabVisibility:                   []string{"home", "watchlist", "search", "lists", "live", "profiles", "downloads", "settings", "admin"},
 			NavigationTabVisibilityIncludesSystemTabs: true,
+			NavigationTabVisibilityIncludesWatchlist:  true,
 			WatchStateIconStyle:                       "colored",
 			IncludeUnreleasedMoviesInLists:            BoolPtr(true),
 			IncludeUnreleasedShowsInLists:             BoolPtr(true),

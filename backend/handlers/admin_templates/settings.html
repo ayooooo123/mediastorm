@@ -150,6 +150,239 @@
         grid-template-columns: 1fr;
     }
 }
+
+.settings-workspace {
+    display: grid;
+    grid-template-columns: minmax(190px, 220px) minmax(0, 1fr);
+    gap: 1rem;
+    align-items: start;
+}
+.settings-sidebar {
+    align-self: start;
+    min-width: 0;
+}
+.settings-main {
+    min-width: 0;
+}
+.settings-workspace-toolbar {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.35rem;
+    margin: 0;
+    padding: 0.75rem;
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    background: var(--bg-secondary);
+}
+.settings-scope-section {
+    padding-bottom: 0.7rem;
+    border-bottom: 1px solid var(--border-color);
+}
+.settings-scope-tree {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+}
+.settings-scope-row {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    width: 100%;
+    min-width: 0;
+    padding: 0.45rem 0.5rem;
+    border: 1px solid transparent;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--text-secondary);
+    text-align: left;
+    cursor: pointer;
+}
+.settings-scope-row:hover { color: var(--text-primary); background: var(--bg-tertiary); }
+.settings-scope-row.active { color: var(--text-primary); background: var(--accent-bg); border-color: var(--accent); }
+.settings-scope-server-line { display: flex; align-items: stretch; }
+.settings-scope-server-line .settings-scope-row { flex: 1; width: auto; padding-left: 0.15rem; }
+.settings-scope-row.household { color: var(--text-primary); font-weight: 600; }
+.settings-scope-person-line { display: flex; align-items: stretch; padding-left: 0.85rem; }
+.settings-scope-person-line .settings-scope-row.person { flex: 1; width: auto; padding-left: 0.15rem; }
+.settings-scope-toggle {
+    display: grid;
+    place-items: center;
+    width: 24px;
+    flex: 0 0 24px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+.settings-scope-toggle:hover { color: var(--text-primary); }
+.settings-scope-row.device { padding-left: 2.2rem; }
+.settings-scope-chevron,
+.settings-scope-icon {
+    width: 15px;
+    height: 15px;
+    flex: 0 0 15px;
+}
+.settings-scope-chevron { transition: transform 0.15s ease; }
+.settings-scope-row.collapsed .settings-scope-chevron,
+.settings-scope-toggle.collapsed .settings-scope-chevron { transform: rotate(-90deg); }
+.settings-scope-copy { min-width: 0; flex: 1; }
+.settings-scope-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.78rem; }
+.settings-scope-meta { display: block; margin-top: 0.08rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: 0.65rem; font-weight: 400; }
+.settings-scope-dot { width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--accent); }
+.settings-scope-custom {
+    flex: 0 0 auto;
+    padding: 0.12rem 0.38rem;
+    border-radius: 999px;
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+    font-size: 0.58rem;
+    font-weight: 650;
+    line-height: 1.2;
+}
+.settings-impact-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 1rem;
+    padding: 0.8rem 1rem;
+    border: 1px solid var(--border-color);
+    border-radius: 9px;
+    background: var(--bg-secondary);
+}
+.settings-impact-banner p { margin: 0.2rem 0 0; color: var(--text-muted); font-size: 0.78rem; }
+.settings-stale-toggle {
+    align-self: flex-start;
+    margin: 0.1rem 0 0.25rem 2.2rem;
+    padding: 0.25rem 0.4rem;
+    border: 0;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 0.66rem;
+    cursor: pointer;
+}
+.settings-stale-toggle:hover { color: var(--text-primary); }
+.settings-scope-empty { padding: 0.35rem 0.5rem 0.35rem 1.35rem; color: var(--text-muted); font-size: 0.68rem; }
+.settings-navigation-section { padding-top: 0.7rem; }
+#userSelector,
+#clientSelector { display: none !important; }
+.settings-sidebar-label {
+    padding: 0.15rem 0.55rem 0.35rem;
+    color: var(--text-muted);
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+.settings-category-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+}
+.settings-category-btn,
+.settings-level-btn {
+    border: 1px solid transparent;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--text-secondary);
+    padding: 0.55rem 0.65rem;
+    font-size: 0.8rem;
+    cursor: pointer;
+}
+.settings-category-btn {
+    width: 100%;
+    text-align: left;
+}
+.settings-category-btn-copy { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.settings-customization-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.2rem;
+    padding: 0.1rem 0.35rem;
+    border-radius: 999px;
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+    font-size: 0.62rem;
+    font-weight: 700;
+    line-height: 1.25;
+}
+.section-customization-count { margin-left: 0.45rem; }
+.settings-category-btn:hover,
+.settings-level-btn:hover { color: var(--text-primary); background: var(--bg-tertiary); }
+.settings-category-btn.active,
+.settings-level-btn.active { color: var(--text-primary); background: var(--accent-bg); border-color: var(--accent); }
+.settings-level-section {
+    margin-top: 0.55rem;
+    padding-top: 0.7rem;
+    border-top: 1px solid var(--border-color);
+}
+.settings-level-switch { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.25rem; padding: 0.2rem; border-radius: 8px; background: var(--bg-tertiary); }
+.settings-level-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.42;
+    color: var(--text-muted);
+    background: transparent;
+}
+.settings-level-btn:disabled:hover { color: var(--text-muted); background: transparent; }
+.settings-level-help { margin-top: 0.45rem; color: var(--text-muted); font-size: 0.72rem; line-height: 1.4; }
+.page-header-controls .btn {
+    box-sizing: border-box;
+    height: 40px;
+    max-height: 40px;
+    white-space: nowrap;
+}
+.page-header-controls .form-select {
+    box-sizing: border-box;
+    height: 40px;
+    max-height: 40px;
+}
+#settingsContainer .settings-group { margin-bottom: 1rem; }
+#settingsContainer .group-title { margin: 0 0 0.55rem; font-size: 0.78rem; }
+#settingsContainer .section { margin-bottom: 0.45rem; }
+#settingsContainer .section-header { min-height: 48px; padding: 0.7rem 0.85rem; }
+#settingsContainer .section-content { padding: 0.9rem; }
+#settingsContainer .grid { gap: 0.75rem; }
+#settingsContainer .form-group { margin-bottom: 0.75rem; }
+#settingsContainer .form-hint { margin-top: 0.3rem; font-size: 0.74rem; line-height: 1.35; }
+#settingsContainer .field-subgroup { margin: 0.25rem 0 0.75rem; padding: 0.8rem; }
+.advanced-setting-badge {
+    display: inline-flex;
+    margin-left: 0.45rem;
+    padding: 0.12rem 0.38rem;
+    border-radius: 999px;
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+    font-size: 0.62rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.settings-related-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 0.75rem;
+    padding: 0.85rem 1rem;
+    border: 1px solid var(--border-color);
+    border-radius: 9px;
+    background: var(--bg-secondary);
+}
+.settings-related-card p { margin: 0.2rem 0 0; color: var(--text-muted); font-size: 0.78rem; }
+@media (max-width: 900px) {
+    .page-header-controls { flex-wrap: wrap; }
+    .settings-workspace { grid-template-columns: 1fr; }
+    .settings-workspace-toolbar { gap: 0.55rem; }
+    .settings-category-nav { flex-direction: row; width: 100%; overflow-x: auto; padding-bottom: 0.2rem; }
+    .settings-category-btn { flex: 0 0 auto; width: auto; white-space: nowrap; }
+    .settings-level-section { display: flex; align-items: center; gap: 0.6rem; margin-top: 0; padding-top: 0.6rem; }
+    .settings-level-section .settings-sidebar-label { padding: 0; }
+    .settings-level-switch { display: flex; }
+    .settings-level-help { margin: 0; }
+}
 </style>
 {{end}}
 
@@ -176,16 +409,7 @@
         <p>{{if .IsAdmin}}Configure your mediastorm server{{else}}Configure profile settings{{end}}</p>
     </div>
     <div class="page-header-controls" style="display: flex; gap: 0.5rem; align-items: center;">
-        <input type="text" id="settingsSearch" class="form-input" placeholder="Search settings..." oninput="handleSettingsSearch(this.value)" style="min-width: 200px;">
-        <select id="userSelector" class="form-select" style="min-width: 180px;" onchange="handleUserChange(this.value)">
-            {{if .IsAdmin}}<option value="">Global Defaults</option>{{end}}
-            {{range .Users}}
-            <option value="{{.ID}}">{{.Name}}</option>
-            {{end}}
-        </select>
-        <select id="clientSelector" class="form-select" style="min-width: 180px; display: none;" onchange="handleClientChange(this.value)">
-            <option value="">Profile Defaults</option>
-        </select>
+        <input type="search" id="settingsSearch" class="form-input" placeholder="Search settings..." autocomplete="off" autocapitalize="none" spellcheck="false" readonly aria-autocomplete="none" data-1p-ignore="true" data-lpignore="true" data-bwignore="true" data-protonpass-ignore="true" data-form-type="other" onpointerdown="activateSettingsSearch(this)" onkeydown="activateSettingsSearch(this)" onbeforeinput="activateSettingsSearch(this)" oninput="handleSettingsSearchInput(this)" style="min-width: 200px;">
         <button id="identifyClientBtn" class="btn btn-secondary" style="display: none;" onclick="identifyClient()" title="Send ping to identify this device">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
                 <circle cx="12" cy="12" r="10"/>
@@ -199,14 +423,14 @@
                 <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
                 <path d="M3 3v5h5"/>
             </svg>
-            Revert
+            Use Parent Defaults
         </button>
-        <button id="propagateBtn" class="btn btn-secondary" style="display: none;" onclick="propagateSettings()" title="Propagate settings to children">
+        <button id="propagateBtn" class="btn btn-secondary" style="display: none;" onclick="propagateSettings()" title="Review child scopes with custom settings">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M12 5v14"/>
                 <path d="M19 12l-7 7-7-7"/>
             </svg>
-            Propagate
+            <span id="propagateBtnLabel">Review Customizations</span>
         </button>
         <button class="btn btn-primary" onclick="saveAllSettings()">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
@@ -219,10 +443,41 @@
     </div>
 </div>
 
-<div id="settingsContainer">
-    <div style="display: flex; align-items: center; justify-content: center; padding: 2rem;">
-        <div class="spinner"></div>
-    </div>
+<div class="settings-workspace">
+    <aside class="settings-sidebar" aria-label="Settings navigation">
+        <div class="settings-workspace-toolbar">
+            <div class="settings-scope-section">
+                <div class="settings-sidebar-label">Scope</div>
+                <div id="settingsScopeTree" class="settings-scope-tree" aria-label="Settings scope"></div>
+                <select id="userSelector" hidden aria-hidden="true" tabindex="-1">
+                    {{if .IsAdmin}}<option value="">Server defaults</option>{{end}}
+                    {{range .Users}}
+                    <option value="{{.ID}}">{{.Name}}</option>
+                    {{end}}
+                </select>
+                <select id="clientSelector" hidden aria-hidden="true" tabindex="-1"><option value="">Profile defaults</option></select>
+            </div>
+            <div class="settings-navigation-section">
+                <div class="settings-sidebar-label">Settings</div>
+                <div id="settingsCategoryNav" class="settings-category-nav" aria-label="Settings categories"></div>
+            </div>
+            <div class="settings-level-section">
+                <div class="settings-sidebar-label">View</div>
+                <div class="settings-level-switch" aria-label="Settings detail level">
+                    <button id="settingsBasicBtn" class="settings-level-btn" type="button" disabled aria-disabled="true" title="Basic view is being reviewed">Basic</button>
+                    <button id="settingsAdvancedBtn" class="settings-level-btn" type="button" onclick="setSettingsLevel('advanced')">Advanced</button>
+                </div>
+                <div id="settingsLevelHelp" class="settings-level-help"></div>
+            </div>
+        </div>
+    </aside>
+    <main class="settings-main">
+        <div id="settingsContainer">
+            <div style="display: flex; align-items: center; justify-content: center; padding: 2rem;">
+                <div class="spinner"></div>
+            </div>
+        </div>
+    </main>
 </div>
 
 <!-- Test Result Modal -->
@@ -259,7 +514,7 @@
     </div>
 </div>
 
-<!-- Propagate Prompt Modal -->
+<!-- Override Review Modal -->
 <div id="propagateModal" class="test-modal" onclick="closePropagateModal()">
     <div class="test-modal-content" onclick="event.stopPropagation()" style="max-width: 480px;">
         <div class="test-modal-header">
@@ -267,7 +522,7 @@
                 <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M12 5v14"/><path d="M19 12l-7 7-7-7"/>
                 </svg>
-                <span id="propagateModalTitle">Propagate settings?</span>
+                <span id="propagateModalTitle">Review custom settings</span>
             </h3>
             <button class="test-modal-close" onclick="closePropagateModal()">
                 <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
@@ -281,12 +536,12 @@
             <p id="propagateModalNote" style="color: var(--text-secondary); font-size: 0.85rem;"></p>
         </div>
         <div class="test-modal-footer" style="display: flex; gap: 0.5rem; justify-content: flex-end;">
-            <button class="btn btn-secondary" onclick="closePropagateModal()">Skip</button>
+            <button class="btn btn-secondary" onclick="closePropagateModal()">Close</button>
             <button id="propagateConfirmBtn" class="btn btn-primary" onclick="confirmPropagate()">
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M12 5v14"/><path d="M19 12l-7 7-7-7"/>
                 </svg>
-                Propagate
+                Use Parent Defaults
             </button>
         </div>
     </div>
@@ -381,6 +636,46 @@
     let schema = {{json .Schema}};
     let groups = {{json .Groups}};
     let presets = {{json .Presets}};
+    const friendlySettingsCopy = [
+        ['server', 'host', 'Listen Address', 'Usually left blank so mediastorm can accept connections on every network interface.'],
+        ['server', 'port', 'Web Port', 'The port used to open mediastorm. The default is 7777.'],
+        ['server', 'basePath', 'URL Prefix', 'Optional path used when mediastorm sits behind a reverse proxy.'],
+        ['network', 'homeWifiSSID', 'Home Wi-Fi Name', 'The Wi-Fi network that tells the app it is at home.'],
+        ['network', 'homeBackendUrl', 'Address at Home', 'The faster local address used while connected to home Wi-Fi.'],
+        ['network', 'remoteBackendUrl', 'Address Away from Home', 'The secure address used on mobile data or other networks.'],
+        ['streaming', 'serviceMode', 'Streaming Method', 'Choose Usenet, debrid, or both.'],
+        ['streaming', 'multiProviderMode', 'When More Than One Debrid Service Is Available', 'Choose the fastest service automatically or prefer the service order you set.'],
+        ['streaming', 'indexerTimeoutSec', 'Search Wait Time', 'How long to wait for search sources before showing available results.'],
+        ['streaming', 'healthCheckTimeoutSec', 'Connection Test Wait Time', 'How long a manual service test may run before it is stopped.'],
+        ['filtering', 'maxSizeMovieGb', 'Largest Movie', 'Ignore movie files larger than this. Use 0 for no limit.'],
+        ['filtering', 'maxSizeEpisodeGb', 'Largest Episode', 'Ignore episode files larger than this. Use 0 for no limit.'],
+        ['filtering', 'maxResolution', 'Highest Video Quality', 'Do not show results above this video quality. Leave blank for no limit.'],
+        ['filtering', 'hdrDvPolicy', 'HDR & Dolby Vision', 'Choose which HDR and Dolby Vision formats can be selected automatically.'],
+        ['filtering', 'adaptivePlaybackEnabled', 'Adapt to Each Device', 'Use each device\'s measured connection and display support to avoid streams it may struggle to play.'],
+        ['filtering', 'requiredTerms', 'Must Include', 'Keep only results containing at least one of these words or patterns.'],
+        ['filtering', 'filterOutTerms', 'Always Exclude', 'Remove results containing any of these words or patterns.'],
+        ['filtering', 'preferredTerms', 'Prefer', 'Move matching results higher. Larger weights have a stronger effect.'],
+        ['filtering', 'nonPreferredTerms', 'Prefer Less', 'Move matching results lower without hiding them completely.'],
+        ['filtering', 'servicePriority', 'Preferred Streaming Method', 'When enabled in result ordering, prefer Usenet or debrid results.'],
+        ['playback', 'preferredPlayer', 'Default Player', 'The player opened when playback starts.'],
+        ['playback', 'preferredAudioLanguage', 'Preferred Audio', 'The language to select first when it is available.'],
+        ['playback', 'preferredSubtitleLanguage', 'Preferred Subtitles', 'The subtitle language to select first when it is available.'],
+        ['playback', 'forceAacTranscoding', 'Make Surround Audio More Compatible', 'Convert surround audio to AAC for devices or headphones that cannot play it directly.'],
+        ['playback', 'disablePrequeue', 'Prepare Streams Only After Pressing Play', 'Reduces background work, but playback may take longer to start.'],
+        ['homeShelves', 'itemCap', 'Items Per Home Row', 'How many items appear before the Explore card.'],
+        ['homeShelves', 'excludeUpcomingFromContinue', 'Keep Unreleased Episodes Out of Continue Watching', 'Show unreleased next episodes in My Upcoming instead.'],
+        ['display', 'badgeVisibility', 'Information Shown on Posters', 'Choose the labels and progress information shown on media cards.'],
+        ['display', 'navigationTabVisibility', 'App Navigation', 'Choose which navigation tabs are visible in the apps.'],
+        ['metadata', 'tvdbApiKey', 'TVDB Key', 'Used to look up TV show and episode information.'],
+        ['metadata', 'tmdbApiKey', 'TMDB Key', 'Used to look up movie, show, and artwork information.'],
+        ['subtitles', 'enableTranslatedSubs', 'Translate Subtitles When Needed', 'Allow English subtitles to be translated into the profile\'s preferred subtitle language.']
+    ];
+    friendlySettingsCopy.forEach(([sectionKey, fieldKey, label, description]) => {
+        const field = schema[sectionKey]?.fields?.[fieldKey];
+        if (!field) return;
+        field.label = label;
+        field.description = description;
+    });
     let originalSettings = JSON.parse(JSON.stringify(currentSettings));
     let selectedUserId = '';
     let userSettings = null;
@@ -389,6 +684,7 @@
     let clientSettings = null;
     let originalClientSettings = null;
     let clientsForUser = []; // Clients for the selected user
+    let settingsScopeClients = []; // All visible clients used by the scope tree
     let profilesData = []; // Profiles with PIN status
     let accountsData = []; // User accounts with profiles
     let traktAccountsData = []; // Available Trakt accounts for the current admin/account scope
@@ -401,8 +697,287 @@
     let pearTubeStatus = null; // Live relay verdict from /api/p2p/status
     let userOverrides = {{json .UserOverrides}}; // Map of userId -> hasOverrides
     const isAdmin = {{json .IsAdmin}};
+    const settingsScopeUsername = {{json .Username}};
+    const STALE_SETTINGS_DEVICE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+    const expandedSettingsHouseholds = new Set();
+    const expandedSettingsPeople = new Set();
+    const expandedSettingsStaleDevices = new Set();
+    let settingsScopeServerExpanded = false;
     const settingsDebugSessionId = 'settings-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
     let editShelfEscapeHandler = null;
+    let activeSettingsGroup = '';
+    // Basic mode remains visible as a roadmap affordance, but all settings stay
+    // available until its contents have been reviewed section by section.
+    let settingsLevel = 'advanced';
+    const advancedSections = new Set(['ranking', 'server', 'transmux']);
+    const advancedFieldPaths = new Set([
+        'streaming.multiProviderMode',
+        'streaming.usenetResolutionTimeoutSec',
+        'streaming.indexerTimeoutSec',
+        'streaming.healthCheckTimeoutSec',
+        'streaming.maxAlternateTitleSearches',
+        'playback.thumbnails.enabled',
+        'playback.thumbnails.workers',
+        'playback.youtubeProxyUrl',
+        'playback.ytdlpCookies',
+        'homeShelves.homeShelfScale',
+        'homeShelves.homeHeroScale',
+        'server.allowedPrivateMediaOrigins'
+    ]);
+    const advancedArrayFields = new Set([
+        'live.sources.proxyUrl', 'live.sources.playlistCacheTtlHours', 'live.sources.probeSizeMb', 'live.sources.analyzeDurationSec', 'live.sources.lowLatency',
+        'liveTV.sources.proxyUrl', 'liveTV.sources.playlistCacheTtlHours', 'liveTV.sources.probeSizeMb', 'liveTV.sources.analyzeDurationSec', 'liveTV.sources.lowLatency',
+        'usenetEngines.apiPath', 'usenetEngines.priority', 'usenetEngines.config.webdavPathPrefix', 'usenetEngines.pollIntervalSeconds', 'usenetEngines.timeoutSeconds'
+    ]);
+    const requestedSettingsSection = window.location.hash.replace(/^#/, '');
+    if (requestedSettingsSection && schema[requestedSettingsSection]?.group) {
+        activeSettingsGroup = schema[requestedSettingsSection].group;
+    }
+    if (advancedSections.has(requestedSettingsSection)) {
+        settingsLevel = 'advanced';
+    }
+
+    function setSettingsLevel(level) {
+        settingsLevel = 'advanced';
+        localStorage.setItem('mediastorm-settings-level', settingsLevel);
+        renderSettings();
+    }
+
+    function setSettingsGroup(groupId) {
+        activeSettingsGroup = groupId;
+        renderSettings();
+    }
+
+    function renderSettingsWorkspaceNavigation() {
+        renderSettingsScopeTree();
+        const nav = document.getElementById('settingsCategoryNav');
+        const availableGroups = groups.filter(group => Object.entries(schema).some(([key, def]) => {
+            if (def.group !== group.id || def.hidden) return false;
+            if (settingsLevel === 'basic' && advancedSections.has(key)) return false;
+            if (selectedClientId && !clientConfigSections.includes(key)) return false;
+            if (selectedUserId && !selectedClientId && !perUserSections.includes(key)) return false;
+            if (!selectedUserId && def.inheritFrom) return false;
+            return true;
+        }));
+        if (activeSettingsGroup && !availableGroups.some(group => group.id === activeSettingsGroup)) {
+            activeSettingsGroup = '';
+        }
+        if (nav) {
+            const allCustomizationCount = availableGroups.reduce((total, group) => total + settingsGroupCustomizationCount(group.id), 0);
+            const allButton = '<button type="button" class="settings-category-btn '+(!activeSettingsGroup ? 'active' : '')+'"'+(!activeSettingsGroup ? ' aria-current="page"' : '')+' onclick="setSettingsGroup(\'\')"><span class="settings-category-btn-copy"><span>All</span>'+renderCustomizationCount(allCustomizationCount)+'</span></button>';
+            nav.innerHTML = allButton + availableGroups.map(group => {
+                const isActive = group.id === activeSettingsGroup;
+                const customizationCount = settingsGroupCustomizationCount(group.id);
+                return '<button type="button" class="settings-category-btn '+(isActive ? 'active' : '')+'"'+(isActive ? ' aria-current="page"' : '')+' onclick="setSettingsGroup(\''+group.id+'\')"><span class="settings-category-btn-copy"><span>'+group.label+'</span>'+renderCustomizationCount(customizationCount)+'</span></button>';
+            }).join('');
+        }
+        document.getElementById('settingsBasicBtn')?.classList.toggle('active', settingsLevel === 'basic');
+        document.getElementById('settingsAdvancedBtn')?.classList.toggle('active', settingsLevel === 'advanced');
+        const help = document.getElementById('settingsLevelHelp');
+        if (help) help.textContent = 'All settings are currently shown. Basic view is disabled while its contents are reviewed.';
+    }
+
+    function settingsScopeIcon(kind) {
+        if (kind === 'server') return '<svg class="settings-scope-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="3" width="16" height="7" rx="2"/><rect x="4" y="14" width="16" height="7" rx="2"/><path d="M8 6.5h.01M8 17.5h.01"/></svg>';
+        if (kind === 'household') return '<svg class="settings-scope-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10M9 20v-6h6v6"/></svg>';
+        if (kind === 'person') return '<svg class="settings-scope-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>';
+        return '<svg class="settings-scope-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>';
+    }
+
+    function settingsScopeChevron() {
+        return '<svg class="settings-scope-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>';
+    }
+
+    function isSettingsDeviceStale(client) {
+        if (!client.lastSeenAt) return true;
+        const lastSeen = new Date(client.lastSeenAt).getTime();
+        return !Number.isFinite(lastSeen) || Date.now() - lastSeen > STALE_SETTINGS_DEVICE_AGE_MS;
+    }
+
+    function settingsScopeHouseholds() {
+        const accounts = Array.isArray(accountsData) ? accountsData : [];
+        if (accounts.length > 0) return accounts;
+        const accountIds = [...new Set(profilesData.map(profile => profile.accountId).filter(Boolean))];
+        if (accountIds.length > 0) {
+            return accountIds.map((id, index) => ({ id, username: index === 0 && settingsScopeUsername ? settingsScopeUsername : 'Household' }));
+        }
+        return [{ id: '__household__', username: settingsScopeUsername || 'Household' }];
+    }
+
+    function renderSettingsScopeTree() {
+        const tree = document.getElementById('settingsScopeTree');
+        if (!tree) return;
+        const households = settingsScopeHouseholds();
+        let html = '';
+        if (isAdmin) {
+            html += `<div class="settings-scope-server-line"><button type="button" class="settings-scope-toggle ${settingsScopeServerExpanded ? '' : 'collapsed'}" onclick="toggleSettingsServer(event)" aria-expanded="${settingsScopeServerExpanded}" aria-label="${settingsScopeServerExpanded ? 'Collapse' : 'Expand'} households">${settingsScopeChevron()}</button><button type="button" class="settings-scope-row ${!selectedUserId ? 'active' : ''}" onclick="selectSettingsScope('server', '')">${settingsScopeIcon('server')}<span class="settings-scope-copy"><span class="settings-scope-name">Server defaults</span><span class="settings-scope-meta">All households</span></span>${!selectedUserId ? '<span class="settings-scope-dot"></span>' : ''}</button></div>`;
+            if (!settingsScopeServerExpanded) {
+                tree.innerHTML = html;
+                return;
+            }
+        }
+
+        for (const household of households) {
+            const householdId = household.id || '__household__';
+            const people = profilesData.filter(profile => householdId === '__household__' || profile.accountId === householdId);
+            const isExpanded = expandedSettingsHouseholds.has(householdId);
+            html += `<button type="button" class="settings-scope-row household ${isExpanded ? '' : 'collapsed'}" onclick="toggleSettingsHousehold(decodeURIComponent('${encodeURIComponent(householdId)}'))" aria-expanded="${isExpanded}">${settingsScopeChevron()}${settingsScopeIcon('household')}<span class="settings-scope-copy"><span class="settings-scope-name">${escapeHtml(household.username || household.name || 'Household')}</span><span class="settings-scope-meta">${people.length} ${people.length === 1 ? 'person' : 'people'}</span></span></button>`;
+            if (!isExpanded) continue;
+            if (people.length === 0) {
+                html += '<div class="settings-scope-empty">No people in this household</div>';
+                continue;
+            }
+            for (const profile of people) html += renderSettingsPersonScope(profile);
+        }
+        tree.innerHTML = html;
+    }
+
+    function profileCustomizationCount(profileId) {
+        const details = userOverrideDetails[profileId] || {};
+        return Object.values(details).reduce((total, fields) => total + (Array.isArray(fields) ? fields.length : 0), 0);
+    }
+
+    function settingsScopeCustomizationBadge(count, label = 'custom') {
+        if (!count) return '';
+        const text = typeof count === 'number' && count > 1 ? `${count} ${label}` : label.charAt(0).toUpperCase() + label.slice(1);
+        return `<span class="settings-scope-custom" title="This scope has settings that differ from its parent">${escapeHtml(text)}</span>`;
+    }
+
+    function renderCustomizationCount(count, extraClass = '') {
+        if (!count) return '';
+        return `<span class="settings-customization-count ${extraClass}" title="${count} custom setting${count === 1 ? '' : 's'}">${count}</span>`;
+    }
+
+    function rankingCustomizationCount() {
+        if (selectedClientId && clientSettings) {
+            return clientRankingFields.filter(field => clientFieldDiffersFromInherited(clientSettings, 'ranking', field)).length;
+        }
+        if (!selectedUserId || !userSettings) return 0;
+        return (buildProfileOverrideDetails(userSettings).ranking || []).length;
+    }
+
+    function settingsSectionCustomizationCount(sectionKey) {
+        if (!selectedUserId && !selectedClientId) return 0;
+        if (sectionKey === 'ranking') return rankingCustomizationCount();
+
+        if (!selectedClientId && selectedUserId && userSettings) {
+            const groupKey = {
+                playback: 'playback',
+                metadata: 'metadata',
+                filtering: 'contentFiltering',
+                animeFiltering: 'animeFiltering',
+                display: 'display',
+                homeShelves: 'homeShelves',
+                liveTV: 'liveTV',
+                network: 'network',
+            }[sectionKey];
+            if (groupKey) {
+                return (buildProfileOverrideDetails(userSettings)[groupKey] || []).length;
+            }
+        }
+
+        const paths = new Set();
+        const collectFields = (key, def) => {
+            if (!def || def.is_array) return;
+            for (const fieldKey of Object.keys(def.fields || {})) {
+                const path = `${key}.${fieldKey}`;
+                if (selectedClientId && !getClientSettingsKey(path)) continue;
+                if (getInheritanceInfo(path).isOverridden) paths.add(path);
+            }
+        };
+
+        collectFields(sectionKey, schema[sectionKey]);
+        for (const [nestedKey, nestedDef] of Object.entries(schema)) {
+            if (nestedDef.parent !== sectionKey || nestedDef.group) continue;
+            if (nestedDef.is_array) {
+                if (!selectedClientId && isProfileValueDifferent(nestedKey)) paths.add(nestedKey);
+                continue;
+            }
+            collectFields(nestedKey, nestedDef);
+        }
+        return paths.size;
+    }
+
+    function settingsGroupCustomizationCount(groupId) {
+        if (!selectedUserId && !selectedClientId) return 0;
+        return Object.entries(schema)
+            .filter(([, def]) => def.group === groupId && !def.hidden)
+            .reduce((total, [sectionKey]) => total + settingsSectionCustomizationCount(sectionKey), 0);
+    }
+
+    function renderSettingsPersonScope(profile) {
+        const profileClients = settingsScopeClients.filter(client => client.userId === profile.id);
+        const activeClients = profileClients.filter(client => !isSettingsDeviceStale(client));
+        const staleClients = profileClients.filter(isSettingsDeviceStale);
+        const showStale = expandedSettingsStaleDevices.has(profile.id);
+        const visibleClients = showStale ? [...activeClients, ...staleClients] : activeClients;
+        const isExpanded = expandedSettingsPeople.has(profile.id);
+        const isActive = selectedUserId === profile.id && !selectedClientId;
+        const customizationCount = profileCustomizationCount(profile.id);
+        let html = `<div class="settings-scope-person-line"><button type="button" class="settings-scope-toggle ${isExpanded ? '' : 'collapsed'}" onclick="toggleSettingsPerson(event, decodeURIComponent('${encodeURIComponent(profile.id)}'))" aria-expanded="${isExpanded}" aria-label="${isExpanded ? 'Collapse' : 'Expand'} devices for ${escapeHtml(profile.name || 'person')}">${settingsScopeChevron()}</button><button type="button" class="settings-scope-row person ${isActive ? 'active' : ''}" onclick="selectSettingsScope('person', decodeURIComponent('${encodeURIComponent(profile.id)}'))">${settingsScopeIcon('person')}<span class="settings-scope-copy"><span class="settings-scope-name">${escapeHtml(profile.name || 'Unnamed person')}</span><span class="settings-scope-meta">Profile defaults · ${profileClients.length} ${profileClients.length === 1 ? 'device' : 'devices'}</span></span>${settingsScopeCustomizationBadge(customizationCount)}${isActive ? '<span class="settings-scope-dot"></span>' : ''}</button></div>`;
+        if (!isExpanded) return html;
+        for (const client of visibleClients) {
+            const deviceActive = selectedClientId === client.id;
+            const loadedClient = clientsForUser.find(candidate => candidate.id === client.id);
+            const detail = [client.deviceType, client.os, isSettingsDeviceStale(client) ? 'Not seen in 7+ days' : 'Active'].filter(Boolean).join(' · ');
+            const hasOverrides = loadedClient ? loadedClient.hasOverrides : client.hasOverrides;
+            html += `<button type="button" class="settings-scope-row device ${deviceActive ? 'active' : ''}" onclick="selectSettingsScope('device', decodeURIComponent('${encodeURIComponent(profile.id)}'), decodeURIComponent('${encodeURIComponent(client.id)}'))">${settingsScopeIcon('device')}<span class="settings-scope-copy"><span class="settings-scope-name">${escapeHtml(client.nickname || client.name || client.deviceName || 'Unknown device')}</span><span class="settings-scope-meta">${escapeHtml(detail)}</span></span>${settingsScopeCustomizationBadge(hasOverrides ? 1 : 0)}${deviceActive ? '<span class="settings-scope-dot"></span>' : ''}</button>`;
+        }
+        if (profileClients.length === 0) html += '<div class="settings-scope-empty" style="padding-left:2.2rem;">No devices yet</div>';
+        if (staleClients.length > 0) html += `<button type="button" class="settings-stale-toggle" onclick="toggleSettingsStaleDevices(event, decodeURIComponent('${encodeURIComponent(profile.id)}'))">${showStale ? 'Hide' : 'Show'} ${staleClients.length} device${staleClients.length === 1 ? '' : 's'} not seen in 7+ days</button>`;
+        return html;
+    }
+
+    function toggleSettingsHousehold(householdId) {
+        if (expandedSettingsHouseholds.has(householdId)) expandedSettingsHouseholds.delete(householdId);
+        else expandedSettingsHouseholds.add(householdId);
+        renderSettingsScopeTree();
+    }
+
+    function toggleSettingsServer(event) {
+        event.stopPropagation();
+        settingsScopeServerExpanded = !settingsScopeServerExpanded;
+        renderSettingsScopeTree();
+    }
+
+    function toggleSettingsStaleDevices(event, profileId) {
+        event.stopPropagation();
+        if (expandedSettingsStaleDevices.has(profileId)) expandedSettingsStaleDevices.delete(profileId);
+        else expandedSettingsStaleDevices.add(profileId);
+        renderSettingsScopeTree();
+    }
+
+    function toggleSettingsPerson(event, profileId) {
+        event.stopPropagation();
+        if (expandedSettingsPeople.has(profileId)) expandedSettingsPeople.delete(profileId);
+        else expandedSettingsPeople.add(profileId);
+        renderSettingsScopeTree();
+    }
+
+    function expandSettingsScopeToProfile(profileId) {
+        const profile = profilesData.find(candidate => candidate.id === profileId);
+        if (!profile) return;
+        settingsScopeServerExpanded = true;
+        const householdId = profile.accountId || '__household__';
+        expandedSettingsHouseholds.add(householdId);
+    }
+
+    async function selectSettingsScope(kind, profileId, clientId = '') {
+        if (kind === 'server') {
+            const selector = document.getElementById('userSelector');
+            if (selector) selector.value = '';
+            await handleUserChange('');
+            return;
+        }
+        const selector = document.getElementById('userSelector');
+        if (selector) selector.value = profileId;
+        await handleUserChange(profileId);
+        if (kind === 'device' && clientId) {
+            const clientSelector = document.getElementById('clientSelector');
+            if (clientSelector) clientSelector.value = clientId;
+            await handleClientChange(clientId);
+        }
+    }
 
     function stringifyDebugArg(arg) {
         if (arg instanceof Error) {
@@ -631,10 +1206,12 @@
     let searchTerm = '';
     let filteredSections = null; // null = no filter, Set = filtered section keys
     let filteredFields = null; // null = no filter, Map of sectionKey -> Set of matching field keys
+    let settingsSearchActivated = false;
 
     // Sections that are per-user (when a user is selected, only show these)
     // Per-user sections: liveTV IPTV source overrides are configured here; channel preferences use a custom manager.
     const perUserSections = ['playback', 'metadata', 'homeShelves', 'homeShelves.shelves', 'filtering', 'filtering.debrid', 'filtering.usenet', 'animeFiltering', 'liveTV', 'liveTV.sources', 'liveTV.playlistSources', 'display', 'network', 'ranking', 'ranking.criteria', 'ranking.debrid.criteria', 'ranking.usenet.criteria'];
+    const clientConfigSections = ['filtering', 'animeFiltering', 'network', 'display', 'playback', 'ranking'];
 
     // Validation state - stores errors by section and field
     let validationErrors = {};
@@ -657,10 +1234,33 @@
         const keys = globalPath.split('.');
         let val = currentSettings;
         for (const key of keys) {
-            if (val === undefined || val === null) return undefined;
+            if (val === undefined || val === null) return getSchemaZeroDefault(path);
             val = val[key];
         }
-        return val;
+        return val === undefined ? getSchemaZeroDefault(path) : val;
+    }
+
+    // JSON omits false/zero global values, but scoped comparisons need their
+    // effective zero values so an explicit false does not become a fake override.
+    function getSchemaZeroDefault(path) {
+        const parts = path.split('.');
+        let sectionDef = null;
+        let fieldKey = '';
+        for (let split = parts.length - 1; split >= 1; split--) {
+            const sectionKey = parts.slice(0, split).join('.');
+            if (schema[sectionKey]) {
+                sectionDef = schema[sectionKey];
+                fieldKey = parts.slice(split).join('.');
+                break;
+            }
+        }
+        const fieldDef = sectionDef?.fields?.[fieldKey];
+        if (!fieldDef) return undefined;
+        if (fieldDef.type === 'boolean') return false;
+        if (fieldDef.type === 'number') return 0;
+        if (['tags', 'weighted-tags', 'multiselect'].includes(fieldDef.type)) return [];
+        if (['text', 'password', 'select'].includes(fieldDef.type)) return '';
+        return undefined;
     }
 
     // Check if a value is empty/missing
@@ -682,11 +1282,49 @@
         return hasEnabledItem(currentSettings.usenet || []) || hasEnabledItem(currentSettings.usenetEngines || []);
     }
 
+    function apparentRegexFormatError(terms) {
+        if (!Array.isArray(terms)) return '';
+        for (let i = 0; i < terms.length; i++) {
+            const raw = String(terms[i] || '').trim();
+            if (!raw) continue;
+            const term = parseWeightedTerm(raw).term;
+            const startsSlash = term.startsWith('/');
+            const endsSlash = term.endsWith('/');
+            if (startsSlash !== endsSlash || (startsSlash && term.length < 3)) {
+                return 'Term ' + (i + 1) + ' looks like a regex but is not wrapped correctly. Use /pattern/, for example /\\bREMUX\\b/.';
+            }
+        }
+        return '';
+    }
+
+    function addFilteringRegexErrors(errors, sectionKey, filtering) {
+        if (!filtering) return;
+        const fields = ['requiredTerms', 'filterOutTerms', 'preferredTerms', 'nonPreferredTerms', 'downloadPreferredTerms'];
+        for (const field of fields) {
+            const message = apparentRegexFormatError(filtering[field]);
+            if (message) {
+                if (!errors[sectionKey]) errors[sectionKey] = {fields: {}, messages: []};
+                errors[sectionKey].fields[field] = message;
+            }
+        }
+    }
+
+    function validateFilteringRegexFormatting(errors, filtering) {
+        addFilteringRegexErrors(errors, 'filtering', filtering);
+        addFilteringRegexErrors(errors, 'filtering.debrid', filtering?.debrid);
+        addFilteringRegexErrors(errors, 'filtering.usenet', filtering?.usenet);
+    }
+
     // Validate all settings and return errors object
     function validateSettings() {
         const errors = {};
 
-        // Skip validation for user-specific settings or non-admin users
+        const activeFiltering = selectedClientId
+            ? clientSettings
+            : (selectedUserId ? userSettings?.filtering : currentSettings.filtering);
+        validateFilteringRegexFormatting(errors, activeFiltering);
+
+        // The remaining validation applies only to global admin settings.
         if (selectedUserId || !isAdmin) return errors;
 
         const serviceMode = currentSettings.streaming?.serviceMode || 'hybrid';
@@ -783,6 +1421,22 @@
     }
 
     // Search/filter settings
+    function activateSettingsSearch(input) {
+        if (settingsSearchActivated) return;
+        settingsSearchActivated = true;
+        input.value = '';
+        input.readOnly = false;
+        handleSettingsSearch('');
+    }
+
+    function handleSettingsSearchInput(input) {
+        if (!settingsSearchActivated) {
+            input.value = '';
+            return;
+        }
+        handleSettingsSearch(input.value);
+    }
+
     function handleSettingsSearch(term) {
         searchTerm = term.toLowerCase().trim();
 
@@ -837,6 +1491,7 @@
     }
 
     async function handleUserChange(userId) {
+        overrideImpactNotice = null;
         selectedUserId = userId;
         // Clear client selection when user changes
         selectedClientId = '';
@@ -853,7 +1508,7 @@
         if (userId) {
             // Load user-specific settings
             try {
-                const response = await fetch(basePath + '/api/user-settings?userId=' + encodeURIComponent(userId));
+                const response = await fetch(basePath + '/api/user-settings?userId=' + encodeURIComponent(userId) + '&raw=true');
                 if (response.ok) {
                     userSettings = await response.json();
                     originalUserSettings = JSON.parse(JSON.stringify(userSettings));
@@ -1019,6 +1674,14 @@
                             }
                         }
                     }
+                    if (!hasActualOverrides) {
+                        for (const key of clientRankingFields) {
+                            if (clientFieldDiffersFromInherited(settings, 'ranking', key)) {
+                                hasActualOverrides = true;
+                                break;
+                            }
+                        }
+                    }
                     client.hasOverrides = hasActualOverrides;
                     clientOverrideGroupsById[client.id] = propagationGroupsForClientSettings(settings);
                 } else {
@@ -1033,20 +1696,22 @@
         }
     }
 
-    // Per-profile override details: { userId: { sectionLabel: [fieldLabel, ...] } }
+    // Per-profile override details: { userId: { groupKey: [fieldLabel, ...] } }
     let userOverrideDetails = {};
     let clientOverrideGroupsById = {};
+    let overrideImpactNotice = null;
 
     // Sections to check for overrides and their global mapping
     const overrideSections = [
-        { key: 'playback', globalKey: 'playback', label: 'Playback' },
-        { key: 'metadata', globalKey: 'metadata', label: 'Metadata' },
-        { key: 'filtering', globalKey: 'filtering', label: 'Content Filtering' },
-        { key: 'animeFiltering', globalKey: 'animeFiltering', label: 'Anime Language' },
-        { key: 'display', globalKey: 'display', label: 'Display' },
-        { key: 'homeShelves', globalKey: 'homeShelves', label: 'Home Shelves' },
-        { key: 'liveTV', globalKey: 'live', label: 'Live TV' },
-        { key: 'network', globalKey: 'network', label: 'Network' },
+        { key: 'playback', groupKey: 'playback' },
+        { key: 'metadata', groupKey: 'metadata' },
+        { key: 'filtering', groupKey: 'contentFiltering' },
+        { key: 'animeFiltering', groupKey: 'animeFiltering' },
+        { key: 'display', groupKey: 'display' },
+        { key: 'homeShelves', groupKey: 'homeShelves' },
+        { key: 'liveTV', groupKey: 'liveTV' },
+        { key: 'network', groupKey: 'network' },
+        { key: 'ranking', groupKey: 'ranking' },
     ];
 
     // LiveTV fields that are inherently per-user (channel preferences), never overrides
@@ -1062,6 +1727,15 @@
     }
 
     function getClientPropagationFieldLabel(fieldKey) {
+        const rankingLabels = {
+            newestReleaseFirst: 'Newest Release First',
+            rankingSplitByService: 'Split Debrid/Usenet Ranking',
+            rankingCriteria: 'Overall Ranking Criteria',
+            debridRankingCriteria: 'Debrid Ranking Criteria',
+            usenetRankingCriteria: 'Usenet Ranking Criteria',
+        };
+        if (rankingLabels[fieldKey]) return rankingLabels[fieldKey];
+        if (fieldKey === 'useLoadingScreen') return 'Loading Screen';
         const section = getClientFieldSection(fieldKey);
         if (section === 'display' && fieldKey.startsWith('appearance.')) return 'appearance';
         return getFieldLabel(section, fieldKey.split('.')[0]);
@@ -1083,6 +1757,93 @@
                 description: Array.from(new Set(fields)).join(', '),
             };
         }).filter(Boolean);
+    }
+
+    // Build one canonical view of a profile's stored differences. Section
+    // badges, scope-tree totals, and the review dialog must all use this same
+    // result so inherited/materialized values cannot be reported differently.
+    function buildProfileOverrideDetails(settings) {
+        if (!settings || Object.keys(settings).length === 0) return {};
+        const details = {};
+
+        const addFieldDifference = (groupKey, sectionKey, fieldKey, fullPath, label = '') => {
+            if (!hasOwnAtPath(settings, fullPath)) return;
+            const profileValue = normalizeForComparisonForField(sectionKey, fieldKey, getAtPath(settings, fullPath));
+            if (profileValue === null) return;
+            const globalValue = normalizeForComparisonForField(sectionKey, fieldKey, getGlobalValue(fullPath));
+            if (deepEqual(profileValue, globalValue)) return;
+            if (!details[groupKey]) details[groupKey] = [];
+            details[groupKey].push(label || getFieldLabel(sectionKey, fieldKey));
+        };
+
+        for (const sec of overrideSections) {
+            const profileSection = settings[sec.key];
+            if (!profileSection) continue;
+            const groupKey = sec.groupKey;
+
+            if (sec.key === 'homeShelves') {
+                const profileShelves = profileSection.shelves;
+                const globalShelves = getGlobalValue('homeShelves.shelves') || [];
+                if (Array.isArray(profileShelves) && profileShelves.length > 0 && !shelvesEqual(profileShelves, globalShelves)) {
+                    const globalById = {};
+                    for (const shelf of globalShelves) globalById[shelf.id] = shelf;
+                    const diffs = [];
+                    for (const shelf of profileShelves) {
+                        const globalShelf = globalById[shelf.id];
+                        if (!globalShelf) {
+                            diffs.push((shelf.name || shelf.id) + ' (added)');
+                        } else if (!shelfEqual(shelf, globalShelf)) {
+                            diffs.push(shelf.name || shelf.id);
+                        }
+                    }
+                    if (diffs.length > 0) details[groupKey] = diffs;
+                }
+            }
+
+            for (const [fieldKey, fieldDef] of Object.entries(schema[sec.key]?.fields || {})) {
+                if (fieldDef.globalOnly || (sec.key === 'liveTV' && liveTVPerUserFields.has(fieldKey))) continue;
+                addFieldDifference(groupKey, sec.key, fieldKey, `${sec.key}.${fieldKey}`);
+            }
+
+            for (const [nestedKey, nestedDef] of Object.entries(schema)) {
+                if (nestedDef.parent !== sec.key || nestedDef.is_array || nestedDef.group) continue;
+                for (const [fieldKey, fieldDef] of Object.entries(nestedDef.fields || {})) {
+                    if (fieldDef.globalOnly) continue;
+                    addFieldDifference(groupKey, nestedKey, fieldKey, `${nestedKey}.${fieldKey}`,
+                        `${nestedDef.label || nestedKey}: ${fieldDef.label || fieldKey}`);
+                }
+            }
+
+            if (sec.key === 'liveTV' && profileSection.sourcesOverride === true) {
+                const profileSources = Array.isArray(profileSection.sources) ? profileSection.sources : [];
+                const globalSources = getGlobalValue('liveTV.sources') || [];
+                if (!deepEqual(profileSources, globalSources)) {
+                    if (!details[groupKey]) details[groupKey] = [];
+                    details[groupKey].push('Live TV Sources');
+                }
+            }
+
+            if (sec.key !== 'ranking') continue;
+            for (const [path, label] of [
+                ['criteria', 'Overall Ranking Criteria'],
+                ['debrid.criteria', 'Debrid Ranking Criteria'],
+                ['usenet.criteria', 'Usenet Ranking Criteria'],
+            ]) {
+                const criteria = getAtPath(settings.ranking, path);
+                if (Array.isArray(criteria) && criteria.length > 0) {
+                    if (!details[groupKey]) details[groupKey] = [];
+                    details[groupKey].push(label);
+                }
+            }
+        }
+
+        for (const fields of Object.values(details)) {
+            if (Array.isArray(fields)) {
+                const uniqueFields = Array.from(new Set(fields));
+                fields.splice(0, fields.length, ...uniqueFields);
+            }
+        }
+        return details;
     }
 
     // Recalculate overrides for all users — fetches each profile's stored settings
@@ -1114,86 +1875,7 @@
                     continue;
                 }
 
-                const details = {};
-
-                for (const sec of overrideSections) {
-                    const profileSection = settings[sec.key];
-                    if (!profileSection) continue;
-                    const globalSection = currentSettings[sec.globalKey] || {};
-                    if (sec.key === 'display') {
-                        settingsPropagationLog('recalc display section start from raw profile settings', {
-                            userId,
-                            profileDisplay: profileSection,
-                            globalDisplay: globalSection,
-                        });
-                    }
-
-                    // Special case: homeShelves — compare shelves array
-                    if (sec.key === 'homeShelves') {
-                        const profileShelves = profileSection.shelves;
-                        const globalShelves = globalSection.shelves;
-                        if (profileShelves && globalShelves && !shelvesEqual(profileShelves, globalShelves)) {
-                            // Find which shelves differ
-                            const globalById = {};
-                            for (const gs of globalShelves) globalById[gs.id] = gs;
-                            const diffs = [];
-                            for (const ps of profileShelves) {
-                                const gs = globalById[ps.id];
-                                if (!gs) { diffs.push(ps.name + ' (added)'); continue; }
-                                if (!shelfEqual(ps, gs)) diffs.push(ps.name);
-                            }
-                            if (diffs.length > 0) details[sec.label] = diffs;
-                        }
-                        // Also check non-shelves fields (e.g. exploreCardPosition)
-                        for (const fieldKey of Object.keys(profileSection)) {
-                            if (fieldKey === 'shelves') continue;
-                            const profileVal = normalizeForComparisonForField(sec.key, fieldKey, profileSection[fieldKey]);
-                            if (profileVal === null) continue;
-                            const globalVal = normalizeForComparisonForField(sec.key, fieldKey, globalSection[fieldKey]);
-                            if (!deepEqual(profileVal, globalVal)) {
-                                if (!details[sec.label]) details[sec.label] = [];
-                                details[sec.label].push(getFieldLabel(sec.key, fieldKey));
-                            }
-                        }
-                        continue;
-                    }
-
-                    const diffFields = [];
-                    for (const fieldKey of Object.keys(profileSection)) {
-                        // Skip inherently per-user LiveTV fields
-                        if (sec.key === 'liveTV' && liveTVPerUserFields.has(fieldKey)) continue;
-                        const profileVal = normalizeForComparison(profileSection[fieldKey]);
-                        if (profileVal === null) continue;
-                        const globalVal = normalizeForComparison(globalSection[fieldKey]);
-                        if (!deepEqual(profileVal, globalVal)) {
-                            if (sec.key === 'display') {
-                                settingsPropagationLog('recalc display field differs from raw profile settings', {
-                                    userId,
-                                    fieldKey,
-                                    fieldLabel: getFieldLabel(sec.key, fieldKey),
-                                    rawProfile: profileSection[fieldKey],
-                                    rawGlobal: globalSection[fieldKey],
-                                    normalizedProfile: profileVal,
-                                    normalizedGlobal: globalVal,
-                                });
-                            }
-                            diffFields.push(getFieldLabel(sec.key, fieldKey));
-                        }
-                    }
-                    if (diffFields.length > 0) {
-                        details[sec.label] = diffFields;
-                    }
-                }
-
-                // Check ranking separately (nested structure)
-                if (settings.ranking && settings.ranking.criteria) {
-                    const globalRanking = currentSettings.ranking || {};
-                    const globalCriteria = globalRanking.criteria || [];
-                    const profileCriteria = settings.ranking.criteria;
-                    if (!deepEqual(normalizeForComparison(profileCriteria), normalizeForComparison(globalCriteria))) {
-                        details['Result Ranking'] = ['Ranking criteria'];
-                    }
-                }
+                const details = buildProfileOverrideDetails(settings);
 
                 const hasOverrides = Object.keys(details).length > 0;
                 settingsPropagationLog('recalc profile result from raw profile settings', {
@@ -1209,9 +1891,12 @@
                 console.warn('Failed to load settings for user', userId, e);
             }
         }
+        renderSettingsScopeTree();
+        updateRevertButtonVisibility();
     }
 
     async function handleClientChange(clientId) {
+        overrideImpactNotice = null;
         selectedClientId = clientId;
         const identifyBtn = document.getElementById('identifyClientBtn');
         if (clientId) {
@@ -1275,6 +1960,7 @@
     function updateRevertButtonVisibility() {
         const revertBtn = document.getElementById('revertBtn');
         const propagateBtn = document.getElementById('propagateBtn');
+        const propagateBtnLabel = document.getElementById('propagateBtnLabel');
 
         let showRevert = false;
         let hasOverrides = false;
@@ -1296,25 +1982,21 @@
                 : 'Reset all profile settings to global defaults';
         }
 
-        // Propagate button: show at global level or profile level (not client level)
-        // Only show for admin users
+        // Review button: show when child scopes have custom settings.
         if (propagateBtn && isAdmin) {
             let showPropagate = false;
             if (!selectedClientId) {
-                // At global level (no user selected) or profile level (user selected)
-                // Show propagate if there are profiles/clients to propagate to
                 if (!selectedUserId) {
-                    // Global level - always show if there are users
-                    showPropagate = true;
+                    showPropagate = Object.values(userOverrides || {}).some(Boolean);
                 } else {
-                    // Profile level - show if there are clients for this user
-                    showPropagate = clientsForUser.length > 0;
+                    showPropagate = clientsForUser.some(client => client.hasOverrides);
                 }
             }
             propagateBtn.style.display = showPropagate ? 'inline-flex' : 'none';
+            if (propagateBtnLabel) propagateBtnLabel.textContent = 'Review Customizations';
             propagateBtn.title = selectedUserId
-                ? 'Propagate profile settings to all devices'
-                : 'Propagate global settings to all profiles and devices';
+                ? 'Review devices with settings that differ from this profile'
+                : 'Review profiles with settings that differ from server defaults';
         }
     }
 
@@ -1383,67 +2065,10 @@
         }
     }
 
-    // Propagate settings from global to all profiles+clients, or from profile to its clients
+    // Open the explicit review flow for child scopes with custom settings.
     async function propagateSettings() {
-        const isProfileLevel = !!selectedUserId;
-        const targetDesc = isProfileLevel
-            ? 'all devices for this profile'
-            : 'all profiles and their devices';
-
-        if (!confirm(`Are you sure you want to propagate current settings to ${targetDesc}? This will overwrite their filter settings.`)) {
-            return;
-        }
-
-        const btn = document.getElementById('propagateBtn');
-        const originalHTML = btn.innerHTML;
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-small"></span> Propagating...';
-
-        try {
-            let url = basePath + '/api/settings/propagate';
-            if (isProfileLevel) {
-                url += '?userId=' + encodeURIComponent(selectedUserId);
-            }
-
-            const response = await fetch(url, {
-                method: 'POST',
-                credentials: 'same-origin'
-            });
-
-            if (response.ok) {
-                const result = await response.json();
-                showToast(result.message || 'Settings propagated successfully');
-
-                // Refresh the view to show updated states
-                if (isProfileLevel) {
-                    // Reload clients for this user
-                    await loadClientsForUser(selectedUserId);
-                    updateClientDropdownIndicators();
-                } else {
-                    // At global level, all profiles now have overrides
-                    // Mark all users as having overrides
-                    const userSelector = document.getElementById('userSelector');
-                    if (userSelector) {
-                        Array.from(userSelector.options).forEach(option => {
-                            if (option.value) {
-                                userOverrides[option.value] = true;
-                            }
-                        });
-                    }
-                    updateUserDropdownIndicators();
-                }
-
-                updateRevertButtonVisibility();
-            } else {
-                const err = await response.text();
-                showToast('Failed to propagate settings: ' + err, 'error');
-            }
-        } catch (e) {
-            showToast('Failed to propagate settings: ' + e.message, 'error');
-        } finally {
-            btn.disabled = false;
-            btn.innerHTML = originalHTML;
-        }
+        if (selectedUserId) await openClientOverrideReview();
+        else await openProfileOverrideReview();
     }
 
     // Track which propagation level the modal is showing for
@@ -1530,6 +2155,7 @@
                 'streamMigrationEnabled',
                 'creditsAutoSkip',
                 'maxResultsPerResolution',
+                'useLoadingScreen',
             ],
         },
         {
@@ -1545,9 +2171,9 @@
         },
         {
             key: 'contentFiltering',
-            label: 'Content Filtering',
+            label: 'Result Quality',
             description: 'Max Movie Size (GB), Max Episode Size (GB), Max Resolution, HDR/DV Policy, Unknown Track Preference, Required Terms, Filter Out Terms, Preferred Terms, Non-Preferred Terms, Download Preferred Terms',
-            detailSection: 'Content Filtering',
+            detailSection: 'Result Quality',
             detailFields: ['Max Movie Size (GB)', 'Max Episode Size (GB)', 'Max Resolution', 'HDR/DV Policy', 'Unknown Track Preference', 'Required Terms', 'Filter Out Terms', 'Preferred Terms', 'Non-Preferred Terms', 'Download Preferred Terms'],
             userPaths: [
                 'filtering.maxSizeMovieGb',
@@ -1572,6 +2198,7 @@
                 'preferredTerms',
                 'nonPreferredTerms',
                 'downloadPreferredTerms',
+                'splitByService',
             ],
         },
         {
@@ -1579,7 +2206,7 @@
             label: 'Display',
             description: 'Badge Icon Style, navigation tabs, TV home/details layout, unreleased visibility, filtering bypass, episode privacy, appearance',
             detailSection: 'Display',
-            detailFields: ['Badge Icon Style', 'Navigation Tabs', 'Include Unreleased Movies in Lists', 'Include Unreleased Shows in Lists', 'Include Unreleased Movies in Search', 'Include Unreleased Shows in Search', 'Bypass Filtering for AIOStreams Only', 'Hide Continue Watching Hero Details', 'Move Details Ratings Up', 'Hide Details Poster', 'Hide TV Drawer Rail', 'Blur Unwatched Episode Thumbnails', 'Blur Unwatched Episode Overview', 'appearance', 'Show Parsed Metadata Badges', 'Badge Visibility'],
+            detailFields: ['Badge Icon Style', 'Navigation Tabs', 'Include Unreleased Movies in Lists', 'Include Unreleased Shows in Lists', 'Include Unreleased Movies in Search', 'Include Unreleased Shows in Search', 'Bypass Filtering for AIOStreams Only', 'Enable Application Animations', 'Enable Hero Art Panning', 'Enable Hero Art Rotation', 'Hide Continue Watching Hero Details', 'Move Details Ratings Up', 'Hide Details Poster', 'Hide TV Drawer Rail', 'Blur Unwatched Episode Thumbnails', 'Blur Unwatched Episode Overview', 'appearance', 'Show Parsed Metadata Badges', 'Badge Visibility'],
             userPaths: [
                 'display.watchStateIconStyle',
                 'display.navigationTabVisibility',
@@ -1588,6 +2215,9 @@
                 'display.includeUnreleasedMoviesInSearch',
                 'display.includeUnreleasedShowsInSearch',
                 'display.bypassFilteringForAioStreamsOnly',
+                'display.enableAnimations',
+                'display.enableHeroArtPanning',
+                'display.enableHeroArtRotation',
                 'display.hideContinueWatchingHeroMetadata',
                 'display.moveDetailsRatingsToMetadata',
                 'display.hideDetailsPoster',
@@ -1607,6 +2237,9 @@
                 'includeUnreleasedMoviesInSearch',
                 'includeUnreleasedShowsInSearch',
                 'bypassFilteringForAioStreamsOnly',
+                'enableAnimations',
+                'enableHeroArtPanning',
+                'enableHeroArtRotation',
                 'hideContinueWatchingHeroMetadata',
                 'moveDetailsRatingsToMetadata',
                 'hideDetailsPoster',
@@ -1685,35 +2318,61 @@
         {
             key: 'ranking',
             label: 'Result Ranking',
-            description: 'Ranking criteria',
+            description: 'Release ordering, shared ranking criteria, and service-specific ranking criteria',
             detailSection: 'Result Ranking',
-            detailFields: ['Ranking criteria'],
+            detailFields: ['Newest Release First', 'Split Debrid/Usenet Ranking', 'Overall Ranking Criteria', 'Debrid Ranking Criteria', 'Usenet Ranking Criteria'],
             userPaths: [
+                'ranking.newestReleaseFirst',
+                'ranking.splitByService',
                 'ranking.criteria',
+                'ranking.debrid.criteria',
+                'ranking.usenet.criteria',
             ],
-            clientPaths: [],
+            clientPaths: [
+                'newestReleaseFirst',
+                'rankingSplitByService',
+                'rankingCriteria',
+                'debridRankingCriteria',
+                'usenetRankingCriteria',
+            ],
         },
     ];
 
     function propagationGroupsForOverrideDetails(details) {
         if (!details || Object.keys(details).length === 0) return [];
         return propagationGroups.map(group => {
-            const fields = details[group.detailSection];
-            const matchingFields = Array.isArray(fields)
-                ? (group.matchAllDetailFields ? fields : fields.filter(field => group.detailFields.includes(field)))
-                : [];
-            if (matchingFields.length === 0) return null;
+            const fields = details[group.key];
+            if (!Array.isArray(fields) || fields.length === 0) return null;
             settingsPropagationLog('group eligible from override details', {
                 group: group.key,
-                section: group.detailSection,
-                matchingFields,
-                allFields: fields,
+                fields,
             });
             return {
                 ...group,
-                description: matchingFields.join(', '),
+                description: fields.join(', '),
             };
         }).filter(Boolean);
+    }
+
+    function profileComparisonPathsForGroup(groupKey) {
+        const section = overrideSections.find(candidate => candidate.groupKey === groupKey);
+        if (!section) return [];
+        const paths = [];
+        for (const [fieldKey, fieldDef] of Object.entries(schema[section.key]?.fields || {})) {
+            if (!fieldDef.globalOnly) paths.push(`${section.key}.${fieldKey}`);
+        }
+        for (const [nestedKey, nestedDef] of Object.entries(schema)) {
+            if (nestedDef.parent !== section.key || nestedDef.group) continue;
+            if (nestedDef.is_array) {
+                paths.push(nestedKey);
+                continue;
+            }
+            for (const [fieldKey, fieldDef] of Object.entries(nestedDef.fields || {})) {
+                if (!fieldDef.globalOnly) paths.push(`${nestedKey}.${fieldKey}`);
+            }
+        }
+        if (section.key === 'liveTV') paths.push('liveTV.sources');
+        return Array.from(new Set(paths));
     }
 
     function changedPropagationGroupKeys(beforeSettings, afterSettings) {
@@ -1729,7 +2388,7 @@
         const changed = new Set();
         const changedDetails = [];
         for (const group of propagationGroups) {
-            for (const userPath of group.userPaths || []) {
+            for (const userPath of profileComparisonPathsForGroup(group.key)) {
                 const globalPath = getGlobalPath(userPath);
                 const keys = globalPath.split('.');
                 const sectionKey = keys[0];
@@ -1822,9 +2481,31 @@
     }
 
     function clearProfilePropagationGroup(targetSettings, group) {
-        for (const path of group.userPaths) {
-            deleteAtPath(targetSettings, path);
+        const sectionKey = {
+            playback: 'playback',
+            metadata: 'metadata',
+            contentFiltering: 'filtering',
+            display: 'display',
+            homeShelves: 'homeShelves',
+            liveTV: 'liveTV',
+            animeFiltering: 'animeFiltering',
+            network: 'network',
+            ranking: 'ranking',
+        }[group.key];
+        if (!sectionKey) return;
+
+        if (sectionKey === 'liveTV') {
+            const personalPreferences = {};
+            for (const fieldKey of liveTVPerUserFields) {
+                if (Object.prototype.hasOwnProperty.call(targetSettings.liveTV || {}, fieldKey)) {
+                    personalPreferences[fieldKey] = targetSettings.liveTV[fieldKey];
+                }
+            }
+            if (Object.keys(personalPreferences).length > 0) targetSettings.liveTV = personalPreferences;
+            else delete targetSettings.liveTV;
+            return;
         }
+        delete targetSettings[sectionKey];
     }
 
     function clearClientPropagationGroup(targetSettings, group) {
@@ -1904,8 +2585,8 @@
         };
     }
 
-    // After saving global settings, check which profiles have overrides and prompt to propagate
-    async function promptPropagateIfNeeded(changedGroupKeys = null) {
+    // Build the explicit server-to-profile customization review.
+    async function openProfileOverrideReview(changedGroupKeys = null) {
         settingsPropagationLog('prompt check started', {
             selectedUserId,
             selectedClientId,
@@ -1940,17 +2621,18 @@
 
         if (profilesWithOverrides.length === 0) {
             settingsPropagationLog('prompt skipped: no profiles with overrides');
+            showToast('No profile customizations to review');
             return;
         }
 
         // Configure modal for global→profiles propagation
         propagateLevel = 'global';
         propagateUserId = '';
-        document.getElementById('propagateModalTitle').textContent = 'Propagate to profiles?';
+        document.getElementById('propagateModalTitle').textContent = 'Review profile customizations';
         document.getElementById('propagateModalDesc').textContent =
-            'These profiles have overrides that differ from the new global settings. Select which groups to overwrite within each profile:';
+            'These profiles have settings that differ from server defaults. Select only the groups that should resume using server defaults:';
         document.getElementById('propagateModalNote').textContent =
-            'A profile checkbox toggles all groups inside that profile. All propagation selections start off.';
+            'Unchecked settings remain custom. Nothing changes until you choose Use Parent Defaults.';
 
         const list = document.getElementById('propagateTargetList');
         const hasChangedGroupFilter = changedGroupKeys instanceof Set && changedGroupKeys.size > 0;
@@ -1978,6 +2660,7 @@
                     details: p.details,
                 })),
             });
+            showToast('No custom settings in the selected groups');
             return;
         }
 
@@ -1995,7 +2678,7 @@
                     <input type="checkbox" class="propagate-check" value="${p.id}" onchange="syncPropagateTargetGroups(this.value)" style="margin-top: 0.2rem; flex-shrink: 0;">
                     <div style="min-width: 0;">
                         <label style="font-weight: 500; cursor: pointer;">
-                            <span>${p.name}</span>
+                            <span>${escapeHtml(p.name)}</span>
                         </label>
                         <div style="display: grid; gap: 0.4rem; margin-top: 0.55rem;">${renderPropagationGroupToggles(p.id, p.propagationGroups)}</div>
                     </div>
@@ -2008,8 +2691,8 @@
         updatePropagateConfirmState();
     }
 
-    // After saving profile settings, check which clients have overrides and prompt to propagate
-    async function promptPropagateClientsIfNeeded() {
+    // Build the explicit profile-to-device customization review.
+    async function openClientOverrideReview() {
         if (!selectedUserId) return;
 
         // Reload clients and recalculate their override status
@@ -2018,16 +2701,19 @@
         const clientsWithOverrides = clientsForUser
             .map(c => ({ ...c, propagationGroups: clientOverrideGroupsById[c.id] || [] }))
             .filter(c => c.hasOverrides && c.propagationGroups.length > 0);
-        if (clientsWithOverrides.length === 0) return;
+        if (clientsWithOverrides.length === 0) {
+            showToast('No supported device customizations to review');
+            return;
+        }
 
         // Configure modal for profile→clients propagation
         propagateLevel = 'profile';
         propagateUserId = selectedUserId;
-        document.getElementById('propagateModalTitle').textContent = 'Propagate to devices?';
+        document.getElementById('propagateModalTitle').textContent = 'Review device customizations';
         document.getElementById('propagateModalDesc').textContent =
-            'These devices have custom overrides that differ from this profile\u2019s settings. Select which groups to reset within each device:';
+            'These devices have settings that differ from this profile. Select only the groups that should resume using profile defaults:';
         document.getElementById('propagateModalNote').textContent =
-            'A device checkbox toggles all supported groups inside that device. All propagation selections start off.';
+            'Unchecked settings remain custom. Nothing changes until you choose Use Parent Defaults.';
 
         const list = document.getElementById('propagateTargetList');
         list.innerHTML = clientsWithOverrides.map(c =>
@@ -2035,7 +2721,7 @@
                 <div style="display: flex; align-items: flex-start; gap: 0.5rem; margin: 0;">
                     <input type="checkbox" class="propagate-check" value="${c.id}" onchange="syncPropagateTargetGroups(this.value)" style="margin-top: 0.2rem; flex-shrink: 0;">
                     <span style="min-width: 0;">
-                        <span style="display: block; font-weight: 500;">${c.name || c.deviceType || c.id}</span>
+                        <span style="display: block; font-weight: 500;">${escapeHtml(c.name || c.deviceType || c.id)}</span>
                         <span style="display: grid; gap: 0.4rem; margin-top: 0.55rem;">${renderPropagationGroupToggles(c.id, c.propagationGroups)}</span>
                     </span>
                 </div>
@@ -2052,6 +2738,45 @@
         document.body.style.overflow = '';
     }
 
+    async function updateProfileSaveImpact(changedGroupKeys) {
+        await recalculateAllUserOverrides();
+        const hasChangedFilter = changedGroupKeys instanceof Set && changedGroupKeys.size > 0;
+        const affected = profilesData.filter(profile => {
+            const groups = propagationGroupsForOverrideDetails(userOverrideDetails[profile.id] || {});
+            return groups.some(group => !hasChangedFilter || changedGroupKeys.has(group.key));
+        });
+        if (affected.length === 0) {
+            overrideImpactNotice = null;
+            return;
+        }
+        overrideImpactNotice = {
+            level: 'global',
+            title: `${affected.length} profile${affected.length === 1 ? '' : 's'} keep custom settings`,
+            description: 'Those custom values remain unchanged and continue to take precedence over server defaults.',
+        };
+    }
+
+    async function updateClientSaveImpact() {
+        if (!selectedUserId) return;
+        await recalculateAllUserOverrides();
+        await loadClientsForUser(selectedUserId);
+        const affected = clientsForUser.filter(client => client.hasOverrides);
+        if (affected.length === 0) {
+            overrideImpactNotice = null;
+            return;
+        }
+        overrideImpactNotice = {
+            level: 'profile',
+            title: `${affected.length} device${affected.length === 1 ? '' : 's'} keep custom settings`,
+            description: 'Those device values remain unchanged and continue to take precedence over profile defaults.',
+        };
+    }
+
+    function reviewOverrideImpact() {
+        if (overrideImpactNotice?.level === 'profile') openClientOverrideReview();
+        else openProfileOverrideReview();
+    }
+
     async function confirmPropagate() {
         const selectionsByTarget = getPropagationSelectionsByTarget();
         if (selectionsByTarget.size === 0) {
@@ -2066,7 +2791,7 @@
         const btn = document.getElementById('propagateConfirmBtn');
         const originalHTML = btn.innerHTML;
         btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-small"></span> Propagating...';
+        btn.innerHTML = '<span class="spinner-small"></span> Updating...';
 
         try {
             let successCount = 0;
@@ -2077,7 +2802,7 @@
                 // Reset selected profile groups so they inherit current global defaults.
                 for (const [userId, selectedGroups] of selectionsByTarget.entries()) {
                     try {
-                        const loadResponse = await fetch(basePath + '/api/user-settings?userId=' + encodeURIComponent(userId), {
+                        const loadResponse = await fetch(basePath + '/api/user-settings?userId=' + encodeURIComponent(userId) + '&raw=true', {
                             credentials: 'same-origin'
                         });
                         if (!loadResponse.ok) {
@@ -2109,7 +2834,7 @@
                             body: JSON.stringify(strippedSettings)
                         });
                         if (response.ok) {
-                            const savedResponse = await fetch(basePath + '/api/user-settings?userId=' + encodeURIComponent(userId), {
+                            const savedResponse = await fetch(basePath + '/api/user-settings?userId=' + encodeURIComponent(userId) + '&raw=true', {
                                 credentials: 'same-origin'
                             });
                             if (savedResponse.ok) {
@@ -2184,9 +2909,9 @@
             }
 
             if (failCount === 0) {
-                showToast(`Settings propagated to ${successCount} ${propagateLevel === 'global' ? 'profile' : 'device'}${successCount !== 1 ? 's' : ''}`);
+                showToast(`Updated ${successCount} ${propagateLevel === 'global' ? 'profile' : 'device'}${successCount !== 1 ? 's' : ''} to use parent defaults`);
             } else {
-                showToast(`Propagated to ${successCount}, failed for ${failCount}`, 'error');
+                showToast(`Updated ${successCount}, failed for ${failCount}`, 'error');
             }
 
             if (propagateLevel === 'global') {
@@ -2200,8 +2925,10 @@
                 renderSettings();
             }
             updateRevertButtonVisibility();
+            overrideImpactNotice = null;
+            renderSettingsScopeTree();
         } catch (e) {
-            showToast('Failed to propagate: ' + e.message, 'error');
+            showToast('Failed to update parent defaults: ' + e.message, 'error');
         } finally {
             btn.disabled = false;
             btn.innerHTML = originalHTML;
@@ -2221,76 +2948,9 @@
             if (userOverrides) userOverrides[userId] = false;
             return;
         }
-
-        // Check all per-user sections for any actual differences
-        let hasActualOverrides = false;
-
-        // Check filtering section
-        if (userSettings.filtering) {
-            const globalFiltering = currentSettings.filtering || {};
-            for (const key of Object.keys(userSettings.filtering)) {
-                const profileVal = normalizeForComparison(userSettings.filtering[key]);
-                // If profile value is null (empty/inherit), skip - not an override
-                if (profileVal === null) continue;
-                const globalVal = normalizeForComparison(globalFiltering[key]);
-                if (!deepEqual(profileVal, globalVal)) {
-                    hasActualOverrides = true;
-                    break;
-                }
-            }
-        }
-
-        // Check anime filtering section
-        if (!hasActualOverrides && userSettings.animeFiltering) {
-            const globalAnimeFiltering = currentSettings.animeFiltering || {};
-            for (const key of Object.keys(userSettings.animeFiltering)) {
-                const profileVal = normalizeForComparison(userSettings.animeFiltering[key]);
-                if (profileVal === null) continue;
-                const globalVal = normalizeForComparison(globalAnimeFiltering[key]);
-                if (!deepEqual(profileVal, globalVal)) {
-                    hasActualOverrides = true;
-                    break;
-                }
-            }
-        }
-
-        // Check playback section
-        if (!hasActualOverrides && userSettings.playback) {
-            const globalPlayback = currentSettings.playback || {};
-            for (const key of Object.keys(userSettings.playback)) {
-                const profileVal = normalizeForComparison(userSettings.playback[key]);
-                // If profile value is null (empty/inherit), skip - not an override
-                if (profileVal === null) continue;
-                const globalVal = normalizeForComparison(globalPlayback[key]);
-                if (!deepEqual(profileVal, globalVal)) {
-                    hasActualOverrides = true;
-                    break;
-                }
-            }
-        }
-
-        // Check liveTV section (inherits from global "live" section)
-        if (!hasActualOverrides && userSettings.liveTV) {
-            const globalLive = currentSettings.live || {};
-            for (const key of Object.keys(userSettings.liveTV)) {
-                const profileVal = normalizeForComparison(userSettings.liveTV[key]);
-                if (profileVal === null) continue;
-                const globalVal = normalizeForComparison(globalLive[key]);
-                if (!deepEqual(profileVal, globalVal)) {
-                    hasActualOverrides = true;
-                    break;
-                }
-            }
-        }
-
-        // Check homeShelves section - use lenient comparison for shelves
-        if (!hasActualOverrides && userSettings.homeShelves) {
-            const globalHomeShelves = currentSettings.homeShelves || {};
-            if (!homeShelvesEqual(userSettings.homeShelves, globalHomeShelves)) {
-                hasActualOverrides = true;
-            }
-        }
-
+        const hasActualOverrides = Object.entries(schema)
+            .filter(([, def]) => def.group && !def.hidden)
+            .some(([sectionKey]) => settingsSectionCustomizationCount(sectionKey) > 0);
         if (userOverrides) userOverrides[userId] = hasActualOverrides;
     }
 
@@ -2406,6 +3066,15 @@
             }
         }
 
+        if (!hasActualOverrides) {
+            for (const key of clientRankingFields) {
+                if (clientFieldDiffersFromInherited(clientSettings, 'ranking', key)) {
+                    hasActualOverrides = true;
+                    break;
+                }
+            }
+        }
+
         client.hasOverrides = hasActualOverrides;
         clientOverrideGroupsById[clientId] = propagationGroupsForClientSettings(clientSettings);
     }
@@ -2492,6 +3161,7 @@
         'maxResultsPerResolution',
     ];
     const clientAnimeFilterFields = ['animeLanguageEnabled', 'animePreferredLanguage'];
+    const clientRankingFields = ['newestReleaseFirst', 'rankingSplitByService', 'rankingCriteria', 'debridRankingCriteria', 'usenetRankingCriteria'];
     // Map network field paths to client settings keys
     const clientNetworkFields = ['homeWifiSSID', 'homeBackendUrl', 'remoteBackendUrl'];
 
@@ -2523,6 +3193,17 @@
             if (keys[0] === 'animeFiltering' && clientAnimeFilterFields.includes(keys[1])) {
                 return keys[1];
             }
+            if (keys[0] === 'ranking') {
+                const rankingKey = keys.slice(1).join('.');
+                const rankingClientKeys = {
+                    newestReleaseFirst: 'newestReleaseFirst',
+                    splitByService: 'rankingSplitByService',
+                    criteria: 'rankingCriteria',
+                    'debrid.criteria': 'debridRankingCriteria',
+                    'usenet.criteria': 'usenetRankingCriteria',
+                };
+                if (rankingClientKeys[rankingKey]) return rankingClientKeys[rankingKey];
+            }
             if (keys[0] === 'network' && clientNetworkFields.includes(keys[1])) {
                 return keys[1];
             }
@@ -2538,6 +3219,16 @@
             val = val[key];
         }
         return val;
+    }
+
+    function hasOwnAtPath(obj, path) {
+        if (!obj || !path) return false;
+        let value = obj;
+        for (const key of path.split('.')) {
+            if (value === null || typeof value !== 'object' || !Object.prototype.hasOwnProperty.call(value, key)) return false;
+            value = value[key];
+        }
+        return true;
     }
 
     function setAtPath(obj, path, value) {
@@ -2710,11 +3401,22 @@
         if (clientDisplayFields.includes(fieldKey)) return 'display';
         if (clientPlaybackFields.includes(fieldKey)) return 'playback';
         if (clientAnimeFilterFields.includes(fieldKey)) return 'animeFiltering';
+        if (clientRankingFields.includes(fieldKey)) return 'ranking';
         if (clientNetworkFields.includes(fieldKey)) return 'network';
         return 'filtering'; // fallback
     }
 
     function getClientFieldSettingsPath(section, fieldKey) {
+        if (section === 'ranking') {
+            const rankingPaths = {
+                newestReleaseFirst: 'ranking.newestReleaseFirst',
+                rankingSplitByService: 'ranking.splitByService',
+                rankingCriteria: 'ranking.criteria',
+                debridRankingCriteria: 'ranking.debrid.criteria',
+                usenetRankingCriteria: 'ranking.usenet.criteria',
+            };
+            if (rankingPaths[fieldKey]) return rankingPaths[fieldKey];
+        }
         return section + '.' + fieldKey;
     }
 
@@ -4741,7 +5443,7 @@
             const profiles = hiddenChannelsManager.profiles || [];
             const loadedProfiles = await Promise.all(profiles.map(async (profile) => {
                 if (profile.settings) return profile;
-                const response = await fetch(basePath + '/api/user-settings?userId=' + encodeURIComponent(profile.id), {
+                const response = await fetch(basePath + '/api/user-settings?userId=' + encodeURIComponent(profile.id) + '&raw=true', {
                     credentials: 'same-origin'
                 });
                 if (!response.ok) throw new Error(await response.text() || 'Failed to load profile settings');
@@ -4794,7 +5496,7 @@
 
         try {
             const loadedProfiles = await Promise.all(profiles.map(async (profile) => {
-                const response = await fetch(basePath + '/api/user-settings?userId=' + encodeURIComponent(profile.id), {
+                const response = await fetch(basePath + '/api/user-settings?userId=' + encodeURIComponent(profile.id) + '&raw=true', {
                     credentials: 'same-origin'
                 });
                 if (!response.ok) throw new Error(await response.text() || 'Failed to load profile settings');
@@ -4832,7 +5534,7 @@
 
         await Promise.all(hiddenChannelsScopeManager.profiles.map(async (profile) => {
             try {
-                const response = await fetch(basePath + '/api/user-settings?userId=' + encodeURIComponent(profile.id), {
+                const response = await fetch(basePath + '/api/user-settings?userId=' + encodeURIComponent(profile.id) + '&raw=true', {
                     credentials: 'same-origin'
                 });
                 if (!response.ok) throw new Error(await response.text() || 'Failed to load profile settings');
@@ -5076,7 +5778,7 @@
                 await Promise.all(profiles.map(async (profile) => {
                     let settings = profile.settings;
                     if (!settings) {
-                        const loadResponse = await fetch(basePath + '/api/user-settings?userId=' + encodeURIComponent(profile.id), {
+                        const loadResponse = await fetch(basePath + '/api/user-settings?userId=' + encodeURIComponent(profile.id) + '&raw=true', {
                             credentials: 'same-origin'
                         });
                         if (!loadResponse.ok) throw new Error(await loadResponse.text() || 'Failed to load profile settings');
@@ -5263,7 +5965,10 @@
 
         const stripped = {};
         // Only process per-user sections (top-level only, skip nested like 'homeShelves.shelves')
-        const topLevelPerUserSections = ['playback', 'metadata', 'homeShelves', 'filtering', 'liveTV', 'display'];
+        const topLevelPerUserSections = [
+            'playback', 'metadata', 'homeShelves', 'filtering', 'animeFiltering',
+            'liveTV', 'display', 'network', 'ranking', 'calendar',
+        ];
 
         for (const section of topLevelPerUserSections) {
             if (!userSettings[section]) continue;
@@ -5295,7 +6000,7 @@
                     if (keepLiveSourceOverride) sectionStripped[key] = true;
                     continue;
                 }
-                const globalValue = globalSection[key];
+                const globalValue = getGlobalValue(section + '.' + key);
                 // Normalize before comparing - treat empty strings/arrays as "inherit from global"
                 const normValue = normalizeForComparisonForField(section, key, value);
                 const normGlobal = normalizeForComparisonForField(section, key, globalValue);
@@ -5339,7 +6044,18 @@
 
         let hasDirectChanges = false;
 
-        if (selectedUserId && isPerUserSection) {
+        if (selectedClientId && clientSettings !== null && originalClientSettings !== null) {
+            const fieldsBySection = {
+                filtering: clientFilterFields,
+                display: clientDisplayFields,
+                playback: clientPlaybackFields,
+                animeFiltering: clientAnimeFilterFields,
+                ranking: clientRankingFields,
+                network: clientNetworkFields,
+            };
+            const fields = fieldsBySection[sectionKey] || fieldsBySection[parentKey] || [];
+            hasDirectChanges = fields.some(field => !deepEqual(getAtPath(clientSettings, field), getAtPath(originalClientSettings, field)));
+        } else if (selectedUserId && isPerUserSection) {
             // Compare user settings
             if (!userSettings || !originalUserSettings) return false;
 
@@ -5393,7 +6109,28 @@
         btn.innerHTML = '<span class="spinner-small"></span>';
 
         try {
-            if (selectedUserId && userSettings) {
+            if (selectedClientId && clientSettings !== null) {
+                const response = await fetch(basePath + '/api/clients/' + encodeURIComponent(selectedClientId) + '/settings', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify(clientSettings)
+                });
+                if (response.ok) {
+                    originalClientSettings = JSON.parse(JSON.stringify(clientSettings));
+                    recalculateClientOverrides(selectedClientId);
+                    btn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>';
+                    showToast('Device settings saved successfully');
+                    updateRevertButtonVisibility();
+                    renderSettingsScopeTree();
+                    setTimeout(() => renderSettings(), 500);
+                } else {
+                    const result = await response.json().catch(() => ({}));
+                    showToast(result.error || 'Failed to save device settings', 'error');
+                    btn.innerHTML = originalHtml;
+                    btn.disabled = false;
+                }
+            } else if (selectedUserId && userSettings) {
                 // Save user-specific settings (strip values matching global to keep as inherited)
                 const strippedSettings = stripInheritedValues(userSettings, currentSettings);
                 console.log('Saving user settings - before strip:', JSON.stringify(userSettings));
@@ -5415,8 +6152,8 @@
                     updateClientDropdownIndicators();
                     updateRevertButtonVisibility();
                     setTimeout(() => renderSettings(), 500);
-                    // Check if any clients for this profile have overrides
-                    await promptPropagateClientsIfNeeded();
+                    await updateClientSaveImpact();
+                    renderSettings();
                 } else {
                     const result = await response.text();
                     showToast(result || 'Failed to save settings', 'error');
@@ -5440,8 +6177,8 @@
                     void loadHardwareAccelerationStatus();
                     void loadPearTubeStatus();
                     setTimeout(() => renderSettings(), 500);
-                    // Check if any profiles have overrides
-                    await promptPropagateIfNeeded(changedGroups);
+                    await updateProfileSaveImpact(changedGroups);
+                    renderSettings();
                 } else {
                     const result = await response.json();
                     showToast(result.error || 'Failed to save settings', 'error');
@@ -5518,7 +6255,10 @@
             const fieldsHtml = Object.entries(sectionDef.fields)
                 .sort((a, b) => (a[1].order || 0) - (b[1].order || 0))
                 .map(([fieldKey, fieldDef]) => {
-                if (sectionKey === 'usenetEngines' && ['apiPath', 'priority', 'config.webdavPathPrefix', 'pollIntervalSeconds', 'timeoutSeconds', 'allowedProfiles'].includes(fieldKey)) {
+                if (settingsLevel === 'basic' && !searchTerm && advancedArrayFields.has(sectionKey + '.' + fieldKey)) {
+                    return '';
+                }
+                if (settingsLevel === 'basic' && sectionKey === 'usenetEngines' && ['apiPath', 'priority', 'config.webdavPathPrefix', 'pollIntervalSeconds', 'timeoutSeconds', 'allowedProfiles'].includes(fieldKey)) {
                     return '';
                 }
                 const showWhen = fieldDef.showWhen;
@@ -5673,6 +6413,7 @@
             const isMyUpcoming = s.id === 'my-upcoming';
             const isRecentlyAired = s.id === 'my-recently-aired';
             const isStreamingServices = s.id === 'streaming-services';
+            const isSharedActivity = s.id === 'popular-on-server' || s.id === 'recently-watched';
             const isCollectionHub = s.type === 'collection-hub';
             const isLibrary = s.type === 'library' || s.type === 'local-library';
             const isCustom = !!s.listUrl || isLibrary || s.type === 'mdblist' || s.type === 'stremio' || s.type === 'tmdb' || s.type === 'trakt' || s.type === 'simkl' || s.type === 'letterboxd' || s.type === 'genre' || s.type === 'decade' || isCollectionHub || (s.id && (s.id.startsWith('mdblist-') || s.id.startsWith('stremio-') || s.id.startsWith('tmdb-') || s.id.startsWith('streaming-service-') || s.id.startsWith('trakt-') || s.id.startsWith('simkl-') || s.id.startsWith('letterboxd-') || s.id.startsWith('genre-') || s.id.startsWith('decade-') || s.id.startsWith('collection-hub-')));
@@ -5690,7 +6431,7 @@
                 : '';
 
             let actionsHtml = '';
-            if (isCustom || isRecentlyAired || isMyUpcoming || isStreamingServices) {
+            if (isCustom || isRecentlyAired || isMyUpcoming || isStreamingServices || isSharedActivity) {
                 // Custom lists can be edited/deleted; configurable built-ins expose scoped settings.
                 const configButton = (handler, title) => '<button class="shelf-edit-btn shelf-config-btn" onclick="'+handler+'" title="'+title+'" aria-label="'+title+'">'+icons.edit+'</button>';
                 actionsHtml = '<div class="shelf-actions">'+
@@ -5700,6 +6441,8 @@
                             ? configButton('editCustomShelf(\''+s.id+'\')', 'Configure sort')
                         : isStreamingServices
                             ? configButton('editStreamingServicesShelf(\''+s.id+'\')', 'Configure streaming services')
+                        : isSharedActivity
+                            ? configButton('editSharedActivityShelf(\''+s.id+'\')', 'Configure shared activity shelf')
                         : isCollectionHub
                             ? configButton('editCollectionHubShelf(\''+s.id+'\')', 'Configure collection hub')
                         : configButton('editCustomShelf(\''+s.id+'\')', 'Configure shelf'))+
@@ -5825,12 +6568,14 @@
             '</style>';
 
         const addCustomListForm = '<div class="add-custom-list-form">'+
-            '<h4 style="margin:0 0 12px 0;font-size:14px;font-weight:500;">Add Custom List</h4>'+
+            '<h4 style="margin:0 0 12px 0;font-size:14px;font-weight:500;">Add Home Shelf</h4>'+
             '<div class="form-row">'+
                 '<div class="form-group" style="flex:0 0 200px;">'+
                     '<label class="form-label" style="font-size:12px;margin-bottom:4px;">Type</label>'+
                     '<select id="newShelfType" onchange="onShelfTypeChange()">'+
                         '<option value="mdblist">MDBList</option>'+
+                        '<option value="popular-on-server">Popular on This Server</option>'+
+                        '<option value="recently-watched">Recently Watched</option>'+
                         '<option value="stremio">Stremio Add-on</option>'+
                         '<option value="tmdb">TMDB</option>'+
                         '<option value="trakt">Trakt</option>'+
@@ -6027,11 +6772,11 @@
                     '<label class="form-label" style="font-size:12px;margin-bottom:4px;">Name</label>'+
                     '<input type="text" id="newShelfName" placeholder="My Custom List">'+
                 '</div>'+
-                '<div class="form-group" style="flex:0 0 80px;">'+
+                '<div class="form-group" id="newShelfLimitGroup" style="flex:0 0 80px;">'+
                     '<label class="form-label" style="font-size:12px;margin-bottom:4px;">Limit</label>'+
                     '<input type="number" id="newShelfLimit" placeholder="0" min="0" max="500" value="0">'+
                 '</div>'+
-                '<div class="form-group" style="flex:0 0 auto;">'+
+                '<div class="form-group" id="newShelfHideUnreleasedGroup" style="flex:0 0 auto;">'+
                     '<label class="form-label" style="font-size:12px;margin-bottom:4px;">Hide Unreleased</label>'+
                     '<div style="display:flex;align-items:center;height:38px;" title="Filter out movies not yet available for home viewing, and upcoming/in-production series"><input type="checkbox" id="newShelfHideUnreleased"></div>'+
                 '</div>'+
@@ -6260,6 +7005,39 @@
             name: 'Favorite Channels',
             enabled: false,
         }, 'streaming-services');
+        insertBuiltInShelf({
+            id: 'popular-on-server',
+            name: 'Popular on This Server',
+            enabled: false,
+            limit: 20,
+            activityWindowDays: 90,
+            minimumProfiles: 2,
+        }, 'live-favorites');
+        insertBuiltInShelf({
+            id: 'recently-watched',
+            name: 'Recently Watched',
+            enabled: false,
+            limit: 20,
+            activityWindowDays: 14,
+            maxItemsPerProfile: 3,
+        }, 'popular-on-server');
+        insertBuiltInShelf({
+            id: 'dashboard',
+            name: 'Dashboard',
+            enabled: false,
+        }, 'recently-watched');
+        const popularShelf = shelves.find((s) => s.id === 'popular-on-server');
+        if (popularShelf) {
+            if (!popularShelf.limit) popularShelf.limit = 20;
+            if (!popularShelf.activityWindowDays) popularShelf.activityWindowDays = 90;
+            if (!popularShelf.minimumProfiles) popularShelf.minimumProfiles = 2;
+        }
+        const recentlyWatchedShelf = shelves.find((s) => s.id === 'recently-watched');
+        if (recentlyWatchedShelf) {
+            if (!recentlyWatchedShelf.limit) recentlyWatchedShelf.limit = 20;
+            if (!recentlyWatchedShelf.activityWindowDays) recentlyWatchedShelf.activityWindowDays = 14;
+            if (!recentlyWatchedShelf.maxItemsPerProfile) recentlyWatchedShelf.maxItemsPerProfile = 3;
+        }
         return shelves;
     }
 
@@ -6355,7 +7133,7 @@
         }
         select.innerHTML = lists.map((list) => {
             const selected = list.id === selectedValue ? 'selected' : '';
-            return `<option value="${list.id}" ${selected}>${list.name}</option>`;
+            return `<option value="${list.id}" ${selected}>${list.name}${list.smart ? ' (Smart list)' : ''}</option>`;
         }).join('');
         if (!selectedValue && select.options.length > 0) {
             select.value = select.options[0].value;
@@ -6832,6 +7610,7 @@
     // Update form fields when shelf type changes
     function onShelfTypeChange() {
         const type = document.getElementById('newShelfType')?.value;
+        const isBuiltInActivity = type === 'popular-on-server' || type === 'recently-watched';
         const isStremio = type === 'stremio';
         const isTMDB = type === 'tmdb';
         const isStreaming = type === 'streaming-service';
@@ -6869,11 +7648,13 @@
         document.getElementById('stremioImportModeGroup').style.display = isStremio ? '' : 'none';
         document.getElementById('stremioManifestGroup').style.display = isStremio ? '' : 'none';
         document.getElementById('stremioCatalogsGroup').style.display = isStremio && loadedStremioShelfManifest ? '' : 'none';
-        document.getElementById('newShelfNameGroup').style.display = isStremio ? 'none' : '';
-        document.getElementById('mdblistUrlGroup').style.display = (isStremio || isTMDB || isStreaming || isTrakt || isSimkl || isLetterboxd || isGenre || isDecade || isCollectionHub || isLibrary) ? 'none' : '';
+        document.getElementById('newShelfNameGroup').style.display = (isStremio || isBuiltInActivity) ? 'none' : '';
+        document.getElementById('newShelfLimitGroup').style.display = isBuiltInActivity ? 'none' : '';
+        document.getElementById('newShelfHideUnreleasedGroup').style.display = isBuiltInActivity ? 'none' : '';
+        document.getElementById('mdblistUrlGroup').style.display = (isBuiltInActivity || isStremio || isTMDB || isStreaming || isTrakt || isSimkl || isLetterboxd || isGenre || isDecade || isCollectionHub || isLibrary) ? 'none' : '';
         const hint = document.getElementById('shelfFormHint');
         if (hint) {
-            hint.style.display = (isStremio || isTMDB || isStreaming || isTrakt || isSimkl || isLetterboxd || isGenre || isDecade || isCollectionHub || isLibrary) ? 'none' : '';
+            hint.style.display = (isBuiltInActivity || isStremio || isTMDB || isStreaming || isTrakt || isSimkl || isLetterboxd || isGenre || isDecade || isCollectionHub || isLibrary) ? 'none' : '';
         }
         if (!isLetterboxd) {
             const urlHint = document.getElementById('letterboxdUrlHint');
@@ -6881,7 +7662,10 @@
             if (urlHint) urlHint.style.display = 'none';
             if (mdblistHint) mdblistHint.style.display = 'none';
         }
-        if (isStremio) {
+        if (isBuiltInActivity) {
+            document.getElementById('newShelfName').value = '';
+        }
+        else if (isStremio) {
             document.getElementById('newShelfName').value = '';
             onStremioImportModeChange();
         }
@@ -6979,7 +7763,31 @@
             shelves = currentSettings.homeShelves.shelves;
         }
 
-        if (shelfType === 'stremio') {
+        const builtInActivityShelves = {
+            'popular-on-server': 'Popular on This Server',
+            'recently-watched': 'Recently Watched',
+        };
+        if (builtInActivityShelves[shelfType]) {
+            const existingShelf = shelves.find((s) => s.id === shelfType);
+            if (existingShelf) {
+                existingShelf.enabled = true;
+                existingShelf.type = existingShelf.type || 'builtin';
+            } else {
+                shelves.push({
+                    id: shelfType,
+                    name: builtInActivityShelves[shelfType],
+                    enabled: true,
+                    order: Math.max(...shelves.map((s) => s.order || 0), -1) + 1,
+                    type: 'builtin',
+                    limit: 20,
+                    activityWindowDays: shelfType === 'popular-on-server' ? 90 : 14,
+                    minimumProfiles: shelfType === 'popular-on-server' ? 2 : undefined,
+                    maxItemsPerProfile: shelfType === 'recently-watched' ? 3 : undefined,
+                });
+            }
+            if (typeSelect) typeSelect.value = 'mdblist';
+            onShelfTypeChange();
+        } else if (shelfType === 'stremio') {
             if (!loadedStremioShelfManifest) {
                 alert('Load the Stremio manifest and select at least one catalog first.');
                 return;
@@ -7830,6 +8638,115 @@
         shelf.animateLogoOnlyOnFocus = animateLogoOnlyOnFocus;
         shelf.collectionItems = items;
         closeCollectionHubModal();
+        renderSettings();
+    }
+
+    function editSharedActivityShelf(shelfId) {
+        const shelves = getEditableHomeShelves();
+        const shelf = shelves.find((item) => item.id === shelfId);
+        if (!shelf) return;
+
+        const isPopular = shelfId === 'popular-on-server';
+        const description = isPopular
+            ? 'Ranks movies and series by completed player-recorded views from sharing profiles. Each completed movie or episode with actual playback time counts as one view; manually marked and imported watched items are excluded. Provider IDs are combined into one canonical title.'
+            : 'Shows completed player-recorded watches from sharing profiles in reverse chronological order. Manually marked and imported watched items are excluded, and profile privacy choices are always respected.';
+        const settingFields = isPopular
+            ? `
+                <div style="margin-bottom:12px;">
+                    <label class="form-label" style="font-size:12px;margin-bottom:4px;display:block;">Activity Window (days)</label>
+                    <input type="number" id="sharedShelfWindowDays" value="${shelf.activityWindowDays || 90}" min="7" max="365" class="form-input">
+                </div>
+                <div style="margin-bottom:12px;">
+                    <label class="form-label" style="font-size:12px;margin-bottom:4px;display:block;">Minimum Views</label>
+                    <input type="number" id="sharedShelfMinProfiles" value="${shelf.minimumProfiles || 2}" min="1" max="100" class="form-input">
+                    <p class="form-hint" style="margin-top:6px;">Only titles with at least this many completed movie or episode views are shown.</p>
+                </div>`
+            : `
+                <div style="margin-bottom:12px;">
+                    <label class="form-label" style="font-size:12px;margin-bottom:4px;display:block;">Activity Window (days)</label>
+                    <input type="number" id="sharedShelfWindowDays" value="${shelf.activityWindowDays || 14}" min="1" max="90" class="form-input">
+                </div>
+                <div style="margin-bottom:12px;">
+                    <label class="form-label" style="font-size:12px;margin-bottom:4px;display:block;">Maximum Items Per Profile</label>
+                    <input type="number" id="sharedShelfPerProfileCap" value="${shelf.maxItemsPerProfile || 3}" min="1" max="20" class="form-input">
+                    <p class="form-hint" style="margin-top:6px;">Prevents one profile from dominating the shared feed.</p>
+                </div>`;
+
+        const modalHtml = `
+            <div id="sharedActivityShelfModal" data-shelf-id="${shelfId}" class="test-modal streaming-services-modal visible" onclick="closeSharedActivityShelfModal(event)">
+                <div class="test-modal-content streaming-services-modal-content" onclick="event.stopPropagation()" style="max-width:560px;">
+                    <div class="test-modal-header streaming-services-modal-header">
+                        <div class="streaming-services-modal-title">
+                            <h3>${icons.edit}<span>Configure ${escapeHtml(shelf.name)}</span></h3>
+                            <p class="form-hint" style="margin-top:0.35rem;">${description}</p>
+                        </div>
+                        <button type="button" class="test-modal-close" onclick="closeSharedActivityShelfModal()" aria-label="Close">&times;</button>
+                    </div>
+                    <div class="test-modal-body streaming-services-modal-body">
+                        <div style="margin-bottom:12px;">
+                            <label class="form-label" style="font-size:12px;margin-bottom:4px;display:block;">Shelf Name</label>
+                            <input type="text" id="sharedShelfName" value="${escapeHtml(shelf.name).replace(/"/g, '&quot;')}" class="form-input">
+                        </div>
+                        ${settingFields}
+                        <div style="margin-bottom:12px;">
+                            <label class="form-label" style="font-size:12px;margin-bottom:4px;display:block;">Item Limit <span style="color:#888;font-weight:normal;">(0 = unlimited)</span></label>
+                            <input type="number" id="sharedShelfItemLimit" value="${shelf.limit || 0}" min="0" max="500" class="form-input">
+                        </div>
+                        <p class="form-hint">These values follow the selected profile's Home Shelves configuration and are executed by the backend.</p>
+                    </div>
+                    <div class="test-modal-footer streaming-services-modal-footer">
+                        <button type="button" class="btn btn-secondary" onclick="closeSharedActivityShelfModal()">Cancel</button>
+                        <button type="button" class="btn btn-primary" onclick="saveSharedActivityShelf()">Save</button>
+                    </div>
+                </div>
+            </div>`;
+        document.body.insertAdjacentHTML('beforeend', modalHtml);
+        document.body.style.overflow = 'hidden';
+        document.getElementById('sharedShelfName')?.focus();
+    }
+
+    function closeSharedActivityShelfModal(event) {
+        if (event && event.target && event.target.id !== 'sharedActivityShelfModal') return;
+        document.getElementById('sharedActivityShelfModal')?.remove();
+        document.body.style.overflow = '';
+    }
+
+    function saveSharedActivityShelf() {
+        const modal = document.getElementById('sharedActivityShelfModal');
+        const shelfId = modal?.dataset.shelfId || '';
+        const shelf = getEditableHomeShelves().find((item) => item.id === shelfId);
+        if (!shelf) return;
+
+        const name = document.getElementById('sharedShelfName')?.value?.trim() || '';
+        const windowDays = parseInt(document.getElementById('sharedShelfWindowDays')?.value || '0', 10);
+        const itemLimit = parseInt(document.getElementById('sharedShelfItemLimit')?.value || '0', 10) || 0;
+        if (!name) {
+            alert('Please enter a shelf name.');
+            return;
+        }
+        if (shelfId === 'popular-on-server') {
+            const minViews = parseInt(document.getElementById('sharedShelfMinProfiles')?.value || '0', 10);
+            if (windowDays < 7 || windowDays > 365 || minViews < 1 || minViews > 100) {
+                alert('Use an activity window from 7 to 365 days and a minimum from 1 to 100 views.');
+                return;
+            }
+            shelf.activityWindowDays = windowDays;
+            shelf.minimumProfiles = minViews;
+        } else if (shelfId === 'recently-watched') {
+            const perProfileCap = parseInt(document.getElementById('sharedShelfPerProfileCap')?.value || '0', 10);
+            if (windowDays < 1 || windowDays > 90 || perProfileCap < 1 || perProfileCap > 20) {
+                alert('Use an activity window from 1 to 90 days and a per-profile maximum from 1 to 20.');
+                return;
+            }
+            shelf.activityWindowDays = windowDays;
+            shelf.maxItemsPerProfile = perProfileCap;
+        } else {
+            return;
+        }
+
+        shelf.name = name;
+        shelf.limit = Math.max(0, Math.min(500, itemLimit));
+        closeSharedActivityShelfModal();
         renderSettings();
     }
 
@@ -8767,6 +9684,14 @@
         return merged;
     }
 
+    function clientRankingKeyForPath(criteriaPath) {
+        return {
+            'ranking.criteria': 'rankingCriteria',
+            'ranking.debrid.criteria': 'debridRankingCriteria',
+            'ranking.usenet.criteria': 'usenetRankingCriteria',
+        }[criteriaPath] || '';
+    }
+
     function effectiveRankingCriteriaForUI(criteriaPath) {
         const sharedGlobal = currentSettings.ranking?.criteria || [];
         if (!selectedUserId || !userSettings) {
@@ -8776,19 +9701,30 @@
 
         const sharedProfile = userSettings.ranking?.criteria || [];
         const effectiveShared = mergeRankingCriteriaForUI(sharedGlobal, sharedProfile);
-        if (criteriaPath === 'ranking.criteria') return effectiveShared;
+        let effectiveProfile = effectiveShared;
+        if (criteriaPath !== 'ranking.criteria') {
+            const service = criteriaPath.split('.')[1];
+            const globalServiceCriteria = currentSettings.ranking?.[service]?.criteria;
+            const base = currentSettings.ranking?.splitByService && Array.isArray(globalServiceCriteria) && globalServiceCriteria.length > 0
+                ? globalServiceCriteria
+                : effectiveShared;
+            const profileServiceCriteria = userSettings.ranking?.[service]?.criteria || [];
+            effectiveProfile = mergeRankingCriteriaForUI(base, profileServiceCriteria);
+        }
 
-        const service = criteriaPath.split('.')[1];
-        const globalServiceCriteria = currentSettings.ranking?.[service]?.criteria;
-        const base = currentSettings.ranking?.splitByService && Array.isArray(globalServiceCriteria) && globalServiceCriteria.length > 0
-            ? globalServiceCriteria
-            : effectiveShared;
-        const profileServiceCriteria = userSettings.ranking?.[service]?.criteria || [];
-        return mergeRankingCriteriaForUI(base, profileServiceCriteria);
+        if (!selectedClientId || !clientSettings) return effectiveProfile;
+        const clientKey = clientRankingKeyForPath(criteriaPath);
+        const clientCriteria = clientKey ? clientSettings[clientKey] : [];
+        return mergeRankingCriteriaForUI(effectiveProfile, clientCriteria || []);
     }
 
     function rankingCriteriaIsInherited(criteriaPath) {
         if (!selectedUserId || !userSettings) return false;
+        if (selectedClientId && clientSettings) {
+            const clientKey = clientRankingKeyForPath(criteriaPath);
+            const direct = clientKey ? clientSettings[clientKey] : undefined;
+            return !Array.isArray(direct) || direct.length === 0;
+        }
         const direct = getAtPath(userSettings, criteriaPath);
         return !Array.isArray(direct) || direct.length === 0;
     }
@@ -8805,9 +9741,14 @@
         let inheritanceBadgeHtml = '';
         if (selectedUserId) {
             if (isInherited) {
-                inheritanceBadgeHtml = '<span class="inheritance-badge inherited" title="Using inherited ranking criteria" style="margin-left:8px;font-size:11px;padding:2px 8px;background:rgba(100,100,100,0.3);border-radius:4px;color:#aaa;">Inherited</span>';
+                const profileCriteria = getAtPath(userSettings, criteriaPath);
+                const inheritedLabel = selectedClientId
+                    ? (Array.isArray(profileCriteria) && profileCriteria.length > 0 ? 'From Profile' : 'From Global')
+                    : 'From Global';
+                inheritanceBadgeHtml = '<span class="inheritance-badge inherited" title="Using inherited ranking criteria" style="margin-left:8px;font-size:11px;padding:2px 8px;background:rgba(100,100,100,0.3);border-radius:4px;color:#aaa;">'+inheritedLabel+'</span>';
             } else {
-                inheritanceBadgeHtml = '<span class="inheritance-badge overridden" title="Profile has custom configuration" style="margin-left:8px;font-size:11px;padding:2px 8px;background:rgba(138,43,226,0.3);border-radius:4px;color:#c9a0dc;">Profile</span>' +
+                const sourceLabel = selectedClientId ? 'Device' : 'Profile';
+                inheritanceBadgeHtml = '<span class="inheritance-badge overridden" title="'+sourceLabel+' has custom configuration" style="margin-left:8px;font-size:11px;padding:2px 8px;background:rgba(138,43,226,0.3);border-radius:4px;color:#c9a0dc;">'+sourceLabel+'</span>' +
                     '<button type="button" class="inheritance-reset" onclick="resetRankingToInherited(\''+criteriaPath+'\')" title="Reset to inherited defaults" style="margin-left:4px;background:none;border:none;color:#888;cursor:pointer;font-size:14px;">↩</button>';
             }
         }
@@ -8868,11 +9809,13 @@
     }
 
     function ensureEditableRankingCriteria(criteriaPath = 'ranking.criteria') {
-        const target = selectedUserId && userSettings ? userSettings : currentSettings;
-        let criteria = getAtPath(target, criteriaPath);
+        const clientKey = selectedClientId ? clientRankingKeyForPath(criteriaPath) : '';
+        const target = selectedClientId && clientSettings ? clientSettings : (selectedUserId && userSettings ? userSettings : currentSettings);
+        let criteria = clientKey ? target[clientKey] : getAtPath(target, criteriaPath);
         if (!Array.isArray(criteria) || criteria.length === 0) {
             criteria = JSON.parse(JSON.stringify(effectiveRankingCriteriaForUI(criteriaPath)));
-            setAtPath(target, criteriaPath, criteria);
+            if (clientKey) target[clientKey] = criteria;
+            else setAtPath(target, criteriaPath, criteria);
         }
         return criteria;
     }
@@ -8884,7 +9827,12 @@
 
     function resetRankingToInherited(criteriaPath = 'ranking.criteria') {
         if (!selectedUserId || !userSettings) return;
-        deleteAtPath(userSettings, criteriaPath);
+        if (selectedClientId && clientSettings) {
+            const clientKey = clientRankingKeyForPath(criteriaPath);
+            if (clientKey) delete clientSettings[clientKey];
+        } else {
+            deleteAtPath(userSettings, criteriaPath);
+        }
         renderSettings();
     }
 
@@ -9103,6 +10051,8 @@
             .map(([fieldKey, fieldDef]) => {
                 // Skip hidden fields
                 if (fieldDef.hidden) return '';
+                const isAdvancedField = fieldDef.advanced || advancedFieldPaths.has(sectionKey + '.' + fieldKey);
+                if (settingsLevel === 'basic' && !searchTerm && isAdvancedField) return '';
                 // Skip global-only fields (like file uploads) when viewing profile/client settings
                 if (fieldDef.globalOnly && (selectedUserId || selectedClientId)) return '';
                 // When editing device settings, only show fields that support client overrides.
@@ -9150,7 +10100,7 @@
                     group: fieldDef.group || '',
                     groupLabel: fieldDef.groupLabel || '',
                     groupDescription: fieldDef.groupDescription || '',
-                    html: '<div class="form-group'+(fieldDef.type === 'boolean' ? ' form-group-toggle' : '')+invalidClass+inheritanceClass+'"><label class="form-label"><span>'+fieldDef.label+'</span>'+inheritanceBadge+'</label>'+renderInput(fieldKey, fieldDef, fieldValue, sectionKey, sectionKey)+(fieldDef.description ? '<p class="form-hint">'+fieldDef.description+'</p>' : '')+renderAdditionalFieldHint(sectionKey, fieldKey)+renderApiKeyFormatWarning(fieldKey, fieldValue)+errorHtml+'</div>',
+                    html: '<div class="form-group'+(fieldDef.type === 'boolean' ? ' form-group-toggle' : '')+invalidClass+inheritanceClass+'"><label class="form-label"><span>'+fieldDef.label+(isAdvancedField ? '<span class="advanced-setting-badge">Advanced</span>' : '')+'</span>'+inheritanceBadge+'</label>'+renderInput(fieldKey, fieldDef, fieldValue, sectionKey, sectionKey)+(fieldDef.description ? '<p class="form-hint">'+fieldDef.description+'</p>' : '')+renderAdditionalFieldHint(sectionKey, fieldKey)+renderApiKeyFormatWarning(fieldKey, fieldValue)+errorHtml+'</div>',
                 };
             })
             .filter(Boolean);
@@ -9340,6 +10290,7 @@
     function renderSection(sectionKey, sectionDef) {
         const isOpen = window.location.hash === '#'+sectionKey;
         const errorCount = getSectionErrorCount(sectionKey);
+        const customizationCount = settingsSectionCustomizationCount(sectionKey);
         const sectionMessages = validationErrors[sectionKey]?.messages || [];
         const hasChanges = sectionHasChanges(sectionKey);
 
@@ -9396,7 +10347,8 @@
                 nestedHtml += renderNestedSectionPanel(nestedKey, nestedDef);
             }
         }
-        return '<div class="section '+(isOpen ? 'open' : '')+(hasChanges ? ' has-changes' : '')+disabledClass+'" id="section-'+sectionKey+'"><div class="section-header" onclick="toggleSection(this)"><div class="section-title">'+getIcon(sectionDef.icon)+sectionDef.label+warningBadge+'</div><div class="section-header-actions">'+saveBtn+'<svg class="section-toggle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg></div></div><div class="section-content">'+comingSoonHtml+messagesHtml+descriptionHtml+contentHtml+nestedHtml+'</div></div>';
+        const advancedBadge = advancedSections.has(sectionKey) ? '<span class="advanced-setting-badge">Advanced</span>' : '';
+        return '<div class="section '+(isOpen ? 'open' : '')+(hasChanges ? ' has-changes' : '')+disabledClass+'" id="section-'+sectionKey+'"><div class="section-header" onclick="toggleSection(this)"><div class="section-title">'+getIcon(sectionDef.icon)+sectionDef.label+advancedBadge+renderCustomizationCount(customizationCount, 'section-customization-count')+warningBadge+'</div><div class="section-header-actions">'+saveBtn+'<svg class="section-toggle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg></div></div><div class="section-content">'+comingSoonHtml+messagesHtml+descriptionHtml+contentHtml+nestedHtml+'</div></div>';
     }
 
     // Profile management functions
@@ -9415,12 +10367,23 @@
         }
     }
 
+    async function loadSettingsScopeClients() {
+        try {
+            const response = await fetch(basePath + '/api/clients', { credentials: 'same-origin' });
+            settingsScopeClients = response.ok ? (await response.json() || []) : [];
+        } catch (e) {
+            console.warn('Failed to load devices for settings scope tree:', e);
+            settingsScopeClients = [];
+        }
+    }
+
     // Account management functions
     async function loadAccounts() {
         try {
             const response = await fetch(basePath + '/api/accounts');
             if (response.ok) {
-                accountsData = await response.json();
+                const data = await response.json();
+                accountsData = Array.isArray(data) ? data : (data.accounts || []);
             } else {
                 console.error('Failed to load accounts');
                 accountsData = [];
@@ -10132,6 +11095,7 @@
 
     function renderSettings() {
         const container = document.getElementById('settingsContainer');
+        renderSettingsWorkspaceNavigation();
 
         // Run validation before rendering
         validationErrors = validateSettings();
@@ -10145,9 +11109,12 @@
 
         // Add info banner when user or client is selected
         let bannerHtml = '';
+        if (overrideImpactNotice) {
+            bannerHtml += '<div class="settings-impact-banner"><div><strong>' + escapeHtml(overrideImpactNotice.title) + '</strong><p>' + escapeHtml(overrideImpactNotice.description) + '</p></div><button type="button" class="btn btn-secondary btn-sm" onclick="reviewOverrideImpact()">Review customizations</button></div>';
+        }
         if (selectedClientId) {
             const client = clientsForUser.find(c => c.id === selectedClientId);
-            const clientName = client ? client.name : selectedClientId;
+            const clientName = client ? (client.nickname || client.name) : selectedClientId;
             bannerHtml = '<div style="background: rgba(240, 208, 32, 0.1); border: 1px solid #f0d020; border-radius: 8px; padding: 1rem; margin-bottom: 1rem;"><div style="display: flex; align-items: center; gap: 0.75rem;"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#f0d020" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg><span>Editing device-specific settings for <strong>' + clientName + '</strong></span></div><p style="margin: 0.5rem 0 0; font-size: 0.8rem; color: var(--text-muted);">Fields show <span class="inheritance-badge overridden" style="font-size: 0.6rem;">Device</span> when overridden here, or <span class="inheritance-badge inherited" style="font-size: 0.6rem;">From Profile</span> / <span class="inheritance-badge inherited" style="font-size: 0.6rem;">From Global</span> when inherited. Click ↩ to reset an override.</p></div>';
         } else if (selectedUserId) {
             bannerHtml = '<div style="background: var(--accent-bg, #2563eb20); border: 1px solid var(--accent, #2563eb); border-radius: 8px; padding: 1rem; margin-bottom: 1rem;"><div style="display: flex; align-items: center; gap: 0.75rem;"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="var(--accent, #2563eb)" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg><span>Editing profile-specific settings</span></div><p style="margin: 0.5rem 0 0; font-size: 0.8rem; color: var(--text-muted);">Fields show <span class="inheritance-badge overridden" style="font-size: 0.6rem;">Profile</span> when overridden here, or <span class="inheritance-badge inherited" style="font-size: 0.6rem;">From Global</span> when using the default. Click ↩ to reset an override.</p></div>';
@@ -10168,19 +11135,19 @@
         let html = bannerHtml;
 
         // Sections that can be configured per-client (subset of perUserSections)
-        const clientSections = ['filtering', 'animeFiltering', 'network', 'display', 'playback'];
-
         let totalMatchingSections = 0;
 
         for (const group of groups) {
+            if (!searchTerm && activeSettingsGroup && group.id !== activeSettingsGroup) continue;
             const groupSections = Object.entries(schema).filter(([key, def]) => {
                 if (def.group !== group.id) return false;
                 // Skip hidden sections
                 if (def.hidden) return false;
+                if (settingsLevel === 'basic' && !searchTerm && advancedSections.has(key)) return false;
                 // If search is active, only show matching sections
                 if (filteredSections !== null && !filteredSections.has(key)) return false;
                 // If a client is selected, only show client-configurable sections
-                if (selectedClientId && !clientSections.includes(key)) return false;
+                if (selectedClientId && !clientConfigSections.includes(key)) return false;
                 // If a user is selected (but not client), show per-user sections
                 if (selectedUserId && !selectedClientId && !perUserSections.includes(key)) return false;
                 // Hide per-user-only sections (with inheritFrom) when viewing global settings
@@ -10191,7 +11158,10 @@
             if (groupSections.length === 0) continue;
 
             totalMatchingSections += groupSections.length;
-            html += '<div class="settings-group"><h2 class="group-title">'+group.label+'</h2><div class="group-sections">'+groupSections.map(([key, def]) => renderSection(key, def)).join('')+'</div></div>';
+            const relatedHtml = group.id === 'services' && isAdmin && !selectedUserId && !selectedClientId
+                ? '<div class="settings-related-card"><div><strong>Connected services</strong><p>Connect Trakt, Simkl, MDBList, Plex, or Jellyfin and assign them to profiles.</p></div><a class="btn btn-secondary btn-sm" href="'+basePath+'/integrations">Manage Services</a></div>'
+                : '';
+            html += '<div class="settings-group"><h2 class="group-title">'+group.label+'</h2><div class="group-sections">'+relatedHtml+groupSections.map(([key, def]) => renderSection(key, def)).join('')+'</div></div>';
         }
 
         // Show "no results" message if search found nothing
@@ -10263,6 +11233,7 @@
                     if (clientInList) clientInList.hasOverrides = hasOverrides;
                     updateClientDropdownIndicators();
                     updateRevertButtonVisibility();
+                    renderSettingsScopeTree();
                 } else {
                     const result = await response.json().catch(() => ({}));
                     showToast(result.error || 'Failed to save client settings', 'error');
@@ -10286,8 +11257,8 @@
                     updateClientDropdownIndicators(); // Update "Profile Defaults" indicator
                     updateRevertButtonVisibility();
                     renderSettings(); // Re-render to update inherited field styling
-                    // Check if any clients for this profile have overrides and offer to propagate
-                    await promptPropagateClientsIfNeeded();
+                    await updateClientSaveImpact();
+                    renderSettings();
                 } else {
                     const result = await response.text();
                     showToast(result || 'Failed to save user settings', 'error');
@@ -10308,8 +11279,8 @@
                     void loadHardwareAccelerationStatus();
                     void loadPearTubeStatus();
                     if (committedPendingTextArrays) renderSettings();
-                    // Check if any profiles have overrides and offer to propagate
-                    await promptPropagateIfNeeded(changedGroups);
+                    await updateProfileSaveImpact(changedGroups);
+                    renderSettings();
                 } else {
                     const result = await response.json();
                     showToast(result.error || 'Failed to save settings', 'error');
@@ -10337,12 +11308,13 @@
         if (isAdmin) {
             void loadHardwareAccelerationStatus();
             void loadPearTubeStatus();
-            await Promise.all([loadProfiles(), loadAccounts(), loadTraktAccounts(), loadSimklAccounts(), loadLetterboxdLists(), loadMediaLibraries(), checkDefaultPassword()]);
+            await Promise.all([loadProfiles(), loadAccounts(), loadSettingsScopeClients(), loadTraktAccounts(), loadSimklAccounts(), loadLetterboxdLists(), loadMediaLibraries(), checkDefaultPassword()]);
             const selector = document.getElementById('userSelector');
             // Pre-select from query param if provided
             if (urlProfileId && selector) {
                 const opt = Array.from(selector.options).find(o => o.value === urlProfileId);
                 if (opt) {
+                    expandSettingsScopeToProfile(urlProfileId);
                     selector.value = urlProfileId;
                     await handleUserChange(urlProfileId);
                     return;
@@ -10357,12 +11329,13 @@
             // This fixes the indicator showing for profiles with saved settings that match global
             await recalculateAllUserOverrides();
         } else {
-            await Promise.all([loadProfiles(), loadTraktAccounts(), loadMediaLibraries()]);
+            await Promise.all([loadProfiles(), loadSettingsScopeClients(), loadTraktAccounts(), loadMediaLibraries()]);
             const selector = document.getElementById('userSelector');
             // Pre-select from query param if provided
             if (urlProfileId && selector) {
                 const opt = Array.from(selector.options).find(o => o.value === urlProfileId);
                 if (opt) {
+                    expandSettingsScopeToProfile(urlProfileId);
                     selector.value = urlProfileId;
                     selectedUserId = urlProfileId;
                     await handleUserChange(urlProfileId);

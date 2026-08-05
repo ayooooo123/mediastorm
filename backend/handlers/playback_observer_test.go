@@ -405,6 +405,12 @@ func (r watchStartedRepo) ListChannels(context.Context, string) ([]models.Notifi
 	}}, nil
 }
 
+// The repository grew a profile-agnostic listing; this fixture owns exactly one
+// channel, so both listings return it.
+func (r watchStartedRepo) ListAllChannels(ctx context.Context) ([]models.NotificationChannel, error) {
+	return r.ListChannels(ctx, "profile")
+}
+
 func (watchStartedRepo) GetChannel(context.Context, string) (*models.NotificationChannel, error) {
 	return nil, nil
 }

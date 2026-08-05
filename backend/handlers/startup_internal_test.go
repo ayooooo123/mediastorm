@@ -56,6 +56,61 @@ func TestStartupStremioShelfQuery(t *testing.T) {
 	}
 }
 
+func TestStartupSharedActivityShelfQueriesIncludeShelfSettings(t *testing.T) {
+	tests := []struct {
+		shelf models.ShelfConfig
+		want  map[string]string
+	}{
+		{
+			shelf: models.ShelfConfig{
+				ID: "popular-on-server", ActivityWindowDays: 30, MinimumProfiles: 3,
+			},
+			want: map[string]string{
+				"source": "popular-on-server", "activityWindowDays": "30", "minimumProfiles": "3",
+			},
+		},
+		{
+			shelf: models.ShelfConfig{
+				ID: "recently-watched", ActivityWindowDays: 7, MaxItemsPerProfile: 5,
+			},
+			want: map[string]string{
+				"source": "recently-watched", "activityWindowDays": "7", "maxItemsPerProfile": "5",
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.shelf.ID, func(t *testing.T) {
+			query, ok := startupDisplayListQueryForShelf(test.shelf, 20, false, "")
+			if !ok {
+				t.Fatal("expected startup shared-activity shelf query")
+			}
+			for key, want := range test.want {
+				if got := query.Get(key); got != want {
+					t.Fatalf("%s = %q, want %q; query=%v", key, got, want, query)
+				}
+			}
+		})
+	}
+}
+
+func TestSlimTrendingItemsPreservesShelfCardPresentation(t *testing.T) {
+	cardImage := &models.Image{URL: "https://example.com/episode.jpg", Type: "backdrop"}
+	items := slimTrendingItems([]models.TrendingItem{{
+		Title: models.Title{
+			ID: "series:1", Name: "Series", MediaType: "series",
+			CardSubtitle: "Watcher watched S01E02", CardImage: cardImage, ForceTitleOverlay: true,
+		},
+	}})
+	if len(items) != 1 {
+		t.Fatalf("items = %d, want 1", len(items))
+	}
+	title := items[0].Title
+	if title.CardSubtitle == "" || title.CardImage == nil || title.CardImage.URL != cardImage.URL || !title.ForceTitleOverlay {
+		t.Fatalf("startup slim response dropped shelf card presentation: %+v", title)
+	}
+}
+
 func TestStartupTMDBShelfFetchLimitPreservesOtherOverflow(t *testing.T) {
 	tests := []struct {
 		name        string

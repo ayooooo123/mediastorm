@@ -256,7 +256,9 @@ func TestBuildMpegTsArgsToneMapsHDROnly(t *testing.T) {
 		hdr:            true,
 		sourceTransfer: "smpte2084",
 	}, caps), " ")
-	if !strings.Contains(hdr, "tonemap=tonemap=hable") {
+	// The curve itself is the shared encode plan's call, not this path's: assert
+	// that an HDR source is tone mapped, not which operator does it.
+	if !strings.Contains(hdr, "tonemap=tonemap=") {
 		t.Fatalf("HDR source must be tone mapped to SDR: %q", hdr)
 	}
 	if !strings.Contains(hdr, "color_trc=smpte2084") {

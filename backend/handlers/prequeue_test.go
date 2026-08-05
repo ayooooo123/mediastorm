@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -147,6 +148,40 @@ func TestValidatePrequeueEpisodeDuration(t *testing.T) {
 	}
 }
 
+func TestShouldPrepareTorrentCandidates(t *testing.T) {
+	tests := []struct {
+		name            string
+		candidate       models.NZBResult
+		alreadyPrepared bool
+		want            bool
+	}{
+		{
+			name:      "defers for usenet candidate",
+			candidate: models.NZBResult{Title: "Usenet", ServiceType: models.ServiceTypeUsenet},
+			want:      false,
+		},
+		{
+			name:      "runs for first eligible debrid candidate",
+			candidate: models.NZBResult{Title: "Debrid", ServiceType: models.ServiceTypeDebrid},
+			want:      true,
+		},
+		{
+			name:            "does not repeat for later debrid candidate",
+			candidate:       models.NZBResult{Title: "Debrid", ServiceType: models.ServiceTypeDebrid},
+			alreadyPrepared: true,
+			want:            false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldPrepareTorrentCandidates(tt.candidate, tt.alreadyPrepared); got != tt.want {
+				t.Fatalf("shouldPrepareTorrentCandidates() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 // mockMovieDetailsProvider implements MovieDetailsProvider for testing
 type mockMovieDetailsProvider struct {
 	title *models.Title
@@ -158,12 +193,31 @@ func (m *mockMovieDetailsProvider) MovieInfo(_ context.Context, _ models.MovieDe
 }
 
 type mockSeriesDetailsProvider struct {
-	details *models.SeriesDetails
-	err     error
+	details   *models.SeriesDetails
+	err       error
+	lastQuery models.SeriesDetailsQuery
 }
 
-func (m *mockSeriesDetailsProvider) SeriesDetails(_ context.Context, _ models.SeriesDetailsQuery) (*models.SeriesDetails, error) {
+func (m *mockSeriesDetailsProvider) SeriesDetails(_ context.Context, query models.SeriesDetailsQuery) (*models.SeriesDetails, error) {
+	m.lastQuery = query
 	return m.details, m.err
+}
+
+func TestCreateEpisodeResolverPropagatesResolvedIMDBID(t *testing.T) {
+	provider := &mockSeriesDetailsProvider{details: &models.SeriesDetails{
+		Title: models.Title{Name: "Captain Star", Year: 1997, IMDBID: "tt0143031"},
+	}}
+	handler := &PrequeueHandler{metadataSvc: provider}
+
+	got := handler.createEpisodeResolverAndLookupAbsoluteEp(
+		context.Background(), "tmdb:series:196", "Captain Star", 1997, "", nil,
+	)
+	if got.IMDBID != "tt0143031" {
+		t.Fatalf("resolved imdb id = %q, want tt0143031", got.IMDBID)
+	}
+	if provider.lastQuery.IMDBID != "" {
+		t.Fatalf("metadata query imdb id = %q, want empty input", provider.lastQuery.IMDBID)
+	}
 }
 
 func TestUnknownTrackPolicyRejects(t *testing.T) {
@@ -587,6 +641,80 @@ func TestCreateEpisodeResolverNormalizesLegacyAbsoluteEpisode(t *testing.T) {
 	}
 }
 
+func TestCreateEpisodeResolverInfersMissingAbsoluteEpisodeFromSeason(t *testing.T) {
+	handler := &PrequeueHandler{
+		metadataSvc: &mockSeriesDetailsProvider{
+			details: &models.SeriesDetails{
+				Title: models.Title{Name: "One Piece", Year: 1999, Genres: []string{"Animation"}},
+				Seasons: []models.SeriesSeason{
+					{
+						Number:       23,
+						EpisodeCount: 17,
+						Episodes: []models.SeriesEpisode{
+							{SeasonNumber: 23, EpisodeNumber: 16, AbsoluteEpisodeNumber: 1171},
+							{SeasonNumber: 23, EpisodeNumber: 17, AiredDate: "2026-08-02"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	got := handler.createEpisodeResolverAndLookupAbsoluteEp(
+		context.Background(),
+		"tmdb:tv:37854",
+		"One Piece",
+		1999,
+		"tt0388629",
+		&models.EpisodeReference{SeasonNumber: 23, EpisodeNumber: 17},
+	)
+
+	if got.TargetEpisode == nil {
+		t.Fatal("TargetEpisode is nil")
+	}
+	if got.TargetEpisode.AbsoluteEpisodeNumber != 1172 {
+		t.Fatalf("AbsoluteEpisodeNumber = %d, want 1172", got.TargetEpisode.AbsoluteEpisodeNumber)
+	}
+}
+
+func TestInferAbsoluteEpisodeNumberRejectsConflictingAnchors(t *testing.T) {
+	seasons := []models.SeriesSeason{
+		{
+			Number: 23,
+			Episodes: []models.SeriesEpisode{
+				{SeasonNumber: 23, EpisodeNumber: 15, AbsoluteEpisodeNumber: 1170},
+				{SeasonNumber: 23, EpisodeNumber: 16, AbsoluteEpisodeNumber: 999},
+			},
+		},
+	}
+
+	got := inferAbsoluteEpisodeNumber(seasons, models.SeriesEpisode{SeasonNumber: 23, EpisodeNumber: 17})
+	if got != 0 {
+		t.Fatalf("inferAbsoluteEpisodeNumber() = %d, want 0 for conflicting anchors", got)
+	}
+}
+
+func TestAnnotateResultEpisodeClonesCachedAttributesAndAddsAbsoluteHint(t *testing.T) {
+	cachedAttributes := map[string]string{"source": "cached"}
+	result := models.NZBResult{Attributes: cachedAttributes}
+
+	annotateResultEpisode(&result, &models.EpisodeReference{
+		SeasonNumber:          23,
+		EpisodeNumber:         17,
+		AbsoluteEpisodeNumber: 1172,
+	})
+
+	if result.Attributes["targetEpisodeCode"] != "S23E17" {
+		t.Fatalf("targetEpisodeCode = %q, want S23E17", result.Attributes["targetEpisodeCode"])
+	}
+	if result.Attributes["absoluteEpisodeNumber"] != "1172" {
+		t.Fatalf("absoluteEpisodeNumber = %q, want 1172", result.Attributes["absoluteEpisodeNumber"])
+	}
+	if _, mutated := cachedAttributes["absoluteEpisodeNumber"]; mutated {
+		t.Fatal("annotateResultEpisode mutated cached attributes")
+	}
+}
+
 func TestPrequeueMovieAnimeDetection_SeriesSkipped(t *testing.T) {
 	handler := &PrequeueHandler{
 		movieMetadataSvc: &mockMovieDetailsProvider{
@@ -791,6 +919,43 @@ func TestAdoptMigrationReplacesPrequeueStream(t *testing.T) {
 	}
 }
 
+func TestAdoptMigrationRejectsM2TSStream(t *testing.T) {
+	store := playback.NewPrequeueStore(time.Hour)
+	entry, created := store.Create("movie:1", "Example", "user1", "movie", 2024, nil, "details")
+	if !created {
+		t.Fatal("Create returned created=false")
+	}
+	store.Update(entry.ID, func(e *playback.PrequeueEntry) {
+		e.Status = playback.PrequeueStatusReady
+		e.StreamPath = "/debrid/torbox/original.mkv"
+	})
+
+	reqBody, err := json.Marshal(adoptMigrationRequest{
+		StreamPath: "/debrid/torbox/torrent/file/2/Disc/BDMV/STREAM/00060.m2ts",
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	handler := &PrequeueHandler{store: store}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/playback/prequeue/"+entry.ID+"/adopt-migration", bytes.NewReader(reqBody))
+	req = mux.SetURLVars(req, map[string]string{"prequeueID": entry.ID})
+
+	handler.AdoptMigration(rec, req)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	got, ok := store.Get(entry.ID)
+	if !ok {
+		t.Fatal("prequeue disappeared")
+	}
+	if got.StreamPath != "/debrid/torbox/original.mkv" || got.MigrationAdopted {
+		t.Fatalf("prequeue mutated after rejected migration: %#v", got)
+	}
+}
+
 func TestPrequeueReusesAdoptedMigrationWithoutTrackMetadata(t *testing.T) {
 	store := playback.NewPrequeueStore(time.Hour)
 	entry, created := store.Create("movie:1", "Example", "user1", "movie", 2024, nil, "details")
@@ -877,6 +1042,44 @@ func TestDefaultExternalURLValidator(t *testing.T) {
 
 		if err := defaultExternalURLValidator(context.Background(), "https://example.com/stream"); err == nil {
 			t.Fatal("expected validation error for 403")
+		}
+	})
+
+	t.Run("forces reresolve when head redirects to ElfHosted slate", func(t *testing.T) {
+		http.DefaultTransport = prequeueRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+			finalReq := r.Clone(r.Context())
+			finalReq.URL, _ = url.Parse("https://slate.elfhosted.com/cache/link-expired.mp4")
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("")),
+				Header:     make(http.Header),
+				Request:    finalReq,
+			}, nil
+		})
+
+		if err := defaultExternalURLValidator(context.Background(), "https://example.com/stream"); err == nil {
+			t.Fatal("expected validation error for ElfHosted slate redirect")
+		}
+	})
+
+	t.Run("forces reresolve when ranged fallback returns slate playlist", func(t *testing.T) {
+		http.DefaultTransport = prequeueRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+			status := http.StatusMethodNotAllowed
+			body := ""
+			if r.Method == http.MethodGet {
+				status = http.StatusOK
+				body = "#EXTM3U\n#EXTINF:120.960,\nhttps://slate.elfhosted.com/cache/link-expired.ts\n"
+			}
+			return &http.Response{
+				StatusCode: status,
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Header:     make(http.Header),
+				Request:    r,
+			}, nil
+		})
+
+		if err := defaultExternalURLValidator(context.Background(), "https://example.com/stream"); err == nil {
+			t.Fatal("expected validation error for ElfHosted slate playlist")
 		}
 	})
 

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"novastream/models"
 )
@@ -46,6 +47,16 @@ func (r *memoryRepo) ListChannels(_ context.Context, profileID string) ([]models
 		if channel.ProfileID == profileID {
 			channels = append(channels, channel)
 		}
+	}
+	return channels, nil
+}
+
+func (r *memoryRepo) ListAllChannels(_ context.Context) ([]models.NotificationChannel, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	channels := make([]models.NotificationChannel, 0, len(r.channels))
+	for _, channel := range r.channels {
+		channels = append(channels, channel)
 	}
 	return channels, nil
 }
@@ -200,6 +211,51 @@ func TestFormatOmitsProgressForWatchedEvent(t *testing.T) {
 	}
 	if body != "Movie" {
 		t.Fatalf("body = %q", body)
+	}
+}
+
+func TestFormatIncludesZeroPercentForProgressEvent(t *testing.T) {
+	title, body := Format(models.NotificationChannel{
+		TitleTemplate: "{{eventLabel}}: {{title}}",
+		BodyTemplate:  "{{mediaLabel}}{{progressLabel}}",
+	}, models.NotificationEvent{
+		Type:      models.NotificationEventWatchProgress,
+		Title:     "Movie",
+		MediaType: "movie",
+		Percent:   0,
+	})
+	if title != "Watching: Movie" {
+		t.Fatalf("title = %q", title)
+	}
+	if body != "Movie · 0%" {
+		t.Fatalf("body = %q", body)
+	}
+}
+
+func TestProgressBarKeepsStartingSegmentFilled(t *testing.T) {
+	tests := []struct {
+		name    string
+		percent float64
+		filled  int
+	}{
+		{name: "negative", percent: -1, filled: 1},
+		{name: "zero", percent: 0, filled: 1},
+		{name: "below first rounded segment", percent: 2, filled: 1},
+		{name: "next segment", percent: 8, filled: 2},
+		{name: "complete", percent: 100, filled: 20},
+		{name: "above complete", percent: 101, filled: 20},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bar := progressBar(tt.percent)
+			if got := strings.Count(bar, "▰"); got != tt.filled {
+				t.Fatalf("filled segments = %d, want %d in %q", got, tt.filled, bar)
+			}
+			if got := utf8.RuneCountInString(bar); got != 20 {
+				t.Fatalf("bar width = %d, want 20 in %q", got, bar)
+			}
+		})
 	}
 }
 
@@ -486,6 +542,94 @@ func TestSaveChannelRequiresSingleNotificationType(t *testing.T) {
 	}
 }
 
+func TestSaveChannelKeepsSystemOperationsSeparateFromMediaEvents(t *testing.T) {
+	service := New(newMemoryRepo())
+	defer service.Close()
+
+	_, err := service.SaveChannel(context.Background(), models.NotificationChannel{
+		ProfileID: "profile",
+		Name:      "Mixed",
+		Type:      models.NotificationChannelWebhook,
+		URL:       "https://example.com/hook",
+		Events: []string{
+			models.NotificationEventWatchStarted,
+			models.NotificationEventSystemStartup,
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "system operations") {
+		t.Fatalf("SaveChannel error = %v, want system operations validation error", err)
+	}
+
+	saved, err := service.SaveChannel(context.Background(), models.NotificationChannel{
+		ProfileID: "profile",
+		Name:      "Lifecycle",
+		Type:      models.NotificationChannelWebhook,
+		URL:       "https://example.com/hook",
+		Events: []string{
+			models.NotificationEventSystemStartup,
+			models.NotificationEventSystemShutdown,
+		},
+	})
+	if err != nil {
+		t.Fatalf("save system channel: %v", err)
+	}
+	if got := strings.Join(saved.Events, ","); got != "system.shutdown,system.startup" {
+		t.Fatalf("system events = %q", got)
+	}
+}
+
+func TestNotifySystemSynchronouslyDeliversOnlySubscribedEvent(t *testing.T) {
+	type receivedPayload struct {
+		Event string                   `json:"event"`
+		Data  models.NotificationEvent `json:"data"`
+	}
+	received := make(chan receivedPayload, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload receivedPayload
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode system notification: %v", err)
+		}
+		received <- payload
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	repo := newMemoryRepo()
+	repo.channels["startup"] = models.NotificationChannel{
+		ID: "startup", ProfileID: "profile-a", Type: models.NotificationChannelWebhook,
+		URL: server.URL, Enabled: true, Events: []string{models.NotificationEventSystemStartup},
+		TitleTemplate: defaultTitleTemplate, BodyTemplate: defaultBodyTemplate,
+	}
+	repo.channels["shutdown"] = models.NotificationChannel{
+		ID: "shutdown", ProfileID: "profile-b", Type: models.NotificationChannelWebhook,
+		URL: server.URL, Enabled: true, Events: []string{models.NotificationEventSystemShutdown},
+		TitleTemplate: defaultTitleTemplate, BodyTemplate: defaultBodyTemplate,
+	}
+	repo.channels["disabled"] = models.NotificationChannel{
+		ID: "disabled", ProfileID: "profile-c", Type: models.NotificationChannelWebhook,
+		URL: server.URL, Enabled: false, Events: []string{models.NotificationEventSystemStartup},
+		TitleTemplate: defaultTitleTemplate, BodyTemplate: defaultBodyTemplate,
+	}
+	service := New(repo)
+	defer service.Close()
+
+	if err := service.NotifySystem(context.Background(), models.NotificationEventSystemStartup); err != nil {
+		t.Fatalf("notify startup: %v", err)
+	}
+	payload := waitForNotificationRequest(t, received)
+	if payload.Event != models.NotificationEventSystemStartup ||
+		payload.Data.ProfileID != "profile-a" ||
+		payload.Data.Title != "mediastorm" ||
+		payload.Data.MediaType != "system" {
+		t.Fatalf("startup payload = %#v", payload)
+	}
+	select {
+	case extra := <-received:
+		t.Fatalf("unexpected system notification = %#v", extra)
+	default:
+	}
+}
+
 func TestReleaseIdentityUsesCanonicalExternalID(t *testing.T) {
 	watchlist := models.NotificationEvent{
 		Title:       "Movie",
@@ -555,6 +699,58 @@ func TestPlaybackNotificationsAreEdgeTriggered(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatalf("timed out waiting for event %q", expected)
 		}
+	}
+}
+
+func TestPlaybackNotificationsExcludeLiveTV(t *testing.T) {
+	received := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Event string `json:"event"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		received <- payload.Event
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	repo := newMemoryRepo()
+	repo.channels["channel"] = models.NotificationChannel{
+		ID: "channel", ProfileID: "profile", Type: models.NotificationChannelDiscord,
+		URL: server.URL + "/api/webhooks/1/token", Enabled: true,
+		Events: []string{
+			models.NotificationEventWatchStarted,
+			models.NotificationEventWatchProgress,
+			models.NotificationEventWatchWatched,
+		},
+		TitleTemplate: defaultTitleTemplate, BodyTemplate: defaultBodyTemplate,
+	}
+	service := New(repo)
+	defer service.Close()
+
+	for _, mediaType := range []string{"live", "Live", " live ", "livetv", "live-tv", "channel", "channels"} {
+		service.HandlePlaybackUpdate("profile", models.PlaybackProgressUpdate{
+			MediaType: mediaType,
+			ItemID:    "live-channel",
+			MovieName: "Live Channel",
+			Duration:  100,
+		}, 50)
+	}
+
+	select {
+	case event := <-received:
+		t.Fatalf("live TV playback emitted %q notification", event)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	service.sessionMu.Lock()
+	sessionCount := len(service.sessions)
+	service.sessionMu.Unlock()
+	if sessionCount != 0 {
+		t.Fatalf("live TV playback created %d notification sessions", sessionCount)
+	}
+	if len(repo.progress) != 0 {
+		t.Fatalf("live TV playback persisted %d progress notifications", len(repo.progress))
 	}
 }
 
@@ -713,20 +909,20 @@ func TestDiscordProgressNotificationEditsThenCompletesOneMessage(t *testing.T) {
 	update := models.PlaybackProgressUpdate{
 		MediaType: "movie", ItemID: "tmdb:1", MovieName: "Movie", Duration: 100,
 	}
-	service.HandlePlaybackUpdate("profile", update, 1)
+	service.HandlePlaybackUpdate("profile", update, 0)
 	first := waitForNotificationRequest(t, received)
 	if first.method != http.MethodPost || first.path != "/api/webhooks/1/token" || first.query != "wait=true" {
 		t.Fatalf("initial request = %s %s?%s", first.method, first.path, first.query)
 	}
-	if first.title != "Watching: Movie" || !strings.Contains(first.body, "1%") ||
+	if first.title != "Watching: Movie" || !strings.Contains(first.body, "0%") ||
 		!strings.Contains(first.body, "▱") {
 		t.Fatalf("initial progress payload = title %q body %q", first.title, first.body)
 	}
-	if strings.Count(first.body, "1%") != 1 {
+	if strings.Count(first.body, "0%") != 1 {
 		t.Fatalf("initial progress body repeats percentage: %q", first.body)
 	}
 
-	service.HandlePlaybackUpdate("profile", update, 1.9)
+	service.HandlePlaybackUpdate("profile", update, 0.9)
 	select {
 	case item := <-received:
 		t.Fatalf("same whole-percentage progress bucket emitted %s %s", item.method, item.path)

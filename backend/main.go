@@ -30,6 +30,7 @@ import (
 	"novastream/internal/slogutil"
 	internalusenet "novastream/internal/usenet"
 	"novastream/internal/webdav"
+	"novastream/models"
 	"novastream/services/accounts"
 	"novastream/services/backup"
 	"novastream/services/badstreams"
@@ -47,6 +48,7 @@ import (
 	"novastream/services/invitations"
 	"novastream/services/jellyfin"
 	"novastream/services/letterboxd"
+	"novastream/services/libraryaccess"
 	"novastream/services/localmedia"
 	"novastream/services/mdblist"
 	"novastream/services/metadata"
@@ -628,6 +630,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to initialise remote media service: %v", err)
 	}
+	libraryAccessService := libraryaccess.New(store.LibraryAccess(), store.LocalMedia(), store.RemoteMedia())
 	remotePlaybackReporter := remotemedia.NewPlaybackReporter(remoteMediaService)
 	multiRTScrobbler := history.NewMultiRealTimeScrobbler(
 		scrobbleTracker,
@@ -806,6 +809,7 @@ func main() {
 		videoHandler.SetConfigManager(cfgManager)
 		videoHandler.SetUsersService(userService)
 		videoHandler.SetAccountsService(accountsService)
+		videoHandler.SetLibraryAccessService(libraryAccessService)
 	}
 
 	liveHandler := handlers.NewLiveHandler(nil, settings.Transmux.Enabled, settings.Transmux.FFmpegPath, settings.Live.PlaylistCacheTTLHours, settings.Live.ProbeSizeMB, settings.Live.AnalyzeDurationSec, settings.Live.LowLatency, cfgManager, userSettingsService)
@@ -845,6 +849,7 @@ func main() {
 	videoHandler.GetHLSManager().AddPlaybackActivityObserver(pearTubeHandler)
 	handlers.GetStreamTracker().AddPlaybackActivityObserver(pearTubeHandler)
 	handlers.GetStreamTracker().SetPlaybackAutoSeeder(pearTubeHandler)
+	localMediaHandler.SetLibraryAccessService(libraryAccessService)
 	userSettingsHandler.LocalMedia = localMediaService
 	userSettingsHandler.SetPrequeueStore(prequeueHandler.GetStore())
 	userSettingsHandler.SetSearchCacheClearer(indexerService)
@@ -883,6 +888,7 @@ func main() {
 		shareLinkRepo = store.ShareLinks()
 	}
 	shareHandler := handlers.NewShareHandler(handlers.NewShareStore(shareLinkRepo), sessionsService, userService, settings.Server.BasePath)
+	shareHandler.SetLibraryAccessService(libraryAccessService)
 
 	api.Register(
 		r,
@@ -975,6 +981,7 @@ func main() {
 	adminUIHandler.SetNotificationService(notificationService)
 	adminUIHandler.SetLocalMediaService(localMediaService)
 	adminUIHandler.SetRemoteMediaService(remoteMediaService)
+	adminUIHandler.SetLibraryAccessService(libraryAccessService)
 
 	// Login/logout routes (no auth required)
 	r.HandleFunc("/admin/login", adminUIHandler.LoginPage).Methods(http.MethodGet)
@@ -989,6 +996,8 @@ func main() {
 	r.HandleFunc("/admin/status", adminUIHandler.RequireAuth(adminUIHandler.StatusPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/history", adminUIHandler.RequireAuth(adminUIHandler.HistoryPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/tools", adminUIHandler.RequireAuth(adminUIHandler.ToolsPage)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/tasks", adminUIHandler.RequireMasterAuth(adminUIHandler.ToolsPage)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/integrations", adminUIHandler.RequireMasterAuth(adminUIHandler.ToolsPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/tools/hidden-items", adminUIHandler.RequireAuth(adminUIHandler.HiddenItemsPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/tools/resolved-nzbs", adminUIHandler.RequireAuth(adminUIHandler.ResolvedNZBsPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/tools/bad-streams", adminUIHandler.RequireMasterAuth(adminUIHandler.BadStreamsPage)).Methods(http.MethodGet)
@@ -1155,10 +1164,12 @@ func main() {
 	r.HandleFunc("/admin/api/accounts/password", adminUIHandler.RequireAuth(adminUIHandler.ResetUserAccountPassword)).Methods(http.MethodPut)
 	r.HandleFunc("/admin/api/accounts/max-streams", adminUIHandler.RequireMasterAuth(adminUIHandler.SetAccountMaxStreams)).Methods(http.MethodPut)
 	r.HandleFunc("/admin/api/profiles/share-links", adminUIHandler.RequireMasterAuth(adminUIHandler.SetProfileAllowShareLinks)).Methods(http.MethodPut)
+	r.HandleFunc("/admin/api/profiles/activity-privacy", adminUIHandler.RequireAuth(adminUIHandler.SetProfileActivityPrivacy)).Methods(http.MethodPut)
 	r.HandleFunc("/admin/api/accounts/default-password", adminUIHandler.RequireAuth(adminUIHandler.HasDefaultPassword)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/library/libraries", adminUIHandler.RequireAuth(adminUIHandler.ListLocalMediaLibraries)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/library/libraries", adminUIHandler.RequireAuth(adminUIHandler.CreateLocalMediaLibrary)).Methods(http.MethodPost)
 	r.HandleFunc("/admin/api/library/libraries/{libraryID}", adminUIHandler.RequireAuth(adminUIHandler.UpdateLocalMediaLibrary)).Methods(http.MethodPut)
+	r.HandleFunc("/admin/api/library/libraries/{libraryID}/access", adminUIHandler.RequireMasterAuth(adminUIHandler.SetLibraryAccess)).Methods(http.MethodPut)
 	r.HandleFunc("/admin/api/library/libraries/{libraryID}", adminUIHandler.RequireAuth(adminUIHandler.DeleteLocalMediaLibrary)).Methods(http.MethodDelete)
 	r.HandleFunc("/admin/api/library/libraries/{libraryID}/scan", adminUIHandler.RequireAuth(adminUIHandler.ScanLocalMediaLibrary)).Methods(http.MethodPost)
 	r.HandleFunc("/admin/api/library/libraries/{libraryID}/items", adminUIHandler.RequireAuth(adminUIHandler.ListLocalMediaItems)).Methods(http.MethodGet)
@@ -1167,6 +1178,8 @@ func main() {
 	r.HandleFunc("/admin/api/library/search", adminUIHandler.RequireAuth(adminUIHandler.SearchLocalMediaMetadata)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/library/fs", adminUIHandler.RequireAuth(adminUIHandler.BrowseLocalMediaDirectories)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/library/remote/discover", adminUIHandler.RequireMasterAuth(adminUIHandler.DiscoverRemoteMediaLibraries)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/api/library/remote/servers", adminUIHandler.RequireMasterAuth(adminUIHandler.DiscoverRemoteMediaServers)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/api/library/remote/verify", adminUIHandler.RequireMasterAuth(adminUIHandler.VerifyRemoteMediaServer)).Methods(http.MethodPost)
 	r.HandleFunc("/admin/api/library/items/{itemID}/match", adminUIHandler.RequireAuth(adminUIHandler.UpdateLocalMediaItemMatch)).Methods(http.MethodPut)
 	r.HandleFunc("/admin/api/library/items/{itemID}", adminUIHandler.RequireAuth(adminUIHandler.DeleteLocalMediaItem)).Methods(http.MethodDelete)
 	r.HandleFunc("/admin/api/profiles/reassign", adminUIHandler.RequireAuth(adminUIHandler.ReassignProfile)).Methods(http.MethodPut)
@@ -1317,6 +1330,7 @@ func main() {
 		r.HandleFunc("/admin/backup", adminUIHandler.RequireMasterAuth(adminUIHandler.BackupPage)).Methods(http.MethodGet)
 		r.HandleFunc("/admin/api/backups", adminUIHandler.RequireMasterAuth(backupHandler.ListBackups)).Methods(http.MethodGet)
 		r.HandleFunc("/admin/api/backups", adminUIHandler.RequireMasterAuth(backupHandler.CreateBackup)).Methods(http.MethodPost)
+		r.HandleFunc("/admin/api/backups/restore", adminUIHandler.RequireMasterAuth(backupHandler.RestoreBackupUpload)).Methods(http.MethodPost)
 		r.HandleFunc("/admin/api/backups/{filename}/download", adminUIHandler.RequireMasterAuth(backupHandler.DownloadBackup)).Methods(http.MethodGet)
 		r.HandleFunc("/admin/api/backups/{filename}/restore", adminUIHandler.RequireMasterAuth(backupHandler.RestoreBackup)).Methods(http.MethodPost)
 		r.HandleFunc("/admin/api/backups/{filename}", adminUIHandler.RequireMasterAuth(backupHandler.DeleteBackup)).Methods(http.MethodDelete)
@@ -1454,6 +1468,7 @@ func main() {
 	r.HandleFunc("/account/api/profiles/pin", adminUIHandler.RequireAuth(adminUIHandler.SetProfilePin)).Methods(http.MethodPut)
 	r.HandleFunc("/account/api/profiles/pin", adminUIHandler.RequireAuth(adminUIHandler.ClearProfilePin)).Methods(http.MethodDelete)
 	r.HandleFunc("/account/api/profiles/kids", adminUIHandler.RequireAuth(adminUIHandler.SetKidsProfile)).Methods(http.MethodPut)
+	r.HandleFunc("/account/api/profiles/activity-privacy", adminUIHandler.RequireAuth(adminUIHandler.SetProfileActivityPrivacy)).Methods(http.MethodPut)
 	r.HandleFunc("/account/api/notifications", adminUIHandler.RequireAuth(adminUIHandler.ListNotificationChannels)).Methods(http.MethodGet)
 	r.HandleFunc("/account/api/notifications", adminUIHandler.RequireAuth(adminUIHandler.SaveNotificationChannel)).Methods(http.MethodPost)
 	r.HandleFunc("/account/api/notifications", adminUIHandler.RequireAuth(adminUIHandler.DeleteNotificationChannel)).Methods(http.MethodDelete)
@@ -1503,6 +1518,7 @@ func main() {
 	r.HandleFunc("/account/api/mdblist/accounts", adminUIHandler.RequireAuth(adminUIHandler.GetMDBListAccounts)).Methods(http.MethodGet)
 	r.HandleFunc("/account/api/library/libraries", adminUIHandler.RequireAuth(adminUIHandler.ListLocalMediaLibraries)).Methods(http.MethodGet)
 	r.HandleFunc("/account/api/library/libraries", adminUIHandler.RequireAuth(adminUIHandler.CreateLocalMediaLibrary)).Methods(http.MethodPost)
+	r.HandleFunc("/account/api/library/libraries/{libraryID}/access", adminUIHandler.RequireMasterAuth(adminUIHandler.SetLibraryAccess)).Methods(http.MethodPut)
 	r.HandleFunc("/account/api/library/libraries/{libraryID}", adminUIHandler.RequireAuth(adminUIHandler.UpdateLocalMediaLibrary)).Methods(http.MethodPut)
 	r.HandleFunc("/account/api/library/libraries/{libraryID}", adminUIHandler.RequireAuth(adminUIHandler.DeleteLocalMediaLibrary)).Methods(http.MethodDelete)
 	r.HandleFunc("/account/api/library/libraries/{libraryID}/scan", adminUIHandler.RequireAuth(adminUIHandler.ScanLocalMediaLibrary)).Methods(http.MethodPost)
@@ -1512,6 +1528,8 @@ func main() {
 	r.HandleFunc("/account/api/library/search", adminUIHandler.RequireAuth(adminUIHandler.SearchLocalMediaMetadata)).Methods(http.MethodGet)
 	r.HandleFunc("/account/api/library/fs", adminUIHandler.RequireAuth(adminUIHandler.BrowseLocalMediaDirectories)).Methods(http.MethodGet)
 	r.HandleFunc("/account/api/library/remote/discover", adminUIHandler.RequireMasterAuth(adminUIHandler.DiscoverRemoteMediaLibraries)).Methods(http.MethodGet)
+	r.HandleFunc("/account/api/library/remote/servers", adminUIHandler.RequireMasterAuth(adminUIHandler.DiscoverRemoteMediaServers)).Methods(http.MethodGet)
+	r.HandleFunc("/account/api/library/remote/verify", adminUIHandler.RequireMasterAuth(adminUIHandler.VerifyRemoteMediaServer)).Methods(http.MethodPost)
 	r.HandleFunc("/account/api/library/items/{itemID}/match", adminUIHandler.RequireAuth(adminUIHandler.UpdateLocalMediaItemMatch)).Methods(http.MethodPut)
 	r.HandleFunc("/account/api/library/items/{itemID}", adminUIHandler.RequireAuth(adminUIHandler.DeleteLocalMediaItem)).Methods(http.MethodDelete)
 
@@ -1595,6 +1613,8 @@ func main() {
 	// Setup graceful shutdown
 	shutdownChan := make(chan os.Signal, 1)
 	signal.Notify(shutdownChan, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(shutdownChan)
+	shutdownDone := make(chan struct{})
 
 	// Start background cache manager to warm trending data and custom lists
 	// on startup and refresh periodically (every 2 hours)
@@ -1682,7 +1702,7 @@ func main() {
 			defer ticker.Stop()
 			for {
 				select {
-				case <-shutdownChan:
+				case <-shutdownDone:
 					return
 				case <-ticker.C:
 					var m runtime.MemStats
@@ -1725,6 +1745,11 @@ func main() {
 		}
 	}()
 	log.Printf("Server listening on %s", addr)
+	startupNotificationCtx, startupNotificationCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := notificationService.NotifySystem(startupNotificationCtx, models.NotificationEventSystemStartup); err != nil {
+		log.Printf("[notifications] startup delivery failed: %v", err)
+	}
+	startupNotificationCancel()
 
 	// Start expensive restore/sync/warmup work after the socket is accepting
 	// connections so restart health checks are not blocked by external probes.
@@ -1751,11 +1776,17 @@ func main() {
 
 	// Wait for shutdown signal
 	<-shutdownChan
+	close(shutdownDone)
 	log.Println("🛑 Shutdown signal received, cleaning up...")
 
 	// Create shutdown context with timeout
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
+	shutdownNotificationCtx, shutdownNotificationCancel := context.WithTimeout(shutdownCtx, 10*time.Second)
+	if err := notificationService.NotifySystem(shutdownNotificationCtx, models.NotificationEventSystemShutdown); err != nil {
+		log.Printf("[notifications] shutdown delivery failed: %v", err)
+	}
+	shutdownNotificationCancel()
 
 	// Stop background cache manager
 	metadataService.StopBackgroundCacheManager()

@@ -1,11 +1,45 @@
 package filter
 
 import (
+	"fmt"
 	"log"
 	"regexp"
 	"strconv"
 	"strings"
 )
+
+// ValidateTerms checks regex-shaped terms before they are persisted. Plain
+// terms remain valid, but a term beginning or ending with a slash must use the
+// documented /pattern/ form. Anchored patterns are also validated because
+// CompileTerms treats them as regexes.
+func ValidateTerms(terms []string) error {
+	for i, raw := range terms {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			continue
+		}
+
+		term, _ := ParseTermWeight(trimmed)
+		startsSlash := strings.HasPrefix(term, "/")
+		endsSlash := strings.HasSuffix(term, "/")
+		if startsSlash != endsSlash || (startsSlash && len(term) < 3) {
+			return fmt.Errorf("term %d (%q): regex must be wrapped in forward slashes, for example /\\bREMUX\\b/", i+1, raw)
+		}
+
+		pattern := ""
+		if startsSlash && endsSlash {
+			pattern = term[1 : len(term)-1]
+		} else if strings.HasPrefix(term, "^") || strings.HasSuffix(term, "$") {
+			pattern = term
+		} else {
+			continue
+		}
+		if _, err := regexp.Compile("(?i)" + pattern); err != nil {
+			return fmt.Errorf("term %d (%q): invalid regex: %w", i+1, raw, err)
+		}
+	}
+	return nil
+}
 
 // CompiledTerm holds either a plain substring or a compiled regex for matching.
 type CompiledTerm struct {

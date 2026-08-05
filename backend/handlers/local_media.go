@@ -16,6 +16,7 @@ import (
 	"novastream/config"
 	"novastream/internal/auth"
 	"novastream/models"
+	"novastream/services/libraryaccess"
 	"novastream/services/localmedia"
 	"novastream/services/remotemedia"
 
@@ -44,9 +45,13 @@ type LocalMediaHandler struct {
 	cfgManager   *config.Manager
 	userSettings userSettingsProvider
 	remote       *remotemedia.Service
+	access       *libraryaccess.Service
 }
 
 func (h *LocalMediaHandler) SetRemoteMediaService(service *remotemedia.Service) { h.remote = service }
+func (h *LocalMediaHandler) SetLibraryAccessService(service *libraryaccess.Service) {
+	h.access = service
+}
 
 func NewLocalMediaHandler(service localMediaService, usersSvc localMediaUsersProvider, transmuxEnabled bool) *LocalMediaHandler {
 	return &LocalMediaHandler{
@@ -91,8 +96,63 @@ func (h *LocalMediaHandler) ListLibraries(w http.ResponseWriter, r *http.Request
 			libraries = append(libraries, models.LocalMediaLibrary{ID: remote.ID, Name: remote.Name, Type: remote.Type, CreatedAt: remote.CreatedAt, UpdatedAt: remote.UpdatedAt, LastScanStartedAt: remote.LastSyncStartedAt, LastScanFinishedAt: remote.LastSyncFinishedAt, LastScanStatus: remote.LastSyncStatus, LastScanError: remote.LastSyncError, LastScanTotal: remote.LastSyncTotal, LastScanDiscovered: remote.LastSyncTotal, LastScanMatched: remote.LastSyncTotal, SourceType: remote.Provider, SourceName: strings.Title(remote.Provider), SourceServerName: remote.ServerName})
 		}
 	}
+	if h.access != nil {
+		accountID, profileID, ok := h.librarySubject(w, r)
+		if !ok {
+			return
+		}
+		masterBypass := auth.IsMaster(r) && profileID == ""
+		filtered := libraries[:0]
+		for _, library := range libraries {
+			allowed, accessErr := h.access.CanAccess(r.Context(), library.ID, accountID, profileID, masterBypass)
+			if accessErr != nil {
+				http.Error(w, accessErr.Error(), http.StatusInternalServerError)
+				return
+			}
+			if allowed {
+				filtered = append(filtered, library)
+			}
+		}
+		libraries = filtered
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(libraries)
+}
+
+func (h *LocalMediaHandler) librarySubject(w http.ResponseWriter, r *http.Request) (accountID, profileID string, ok bool) {
+	accountID = auth.GetAccountID(r)
+	profileID = strings.TrimSpace(r.URL.Query().Get("profileId"))
+	if profileID == "" {
+		profileID = strings.TrimSpace(r.URL.Query().Get("userId"))
+	}
+	if profileID == "" {
+		return accountID, profileID, true
+	}
+	if accountID == "" || h.usersSvc == nil || !h.usersSvc.BelongsToAccount(profileID, accountID) {
+		http.Error(w, "library not found", http.StatusNotFound)
+		return "", "", false
+	}
+	return accountID, profileID, true
+}
+
+func (h *LocalMediaHandler) requireLibraryAccess(w http.ResponseWriter, r *http.Request, libraryID string) bool {
+	if h.access == nil {
+		return true
+	}
+	accountID, profileID, ok := h.librarySubject(w, r)
+	if !ok {
+		return false
+	}
+	allowed, err := h.access.CanAccess(r.Context(), libraryID, accountID, profileID, auth.IsMaster(r) && profileID == "")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return false
+	}
+	if !allowed {
+		http.Error(w, "library not found", http.StatusNotFound)
+		return false
+	}
+	return true
 }
 
 // kidsRatingCaps resolves the (movie, tv) rating caps for the requesting
@@ -126,6 +186,9 @@ func (h *LocalMediaHandler) ListGroups(w http.ResponseWriter, r *http.Request) {
 	libraryID := strings.TrimSpace(mux.Vars(r)["libraryID"])
 	if libraryID == "" {
 		http.Error(w, "missing library ID", http.StatusBadRequest)
+		return
+	}
+	if !h.requireLibraryAccess(w, r, libraryID) {
 		return
 	}
 	if h.service == nil {
@@ -290,6 +353,25 @@ func (h *LocalMediaHandler) FindMatches(w http.ResponseWriter, r *http.Request) 
 		}
 		matches = append(matches, remoteMatches...)
 	}
+	if h.access != nil {
+		accountID, profileID, ok := h.librarySubject(w, r)
+		if !ok {
+			return
+		}
+		masterBypass := auth.IsMaster(r) && profileID == ""
+		filtered := matches[:0]
+		for _, match := range matches {
+			allowed, accessErr := h.access.CanAccess(r.Context(), match.LibraryID, accountID, profileID, masterBypass)
+			if accessErr != nil {
+				http.Error(w, accessErr.Error(), http.StatusInternalServerError)
+				return
+			}
+			if allowed {
+				filtered = append(filtered, match)
+			}
+		}
+		matches = filtered
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(matches)
 }
@@ -307,10 +389,20 @@ func (h *LocalMediaHandler) GetPlayback(w http.ResponseWriter, r *http.Request) 
 
 	profileID := strings.TrimSpace(r.URL.Query().Get("profileId"))
 	profileName := strings.TrimSpace(r.URL.Query().Get("profileName"))
-	if profileID != "" && !auth.IsMaster(r) {
+	if profileID != "" {
 		accountID := auth.GetAccountID(r)
 		if accountID == "" || h.usersSvc == nil || !h.usersSvc.BelongsToAccount(profileID, accountID) {
 			http.Error(w, "profile not found", http.StatusNotFound)
+			return
+		}
+	}
+	if h.access != nil {
+		libraryID, accessErr := h.access.LibraryIDForItem(r.Context(), itemID)
+		if accessErr != nil {
+			http.Error(w, accessErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		if libraryID != "" && !h.requireLibraryAccess(w, r, libraryID) {
 			return
 		}
 	}
@@ -319,6 +411,17 @@ func (h *LocalMediaHandler) GetPlayback(w http.ResponseWriter, r *http.Request) 
 	if errors.Is(err, localmedia.ErrItemNotFound) && h.remote != nil {
 		playback, remoteErr := h.remote.Playback(r.Context(), itemID)
 		if remoteErr == nil {
+			if playbackURL, parseErr := url.Parse(playback.StreamURL); parseErr == nil {
+				query := playbackURL.Query()
+				if profileID != "" {
+					query.Set("profileId", profileID)
+				}
+				if profileName != "" {
+					query.Set("profileName", profileName)
+				}
+				playbackURL.RawQuery = query.Encode()
+				playback.StreamURL = playbackURL.String()
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(playback)
 			return
@@ -526,6 +629,16 @@ func (h *LocalMediaHandler) GetArtwork(w http.ResponseWriter, r *http.Request) {
 	if h.remote == nil {
 		http.NotFound(w, r)
 		return
+	}
+	if h.access != nil {
+		libraryID, err := h.access.LibraryIDForItem(r.Context(), strings.TrimSpace(mux.Vars(r)["itemID"]))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if libraryID == "" || !h.requireLibraryAccess(w, r, libraryID) {
+			return
+		}
 	}
 	resp, err := h.remote.OpenArtwork(r.Context(), strings.TrimSpace(mux.Vars(r)["itemID"]), strings.TrimSpace(mux.Vars(r)["kind"]))
 	if err != nil {

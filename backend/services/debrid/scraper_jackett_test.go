@@ -163,6 +163,9 @@ func TestJackettParseResponse(t *testing.T) {
 	if first.Seeders != 150 {
 		t.Errorf("unexpected seeders: %d", first.Seeders)
 	}
+	if first.PublishDate.IsZero() {
+		t.Fatal("expected Jackett pubDate to be preserved")
+	}
 	if first.Resolution != "1080p" {
 		t.Errorf("unexpected resolution: %s", first.Resolution)
 	}

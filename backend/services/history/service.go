@@ -40,6 +40,7 @@ const (
 	traktStopWatchThreshold             = 80.0
 	continueWatchingComingSoonWindow    = 7 * 24 * time.Hour
 	liveTVRecordingPathSegment          = "/live/recordings/"
+	slowPlaybackProgressThreshold       = time.Second
 )
 
 // MetadataService provides series and movie metadata for continue watching generation.
@@ -127,6 +128,8 @@ type Service struct {
 	continueWatchingTTL    time.Duration
 	changeMu               sync.RWMutex
 	watchStateChanged      func(userID string)
+	playbackProgressGate   chan struct{}
+	playbackProgressOnce   sync.Once
 }
 
 type continueWatchingRevisionStats struct {
@@ -4535,9 +4538,56 @@ func progressSeriesMatchesIdentity(progress models.PlaybackProgress, target medi
 
 // Playback Progress Methods
 
-// UpdatePlaybackProgress updates the playback progress for a media item.
-// Automatically marks items as watched when they reach 90% completion.
+// UpdatePlaybackProgress updates the playback progress for a media item using
+// a background context for compatibility with non-HTTP callers.
 func (s *Service) UpdatePlaybackProgress(userID string, update models.PlaybackProgressUpdate) (models.PlaybackProgress, error) {
+	return s.UpdatePlaybackProgressContext(context.Background(), userID, update)
+}
+
+// acquirePlaybackProgressGate keeps heartbeat writers out of the shared history
+// mutex queue until they are the next writer. Unlike sync.RWMutex.Lock, the gate
+// wait is interruptible, so disconnected clients disappear immediately instead
+// of accumulating behind a slow persistence operation. Once admitted, at most
+// one heartbeat can be waiting on the history mutex, preserving RWMutex writer
+// fairness without a polling TryLock loop.
+func (s *Service) acquirePlaybackProgressGate(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.playbackProgressOnce.Do(func() {
+		s.playbackProgressGate = make(chan struct{}, 1)
+	})
+	select {
+	case s.playbackProgressGate <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *Service) releasePlaybackProgressGate() {
+	<-s.playbackProgressGate
+}
+
+// UpdatePlaybackProgressContext updates playback progress and propagates caller
+// cancellation through lock acquisition and PostgreSQL persistence. It
+// automatically marks items as watched when they reach 90% completion.
+func (s *Service) UpdatePlaybackProgressContext(ctx context.Context, userID string, update models.PlaybackProgressUpdate) (models.PlaybackProgress, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	startedAt := time.Now()
+	lockWaitStartedAt := startedAt
+	lockWait := time.Duration(0)
+	persistDuration := time.Duration(0)
+	defer func() {
+		total := time.Since(startedAt)
+		if total >= slowPlaybackProgressThreshold {
+			log.Printf("[history] slow playback progress update user=%s mediaType=%s itemID=%s total=%s lockWait=%s persist=%s",
+				userID, update.MediaType, update.ItemID, total.Round(time.Millisecond), lockWait.Round(time.Millisecond), persistDuration.Round(time.Millisecond))
+		}
+	}()
+
 	userID = strings.TrimSpace(userID)
 	if userID == "" {
 		return models.PlaybackProgress{}, ErrUserIDRequired
@@ -4557,8 +4607,17 @@ func (s *Service) UpdatePlaybackProgress(userID string, update models.PlaybackPr
 	}
 	isLiveProgress := isLiveProgressUpdate(update)
 
+	if err := s.acquirePlaybackProgressGate(ctx); err != nil {
+		lockWait = time.Since(lockWaitStartedAt)
+		return models.PlaybackProgress{}, err
+	}
+	defer s.releasePlaybackProgressGate()
 	s.mu.Lock()
+	lockWait = time.Since(lockWaitStartedAt)
 	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return models.PlaybackProgress{}, err
+	}
 
 	perUser := s.ensurePlaybackProgressUserLocked(userID)
 	staleWatchedEpisodeUpdate := s.isWatchedEpisodeProgressUpdateLocked(userID, update)
@@ -4721,9 +4780,12 @@ func (s *Service) UpdatePlaybackProgress(userID string, update models.PlaybackPr
 		}
 	}
 
-	if err := s.savePlaybackProgressLocked(); err != nil {
+	persistStartedAt := time.Now()
+	if err := s.savePlaybackProgressLockedContext(ctx); err != nil {
+		persistDuration = time.Since(persistStartedAt)
 		return models.PlaybackProgress{}, err
 	}
+	persistDuration = time.Since(persistStartedAt)
 
 	if !isLiveProgress {
 		// Invalidate continue watching cache for this user since VOD progress changed.
@@ -5266,8 +5328,12 @@ func (s *Service) loadPlaybackProgress() error {
 }
 
 func (s *Service) savePlaybackProgressLocked() error {
+	return s.savePlaybackProgressLockedContext(context.Background())
+}
+
+func (s *Service) savePlaybackProgressLockedContext(ctx context.Context) error {
 	if s.useDB() {
-		return s.syncProgressToDB()
+		return s.syncProgressToDBContext(ctx)
 	}
 
 	// Convert to array format for storage
@@ -5458,7 +5524,13 @@ func (s *Service) syncWatchedToDB() error {
 
 // syncProgressToDB writes only changed and deleted playback-progress rows.
 func (s *Service) syncProgressToDB() error {
-	ctx := context.Background()
+	return s.syncProgressToDBContext(context.Background())
+}
+
+func (s *Service) syncProgressToDBContext(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	upserts, deletes, err := planPlaybackProgressPersistence(s.playbackProgress, s.persistedPlaybackProgress)
 	if err != nil {
 		return fmt.Errorf("plan playback progress persistence: %w", err)
@@ -6371,4 +6443,294 @@ func isMatchingPlaybackForWatchUpdate(progress models.PlaybackProgress, update m
 	}
 
 	return false
+}
+
+// AggregatePopularTitles returns titles ranked by completed media-item views
+// across all eligible profiles within the given lookback window. Episodes are
+// rolled up to their parent series, but each completed episode contributes one
+// view to the series total.
+func (s *Service) AggregatePopularTitles(
+	eligibleUsers map[string]bool,
+	windowDays int,
+	minViews int,
+) []models.PopularTitle {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	cutoff := time.Now().UTC().AddDate(0, 0, -windowDays)
+	if minViews < 1 {
+		minViews = 1
+	}
+
+	// Aggregate each completed movie or episode as one view of its canonical
+	// movie or parent-series title.
+	type aggEntry struct {
+		title models.PopularTitle
+	}
+	aggregated := make(map[string]*aggEntry)
+
+	for userID, perUser := range s.watchHistory {
+		if !eligibleUsers[userID] {
+			continue
+		}
+		for _, item := range perUser {
+			if !item.Watched || item.WatchedSeconds <= 0 || item.WatchedAt.Before(cutoff) {
+				continue
+			}
+			key := popularTitleKey(item)
+			if key == "" {
+				continue
+			}
+			entry := aggregated[key]
+			if entry == nil {
+				entry = &aggEntry{}
+				aggregated[key] = entry
+			}
+			entry.title.WatchCount++
+			if entry.title.Name == "" || item.WatchedAt.After(entry.title.LastWatched) {
+				mediaType, name, year, extIDs := popularTitleMetadata(item)
+				watchCount := entry.title.WatchCount
+				entry.title = models.PopularTitle{
+					MediaType:   mediaType,
+					ItemID:      popularTitleItemID(item),
+					Name:        name,
+					Year:        year,
+					WatchCount:  watchCount,
+					ExternalIDs: cloneStringMap(extIDs),
+					LastWatched: item.WatchedAt,
+				}
+			} else {
+				mergeMissingExternalIDs(entry.title.ExternalIDs, item.ExternalIDs)
+			}
+		}
+	}
+
+	result := make([]models.PopularTitle, 0, len(aggregated))
+	for _, entry := range aggregated {
+		if entry.title.Name == "" || entry.title.WatchCount < minViews {
+			continue
+		}
+		result = append(result, entry.title)
+	}
+
+	// Rank by completed media-item views, then by the most recent qualifying
+	// view so ties do not produce an arbitrary alphabetical archive.
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].WatchCount == result[j].WatchCount {
+			if !result[i].LastWatched.Equal(result[j].LastWatched) {
+				return result[i].LastWatched.After(result[j].LastWatched)
+			}
+			return strings.ToLower(result[i].Name) < strings.ToLower(result[j].Name)
+		}
+		return result[i].WatchCount > result[j].WatchCount
+	})
+
+	return result
+}
+
+// ListRecentWatches returns the most recent watch events across eligible profiles,
+// capped at maxPerProfile entries per user. Anonymous profiles (shared_anonymous)
+// have their UserID cleared and IsAnonymous set to true.
+func (s *Service) ListRecentWatches(eligibleUsers map[string]models.User, windowDays int, maxPerProfile int) []models.RecentWatch {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	cutoff := time.Now().UTC().AddDate(0, 0, -windowDays)
+
+	type userWatch struct {
+		item models.WatchHistoryItem
+		user models.User
+	}
+
+	// Collect all eligible watches
+	var allWatches []userWatch
+	for userID, perUser := range s.watchHistory {
+		user, ok := eligibleUsers[userID]
+		if !ok {
+			continue
+		}
+		for _, item := range perUser {
+			if !item.Watched || item.WatchedSeconds <= 0 || item.WatchedAt.Before(cutoff) {
+				continue
+			}
+			allWatches = append(allWatches, userWatch{item: item, user: user})
+		}
+	}
+
+	// Sort by watched date descending
+	sort.Slice(allWatches, func(i, j int) bool {
+		return allWatches[i].item.WatchedAt.After(allWatches[j].item.WatchedAt)
+	})
+
+	// Group by user and apply per-profile cap
+	type userGroup struct {
+		items []models.WatchHistoryItem
+		user  models.User
+	}
+	userGroups := make(map[string]*userGroup)
+	var userOrder []string // preserve chronological order of first appearance
+
+	for _, uw := range allWatches {
+		uid := uw.user.ID
+		grp, ok := userGroups[uid]
+		if !ok {
+			grp = &userGroup{user: uw.user}
+			userGroups[uid] = grp
+			userOrder = append(userOrder, uid)
+		}
+		if len(grp.items) < maxPerProfile {
+			grp.items = append(grp.items, uw.item)
+		}
+	}
+
+	// Build result preserving global chronological order
+	// (re-sort cap-applied items by time)
+	var result []models.RecentWatch
+	for _, uid := range userOrder {
+		grp := userGroups[uid]
+		for _, item := range grp.items {
+			isAnonymous := strings.EqualFold(strings.TrimSpace(grp.user.ActivityPrivacy), "shared_anonymous")
+			userName := grp.user.Name
+			if isAnonymous {
+				userName = "Fellow user"
+			}
+			rw := models.RecentWatch{
+				UserID:        grp.user.ID,
+				UserName:      userName,
+				IsAnonymous:   isAnonymous,
+				MediaType:     item.MediaType,
+				ItemID:        item.ItemID,
+				Name:          item.Name,
+				SeriesID:      item.SeriesID,
+				SeriesName:    item.SeriesName,
+				SeasonNumber:  item.SeasonNumber,
+				EpisodeNumber: item.EpisodeNumber,
+				WatchedAt:     item.WatchedAt,
+				ExternalIDs:   item.ExternalIDs,
+			}
+			if isAnonymous {
+				rw.UserID = "" // clear user ID for anonymous entries
+			}
+			result = append(result, rw)
+		}
+	}
+
+	// Sort by WatchedAt descending
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].WatchedAt.After(result[j].WatchedAt)
+	})
+
+	return result
+}
+
+// popularTitleKey returns a canonical key for a watch history item:
+// "movie:<itemID>" for movies, "series:<seriesID>" for episodes.
+// Returns "" if the item cannot be resolved.
+func popularTitleKey(item models.WatchHistoryItem) string {
+	mediaType := strings.ToLower(strings.TrimSpace(item.MediaType))
+	if mediaType == "episode" || mediaType == "series" {
+		mediaType = "series"
+	} else if mediaType == "movie" {
+		mediaType = "movie"
+	} else {
+		return ""
+	}
+	for _, provider := range []string{"imdb", "tmdb", "tvdb"} {
+		if value := strings.ToLower(strings.TrimSpace(item.ExternalIDs[provider])); value != "" {
+			return mediaType + ":" + provider + ":" + value
+		}
+	}
+
+	switch item.MediaType {
+	case "movie":
+		id := strings.TrimSpace(item.ItemID)
+		if id == "" {
+			return ""
+		}
+		return "movie:" + strings.ToLower(id)
+	case "episode", "series":
+		sid := strings.TrimSpace(item.SeriesID)
+		if item.MediaType == "series" && sid == "" {
+			sid = strings.TrimSpace(item.ItemID)
+		}
+		if sid == "" {
+			// Try to infer from ItemID (strip :S##E## suffix)
+			sid = inferSeriesID(item.ItemID)
+		}
+		if sid == "" {
+			return ""
+		}
+		return "series:" + strings.ToLower(sid)
+	default:
+		return ""
+	}
+}
+
+// popularTitleItemID returns the item-level ID for a watch history item
+// (series ID for episodes, item ID for movies).
+func popularTitleItemID(item models.WatchHistoryItem) string {
+	if item.MediaType == "episode" || item.MediaType == "series" {
+		sid := strings.TrimSpace(item.SeriesID)
+		if item.MediaType == "series" && sid == "" {
+			sid = strings.TrimSpace(item.ItemID)
+		}
+		if sid != "" {
+			return sid
+		}
+		return inferSeriesID(item.ItemID)
+	}
+	return item.ItemID
+}
+
+// popularTitleMetadata extracts display metadata from a watch history item.
+func popularTitleMetadata(item models.WatchHistoryItem) (mediaType, name string, year int, extIDs map[string]string) {
+	if item.MediaType == "episode" || item.MediaType == "series" {
+		name = strings.TrimSpace(item.SeriesName)
+		if name == "" {
+			name = strings.TrimSpace(item.Name)
+		}
+		return "series", name, item.Year, item.ExternalIDs
+	}
+	return "movie", item.Name, item.Year, item.ExternalIDs
+}
+
+func cloneStringMap(source map[string]string) map[string]string {
+	result := make(map[string]string, len(source))
+	for key, value := range source {
+		result[key] = value
+	}
+	return result
+}
+
+func mergeMissingExternalIDs(target map[string]string, source map[string]string) {
+	if target == nil {
+		return
+	}
+	for key, value := range source {
+		if strings.TrimSpace(target[key]) == "" && strings.TrimSpace(value) != "" {
+			target[key] = value
+		}
+	}
+}
+
+// inferSeriesID strips the :S##E## suffix from an episode ItemID to yield
+// the parent series ID. Returns "" if the pattern is not recognised.
+func inferSeriesID(itemID string) string {
+	itemID = strings.TrimSpace(itemID)
+	// Look for :S##E## at the end, case-insensitive
+	upper := strings.ToUpper(itemID)
+	idx := strings.LastIndex(upper, ":S")
+	if idx < 0 {
+		idx = strings.LastIndex(upper, "/S")
+	}
+	if idx < 0 {
+		return ""
+	}
+	// After :S or /S should be digits, then E, then digits
+	rest := upper[idx+2:]
+	eIdx := strings.Index(rest, "E")
+	if eIdx < 0 {
+		return ""
+	}
+	return itemID[:idx]
 }

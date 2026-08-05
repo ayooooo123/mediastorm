@@ -132,6 +132,7 @@ func (i *InternetArchiveScraper) Search(ctx context.Context, req SearchRequest) 
 				Indexer:     i.Name(),
 				TorrentURL:  streamURL,
 				SizeBytes:   sizeBytes,
+				PublishDate: parseScraperPublishDate(firstNonEmpty(item.Metadata.PublicDate.String(), doc.PublicDate.String())),
 				Provider:    "archive.org",
 				MetaName:    firstNonEmpty(item.Metadata.Title.String(), doc.Title.String(), queryTitle),
 				MetaID:      identifier,
@@ -163,7 +164,7 @@ func (i *InternetArchiveScraper) searchItems(ctx context.Context, req SearchRequ
 	values.Set("rows", strconv.Itoa(i.maxItems))
 	values.Set("page", "1")
 	values.Add("sort[]", "downloads desc")
-	for _, field := range []string{"identifier", "title", "year", "date", "downloads", "licenseurl", "collection"} {
+	for _, field := range []string{"identifier", "title", "year", "date", "publicdate", "downloads", "licenseurl", "collection"} {
 		values.Add("fl[]", field)
 	}
 	endpoint.RawQuery = values.Encode()
@@ -232,6 +233,7 @@ type internetArchiveDoc struct {
 	Title      internetArchiveText `json:"title"`
 	Year       internetArchiveText `json:"year"`
 	Date       internetArchiveText `json:"date"`
+	PublicDate internetArchiveText `json:"publicdate"`
 	LicenseURL internetArchiveText `json:"licenseurl"`
 	Collection internetArchiveList `json:"collection"`
 }
@@ -245,6 +247,7 @@ type internetArchiveItemMetadata struct {
 	Title       internetArchiveText `json:"title"`
 	Year        internetArchiveText `json:"year"`
 	Date        internetArchiveText `json:"date"`
+	PublicDate  internetArchiveText `json:"publicdate"`
 	Runtime     internetArchiveText `json:"runtime"`
 	Description internetArchiveText `json:"description"`
 	LicenseURL  internetArchiveText `json:"licenseurl"`

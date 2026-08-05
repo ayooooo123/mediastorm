@@ -2,6 +2,29 @@ package handlers
 
 import "testing"
 
+func TestFindAudioTrackByLanguagePrefersEAC3OverEarlierCompatibleFallbacks(t *testing.T) {
+	streams := []AudioStreamInfo{
+		{Index: 1, Codec: "aac", Language: "eng", Title: "English AAC"},
+		{Index: 2, Codec: "ac3", Language: "eng", Title: "English 5.1"},
+		{Index: 3, Codec: "eac3", Language: "eng", Title: "English DDP Atmos"},
+	}
+
+	if got := FindAudioTrackByLanguage(streams, "eng"); got != 3 {
+		t.Fatalf("FindAudioTrackByLanguage() = %d, want E-AC-3 track 3", got)
+	}
+}
+
+func TestFindAudioTrackByLanguageSkipsEAC3CommentaryForRegularCompatibleTrack(t *testing.T) {
+	streams := []AudioStreamInfo{
+		{Index: 1, Codec: "ac3", Language: "eng", Title: "English 5.1"},
+		{Index: 2, Codec: "eac3", Language: "eng", Title: "Director Commentary"},
+	}
+
+	if got := FindAudioTrackByLanguage(streams, "eng"); got != 1 {
+		t.Fatalf("FindAudioTrackByLanguage() = %d, want regular AC-3 track 1", got)
+	}
+}
+
 func TestFindSubtitleTrackByPreferenceSkipsUnlabeledTracks(t *testing.T) {
 	streams := []SubtitleStreamInfo{
 		{Index: 0, Language: "", Title: "", IsForced: false},

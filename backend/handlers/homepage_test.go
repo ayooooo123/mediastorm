@@ -1,10 +1,159 @@
 package handlers
 
 import (
-	"novastream/models"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"novastream/models"
 )
+
+type homepageStreamsStub struct {
+	response StreamsResponse
+}
+
+func (s homepageStreamsStub) ActiveStreams() StreamsResponse {
+	return s.response
+}
+
+type homepageUsersStub struct {
+	users []models.User
+}
+
+func (s homepageUsersStub) ListAll() []models.User {
+	return s.users
+}
+
+func TestHomepageUsesCanonicalDashboardStreams(t *testing.T) {
+	createdAt := time.Date(2026, 7, 28, 20, 0, 0, 0, time.UTC)
+	handler := NewHomepageHandler(nil)
+	handler.SetAPIKey("homepage-secret")
+	handler.SetStreamsProvider(homepageStreamsStub{response: StreamsResponse{
+		Count: 2,
+		Streams: []StreamInfo{
+			{
+				ID:              "stream-nazara",
+				Type:            "direct",
+				Filename:        "movie.mkv",
+				ProfileName:     "nazara",
+				CreatedAt:       createdAt,
+				CurrentPosition: 120,
+				PercentWatched:  10,
+			},
+			{
+				ID:          "stream-mom",
+				Type:        "hls",
+				Filename:    "show.s01e01.mkv",
+				ProfileName: "mom",
+				CreatedAt:   createdAt,
+				HasHDR:      true,
+			},
+		},
+	}})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/homepage", nil)
+	req.Header.Set("X-API-Key", "homepage-secret")
+	rec := httptest.NewRecorder()
+	handler.GetStats(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var stats HomepageStats
+	if err := json.NewDecoder(rec.Body).Decode(&stats); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if stats.ActiveStreams != 2 || len(stats.Streams) != 2 {
+		t.Fatalf("activeStreams/streams = %d/%d, want 2/2", stats.ActiveStreams, len(stats.Streams))
+	}
+	if got := stats.Streams[0]; got.ProfileName != "nazara" || got.Type != "direct" || got.CurrentPosition != 120 {
+		t.Errorf("first stream = %+v, want canonical nazara direct stream", got)
+	}
+	if got := stats.Streams[1]; got.ProfileName != "mom" || got.Type != "hls" || !got.HasHDR {
+		t.Errorf("second stream = %+v, want canonical mom HLS stream", got)
+	}
+}
+
+func TestDashboardShelfUsesPresentationSafeCanonicalStreams(t *testing.T) {
+	createdAt := time.Date(2026, 7, 29, 18, 30, 0, 0, time.UTC)
+	handler := NewHomepageHandler(nil)
+	handler.SetUserService(homepageUsersStub{users: []models.User{
+		{ID: "profile-liam", Name: "Liam", ActivityPrivacy: models.ActivityPrivacyShared},
+		{ID: "profile-guest", Name: "Guest", ActivityPrivacy: models.ActivityPrivacySharedAnonymous},
+		{ID: "profile-private", Name: "Private", ActivityPrivacy: models.ActivityPrivacyNotShared},
+	}})
+	handler.SetStreamsProvider(homepageStreamsStub{response: StreamsResponse{
+		Count: 2,
+		Streams: []StreamInfo{
+			{
+				ID:              "stream-paused",
+				ItemID:          "tmdb:tv:123:s1:e2",
+				Path:            "/secret/media/show.mkv",
+				ClientIP:        "10.0.0.5",
+				UserAgent:       "private-player-agent",
+				ProfileIDs:      []string{"profile-liam", "profile-guest", "profile-private"},
+				ProfileNames:    []string{"Liam", "Guest", "Private"},
+				CreatedAt:       createdAt,
+				Duration:        2400,
+				CurrentPosition: 600,
+				PercentWatched:  25,
+				IsPaused:        true,
+				MediaType:       "episode",
+				Title:           "Example Show",
+				SeasonNumber:    1,
+				EpisodeNumber:   2,
+				EpisodeName:     "Second Episode",
+				PosterURL:       "https://images.example/poster.jpg",
+			},
+			{
+				ID:            "stream-private",
+				ProfileID:     "profile-private",
+				ProfileName:   "Private",
+				CreatedAt:     createdAt,
+				MediaType:     "movie",
+				Title:         "Private Movie",
+				PosterURL:     "https://images.example/private.jpg",
+				IsPaused:      false,
+				ExternalIDs:   map[string]string{"tmdb": "456"},
+				BytesStreamed: 1,
+			},
+		},
+	}})
+
+	rec := httptest.NewRecorder()
+	handler.GetDashboardShelf(rec, httptest.NewRequest(http.MethodGet, "/api/dashboard/shelf", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	body := rec.Body.String()
+	var response DashboardShelfResponse
+	if err := json.Unmarshal([]byte(body), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Count != 1 || len(response.Streams) != 1 {
+		t.Fatalf("count/streams = %d/%d, want 1/1", response.Count, len(response.Streams))
+	}
+	stream := response.Streams[0]
+	if !stream.IsPaused || stream.Status != "paused" || stream.PercentWatched != 25 {
+		t.Fatalf("unexpected playback state: %+v", stream)
+	}
+	if len(stream.ProfileNames) != 2 || stream.ProfileNames[0] != "Liam" || stream.ProfileNames[1] != "Fellow user" {
+		t.Fatalf("unexpected watcher names: %+v", stream.ProfileNames)
+	}
+	if strings.Contains(body, "Private") {
+		t.Fatalf("dashboard shelf response included a non-sharing profile: %s", body)
+	}
+	for _, sensitive := range []string{"/secret/media/show.mkv", "10.0.0.5", "private-player-agent"} {
+		if strings.Contains(body, sensitive) {
+			t.Fatalf("dashboard shelf response leaked %q", sensitive)
+		}
+	}
+}
 
 func TestFindMatchingProgress_EpisodePreciseMatch(t *testing.T) {
 	// When filename contains S##E## pattern, the precise match should win

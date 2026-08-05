@@ -238,9 +238,10 @@ type effectiveFilterBundle struct {
 }
 
 type effectiveRankingBundle struct {
-	Default []config.RankingCriterion
-	Debrid  []config.RankingCriterion
-	Usenet  []config.RankingCriterion
+	Default            []config.RankingCriterion
+	Debrid             []config.RankingCriterion
+	Usenet             []config.RankingCriterion
+	NewestReleaseFirst bool
 }
 
 func filterSettingsFromConfig(in config.FilterSettings) models.FilterSettings {
@@ -612,7 +613,12 @@ func rankingCriteriaFromConfig(settings config.RankingSettings, fallback []confi
 
 func (s *Service) getEffectiveRankingBundle(userID, clientID string, globalSettings config.Settings) effectiveRankingBundle {
 	base := s.getEffectiveRankingCriteria(userID, clientID, globalSettings)
-	bundle := effectiveRankingBundle{Default: base, Debrid: base, Usenet: base}
+	bundle := effectiveRankingBundle{
+		Default:            base,
+		Debrid:             base,
+		Usenet:             base,
+		NewestReleaseFirst: globalSettings.Ranking.NewestReleaseFirst,
+	}
 
 	splitByService := globalSettings.Ranking.SplitByService
 	if splitByService {
@@ -629,6 +635,9 @@ func (s *Service) getEffectiveRankingBundle(userID, clientID string, globalSetti
 		if err != nil {
 			log.Printf("[indexer] failed to get user split ranking settings for %s: %v", userID, err)
 		} else if userSettings != nil && userSettings.Ranking != nil {
+			if userSettings.Ranking.NewestReleaseFirst != nil {
+				bundle.NewestReleaseFirst = *userSettings.Ranking.NewestReleaseFirst
+			}
 			if userSettings.Ranking.SplitByService != nil {
 				splitByService = *userSettings.Ranking.SplitByService
 			}
@@ -650,6 +659,9 @@ func (s *Service) getEffectiveRankingBundle(userID, clientID string, globalSetti
 		if err != nil {
 			log.Printf("[indexer] failed to get client split ranking settings for %s: %v", clientID, err)
 		} else if clientSettings != nil {
+			if clientSettings.NewestReleaseFirst != nil {
+				bundle.NewestReleaseFirst = *clientSettings.NewestReleaseFirst
+			}
 			if clientSettings.RankingSplitByService != nil {
 				splitByService = *clientSettings.RankingSplitByService
 			}
@@ -866,6 +878,21 @@ func compareDownloadPreferredTerms(i, j models.NZBResult, terms []filter.Compile
 	return 0
 }
 
+// compareEpisodeYearMatch gives targeted episode results with a confirmed
+// close year precedence over lenient yearless matches. Filtering only sets the
+// tag after both the title identity and target episode have been validated.
+func compareEpisodeYearMatch(i, j models.NZBResult) int {
+	iMatch := i.Attributes["episodeYearMatch"] == "true"
+	jMatch := j.Attributes["episodeYearMatch"] == "true"
+	if iMatch && !jMatch {
+		return -1
+	}
+	if !iMatch && jMatch {
+		return 1
+	}
+	return 0
+}
+
 func compareDeterministicTieBreaker(i, j models.NZBResult) int {
 	valuesI := []string{
 		strings.ToLower(strings.TrimSpace(i.Title)),
@@ -891,6 +918,10 @@ func compareDeterministicTieBreaker(i, j models.NZBResult) int {
 }
 
 func compareByRankingCriteria(i, j models.NZBResult, scoringCtx ScoringContext) int {
+	if cmp := compareEpisodeYearMatch(i, j); cmp != 0 {
+		return cmp
+	}
+
 	if scoringCtx.UseDownloadRanking {
 		if cmp := compareDownloadPreferredTerms(i, j, scoringCtx.DownloadPreferredTerms); cmp != 0 {
 			return cmp
@@ -1014,6 +1045,37 @@ func sortScoredResultsByRankingBundle(results []models.ScoredNZBResult, baseCtx 
 	for position, originalIndex := range rankingOrderByBundle(plain, baseCtx, rankings) {
 		results[position] = original[originalIndex]
 	}
+}
+
+// sortResultsNewestReleaseFirst is the final ordering override for release-age
+// ranking. Results without a source-supplied timestamp stay behind dated
+// results, retaining their existing deterministic order.
+func sortResultsNewestReleaseFirst(results []models.NZBResult) {
+	sort.SliceStable(results, func(i, j int) bool {
+		iMissing := results[i].PublishDate.IsZero()
+		jMissing := results[j].PublishDate.IsZero()
+		if iMissing != jMissing {
+			return !iMissing
+		}
+		if iMissing {
+			return false
+		}
+		return results[i].PublishDate.After(results[j].PublishDate)
+	})
+}
+
+func sortScoredResultsNewestReleaseFirst(results []models.ScoredNZBResult) {
+	sort.SliceStable(results, func(i, j int) bool {
+		iMissing := results[i].PublishDate.IsZero()
+		jMissing := results[j].PublishDate.IsZero()
+		if iMissing != jMissing {
+			return !iMissing
+		}
+		if iMissing {
+			return false
+		}
+		return results[i].PublishDate.After(results[j].PublishDate)
+	})
 }
 
 func (s *Service) buildScoringContext(opts SearchOptions, settings config.Settings, filterSettings models.FilterSettings, animeSettings models.AnimeFilteringSettings) ScoringContext {
@@ -1380,6 +1442,12 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBR
 			s.searchCount.Load(), s.searchSplitCount.Load(), s.usenetAPICallCount.Load())
 		return cached, nil
 	}
+	sourceOpts := opts
+	if rankingBundle.NewestReleaseFirst {
+		// Source-level caps can discard newer releases before the final
+		// cross-source ordering override has a chance to see them.
+		sourceOpts.MaxResults = 0
+	}
 
 	// Run usenet, debrid, and p2p searches in parallel for faster results
 	type searchResult struct {
@@ -1397,7 +1465,7 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBR
 		go func() {
 			defer wg.Done()
 			usenetStart := time.Now()
-			usenetResults, err := s.searchUsenetWithFilter(ctx, settings, opts, parsedQuery, alternateTitles, searchQueries, filterBundle.Usenet)
+			usenetResults, err := s.searchUsenetWithFilter(ctx, settings, sourceOpts, parsedQuery, alternateTitles, searchQueries, filterBundle.Usenet)
 			log.Printf("[indexer] TIMING: usenet search complete (took: %v, results: %d)", time.Since(usenetStart), len(usenetResults))
 			if err != nil {
 				resultsChan <- searchResult{err: err, source: "usenet"}
@@ -1427,7 +1495,7 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBR
 			debOpts := debrid.SearchOptions{
 				Query:                 opts.Query,
 				Categories:            append([]string{}, opts.Categories...),
-				MaxResults:            opts.MaxResults,
+				MaxResults:            sourceOpts.MaxResults,
 				IMDBID:                opts.IMDBID,
 				MediaType:             opts.MediaType,
 				Year:                  opts.Year,
@@ -1506,7 +1574,10 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBR
 	bypassRanking := shouldBypassAIOStreamsRanking(settings, filterOverrides, includeUsenet)
 
 	var scoringCtx *ScoringContext
-	if bypassRanking {
+	if rankingBundle.NewestReleaseFirst {
+		log.Printf("[indexer] Sorting %d results by newest release first; all ranking criteria are ignored", len(aggregated))
+		sortResultsNewestReleaseFirst(aggregated)
+	} else if bypassRanking {
 		log.Printf("[indexer] Bypassing mediastorm ranking - AIOStreams is the only enabled scraper and bypass setting is enabled")
 	} else {
 		ctx := s.buildScoringContextWithCriteria(opts, settings, filterSettings, animeSettings, rankingBundle.Default)
@@ -1612,6 +1683,7 @@ func (s *Service) SearchWithScoring(ctx context.Context, opts SearchOptions) ([]
 
 	filterBundle, animeSettings, filterOverrides := s.getEffectiveFilterBundle(opts.UserID, opts.ClientID, settings)
 	filterSettings := filterBundle.Default
+	rankingBundle := s.getEffectiveRankingBundle(opts.UserID, opts.ClientID, settings)
 	if shouldBypassAIOStreamsRanking(settings, filterOverrides, shouldUseUsenet(settings.Streaming.ServiceMode)) {
 		log.Printf("[indexer] Bypassing mediastorm filtering/ranking - AIOStreams is the only enabled scraper and bypass setting is enabled")
 		scored := make([]models.ScoredNZBResult, len(rawResults))
@@ -1620,6 +1692,9 @@ func (s *Service) SearchWithScoring(ctx context.Context, opts SearchOptions) ([]
 				NZBResult:    markRankingBypassed(r),
 				FilterStatus: "passed",
 			}
+		}
+		if rankingBundle.NewestReleaseFirst {
+			sortScoredResultsNewestReleaseFirst(scored)
 		}
 		return scored, nil
 	}
@@ -1655,7 +1730,6 @@ func (s *Service) SearchWithScoring(ctx context.Context, opts SearchOptions) ([]
 			detailed = append(detailed, resultDetails[0])
 		}
 	}
-	rankingBundle := s.getEffectiveRankingBundle(opts.UserID, opts.ClientID, settings)
 	scoringCtx := s.buildScoringContextWithCriteria(opts, settings, filterSettings, animeSettings, rankingBundle.Default)
 
 	// Separate passed and filtered
@@ -1680,7 +1754,11 @@ func (s *Service) SearchWithScoring(ctx context.Context, opts SearchOptions) ([]
 
 	// Sort passed results by the same priority order used by standard ranking.
 	if len(passed) > 0 {
-		sortScoredResultsByRankingBundle(passed, scoringCtx, rankingBundle)
+		if rankingBundle.NewestReleaseFirst {
+			sortScoredResultsNewestReleaseFirst(passed)
+		} else {
+			sortScoredResultsByRankingBundle(passed, scoringCtx, rankingBundle)
+		}
 
 		// Apply per-resolution limit to passed results (same as Search path)
 		maxPerRes := models.IntVal(filterOverrides.MaxResultsPerResolution, 0)
@@ -1697,6 +1775,9 @@ func (s *Service) SearchWithScoring(ctx context.Context, opts SearchOptions) ([]
 			log.Printf("[indexer] Per-resolution limit=%d applied to passed results: %d -> %d", maxPerRes, len(passed), len(limited))
 			passed = limited
 		}
+	}
+	if rankingBundle.NewestReleaseFirst {
+		sortScoredResultsNewestReleaseFirst(filtered)
 	}
 
 	// Combine: passed first, then filtered

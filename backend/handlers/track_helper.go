@@ -118,7 +118,8 @@ func matchesLanguage(language, title, normalizedPref string) bool {
 }
 
 // FindAudioTrackByLanguage finds an audio track matching the preferred language.
-// Prefers compatible audio codecs (AAC, AC3, etc.) over TrueHD/DTS when multiple tracks exist.
+// Prefers E-AC-3 (including Dolby Digital Plus Atmos) before other compatible
+// codecs, then avoids TrueHD/DTS when multiple tracks exist.
 // Specifically avoids TrueHD/MLP unless it's the only option for the preferred language.
 // Skips commentary tracks unless they are the only option.
 // Returns -1 if no matching track is found.
@@ -129,7 +130,19 @@ func FindAudioTrackByLanguage(streams []AudioStreamInfo, preferredLanguage strin
 
 	normalizedPref := strings.ToLower(strings.TrimSpace(preferredLanguage))
 
-	// Pass 1: Compatible codec (AAC, AC3, etc.) matching language, skipping commentary
+	// Pass 1: E-AC-3 matching language, skipping commentary. Keeping DDP ahead
+	// of AAC/AC-3 allows native tvOS playback to preserve an Atmos/JOC stream.
+	for _, stream := range streams {
+		if matchesLanguage(stream.Language, stream.Title, normalizedPref) &&
+			strings.EqualFold(strings.TrimSpace(stream.Codec), "eac3") &&
+			!IsCommentaryTrack(stream.Title) {
+			log.Printf("[track] Preferred E-AC-3 audio track %d for language %q",
+				stream.Index, preferredLanguage)
+			return stream.Index
+		}
+	}
+
+	// Pass 2: Other compatible codec (AAC, AC3, etc.) matching language, skipping commentary
 	for _, stream := range streams {
 		if matchesLanguage(stream.Language, stream.Title, normalizedPref) &&
 			CompatibleAudioCodecs[strings.ToLower(stream.Codec)] &&
@@ -140,7 +153,7 @@ func FindAudioTrackByLanguage(streams []AudioStreamInfo, preferredLanguage strin
 		}
 	}
 
-	// Pass 2: Non-TrueHD incompatible codec (DTS, etc.) matching language, skipping commentary
+	// Pass 3: Non-TrueHD incompatible codec (DTS, etc.) matching language, skipping commentary
 	// TrueHD is particularly problematic for streaming, so prefer DTS over TrueHD
 	for _, stream := range streams {
 		if matchesLanguage(stream.Language, stream.Title, normalizedPref) &&
@@ -152,7 +165,7 @@ func FindAudioTrackByLanguage(streams []AudioStreamInfo, preferredLanguage strin
 		}
 	}
 
-	// Pass 3: TrueHD/MLP matching language, skipping commentary (only if no other option)
+	// Pass 4: TrueHD/MLP matching language, skipping commentary (only if no other option)
 	for _, stream := range streams {
 		if matchesLanguage(stream.Language, stream.Title, normalizedPref) &&
 			IsTrueHDCodec(stream.Codec) &&
@@ -163,7 +176,17 @@ func FindAudioTrackByLanguage(streams []AudioStreamInfo, preferredLanguage strin
 		}
 	}
 
-	// Pass 4: Compatible codec matching language, including commentary
+	// Pass 5: E-AC-3 matching language, including commentary
+	for _, stream := range streams {
+		if matchesLanguage(stream.Language, stream.Title, normalizedPref) &&
+			strings.EqualFold(strings.TrimSpace(stream.Codec), "eac3") {
+			log.Printf("[track] Fallback to E-AC-3 audio track %d (commentary) for language %q",
+				stream.Index, preferredLanguage)
+			return stream.Index
+		}
+	}
+
+	// Pass 6: Other compatible codec matching language, including commentary
 	for _, stream := range streams {
 		if matchesLanguage(stream.Language, stream.Title, normalizedPref) &&
 			CompatibleAudioCodecs[strings.ToLower(stream.Codec)] {
@@ -173,7 +196,7 @@ func FindAudioTrackByLanguage(streams []AudioStreamInfo, preferredLanguage strin
 		}
 	}
 
-	// Pass 5: Non-TrueHD incompatible codec matching language, including commentary
+	// Pass 7: Non-TrueHD incompatible codec matching language, including commentary
 	for _, stream := range streams {
 		if matchesLanguage(stream.Language, stream.Title, normalizedPref) &&
 			!IsTrueHDCodec(stream.Codec) {
@@ -183,7 +206,7 @@ func FindAudioTrackByLanguage(streams []AudioStreamInfo, preferredLanguage strin
 		}
 	}
 
-	// Pass 6: TrueHD/MLP matching language, including commentary (last resort)
+	// Pass 8: TrueHD/MLP matching language, including commentary (last resort)
 	for _, stream := range streams {
 		if matchesLanguage(stream.Language, stream.Title, normalizedPref) {
 			log.Printf("[track] Fallback to TrueHD audio track %d (%s, commentary) for language %q (only option) - will need HLS transcoding",

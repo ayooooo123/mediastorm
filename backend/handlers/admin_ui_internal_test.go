@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"novastream/config"
+	"novastream/models"
 )
 
 func TestNotificationsTemplateLoads(t *testing.T) {
@@ -38,6 +39,24 @@ func TestNotificationsTemplateOmitsRedundantPlayingEvent(t *testing.T) {
 	}
 	if strings.Contains(source, "Now playing") {
 		t.Fatal("notifications template still labels a playing notification")
+	}
+}
+
+func TestNotificationsTemplateIncludesSystemOperationsSection(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/notifications.html")
+	if err != nil {
+		t.Fatalf("read notifications template: %v", err)
+	}
+	source := string(templateBytes)
+	for _, marker := range []string{
+		"System Operations",
+		`value="system.startup"`,
+		`value="system.shutdown"`,
+		`id="system-settings"`,
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("notifications template missing system operations marker %q", marker)
+		}
 	}
 }
 
@@ -100,6 +119,312 @@ func TestAdminSettingsCustomShelfActionsAlignWithInputs(t *testing.T) {
 		if !strings.Contains(source, marker) {
 			t.Fatalf("settings template missing custom shelf alignment marker %q", marker)
 		}
+	}
+}
+
+func TestAdminSettingsAddListIncludesSharedActivityShelves(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/settings.html")
+	if err != nil {
+		t.Fatalf("read settings template: %v", err)
+	}
+	source := string(templateBytes)
+
+	for _, marker := range []string{
+		`<option value="popular-on-server">Popular on This Server</option>`,
+		`<option value="recently-watched">Recently Watched</option>`,
+		`'popular-on-server': 'Popular on This Server'`,
+		`'recently-watched': 'Recently Watched'`,
+		`existingShelf.enabled = true`,
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("settings template missing shared activity shelf add-list marker %q", marker)
+		}
+	}
+}
+
+func TestAdminSettingsUsesCategoryAndDetailProgressiveDisclosure(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/settings.html")
+	if err != nil {
+		t.Fatalf("read settings template: %v", err)
+	}
+	source := string(templateBytes)
+
+	for _, marker := range []string{
+		`id="settingsCategoryNav"`,
+		`id="settingsBasicBtn" class="settings-level-btn" type="button" disabled`,
+		`id="settingsAdvancedBtn"`,
+		`autocomplete="off" autocapitalize="none" spellcheck="false"`,
+		`let settingsLevel = 'advanced';`,
+		`.page-header-controls .form-select {`,
+		`height: 40px;`,
+		`function setSettingsLevel(level)`,
+		`function setSettingsGroup(groupId)`,
+		`let activeSettingsGroup = '';`,
+		`onclick="setSettingsGroup(\'\')"><span class="settings-category-btn-copy"><span>All</span>`,
+		`const advancedSections = new Set`,
+		`const friendlySettingsCopy = [`,
+		`'Streaming Method'`,
+		`'Adapt to Each Device'`,
+		`if (!searchTerm && activeSettingsGroup && group.id !== activeSettingsGroup) continue;`,
+		`propagateBtnLabel.textContent = 'Review Customizations'`,
+		`settingsLevel === 'basic' && !searchTerm && advancedSections.has(key)`,
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("settings template missing progressive-disclosure marker %q", marker)
+		}
+	}
+}
+
+func TestAdminToolsProvidesFocusedTasksAndIntegrationsViews(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/tools.html")
+	if err != nil {
+		t.Fatalf("read tools template: %v", err)
+	}
+	source := string(templateBytes)
+
+	for _, marker := range []string{
+		`id="tasksPageHost"`,
+		`id="integrationsPageHost"`,
+		`id="taskProfileFilter"`,
+		`const isTasksPage =`,
+		`const isIntegrationsPage =`,
+		`function applyTaskFilters()`,
+		`requestedTaskProfileId`,
+		`name="mediastorm-task-filter"`,
+		`class="import-card task-card"`,
+		`class="task-schedule-label">Frequency`,
+		`class="task-schedule-label">Next run`,
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("tools template missing focused-view marker %q", marker)
+		}
+	}
+}
+
+func TestAdminDashboardBasicViewKeepsOnlyUserActivityCards(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/status.html")
+	if err != nil {
+		t.Fatalf("read status template: %v", err)
+	}
+	source := string(templateBytes)
+
+	for _, marker := range []string{
+		"<!-- Active Streams -->\n<div class=\"card\"",
+		"<!-- Usenet Activity -->\n<div class=\"card dashboard-advanced-detail\"",
+		`<div class="card live-limits-card dashboard-advanced-detail"`,
+		`<div class="grid grid-2 dashboard-advanced-detail"`,
+		`document.querySelectorAll('.dashboard-advanced-detail')`,
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("status template missing basic-dashboard marker %q", marker)
+		}
+	}
+}
+
+func TestAdminDashboardWatchTimeNormalizesRoundedMinutes(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/status.html")
+	if err != nil {
+		t.Fatalf("read status template: %v", err)
+	}
+	source := string(templateBytes)
+
+	for _, marker := range []string{
+		`const totalMinutes = Math.max(1, Math.round(seconds / 60));`,
+		`const hours = Math.floor(totalMinutes / 60);`,
+		`const mins = totalMinutes % 60;`,
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("status template missing normalized watch-time marker %q", marker)
+		}
+	}
+	if strings.Contains(source, `Math.round((seconds % 3600) / 60)`) {
+		t.Fatal("watch-time formatter can still render 60 leftover minutes")
+	}
+}
+
+func TestAdminAccountsSurfacesProfileTaskContext(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/accounts.html")
+	if err != nil {
+		t.Fatalf("read accounts template: %v", err)
+	}
+	source := string(templateBytes)
+
+	for _, marker := range []string{
+		`id="tab-tasks"`,
+		`id="content-tasks"`,
+		`fetch(basePath + '/api/scheduled-tasks')`,
+		`function renderProfileTasksSummary()`,
+		`/tasks?profileId=`,
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("accounts template missing task-context marker %q", marker)
+		}
+	}
+}
+
+func TestAdminSettingsSharedActivityShelvesExposeAssociatedSettings(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/settings.html")
+	if err != nil {
+		t.Fatalf("read settings template: %v", err)
+	}
+	source := string(templateBytes)
+
+	for _, marker := range []string{
+		`editSharedActivityShelf(\''+s.id+'\')`,
+		`id="sharedShelfWindowDays"`,
+		`id="sharedShelfMinProfiles"`,
+		`id="sharedShelfPerProfileCap"`,
+		`shelf.activityWindowDays`,
+		`shelf.minimumProfiles`,
+		`shelf.maxItemsPerProfile`,
+		`Minimum Views`,
+		`completed movie or episode views`,
+		`saveSharedActivityShelf()`,
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("settings template missing shared activity shelf setting marker %q", marker)
+		}
+	}
+}
+
+func TestProfileActivityPrivacyCopyIncludesDashboardShelf(t *testing.T) {
+	adminBytes, err := adminTemplates.ReadFile("admin_templates/accounts.html")
+	if err != nil {
+		t.Fatalf("read admin accounts template: %v", err)
+	}
+	accountBytes, err := accountTemplatesFS.ReadFile("account_templates/dashboard.html")
+	if err != nil {
+		t.Fatalf("read account dashboard template: %v", err)
+	}
+
+	for name, source := range map[string]string{
+		"admin":   string(adminBytes),
+		"account": string(accountBytes),
+	} {
+		for _, marker := range []string{
+			"Server Activity Sharing",
+			"Recently Watched, and the active Dashboard shelf",
+			">Do not share</option>",
+		} {
+			if !strings.Contains(source, marker) {
+				t.Fatalf("%s profile template missing activity privacy marker %q", name, marker)
+			}
+		}
+	}
+}
+
+func TestAdminStatusActiveStreamsPreferSeriesPosters(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/status.html")
+	if err != nil {
+		t.Fatalf("read status template: %v", err)
+	}
+	source := string(templateBytes)
+
+	if strings.Contains(source, "title.poster?.url || title.backdrop?.url") {
+		t.Fatal("active-stream poster lookup still falls back to landscape backdrop artwork")
+	}
+
+	loadStart := strings.Index(source, "async function loadStreamPosters(streams)")
+	if loadStart < 0 {
+		t.Fatal("status template missing loadStreamPosters")
+	}
+	loadSource := source[loadStart:]
+	seriesLookup := strings.Index(loadSource, "mediaInfo.type === 'series'")
+	streamArtwork := strings.Index(loadSource, "if (mediaInfo.posterUrl)")
+	if seriesLookup < 0 || streamArtwork < 0 || seriesLookup > streamArtwork {
+		t.Fatal("episode cards must resolve the canonical series poster before using stream artwork")
+	}
+}
+
+func TestAdminStatusActiveStreamRowsKeepMediaOnOneLineAndShowService(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/status.html")
+	if err != nil {
+		t.Fatalf("read status template: %v", err)
+	}
+	source := string(templateBytes)
+
+	for _, marker := range []string{
+		`<th>Media</th><th>Service</th>`,
+		`class="stream-table-media-subtitle"`,
+		`renderStreamServiceBadge(stream, true)`,
+		`function getStreamServiceType(stream)`,
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("status template missing active-stream row marker %q", marker)
+		}
+	}
+}
+
+func TestAdminStatusActiveStreamsShowDeviceAndCompactEpisodeLabel(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/status.html")
+	if err != nil {
+		t.Fatalf("read status template: %v", err)
+	}
+	source := string(templateBytes)
+	for _, marker := range []string{
+		`function getDeviceDisplay(stream)`,
+		`class="stream-card-device"`,
+		`class="stream-card-profile-name"`,
+		`class="stream-table-profile"`,
+		`class="stream-table-device"`,
+		`const episodeCode = `,
+		`[stream.year ? String(stream.year) : '', episodeCode]`,
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("status template missing device/episode marker %q", marker)
+		}
+	}
+	if strings.Contains(source, `S${stream.season_number}E${stream.episode_number} - ${stream.episode_name}`) {
+		t.Fatal("episode display still includes the episode name")
+	}
+}
+
+func TestAddDashboardDeviceInfoPrefersNickname(t *testing.T) {
+	stream := map[string]interface{}{}
+	addDashboardDeviceInfo(stream, "client-1", map[string]models.Client{
+		"client-1": {
+			ID:         "client-1",
+			Nickname:   "Living Room",
+			Name:       "Admin name",
+			DeviceName: "Liam's iPhone",
+			DeviceType: "iPhone",
+			OS:         "iOS",
+		},
+	})
+
+	if got := stream["device_name"]; got != "Living Room" {
+		t.Fatalf("device_name = %v, want nickname", got)
+	}
+	if got := stream["device_nickname"]; got != "Living Room" {
+		t.Fatalf("device_nickname = %v, want nickname", got)
+	}
+	if got := stream["device_type"]; got != "iPhone" {
+		t.Fatalf("device_type = %v, want iPhone", got)
+	}
+	if got := stream["client_id"]; got != "client-1" {
+		t.Fatalf("client_id = %v, want client-1", got)
+	}
+}
+
+func TestDashboardStreamServiceType(t *testing.T) {
+	tests := []struct {
+		name   string
+		live   bool
+		paths  []string
+		wanted string
+	}{
+		{name: "live TV", live: true, paths: []string{"https://provider.test/channel.ts"}, wanted: "stream"},
+		{name: "debrid path", paths: []string{"/debrid/realdebrid/torrent/file/0/movie.mkv"}, wanted: "debrid"},
+		{name: "webdav debrid path", paths: []string{"/webdav/debrid/torbox/torrent/file/0/movie.mkv"}, wanted: "debrid"},
+		{name: "original debrid path", paths: []string{"https://cdn.test/file", "/debrid/realdebrid/torrent/file/0/movie.mkv"}, wanted: "debrid"},
+		{name: "usenet path", paths: []string{"/nzbs/job/movie.mkv"}, wanted: "usenet"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := dashboardStreamServiceType(tt.live, tt.paths...); got != tt.wanted {
+				t.Fatalf("dashboardStreamServiceType() = %q, want %q", got, tt.wanted)
+			}
+		})
 	}
 }
 

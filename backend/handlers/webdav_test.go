@@ -14,10 +14,12 @@ import (
 
 // mockProvider is a simple mock implementation of streaming.Provider for testing
 type mockProviderWebDAV struct {
-	data []byte
+	data        []byte
+	hadDeadline bool
 }
 
 func (m *mockProviderWebDAV) Stream(ctx context.Context, req streaming.Request) (*streaming.Response, error) {
+	_, m.hadDeadline = ctx.Deadline()
 	headers := make(http.Header)
 	headers.Set("Content-Type", "video/x-matroska")
 	headers.Set("Accept-Ranges", "bytes")
@@ -69,7 +71,8 @@ func newTestProvider(t *testing.T, data []byte) streaming.Provider {
 
 func TestWebDAVHandlerServeHTTP(t *testing.T) {
 	data := []byte("hello world")
-	handler := NewWebDAVHandler(newTestProvider(t, data))
+	provider := &mockProviderWebDAV{data: data}
+	handler := NewWebDAVHandler(provider)
 
 	req := httptest.NewRequest(http.MethodGet, "/webdav/movies/title.mkv", nil)
 	rr := httptest.NewRecorder()
@@ -89,6 +92,9 @@ func TestWebDAVHandlerServeHTTP(t *testing.T) {
 	}
 	if !bytes.Equal(body, data) {
 		t.Fatalf("body = %q, want %q", body, data)
+	}
+	if provider.hadDeadline {
+		t.Fatal("provider context has a deadline; WebDAV playback must remain open until the client disconnects")
 	}
 }
 

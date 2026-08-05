@@ -222,7 +222,7 @@ func TestStartLiveHLSSessionDirectForcesHLSWhenRequested(t *testing.T) {
 		settings: map[string]*models.UserSettings{},
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/live/hls/start?url=http%3A%2F%2Fexample.com%2Fchannel.ts&target=app&format=hls", nil)
+	req := httptest.NewRequest(http.MethodGet, "/live/hls/start?url=http%3A%2F%2Fexample.com%2Fchannel.ts&target=native&format=hls", nil)
 	rec := httptest.NewRecorder()
 
 	handler.StartLiveHLSSession(rec, req)
@@ -232,6 +232,7 @@ func TestStartLiveHLSSessionDirectForcesHLSWhenRequested(t *testing.T) {
 	}
 
 	var body struct {
+		SessionID   string `json:"sessionId"`
 		PlaylistURL string `json:"playlistUrl"`
 		IsDirect    bool   `json:"isDirect"`
 		IsLive      bool   `json:"isLive"`
@@ -247,6 +248,16 @@ func TestStartLiveHLSSessionDirectForcesHLSWhenRequested(t *testing.T) {
 	}
 	if !strings.HasPrefix(body.PlaylistURL, "/video/hls/") {
 		t.Fatalf("playlistUrl = %q, want /video/hls/ prefix", body.PlaylistURL)
+	}
+	session, ok := handler.hlsManager.GetSession(body.SessionID)
+	if !ok {
+		t.Fatalf("session %q not found", body.SessionID)
+	}
+	session.mu.RLock()
+	playbackTarget := session.PlaybackTarget
+	session.mu.RUnlock()
+	if playbackTarget != "native" {
+		t.Fatalf("playbackTarget = %q, want native", playbackTarget)
 	}
 }
 

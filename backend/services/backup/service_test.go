@@ -2,6 +2,7 @@ package backup
 
 import (
 	"archive/zip"
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -387,6 +388,68 @@ func TestRestoreBackup_RestoresFiles(t *testing.T) {
 	}
 	if string(content) != `{"key":"value"}` {
 		t.Errorf("expected original content, got %s", string(content))
+	}
+}
+
+func TestRestoreBackupUpload_RestoresFilesWithoutKeepingUpload(t *testing.T) {
+	svc, cacheDir := setupTestService(t)
+
+	info, err := svc.CreateBackup(BackupTypeManual)
+	if err != nil {
+		t.Fatalf("CreateBackup failed: %v", err)
+	}
+	archive, err := os.ReadFile(filepath.Join(svc.backupDir, info.Filename))
+	if err != nil {
+		t.Fatalf("read backup: %v", err)
+	}
+	if err := svc.DeleteBackup(info.Filename); err != nil {
+		t.Fatalf("DeleteBackup failed: %v", err)
+	}
+
+	settingsPath := filepath.Join(cacheDir, "settings.json")
+	if err := os.WriteFile(settingsPath, []byte(`{"modified":true}`), 0644); err != nil {
+		t.Fatalf("modify settings: %v", err)
+	}
+
+	if err := svc.RestoreBackupUpload(bytes.NewReader(archive), "downloaded-backup.ZIP"); err != nil {
+		t.Fatalf("RestoreBackupUpload failed: %v", err)
+	}
+
+	content, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read restored settings: %v", err)
+	}
+	if string(content) != `{"key":"value"}` {
+		t.Errorf("expected original content, got %s", string(content))
+	}
+	backups, err := svc.ListBackups()
+	if err != nil {
+		t.Fatalf("ListBackups failed: %v", err)
+	}
+	if len(backups) != 0 {
+		t.Fatalf("expected uploaded backup not to be retained, got %d backups", len(backups))
+	}
+}
+
+func TestRestoreBackupUpload_RejectsNonZipFilename(t *testing.T) {
+	svc, _ := setupTestService(t)
+
+	err := svc.RestoreBackupUpload(strings.NewReader("not a backup"), "backup.txt")
+	if err == nil {
+		t.Fatal("expected non-ZIP filename to be rejected")
+	}
+}
+
+func TestIsRestorableBackupFile(t *testing.T) {
+	for _, name := range append(append([]string{}, backupFiles...), "database.json") {
+		if !isRestorableBackupFile(name) {
+			t.Errorf("expected %q to be restorable", name)
+		}
+	}
+	for _, name := range []string{"manifest.json", "../settings.json", "nested/settings.json", "unknown.json"} {
+		if isRestorableBackupFile(name) {
+			t.Errorf("expected %q to be rejected", name)
+		}
 	}
 }
 

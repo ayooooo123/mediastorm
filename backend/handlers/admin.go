@@ -377,7 +377,13 @@ func seasonEpisodePatterns(season, episode int) []string {
 // GetActiveStreams returns all active streams (both HLS and direct)
 func (h *AdminHandler) GetActiveStreams(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(h.ActiveStreams())
+}
 
+// ActiveStreams returns the same consolidated stream data exposed by the
+// authenticated admin dashboard endpoint. Other views should use this method
+// instead of rebuilding stream state from the HLS manager independently.
+func (h *AdminHandler) ActiveStreams() StreamsResponse {
 	// Build user ID -> name map for profile lookup
 	userNames := make(map[string]string)
 	if h.userService != nil {
@@ -701,7 +707,7 @@ func (h *AdminHandler) GetActiveStreams(w http.ResponseWriter, r *http.Request) 
 	}
 	response.Count = len(response.Streams)
 
-	json.NewEncoder(w).Encode(response)
+	return response
 }
 
 // cleanFilenameForMatch removes common filename artifacts for matching against media titles

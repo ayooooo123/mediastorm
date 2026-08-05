@@ -4,21 +4,54 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"novastream/services/castcaps"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
-	"novastream/services/castcaps"
 	"time"
 
 	"novastream/config"
 	"novastream/services/streaming"
 )
+
+func TestCreateSessionRejectsElfHostedPlaceholderRedirect(t *testing.T) {
+	originalClient := hlsRedirectHTTPClient
+	defer func() { hlsRedirectHTTPClient = originalClient }()
+
+	hlsRedirectHTTPClient = &http.Client{
+		Transport: prequeueRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+			finalReq := r.Clone(r.Context())
+			finalReq.URL, _ = url.Parse("https://slate.elfhosted.com/cache/link-expired.mp4")
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("placeholder")),
+				Header:     make(http.Header),
+				Request:    finalReq,
+			}, nil
+		}),
+	}
+
+	manager := NewHLSManager(t.TempDir(), "", "", nil)
+	defer manager.Shutdown()
+
+	_, err := manager.CreateSession(
+		context.Background(),
+		"https://comet.elfhosted.com/playback/expired",
+		"https://comet.elfhosted.com/playback/expired",
+		false, "", false, false, 0, 0, -1, -1, "", "", "", false, "", "", 0, "",
+	)
+	if !errors.Is(err, errExternalStreamPlaceholder) {
+		t.Fatalf("CreateSession error = %v, want external placeholder error", err)
+	}
+}
 
 // --- generateSessionID tests ---
 
@@ -1176,6 +1209,43 @@ func TestProbeCacheConversionRoundTripRetainsCastFields(t *testing.T) {
 	roundTripped := handler.unifiedProbeToVideoFull(cached)
 	if roundTripped.VideoWidth != 1920 || roundTripped.VideoHeight != 1080 || roundTripped.VideoLevel != 41 {
 		t.Fatalf("UnifiedProbeResult -> VideoFullResult dropped Cast fields: %+v", roundTripped)
+	}
+}
+
+func TestLiveHLSOutputArgsNativeTransmuxPreservesCaptionCarryingTS(t *testing.T) {
+	args := liveHLSOutputArgs("native", "/tmp/live/segment%d.ts", "/tmp/live/stream.m3u8")
+	joined := strings.Join(args, " ")
+
+	for _, expected := range []string{
+		"-c:v copy",
+		"-c:a copy",
+		"-hls_segment_filename /tmp/live/segment%d.ts",
+		"/tmp/live/stream.m3u8",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("native live args %q missing %q", joined, expected)
+		}
+	}
+	for _, unexpected := range []string{"libx264", "-force_key_frames", "independent_segments"} {
+		if strings.Contains(joined, unexpected) {
+			t.Fatalf("native live args %q unexpectedly contain %q", joined, unexpected)
+		}
+	}
+}
+
+func TestLiveHLSOutputArgsWebRetainsCompatibilityTranscode(t *testing.T) {
+	args := liveHLSOutputArgs("web", "/tmp/live/segment%d.ts", "/tmp/live/stream.m3u8")
+	joined := strings.Join(args, " ")
+
+	for _, expected := range []string{
+		"-c:v libx264",
+		"-c:a aac",
+		"-force_key_frames expr:gte(t,n_forced*1)",
+		"delete_segments+independent_segments+temp_file",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("web live args %q missing %q", joined, expected)
+		}
 	}
 }
 

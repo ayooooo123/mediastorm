@@ -41,6 +41,24 @@ func TestCompileTerms_InvalidRegexFallback(t *testing.T) {
 	}
 }
 
+func TestValidateTerms(t *testing.T) {
+	valid := []string{"REMUX", `\bREMUX\b`, `/\bREMUX\b/`, `/x26[45]/=4`, `^Movie.*$`}
+	if err := ValidateTerms(valid); err != nil {
+		t.Fatalf("ValidateTerms(valid) returned %v", err)
+	}
+
+	for _, terms := range [][]string{
+		{`/\bREMUX\b`},
+		{`\bREMUX\b/`},
+		{`/invalid[/`},
+		{`^invalid[`},
+	} {
+		if err := ValidateTerms(terms); err == nil {
+			t.Errorf("ValidateTerms(%q) returned nil, want an error", terms)
+		}
+	}
+}
+
 func TestCompileTerms_EmptyAndWhitespace(t *testing.T) {
 	terms := CompileTerms([]string{"", "  ", "\t"})
 	if len(terms) != 0 {
@@ -168,9 +186,9 @@ func TestMatchesAnyTerm_FrenchGroupRegex(t *testing.T) {
 	}
 
 	tests := []struct {
-		title   string
-		match   bool
-		desc    string
+		title string
+		match bool
+		desc  string
 	}{
 		// Standard release formats: name-GROUP
 		{"Movie.2024.1080p.BluRay.x264-ALFA", true, "hyphen delimited group ALFA"},
@@ -293,11 +311,11 @@ func TestParseTermWeight(t *testing.T) {
 		{"DV=3", "DV", 3},
 		{"REMUX=2", "REMUX", 2},
 		{"/\\bHDR\\b/=5", "/\\bHDR\\b/", 5},
-		{"DV=0", "DV=0", 1},     // invalid weight (<1) → default
-		{"DV=abc", "DV=abc", 1}, // non-integer → default
-		{"DV=", "DV=", 1},      // trailing = with no value
-		{"=3", "=3", 1},        // no term part → keep as-is
-		{"/foo=bar/", "/foo=bar/", 1}, // = inside regex, no trailing int
+		{"DV=0", "DV=0", 1},             // invalid weight (<1) → default
+		{"DV=abc", "DV=abc", 1},         // non-integer → default
+		{"DV=", "DV=", 1},               // trailing = with no value
+		{"=3", "=3", 1},                 // no term part → keep as-is
+		{"/foo=bar/", "/foo=bar/", 1},   // = inside regex, no trailing int
 		{"/foo=bar/=2", "/foo=bar/", 2}, // = inside regex + valid weight
 	}
 	for _, tt := range tests {

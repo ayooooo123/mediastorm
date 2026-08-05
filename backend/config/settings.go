@@ -640,6 +640,9 @@ type ShelfConfig struct {
 	LetterboxdListID       string                 `json:"letterboxdListId,omitempty"`       // MDBList external-list ID for an imported Letterboxd list
 	LetterboxdListURL      string                 `json:"letterboxdListUrl,omitempty"`      // Public Letterboxd list URL
 	Limit                  int                    `json:"limit,omitempty"`                  // Optional limit on number of items returned (0 = no limit)
+	ActivityWindowDays     int                    `json:"activityWindowDays,omitempty"`     // Shared-activity lookback window for backend activity shelves
+	MinimumProfiles        int                    `json:"minimumProfiles,omitempty"`        // Minimum completed media-item views required by Popular on This Server
+	MaxItemsPerProfile     int                    `json:"maxItemsPerProfile,omitempty"`     // Per-profile contribution cap for Recently Watched
 	HideUnreleased         bool                   `json:"hideUnreleased,omitempty"`         // Filter out unreleased/in-theaters content
 	Sort                   string                 `json:"sort,omitempty"`                   // Optional shelf-specific sort mode
 	CalendarSources        CalendarSourceSettings `json:"calendarSources,omitempty"`        // Optional source filter for calendar-backed shelves
@@ -700,17 +703,24 @@ const (
 
 // HomeShelvesSettings controls which shelves appear on the home screen and their order.
 type HomeShelvesSettings struct {
-	Shelves                         []ShelfConfig       `json:"shelves"`
-	ExploreCardPosition             ExploreCardPosition `json:"exploreCardPosition,omitempty"`             // "front" (default) or "end"
-	ItemCap                         int                 `json:"itemCap,omitempty"`                         // Max items shown per home shelf before Explore card (default 20)
-	ExcludeUpcomingFromContinue     bool                `json:"excludeUpcomingFromContinue,omitempty"`     // Move unreleased next-up episodes out of Continue Watching
-	MobileTopShelfMode              string              `json:"mobileTopShelfMode,omitempty"`              // "default", "disabled", or "shelf"
-	MobileTopShelfSourceID          string              `json:"mobileTopShelfSourceId,omitempty"`          // Shelf ID used when mobileTopShelfMode is "shelf"
-	TVTopShelfMode                  string              `json:"tvTopShelfMode,omitempty"`                  // "default", "disabled", or "shelf"
-	TVTopShelfSourceID              string              `json:"tvTopShelfSourceId,omitempty"`              // Shelf ID used when tvTopShelfMode is "shelf"
-	DisableTvLandscapeCardExpansion bool                `json:"disableTvLandscapeCardExpansion,omitempty"` // Keep TV shelf cards in portrait when focused
-	HomeShelfScale                  float64             `json:"homeShelfScale,omitempty"`                  // TV home shelf/card scale, 0.5-1.0 (default 1.0)
-	HomeHeroScale                   float64             `json:"homeHeroScale,omitempty"`                   // TV upper hero/art scale, 0.5-1.0 (default 1.0)
+	Shelves                     []ShelfConfig       `json:"shelves"`
+	ExploreCardPosition         ExploreCardPosition `json:"exploreCardPosition,omitempty"`         // "front" (default) or "end"
+	ItemCap                     int                 `json:"itemCap,omitempty"`                     // Max items shown per home shelf before Explore card (default 20)
+	ExcludeUpcomingFromContinue bool                `json:"excludeUpcomingFromContinue,omitempty"` // Move unreleased next-up episodes out of Continue Watching
+	// PopularOnServerWindowDays is the lookback window in days for the
+	// "Popular on This Server" shelf.
+	// Valid range: 7-365. Default 90.
+	PopularOnServerWindowDays int `json:"popularOnServerWindowDays,omitempty"`
+	// RecentlyWatchedCapPerProfile limits how many recent watch entries each
+	// profile contributes to the "Recently Watched" feed. Default 3.
+	RecentlyWatchedCapPerProfile    int     `json:"recentlyWatchedCapPerProfile,omitempty"`
+	MobileTopShelfMode              string  `json:"mobileTopShelfMode,omitempty"`              // "default", "disabled", or "shelf"
+	MobileTopShelfSourceID          string  `json:"mobileTopShelfSourceId,omitempty"`          // Shelf ID used when mobileTopShelfMode is "shelf"
+	TVTopShelfMode                  string  `json:"tvTopShelfMode,omitempty"`                  // "default", "disabled", or "shelf"
+	TVTopShelfSourceID              string  `json:"tvTopShelfSourceId,omitempty"`              // Shelf ID used when tvTopShelfMode is "shelf"
+	DisableTvLandscapeCardExpansion bool    `json:"disableTvLandscapeCardExpansion,omitempty"` // Keep TV shelf cards in portrait when focused
+	HomeShelfScale                  float64 `json:"homeShelfScale,omitempty"`                  // TV home shelf/card scale, 0.5-1.0 (default 1.0)
+	HomeHeroScale                   float64 `json:"homeHeroScale,omitempty"`                   // TV upper hero/art scale, 0.5-1.0 (default 1.0)
 }
 
 // DefaultHomeShelfConfigs returns the built-in home shelves in their default order.
@@ -728,6 +738,8 @@ func DefaultHomeShelfConfigs() []ShelfConfig {
 		{ID: "trending-tv", Name: "Trending TV Shows", Enabled: true, Order: 9},
 		{ID: "streaming-services", Name: "Streaming Services", Enabled: true, Order: 10},
 		{ID: "live-favorites", Name: "Favorite Channels", Enabled: false, Order: 11},
+		{ID: "popular-on-server", Name: "Popular on This Server", Enabled: false, Order: 12, Limit: 20, ActivityWindowDays: 90, MinimumProfiles: 2},
+		{ID: "recently-watched", Name: "Recently Watched", Enabled: false, Order: 13, Limit: 20, ActivityWindowDays: 14, MaxItemsPerProfile: 3},
 	}
 }
 
@@ -989,6 +1001,103 @@ func EnsureDefaultHomeShelves(shelves []ShelfConfig) ([]ShelfConfig, bool) {
 		changed = true
 	}
 
+	if !hasShelf("popular-on-server") {
+		insertOrder := -1
+		for _, shelf := range nextShelves {
+			if shelf.ID == "live-favorites" {
+				insertOrder = shelf.Order + 1
+				break
+			}
+			if shelf.Order > insertOrder {
+				insertOrder = shelf.Order + 1
+			}
+		}
+		if insertOrder < 0 {
+			insertOrder = 0
+		}
+
+		for i := range nextShelves {
+			if nextShelves[i].Order >= insertOrder {
+				nextShelves[i].Order++
+			}
+		}
+
+		nextShelves = append(nextShelves, ShelfConfig{
+			ID:                 "popular-on-server",
+			Name:               "Popular on This Server",
+			Enabled:            false,
+			Order:              insertOrder,
+			Limit:              20,
+			ActivityWindowDays: 90,
+			MinimumProfiles:    2,
+		})
+		changed = true
+	}
+
+	if !hasShelf("recently-watched") {
+		insertOrder := -1
+		for _, shelf := range nextShelves {
+			if shelf.ID == "popular-on-server" {
+				insertOrder = shelf.Order + 1
+				break
+			}
+			if shelf.Order > insertOrder {
+				insertOrder = shelf.Order + 1
+			}
+		}
+		if insertOrder < 0 {
+			insertOrder = 0
+		}
+
+		for i := range nextShelves {
+			if nextShelves[i].Order >= insertOrder {
+				nextShelves[i].Order++
+			}
+		}
+
+		nextShelves = append(nextShelves, ShelfConfig{
+			ID:                 "recently-watched",
+			Name:               "Recently Watched",
+			Enabled:            false,
+			Order:              insertOrder,
+			Limit:              20,
+			ActivityWindowDays: 14,
+			MaxItemsPerProfile: 3,
+		})
+		changed = true
+	}
+
+	for i := range nextShelves {
+		switch nextShelves[i].ID {
+		case "popular-on-server":
+			if nextShelves[i].Limit <= 0 {
+				nextShelves[i].Limit = 20
+				changed = true
+			}
+			if nextShelves[i].ActivityWindowDays < 7 || nextShelves[i].ActivityWindowDays > 365 {
+				nextShelves[i].ActivityWindowDays = 90
+				changed = true
+			}
+			if nextShelves[i].MinimumProfiles < 1 || nextShelves[i].MinimumProfiles > 100 {
+				nextShelves[i].MinimumProfiles = 2
+				changed = true
+			}
+		case "recently-watched":
+			if nextShelves[i].Limit <= 0 {
+				nextShelves[i].Limit = 20
+				changed = true
+			}
+			if nextShelves[i].ActivityWindowDays < 1 || nextShelves[i].ActivityWindowDays > 90 {
+				nextShelves[i].ActivityWindowDays = 14
+				changed = true
+			}
+			if nextShelves[i].MaxItemsPerProfile < 1 || nextShelves[i].MaxItemsPerProfile > 20 {
+				nextShelves[i].MaxItemsPerProfile = 3
+				changed = true
+			}
+		}
+	}
+
 	return nextShelves, changed
 }
 
@@ -1081,6 +1190,7 @@ type AnimeFilteringSettings struct {
 type UISettings struct {
 	LoadingAnimationEnabled                   bool   `json:"loadingAnimationEnabled"`
 	NavigationTabVisibilityIncludesSystemTabs bool   `json:"navigationTabVisibilityIncludesSystemTabs,omitempty"`
+	NavigationTabVisibilityIncludesWatchlist  bool   `json:"navigationTabVisibilityIncludesWatchlist,omitempty"`
 	OnboardingCompleted                       bool   `json:"onboardingCompleted,omitempty"`
 	OnboardingSkipped                         bool   `json:"onboardingSkipped,omitempty"`
 	OnboardingCompletedAt                     string `json:"onboardingCompletedAt,omitempty"`
@@ -1095,7 +1205,7 @@ type DisplaySettings struct {
 	// Valid values: "watchProgress", "releaseStatus", "watchState", "unwatchedCount"
 	BadgeVisibility []string `json:"badgeVisibility"`
 	// NavigationTabVisibility controls which app navigation tabs are shown.
-	// Valid values: "home", "search", "lists", "live", "profiles", "downloads", "settings", "admin"
+	// Valid values: "home", "watchlist", "search", "lists", "live", "profiles", "downloads", "settings", "admin"
 	NavigationTabVisibility []string `json:"navigationTabVisibility,omitempty"`
 	// WatchStateIconStyle controls the color of watch state icons.
 	// "colored" (default) = green/yellow circles, "white" = all white circles
@@ -1586,10 +1696,11 @@ type RankingCriterion struct {
 
 // RankingSettings holds the ordered list of ranking criteria.
 type RankingSettings struct {
-	Criteria       []RankingCriterion `json:"criteria"`
-	SplitByService bool               `json:"splitByService,omitempty"`
-	Debrid         *RankingSettings   `json:"debrid,omitempty"`
-	Usenet         *RankingSettings   `json:"usenet,omitempty"`
+	Criteria           []RankingCriterion `json:"criteria"`
+	NewestReleaseFirst bool               `json:"newestReleaseFirst,omitempty"`
+	SplitByService     bool               `json:"splitByService,omitempty"`
+	Debrid             *RankingSettings   `json:"debrid,omitempty"`
+	Usenet             *RankingSettings   `json:"usenet,omitempty"`
 }
 
 // DefaultRankingCriteria returns the default ranking criteria in their default order.
@@ -1628,10 +1739,12 @@ func DefaultSettings() Settings {
 		Playback:  PlaybackSettings{PreferredPlayer: "native", PreferredAudioLanguage: "eng", PauseWhenAppInactive: false, UseLoadingScreen: false, SubtitleSize: 1.0, SubtitleUseCropDetectPosition: true, SubtitleColor: "#FFFFFF", SubtitleOpacity: 1.0, SubtitleBold: false, SubtitleOutlineEnabled: false, SubtitleOutlineColor: "#000000", SubtitleOutlineWeight: 0.35, SubtitleBackgroundEnabled: true, SubtitleBackgroundColor: "#000000", SubtitleBackgroundOpacity: 0.6, SeekForwardSeconds: 30, SeekBackwardSeconds: 10, StreamMigrationEnabled: true, CreditsDetectionEnabled: false, MatchFrameRate: false, Thumbnails: PlaybackThumbnailSettings{Enabled: false, Workers: 1}},
 		Live:      LiveSettings{Mode: "m3u", PlaylistURL: "", MaxStreams: 0, PlaylistCacheTTLHours: 24},
 		HomeShelves: HomeShelvesSettings{
-			Shelves:        DefaultHomeShelfConfigs(),
-			ItemCap:        20,
-			HomeShelfScale: 1.0,
-			HomeHeroScale:  1.0,
+			Shelves:                      DefaultHomeShelfConfigs(),
+			ItemCap:                      20,
+			PopularOnServerWindowDays:    90,
+			RecentlyWatchedCapPerProfile: 3,
+			HomeShelfScale:               1.0,
+			HomeHeroScale:                1.0,
 		},
 		Filtering: FilterSettings{
 			MaxSizeMovieGB:             0,                       // 0 means no limit
@@ -1646,10 +1759,11 @@ func DefaultSettings() Settings {
 		UI: UISettings{
 			LoadingAnimationEnabled:                   true,
 			NavigationTabVisibilityIncludesSystemTabs: true,
+			NavigationTabVisibilityIncludesWatchlist:  true,
 		},
 		Display: DisplaySettings{
 			BadgeVisibility:                 []string{"watchProgress"},
-			NavigationTabVisibility:         []string{"home", "search", "lists", "live", "profiles", "downloads", "settings", "admin"},
+			NavigationTabVisibility:         []string{"home", "watchlist", "search", "lists", "live", "profiles", "downloads", "settings", "admin"},
 			WatchStateIconStyle:             "colored",
 			IncludeUnreleasedMoviesInLists:  true,
 			IncludeUnreleasedShowsInLists:   true,
@@ -1871,6 +1985,7 @@ func (m *Manager) Load() (Settings, error) {
 
 	migrateLiveSourcesRaw(raw)
 	migrateNavigationTabVisibilitySystemTabs(raw)
+	migrateNavigationTabVisibilityWatchlist(raw)
 
 	if metadataRaw, ok := raw["metadata"].(map[string]interface{}); ok {
 		var migratedPrimary string
@@ -2296,6 +2411,12 @@ func (m *Manager) Load() (Settings, error) {
 	if s.HomeShelves.ItemCap <= 0 {
 		s.HomeShelves.ItemCap = 20
 	}
+	if s.HomeShelves.PopularOnServerWindowDays < 7 || s.HomeShelves.PopularOnServerWindowDays > 365 {
+		s.HomeShelves.PopularOnServerWindowDays = 90
+	}
+	if s.HomeShelves.RecentlyWatchedCapPerProfile < 1 || s.HomeShelves.RecentlyWatchedCapPerProfile > 20 {
+		s.HomeShelves.RecentlyWatchedCapPerProfile = 3
+	}
 	if s.HomeShelves.HomeShelfScale <= 0 {
 		s.HomeShelves.HomeShelfScale = 1.0
 	} else if s.HomeShelves.HomeShelfScale < 0.5 {
@@ -2340,7 +2461,7 @@ func (m *Manager) Load() (Settings, error) {
 		s.Display.BadgeVisibility = []string{"watchProgress"}
 	}
 	if len(s.Display.NavigationTabVisibility) == 0 {
-		s.Display.NavigationTabVisibility = []string{"home", "search", "lists", "live", "profiles", "downloads", "settings", "admin"}
+		s.Display.NavigationTabVisibility = []string{"home", "watchlist", "search", "lists", "live", "profiles", "downloads", "settings", "admin"}
 	}
 	if s.Display.WatchStateIconStyle == "" {
 		s.Display.WatchStateIconStyle = "colored"
@@ -2520,6 +2641,35 @@ func migrateNavigationTabVisibilitySystemTabs(raw map[string]interface{}) {
 	}
 
 	uiMap["navigationTabVisibilityIncludesSystemTabs"] = true
+}
+
+func migrateNavigationTabVisibilityWatchlist(raw map[string]interface{}) {
+	uiMap, ok := raw["ui"].(map[string]interface{})
+	if !ok {
+		uiMap = map[string]interface{}{"loadingAnimationEnabled": true}
+		raw["ui"] = uiMap
+	}
+	if migrated, _ := uiMap["navigationTabVisibilityIncludesWatchlist"].(bool); migrated {
+		return
+	}
+
+	if displayMap, ok := raw["display"].(map[string]interface{}); ok {
+		if tabs, ok := displayMap["navigationTabVisibility"].([]interface{}); ok && len(tabs) > 0 {
+			hasWatchlist := false
+			for _, tab := range tabs {
+				if key, ok := tab.(string); ok && key == "watchlist" {
+					hasWatchlist = true
+					break
+				}
+			}
+			if !hasWatchlist {
+				tabs = append(tabs, "watchlist")
+				displayMap["navigationTabVisibility"] = tabs
+			}
+		}
+	}
+
+	uiMap["navigationTabVisibilityIncludesWatchlist"] = true
 }
 
 func liveHasLegacySourceConfig(liveRaw map[string]interface{}) bool {

@@ -1,12 +1,26 @@
 {{template "base" .}}
 
-{{define "title"}}Tools - mediastorm Admin{{end}}
+{{define "title"}}{{if hasSuffix .CurrentPath "/tasks"}}Automations{{else if hasSuffix .CurrentPath "/integrations"}}Connected Services{{else}}Maintenance{{end}} - mediastorm Admin{{end}}
 
 {{define "content"}}
 <div class="page-header">
-    <h1>Tools</h1>
-    <p>Import and manage your media library</p>
+    {{if hasSuffix .CurrentPath "/tasks"}}
+    <h1>Automations</h1>
+    <p>Schedule recurring syncs, library scans, backups, and background preparation.</p>
+    {{else if hasSuffix .CurrentPath "/integrations"}}
+    <h1>Connected Services</h1>
+    <p>Connect external media services and choose which profiles use them.</p>
+    {{else}}
+    <h1>Maintenance</h1>
+    <p>Manage integrations, internal data, diagnostics, and server maintenance.</p>
+    {{end}}
 </div>
+
+{{if hasSuffix .CurrentPath "/tasks"}}
+<div id="tasksPageHost"></div>
+{{else if hasSuffix .CurrentPath "/integrations"}}
+<div id="integrationsPageHost"></div>
+{{end}}
 
 <!-- SYSTEM CATEGORY -->
 <div class="settings-group">
@@ -140,7 +154,7 @@
 </div>
 
 <!-- INTEGRATIONS CATEGORY -->
-<div class="settings-group">
+<div class="settings-group" id="integrationsGroup">
     <div class="group-title">Integrations</div>
 
     <!-- Scrobbling Accounts Section -->
@@ -161,7 +175,7 @@
         <div class="section-content">
             <p class="text-muted" style="margin-bottom: 1rem;">
                 Register Trakt, Simkl, and MDBList accounts here, then link them to profiles in the <strong style="color: var(--text-secondary);">Profile Scrobbling</strong> section below.
-                Scrobbling pushes watched items to the linked service. To pull watch history, create a sync scheduled task.
+                Scrobbling pushes watched items to the linked service. To pull watch history, create a sync automation.
             </p>
 
             <!-- Trakt Accounts -->
@@ -325,7 +339,7 @@
         <div class="section-content">
             <p class="text-muted" style="margin-bottom: 1rem;">
                 Link each profile to Trakt, Simkl, and/or MDBList. When a profile watches content, it will automatically scrobble to their linked services (one-way push).
-                To sync history in the other direction (e.g. items watched in other apps), use a <strong style="color: var(--text-secondary);">Trakt History Sync</strong> scheduled task.
+                To sync history in the other direction (e.g. items watched in other apps), use a <strong style="color: var(--text-secondary);">Trakt History Sync</strong> automation.
             </p>
             <div id="profileTraktLinkingList">
                 <!-- Profile linking rows will be rendered here -->
@@ -519,7 +533,7 @@
                     <circle cx="12" cy="12" r="10"/>
                     <polyline points="12 6 12 12 16 14"/>
                 </svg>
-                Scheduled Tasks
+                Automations
             </div>
             <span id="scheduledTasksCountBadge" class="status-badge"></span>
             <svg class="section-toggle" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
@@ -528,14 +542,38 @@
         </div>
         <div class="section-content">
             <p class="text-muted" style="margin-bottom: 1rem;">
-                Automate recurring tasks like syncing watchlists or importing data from connected services.
+                Schedule recurring syncs, imports, scans, backups, and background preparation.
             </p>
+
+            <div class="task-toolbar">
+                <div class="form-group">
+                    <label class="form-label" for="taskProfileFilter">Profile</label>
+                    <select id="taskProfileFilter" class="form-select" onchange="applyTaskFilters()">
+                        <option value="">All profiles and server automations</option>
+                        {{range .Users}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+                        <option value="__server__">Server automations only</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="taskStatusFilter">Status</label>
+                    <select id="taskStatusFilter" class="form-select" onchange="applyTaskFilters()">
+                        <option value="">Any status</option>
+                        <option value="active">Active</option>
+                        <option value="paused">Paused</option>
+                        <option value="error">Needs attention</option>
+                    </select>
+                </div>
+                <div class="form-group task-search-group">
+                    <label class="form-label" for="taskSearchFilter">Find an automation</label>
+                    <input id="taskSearchFilter" class="form-input" name="mediastorm-task-filter" type="search" placeholder="Name, service, or automation type" autocomplete="off" autocapitalize="none" spellcheck="false" readonly aria-autocomplete="none" data-1p-ignore="true" data-lpignore="true" data-bwignore="true" data-protonpass-ignore="true" data-form-type="other" onpointerdown="activateTaskSearch(this)" onkeydown="activateTaskSearch(this)" onbeforeinput="activateTaskSearch(this)" oninput="handleTaskSearchInput(this)">
+                </div>
+            </div>
 
             <!-- Scheduled Tasks List -->
             <div id="scheduledTasksList" style="margin-bottom: 1.5rem;">
                 <div class="loading-box">
                     <div class="spinner"></div>
-                    <span>Loading tasks...</span>
+                    <span>Loading automations...</span>
                 </div>
             </div>
 
@@ -545,8 +583,8 @@
                     <circle cx="12" cy="12" r="10"/>
                     <polyline points="12 6 12 12 16 14"/>
                 </svg>
-                <p>No scheduled tasks configured.</p>
-                <p style="font-size: 0.875rem;">Create a task to automate syncing from connected services.</p>
+                <p>No automations configured.</p>
+                <p style="font-size: 0.875rem;">Create an automation to sync from connected services or run server maintenance on a schedule.</p>
             </div>
 
             <!-- Add New Task Button -->
@@ -554,16 +592,16 @@
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 0.5rem;">
                     <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
                 </svg>
-                Add Scheduled Task
+                Add Automation
             </button>
 
             <!-- Add Task Modal -->
             <div id="addScheduledTaskModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.8); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); z-index: 1000; justify-content: center; align-items: center;">
                 <div style="background: var(--bg-elevated); padding: 2rem; border-radius: 12px; max-width: 500px; width: 90%; max-height: 90vh; overflow-y: auto; box-shadow: 0 8px 32px rgba(0,0,0,0.3);">
-                    <h3 style="margin-bottom: 1rem;">Add Scheduled Task</h3>
+                    <h3 style="margin-bottom: 1rem;">Add Automation</h3>
 
                     <div class="form-group">
-                        <label class="form-label">Task Type</label>
+                        <label class="form-label">Automation Type</label>
                         <select id="newTaskType" class="form-select" onchange="onTaskTypeChange()">
                             <option value="plex_watchlist_sync">Plex Watchlist Sync</option>
                             <option value="plex_history_sync">Plex Watch History Sync</option>
@@ -581,7 +619,7 @@
                     </div>
 
                     <div class="form-group">
-                        <label class="form-label">Task Name</label>
+                        <label class="form-label">Automation Name</label>
                         <input type="text" class="form-input" id="newTaskName" placeholder="e.g., Sync Family Plex Watchlist">
                     </div>
 
@@ -906,7 +944,7 @@
                             <option value="12hours" selected>Every 12 Hours</option>
                             <option value="daily">Daily</option>
                         </select>
-                        <small id="onceFrequencyNote" class="text-muted" style="display: none; color: var(--accent);">This task will run immediately and auto-complete after finishing.</small>
+                        <small id="onceFrequencyNote" class="text-muted" style="display: none; color: var(--accent);">This automation will run immediately and auto-complete after finishing.</small>
                     </div>
                     <div id="newAutoFrequencyLabel" class="form-group" style="display: none;">
                         <label class="form-label">Frequency</label>
@@ -919,7 +957,7 @@
                     <div class="form-group">
                         <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
                             <input type="checkbox" id="newTaskEnabled" checked>
-                            Enable task immediately
+                            Enable automation immediately
                         </label>
                     </div>
 
@@ -928,12 +966,12 @@
                             <input type="checkbox" id="newTaskDryRun">
                             Dry run (test without making changes)
                         </label>
-                        <small class="text-muted">When enabled, the task will log what it would do without actually syncing</small>
+                        <small class="text-muted">When enabled, the automation will log what it would do without actually syncing</small>
                     </div>
 
                     <div class="btn-group" style="margin-top: 1.5rem;">
                         <button class="btn btn-secondary" onclick="hideAddScheduledTaskModal()">Cancel</button>
-                        <button class="btn btn-primary" onclick="createScheduledTask()">Create Task</button>
+                        <button class="btn btn-primary" onclick="createScheduledTask()">Create Automation</button>
                     </div>
                 </div>
             </div>
@@ -941,11 +979,11 @@
             <!-- Edit Task Modal -->
             <div id="editScheduledTaskModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.8); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); z-index: 1000; justify-content: center; align-items: center;">
                 <div style="background: var(--bg-elevated); padding: 2rem; border-radius: 12px; max-width: 500px; width: 90%; max-height: 90vh; overflow-y: auto; box-shadow: 0 8px 32px rgba(0,0,0,0.3);">
-                    <h3 style="margin-bottom: 1rem;">Edit Scheduled Task</h3>
+                    <h3 style="margin-bottom: 1rem;">Edit Automation</h3>
                     <input type="hidden" id="editTaskId">
 
                     <div class="form-group">
-                        <label class="form-label">Task Type</label>
+                        <label class="form-label">Automation Type</label>
                         <select id="editTaskType" class="form-select" disabled>
                             <option value="plex_watchlist_sync">Plex Watchlist Sync</option>
                             <option value="plex_history_sync">Plex Watch History Sync</option>
@@ -960,11 +998,11 @@
                             <option value="backup">System Backup</option>
                             <option value="prewarm">Pre-warm Home Shelves</option>
                         </select>
-                        <small class="text-muted">Task type cannot be changed</small>
+                        <small class="text-muted">Automation type cannot be changed</small>
                     </div>
 
                     <div class="form-group">
-                        <label class="form-label">Task Name</label>
+                        <label class="form-label">Automation Name</label>
                         <input type="text" class="form-input" id="editTaskName" placeholder="e.g., Sync Family Plex Watchlist">
                     </div>
 
@@ -1288,7 +1326,7 @@
                             <input type="checkbox" id="editTaskDryRun">
                             Dry run (test without making changes)
                         </label>
-                        <small class="text-muted">When enabled, the task will log what it would do without actually syncing</small>
+                        <small class="text-muted">When enabled, the automation will log what it would do without actually syncing</small>
                     </div>
 
                     <div class="btn-group" style="margin-top: 1.5rem;">
@@ -1410,56 +1448,22 @@
 <div class="settings-group">
     <div class="group-title">Devices</div>
 
-    <!-- Client Management Section -->
-    <div class="section" id="clientManagementSection">
-        <div class="section-header" onclick="toggleSection(this)">
+    <div class="section open">
+        <div class="section-header">
             <div class="section-title">
                 <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
                     <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
                     <line x1="8" y1="21" x2="16" y2="21"/>
                     <line x1="12" y1="17" x2="12" y2="21"/>
                 </svg>
-                Client Management
+                Device Management Has Moved
             </div>
-            <span id="clientCountBadge" class="status-badge"></span>
-            <svg class="section-toggle" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-                <polyline points="6 9 12 15 18 9"/>
-            </svg>
         </div>
         <div class="section-content">
             <p class="text-muted" style="margin-bottom: 1rem;">
-                Manage registered client devices. Ping to identify devices, reassign them to different profiles, or remove them.
+                Devices now appear with their person and household so the access hierarchy is clear.
             </p>
-
-            <!-- Filter by profile -->
-            <div class="form-group" style="margin-bottom: 1rem;">
-                <label class="form-label">Filter by Profile</label>
-                <select id="clientProfileFilter" class="form-select" style="max-width: 300px;" onchange="filterClientsByProfile()">
-                    <option value="">All Profiles</option>
-                    {{range .Users}}
-                    <option value="{{.ID}}">{{.Name}}</option>
-                    {{end}}
-                </select>
-            </div>
-
-            <!-- Clients List -->
-            <div id="clientsList" style="margin-bottom: 1rem;">
-                <div class="loading-box">
-                    <div class="spinner"></div>
-                    <span>Loading clients...</span>
-                </div>
-            </div>
-
-            <!-- Empty state -->
-            <div id="clientsEmptyState" style="display: none; text-align: center; padding: 2rem; color: var(--text-muted);">
-                <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity: 0.5; margin-bottom: 1rem;">
-                    <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
-                    <line x1="8" y1="21" x2="16" y2="21"/>
-                    <line x1="12" y1="17" x2="12" y2="21"/>
-                </svg>
-                <p>No client devices registered yet.</p>
-                <p style="font-size: 0.875rem;">Devices will appear here when they connect to the server.</p>
-            </div>
+            <a class="btn btn-primary" href="{{.BasePath}}/accounts">Open Households, People &amp; Devices</a>
         </div>
     </div>
 </div>
@@ -1579,6 +1583,112 @@
 </div>
 
 <style>
+    {{if hasSuffix .CurrentPath "/tasks"}}
+    .settings-group { display: none; }
+    #tasksPageHost .settings-group { display: block; }
+    #tasksPageHost #scheduledTasksSection { display: block; }
+    #tasksPageHost .group-title { display: none; }
+    #tasksPageHost #scheduledTasksSection > .section-header { display: none; }
+    #tasksPageHost #scheduledTasksSection > .section-content { display: block; padding: 1.25rem; }
+    {{else if hasSuffix .CurrentPath "/integrations"}}
+    .settings-group { display: none; }
+    #integrationsPageHost .settings-group { display: block; }
+    #integrationsPageHost .group-title { display: none; }
+    {{else}}
+    #scheduledTasksSection { display: none; }
+    #integrationsGroup { display: none; }
+    {{end}}
+    .task-toolbar {
+        display: grid;
+        grid-template-columns: minmax(170px, 0.8fr) minmax(140px, 0.55fr) minmax(220px, 1fr);
+        gap: 0.75rem;
+        padding: 0.85rem;
+        margin-bottom: 1rem;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--bg-secondary);
+    }
+    .task-toolbar .form-group { margin: 0; }
+    .task-toolbar .form-input,
+    .task-toolbar .form-select {
+        height: 2.5rem;
+        min-height: 2.5rem;
+        box-sizing: border-box;
+    }
+    #scheduledTasksList.task-card-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.85rem;
+    }
+    #scheduledTasksList .task-filter-empty { grid-column: 1 / -1; }
+    .task-card {
+        min-width: 0;
+        margin: 0;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--bg-secondary);
+        overflow: hidden;
+    }
+    .task-card .import-card-header { min-height: 66px; }
+    .task-card .import-card-body {
+        display: flex;
+        flex-direction: column;
+        height: calc(100% - 66px);
+        box-sizing: border-box;
+    }
+    .task-card-schedule {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.55rem;
+        margin-bottom: 0.75rem;
+    }
+    .task-schedule-stat {
+        min-width: 0;
+        padding: 0.65rem 0.75rem;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--bg-tertiary);
+    }
+    .task-schedule-label {
+        display: block;
+        margin-bottom: 0.2rem;
+        color: var(--text-muted);
+        font-size: 0.65rem;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+    }
+    .task-schedule-value {
+        display: block;
+        overflow: hidden;
+        color: var(--text-primary);
+        font-size: 0.9rem;
+        font-weight: 650;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .task-card-context {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem 0.7rem;
+        min-height: 1.35rem;
+        margin-bottom: 0.7rem;
+        color: var(--text-muted);
+        font-size: 0.8rem;
+    }
+    .task-card-runtime {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.45rem 0.65rem;
+        padding-top: 0.7rem;
+        border-top: 1px solid var(--border);
+    }
+    .task-card-actions { margin-top: auto !important; padding-top: 0.8rem; flex-wrap: wrap; }
+    @media (max-width: 760px) {
+        .task-toolbar { grid-template-columns: 1fr; }
+        #scheduledTasksList.task-card-grid { grid-template-columns: 1fr; }
+    }
     /* Link styling - consistent light grey with underline */
     a {
         color: #9ca3af;
@@ -2297,20 +2407,46 @@
     // ========== Jellyfin State ==========
     let jellyfinAccounts = [];
 
-    // ========== Client Management State ==========
-    let allClients = [];
-    let filteredClients = [];
-    let backendVersionInfo = null;
-
     // ========== Scheduled Tasks State ==========
     let scheduledTasks = [];
+    let taskSearchActivated = false;
+    const isTasksPage = {{if hasSuffix .CurrentPath "/tasks"}}true{{else}}false{{end}};
+    const isIntegrationsPage = {{if hasSuffix .CurrentPath "/integrations"}}true{{else}}false{{end}};
+    const requestedTaskProfileId = new URLSearchParams(window.location.search).get('profileId') || '';
 
     // ========== Initialize ==========
     document.addEventListener('DOMContentLoaded', async function() {
+        if (isTasksPage) {
+            const section = document.getElementById('scheduledTasksSection');
+            const host = document.getElementById('tasksPageHost');
+            if (section && host) {
+                const group = document.createElement('div');
+                group.className = 'settings-group';
+                group.appendChild(section);
+                host.appendChild(group);
+                section.classList.add('open');
+            }
+            const profileFilter = document.getElementById('taskProfileFilter');
+            if (profileFilter && requestedTaskProfileId && Array.from(profileFilter.options).some(option => option.value === requestedTaskProfileId)) {
+                profileFilter.value = requestedTaskProfileId;
+            }
+        } else if (isIntegrationsPage) {
+            const integrationsGroup = document.getElementById('integrationsGroup');
+            const host = document.getElementById('integrationsPageHost');
+            if (integrationsGroup && host) {
+                host.appendChild(integrationsGroup);
+            }
+        }
         // Load profiles first so client dropdowns are populated
         await loadUserProfiles();
         // Then load everything else in parallel
-        await Promise.all([loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadJellyfinAccounts(), loadLocalMediaLibraries(), loadBackendVersionInfo(), loadUpdateStatus(false), loadClients(), loadScheduledTasks(), loadWorkers(), loadShareLogsClients()]);
+        if (isTasksPage) {
+            await Promise.all([loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadJellyfinAccounts(), loadLocalMediaLibraries(), loadScheduledTasks()]);
+        } else if (isIntegrationsPage) {
+            await Promise.all([loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadJellyfinAccounts()]);
+        } else {
+            await Promise.all([loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadJellyfinAccounts(), loadLocalMediaLibraries(), loadUpdateStatus(false), loadWorkers(), loadShareLogsClients()]);
+        }
     });
 
     async function loadLocalMediaLibraries() {
@@ -4793,10 +4929,12 @@
         // Only load if admin (the section won't exist for non-admins)
         if (!listContainer) return;
 
+        listContainer.classList.add('task-card-grid');
+
         try {
             const response = await fetch(basePath + '/api/scheduled-tasks');
             if (!response.ok) {
-                throw new Error('Failed to load scheduled tasks');
+                throw new Error('Failed to load automations');
             }
             const data = await response.json();
             scheduledTasks = data.tasks || [];
@@ -4804,8 +4942,8 @@
             updateScheduledTasksCountBadge();
             updatePrequeueManagementSection();
         } catch (err) {
-            console.error('Failed to load scheduled tasks:', err);
-            listContainer.innerHTML = '<p class="text-muted">Failed to load scheduled tasks.</p>';
+            console.error('Failed to load automations:', err);
+            listContainer.innerHTML = '<p class="text-muted">Failed to load automations.</p>';
             updatePrequeueManagementSection();
         }
     }
@@ -4849,11 +4987,35 @@
 
         if (emptyState) emptyState.style.display = 'none';
 
-        listContainer.innerHTML = scheduledTasks.map(task => {
+        const profileFilter = document.getElementById('taskProfileFilter')?.value || '';
+        const statusFilter = document.getElementById('taskStatusFilter')?.value || '';
+        const searchFilter = (document.getElementById('taskSearchFilter')?.value || '').trim().toLowerCase();
+        const visibleTasks = scheduledTasks.filter(task => {
+            const taskProfileId = task.config?.profileId || '';
+            if (profileFilter === '__server__' && taskProfileId) return false;
+            if (profileFilter && profileFilter !== '__server__' && taskProfileId !== profileFilter) return false;
+            if (statusFilter === 'active' && !task.enabled) return false;
+            if (statusFilter === 'paused' && task.enabled) return false;
+            if (statusFilter === 'error' && task.lastStatus !== 'error') return false;
+            if (searchFilter) {
+                const profile = userProfiles.find(item => item.id === taskProfileId);
+                const haystack = [task.name, getTaskTypeLabel(task.type), task.type, profile?.name].filter(Boolean).join(' ').toLowerCase();
+                if (!haystack.includes(searchFilter)) return false;
+            }
+            return true;
+        });
+
+        if (visibleTasks.length === 0) {
+            listContainer.innerHTML = '<div class="task-filter-empty">No automations match these filters.</div>';
+            return;
+        }
+
+        listContainer.innerHTML = visibleTasks.map(task => {
             const statusClass = getStatusClass(task.lastStatus);
             const statusLabel = getStatusLabel(task.lastStatus);
             const frequencyLabel = getFrequencyLabel(task.frequency, task.type);
             const lastRunLabel = task.lastRunAt ? formatRelativeTime(task.lastRunAt) : 'Never';
+            const nextRunLabel = task.enabled ? getNextRunLabel(task) : 'Paused';
             const taskTypeLabel = getTaskTypeLabel(task.type);
 
             // Get account and profile names based on task type
@@ -4919,7 +5081,7 @@
             }
 
             return `
-                <div class="import-card" data-task-id="${task.id}" style="margin-bottom: 0.75rem;">
+                <div class="import-card task-card" data-task-id="${task.id}">
                     <div class="import-card-header">
                         <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; flex: 1;">
                             <h3 style="margin: 0;">${escapeHtml(task.name || taskTypeLabel)}</h3>
@@ -4937,28 +5099,31 @@
                         </label>
                     </div>
                     <div class="import-card-body" style="padding: 0.75rem 1rem;">
-                        <div style="display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; margin-bottom: 0.75rem;">
-                            <div style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem;">
-                                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="opacity: 0.6;">
-                                    <circle cx="12" cy="12" r="10"/>
-                                    <polyline points="12 6 12 12 16 14"/>
-                                </svg>
-                                <span>${frequencyLabel}</span>
+                        <div class="task-card-schedule">
+                            <div class="task-schedule-stat" title="${escapeHtml(frequencyLabel)}">
+                                <span class="task-schedule-label">Frequency</span>
+                                <span class="task-schedule-value">${escapeHtml(frequencyLabel)}</span>
                             </div>
+                            <div class="task-schedule-stat" title="${escapeHtml(nextRunLabel)}">
+                                <span class="task-schedule-label">Next run</span>
+                                <span class="task-schedule-value">${escapeHtml(nextRunLabel)}</span>
+                            </div>
+                        </div>
+                        <div class="task-card-context">
                             ${task.type.includes('sync') ? `
-                            <div style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; color: var(--text-muted);">
+                            <div style="display: flex; align-items: center; gap: 0.5rem;">
                                 <span>${accountSource}:</span>
                                 <strong>${escapeHtml(accountName)}</strong>
                                 <span>→</span>
                                 <strong>${escapeHtml(profileName)}</strong>
                             </div>
                             ` : task.type === 'local_media_scan' ? `
-                            <div style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; color: var(--text-muted);">
+                            <div style="display: flex; align-items: center; gap: 0.5rem;">
                                 <span>${accountSource}:</span>
                                 <strong>${escapeHtml(accountName)}</strong>
                             </div>
                             ` : task.type === 'prewarm' ? `
-                            <div style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; color: var(--text-muted);">
+                            <div style="display: flex; align-items: center; gap: 0.5rem;">
                                 <span>Shelves:</span>
                                 <strong>${escapeHtml(prewarmShelfSummary)}</strong>
                                 <span>· Stable re-resolve:</span>
@@ -4966,15 +5131,14 @@
                             </div>
                             ` : ''}
                         </div>
-                        <div style="display: flex; flex-wrap: wrap; gap: 1rem; align-items: center;">
+                        <div class="task-card-runtime">
                             <span class="status-badge ${statusClass}" style="font-size: 0.75rem;">${statusLabel}</span>
                             <span class="text-muted" style="font-size: 0.8125rem;">Last: ${lastRunLabel}</span>
-                            ${task.enabled ? `<span class="text-muted" style="font-size: 0.8125rem;">Next: ${getNextRunLabel(task)}</span>` : ''}
                             ${task.itemsImported > 0 && task.type !== 'backup' ? `<span class="text-muted" style="font-size: 0.8125rem;">${task.itemsImported} items ${task.type === 'prewarm' ? 'warmed' : 'synced'}</span>` : ''}
                             ${task.dryRunDetails ? `<button class="btn btn-sm" onclick="showDryRunResults('${task.id}')" style="padding: 0.15rem 0.5rem; font-size: 0.75rem; background: rgba(99, 102, 241, 0.2); color: var(--accent);">View Dry Run Results</button>` : ''}
                             ${task.lastError ? `<span style="color: var(--danger); font-size: 0.8125rem;">${escapeHtml(task.lastError)}</span>` : ''}
                         </div>
-                        <div style="display: flex; gap: 0.5rem; margin-top: 0.75rem;">
+                        <div class="task-card-actions" style="display: flex; gap: 0.5rem; margin-top: 0.75rem;">
                             <button class="btn btn-sm btn-secondary" onclick="runScheduledTaskNow('${task.id}')" ${task.lastStatus === 'running' ? 'disabled' : ''}>
                                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 0.25rem;">
                                     <polygon points="5 3 19 12 5 21 5 3"/>
@@ -5000,6 +5164,26 @@
                 </div>
             `;
         }).join('');
+    }
+
+    function activateTaskSearch(input) {
+        if (taskSearchActivated) return;
+        taskSearchActivated = true;
+        input.value = '';
+        input.readOnly = false;
+        applyTaskFilters();
+    }
+
+    function handleTaskSearchInput(input) {
+        if (!taskSearchActivated) {
+            input.value = '';
+            return;
+        }
+        applyTaskFilters();
+    }
+
+    function applyTaskFilters() {
+        renderScheduledTasksList();
     }
 
     async function purgePrequeues() {
@@ -5302,6 +5486,21 @@
         // Reset visibility
         onTaskTypeChange();
 
+        const preferredProfileId = document.getElementById('taskProfileFilter')?.value || requestedTaskProfileId;
+        if (preferredProfileId && preferredProfileId !== '__server__') {
+            [
+                'newTaskProfile', 'newTaskTraktProfile', 'newTaskHistoryProfile',
+                'newTaskSimklHistoryProfile', 'newTaskMdblistWatchlistProfile',
+                'newTaskMdblistProfile', 'newTaskPlexHistoryProfile',
+                'newTaskJellyfinFavProfile', 'newTaskJellyfinHistProfile'
+            ].forEach(id => {
+                const select = document.getElementById(id);
+                if (select && Array.from(select.options).some(option => option.value === preferredProfileId)) {
+                    select.value = preferredProfileId;
+                }
+            });
+        }
+
         document.getElementById('addScheduledTaskModal').style.display = 'flex';
         document.body.style.overflow = 'hidden';
     }
@@ -5496,7 +5695,7 @@
                 select.innerHTML = '<option value="">No custom lists found</option>';
             } else {
                 select.innerHTML = lists.map(list =>
-                    `<option value="${list.id}">${escapeHtml(list.name)} (${list.itemCount} items)</option>`
+                    `<option value="${list.id}">${escapeHtml(list.name)}${list.smart ? ' (Smart list)' : ` (${list.itemCount} items)`}</option>`
                 ).join('');
             }
         } catch (err) {
@@ -5661,10 +5860,10 @@
             const data = await response.json();
 
             if (!response.ok) {
-                throw new Error(data.error || 'Failed to create task');
+                throw new Error(data.error || 'Failed to create automation');
             }
 
-            showToast('Scheduled task created', 'success');
+            showToast('Automation created', 'success');
             hideAddScheduledTaskModal();
             await loadScheduledTasks();
         } catch (err) {
@@ -5682,7 +5881,7 @@
 
             if (!response.ok) {
                 const data = await response.json();
-                throw new Error(data.error || 'Failed to toggle task');
+                throw new Error(data.error || 'Failed to update automation');
             }
 
             // Update local state
@@ -5691,7 +5890,7 @@
 
             updateScheduledTasksCountBadge();
             updatePrequeueManagementSection();
-            showToast(enabled ? 'Task enabled' : 'Task disabled', 'success');
+            showToast(enabled ? 'Automation enabled' : 'Automation disabled', 'success');
         } catch (err) {
             showToast(err.message, 'error');
             // Reload to reset checkbox state
@@ -5707,10 +5906,10 @@
 
             if (!response.ok) {
                 const data = await response.json();
-                throw new Error(data.error || 'Failed to start task');
+                throw new Error(data.error || 'Failed to start automation');
             }
 
-            showToast('Task started', 'success');
+            showToast('Automation started', 'success');
 
             // Poll for status updates
             setTimeout(async () => {
@@ -5727,7 +5926,7 @@
     }
 
     async function deleteScheduledTask(taskId) {
-        if (!confirm('Delete this scheduled task?')) return;
+        if (!confirm('Delete this automation?')) return;
 
         try {
             const response = await fetch(`${basePath}/api/scheduled-tasks/${taskId}`, {
@@ -5736,10 +5935,10 @@
 
             if (!response.ok) {
                 const data = await response.json();
-                throw new Error(data.error || 'Failed to delete task');
+                throw new Error(data.error || 'Failed to delete automation');
             }
 
-            showToast('Task deleted', 'success');
+            showToast('Automation deleted', 'success');
             await loadScheduledTasks();
         } catch (err) {
             showToast(err.message, 'error');
@@ -5749,7 +5948,7 @@
     async function showEditScheduledTaskModal(taskId) {
         const task = scheduledTasks.find(t => t.id === taskId);
         if (!task) {
-            showToast('Task not found', 'error');
+            showToast('Automation not found', 'error');
             return;
         }
 
@@ -6174,10 +6373,10 @@
             const data = await response.json();
 
             if (!response.ok) {
-                throw new Error(data.error || 'Failed to update task');
+                throw new Error(data.error || 'Failed to update automation');
             }
 
-            showToast('Task updated', 'success');
+            showToast('Automation updated', 'success');
             hideEditScheduledTaskModal();
             await loadScheduledTasks();
         } catch (err) {

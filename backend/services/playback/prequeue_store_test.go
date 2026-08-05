@@ -313,3 +313,22 @@ func TestPrequeueEntryToResponseInfersServiceType(t *testing.T) {
 		})
 	}
 }
+
+func TestPrequeueEntryToResponseIncludesProgress(t *testing.T) {
+	entry := &PrequeueEntry{
+		ID:              "pq_test",
+		Status:          PrequeueStatusResolving,
+		ProgressStage:   "resolving_candidate",
+		ProgressDetail:  "Example.Release.2160p",
+		ProgressCurrent: 2,
+		ProgressTotal:   7,
+	}
+
+	resp := entry.ToResponse()
+	if resp.ProgressStage != entry.ProgressStage ||
+		resp.ProgressDetail != entry.ProgressDetail ||
+		resp.ProgressCurrent != entry.ProgressCurrent ||
+		resp.ProgressTotal != entry.ProgressTotal {
+		t.Fatalf("progress response = %#v, want progress fields from entry", resp)
+	}
+}

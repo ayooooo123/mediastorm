@@ -1162,6 +1162,30 @@ func TestResults_EpisodeAirYear(t *testing.T) {
 	})
 }
 
+func TestResults_TargetEpisodeMatchingYearGetsPriorityTag(t *testing.T) {
+	results := []models.NZBResult{
+		{Title: "Little.House.On.The.Prairie.1974.S01E01.A.Harvest.Of.Friends.1080p.BDRip.X265"},
+		{Title: "Little.House.On.The.Prairie.S01E01.A.Harvest.Of.Friends.1080p.BluRay.x264"},
+	}
+
+	detailed := ResultsWithDetails(results, Options{
+		ExpectedTitle: "Little House on the Prairie",
+		ExpectedYear:  1974,
+		IsMovie:       false,
+		TargetSeason:  1,
+		TargetEpisode: 1,
+	})
+	if len(detailed) != 2 || !detailed[0].Passed || !detailed[1].Passed {
+		t.Fatalf("expected both episode results to pass, got %+v", detailed)
+	}
+	if got := detailed[0].Result.Attributes["episodeYearMatch"]; got != "true" {
+		t.Fatalf("matching-year episode priority tag = %q, want true", got)
+	}
+	if _, exists := detailed[1].Result.Attributes["episodeYearMatch"]; exists {
+		t.Fatalf("yearless episode should not have priority tag, got %+v", detailed[1].Result.Attributes)
+	}
+}
+
 func TestResults_TitleContainment(t *testing.T) {
 	// Test the bug case: "F1 The Movie" releases should match when TMDB returns "F1"
 	// This tests the fix for non-English title matching where the original title

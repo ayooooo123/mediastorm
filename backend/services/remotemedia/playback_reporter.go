@@ -108,7 +108,7 @@ func (r *PlaybackReporter) reportToProvider(
 		if account == nil {
 			return ErrNotFound
 		}
-		server, err := r.service.servers.resolve(library.AccountID, account.AuthToken, library.ServerID, r.service.plex.GetAccessibleServers)
+		server, err := r.service.plexServerForLibrary(library, account.AuthToken)
 		if err != nil {
 			return err
 		}

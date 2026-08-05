@@ -16,6 +16,24 @@ func TestPlaybackSettingsNormalizeAllowedTrackLanguages(t *testing.T) {
 	}
 }
 
+func TestEnsureDefaultHomeShelvesBackfillsSharedShelfLimits(t *testing.T) {
+	shelves, changed := EnsureDefaultHomeShelves([]ShelfConfig{
+		{ID: "popular-on-server", Name: "Popular"},
+		{ID: "recently-watched", Name: "Recent"},
+	})
+	if !changed {
+		t.Fatal("expected shared shelf limits to be backfilled")
+	}
+
+	for _, shelf := range shelves {
+		if shelf.ID == "popular-on-server" || shelf.ID == "recently-watched" {
+			if shelf.Limit != 20 {
+				t.Fatalf("%s limit = %d, want 20", shelf.ID, shelf.Limit)
+			}
+		}
+	}
+}
+
 func TestMigrateLibraryShelfConfigs(t *testing.T) {
 	shelves := []ShelfConfig{{ID: "local-library-library-123", Type: "local-library"}}
 
@@ -308,6 +326,43 @@ func TestLoadPreservesHiddenSystemTabsAfterNavigationTabVisibilityMigration(t *t
 	}
 	if containsString(settings.Display.NavigationTabVisibility, "admin") {
 		t.Fatalf("navigationTabVisibility = %#v, admin should remain hidden after migration marker", settings.Display.NavigationTabVisibility)
+	}
+}
+
+func TestLoadMigratesNavigationTabVisibilityWatchlist(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	raw := []byte(`{"ui":{"loadingAnimationEnabled":true,"navigationTabVisibilityIncludesSystemTabs":true},"display":{"navigationTabVisibility":["home","search","lists","live","profiles","downloads","settings","admin"]}}`)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+
+	settings, err := NewManager(path).Load()
+	if err != nil {
+		t.Fatalf("load settings: %v", err)
+	}
+
+	if !settings.UI.NavigationTabVisibilityIncludesWatchlist {
+		t.Fatal("expected Watchlist navigation visibility migration marker to be set")
+	}
+	if !containsString(settings.Display.NavigationTabVisibility, "watchlist") {
+		t.Fatalf("navigationTabVisibility = %#v, want Watchlist tab added", settings.Display.NavigationTabVisibility)
+	}
+}
+
+func TestLoadPreservesHiddenWatchlistAfterNavigationTabVisibilityMigration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	raw := []byte(`{"ui":{"loadingAnimationEnabled":true,"navigationTabVisibilityIncludesSystemTabs":true,"navigationTabVisibilityIncludesWatchlist":true},"display":{"navigationTabVisibility":["home","search","lists","live","profiles","downloads","settings","admin"]}}`)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+
+	settings, err := NewManager(path).Load()
+	if err != nil {
+		t.Fatalf("load settings: %v", err)
+	}
+
+	if containsString(settings.Display.NavigationTabVisibility, "watchlist") {
+		t.Fatalf("navigationTabVisibility = %#v, Watchlist should remain hidden after migration marker", settings.Display.NavigationTabVisibility)
 	}
 }
 

@@ -33,6 +33,7 @@ type UserRepository interface {
 type NotificationRepository interface {
 	GetChannel(ctx context.Context, id string) (*models.NotificationChannel, error)
 	ListChannels(ctx context.Context, profileID string) ([]models.NotificationChannel, error)
+	ListAllChannels(ctx context.Context) ([]models.NotificationChannel, error)
 	CreateChannel(ctx context.Context, channel *models.NotificationChannel) error
 	UpdateChannel(ctx context.Context, channel *models.NotificationChannel) error
 	DeleteChannel(ctx context.Context, profileID, id string) error
@@ -275,6 +276,14 @@ type RemoteMediaRepository interface {
 	GetItem(ctx context.Context, id string) (*models.RemoteMediaItem, error)
 	UpsertItem(ctx context.Context, item *models.RemoteMediaItem) error
 	MarkItemsMissingNotSeenInSync(ctx context.Context, libraryID, syncID string) error
+}
+
+// LibraryAccessRepository manages access policies shared by local and remote libraries.
+type LibraryAccessRepository interface {
+	Get(ctx context.Context, libraryID string) (*models.LibraryAccessPolicy, error)
+	List(ctx context.Context) (map[string]models.LibraryAccessPolicy, error)
+	Set(ctx context.Context, policy models.LibraryAccessPolicy) error
+	Delete(ctx context.Context, libraryID string) error
 }
 
 type RecordingRepository interface {

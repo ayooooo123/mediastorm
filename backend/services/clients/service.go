@@ -72,7 +72,7 @@ func NewService(storageDir string) (*Service, error) {
 // Register registers or updates a client device.
 // If the client already exists, it updates LastSeenAt and device info.
 // If new, it creates the client with auto-generated name.
-func (s *Service) Register(id, userID, deviceType, os, appVersion, deviceName string) (models.Client, error) {
+func (s *Service) Register(id, userID, deviceType, os, appVersion, deviceName, nickname string) (models.Client, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return models.Client{}, ErrClientIDRequired
@@ -94,6 +94,10 @@ func (s *Service) Register(id, userID, deviceType, os, appVersion, deviceName st
 	defer s.mu.Unlock()
 
 	now := time.Now().UTC()
+	nickname = strings.TrimSpace(nickname)
+	if len([]rune(nickname)) > 64 {
+		return models.Client{}, errors.New("nickname must be 64 characters or fewer")
+	}
 
 	if existing, ok := s.clients[id]; ok {
 		// Update existing client — only overwrite UserID when a
@@ -107,6 +111,9 @@ func (s *Service) Register(id, userID, deviceType, os, appVersion, deviceName st
 		existing.DeviceType = deviceType
 		existing.OS = os
 		existing.AppVersion = appVersion
+		if nickname != "" {
+			existing.Nickname = nickname
+		}
 		existing.LastSeenAt = now
 		s.clients[id] = existing
 
@@ -126,6 +133,7 @@ func (s *Service) Register(id, userID, deviceType, os, appVersion, deviceName st
 		ID:            id,
 		UserID:        userID,
 		Name:          generateClientName(deviceType, os),
+		Nickname:      nickname,
 		DeviceName:    deviceName,
 		DeviceType:    deviceType,
 		OS:            os,
@@ -141,6 +149,33 @@ func (s *Service) Register(id, userID, deviceType, os, appVersion, deviceName st
 		return models.Client{}, err
 	}
 
+	return client, nil
+}
+
+// SetNickname updates the user-assigned name for a client. An empty nickname
+// clears the custom label and lets administrative UIs fall back to Name.
+func (s *Service) SetNickname(id, nickname string) (models.Client, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return models.Client{}, ErrClientIDRequired
+	}
+	nickname = strings.TrimSpace(nickname)
+	if len([]rune(nickname)) > 64 {
+		return models.Client{}, errors.New("nickname must be 64 characters or fewer")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	client, ok := s.clients[id]
+	if !ok {
+		return models.Client{}, ErrClientNotFound
+	}
+	client.Nickname = nickname
+	s.clients[id] = client
+	if err := s.saveLocked(); err != nil {
+		return models.Client{}, err
+	}
 	return client, nil
 }
 

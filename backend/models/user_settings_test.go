@@ -77,6 +77,55 @@ func TestEnsureDefaultHomeShelvesDisablesExperimentalTonightShelf(t *testing.T) 
 	t.Fatal("expected tonight shelf to remain present after migration")
 }
 
+func TestEnsureDefaultHomeShelvesBackfillsSharedActivitySettings(t *testing.T) {
+	shelves := []ShelfConfig{
+		{ID: "popular-on-server", Name: "Popular", Enabled: true},
+		{ID: "recently-watched", Name: "Recent", Enabled: true},
+	}
+
+	migrated, changed := EnsureDefaultHomeShelves(shelves)
+	if !changed {
+		t.Fatal("expected missing shared-activity settings to trigger migration")
+	}
+	var popular, recent *ShelfConfig
+	for i := range migrated {
+		switch migrated[i].ID {
+		case "popular-on-server":
+			popular = &migrated[i]
+		case "recently-watched":
+			recent = &migrated[i]
+		}
+	}
+	if popular == nil || popular.Limit != 20 || popular.ActivityWindowDays != 90 || popular.MinimumProfiles != 2 {
+		t.Fatalf("unexpected popular defaults: %+v", popular)
+	}
+	if recent == nil || recent.Limit != 20 || recent.ActivityWindowDays != 14 || recent.MaxItemsPerProfile != 3 {
+		t.Fatalf("unexpected recent defaults: %+v", recent)
+	}
+}
+
+func TestEnsureDefaultHomeShelvesAddsDisabledDashboardShelf(t *testing.T) {
+	migrated, changed := EnsureDefaultHomeShelves([]ShelfConfig{
+		{ID: "continue-watching", Name: "Continue Watching", Enabled: true, Order: 0},
+		{ID: "recently-watched", Name: "Recently Watched", Enabled: false, Order: 1},
+	})
+	if !changed {
+		t.Fatal("expected missing dashboard shelf to trigger migration")
+	}
+	for _, shelf := range migrated {
+		if shelf.ID == "dashboard" {
+			if shelf.Enabled {
+				t.Fatal("dashboard shelf should be disabled by default")
+			}
+			if shelf.Name != "Dashboard" {
+				t.Fatalf("unexpected dashboard shelf name %q", shelf.Name)
+			}
+			return
+		}
+	}
+	t.Fatal("expected dashboard shelf to be added")
+}
+
 func newGlobal() *ResolvedLiveSource {
 	return &ResolvedLiveSource{
 		Mode:                  "m3u",

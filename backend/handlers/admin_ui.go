@@ -47,6 +47,7 @@ import (
 	"novastream/services/debrid"
 	"novastream/services/history"
 	"novastream/services/invitations"
+	"novastream/services/libraryaccess"
 	"novastream/services/localmedia"
 	"novastream/services/metadata"
 	"novastream/services/notifications"
@@ -208,22 +209,21 @@ func (s *adminSessionStore) revoke(token string) {
 
 // SettingsGroups defines the order and labels for settings groups
 var SettingsGroups = []map[string]string{
-	{"id": "providers", "label": "Providers"},
-	{"id": "sources", "label": "Sources"},
-	{"id": "searchFiltering", "label": "Search & Filtering"},
-	{"id": "services", "label": "Services"},
-	{"id": "experience", "label": "Experience"},
-	{"id": "server", "label": "Server"},
+	{"id": "providers", "label": "Streaming Setup"},
+	{"id": "searchFiltering", "label": "Playback & Results"},
+	{"id": "experience", "label": "Home & Appearance"},
+	{"id": "services", "label": "Content & Integrations"},
+	{"id": "server", "label": "Server & Network"},
 }
 
 // SettingsSchema defines the schema for dynamic form generation
 var SettingsSchema = map[string]interface{}{
 	"server": map[string]interface{}{
-		"label":       "Server Settings",
+		"label":       "Server Address",
 		"icon":        "server",
 		"group":       "server",
 		"order":       0,
-		"description": "Changing host, port, or base path requires a container restart to take effect. Other server settings apply when saved.",
+		"description": "These values control where mediastorm listens for connections. Address changes take effect after a container restart.",
 		"fields": map[string]interface{}{
 			"host":     map[string]interface{}{"type": "text", "label": "Host", "description": "Server bind address (leave empty to bind all interfaces)", "order": 0},
 			"port":     map[string]interface{}{"type": "number", "label": "Port", "description": "Server port (default: 7777)", "order": 1},
@@ -237,7 +237,7 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"network": map[string]interface{}{
-		"label": "Network URL Switching",
+		"label": "Home & Away Addresses",
 		"icon":  "wifi",
 		"group": "server",
 		"order": 1,
@@ -266,7 +266,7 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"streaming": map[string]interface{}{
-		"label": "Search & Resolution",
+		"label": "How Streams Are Found",
 		"icon":  "search",
 		"group": "searchFiltering",
 		"order": 0,
@@ -310,7 +310,7 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"debridProviders": map[string]interface{}{
-		"label":    "Debrid Providers",
+		"label":    "Debrid Services",
 		"icon":     "cloud",
 		"group":    "providers",
 		"order":    1,
@@ -332,7 +332,7 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"usenet": map[string]interface{}{
-		"label":    "Usenet Providers",
+		"label":    "Usenet Servers",
 		"icon":     "download",
 		"group":    "providers",
 		"order":    2,
@@ -349,8 +349,8 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"usenetEngines": map[string]interface{}{
-		"label":       "External Usenet Engines",
-		"description": "Optional SABnzbd-compatible NZB/WebDAV engines for Usenet playback. These can satisfy Usenet resolution without direct NNTP streaming.",
+		"label":       "Usenet Apps",
+		"description": "Connect an optional NZB/WebDAV app such as AltMount, NZBDav, or Decypharr for Usenet playback.",
 		"icon":        "download",
 		"group":       "providers",
 		"order":       3,
@@ -387,10 +387,11 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"filtering": map[string]interface{}{
-		"label": "Ranking & Filtering",
-		"icon":  "filter",
-		"group": "searchFiltering",
-		"order": 1,
+		"label":       "Result Quality",
+		"icon":        "filter",
+		"group":       "searchFiltering",
+		"order":       1,
+		"description": "<strong>Regex format:</strong> Plain text performs a case-insensitive substring match. To use a regex, wrap the complete pattern in forward slashes, for example <code>/\\bREMUX\\b/</code>. Do not add JavaScript flags such as <code>/pattern/i</code>; matching is already case-insensitive. Preferred-term weights are set with the weight control.",
 		"fields": map[string]interface{}{
 			"maxSizeMovieGb":   map[string]interface{}{"type": "number", "label": "Max Movie Size (GB)", "description": "Maximum movie file size (0 = no limit)"},
 			"maxSizeEpisodeGb": map[string]interface{}{"type": "number", "label": "Max Episode Size (GB)", "description": "Maximum episode file size (0 = no limit)"},
@@ -418,11 +419,11 @@ var SettingsSchema = map[string]interface{}{
 				"description": "Fraction of measured throughput a stream's average bitrate may use and still be considered comfortably streamable (0-1, default 0.7). Lower = stricter size caps.",
 				"order":       11,
 			},
-			"requiredTerms":          map[string]interface{}{"type": "tags", "label": "Required Terms", "description": "At least one of these terms must match for a result to be kept. Wrap in /slashes/ for regex, e.g. /\\b(?:Multi|French)\\b/."},
-			"filterOutTerms":         map[string]interface{}{"type": "tags", "label": "Filter Out Terms", "description": "Terms to exclude from results (case-insensitive substring match; wrap in /slashes/ for regex, e.g. /\\bDUB\\b/)"},
-			"preferredTerms":         map[string]interface{}{"type": "weighted-tags", "label": "Preferred Terms", "description": "Terms to prioritize in results. Each term has a weight (1-10) that controls how strongly it influences ranking. Higher weights boost results more. Wrap in /slashes/ for regex."},
-			"nonPreferredTerms":      map[string]interface{}{"type": "weighted-tags", "label": "Non-Preferred Terms", "description": "Terms to derank in results. Each term has a weight (1-10) that controls how strongly it penalizes ranking. Higher weights push results lower. Wrap in /slashes/ for regex. The restricted-file quick add can help when Real Debrid is the sole provider to avoid restricted files."},
-			"downloadPreferredTerms": map[string]interface{}{"type": "weighted-tags", "label": "Download Preferred Terms", "description": "Terms to strongly prioritize only during download actions. They do not affect normal interactive search or playback prequeue ranking. Wrap in /slashes/ for regex."},
+			"requiredTerms":          map[string]interface{}{"type": "tags", "label": "Required Terms", "description": "At least one of these terms must match for a result to be kept."},
+			"filterOutTerms":         map[string]interface{}{"type": "tags", "label": "Filter Out Terms", "description": "Terms that exclude matching results."},
+			"preferredTerms":         map[string]interface{}{"type": "weighted-tags", "label": "Preferred Terms", "description": "Terms to prioritize in results. Higher weights have a stronger influence on ranking."},
+			"nonPreferredTerms":      map[string]interface{}{"type": "weighted-tags", "label": "Non-Preferred Terms", "description": "Terms to derank in results. Higher weights apply a stronger penalty. The restricted-file quick add can help when Real Debrid is the sole provider."},
+			"downloadPreferredTerms": map[string]interface{}{"type": "weighted-tags", "label": "Download Preferred Terms", "description": "Terms to prioritize only during downloads. They do not affect interactive search or playback prequeue ranking."},
 			"unknownTrackPolicy": map[string]interface{}{
 				"type":  "select",
 				"label": "Unknown Track Preference",
@@ -496,7 +497,7 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"animeFiltering": map[string]interface{}{
-		"label": "Anime Language",
+		"label": "Anime Preferences",
 		"icon":  "globe",
 		"group": "searchFiltering",
 		"order": 2,
@@ -520,11 +521,17 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"ranking": map[string]interface{}{
-		"label": "Overall Ranking",
+		"label": "Result Order",
 		"icon":  "list",
 		"group": "searchFiltering",
 		"order": 3,
 		"fields": map[string]interface{}{
+			"newestReleaseFirst": map[string]interface{}{
+				"type":        "boolean",
+				"label":       "Newest Release First",
+				"description": "Sort all search results by source-reported release time, newest first. Supported by Usenet/Newznab, Jackett/Prowlarr, Nyaa, Internet Archive, and Zilean (using its ingestion time). Torrentio, Comet, MediaFusion, AIOStreams, and StremThru do not expose release timestamps; their results are placed after dated results. When enabled, all other ranking criteria are ignored.",
+				"order":       0,
+			},
 			"splitByService": map[string]interface{}{"type": "boolean", "label": "Split Debrid/Usenet Ranking", "description": "Rank Debrid and Usenet results independently with their service-specific criteria, then merge the two ordered lists using the shared Overall Ranking criteria."},
 		},
 	},
@@ -597,7 +604,7 @@ var SettingsSchema = map[string]interface{}{
 	"live.sources": map[string]interface{}{
 		"label":    "Live TV",
 		"icon":     "tv",
-		"group":    "sources",
+		"group":    "providers",
 		"order":    2,
 		"is_array": true,
 		"parent":   "live",
@@ -636,9 +643,9 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"indexers": map[string]interface{}{
-		"label":    "Usenet Indexers",
+		"label":    "Usenet Search Sources",
 		"icon":     "search",
-		"group":    "sources",
+		"group":    "providers",
 		"order":    0,
 		"is_array": true,
 		"fields": map[string]interface{}{
@@ -658,10 +665,10 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"torrentScrapers": map[string]interface{}{
-		"label":       "Torrent & Stream Sources",
+		"label":       "Torrent & Streaming Sources",
 		"description": "Configure search addons used for debrid and direct playback discovery. Some sources return torrent candidates (Torrentio, Jackett, Zilean, Nyaa), while others may return ready-to-play direct stream URLs (AIOStreams, Comet, MediaFusion, Internet Archive). Streaming mode still controls whether playback uses Usenet, Debrid, or Hybrid resolution.",
 		"icon":        "magnet",
-		"group":       "sources",
+		"group":       "providers",
 		"order":       1,
 		"is_array":    true,
 		"fields": map[string]interface{}{
@@ -684,7 +691,7 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"playback": map[string]interface{}{
-		"label": "Playback",
+		"label": "Playback Experience",
 		"icon":  "play",
 		"group": "experience",
 		"order": 0,
@@ -728,7 +735,7 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"homeShelves": map[string]interface{}{
-		"label": "Home Shelves",
+		"label": "Home Screen",
 		"icon":  "layout",
 		"group": "experience",
 		"order": 1,
@@ -757,7 +764,7 @@ var SettingsSchema = map[string]interface{}{
 			"type": map[string]interface{}{
 				"type":        "select",
 				"label":       "Type",
-				"options":     []string{"builtin", "mdblist", "tmdb", "trakt", "simkl", "letterboxd", "genre", "decade", "collection-hub", "library"},
+				"options":     []string{"builtin", "mdblist", "stremio", "tmdb", "trakt", "simkl", "letterboxd", "genre", "decade", "collection-hub", "library"},
 				"description": "Shelf type (built-in, TMDB, external list, collection hub, or configured media library)",
 				"order":       2,
 			},
@@ -816,7 +823,7 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"display": map[string]interface{}{
-		"label": "Display",
+		"label": "Appearance & Branding",
 		"icon":  "eye",
 		"group": "experience",
 		"order": 2,
@@ -835,11 +842,12 @@ var SettingsSchema = map[string]interface{}{
 			},
 			"navigationTabVisibility": map[string]interface{}{
 				"type":        "checkboxes",
-				"label":       "Visible Navigation Tabs",
-				"description": "Choose which app navigation tabs are shown to this scope. Admin is web only.",
+				"label":       "Visible Navigation Items",
+				"description": "Choose which drawer and tab-bar items are shown to this scope. Admin is web only.",
 				"order":       1,
 				"options": []map[string]interface{}{
 					{"value": "home", "label": "Home"},
+					{"value": "watchlist", "label": "Watchlist"},
 					{"value": "search", "label": "Search"},
 					{"value": "lists", "label": "Discovery"},
 					{"value": "live", "label": "Live"},
@@ -1077,7 +1085,7 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"metadata": map[string]interface{}{
-		"label":    "Metadata",
+		"label":    "Movie & Show Information",
 		"icon":     "film",
 		"group":    "services",
 		"order":    0,
@@ -1178,7 +1186,7 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"transmux": map[string]interface{}{
-		"label":       "Web Player Hardware Acceleration",
+		"label":       "Web Player Video",
 		"icon":        "film",
 		"group":       "server",
 		"order":       2,
@@ -1206,7 +1214,7 @@ var SettingsSchema = map[string]interface{}{
 		},
 	},
 	"subtitles": map[string]interface{}{
-		"label":    "Subtitles",
+		"label":    "Subtitle Services",
 		"icon":     "key",
 		"group":    "services",
 		"order":    2,
@@ -1431,7 +1439,7 @@ var SettingsSchema = map[string]interface{}{
 	"liveTV.sources": map[string]interface{}{
 		"label":       "Live TV",
 		"icon":        "tv",
-		"group":       "sources",
+		"group":       "providers",
 		"order":       3,
 		"inheritFrom": "live.sources",
 		"is_array":    true,
@@ -1511,6 +1519,7 @@ type AdminUIHandler struct {
 	debridSearchService   *debrid.SearchService
 	localMediaService     *localmedia.Service
 	remoteMediaService    *remotemedia.Service
+	libraryAccessService  *libraryaccess.Service
 	calendarService       *calendar.Service
 	clientsService        clientsService
 	clientSettingsService clientSettingsService
@@ -1573,6 +1582,10 @@ func (h *AdminUIHandler) SetLocalMediaService(ls *localmedia.Service) {
 
 func (h *AdminUIHandler) SetRemoteMediaService(service *remotemedia.Service) {
 	h.remoteMediaService = service
+}
+
+func (h *AdminUIHandler) SetLibraryAccessService(service *libraryaccess.Service) {
+	h.libraryAccessService = service
 }
 
 // SetAccountsService sets the accounts service for account management
@@ -2193,12 +2206,47 @@ func (h *AdminUIHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // buildStreamsPayload builds the streams JSON payload for both the REST and SSE endpoints.
+func addDashboardDeviceInfo(stream map[string]interface{}, clientID string, clientsByID map[string]models.Client) {
+	clientID = strings.TrimSpace(clientID)
+	if clientID == "" {
+		return
+	}
+	stream["client_id"] = clientID
+	client, ok := clientsByID[clientID]
+	if !ok {
+		return
+	}
+	nickname := strings.TrimSpace(client.Nickname)
+	if nickname != "" {
+		stream["device_nickname"] = nickname
+	}
+	displayName := nickname
+	if displayName == "" {
+		displayName = strings.TrimSpace(client.Name)
+	}
+	if displayName == "" {
+		displayName = strings.TrimSpace(client.DeviceName)
+	}
+	if displayName == "" {
+		displayName = strings.TrimSpace(client.DeviceType)
+	}
+	stream["device_name"] = displayName
+	stream["device_type"] = strings.TrimSpace(client.DeviceType)
+	stream["device_os"] = strings.TrimSpace(client.OS)
+}
+
 func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]byte, error) {
 	// Pause detection thresholds
 	const heartbeatEndedThreshold = 25 * time.Second
 	const transportPauseThreshold = 30 * time.Second
 	const transportHideThreshold = 60 * time.Second
 	now := time.Now()
+	clientsByID := make(map[string]models.Client)
+	if h.clientsService != nil {
+		for _, client := range h.clientsService.List() {
+			clientsByID[client.ID] = client
+		}
+	}
 
 	// Get allowed profile IDs for this account (for filtering)
 	scopedUsers := h.getScopedUsers(isAdmin, accountID)
@@ -2267,6 +2315,9 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 			var position, percent float64
 			mediaType := session.MediaMetadata.MediaType
 			title := session.MediaMetadata.Title
+			if mediaType == "episode" && session.MediaMetadata.SeriesName != "" {
+				title = session.MediaMetadata.SeriesName
+			}
 			episodeName := session.MediaMetadata.EpisodeName
 			seasonNumber := session.MediaMetadata.SeasonNumber
 			episodeNumber := session.MediaMetadata.EpisodeNumber
@@ -2316,6 +2367,7 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 				"id":               session.ID,
 				"type":             "hls",
 				"is_live":          session.IsLive,
+				"service_type":     dashboardStreamServiceType(session.IsLive, session.Path, session.OriginalPath),
 				"path":             session.Path,
 				"original_path":    session.OriginalPath,
 				"filename":         filename,
@@ -2345,6 +2397,7 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 				"posterUrl":      posterURL,
 				"externalIds":    externalIDs,
 			}
+			addDashboardDeviceInfo(hlsStreamData, session.ClientID, clientsByID)
 			// Prefer fresh progress heartbeats; once they go stale (e.g. a client
 			// stops scrobbling after crossing the 90% watched threshold) fall back
 			// to raw transport activity so the dashboard keeps advancing via
@@ -2414,6 +2467,9 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 		var position, percent, duration float64
 		mediaType := stream.MediaMetadata.MediaType
 		title := stream.MediaMetadata.Title
+		if mediaType == "episode" && stream.MediaMetadata.SeriesName != "" {
+			title = stream.MediaMetadata.SeriesName
+		}
 		episodeName := stream.MediaMetadata.EpisodeName
 		seasonNumber := stream.MediaMetadata.SeasonNumber
 		episodeNumber := stream.MediaMetadata.EpisodeNumber
@@ -2448,11 +2504,13 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 			"id":               stream.ID,
 			"type":             "direct",
 			"is_live":          streamMetadataIsLive(stream.MediaMetadata, stream.Path),
+			"service_type":     dashboardStreamServiceType(streamMetadataIsLive(stream.MediaMetadata, stream.Path), stream.Path),
 			"path":             stream.Path,
 			"filename":         stream.Filename,
 			"item_id":          stream.MediaMetadata.ItemID,
 			"profile_id":       stream.ProfileID,
 			"profile_name":     stream.ProfileName,
+			"account_id":       stream.AccountID,
 			"client_ip":        stream.ClientIP,
 			"created_at":       stream.StartTime,
 			"last_access":      stream.LastActivity,
@@ -2474,6 +2532,7 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 			"posterUrl":      posterURL,
 			"externalIds":    externalIDs,
 		}
+		addDashboardDeviceInfo(streamData, stream.ClientID, clientsByID)
 		// Prefer fresh progress heartbeats; once they go stale (e.g. a client
 		// stops scrobbling after crossing the 90% watched threshold) fall back to
 		// raw transport activity so the dashboard keeps advancing via
@@ -2523,7 +2582,7 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 	liveUsage, liveUsageByUser, liveUsageBuckets := h.buildDashboardLiveUsage(isAdmin, scopedUsers, allowedProfileIDs)
 
 	// Build VOD stream usage by account
-	vodUsageByAccount := h.buildVODStreamUsage(isAdmin, scopedUsers, allowedProfileIDs)
+	vodUsageByAccount := h.buildVODStreamUsage(isAdmin, scopedUsers, allowedProfileIDs, streams)
 
 	// Global VOD stream limit
 	var globalVODLimit int
@@ -2532,7 +2591,7 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 			globalVODLimit = cfg.Playback.MaxConcurrentStreams
 		}
 	}
-	globalVODCurrent := tracker.CountPlaybackSlots()
+	globalVODCurrent := countDashboardVODStreams(streams)
 
 	return json.Marshal(map[string]interface{}{
 		"streams":           streams,
@@ -2666,6 +2725,24 @@ func streamMetadataIsLive(meta StreamMediaMetadata, path string) bool {
 
 	itemID := strings.ToLower(strings.TrimSpace(meta.ItemID))
 	return strings.Contains(itemID, "/live/") || strings.Contains(strings.ToLower(strings.TrimSpace(path)), "/live/")
+}
+
+// dashboardStreamServiceType returns the playback source category shown by the
+// active-stream dashboard. Live TV is intentionally labelled "stream" while
+// VOD paths resolve to the two searchable playback services.
+func dashboardStreamServiceType(isLive bool, paths ...string) string {
+	if isLive {
+		return "stream"
+	}
+	for _, sourcePath := range paths {
+		normalized := strings.ToLower(strings.TrimSpace(sourcePath))
+		normalized = strings.TrimPrefix(normalized, "/")
+		normalized = strings.TrimPrefix(normalized, "webdav/")
+		if strings.HasPrefix(normalized, "debrid/") || strings.Contains(normalized, "/debrid/") {
+			return "debrid"
+		}
+	}
+	return "usenet"
 }
 
 func streamExternalIDs(itemID string, ids map[string]string) map[string]string {
@@ -6798,6 +6875,7 @@ type ProfileWithPinStatus struct {
 	HasIcon            bool      `json:"hasIcon"`
 	IsKidsProfile      bool      `json:"isKidsProfile"`
 	AllowShareLinks    bool      `json:"allowShareLinks"`
+	ActivityPrivacy    string    `json:"activityPrivacy"`
 	KidsMode           string    `json:"kidsMode,omitempty"`
 	KidsMaxRating      string    `json:"kidsMaxRating,omitempty"`
 	KidsMaxMovieRating string    `json:"kidsMaxMovieRating,omitempty"`
@@ -6833,6 +6911,7 @@ func (h *AdminUIHandler) GetProfiles(w http.ResponseWriter, r *http.Request) {
 			HasIcon:            u.HasIcon(),
 			IsKidsProfile:      u.IsKidsProfile,
 			AllowShareLinks:    u.AllowShareLinks,
+			ActivityPrivacy:    models.NormalizeActivityPrivacy(u.ActivityPrivacy),
 			KidsMode:           u.KidsMode,
 			KidsMaxRating:      u.KidsMaxRating,
 			KidsMaxMovieRating: u.KidsMaxMovieRating,
@@ -6899,6 +6978,7 @@ func (h *AdminUIHandler) SetProfilePin(w http.ResponseWriter, r *http.Request) {
 		HasPin:             user.HasPin(),
 		HasIcon:            user.HasIcon(),
 		IsKidsProfile:      user.IsKidsProfile,
+		ActivityPrivacy:    models.NormalizeActivityPrivacy(user.ActivityPrivacy),
 		KidsMode:           user.KidsMode,
 		KidsMaxRating:      user.KidsMaxRating,
 		KidsMaxMovieRating: user.KidsMaxMovieRating,
@@ -6945,6 +7025,7 @@ func (h *AdminUIHandler) ClearProfilePin(w http.ResponseWriter, r *http.Request)
 		HasPin:             user.HasPin(),
 		HasIcon:            user.HasIcon(),
 		IsKidsProfile:      user.IsKidsProfile,
+		ActivityPrivacy:    models.NormalizeActivityPrivacy(user.ActivityPrivacy),
 		KidsMode:           user.KidsMode,
 		KidsMaxRating:      user.KidsMaxRating,
 		KidsMaxMovieRating: user.KidsMaxMovieRating,
@@ -7805,6 +7886,49 @@ func (h *AdminUIHandler) SetProfileAllowShareLinks(w http.ResponseWriter, r *htt
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "share permission updated"})
+}
+
+// SetProfileActivityPrivacy updates a profile's privacy choice for shared
+// server activity shelves.
+func (h *AdminUIHandler) SetProfileActivityPrivacy(w http.ResponseWriter, r *http.Request) {
+	if h.usersService == nil {
+		http.Error(w, "Users service not available", http.StatusInternalServerError)
+		return
+	}
+
+	profileID := strings.TrimSpace(r.URL.Query().Get("profileId"))
+	if profileID == "" {
+		http.Error(w, "profileId parameter required", http.StatusBadRequest)
+		return
+	}
+	if ok, _ := h.requireProfileScope(w, r, profileID); !ok {
+		return
+	}
+
+	var req struct {
+		ActivityPrivacy string `json:"activityPrivacy"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		http.Error(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	profile, err := h.usersService.SetActivityPrivacy(profileID, req.ActivityPrivacy)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, users.ErrUserNotFound) {
+			status = http.StatusNotFound
+		} else if errors.Is(err, users.ErrActivityPrivacy) {
+			status = http.StatusBadRequest
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(profile)
 }
 
 // RenameAccountRequest represents a request to rename an account
@@ -10034,8 +10158,15 @@ func (h *AdminUIHandler) ToolsPage(w http.ResponseWriter, r *http.Request) {
 	}
 	usersList := h.getScopedUsers(isAdmin, accountID)
 
+	currentPath := basePath + "/tools"
+	if strings.HasSuffix(r.URL.Path, "/tasks") {
+		currentPath = basePath + "/tasks"
+	} else if strings.HasSuffix(r.URL.Path, "/integrations") {
+		currentPath = basePath + "/integrations"
+	}
+
 	data := AdminPageData{
-		CurrentPath:    basePath + "/tools",
+		CurrentPath:    currentPath,
 		BasePath:       basePath,
 		ServerBasePath: h.serverBasePath,
 		IsAdmin:        isAdmin,
@@ -10705,6 +10836,20 @@ func (h *AdminUIHandler) ListLocalMediaLibraries(w http.ResponseWriter, r *http.
 			libraries = append(libraries, models.LocalMediaLibrary{ID: remote.ID, Name: remote.Name, Type: remote.Type, CreatedAt: remote.CreatedAt, UpdatedAt: remote.UpdatedAt, LastScanStartedAt: remote.LastSyncStartedAt, LastScanFinishedAt: remote.LastSyncFinishedAt, LastScanStatus: remote.LastSyncStatus, LastScanError: remote.LastSyncError, LastScanDiscovered: remote.LastSyncTotal, LastScanTotal: remote.LastSyncTotal, LastScanMatched: remote.LastSyncTotal, SourceType: remote.Provider, SourceName: strings.Title(remote.Provider), SourceServerName: remote.ServerName})
 		}
 	}
+	if h.libraryAccessService != nil {
+		policies, accessErr := h.libraryAccessService.List(r.Context())
+		if accessErr != nil {
+			http.Error(w, accessErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		for i := range libraries {
+			policy, exists := policies[libraries[i].ID]
+			if !exists {
+				policy = models.LibraryAccessPolicy{LibraryID: libraries[i].ID, AccessMode: models.LibraryAccessModeRestricted, AllowedAccountIDs: []string{}, AllowedProfileIDs: []string{}}
+			}
+			libraries[i].Access = &policy
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(libraries)
 }
@@ -10719,6 +10864,7 @@ func (h *AdminUIHandler) CreateLocalMediaLibrary(w http.ResponseWriter, r *http.
 		AccountID         string `json:"accountId"`
 		ServerID          string `json:"serverId"`
 		ServerName        string `json:"serverName"`
+		ServerURL         string `json:"serverUrl"`
 		ExternalLibraryID string `json:"externalLibraryId"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
@@ -10730,10 +10876,17 @@ func (h *AdminUIHandler) CreateLocalMediaLibrary(w http.ResponseWriter, r *http.
 			http.Error(w, "remote media service unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		library, err := h.remoteMediaService.CreateLibrary(r.Context(), models.RemoteMediaLibraryCreateInput{Name: input.Name, Type: input.Type, Provider: input.Provider, AccountID: input.AccountID, ServerID: input.ServerID, ServerName: input.ServerName, ExternalLibraryID: input.ExternalLibraryID})
+		library, err := h.remoteMediaService.CreateLibrary(r.Context(), models.RemoteMediaLibraryCreateInput{Name: input.Name, Type: input.Type, Provider: input.Provider, AccountID: input.AccountID, ServerID: input.ServerID, ServerName: input.ServerName, ServerURL: input.ServerURL, ExternalLibraryID: input.ExternalLibraryID})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
+		}
+		if h.libraryAccessService != nil {
+			if err := h.libraryAccessService.Set(r.Context(), models.LibraryAccessPolicy{LibraryID: library.ID, AccessMode: models.LibraryAccessModeRestricted}); err != nil {
+				_ = h.remoteMediaService.DeleteLibrary(r.Context(), library.ID)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(library)
@@ -10744,8 +10897,56 @@ func (h *AdminUIHandler) CreateLocalMediaLibrary(w http.ResponseWriter, r *http.
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if h.libraryAccessService != nil {
+		if err := h.libraryAccessService.Set(r.Context(), models.LibraryAccessPolicy{LibraryID: library.ID, AccessMode: models.LibraryAccessModeRestricted}); err != nil {
+			_ = h.localMediaService.DeleteLibrary(r.Context(), library.ID)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(library)
+}
+
+func (h *AdminUIHandler) SetLibraryAccess(w http.ResponseWriter, r *http.Request) {
+	if !h.requireLocalMediaAdmin(w, r) {
+		return
+	}
+	if h.libraryAccessService == nil {
+		http.Error(w, "library access service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	libraryID := strings.TrimSpace(mux.Vars(r)["libraryID"])
+	exists := false
+	if library, _ := h.localMediaService.GetLibrary(r.Context(), libraryID); library != nil {
+		exists = true
+	}
+	if !exists && h.remoteMediaService != nil {
+		if library, _ := h.remoteMediaService.GetLibrary(r.Context(), libraryID); library != nil {
+			exists = true
+		}
+	}
+	if !exists {
+		http.Error(w, "library not found", http.StatusNotFound)
+		return
+	}
+	var policy models.LibraryAccessPolicy
+	if err := json.NewDecoder(r.Body).Decode(&policy); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	policy.LibraryID = libraryID
+	if err := h.libraryAccessService.Set(r.Context(), policy); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	saved, err := h.libraryAccessService.Get(r.Context(), libraryID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(saved)
 }
 
 func (h *AdminUIHandler) UpdateLocalMediaLibrary(w http.ResponseWriter, r *http.Request) {
@@ -10956,6 +11157,58 @@ func (h *AdminUIHandler) DiscoverRemoteMediaLibraries(w http.ResponseWriter, r *
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(libraries)
+}
+
+func (h *AdminUIHandler) DiscoverRemoteMediaServers(w http.ResponseWriter, r *http.Request) {
+	if !h.requireLocalMediaAdmin(w, r) {
+		return
+	}
+	if h.remoteMediaService == nil {
+		http.Error(w, "remote media service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if !strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("provider")), models.MediaSourcePlex) {
+		http.Error(w, "server discovery is only available for Plex", http.StatusBadRequest)
+		return
+	}
+	servers, err := h.remoteMediaService.DiscoverPlexServers(r.URL.Query().Get("accountId"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(servers)
+}
+
+func (h *AdminUIHandler) VerifyRemoteMediaServer(w http.ResponseWriter, r *http.Request) {
+	if !h.requireLocalMediaAdmin(w, r) {
+		return
+	}
+	if h.remoteMediaService == nil {
+		http.Error(w, "remote media service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var input struct {
+		Provider  string `json:"provider"`
+		AccountID string `json:"accountId"`
+		ServerID  string `json:"serverId"`
+		ServerURL string `json:"serverUrl"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if !strings.EqualFold(strings.TrimSpace(input.Provider), models.MediaSourcePlex) {
+		http.Error(w, "server verification is only available for Plex", http.StatusBadRequest)
+		return
+	}
+	verified, err := h.remoteMediaService.VerifyPlexServer(r.Context(), input.AccountID, input.ServerID, input.ServerURL)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(verified)
 }
 
 func (h *AdminUIHandler) SearchLocalMediaMetadata(w http.ResponseWriter, r *http.Request) {

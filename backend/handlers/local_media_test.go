@@ -14,6 +14,7 @@ import (
 	"novastream/config"
 	"novastream/internal/auth"
 	"novastream/models"
+	"novastream/services/libraryaccess"
 	"novastream/services/localmedia"
 
 	"github.com/gorilla/mux"
@@ -177,6 +178,30 @@ type fakeLocalMediaUsersProvider struct {
 	allowed bool
 	user    models.User
 	userOK  bool
+}
+
+type fakeLibraryAccessRepo struct {
+	policies map[string]models.LibraryAccessPolicy
+}
+
+func (f *fakeLibraryAccessRepo) Get(_ context.Context, libraryID string) (*models.LibraryAccessPolicy, error) {
+	policy, ok := f.policies[libraryID]
+	if !ok {
+		return nil, nil
+	}
+	copy := policy
+	return &copy, nil
+}
+func (f *fakeLibraryAccessRepo) List(_ context.Context) (map[string]models.LibraryAccessPolicy, error) {
+	return f.policies, nil
+}
+func (f *fakeLibraryAccessRepo) Set(_ context.Context, policy models.LibraryAccessPolicy) error {
+	f.policies[policy.LibraryID] = policy
+	return nil
+}
+func (f *fakeLibraryAccessRepo) Delete(_ context.Context, libraryID string) error {
+	delete(f.policies, libraryID)
+	return nil
 }
 
 func (f fakeLocalMediaUsersProvider) BelongsToAccount(profileID, accountID string) bool {
@@ -382,6 +407,43 @@ func TestLocalMediaHandlerListLibrariesEmpty(t *testing.T) {
 	}
 }
 
+func TestLocalMediaHandlerListLibrariesFiltersDeniedLibraries(t *testing.T) {
+	handler := NewLocalMediaHandler(&fakeLocalMediaPlaybackService{libraries: []models.LocalMediaLibrary{{ID: "allowed"}, {ID: "denied"}}}, fakeLocalMediaUsersProvider{}, false)
+	handler.SetLibraryAccessService(libraryaccess.New(&fakeLibraryAccessRepo{policies: map[string]models.LibraryAccessPolicy{
+		"allowed": {LibraryID: "allowed", AccessMode: models.LibraryAccessModeRestricted, AllowedAccountIDs: []string{"acct1"}},
+		"denied":  {LibraryID: "denied", AccessMode: models.LibraryAccessModeRestricted, AllowedAccountIDs: []string{"acct2"}},
+	}}, nil, nil))
+	req := httptest.NewRequest(http.MethodGet, "/api/library/libraries", nil)
+	req = req.WithContext(context.WithValue(req.Context(), auth.ContextKeyAccountID, "acct1"))
+	rec := httptest.NewRecorder()
+	handler.ListLibraries(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var libraries []models.LocalMediaLibrary
+	if err := json.NewDecoder(rec.Body).Decode(&libraries); err != nil {
+		t.Fatal(err)
+	}
+	if len(libraries) != 1 || libraries[0].ID != "allowed" {
+		t.Fatalf("unexpected libraries: %+v", libraries)
+	}
+}
+
+func TestLocalMediaHandlerListGroupsRejectsForeignProfile(t *testing.T) {
+	handler := NewLocalMediaHandler(&fakeLocalMediaPlaybackService{groups: &models.LocalMediaGroupListResult{}}, fakeLocalMediaUsersProvider{allowed: false}, false)
+	handler.SetLibraryAccessService(libraryaccess.New(&fakeLibraryAccessRepo{policies: map[string]models.LibraryAccessPolicy{
+		"lib1": {LibraryID: "lib1", AccessMode: models.LibraryAccessModeAll},
+	}}, nil, nil))
+	req := httptest.NewRequest(http.MethodGet, "/api/library/libraries/lib1/groups?profileId=foreign", nil)
+	req = mux.SetURLVars(req, map[string]string{"libraryID": "lib1"})
+	req = req.WithContext(context.WithValue(req.Context(), auth.ContextKeyAccountID, "acct1"))
+	rec := httptest.NewRecorder()
+	handler.ListGroups(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestLocalMediaHandlerListGroups(t *testing.T) {
 	service := &fakeLocalMediaPlaybackService{
 		groups: &models.LocalMediaGroupListResult{
@@ -482,5 +544,40 @@ func TestLocalMediaHandlerFindMatches(t *testing.T) {
 	}
 	if len(matches) != 1 || matches[0].LibraryID != "lib1" || matches[0].Group.ID != "movie:tmdb:movie:123" {
 		t.Fatalf("unexpected matches: %+v", matches)
+	}
+}
+
+func TestLocalMediaHandlerFindMatchesEnforcesSelectedProfileForMasterAccount(t *testing.T) {
+	handler := NewLocalMediaHandler(&fakeLocalMediaPlaybackService{
+		matches: []models.LocalMediaMatchedGroup{{
+			LibraryID:   "lib1",
+			LibraryName: "Movies",
+			Group:       models.LocalMediaItemGroup{ID: "movie:tmdb:123"},
+		}},
+	}, fakeLocalMediaUsersProvider{allowed: true}, true)
+	handler.SetLibraryAccessService(libraryaccess.New(&fakeLibraryAccessRepo{policies: map[string]models.LibraryAccessPolicy{
+		"lib1": {
+			LibraryID:         "lib1",
+			AccessMode:        models.LibraryAccessModeRestricted,
+			AllowedProfileIDs: []string{"godver3"},
+		},
+	}}, nil, nil))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/library/matches?mediaType=movie&tmdbId=123&profileId=sandi", nil)
+	ctx := context.WithValue(req.Context(), auth.ContextKeyAccountID, "master-account")
+	ctx = context.WithValue(ctx, auth.ContextKeyIsMaster, true)
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+	handler.FindMatches(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var matches []models.LocalMediaMatchedGroup
+	if err := json.NewDecoder(rec.Body).Decode(&matches); err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("master account's denied active profile saw matches: %+v", matches)
 	}
 }

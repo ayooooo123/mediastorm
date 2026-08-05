@@ -20,12 +20,18 @@ import (
 // StreamTracker tracks active video streams for monitoring
 type StreamTracker struct {
 	streams          map[string]*TrackedStream
+	recentlyEnded    map[string]recentlyEndedStream
 	stopPlaybacks    map[string]time.Time
 	migrationSignals map[string]playbackMigrationSignal
 	mu               sync.RWMutex
 	counter          uint64
 	playbackObserver PlaybackActivityObserver
 	autoSeeder       playbackAutoSeeder
+}
+
+type recentlyEndedStream struct {
+	stream  *TrackedStream
+	endedAt time.Time
 }
 
 type playbackMigrationSignal struct {
@@ -56,6 +62,7 @@ type TrackedStream struct {
 	Path            string
 	Filename        string
 	ClientIP        string
+	ClientID        string
 	ProfileID       string
 	ProfileName     string
 	AccountID       string
@@ -228,6 +235,7 @@ var globalStreamTracker = &StreamTracker{
 
 const playbackStopSignalDuration = 2 * time.Minute
 const playbackMigrationSignalDuration = 30 * time.Second
+const playbackNotificationTeardownGrace = 30 * time.Second
 
 // GetStreamTracker returns the global stream tracker
 func GetStreamTracker() *StreamTracker {
@@ -262,6 +270,42 @@ func (t *StreamTracker) SetPlaybackAutoSeeder(seeder playbackAutoSeeder) {
 	t.mu.Unlock()
 }
 
+// AssociateClientWithPlayback binds the authenticated app client sending a
+// playback heartbeat to its active direct transport connections. Older native
+// app bundles did not include clientId in the media URL, even though their API
+// heartbeats carry X-Client-ID, so the dashboard could not resolve a device.
+func (t *StreamTracker) AssociateClientWithPlayback(userID string, update models.PlaybackProgressUpdate, clientID string) int {
+	if t == nil || strings.TrimSpace(clientID) == "" {
+		return 0
+	}
+	targetKey := playbackControlKey(userID, update.MediaType, update.ItemID)
+	if targetKey == "" {
+		return 0
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	matched := 0
+	for _, stream := range t.streams {
+		matches := false
+		for _, key := range streamPlaybackControlKeys(stream) {
+			if key == targetKey {
+				matches = true
+				break
+			}
+		}
+		if !matches {
+			continue
+		}
+		if update.SourcePath != "" && normalizeStreamFailurePath(stream.Path) != normalizeStreamFailurePath(update.SourcePath) {
+			continue
+		}
+		stream.ClientID = strings.TrimSpace(clientID)
+		matched++
+	}
+	return matched
+}
+
 // ObservePlaybackActivity matches a player heartbeat to the most recently
 // active direct stream before forwarding it to the notification observer.
 func (t *StreamTracker) ObservePlaybackActivity(userID string, update models.PlaybackProgressUpdate, percentWatched float64) int {
@@ -289,6 +333,32 @@ func (t *StreamTracker) ObservePlaybackActivity(userID string, update models.Pla
 		}
 		if best == nil || stream.LastActivity.After(best.LastActivity) {
 			best = stream
+		}
+	}
+	if best == nil {
+		now := time.Now()
+		var bestEndedAt time.Time
+		for _, ended := range t.recentlyEnded {
+			if ended.stream == nil || now.Sub(ended.endedAt) > playbackNotificationTeardownGrace {
+				continue
+			}
+			matches := false
+			for _, key := range streamPlaybackControlKeys(ended.stream) {
+				if key == targetKey {
+					matches = true
+					break
+				}
+			}
+			if !matches {
+				continue
+			}
+			if update.SourcePath != "" && normalizeStreamFailurePath(ended.stream.Path) != normalizeStreamFailurePath(update.SourcePath) {
+				continue
+			}
+			if best == nil || ended.endedAt.After(bestEndedAt) {
+				best = ended.stream
+				bestEndedAt = ended.endedAt
+			}
 		}
 	}
 	if best != nil {
@@ -373,6 +443,7 @@ func (t *StreamTracker) StartStreamWithAccount(r *http.Request, path string, con
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.pruneStopSignalsLocked()
+	t.pruneRecentlyEndedLocked(time.Now())
 
 	id := generateStreamID(atomic.AddUint64(&t.counter, 1))
 
@@ -399,6 +470,7 @@ func (t *StreamTracker) StartStreamWithAccount(r *http.Request, path string, con
 		Path:            path,
 		Filename:        filename,
 		ClientIP:        clientIP,
+		ClientID:        requestClientID(r),
 		ProfileID:       profileID,
 		ProfileName:     profileName,
 		AccountID:       accountID,
@@ -905,6 +977,7 @@ func (t *StreamTracker) GetStream(id string) (*TrackedStream, bool) {
 		Path:           stream.Path,
 		Filename:       stream.Filename,
 		ClientIP:       stream.ClientIP,
+		ClientID:       stream.ClientID,
 		ProfileID:      stream.ProfileID,
 		ProfileName:    stream.ProfileName,
 		AccountID:      stream.AccountID,
@@ -1023,7 +1096,8 @@ func (t *StreamTracker) EndStream(id string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if _, ok := t.streams[id]; ok {
+	if stream, ok := t.streams[id]; ok {
+		t.rememberEndedStreamLocked(stream, time.Now())
 		delete(t.streams, id)
 	}
 }
@@ -1041,11 +1115,31 @@ func (t *StreamTracker) TerminateStream(id string) bool {
 		t.mu.Unlock()
 		return false
 	}
+	t.rememberEndedStreamLocked(stream, time.Now())
 	delete(t.streams, id)
 	t.mu.Unlock()
 
 	cancel()
 	return true
+}
+
+func (t *StreamTracker) rememberEndedStreamLocked(stream *TrackedStream, now time.Time) {
+	if stream == nil {
+		return
+	}
+	t.pruneRecentlyEndedLocked(now)
+	if t.recentlyEnded == nil {
+		t.recentlyEnded = make(map[string]recentlyEndedStream)
+	}
+	t.recentlyEnded[stream.ID] = recentlyEndedStream{stream: stream, endedAt: now}
+}
+
+func (t *StreamTracker) pruneRecentlyEndedLocked(now time.Time) {
+	for id, ended := range t.recentlyEnded {
+		if ended.stream == nil || now.Sub(ended.endedAt) > playbackNotificationTeardownGrace {
+			delete(t.recentlyEnded, id)
+		}
+	}
 }
 
 // GetActiveStreams returns all currently active streams
@@ -1069,6 +1163,7 @@ func (t *StreamTracker) GetActiveStreams() []*TrackedStream {
 			Path:           s.Path,
 			Filename:       s.Filename,
 			ClientIP:       s.ClientIP,
+			ClientID:       s.ClientID,
 			ProfileID:      s.ProfileID,
 			ProfileName:    s.ProfileName,
 			AccountID:      s.AccountID,

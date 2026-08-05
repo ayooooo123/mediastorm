@@ -162,6 +162,11 @@ type historyServiceInterface interface {
 	ListPlaybackProgress(userID string) ([]models.PlaybackProgress, error)
 }
 
+type sharedShelfHistoryService interface {
+	AggregatePopularTitles(eligibleUsers map[string]bool, windowDays, minViews int) []models.PopularTitle
+	ListRecentWatches(eligibleUsers map[string]models.User, windowDays int, maxPerProfile int) []models.RecentWatch
+}
+
 // watchlistLister provides access to a user's watchlist for recommendations.
 type watchlistLister interface {
 	List(userID string) ([]models.WatchlistItem, error)
@@ -170,6 +175,10 @@ type watchlistLister interface {
 // usersServiceInterface provides access to user profiles for kids filtering.
 type usersServiceInterface interface {
 	Get(id string) (models.User, bool)
+}
+
+type sharedShelfUsersService interface {
+	ListAll() []models.User
 }
 
 type accountsServiceInterface interface {
@@ -194,6 +203,11 @@ type MetadataHandler struct {
 	personalizedMu       sync.Mutex
 	personalizedCache    map[string]personalizedRecommendationsCacheEntry
 	personalizedInFlight map[string]*personalizedRecommendationsBuild
+
+	popularCacheMu       sync.Mutex
+	popularCache         *cachedPopularOnServer
+	recentWatchesCacheMu sync.Mutex
+	recentWatchesCache   *cachedRecentlyWatched
 	stremioCatalogMu     sync.Mutex
 	stremioCatalogCache  map[string]stremioShelfCatalogCacheEntry
 }
@@ -543,6 +557,7 @@ func (h *MetadataHandler) SeriesDetails(w http.ResponseWriter, r *http.Request) 
 		Year:       trimAndParseInt(query.Get("year")),
 		TVDBID:     trimAndParseInt64(query.Get("tvdbId")),
 		TMDBID:     trimAndParseInt64(query.Get("tmdbId")),
+		IMDBID:     strings.TrimSpace(query.Get("imdbId")),
 		SeasonType: strings.ToLower(strings.TrimSpace(query.Get("seasonType"))),
 	}
 
@@ -1096,35 +1111,32 @@ func filterWatchedItems(items []models.TrendingItem, userID string, historySvc h
 	result := make([]models.TrendingItem, 0, len(items))
 	filteredCount := 0
 	for _, item := range items {
-		// Build item ID for watch history lookup
-		itemID := buildItemIDForHistory(item)
-		if itemID == "" {
-			// Can't determine ID, include by default
-			result = append(result, item)
-			continue
-		}
-
-		mediaType := item.Title.MediaType
-		if mediaType == "" {
-			// Unknown type - include by default
-			result = append(result, item)
-			continue
-		}
-
-		// Check if item is marked as watched
-		watchItem, _ := historySvc.GetWatchHistoryItem(userID, mediaType, itemID)
-		if watchItem == nil || !watchItem.Watched {
+		if !isTrendingItemWatched(item, userID, historySvc) {
 			// Not watched or not found - include it
 			result = append(result, item)
 		} else {
 			filteredCount++
 			if filteredCount <= 3 {
-				log.Printf("[hideWatched] filtered %s: %s (itemID=%s)", mediaType, item.Title.Name, itemID)
+				itemID := buildItemIDForHistory(item)
+				log.Printf("[hideWatched] filtered %s: %s (itemID=%s)", item.Title.MediaType, item.Title.Name, itemID)
 			}
 		}
 	}
 	log.Printf("[hideWatched] filter result: %d/%d items kept (filtered %d)", len(result), len(items), filteredCount)
 	return result
+}
+
+func isTrendingItemWatched(item models.TrendingItem, userID string, historySvc historyServiceInterface) bool {
+	if userID == "" || historySvc == nil {
+		return false
+	}
+	itemID := buildItemIDForHistory(item)
+	mediaType := item.Title.MediaType
+	if itemID == "" || mediaType == "" {
+		return false
+	}
+	watchItem, _ := historySvc.GetWatchHistoryItem(userID, mediaType, itemID)
+	return watchItem != nil && watchItem.Watched
 }
 
 // buildItemIDForHistory constructs the item ID used in watch history from a TrendingItem.
@@ -2516,4 +2528,415 @@ func (h *MetadataHandler) GetProgress(w http.ResponseWriter, r *http.Request) {
 	snapshot := h.Service.GetProgressSnapshot()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(snapshot)
+}
+
+// cachedPopularOnServer holds a cached "Popular on This Server" response.
+type cachedPopularOnServer struct {
+	items     []models.TrendingItem
+	total     int
+	key       string
+	expiresAt time.Time
+}
+
+// cachedRecentlyWatched holds a cached "Recently Watched" response.
+type cachedRecentlyWatched struct {
+	items     []models.TrendingItem
+	total     int
+	key       string
+	expiresAt time.Time
+}
+
+// PopularOnServerResponse is the JSON payload for the "Popular on This Server" shelf.
+type PopularOnServerResponse struct {
+	Items []models.TrendingItem `json:"items"`
+	Total int                   `json:"total"`
+}
+
+// PopularOnServer handles GET /api/discover/popular-on-server
+func (h *MetadataHandler) PopularOnServer(w http.ResponseWriter, r *http.Request) {
+	service := h.serviceForUser("")
+	windowDays := 90
+	minViews := 2
+	if h.CfgManager != nil {
+		cfg, err := h.CfgManager.Load()
+		if err == nil && cfg.HomeShelves.PopularOnServerWindowDays >= 7 && cfg.HomeShelves.PopularOnServerWindowDays <= 365 {
+			windowDays = cfg.HomeShelves.PopularOnServerWindowDays
+		}
+	}
+	windowDays = sharedShelfIntQuery(r, "activityWindowDays", 7, 365, windowDays)
+	minViews = sharedShelfIntQuery(r, "minimumProfiles", 1, 100, minViews)
+
+	historyService, historyOK := h.HistoryService.(sharedShelfHistoryService)
+	usersService, usersOK := h.UsersService.(sharedShelfUsersService)
+	if !historyOK || !usersOK {
+		h.writeSharedShelfResponse(w, r, service, nil, 0)
+		return
+	}
+
+	eligibleUsers, privacyKey := eligibleSharedShelfUsers(usersService.ListAll())
+	eligibleIDs := make(map[string]bool, len(eligibleUsers))
+	for id := range eligibleUsers {
+		eligibleIDs[id] = true
+	}
+	viewerUserID, hideWatched := sharedShelfViewerFilter(r)
+	offset, limit := sharedShelfPage(r, 20)
+	cacheKey := fmt.Sprintf("%s:%s:%t:%d:%d:%d:%d", privacyKey, viewerUserID, hideWatched, windowDays, minViews, offset, limit)
+
+	h.popularCacheMu.Lock()
+	if h.popularCache != nil && h.popularCache.key == cacheKey && h.popularCache.expiresAt.After(time.Now()) {
+		cached := h.popularCache
+		h.popularCacheMu.Unlock()
+		h.writeSharedShelfResponse(w, r, service, cached.items, cached.total)
+		return
+	}
+	h.popularCacheMu.Unlock()
+
+	popular := historyService.AggregatePopularTitles(eligibleIDs, windowDays, minViews)
+	if hideWatched {
+		filtered := make([]models.PopularTitle, 0, len(popular))
+		for _, item := range popular {
+			title := titleFromSharedShelfItem(item.ItemID, item.Name, item.MediaType, item.Year, item.ExternalIDs)
+			if !isTrendingItemWatched(models.TrendingItem{Title: title}, viewerUserID, h.HistoryService) {
+				filtered = append(filtered, item)
+			}
+		}
+		popular = filtered
+	}
+	total := len(popular)
+	if offset >= len(popular) {
+		popular = nil
+	} else {
+		popular = popular[offset:minInt(len(popular), offset+limit)]
+	}
+
+	items := parallelSharedShelfItems(r.Context(), popular, func(ctx context.Context, pt models.PopularTitle) models.TrendingItem {
+		title := titleFromSharedShelfItem(
+			pt.ItemID,
+			pt.Name,
+			pt.MediaType,
+			pt.Year,
+			pt.ExternalIDs,
+		)
+		title = enrichSharedShelfTitle(ctx, service, title)
+		title.CardSubtitle = fmt.Sprintf("%d %s", pt.WatchCount, pluralizeView(pt.WatchCount))
+		title.ForceTitleOverlay = true
+		return models.TrendingItem{Title: title, Rank: pt.WatchCount}
+	})
+
+	h.popularCacheMu.Lock()
+	h.popularCache = &cachedPopularOnServer{
+		items:     items,
+		total:     total,
+		key:       cacheKey,
+		expiresAt: time.Now().Add(10 * time.Minute),
+	}
+	h.popularCacheMu.Unlock()
+
+	h.writeSharedShelfResponse(w, r, service, items, total)
+}
+
+// RecentlyWatchedResponse uses the same item contract as every other home shelf.
+type RecentlyWatchedResponse struct {
+	Items []models.TrendingItem `json:"items"`
+	Total int                   `json:"total"`
+}
+
+// RecentlyWatched handles GET /api/discover/recently-watched.
+func (h *MetadataHandler) RecentlyWatched(w http.ResponseWriter, r *http.Request) {
+	service := h.serviceForUser("")
+	windowDays := 14
+	maxPerProfile := 3
+	if h.CfgManager != nil {
+		cfg, err := h.CfgManager.Load()
+		if err == nil && cfg.HomeShelves.RecentlyWatchedCapPerProfile > 0 && cfg.HomeShelves.RecentlyWatchedCapPerProfile <= 20 {
+			maxPerProfile = cfg.HomeShelves.RecentlyWatchedCapPerProfile
+		}
+	}
+	windowDays = sharedShelfIntQuery(r, "activityWindowDays", 1, 90, windowDays)
+	maxPerProfile = sharedShelfIntQuery(r, "maxItemsPerProfile", 1, 20, maxPerProfile)
+
+	historyService, historyOK := h.HistoryService.(sharedShelfHistoryService)
+	usersService, usersOK := h.UsersService.(sharedShelfUsersService)
+	if !historyOK || !usersOK {
+		h.writeSharedShelfResponse(w, r, service, nil, 0)
+		return
+	}
+
+	eligibleUsers, privacyKey := eligibleSharedShelfUsers(usersService.ListAll())
+	viewerUserID, hideWatched := sharedShelfViewerFilter(r)
+	offset, limit := sharedShelfPage(r, 20)
+	cacheKey := fmt.Sprintf("%s:%s:%t:%d:%d:%d:%d", privacyKey, viewerUserID, hideWatched, windowDays, maxPerProfile, offset, limit)
+
+	h.recentWatchesCacheMu.Lock()
+	if h.recentWatchesCache != nil && h.recentWatchesCache.key == cacheKey && h.recentWatchesCache.expiresAt.After(time.Now()) {
+		cached := h.recentWatchesCache
+		h.recentWatchesCacheMu.Unlock()
+		h.writeSharedShelfResponse(w, r, service, cached.items, cached.total)
+		return
+	}
+	h.recentWatchesCacheMu.Unlock()
+
+	recent := historyService.ListRecentWatches(eligibleUsers, windowDays, maxPerProfile)
+	if hideWatched {
+		filtered := make([]models.RecentWatch, 0, len(recent))
+		for _, watch := range recent {
+			title := recentWatchBaseTitle(watch)
+			if !isTrendingItemWatched(models.TrendingItem{Title: title}, viewerUserID, h.HistoryService) {
+				filtered = append(filtered, watch)
+			}
+		}
+		recent = filtered
+	}
+	total := len(recent)
+	if offset >= len(recent) {
+		recent = nil
+	} else {
+		recent = recent[offset:minInt(len(recent), offset+limit)]
+	}
+
+	type rankedRecentWatch struct {
+		Rank  int
+		Watch models.RecentWatch
+	}
+	ranked := make([]rankedRecentWatch, len(recent))
+	for i, watch := range recent {
+		ranked[i] = rankedRecentWatch{Rank: i + 1, Watch: watch}
+	}
+	items := parallelSharedShelfItems(r.Context(), ranked, func(ctx context.Context, rankedWatch rankedRecentWatch) models.TrendingItem {
+		watch := rankedWatch.Watch
+		title := recentWatchBaseTitle(watch)
+		title = enrichRecentWatchTitle(ctx, service, title, watch)
+		title.CardSubtitle = recentWatchSubtitle(watch)
+		title.ForceTitleOverlay = true
+		return models.TrendingItem{Title: title, Rank: rankedWatch.Rank}
+	})
+
+	h.recentWatchesCacheMu.Lock()
+	h.recentWatchesCache = &cachedRecentlyWatched{
+		items:     items,
+		total:     total,
+		key:       cacheKey,
+		expiresAt: time.Now().Add(5 * time.Minute),
+	}
+	h.recentWatchesCacheMu.Unlock()
+
+	h.writeSharedShelfResponse(w, r, service, items, total)
+}
+
+func eligibleSharedShelfUsers(users []models.User) (map[string]models.User, string) {
+	eligible := make(map[string]models.User)
+	keys := make([]string, 0, len(users))
+	for _, user := range users {
+		privacy := models.NormalizeActivityPrivacy(user.ActivityPrivacy)
+		if !user.SharesActivity() {
+			continue
+		}
+		user.ActivityPrivacy = privacy
+		eligible[user.ID] = user
+		keys = append(keys, user.ID+":"+privacy+":"+user.Name)
+	}
+	sort.Strings(keys)
+	return eligible, strings.Join(keys, "|")
+}
+
+func sharedShelfViewerFilter(r *http.Request) (string, bool) {
+	userID := strings.TrimSpace(r.URL.Query().Get("userId"))
+	hideWatched := userID != "" && strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("hideWatched")), "true")
+	return userID, hideWatched
+}
+
+func recentWatchBaseTitle(watch models.RecentWatch) models.Title {
+	mediaType := watch.MediaType
+	itemID := watch.ItemID
+	name := watch.Name
+	if watch.MediaType == "episode" {
+		mediaType = "series"
+		itemID = watch.SeriesID
+		name = watch.SeriesName
+	}
+	return titleFromSharedShelfItem(itemID, name, mediaType, 0, watch.ExternalIDs)
+}
+
+func sharedShelfPage(r *http.Request, fallback int) (int, int) {
+	offset := 0
+	if value, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("offset"))); err == nil && value > 0 {
+		offset = value
+	}
+	limit := fallback
+	if value, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("limit"))); err == nil && value > 0 {
+		limit = minInt(value, 100)
+	}
+	return offset, limit
+}
+
+func sharedShelfIntQuery(r *http.Request, key string, minimum, maximum, fallback int) int {
+	value, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get(key)))
+	if err != nil || value < minimum || value > maximum {
+		return fallback
+	}
+	return value
+}
+
+func titleFromSharedShelfItem(itemID, name, mediaType string, year int, externalIDs map[string]string) models.Title {
+	title := models.Title{
+		ID:        itemID,
+		Name:      name,
+		MediaType: mediaType,
+		Year:      year,
+		Overview:  "",
+		Language:  "",
+	}
+	if externalIDs != nil {
+		if tmdb, ok := externalIDs["tmdb"]; ok {
+			if id, err := strconv.ParseInt(tmdb, 10, 64); err == nil {
+				title.TMDBID = id
+			}
+		}
+		if imdb, ok := externalIDs["imdb"]; ok {
+			title.IMDBID = imdb
+		}
+		if tvdb, ok := externalIDs["tvdb"]; ok {
+			if id, err := strconv.ParseInt(tvdb, 10, 64); err == nil {
+				title.TVDBID = id
+			}
+		}
+	}
+	return title
+}
+
+func enrichSharedShelfTitle(ctx context.Context, service metadataService, title models.Title) models.Title {
+	if title.MediaType == "series" {
+		query := models.SeriesDetailsQuery{
+			TitleID: title.ID,
+			Name:    title.Name,
+			Year:    title.Year,
+			TVDBID:  title.TVDBID,
+			TMDBID:  title.TMDBID,
+			IMDBID:  title.IMDBID,
+		}
+		if details, err := service.SeriesDetails(ctx, query); err == nil && details != nil {
+			return details.Title
+		}
+	} else if title.MediaType == "movie" {
+		query := models.MovieDetailsQuery{
+			TitleID: title.ID,
+			TMDBID:  title.TMDBID,
+			IMDBID:  title.IMDBID,
+			Name:    title.Name,
+			Year:    title.Year,
+		}
+		if details, err := service.MovieDetails(ctx, query); err == nil && details != nil {
+			return *details
+		}
+	}
+	return title
+}
+
+func enrichRecentWatchTitle(
+	ctx context.Context,
+	service metadataService,
+	title models.Title,
+	watch models.RecentWatch,
+) models.Title {
+	if watch.MediaType != "episode" || title.MediaType != "series" {
+		return enrichSharedShelfTitle(ctx, service, title)
+	}
+
+	query := models.SeriesDetailsQuery{
+		TitleID: title.ID,
+		Name:    title.Name,
+		Year:    title.Year,
+		TVDBID:  title.TVDBID,
+		TMDBID:  title.TMDBID,
+		IMDBID:  title.IMDBID,
+	}
+	details, err := service.SeriesDetails(ctx, query)
+	if err != nil || details == nil {
+		return title
+	}
+
+	enriched := details.Title
+	for _, season := range details.Seasons {
+		if season.Number != watch.SeasonNumber {
+			continue
+		}
+		for _, episode := range season.Episodes {
+			if episode.EpisodeNumber == watch.EpisodeNumber && episode.Image != nil {
+				image := *episode.Image
+				enriched.CardImage = &image
+				return enriched
+			}
+		}
+	}
+	return enriched
+}
+
+func parallelSharedShelfItems[T any](
+	ctx context.Context,
+	source []T,
+	build func(context.Context, T) models.TrendingItem,
+) []models.TrendingItem {
+	items := make([]models.TrendingItem, len(source))
+	if len(source) == 0 {
+		return items
+	}
+
+	const maxConcurrentEnrichments = 6
+	semaphore := make(chan struct{}, maxConcurrentEnrichments)
+	var wg sync.WaitGroup
+	for i, sourceItem := range source {
+		wg.Add(1)
+		go func(index int, item T) {
+			defer wg.Done()
+			select {
+			case semaphore <- struct{}{}:
+				defer func() { <-semaphore }()
+			case <-ctx.Done():
+				return
+			}
+			items[index] = build(ctx, item)
+		}(i, sourceItem)
+	}
+	wg.Wait()
+	return items
+}
+
+func pluralizeView(count int) string {
+	if count == 1 {
+		return "view"
+	}
+	return "views"
+}
+
+func recentWatchSubtitle(watch models.RecentWatch) string {
+	label := watch.UserName + " watched"
+	if watch.MediaType == "episode" {
+		if watch.SeasonNumber > 0 || watch.EpisodeNumber > 0 {
+			label += fmt.Sprintf(" S%02dE%02d", watch.SeasonNumber, watch.EpisodeNumber)
+		}
+		if strings.TrimSpace(watch.Name) != "" {
+			label += " · " + strings.TrimSpace(watch.Name)
+		}
+	}
+	return label
+}
+
+func (h *MetadataHandler) writeSharedShelfResponse(
+	w http.ResponseWriter,
+	r *http.Request,
+	service metadataService,
+	items []models.TrendingItem,
+	total int,
+) {
+	if items == nil {
+		items = []models.TrendingItem{}
+	}
+	originalCount := len(items)
+	userID := strings.TrimSpace(r.URL.Query().Get("userId"))
+	items = h.filterTrendingByKids(r.Context(), userID, service, items)
+	if len(items) != originalCount {
+		total = len(items)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(PopularOnServerResponse{Items: items, Total: total})
 }

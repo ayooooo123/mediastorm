@@ -59,3 +59,56 @@ func TestBuildDashboardLiveUsageUsesConfiguredLiveSources(t *testing.T) {
 		t.Fatalf("Sports limit = %d, want 5", limits["Sports"])
 	}
 }
+
+func TestDashboardVODUsageIncludesHLSAndDirectButExcludesLive(t *testing.T) {
+	users := []models.User{
+		{ID: "profile-web", AccountID: "account-a"},
+		{ID: "profile-native", AccountID: "account-b"},
+		{ID: "profile-live", AccountID: "account-a"},
+	}
+	streams := []map[string]interface{}{
+		{
+			"type":       "hls",
+			"profile_id": "profile-web",
+			"is_live":    false,
+		},
+		{
+			"type":       "direct",
+			"profile_id": "profile-native",
+			"is_live":    false,
+		},
+		{
+			"type":       "hls",
+			"profile_id": "profile-live",
+			"is_live":    true,
+		},
+	}
+
+	if got := countDashboardVODStreams(streams); got != 2 {
+		t.Fatalf("countDashboardVODStreams() = %d, want 2", got)
+	}
+
+	byAccount := dashboardVODStreamsByAccount(streams, users)
+	if got := byAccount["account-a"]; got != 1 {
+		t.Fatalf("account-a VOD streams = %d, want 1", got)
+	}
+	if got := byAccount["account-b"]; got != 1 {
+		t.Fatalf("account-b VOD streams = %d, want 1", got)
+	}
+}
+
+func TestDashboardVODUsagePrefersTrackedAccountID(t *testing.T) {
+	streams := []map[string]interface{}{
+		{
+			"type":       "direct",
+			"profile_id": "missing-profile",
+			"account_id": "account-a",
+			"is_live":    false,
+		},
+	}
+
+	byAccount := dashboardVODStreamsByAccount(streams, nil)
+	if got := byAccount["account-a"]; got != 1 {
+		t.Fatalf("account-a VOD streams = %d, want 1", got)
+	}
+}

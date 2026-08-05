@@ -689,6 +689,7 @@ func normalizeScrapeResult(res ScrapeResult) models.NZBResult {
 		Link:        link,
 		DownloadURL: link,
 		SizeBytes:   res.SizeBytes,
+		PublishDate: res.PublishDate,
 		Categories:  nil,
 		Attributes:  map[string]string{},
 		ServiceType: models.ServiceTypeDebrid,
@@ -739,6 +740,7 @@ func normalizeScrapeResult(res ScrapeResult) models.NZBResult {
 		}
 		result.Attributes[key] = value
 	}
+	annotateDirectStreamCacheHint(result.Attributes)
 	return result
 }
 

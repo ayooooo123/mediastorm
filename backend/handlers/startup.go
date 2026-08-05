@@ -1005,7 +1005,12 @@ func isStartupFetchableCustomShelf(shelf models.ShelfConfig) bool {
 		_, _, ok := parseStartupDecadeShelfID(shelf.ID)
 		return ok
 	default:
-		return false
+		switch shelf.ID {
+		case "popular-on-server", "recently-watched":
+			return true
+		default:
+			return false
+		}
 	}
 }
 
@@ -1089,7 +1094,28 @@ func startupDisplayListQueryForShelf(shelf models.ShelfConfig, homeShelfLimit in
 		query.Set("lite", "true")
 		query.Set("artworkLimit", strconv.Itoa(minInt(limit, homeShelfLimit+startupExploreCollageItemCount)))
 	default:
-		return nil, false
+		switch shelf.ID {
+		case "popular-on-server":
+			query.Set("source", "popular-on-server")
+			if shelf.ActivityWindowDays > 0 {
+				query.Set("activityWindowDays", strconv.Itoa(shelf.ActivityWindowDays))
+			}
+			if shelf.MinimumProfiles > 0 {
+				query.Set("minimumProfiles", strconv.Itoa(shelf.MinimumProfiles))
+			}
+			return query, true
+		case "recently-watched":
+			query.Set("source", "recently-watched")
+			if shelf.ActivityWindowDays > 0 {
+				query.Set("activityWindowDays", strconv.Itoa(shelf.ActivityWindowDays))
+			}
+			if shelf.MaxItemsPerProfile > 0 {
+				query.Set("maxItemsPerProfile", strconv.Itoa(shelf.MaxItemsPerProfile))
+			}
+			return query, true
+		default:
+			return nil, false
+		}
 	}
 	return query, true
 }
@@ -1184,6 +1210,12 @@ func homeShelfSourceKey(shelf models.ShelfConfig) string {
 	case "genre", "decade", "collection-hub", "local-library":
 		return shelf.Type + ":" + shelf.ID
 	default:
+		switch shelf.ID {
+		case "popular-on-server":
+			return fmt.Sprintf("popular-on-server:%d:%d", shelf.ActivityWindowDays, shelf.MinimumProfiles)
+		case "recently-watched":
+			return fmt.Sprintf("recently-watched:%d:%d", shelf.ActivityWindowDays, shelf.MaxItemsPerProfile)
+		}
 		if strings.TrimSpace(shelf.ListURL) != "" {
 			return "mdblist:" + strings.TrimSpace(shelf.ListURL)
 		}
@@ -1368,27 +1400,30 @@ func slimTrendingItems(items []models.TrendingItem) []models.TrendingItem {
 		slim[i] = models.TrendingItem{
 			Rank: item.Rank,
 			Title: models.Title{
-				ID:              item.Title.ID,
-				Name:            item.Title.Name,
-				OriginalName:    item.Title.OriginalName,
-				Overview:        item.Title.Overview,
-				Year:            item.Title.Year,
-				Language:        item.Title.Language,
-				Poster:          item.Title.Poster,
-				TextPoster:      item.Title.TextPoster,
-				Backdrop:        item.Title.Backdrop,
-				TextBackdrop:    item.Title.TextBackdrop,
-				Backdrops:       item.Title.Backdrops,
-				MediaType:       item.Title.MediaType,
-				TVDBID:          item.Title.TVDBID,
-				IMDBID:          item.Title.IMDBID,
-				TMDBID:          item.Title.TMDBID,
-				Status:          item.Title.Status,
-				LifecycleStatus: item.Title.LifecycleStatus,
-				Theatrical:      item.Title.Theatrical,
-				HomeRelease:     item.Title.HomeRelease,
-				Certification:   item.Title.Certification,
-				Genres:          item.Title.Genres,
+				ID:                item.Title.ID,
+				Name:              item.Title.Name,
+				OriginalName:      item.Title.OriginalName,
+				Overview:          item.Title.Overview,
+				Year:              item.Title.Year,
+				Language:          item.Title.Language,
+				Poster:            item.Title.Poster,
+				TextPoster:        item.Title.TextPoster,
+				Backdrop:          item.Title.Backdrop,
+				TextBackdrop:      item.Title.TextBackdrop,
+				Backdrops:         item.Title.Backdrops,
+				MediaType:         item.Title.MediaType,
+				TVDBID:            item.Title.TVDBID,
+				IMDBID:            item.Title.IMDBID,
+				TMDBID:            item.Title.TMDBID,
+				Status:            item.Title.Status,
+				LifecycleStatus:   item.Title.LifecycleStatus,
+				Theatrical:        item.Title.Theatrical,
+				HomeRelease:       item.Title.HomeRelease,
+				Certification:     item.Title.Certification,
+				Genres:            item.Title.Genres,
+				CardSubtitle:      item.Title.CardSubtitle,
+				CardImage:         item.Title.CardImage,
+				ForceTitleOverlay: item.Title.ForceTitleOverlay,
 			},
 		}
 	}

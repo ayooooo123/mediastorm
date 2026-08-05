@@ -257,6 +257,17 @@ func TestAdminUIHandler_GetSchema(t *testing.T) {
 		t.Fatal("cleanPosters should be hidden from the admin settings schema")
 	}
 
+	filtering, ok := schema["filtering"].(map[string]interface{})
+	if !ok {
+		t.Fatal("schema missing filtering section")
+	}
+	regexNotice, _ := filtering["description"].(string)
+	for _, text := range []string{"Regex format:", `/\bREMUX\b/`, "/pattern/i", "case-insensitive"} {
+		if !strings.Contains(regexNotice, text) {
+			t.Errorf("filtering regex notice missing %q: %q", text, regexNotice)
+		}
+	}
+
 	for _, key := range []string{"ranking.debrid.criteria", "ranking.usenet.criteria"} {
 		section, ok := schema[key].(map[string]interface{})
 		if !ok {
@@ -268,6 +279,24 @@ func TestAdminUIHandler_GetSchema(t *testing.T) {
 		showWhen, ok := section["showWhen"].(map[string]interface{})
 		if !ok || showWhen["field"] != "ranking.splitByService" || showWhen["value"] != true {
 			t.Errorf("%s showWhen = %#v, want ranking.splitByService=true", key, section["showWhen"])
+		}
+	}
+	ranking, ok := schema["ranking"].(map[string]interface{})
+	if !ok {
+		t.Fatal("schema missing ranking section")
+	}
+	rankingFields, ok := ranking["fields"].(map[string]interface{})
+	if !ok {
+		t.Fatal("ranking schema missing fields")
+	}
+	newestReleaseFirst, ok := rankingFields["newestReleaseFirst"].(map[string]interface{})
+	if !ok {
+		t.Fatal("ranking schema missing newestReleaseFirst")
+	}
+	description, _ := newestReleaseFirst["description"].(string)
+	for _, source := range []string{"Usenet/Newznab", "Jackett/Prowlarr", "Nyaa", "Internet Archive", "Zilean", "Torrentio", "Comet", "MediaFusion", "AIOStreams", "StremThru"} {
+		if !strings.Contains(description, source) {
+			t.Errorf("newestReleaseFirst description missing source %q: %q", source, description)
 		}
 	}
 }
@@ -378,14 +407,49 @@ func TestAdminUIHandler_GetUserAccounts(t *testing.T) {
 		t.Fatal("master account not found")
 	}
 
+	createBody, err := json.Marshal(map[string]string{
+		"name":      "Living Room",
+		"accountId": masterAccount.ID,
+	})
+	if err != nil {
+		t.Fatalf("marshal create profile request: %v", err)
+	}
+	createReq := createAuthenticatedRequest(t, http.MethodPost, "/admin/api/profiles", createBody, sessionsService, masterAccount.ID, true)
+	createRec := httptest.NewRecorder()
+	handler.RequireAuth(handler.CreateProfile)(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("CreateProfile status = %d, want %d: %s", createRec.Code, http.StatusOK, createRec.Body.String())
+	}
+
 	req := createAuthenticatedRequest(t, http.MethodGet, "/api/admin/accounts", nil, sessionsService, masterAccount.ID, true)
 	rec := httptest.NewRecorder()
 
 	handler.RequireMasterAuth(handler.GetUserAccounts)(rec, req)
 
-	// Should succeed or require auth
-	if rec.Code != http.StatusOK && rec.Code != http.StatusUnauthorized {
-		t.Errorf("GetUserAccounts status = %d, want 200 or 401", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GetUserAccounts status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var response struct {
+		Accounts []handlers.AdminAccountWithProfiles `json:"accounts"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode accounts response: %v", err)
+	}
+	if len(response.Accounts) != 1 {
+		t.Fatalf("accounts count = %d, want 1", len(response.Accounts))
+	}
+	var found bool
+	for _, profile := range response.Accounts[0].Profiles {
+		if profile.Name == "Living Room" {
+			found = true
+			if profile.AccountID != masterAccount.ID {
+				t.Errorf("associated profile account ID = %q, want %q", profile.AccountID, masterAccount.ID)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("accounts response did not include the associated Living Room profile: %+v", response.Accounts[0].Profiles)
 	}
 }
 
@@ -2400,6 +2464,15 @@ func TestAdminUIHandler_ConnectionsPage(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("admin: expected 200, got %d", rec.Code)
 	}
+	body := rec.Body.String()
+	for _, contentID := range []string{"search-diagnostics-content", "api-usage-content"} {
+		if !strings.Contains(body, `aria-expanded="false" aria-controls="`+contentID+`"`) {
+			t.Errorf("admin: expected %s toggle to start collapsed", contentID)
+		}
+		if !strings.Contains(body, `id="`+contentID+`" class="collapsible-panel-content" hidden`) {
+			t.Errorf("admin: expected %s content to be hidden by default", contentID)
+		}
+	}
 
 	// Test non-admin gets 403 from RequireMasterAuth
 	nonAdminAccount, err := accountsService.Create("regular", "pass123")
@@ -2527,6 +2600,31 @@ func TestHardwareAccelerationSchemaIsVisibleUnderServerSettings(t *testing.T) {
 	if field["type"] != "select" || field["globalOnly"] != true {
 		t.Fatalf("unexpected hardwareAcceleration schema: %+v", field)
 	}
+}
+
+func TestNavigationVisibilitySchemaIncludesWatchlist(t *testing.T) {
+	section, ok := handlers.SettingsSchema["display"].(map[string]interface{})
+	if !ok {
+		t.Fatal("display settings schema is missing")
+	}
+	fields, ok := section["fields"].(map[string]interface{})
+	if !ok {
+		t.Fatal("display fields schema is missing")
+	}
+	field, ok := fields["navigationTabVisibility"].(map[string]interface{})
+	if !ok {
+		t.Fatal("navigationTabVisibility field is missing")
+	}
+	options, ok := field["options"].([]map[string]interface{})
+	if !ok {
+		t.Fatalf("unexpected navigation options type: %T", field["options"])
+	}
+	for _, option := range options {
+		if option["value"] == "watchlist" {
+			return
+		}
+	}
+	t.Fatal("navigation visibility options do not include Watchlist")
 }
 
 // multipartWriter creates a multipart form with a file field

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"novastream/config"
 	"novastream/models"
@@ -41,20 +42,21 @@ func (s stubClientSettings) Get(_ string) (*models.ClientFilterSettings, error) 
 
 func TestNormalizeScrapeResult(t *testing.T) {
 	input := ScrapeResult{
-		Title:      "Breaking Bad S01E01",
-		Indexer:    "",
-		Magnet:     "magnet:?xt=urn:btih:ABC",
-		InfoHash:   "ABC",
-		FileIndex:  7,
-		SizeBytes:  42,
-		Seeders:    100,
-		Provider:   "TorrentGalaxy",
-		Languages:  []string{"🇬🇧", "🇺🇸"},
-		Resolution: "1080p",
-		MetaName:   "Breaking Bad",
-		MetaID:     "tt0903747",
-		Source:     "torrentio",
-		Attributes: map[string]string{"custom": "value"},
+		Title:       "Breaking Bad S01E01",
+		Indexer:     "",
+		Magnet:      "magnet:?xt=urn:btih:ABC",
+		InfoHash:    "ABC",
+		FileIndex:   7,
+		SizeBytes:   42,
+		PublishDate: time.Date(2026, time.July, 30, 12, 34, 0, 0, time.UTC),
+		Seeders:     100,
+		Provider:    "TorrentGalaxy",
+		Languages:   []string{"🇬🇧", "🇺🇸"},
+		Resolution:  "1080p",
+		MetaName:    "Breaking Bad",
+		MetaID:      "tt0903747",
+		Source:      "torrentio",
+		Attributes:  map[string]string{"custom": "value"},
 	}
 
 	result := normalizeScrapeResult(input)
@@ -75,6 +77,9 @@ func TestNormalizeScrapeResult(t *testing.T) {
 	}
 	if result.DownloadURL != input.Magnet {
 		t.Fatalf("download url mismatch")
+	}
+	if !result.PublishDate.Equal(input.PublishDate) {
+		t.Fatalf("publish date = %v, want %v", result.PublishDate, input.PublishDate)
 	}
 }
 

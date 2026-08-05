@@ -12,10 +12,11 @@ type UserRankingCriterion struct {
 
 // UserRankingSettings holds per-user ranking overrides.
 type UserRankingSettings struct {
-	Criteria       []UserRankingCriterion `json:"criteria,omitempty"`
-	SplitByService *bool                  `json:"splitByService,omitempty"`
-	Debrid         *UserRankingSettings   `json:"debrid,omitempty"`
-	Usenet         *UserRankingSettings   `json:"usenet,omitempty"`
+	Criteria           []UserRankingCriterion `json:"criteria,omitempty"`
+	NewestReleaseFirst *bool                  `json:"newestReleaseFirst,omitempty"`
+	SplitByService     *bool                  `json:"splitByService,omitempty"`
+	Debrid             *UserRankingSettings   `json:"debrid,omitempty"`
+	Usenet             *UserRankingSettings   `json:"usenet,omitempty"`
 }
 
 // ClientRankingCriterion represents a per-client override for a ranking criterion.

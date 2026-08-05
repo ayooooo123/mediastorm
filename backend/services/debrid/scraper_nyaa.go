@@ -259,6 +259,7 @@ func (n *NyaaScraper) parseRSSResponse(body []byte) ([]ScrapeResult, error) {
 			InfoHash:    infoHash,
 			FileIndex:   -1, // Nyaa doesn't provide file index
 			SizeBytes:   sizeBytes,
+			PublishDate: parseScraperPublishDate(item.PubDate),
 			Seeders:     item.Seeders,
 			Provider:    n.Name(),
 			Resolution:  resolution,

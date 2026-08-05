@@ -15,24 +15,24 @@ import (
 	"time"
 
 	"github.com/avast/retry-go/v4"
+	"github.com/javi11/nntpcli"
+	"github.com/javi11/nzbparser"
+	concpool "github.com/sourcegraph/conc/pool"
 	"novastream/internal/encryption"
 	"novastream/internal/encryption/rclone"
 	metapb "novastream/internal/nzb/metadata/proto"
 	"novastream/internal/pool"
-	"github.com/javi11/nntpcli"
-	"github.com/javi11/nzbparser"
-	concpool "github.com/sourcegraph/conc/pool"
 )
 
 // NzbType represents the type of NZB content
 type NzbType string
 
 const (
-	NzbTypeSingleFile  NzbType = "single_file"
-	NzbTypeMultiFile   NzbType = "multi_file"
-	NzbTypeRarArchive  NzbType = "rar_archive"
-	NzbType7zArchive   NzbType = "7z_archive"
-	NzbTypeStrm        NzbType = "strm_file"
+	NzbTypeSingleFile NzbType = "single_file"
+	NzbTypeMultiFile  NzbType = "multi_file"
+	NzbTypeRarArchive NzbType = "rar_archive"
+	NzbType7zArchive  NzbType = "7z_archive"
+	NzbTypeStrm       NzbType = "strm_file"
 )
 
 // ParsedNzb contains the parsed NZB data and extracted metadata
@@ -80,6 +80,10 @@ var (
 	// followed by a non-alphanumeric char) so it works on both bare filenames
 	// ("Movie.part002.rev") and raw NZB subjects ("... \"Movie.part002.rev\" -").
 	recoveryPattern = regexp.MustCompile(`(?i)\.(par2|rev)($|[^a-z0-9])`)
+	// Matches a RAR volume in either a bare filename or a longer NZB subject. Unlike
+	// rarPattern, this deliberately accepts a trailing quote/space so it can identify
+	// subjects such as `"movie.part001.rar" yEnc (1/100)` before yEnc headers exist.
+	rarVolumeTokenPattern = regexp.MustCompile(`(?i)(?:\.part\d+\.rar|\.rar|\.r\d+)($|[^a-z0-9])`)
 )
 
 var (
@@ -143,6 +147,22 @@ func normalizeNzbSubjects(raw []byte) ([]byte, int) {
 func isRecoveryFile(names ...string) bool {
 	for _, name := range names {
 		if recoveryPattern.MatchString(strings.ToLower(strings.TrimSpace(name))) {
+			return true
+		}
+	}
+	return false
+}
+
+// requiresEncryptedRarVolume reports whether the file is a required volume in a
+// password-protected RAR set. Encrypted archives cannot tolerate a ciphertext hole:
+// without downloading and repairing the complete set, all later random-access
+// offsets are unusable. Recovery volumes remain optional and are excluded here.
+func requiresEncryptedRarVolume(meta map[string]string, names ...string) bool {
+	if strings.TrimSpace(meta["password"]) == "" || isRecoveryFile(names...) {
+		return false
+	}
+	for _, name := range names {
+		if rarVolumeTokenPattern.MatchString(strings.TrimSpace(name)) {
 			return true
 		}
 	}
@@ -354,6 +374,12 @@ func (p *Parser) parseFileWithContext(ctx context.Context, file nzbparser.NzbFil
 
 		firstPartHeaders, err := p.fetchYencHeaders(file.Segments[0], nil)
 		if err != nil {
+			if requiresEncryptedRarVolume(meta, file.Filename, file.Subject) {
+				p.log.Warn("required encrypted RAR volume is unavailable",
+					"filename", file.Filename, "error", err)
+				return nil, NewNonRetryableError(
+					fmt.Sprintf("required encrypted RAR volume %s is incomplete", file.Filename), err)
+			}
 			// A transiently missing first article must not abort the import: the
 			// filename comes from the (now-repaired) subject and the uniform body
 			// size is recovered from another segment during normalization below.

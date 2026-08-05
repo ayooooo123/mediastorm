@@ -129,6 +129,7 @@ type zileanItem struct {
 	IMDBID     string        `json:"imdb_id"`
 	Category   string        `json:"category"`
 	Container  string        `json:"container"`
+	IngestedAt string        `json:"ingested_at"`
 }
 
 func (z *ZileanScraper) Search(ctx context.Context, req SearchRequest) ([]ScrapeResult, error) {
@@ -147,17 +148,17 @@ func (z *ZileanScraper) Search(ctx context.Context, req SearchRequest) ([]Scrape
 	// This handles TMDB/TVDB episode numbering offset
 	isDailySearch := req.IsDaily && req.Parsed.MediaType == MediaTypeSeries && req.Parsed.Season > 0 && req.Parsed.Episode > 0 && req.TargetAirDate != ""
 	if isDailySearch {
-		results, err = z.searchDailyTV(ctx, cleanTitle, req.Parsed.Season, req.Parsed.Episode, req.TargetAirDate)
+		results, err = z.searchDailyTV(ctx, cleanTitle, req.Parsed.Season, req.Parsed.Episode, req.TargetAirDate, req.IMDBID)
 	} else if req.Parsed.MediaType == MediaTypeSeries && req.Parsed.Season > 0 && req.Parsed.Episode > 0 {
 		// TV show search: title + season + episode
-		results, err = z.searchTV(ctx, cleanTitle, req.Parsed.Season, req.Parsed.Episode, false)
+		results, err = z.searchTV(ctx, cleanTitle, req.Parsed.Season, req.Parsed.Episode, false, req.IMDBID)
 	} else if req.Parsed.MediaType == MediaTypeMovie || req.Parsed.Year > 0 {
 		// Movie search: title + year
-		results, err = z.searchMovie(ctx, cleanTitle, req.Parsed.Year)
+		results, err = z.searchMovie(ctx, cleanTitle, req.Parsed.Year, req.IMDBID)
 	} else {
 		// Generic search - just title
 		log.Printf("[zilean] MediaType unknown, performing generic search for %q", cleanTitle)
-		results, err = z.searchGeneric(ctx, cleanTitle)
+		results, err = z.searchGeneric(ctx, cleanTitle, req.IMDBID)
 	}
 
 	if err != nil {
@@ -178,19 +179,20 @@ func (z *ZileanScraper) Search(ctx context.Context, req SearchRequest) ([]Scrape
 }
 
 // searchMovie performs a movie search with title and year.
-func (z *ZileanScraper) searchMovie(ctx context.Context, title string, year int) ([]ScrapeResult, error) {
+func (z *ZileanScraper) searchMovie(ctx context.Context, title string, year int, imdbID string) ([]ScrapeResult, error) {
 	params := url.Values{}
 	params.Set("Query", title)
 	if year > 0 {
 		params.Set("Year", strconv.Itoa(year))
 	}
+	setZileanIMDBID(params, imdbID)
 
 	log.Printf("[zilean] Movie search: Query=%q, Year=%d", title, year)
 	return z.fetchResults(ctx, params)
 }
 
 // searchTV performs a TV search with title, season, and episode.
-func (z *ZileanScraper) searchTV(ctx context.Context, title string, season, episode int, multi bool) ([]ScrapeResult, error) {
+func (z *ZileanScraper) searchTV(ctx context.Context, title string, season, episode int, multi bool, imdbID string) ([]ScrapeResult, error) {
 	params := url.Values{}
 	params.Set("Query", title)
 
@@ -201,6 +203,7 @@ func (z *ZileanScraper) searchTV(ctx context.Context, title string, season, epis
 	if episode > 0 && !multi {
 		params.Set("Episode", strconv.Itoa(episode))
 	}
+	setZileanIMDBID(params, imdbID)
 
 	log.Printf("[zilean] TV search: Query=%q, Season=%d, Episode=%d, Multi=%v", title, season, episode, multi)
 	return z.fetchResults(ctx, params)
@@ -208,7 +211,7 @@ func (z *ZileanScraper) searchTV(ctx context.Context, title string, season, epis
 
 // searchDailyTV searches adjacent episodes for daily shows and filters by date.
 // This handles TMDB/TVDB episode numbering offset by trying N-1, N, N+1.
-func (z *ZileanScraper) searchDailyTV(ctx context.Context, title string, season, episode int, targetAirDate string) ([]ScrapeResult, error) {
+func (z *ZileanScraper) searchDailyTV(ctx context.Context, title string, season, episode int, targetAirDate, imdbID string) ([]ScrapeResult, error) {
 	log.Printf("[zilean] Daily show detected, will try E%d, E%d, E%d for target date %s",
 		episode-1, episode, episode+1, targetAirDate)
 
@@ -227,6 +230,7 @@ func (z *ZileanScraper) searchDailyTV(ctx context.Context, title string, season,
 		params := url.Values{}
 		params.Set("Query", title)
 		params.Set("Season", strconv.Itoa(season))
+		setZileanIMDBID(params, imdbID)
 		params.Set("Episode", strconv.Itoa(ep))
 
 		log.Printf("[zilean] Daily TV search: Query=%q, Season=%d, Episode=%d (target date: %s)", title, season, ep, targetAirDate)
@@ -272,12 +276,19 @@ func (z *ZileanScraper) searchDailyTV(ctx context.Context, title string, season,
 }
 
 // searchGeneric performs a basic text search.
-func (z *ZileanScraper) searchGeneric(ctx context.Context, query string) ([]ScrapeResult, error) {
+func (z *ZileanScraper) searchGeneric(ctx context.Context, query, imdbID string) ([]ScrapeResult, error) {
 	params := url.Values{}
 	params.Set("Query", query)
+	setZileanIMDBID(params, imdbID)
 
 	log.Printf("[zilean] Generic search: Query=%q", query)
 	return z.fetchResults(ctx, params)
+}
+
+func setZileanIMDBID(params url.Values, imdbID string) {
+	if imdbID = strings.TrimSpace(imdbID); imdbID != "" {
+		params.Set("ImdbId", imdbID)
+	}
 }
 
 // fetchResults makes the API request and parses the JSON response.
@@ -393,6 +404,10 @@ func (z *ZileanScraper) parseResponse(body []byte) ([]ScrapeResult, error) {
 			attrs["languages"] = strings.Join(item.Languages, ",")
 		}
 
+		// Zilean does not expose the tracker publication time, but its
+		// ingestion timestamp precisely records when the release became
+		// available to this source.
+		published := parseScraperPublishDate(item.IngestedAt)
 		result := ScrapeResult{
 			Title:       item.RawTitle,
 			Indexer:     z.Name(),
@@ -400,6 +415,7 @@ func (z *ZileanScraper) parseResponse(body []byte) ([]ScrapeResult, error) {
 			InfoHash:    infoHash,
 			FileIndex:   -1, // Zilean doesn't provide file index
 			SizeBytes:   sizeBytes,
+			PublishDate: published,
 			Seeders:     0, // Zilean doesn't provide seeder info
 			Provider:    z.Name(),
 			Languages:   item.Languages,

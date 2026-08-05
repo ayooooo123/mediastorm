@@ -262,6 +262,10 @@ func Register(
 	protected.HandleFunc("/discover/decade", handleOptions).Methods(http.MethodOptions)
 	protected.HandleFunc("/discover/top-ten", metadataHandler.TopTen).Methods(http.MethodGet)
 	protected.HandleFunc("/discover/top-ten", handleOptions).Methods(http.MethodOptions)
+	protected.HandleFunc("/discover/popular-on-server", metadataHandler.PopularOnServer).Methods(http.MethodGet)
+	protected.HandleFunc("/discover/popular-on-server", handleOptions).Methods(http.MethodOptions)
+	protected.HandleFunc("/discover/recently-watched", metadataHandler.RecentlyWatched).Methods(http.MethodGet)
+	protected.HandleFunc("/discover/recently-watched", handleOptions).Methods(http.MethodOptions)
 	protected.HandleFunc("/recommendations", metadataHandler.GetAIRecommendations).Methods(http.MethodGet)
 	protected.HandleFunc("/recommendations", handleOptions).Methods(http.MethodOptions)
 	protected.HandleFunc("/recommendations/personalized", metadataHandler.GetPersonalizedRecommendations).Methods(http.MethodGet)
@@ -481,14 +485,20 @@ func Register(
 	protected.HandleFunc("/updates/status", updatesHandler.Status).Methods(http.MethodGet)
 	protected.HandleFunc("/updates/status", updatesHandler.Options).Methods(http.MethodOptions)
 
+	// Create the monitoring handler once so the admin endpoint and Homepage
+	// integration share the exact same active-stream aggregation.
+	adminHandler := handlers.NewAdminHandler(videoHandler.GetHLSManager())
+	adminHandler.SetProgressService(historyHandler.Service)
+	adminHandler.SetUserService(usersSvc)
+
 	// Homepage dashboard integration endpoint (requires API key)
 	homepageHandler := handlers.NewHomepageHandler(accountsSvc)
 	homepageHandler.SetUserService(usersSvc)
-	homepageHandler.SetHLSManager(videoHandler.GetHLSManager())
-	homepageHandler.SetProgressService(historyHandler.Service)
+	homepageHandler.SetStreamsProvider(adminHandler)
 	homepageHandler.SetMetadataService(metadataHandler.Service)
 	homepageHandler.SetAPIKey(homepageAPIKey)
 	api.HandleFunc("/homepage", homepageHandler.GetStats).Methods(http.MethodGet, http.MethodOptions)
+	protected.HandleFunc("/dashboard/shelf", homepageHandler.GetDashboardShelf).Methods(http.MethodGet, http.MethodOptions)
 
 	// Static assets endpoint (public - rating icons, etc.)
 	staticHandler := handlers.NewStaticHandler()
@@ -506,9 +516,6 @@ func Register(
 	}
 
 	// Admin endpoints for monitoring (master only)
-	adminHandler := handlers.NewAdminHandler(videoHandler.GetHLSManager())
-	adminHandler.SetProgressService(historyHandler.Service)
-	adminHandler.SetUserService(usersSvc)
 	adminRouter := protected.PathPrefix("/admin").Subrouter()
 	adminRouter.Use(MasterOnlyMiddleware())
 	adminRouter.HandleFunc("/streams", adminHandler.GetActiveStreams).Methods(http.MethodGet, http.MethodOptions)

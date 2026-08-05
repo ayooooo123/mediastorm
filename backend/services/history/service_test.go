@@ -2,6 +2,7 @@ package history
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -6181,5 +6182,46 @@ func TestDedupeWatchHistoryPrefersSeasonalEpisode(t *testing.T) {
 	movieB := models.WatchHistoryItem{MediaType: "movie", Name: "Pressure", Year: 2015}
 	if len(DedupeWatchHistory([]models.WatchHistoryItem{movieA, movieB})) != 2 {
 		t.Error("distinct movies should not collapse")
+	}
+}
+
+func TestUpdatePlaybackProgressContextDropsCanceledQueuedHeartbeat(t *testing.T) {
+	svc, err := NewService(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	// Simulate one slow heartbeat already owning the persistence path. Requests
+	// behind it wait on the cancellation-aware gate rather than accumulating on
+	// the shared history mutex.
+	if err := svc.acquirePlaybackProgressGate(context.Background()); err != nil {
+		t.Fatalf("acquirePlaybackProgressGate() error = %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+
+	startedAt := time.Now()
+	_, updateErr := svc.UpdatePlaybackProgressContext(ctx, "user", models.PlaybackProgressUpdate{
+		MediaType: "movie",
+		ItemID:    "tmdb:movie:1",
+		Position:  30,
+		Duration:  120,
+	})
+	elapsed := time.Since(startedAt)
+	svc.releasePlaybackProgressGate()
+
+	if !errors.Is(updateErr, context.DeadlineExceeded) {
+		t.Fatalf("UpdatePlaybackProgressContext() error = %v, want context deadline exceeded", updateErr)
+	}
+	if elapsed > 250*time.Millisecond {
+		t.Fatalf("canceled lock wait took %s, want <= 250ms", elapsed)
+	}
+
+	items, err := svc.ListPlaybackProgress("user")
+	if err != nil {
+		t.Fatalf("ListPlaybackProgress() error = %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("canceled update mutated playback progress: %+v", items)
 	}
 }

@@ -122,6 +122,22 @@ func (f *fakeMetadataService) SeriesDetails(_ context.Context, query models.Seri
 	return f.seriesResp, f.seriesErr
 }
 
+func TestMetadataHandlerSeriesDetailsPassesIMDBID(t *testing.T) {
+	fake := &fakeMetadataService{seriesResp: &models.SeriesDetails{Title: models.Title{Name: "Captain Star"}}}
+	handler := NewMetadataHandler(fake, testConfigManager(t))
+	req := httptest.NewRequest(http.MethodGet, "/api/metadata/series?name=Captain+Star&imdbId=tt0143031", nil)
+	rec := httptest.NewRecorder()
+
+	handler.SeriesDetails(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.lastSeriesQuery.IMDBID != "tt0143031" {
+		t.Fatalf("series query imdb id = %q, want tt0143031", fake.lastSeriesQuery.IMDBID)
+	}
+}
+
 func (f *fakeMetadataService) SeriesInfo(_ context.Context, query models.SeriesDetailsQuery) (*models.Title, error) {
 	f.lastSeriesQuery = query
 	if f.seriesResp != nil {

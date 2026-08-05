@@ -12,6 +12,7 @@ import (
 	"novastream/internal/auth"
 	"novastream/internal/requestsecurity"
 	"novastream/models"
+	"novastream/services/libraryaccess"
 )
 
 // SharePlaybackSessionTTL is how long the minted stream-scoped session stays valid
@@ -53,6 +54,11 @@ type ShareHandler struct {
 	sessions       ShareSessionService
 	users          ShareProfileService
 	serverBasePath string
+	libraryAccess  *libraryaccess.Service
+}
+
+func (h *ShareHandler) SetLibraryAccessService(service *libraryaccess.Service) {
+	h.libraryAccess = service
 }
 
 // NewShareHandler creates a ShareHandler.
@@ -152,6 +158,22 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 			(!auth.IsMaster(r) && !h.users.BelongsToAccount(profileID, accountID)) ||
 			!profile.AllowShareLinks {
 			writeShareJSONError(w, http.StatusForbidden, "share links are not enabled for this profile")
+			return
+		}
+	}
+	if h.libraryAccess != nil {
+		streamPath := params["sourcePath"]
+		if streamPath == "" {
+			streamPath = params["movie"]
+		}
+		profileID := strings.TrimSpace(params["profileId"])
+		recognized, allowed, accessErr := h.libraryAccess.CanAccessStream(r.Context(), streamPath, accountID, profileID, auth.IsMaster(r) && profileID == "")
+		if accessErr != nil {
+			writeShareJSONError(w, http.StatusInternalServerError, "failed to verify library access")
+			return
+		}
+		if recognized && !allowed {
+			writeShareJSONError(w, http.StatusNotFound, "playback source not found")
 			return
 		}
 	}

@@ -616,7 +616,7 @@ func buildVideoEncodePlanWithLimits(
 				"tonemap_opencl=tonemap=hable:desat=0:t=bt709:m=bt709:p=bt709:format=nv12",
 				"hwdownload",
 				"format=nv12")
-		default: // zscale (CPU, libzimg). Hable operator, 100-nit ref, BT.709 SDR.
+		default: // zscale (CPU, libzimg). Mobius operator with a mild SDR presentation lift.
 			filters = append(filters,
 				// Some DV8 files omit container-level color metadata even though
 				// their base layer is HDR10. Without explicit input properties,
@@ -624,9 +624,9 @@ func buildVideoEncodePlanWithLimits(
 				inputColorParams,
 				"zscale=t=linear:npl=100",
 				"format=gbrpf32le",
-				"zscale=p=bt709",
-				"tonemap=tonemap=hable:desat=0",
-				"zscale=t=bt709:m=bt709:r=tv",
+				"tonemap=tonemap=mobius:param=0.35:desat=0:peak=1000",
+				"zscale=t=bt709:m=bt709:p=bt709:r=tv",
+				"eq=brightness=0.03:contrast=1.08:saturation=1.15:gamma=0.98",
 				"format=yuv420p")
 		}
 	}

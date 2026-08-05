@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -60,6 +61,10 @@ type activePlaybackTracker interface {
 // and its implementation is inert unless a relay is configured.
 type playbackAutoSeeder interface {
 	OnPlaybackStarted(update models.PlaybackProgressUpdate)
+}
+
+type contextualPlaybackProgressService interface {
+	UpdatePlaybackProgressContext(ctx context.Context, userID string, update models.PlaybackProgressUpdate) (models.PlaybackProgress, error)
 }
 
 type HistoryHandler struct {
@@ -593,11 +598,21 @@ func (h *HistoryHandler) UpdatePlaybackProgress(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	progress, err := h.Service.UpdatePlaybackProgress(userID, update)
+	var progress models.PlaybackProgress
+	var err error
+	if contextualService, ok := h.Service.(contextualPlaybackProgressService); ok {
+		progress, err = contextualService.UpdatePlaybackProgressContext(r.Context(), userID, update)
+	} else {
+		progress, err = h.Service.UpdatePlaybackProgress(userID, update)
+	}
 	if err != nil {
+		if r.Context().Err() != nil {
+			return
+		}
 		http.Error(w, err.Error(), watchHistoryErrorStatus(err))
 		return
 	}
+	GetStreamTracker().AssociateClientWithPlayback(userID, update, requestClientID(r))
 	allowedToContinue := !GetStreamTracker().ShouldStopPlayback(userID, update)
 	progress.AllowedToContinue = &allowedToContinue
 	// Bind the release's required bitrate to the exact active source. Provider

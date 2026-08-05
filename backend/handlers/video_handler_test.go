@@ -4,17 +4,22 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"novastream/config"
 	"novastream/services/credits"
+	"novastream/services/playback"
 	"novastream/services/streaming"
 )
 
@@ -182,6 +187,54 @@ func TestProxyExternalURLCachesFinalRedirectAndReusesConnection(t *testing.T) {
 	}
 	if got := finalConnections.Load(); got != 1 {
 		t.Fatalf("final connections = %d, want 1 reused connection", got)
+	}
+}
+
+func TestProxyExternalURLRejectsElfHostedPlaceholderAndInvalidatesPrequeue(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("custom transport should handle the request")
+	}))
+	defer origin.Close()
+
+	handler := NewVideoHandler(false, "", "")
+	settings := config.DefaultSettings()
+	settings.Server.AllowedPrivateMediaOrigins = []string{origin.URL}
+	handler.SetConfigManager(staticVideoConfigProvider{settings: settings})
+	handler.externalProxyHTTPClient = &http.Client{
+		Transport: prequeueRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+			finalReq := r.Clone(r.Context())
+			finalReq.URL, _ = url.Parse("https://slate.elfhosted.com/cache/link-expired.mp4")
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("placeholder")),
+				Header:     make(http.Header),
+				Request:    finalReq,
+			}, nil
+		}),
+	}
+
+	store := playback.NewPrequeueStore(time.Hour)
+	entry, _ := store.Create("movie:1", "Movie", "default", "movie", 2020, nil, "details")
+	store.Update(entry.ID, func(current *playback.PrequeueEntry) {
+		current.Status = playback.PrequeueStatusReady
+		current.StreamPath = origin.URL + "/playback/expired"
+	})
+	handler.SetPrequeueStore(store)
+
+	req := httptest.NewRequest(http.MethodGet, "/video/stream", nil)
+	rec := httptest.NewRecorder()
+	handled, err := handler.proxyExternalURL(rec, req, entry.StreamPath)
+	if !handled {
+		t.Fatal("handled = false")
+	}
+	if !errors.Is(err, errExternalStreamPlaceholder) {
+		t.Fatalf("proxyExternalURL error = %v, want external placeholder error", err)
+	}
+	if rec.Code != http.StatusGone {
+		t.Fatalf("status = %d, want 410", rec.Code)
+	}
+	if _, ok := store.Get(entry.ID); ok {
+		t.Fatal("expired placeholder prequeue was not invalidated")
 	}
 }
 
@@ -980,13 +1033,15 @@ func TestShouldIncludeEmptyMoov(t *testing.T) {
 
 // testStreamProvider implements streaming.Provider for testing
 type testStreamProvider struct {
-	data       []byte
-	statusCode int
-	headers    http.Header
-	err        error
+	data        []byte
+	statusCode  int
+	headers     http.Header
+	err         error
+	hadDeadline bool
 }
 
 func (p *testStreamProvider) Stream(ctx context.Context, req streaming.Request) (*streaming.Response, error) {
+	_, p.hadDeadline = ctx.Deadline()
 	if p.err != nil {
 		return nil, p.err
 	}
@@ -1064,6 +1119,51 @@ func TestVideoHandler_StreamVideo_Success(t *testing.T) {
 	body := rr.Body.Bytes()
 	if !bytes.Equal(body, data) {
 		t.Errorf("body = %q, want %q", body, data)
+	}
+	if provider.hadDeadline {
+		t.Fatal("provider context has a deadline; playback must remain open until the client disconnects")
+	}
+}
+
+func TestProxyExternalURLHasNoWholePlaybackTimeout(t *testing.T) {
+	const origin = "http://127.0.0.1:3312"
+
+	handler := NewVideoHandler(false, "", "")
+	if handler.externalProxyHTTPClient.Timeout != 0 {
+		t.Fatalf("external proxy client timeout = %v, want no whole-request timeout", handler.externalProxyHTTPClient.Timeout)
+	}
+
+	settings := config.DefaultSettings()
+	settings.Server.AllowedPrivateMediaOrigins = []string{origin}
+	handler.SetConfigManager(staticVideoConfigProvider{settings: settings})
+
+	var upstreamHadDeadline bool
+	handler.externalProxyHTTPClient = &http.Client{
+		Transport: prequeueRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+			_, upstreamHadDeadline = r.Context().Deadline()
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("video")),
+				Header: http.Header{
+					"Content-Type":   []string{"video/x-matroska"},
+					"Content-Length": []string{"5"},
+				},
+				Request: r,
+			}, nil
+		}),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/video/stream", nil)
+	rec := httptest.NewRecorder()
+	handled, err := handler.proxyExternalURL(rec, req, origin+"/webdav/movie.mkv")
+	if err != nil || !handled {
+		t.Fatalf("proxyExternalURL: handled=%t err=%v", handled, err)
+	}
+	if upstreamHadDeadline {
+		t.Fatal("external proxy request has a deadline; response-body streaming would be cut off")
+	}
+	if got := rec.Body.String(); got != "video" {
+		t.Fatalf("body = %q, want %q", got, "video")
 	}
 }
 

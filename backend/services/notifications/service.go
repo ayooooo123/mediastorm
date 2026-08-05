@@ -31,11 +31,13 @@ const (
 var defaultReleaseTypes = []string{"digital", "physical"}
 
 var validEvents = map[string]bool{
-	models.NotificationEventWatchStarted:  true,
-	models.NotificationEventWatchProgress: true,
-	models.NotificationEventWatchResumed:  true,
-	models.NotificationEventWatchWatched:  true,
-	models.NotificationEventRelease:       true,
+	models.NotificationEventWatchStarted:   true,
+	models.NotificationEventWatchProgress:  true,
+	models.NotificationEventWatchResumed:   true,
+	models.NotificationEventWatchWatched:   true,
+	models.NotificationEventRelease:        true,
+	models.NotificationEventSystemStartup:  true,
+	models.NotificationEventSystemShutdown: true,
 }
 
 var validReleaseTypes = map[string]string{
@@ -168,6 +170,11 @@ func (s *Service) SaveChannel(ctx context.Context, channel models.NotificationCh
 	if hasReleaseEvents && len(channel.Events) > 1 {
 		return models.NotificationChannel{}, errors.New("watch status and release status events must use separate destinations")
 	}
+	hasSystemEvents := contains(channel.Events, models.NotificationEventSystemStartup) ||
+		contains(channel.Events, models.NotificationEventSystemShutdown)
+	if hasSystemEvents && len(channel.Events) > countSystemEvents(channel.Events) {
+		return models.NotificationChannel{}, errors.New("system operations and media events must use separate destinations")
+	}
 	if hasReleaseEvents {
 		if !channel.NotifyWatchlist && !channel.NotifyTrending {
 			return models.NotificationChannel{}, errors.New("select at least one release source")
@@ -264,13 +271,68 @@ func (s *Service) TestChannel(ctx context.Context, profileID, id string) error {
 		event.ReleaseType = "digital"
 		event.ReleaseDate = event.OccurredAt.Format("2006-01-02")
 		event.Source = "test"
+	} else if contains(channel.Events, models.NotificationEventSystemStartup) {
+		event.Type = models.NotificationEventSystemStartup
+		event.Title = "mediastorm"
+		event.MediaType = "system"
+		event.Percent = 0
+	} else if contains(channel.Events, models.NotificationEventSystemShutdown) {
+		event.Type = models.NotificationEventSystemShutdown
+		event.Title = "mediastorm"
+		event.MediaType = "system"
+		event.Percent = 0
 	}
 	return s.deliver(ctx, *channel, event)
 }
 
+// NotifySystem synchronously sends a lifecycle event to every subscribed
+// destination. Lifecycle delivery intentionally bypasses the background queue:
+// during shutdown the process must wait for outbound requests before Docker's
+// stop grace period expires and networking is removed.
+func (s *Service) NotifySystem(ctx context.Context, eventType string) error {
+	if eventType != models.NotificationEventSystemStartup &&
+		eventType != models.NotificationEventSystemShutdown {
+		return fmt.Errorf("unsupported system notification event %q", eventType)
+	}
+	channels, err := s.repo.ListAllChannels(ctx)
+	if err != nil {
+		return fmt.Errorf("list system notification channels: %w", err)
+	}
+
+	var wg sync.WaitGroup
+	var errorsMu sync.Mutex
+	var deliveryErrors []error
+	for _, channel := range channels {
+		if !channel.Enabled || !contains(channel.Events, eventType) {
+			continue
+		}
+		channel := channel
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			event := models.NotificationEvent{
+				ID:         uuid.NewString(),
+				Type:       eventType,
+				ProfileID:  channel.ProfileID,
+				Title:      "mediastorm",
+				MediaType:  "system",
+				OccurredAt: time.Now().UTC(),
+			}
+			if err := s.deliver(ctx, channel, event); err != nil {
+				errorsMu.Lock()
+				deliveryErrors = append(deliveryErrors,
+					fmt.Errorf("channel %s: %w", channel.ID, err))
+				errorsMu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	return errors.Join(deliveryErrors...)
+}
+
 // HandlePlaybackUpdate converts player heartbeats into edge-triggered watch events.
 func (s *Service) HandlePlaybackUpdate(userID string, update models.PlaybackProgressUpdate, percent float64) {
-	if update.MediaType == "live" {
+	if isLivePlaybackNotification(update) {
 		return
 	}
 	key := userID + "\x00" + update.MediaType + "\x00" + update.ItemID
@@ -368,6 +430,15 @@ func (s *Service) HandlePlaybackUpdate(userID string, update models.PlaybackProg
 	}
 	if update.PlaybackEnded && percent < 90 {
 		s.deletePlaybackProgressNotification(userID, notificationSession, persistedPlaybackKey, sequence)
+	}
+}
+
+func isLivePlaybackNotification(update models.PlaybackProgressUpdate) bool {
+	switch strings.ToLower(strings.TrimSpace(update.MediaType)) {
+	case "live", "livetv", "live-tv", "channel", "channels":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -879,6 +950,11 @@ func progressBar(percent float64) string {
 		percent = 100
 	}
 	filled := int((percent*width + 50) / 100)
+	// Keep an active zero/low-percent bar from becoming one long run of hollow
+	// parallelograms, which Discord renders wider than the mixed bar.
+	if filled == 0 {
+		filled = 1
+	}
 	return strings.Repeat("▰", filled) + strings.Repeat("▱", width-filled)
 }
 
@@ -1075,8 +1151,10 @@ func templateValues(event models.NotificationEvent) map[string]string {
 	}
 	percent := ""
 	progressLabel := ""
-	if event.Type != models.NotificationEventWatchWatched && event.Percent > 0 {
-		percent = strconv.FormatFloat(event.Percent, 'f', 0, 64)
+	if event.Type != models.NotificationEventWatchWatched &&
+		(event.Type == models.NotificationEventWatchProgress || event.Percent > 0) {
+		displayPercent := max(event.Percent, 0)
+		percent = strconv.FormatFloat(displayPercent, 'f', 0, 64)
 		progressLabel = " · " + percent + "%"
 	}
 	releaseLabel := ""
@@ -1287,6 +1365,10 @@ func eventLabel(event string) string {
 		return "Watched"
 	case models.NotificationEventRelease:
 		return "Now available"
+	case models.NotificationEventSystemStartup:
+		return "Server started"
+	case models.NotificationEventSystemShutdown:
+		return "Server shutting down"
 	default:
 		return event
 	}
@@ -1304,6 +1386,17 @@ func contains(values []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func countSystemEvents(events []string) int {
+	count := 0
+	for _, event := range events {
+		if event == models.NotificationEventSystemStartup ||
+			event == models.NotificationEventSystemShutdown {
+			count++
+		}
+	}
+	return count
 }
 
 func firstNonEmpty(values ...string) string {

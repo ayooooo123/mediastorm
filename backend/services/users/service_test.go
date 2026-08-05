@@ -64,6 +64,37 @@ func TestServiceCreateRenameAndDelete(t *testing.T) {
 	}
 }
 
+func TestReassignRollsBackMemoryWhenPersistenceFails(t *testing.T) {
+	storageDir := t.TempDir()
+	svc, err := users.NewService(storageDir)
+	if err != nil {
+		t.Fatalf("failed to create service: %v", err)
+	}
+
+	profile, err := svc.CreateForAccount("source-account", "Test Profile")
+	if err != nil {
+		t.Fatalf("failed to create profile: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(storageDir, "users.json.tmp"), 0o755); err != nil {
+		t.Fatalf("failed to block temp-file creation: %v", err)
+	}
+
+	if _, err := svc.Reassign(profile.ID, "target-account"); err == nil {
+		t.Fatal("expected reassignment persistence to fail")
+	}
+
+	got, ok := svc.Get(profile.ID)
+	if !ok {
+		t.Fatal("expected profile to remain in memory")
+	}
+	if got.AccountID != "source-account" {
+		t.Fatalf("account ID = %q after failed reassignment, want source-account", got.AccountID)
+	}
+	if !got.UpdatedAt.Equal(profile.UpdatedAt) {
+		t.Fatalf("updated timestamp changed after failed reassignment: got %v, want %v", got.UpdatedAt, profile.UpdatedAt)
+	}
+}
+
 func TestSetAllowShareLinks(t *testing.T) {
 	svc, err := users.NewService(t.TempDir())
 	if err != nil {
@@ -93,6 +124,59 @@ func TestSetAllowShareLinks(t *testing.T) {
 
 	if _, err := svc.SetAllowShareLinks("missing-id", true); err == nil {
 		t.Fatalf("expected error for unknown profile id")
+	}
+}
+
+func TestActivityPrivacyDefaultsAnonymousAndPersistsChanges(t *testing.T) {
+	storageDir := t.TempDir()
+	svc, err := users.NewService(storageDir)
+	if err != nil {
+		t.Fatalf("failed to create service: %v", err)
+	}
+
+	created, err := svc.Create("Watcher")
+	if err != nil {
+		t.Fatalf("create returned error: %v", err)
+	}
+	if created.ActivityPrivacy != models.ActivityPrivacySharedAnonymous {
+		t.Fatalf("activity privacy = %q, want anonymous-sharing default", created.ActivityPrivacy)
+	}
+
+	updated, err := svc.SetActivityPrivacy(created.ID, models.ActivityPrivacyNotShared)
+	if err != nil {
+		t.Fatalf("SetActivityPrivacy returned error: %v", err)
+	}
+	if updated.ActivityPrivacy != models.ActivityPrivacyNotShared {
+		t.Fatalf("activity privacy = %q, want not shared", updated.ActivityPrivacy)
+	}
+	if _, err := svc.SetActivityPrivacy(created.ID, "public"); err == nil {
+		t.Fatal("expected invalid activity privacy to fail")
+	}
+
+	reloaded, err := users.NewService(storageDir)
+	if err != nil {
+		t.Fatalf("reload service: %v", err)
+	}
+	got, ok := reloaded.Get(created.ID)
+	if !ok || got.ActivityPrivacy != models.ActivityPrivacyNotShared {
+		t.Fatalf("persisted privacy = %q, ok=%v", got.ActivityPrivacy, ok)
+	}
+}
+
+func TestLegacyActivityPrivacyMigratesToPrivate(t *testing.T) {
+	storageDir := t.TempDir()
+	raw := `[{"id":"legacy","accountId":"default","name":"Legacy","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}]`
+	if err := os.WriteFile(filepath.Join(storageDir, "users.json"), []byte(raw), 0o600); err != nil {
+		t.Fatalf("write legacy users: %v", err)
+	}
+
+	svc, err := users.NewService(storageDir)
+	if err != nil {
+		t.Fatalf("load legacy users: %v", err)
+	}
+	got, ok := svc.Get("legacy")
+	if !ok || got.ActivityPrivacy != models.ActivityPrivacyNotShared {
+		t.Fatalf("legacy privacy = %q, ok=%v; want private", got.ActivityPrivacy, ok)
 	}
 }
 

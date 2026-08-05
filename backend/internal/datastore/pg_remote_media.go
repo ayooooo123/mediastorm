@@ -12,13 +12,13 @@ import (
 
 type pgRemoteMediaRepo struct{ pool DB }
 
-const remoteLibraryColumns = `id, name, library_type, provider, account_id, server_id, server_name,
+const remoteLibraryColumns = `id, name, library_type, provider, account_id, server_id, server_name, server_url,
 	external_library_id, created_at, updated_at, last_sync_started_at, last_sync_finished_at,
 	last_sync_status, last_sync_error, last_sync_total`
 
 func scanRemoteLibrary(row interface{ Scan(...interface{}) error }) (*models.RemoteMediaLibrary, error) {
 	var v models.RemoteMediaLibrary
-	err := row.Scan(&v.ID, &v.Name, &v.Type, &v.Provider, &v.AccountID, &v.ServerID, &v.ServerName,
+	err := row.Scan(&v.ID, &v.Name, &v.Type, &v.Provider, &v.AccountID, &v.ServerID, &v.ServerName, &v.ServerURL,
 		&v.ExternalLibraryID, &v.CreatedAt, &v.UpdatedAt, &v.LastSyncStartedAt, &v.LastSyncFinishedAt,
 		&v.LastSyncStatus, &v.LastSyncError, &v.LastSyncTotal)
 	return &v, err
@@ -54,8 +54,8 @@ func (r *pgRemoteMediaRepo) GetLibrary(ctx context.Context, id string) (*models.
 
 func (r *pgRemoteMediaRepo) CreateLibrary(ctx context.Context, v *models.RemoteMediaLibrary) error {
 	_, err := r.pool.Exec(ctx, `INSERT INTO remote_media_libraries (`+remoteLibraryColumns+`) VALUES
-		($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, v.ID, v.Name, v.Type, v.Provider,
-		v.AccountID, v.ServerID, v.ServerName, v.ExternalLibraryID, v.CreatedAt, v.UpdatedAt,
+		($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, v.ID, v.Name, v.Type, v.Provider,
+		v.AccountID, v.ServerID, v.ServerName, v.ServerURL, v.ExternalLibraryID, v.CreatedAt, v.UpdatedAt,
 		v.LastSyncStartedAt, v.LastSyncFinishedAt, v.LastSyncStatus, v.LastSyncError, v.LastSyncTotal)
 	if err != nil {
 		return fmt.Errorf("create remote media library: %w", err)
@@ -65,8 +65,8 @@ func (r *pgRemoteMediaRepo) CreateLibrary(ctx context.Context, v *models.RemoteM
 
 func (r *pgRemoteMediaRepo) UpdateLibrary(ctx context.Context, v *models.RemoteMediaLibrary) error {
 	_, err := r.pool.Exec(ctx, `UPDATE remote_media_libraries SET name=$2, library_type=$3, server_name=$4,
-		updated_at=$5, last_sync_started_at=$6, last_sync_finished_at=$7, last_sync_status=$8,
-		last_sync_error=$9, last_sync_total=$10 WHERE id=$1`, v.ID, v.Name, v.Type, v.ServerName,
+		server_url=$5, updated_at=$6, last_sync_started_at=$7, last_sync_finished_at=$8, last_sync_status=$9,
+		last_sync_error=$10, last_sync_total=$11 WHERE id=$1`, v.ID, v.Name, v.Type, v.ServerName, v.ServerURL,
 		v.UpdatedAt, v.LastSyncStartedAt, v.LastSyncFinishedAt, v.LastSyncStatus, v.LastSyncError, v.LastSyncTotal)
 	if err != nil {
 		return fmt.Errorf("update remote media library: %w", err)

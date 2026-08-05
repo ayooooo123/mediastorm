@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -19,12 +18,16 @@ type HomepageMetadataService interface {
 	SeriesDetails(ctx context.Context, req models.SeriesDetailsQuery) (*models.SeriesDetails, error)
 }
 
+// HomepageStreamsProvider supplies the canonical active-stream view.
+type HomepageStreamsProvider interface {
+	ActiveStreams() StreamsResponse
+}
+
 // HomepageHandler provides stats for Homepage dashboard integration
 type HomepageHandler struct {
 	accounts        *accounts.Service
 	userService     UserService
-	hlsManager      *HLSManager
-	progressService ProgressService
+	streamsProvider HomepageStreamsProvider
 	metadataService HomepageMetadataService
 	apiKey          string // Required API key for authentication
 }
@@ -46,7 +49,7 @@ type HomepageAccount struct {
 // HomepageStream represents an active stream for Homepage
 type HomepageStream struct {
 	ID              string    `json:"id"`
-	Type            string    `json:"type"` // "hls"
+	Type            string    `json:"type"` // "hls" or "direct"
 	Filename        string    `json:"filename"`
 	ProfileName     string    `json:"profileName,omitempty"`
 	ClientIP        string    `json:"clientIp,omitempty"`
@@ -77,6 +80,35 @@ type HomepageStats struct {
 	Streams       []HomepageStream  `json:"streams"`
 }
 
+// DashboardShelfStream is the presentation-safe subset of an active dashboard
+// stream exposed to authenticated app clients. It intentionally omits file
+// paths, network addresses, user agents, and transport statistics.
+type DashboardShelfStream struct {
+	ID              string            `json:"id"`
+	ItemID          string            `json:"itemId,omitempty"`
+	ProfileNames    []string          `json:"profileNames,omitempty"`
+	CreatedAt       time.Time         `json:"createdAt"`
+	Duration        float64           `json:"duration,omitempty"`
+	CurrentPosition float64           `json:"currentPosition,omitempty"`
+	PercentWatched  float64           `json:"percentWatched,omitempty"`
+	IsPaused        bool              `json:"isPaused"`
+	Status          string            `json:"status"`
+	MediaType       string            `json:"mediaType,omitempty"`
+	Title           string            `json:"title,omitempty"`
+	Year            int               `json:"year,omitempty"`
+	SeasonNumber    int               `json:"seasonNumber,omitempty"`
+	EpisodeNumber   int               `json:"episodeNumber,omitempty"`
+	EpisodeName     string            `json:"episodeName,omitempty"`
+	ExternalIDs     map[string]string `json:"externalIds,omitempty"`
+	PosterURL       string            `json:"posterUrl,omitempty"`
+	BackdropURL     string            `json:"backdropUrl,omitempty"`
+}
+
+type DashboardShelfResponse struct {
+	Streams []DashboardShelfStream `json:"streams"`
+	Count   int                    `json:"count"`
+}
+
 // NewHomepageHandler creates a new Homepage handler
 func NewHomepageHandler(accounts *accounts.Service) *HomepageHandler {
 	return &HomepageHandler{
@@ -89,14 +121,9 @@ func (h *HomepageHandler) SetUserService(svc UserService) {
 	h.userService = svc
 }
 
-// SetHLSManager sets the HLS manager for stream info
-func (h *HomepageHandler) SetHLSManager(mgr *HLSManager) {
-	h.hlsManager = mgr
-}
-
-// SetProgressService sets the progress service for media matching
-func (h *HomepageHandler) SetProgressService(svc ProgressService) {
-	h.progressService = svc
+// SetStreamsProvider sets the canonical dashboard stream source.
+func (h *HomepageHandler) SetStreamsProvider(provider HomepageStreamsProvider) {
+	h.streamsProvider = provider
 }
 
 // SetMetadataService sets the metadata service for poster URL lookup
@@ -121,16 +148,12 @@ func (h *HomepageHandler) GetStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build user ID -> user map and account -> profiles map
-	usersByID := make(map[string]models.User)
-	userNames := make(map[string]string)
+	// Build account -> profiles map
 	profilesByAccount := make(map[string][]HomepageProfile)
 	totalProfiles := 0
 
 	if h.userService != nil {
 		for _, user := range h.userService.ListAll() {
-			usersByID[user.ID] = user
-			userNames[user.ID] = user.Name
 			profilesByAccount[user.AccountID] = append(profilesByAccount[user.AccountID], HomepageProfile{
 				ID:   user.ID,
 				Name: user.Name,
@@ -152,171 +175,217 @@ func (h *HomepageHandler) GetStats(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Get all playback progress for matching
-	var allProgress map[string][]models.PlaybackProgress
-	if h.progressService != nil {
-		allProgress = h.progressService.ListAllPlaybackProgress()
-	}
-
-	// Build reverse lookup: user name -> user ID for progress matching
-	nameToUserID := make(map[string]string)
-	for userID, name := range userNames {
-		nameToUserID[strings.ToLower(name)] = userID
-	}
-
-	// Build streams list from HLS manager
-	var streamsList []HomepageStream
-	if h.hlsManager != nil {
-		h.hlsManager.mu.RLock()
-		for _, session := range h.hlsManager.sessions {
-			session.mu.RLock()
-
-			// Extract filename from path
-			filename := filepath.Base(session.Path)
-			if filename == "" || filename == "." {
-				filename = filepath.Base(session.OriginalPath)
+	streamsList := make([]HomepageStream, 0)
+	if h.streamsProvider != nil {
+		active := h.streamsProvider.ActiveStreams()
+		streamsList = make([]HomepageStream, 0, len(active.Streams))
+		for _, source := range active.Streams {
+			stream := homepageStreamFromDashboard(source)
+			if h.metadataService != nil && stream.PosterURL == "" && stream.MediaType != "" && stream.Title != "" {
+				stream.PosterURL = h.fetchPosterURL(r.Context(), homepageProgressForPoster(stream))
 			}
-
-			// Look up profile name
-			profileName := session.ProfileName
-			if profileName == "" && session.ProfileID != "" {
-				if user, ok := usersByID[session.ProfileID]; ok {
-					profileName = user.Name
-				}
-			}
-
-			// Calculate current position estimate
-			elapsed := time.Since(session.LastAccess).Seconds()
-			currentPos := session.StartOffset + elapsed
-			if currentPos > session.Duration && session.Duration > 0 {
-				currentPos = session.Duration
-			}
-
-			// Calculate percent watched
-			percentWatched := 0.0
-			if session.Duration > 0 {
-				percentWatched = (currentPos / session.Duration) * 100
-				if percentWatched > 100 {
-					percentWatched = 100
-				}
-			}
-
-			stream := HomepageStream{
-				ID:              session.ID,
-				Type:            "hls",
-				Filename:        filename,
-				ProfileName:     profileName,
-				ClientIP:        session.ClientIP,
-				CreatedAt:       session.CreatedAt,
-				Duration:        session.Duration,
-				CurrentPosition: currentPos,
-				PercentWatched:  percentWatched,
-				HasDV:           session.HasDV,
-				HasHDR:          session.HasHDR,
-				MediaType:       session.MediaMetadata.MediaType,
-				Title:           session.MediaMetadata.Title,
-				Year:            session.MediaMetadata.Year,
-				SeasonNumber:    session.MediaMetadata.SeasonNumber,
-				EpisodeNumber:   session.MediaMetadata.EpisodeNumber,
-				EpisodeName:     session.MediaMetadata.EpisodeName,
-				ExternalIDs:     session.MediaMetadata.ExternalIDs,
-			}
-
-			// Try to match to playback progress for current position. Prefer the
-			// canonical stream metadata; filename matching is only a fallback for
-			// older sessions without media metadata.
-			cleanedFilename := cleanFilenameForMatch(filename)
-			var matchedProgress *models.PlaybackProgress
-			if match := findProgressByMediaMetadata(allProgress, session.ProfileID, profileName, session.MediaMetadata, nameToUserID); match != nil {
-				matchedProgress = match
-			}
-
-			// Determine which user IDs to try for progress lookup
-			userIDsToTry := []string{}
-			if session.ProfileID != "" {
-				userIDsToTry = append(userIDsToTry, session.ProfileID)
-			}
-			if profileName != "" {
-				if mappedID, ok := nameToUserID[strings.ToLower(profileName)]; ok && mappedID != session.ProfileID {
-					userIDsToTry = append(userIDsToTry, mappedID)
-				}
-			}
-
-			if matchedProgress == nil {
-				// Try each user ID to find matching progress
-				for _, userID := range userIDsToTry {
-					if userProgress, ok := allProgress[userID]; ok {
-						if match := findMatchingProgress(userProgress, cleanedFilename, filename); match != nil {
-							matchedProgress = match
-							break
-						}
-					}
-				}
-			}
-
-			if matchedProgress != nil {
-				stream.CurrentPosition = matchedProgress.Position
-				stream.PercentWatched = matchedProgress.PercentWatched
-				if matchedProgress.Duration > 0 {
-					stream.Duration = matchedProgress.Duration
-				}
-				stream.MediaType = matchedProgress.MediaType
-				stream.ExternalIDs = matchedProgress.ExternalIDs
-				if matchedProgress.MediaType == "episode" {
-					stream.Title = matchedProgress.SeriesName
-					stream.SeasonNumber = matchedProgress.SeasonNumber
-					stream.EpisodeNumber = matchedProgress.EpisodeNumber
-					stream.EpisodeName = matchedProgress.EpisodeName
-				} else {
-					stream.Title = matchedProgress.MovieName
-					stream.Year = matchedProgress.Year
-				}
-				// Fetch poster URL from metadata service
-				if h.metadataService != nil {
-					stream.PosterURL = h.fetchPosterURL(r.Context(), matchedProgress)
-				}
-			} else if h.metadataService != nil && stream.PosterURL == "" && stream.MediaType != "" && stream.Title != "" {
-				progressLike := &models.PlaybackProgress{
-					MediaType:     stream.MediaType,
-					ExternalIDs:   stream.ExternalIDs,
-					SeasonNumber:  stream.SeasonNumber,
-					EpisodeNumber: stream.EpisodeNumber,
-					EpisodeName:   stream.EpisodeName,
-					MovieName:     stream.Title,
-					SeriesName:    stream.Title,
-					Year:          stream.Year,
-				}
-				if stream.MediaType == "episode" {
-					progressLike.SeriesName = stream.Title
-					progressLike.MovieName = ""
-				} else {
-					progressLike.MovieName = stream.Title
-					progressLike.SeriesName = ""
-				}
-				stream.PosterURL = h.fetchPosterURL(r.Context(), progressLike)
-			}
-
-			session.mu.RUnlock()
 			streamsList = append(streamsList, stream)
 		}
-		h.hlsManager.mu.RUnlock()
 	}
-
-	// Deduplicate streams by profileName + filename
-	// Same user watching the same file = one stream entry
-	deduped := deduplicateStreams(streamsList)
 
 	stats := HomepageStats{
 		Version:       GetBackendVersion(),
-		ActiveStreams: len(deduped),
+		ActiveStreams: len(streamsList),
 		TotalAccounts: len(accountsList),
 		TotalProfiles: totalProfiles,
 		Accounts:      accountsList,
-		Streams:       deduped,
+		Streams:       streamsList,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(stats)
+}
+
+// GetDashboardShelf returns active playback cards for authenticated app
+// clients. The protected API router handles authentication.
+func (h *HomepageHandler) GetDashboardShelf(w http.ResponseWriter, r *http.Request) {
+	streams := make([]DashboardShelfStream, 0)
+	if h.streamsProvider != nil {
+		active := h.streamsProvider.ActiveStreams()
+		privacy := newDashboardShelfPrivacyIndex(h.userService)
+		streams = make([]DashboardShelfStream, 0, len(active.Streams))
+		for _, source := range active.Streams {
+			profileNames := privacy.visibleProfileNames(source)
+			if len(profileNames) == 0 {
+				continue
+			}
+			stream := dashboardShelfStreamFromDashboard(source, profileNames)
+			if h.metadataService != nil && stream.MediaType != "" && stream.Title != "" {
+				posterURL, backdropURL := h.fetchShelfArtwork(r.Context(), homepageProgressForShelfArtwork(stream))
+				if stream.PosterURL == "" {
+					stream.PosterURL = posterURL
+				}
+				stream.BackdropURL = backdropURL
+			}
+			streams = append(streams, stream)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(DashboardShelfResponse{Streams: streams, Count: len(streams)})
+}
+
+type dashboardShelfPrivacyIndex struct {
+	byID   map[string]models.User
+	byName map[string]models.User
+}
+
+func newDashboardShelfPrivacyIndex(userService UserService) dashboardShelfPrivacyIndex {
+	index := dashboardShelfPrivacyIndex{
+		byID:   make(map[string]models.User),
+		byName: make(map[string]models.User),
+	}
+	if userService == nil {
+		return index
+	}
+	for _, user := range userService.ListAll() {
+		index.byID[user.ID] = user
+		if name := strings.ToLower(strings.TrimSpace(user.Name)); name != "" {
+			index.byName[name] = user
+		}
+	}
+	return index
+}
+
+func (i dashboardShelfPrivacyIndex) visibleProfileNames(source StreamInfo) []string {
+	profileIDs := append([]string(nil), source.ProfileIDs...)
+	profileNames := append([]string(nil), source.ProfileNames...)
+	if len(profileIDs) == 0 && strings.TrimSpace(source.ProfileID) != "" {
+		profileIDs = []string{source.ProfileID}
+	}
+	if len(profileNames) == 0 && strings.TrimSpace(source.ProfileName) != "" {
+		profileNames = []string{source.ProfileName}
+	}
+
+	count := maxInt(len(profileIDs), len(profileNames))
+	visible := make([]string, 0, count)
+	seen := make(map[string]struct{}, count)
+	for idx := 0; idx < count; idx++ {
+		var profileID, profileName string
+		if idx < len(profileIDs) {
+			profileID = strings.TrimSpace(profileIDs[idx])
+		}
+		if idx < len(profileNames) {
+			profileName = strings.TrimSpace(profileNames[idx])
+		}
+		user, ok := i.byID[profileID]
+		if !ok && profileName != "" {
+			user, ok = i.byName[strings.ToLower(profileName)]
+		}
+		if !ok {
+			continue
+		}
+
+		var displayName string
+		switch models.NormalizeActivityPrivacy(user.ActivityPrivacy) {
+		case models.ActivityPrivacyShared:
+			displayName = strings.TrimSpace(user.Name)
+		case models.ActivityPrivacySharedAnonymous:
+			displayName = "Fellow user"
+		default:
+			continue
+		}
+		if displayName == "" {
+			continue
+		}
+		key := strings.ToLower(displayName)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		visible = append(visible, displayName)
+	}
+	return visible
+}
+
+func dashboardShelfStreamFromDashboard(source StreamInfo, profileNames []string) DashboardShelfStream {
+	status := "playing"
+	if source.IsPaused {
+		status = "paused"
+	}
+	return DashboardShelfStream{
+		ID:              source.ID,
+		ItemID:          source.ItemID,
+		ProfileNames:    profileNames,
+		CreatedAt:       source.CreatedAt,
+		Duration:        source.Duration,
+		CurrentPosition: source.CurrentPosition,
+		PercentWatched:  source.PercentWatched,
+		IsPaused:        source.IsPaused,
+		Status:          status,
+		MediaType:       source.MediaType,
+		Title:           source.Title,
+		Year:            source.Year,
+		SeasonNumber:    source.SeasonNumber,
+		EpisodeNumber:   source.EpisodeNumber,
+		EpisodeName:     source.EpisodeName,
+		ExternalIDs:     source.ExternalIDs,
+		PosterURL:       source.PosterURL,
+	}
+}
+
+func homepageProgressForShelfArtwork(stream DashboardShelfStream) *models.PlaybackProgress {
+	progress := &models.PlaybackProgress{
+		ItemID:        stream.ItemID,
+		MediaType:     stream.MediaType,
+		ExternalIDs:   stream.ExternalIDs,
+		SeasonNumber:  stream.SeasonNumber,
+		EpisodeNumber: stream.EpisodeNumber,
+		EpisodeName:   stream.EpisodeName,
+		Year:          stream.Year,
+	}
+	if stream.MediaType == "episode" {
+		progress.SeriesName = stream.Title
+	} else {
+		progress.MovieName = stream.Title
+	}
+	return progress
+}
+
+func homepageStreamFromDashboard(source StreamInfo) HomepageStream {
+	return HomepageStream{
+		ID:              source.ID,
+		Type:            source.Type,
+		Filename:        source.Filename,
+		ProfileName:     source.ProfileName,
+		ClientIP:        source.ClientIP,
+		CreatedAt:       source.CreatedAt,
+		Duration:        source.Duration,
+		CurrentPosition: source.CurrentPosition,
+		PercentWatched:  source.PercentWatched,
+		HasDV:           source.HasDV,
+		HasHDR:          source.HasHDR,
+		MediaType:       source.MediaType,
+		Title:           source.Title,
+		Year:            source.Year,
+		SeasonNumber:    source.SeasonNumber,
+		EpisodeNumber:   source.EpisodeNumber,
+		EpisodeName:     source.EpisodeName,
+		ExternalIDs:     source.ExternalIDs,
+		PosterURL:       source.PosterURL,
+	}
+}
+
+func homepageProgressForPoster(stream HomepageStream) *models.PlaybackProgress {
+	progress := &models.PlaybackProgress{
+		MediaType:     stream.MediaType,
+		ExternalIDs:   stream.ExternalIDs,
+		SeasonNumber:  stream.SeasonNumber,
+		EpisodeNumber: stream.EpisodeNumber,
+		EpisodeName:   stream.EpisodeName,
+		Year:          stream.Year,
+	}
+	if stream.MediaType == "episode" {
+		progress.SeriesName = stream.Title
+	} else {
+		progress.MovieName = stream.Title
+	}
+	return progress
 }
 
 // findMatchingProgress finds a matching progress entry for a filename.
@@ -366,8 +435,13 @@ func findMatchingProgress(progressList []models.PlaybackProgress, cleanedFilenam
 
 // fetchPosterURL fetches the poster URL from the metadata service
 func (h *HomepageHandler) fetchPosterURL(ctx context.Context, progress *models.PlaybackProgress) string {
+	posterURL, _ := h.fetchShelfArtwork(ctx, progress)
+	return posterURL
+}
+
+func (h *HomepageHandler) fetchShelfArtwork(ctx context.Context, progress *models.PlaybackProgress) (string, string) {
 	if h.metadataService == nil || progress == nil {
-		return ""
+		return "", ""
 	}
 
 	// Parse external IDs
@@ -396,8 +470,15 @@ func (h *HomepageHandler) fetchPosterURL(ctx context.Context, progress *models.P
 			TMDBID: tmdbID,
 			TVDBID: tvdbID,
 		}
-		if title, err := h.metadataService.MovieDetails(ctx, query); err == nil && title != nil && title.Poster != nil {
-			return title.Poster.URL
+		if title, err := h.metadataService.MovieDetails(ctx, query); err == nil && title != nil {
+			var posterURL, backdropURL string
+			if title.Poster != nil {
+				posterURL = title.Poster.URL
+			}
+			if title.Backdrop != nil {
+				backdropURL = title.Backdrop.URL
+			}
+			return posterURL, backdropURL
 		}
 	case "episode":
 		query := models.SeriesDetailsQuery{
@@ -405,12 +486,19 @@ func (h *HomepageHandler) fetchPosterURL(ctx context.Context, progress *models.P
 			TMDBID: tmdbID,
 			TVDBID: tvdbID,
 		}
-		if details, err := h.metadataService.SeriesDetails(ctx, query); err == nil && details != nil && details.Title.Poster != nil {
-			return details.Title.Poster.URL
+		if details, err := h.metadataService.SeriesDetails(ctx, query); err == nil && details != nil {
+			var posterURL, backdropURL string
+			if details.Title.Poster != nil {
+				posterURL = details.Title.Poster.URL
+			}
+			if details.Title.Backdrop != nil {
+				backdropURL = details.Title.Backdrop.URL
+			}
+			return posterURL, backdropURL
 		}
 	}
 
-	return ""
+	return "", ""
 }
 
 // deduplicateStreams removes duplicate streams based on profileName + filename

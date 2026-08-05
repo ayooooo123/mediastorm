@@ -13,88 +13,100 @@
 </div>
 
 <div class="search-diagnostics">
-    <div class="search-diagnostics-header">
+    <button class="collapsible-panel-toggle" type="button" aria-expanded="false" aria-controls="search-diagnostics-content" onclick="toggleConnectionsPanel(this)">
         <div>
             <h2>Search Diagnostics</h2>
             <p>Run a real search against enabled indexers and torrent sources to tune search timeout.</p>
         </div>
+        <svg class="collapsible-panel-chevron" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <polyline points="6 9 12 15 18 9"/>
+        </svg>
+    </button>
+    <div id="search-diagnostics-content" class="collapsible-panel-content" hidden>
         <div class="search-diagnostics-actions">
             <button class="btn btn-secondary" id="save-timeout-btn" onclick="saveSearchTimeout()">Save Timeout</button>
             <button class="btn btn-primary" id="run-search-diagnostics-btn" onclick="runSearchDiagnostics()">Run Search Test</button>
         </div>
-    </div>
-    <div class="search-diagnostics-controls">
-        <label>
-            <span>Query</span>
-            <input type="text" id="diag-query" value="The Matrix" autocomplete="off">
-        </label>
-        <label>
-            <span>IMDb ID</span>
-            <input type="text" id="diag-imdb" value="tt0133093" autocomplete="off">
-        </label>
-        <label>
-            <span>Year</span>
-            <input type="number" id="diag-year" value="1999" min="1900" max="2100">
-        </label>
-        <label>
-            <span>Type</span>
-            <select id="diag-media-type">
-                <option value="movie" selected>Movie</option>
-                <option value="series">Series</option>
-            </select>
-        </label>
-        <label>
-            <span>Timeout</span>
-            <input type="number" id="diag-timeout" min="0.1" max="120" step="0.1" value="{{.Settings.Streaming.IndexerTimeoutSec}}">
-        </label>
-    </div>
-    <div id="search-diagnostics-summary" class="search-diagnostics-summary">Not run yet.</div>
-    <div id="search-timeout-recommendation" class="search-timeout-recommendation"></div>
-    <div class="search-diagnostics-table-wrap">
-        <table class="search-diagnostics-table">
-            <thead>
-                <tr>
-                    <th>Source</th>
-                    <th>Kind</th>
-                    <th>Results</th>
-                    <th>Time</th>
-                    <th>Status</th>
-                </tr>
-            </thead>
-            <tbody id="search-diagnostics-results">
-                <tr><td colspan="5" class="empty-row">Run a search test to compare enabled sources.</td></tr>
-            </tbody>
-        </table>
+        <div class="search-diagnostics-controls">
+            <label>
+                <span>Query</span>
+                <input type="text" id="diag-query" value="The Matrix" autocomplete="off">
+            </label>
+            <label>
+                <span>IMDb ID</span>
+                <input type="text" id="diag-imdb" value="tt0133093" autocomplete="off">
+            </label>
+            <label>
+                <span>Year</span>
+                <input type="number" id="diag-year" value="1999" min="1900" max="2100">
+            </label>
+            <label>
+                <span>Type</span>
+                <select id="diag-media-type">
+                    <option value="movie" selected>Movie</option>
+                    <option value="series">Series</option>
+                </select>
+            </label>
+            <label>
+                <span>Timeout</span>
+                <input type="number" id="diag-timeout" min="0.1" max="120" step="0.1" value="{{.Settings.Streaming.IndexerTimeoutSec}}">
+            </label>
+        </div>
+        <div id="search-diagnostics-summary" class="search-diagnostics-summary">Not run yet.</div>
+        <div id="search-timeout-recommendation" class="search-timeout-recommendation"></div>
+        <div class="search-diagnostics-table-wrap">
+            <table class="search-diagnostics-table">
+                <thead>
+                    <tr>
+                        <th>Source</th>
+                        <th>Kind</th>
+                        <th>Results</th>
+                        <th>Time</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody id="search-diagnostics-results">
+                    <tr><td colspan="5" class="empty-row">Run a search test to compare enabled sources.</td></tr>
+                </tbody>
+            </table>
+        </div>
     </div>
 </div>
 
 <div class="api-usage-panel">
-    <div class="api-usage-header">
+    <button class="collapsible-panel-toggle" type="button" aria-expanded="false" aria-controls="api-usage-content" onclick="toggleConnectionsPanel(this)">
         <div>
             <h2>Outbound API Usage</h2>
             <p>Provider calls tracked in the backend cache with rotating history.</p>
         </div>
-        <button class="btn btn-secondary" type="button" onclick="refreshConnectionsUsage()">Refresh</button>
-    </div>
-    <div class="api-usage-summary" id="api-usage-summary">No tracked calls yet.</div>
-    <div class="api-usage-table-wrap">
-        <table class="api-usage-table">
-            <thead>
-                <tr>
-                    <th>Provider</th>
-                    <th>Operation</th>
-                    <th>Last Hour</th>
-                    <th>Last 24h</th>
-                    <th>Count</th>
-                    <th>Failures</th>
-                    <th>Avg</th>
-                    <th>Last</th>
-                </tr>
-            </thead>
-            <tbody id="api-usage-results">
-                <tr><td colspan="8" class="empty-row">No tracked calls yet.</td></tr>
-            </tbody>
-        </table>
+        <svg class="collapsible-panel-chevron" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <polyline points="6 9 12 15 18 9"/>
+        </svg>
+    </button>
+    <div id="api-usage-content" class="collapsible-panel-content" hidden>
+        <div class="api-usage-actions">
+            <button class="btn btn-secondary" type="button" onclick="refreshConnectionsUsage()">Refresh</button>
+        </div>
+        <div class="api-usage-summary" id="api-usage-summary">No tracked calls yet.</div>
+        <div class="api-usage-table-wrap">
+            <table class="api-usage-table">
+                <thead>
+                    <tr>
+                        <th>Provider</th>
+                        <th>Operation</th>
+                        <th>Last Hour</th>
+                        <th>Last 24h</th>
+                        <th>Count</th>
+                        <th>Failures</th>
+                        <th>Avg</th>
+                        <th>Last</th>
+                    </tr>
+                </thead>
+                <tbody id="api-usage-results">
+                    <tr><td colspan="8" class="empty-row">No tracked calls yet.</td></tr>
+                </tbody>
+            </table>
+        </div>
     </div>
 </div>
 
@@ -104,11 +116,16 @@
 .page-header { display: flex; align-items: center; gap: 16px; margin-bottom: 24px; flex-wrap: wrap; }
 .page-header h1 { margin: 0; }
 .page-header p { margin: 0; color: var(--text-secondary, #888); flex: 1; }
-.search-diagnostics { background: var(--card-bg, #1a1a2e); border: 1px solid var(--border-color, #333); border-radius: 8px; padding: 16px; margin-bottom: 24px; display: flex; flex-direction: column; gap: 14px; }
-.search-diagnostics-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
-.search-diagnostics-header h2 { margin: 0 0 4px 0; font-size: 18px; }
-.search-diagnostics-header p { margin: 0; color: var(--text-secondary, #888); font-size: 13px; }
-.search-diagnostics-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.search-diagnostics { background: var(--card-bg, #1a1a2e); border: 1px solid var(--border-color, #333); border-radius: 8px; padding: 16px; margin-bottom: 24px; }
+.collapsible-panel-toggle { width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 16px; border: 0; padding: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; font: inherit; }
+.collapsible-panel-toggle h2 { margin: 0 0 4px 0; font-size: 18px; }
+.collapsible-panel-toggle p { margin: 0; color: var(--text-secondary, #888); font-size: 13px; }
+.collapsible-panel-toggle:focus-visible { outline: 2px solid var(--accent, #6366f1); outline-offset: 5px; border-radius: 4px; }
+.collapsible-panel-chevron { flex-shrink: 0; color: var(--text-secondary, #888); transition: transform 0.2s ease; }
+.collapsible-panel-toggle[aria-expanded="true"] .collapsible-panel-chevron { transform: rotate(180deg); }
+.collapsible-panel-content { display: flex; flex-direction: column; gap: 14px; margin-top: 14px; }
+.collapsible-panel-content[hidden] { display: none; }
+.search-diagnostics-actions, .api-usage-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 .search-diagnostics-controls { display: grid; grid-template-columns: minmax(220px, 2fr) minmax(120px, 1fr) 96px 110px 110px; gap: 10px; align-items: end; }
 .search-diagnostics-controls label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--text-secondary, #888); }
 .search-diagnostics-controls input,
@@ -127,10 +144,7 @@
 .diag-status-pass { color: var(--success-color, #4caf50); }
 .diag-status-warn { color: var(--warning-color, #ff9800); }
 .diag-status-fail { color: var(--error-color, #f44336); max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
-.api-usage-panel { background: var(--card-bg, #1a1a2e); border: 1px solid var(--border-color, #333); border-radius: 8px; padding: 16px; margin-bottom: 24px; display: flex; flex-direction: column; gap: 12px; }
-.api-usage-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
-.api-usage-header h2 { margin: 0 0 4px 0; font-size: 18px; }
-.api-usage-header p { margin: 0; color: var(--text-secondary, #888); font-size: 13px; }
+.api-usage-panel { background: var(--card-bg, #1a1a2e); border: 1px solid var(--border-color, #333); border-radius: 8px; padding: 16px; margin-bottom: 24px; }
 .api-usage-summary { font-size: 13px; color: var(--text-secondary, #888); min-height: 20px; }
 .api-usage-table-wrap { overflow-x: auto; }
 .api-usage-table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -175,6 +189,15 @@
 let settings = {{json .Settings}};
 let testCards = [];
 let latestSearchDiagnostics = null;
+
+function toggleConnectionsPanel(button) {
+    const content = document.getElementById(button.getAttribute('aria-controls'));
+    if (!content) return;
+
+    const expanded = button.getAttribute('aria-expanded') === 'true';
+    button.setAttribute('aria-expanded', String(!expanded));
+    content.hidden = expanded;
+}
 
 function createCard(group, name, badgeHtml, key, payload) {
     return { group, name, badgeHtml, key, payload, status: 'pending', message: '', durationMs: null };

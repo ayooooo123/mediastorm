@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -80,8 +81,39 @@ type LiveSourceOption struct {
 type LiveChannelsResponse struct {
 	Channels            []LiveChannel      `json:"channels"`
 	TotalBeforeFilter   int                `json:"totalBeforeFilter"`
+	Total               int                `json:"total"`
+	Offset              int                `json:"offset"`
+	Limit               int                `json:"limit"`
+	HasMore             bool               `json:"hasMore"`
 	AvailableCategories []string           `json:"availableCategories"`
 	Sources             []LiveSourceOption `json:"sources,omitempty"`
+}
+
+const maxLiveChannelPageSize = 500
+
+func parseLiveChannelPagination(r *http.Request) (offset, limit int, paginated bool, err error) {
+	query := r.URL.Query()
+	offsetValue, hasOffset := query["offset"]
+	limitValue, hasLimit := query["limit"]
+	if !hasOffset && !hasLimit {
+		return 0, 0, false, nil
+	}
+
+	paginated = true
+	limit = 250
+	if hasOffset {
+		offset, err = strconv.Atoi(strings.TrimSpace(offsetValue[len(offsetValue)-1]))
+		if err != nil || offset < 0 {
+			return 0, 0, false, errors.New("offset must be a non-negative integer")
+		}
+	}
+	if hasLimit {
+		limit, err = strconv.Atoi(strings.TrimSpace(limitValue[len(limitValue)-1]))
+		if err != nil || limit <= 0 || limit > maxLiveChannelPageSize {
+			return 0, 0, false, fmt.Errorf("limit must be between 1 and %d", maxLiveChannelPageSize)
+		}
+	}
+	return offset, limit, true, nil
 }
 
 // CategoryInfo represents category metadata.
@@ -1634,6 +1666,11 @@ func (h *LiveHandler) resolveProfileLiveSource(r *http.Request, globalSettings c
 // GetChannels returns parsed and filtered channels from the configured playlist.
 func (h *LiveHandler) GetChannels(w http.ResponseWriter, r *http.Request) {
 	var allChannels []LiveChannel
+	offset, limit, paginated, err := parseLiveChannelPagination(r)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
 
 	settings, err := h.cfgManager.Load()
 	if err != nil {
@@ -1705,12 +1742,60 @@ func (h *LiveHandler) GetChannels(w http.ResponseWriter, r *http.Request) {
 		availableCategories[i] = cat.Name
 	}
 
+	requestedCategories := make(map[string]struct{})
+	for _, category := range r.URL.Query()["category"] {
+		if category = strings.TrimSpace(category); category != "" {
+			requestedCategories[category] = struct{}{}
+		}
+	}
+	requestedFavoriteIDs := make(map[string]struct{})
+	for _, channelID := range r.URL.Query()["favoriteId"] {
+		if channelID = strings.TrimSpace(channelID); channelID != "" {
+			requestedFavoriteIDs[channelID] = struct{}{}
+		}
+	}
+	favoritesOnly, _ := strconv.ParseBool(r.URL.Query().Get("favoritesOnly"))
+	hasValidCategorySelection := false
+	for _, category := range availableCategories {
+		if _, selected := requestedCategories[category]; selected {
+			hasValidCategorySelection = true
+			break
+		}
+	}
+	if favoritesOnly || hasValidCategorySelection {
+		selected := make([]LiveChannel, 0, len(filteredChannels))
+		for _, channel := range filteredChannels {
+			_, favorite := requestedFavoriteIDs[channel.ID]
+			_, categorySelected := requestedCategories[channel.Group]
+			if (favoritesOnly && favorite) || (!favoritesOnly && (favorite || categorySelected)) {
+				selected = append(selected, channel)
+			}
+		}
+		filteredChannels = selected
+	}
+
+	total := len(filteredChannels)
+	pageChannels := filteredChannels
+	responseOffset := 0
+	responseLimit := total
+	if paginated {
+		responseOffset = offset
+		responseLimit = limit
+		start := min(offset, total)
+		end := min(start+limit, total)
+		pageChannels = filteredChannels[start:end]
+	}
+
 	// Note: StreamURL will be set by frontend based on channel.url
 	// The frontend calls buildLiveStreamUrl to create the proxied URL
 
 	response := LiveChannelsResponse{
-		Channels:            filteredChannels,
+		Channels:            pageChannels,
 		TotalBeforeFilter:   totalBeforeFilter,
+		Total:               total,
+		Offset:              responseOffset,
+		Limit:               responseLimit,
+		HasMore:             responseOffset+len(pageChannels) < total,
 		AvailableCategories: availableCategories,
 		Sources:             liveSourceOptions(resolvedLiveSources(src)),
 	}

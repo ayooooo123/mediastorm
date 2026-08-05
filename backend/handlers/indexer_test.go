@@ -10,6 +10,7 @@ import (
 
 	"novastream/models"
 	"novastream/services/indexer"
+	"novastream/utils/filter"
 )
 
 func TestNormalizeDecoratedSeriesQuery(t *testing.T) {
@@ -284,6 +285,57 @@ func TestIndexerHandler_SearchSeriesAbsoluteEpisode(t *testing.T) {
 	}
 	if fake.lastOpts.EpisodeAirYear != 2026 {
 		t.Fatalf("expected episode air year 2026, got %d", fake.lastOpts.EpisodeAirYear)
+	}
+}
+
+func TestIndexerHandler_SearchSeriesInfersMissingAbsoluteEpisode(t *testing.T) {
+	fake := &fakeIndexerService{results: []models.NZBResult{}}
+	seriesSvc := &fakeSeriesMetadataService{
+		details: &models.SeriesDetails{
+			Title: models.Title{
+				Name:   "One Piece",
+				Year:   1999,
+				Genres: []string{"Anime"},
+			},
+			Seasons: []models.SeriesSeason{
+				{
+					Number: 23,
+					Episodes: []models.SeriesEpisode{
+						{SeasonNumber: 23, EpisodeNumber: 16, AbsoluteEpisodeNumber: 1171},
+						{SeasonNumber: 23, EpisodeNumber: 17, AiredDate: "2026-08-02"},
+					},
+				},
+			},
+		},
+	}
+	handler := NewIndexerHandler(fake, false)
+	handler.SetMetadataService(seriesSvc)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/indexers/search?q=One+Piece+S23E17&mediaType=series&year=1999", nil)
+	rec := httptest.NewRecorder()
+
+	handler.Search(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d", http.StatusOK, rec.Code)
+	}
+	if fake.lastOpts.AbsoluteEpisodeNumber != 1172 {
+		t.Fatalf("expected inferred absolute episode 1172, got %d", fake.lastOpts.AbsoluteEpisodeNumber)
+	}
+
+	filterOpts := filter.Options{
+		ExpectedTitle:         "One Piece",
+		TargetSeason:          23,
+		TargetEpisode:         17,
+		TargetAbsoluteEpisode: fake.lastOpts.AbsoluteEpisodeNumber,
+	}
+	results := filter.Results([]models.NZBResult{{Title: "One Piece S01E1172 1080p WEB-DL"}}, filterOpts)
+	if len(results) != 1 {
+		t.Fatal("expected S01E1172 result to pass filtering for inferred absolute episode 1172")
+	}
+	wrongResults := filter.Results([]models.NZBResult{{Title: "One Piece S01E1171 1080p WEB-DL"}}, filterOpts)
+	if len(wrongResults) != 0 {
+		t.Fatal("expected adjacent S01E1171 result to be rejected for absolute episode 1172")
 	}
 }
 

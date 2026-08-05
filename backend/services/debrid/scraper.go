@@ -2,6 +2,8 @@ package debrid
 
 import (
 	"context"
+	"strings"
+	"time"
 
 	"novastream/models"
 )
@@ -32,6 +34,7 @@ type ScrapeResult struct {
 	TorrentURL  string // URL to download .torrent file (used when no magnet/infohash available)
 	FileIndex   int
 	SizeBytes   int64
+	PublishDate time.Time
 	Seeders     int
 	Provider    string
 	Languages   []string
@@ -41,4 +44,27 @@ type ScrapeResult struct {
 	Source      string
 	Attributes  map[string]string
 	ServiceType models.ContentServiceType
+}
+
+func parseScraperPublishDate(value string) time.Time {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}
+	}
+	for _, layout := range []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		time.RFC1123Z,
+		time.RFC1123,
+		time.RFC822Z,
+		time.RFC822,
+		"Mon, 02 Jan 2006 15:04:05 MST",
+		"2006-01-02 15:04:05",
+		"2006-01-02",
+	} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed
+		}
+	}
+	return time.Time{}
 }

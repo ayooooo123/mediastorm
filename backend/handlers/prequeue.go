@@ -6,8 +6,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -262,26 +264,67 @@ func validateExternalStreamURL(ctx context.Context, streamURL string, allowRestr
 	if err := requestsecurity.ValidateOutboundURL(ctx, streamURL, allowRestricted); err != nil {
 		return err
 	}
+	client := requestsecurity.NewSafeHTTPClient(5*time.Second, 5, allowRestricted)
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, streamURL, nil)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; mediastorm/1.0)")
 
-	resp, err := requestsecurity.NewSafeHTTPClient(5*time.Second, 5, allowRestricted).Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	finalURL := resp.Request.URL.String()
+	_ = resp.Body.Close()
 
-	if resp.StatusCode == http.StatusMethodNotAllowed {
-		return nil
+	if debrid.IsKnownPlaceholderURL(finalURL) {
+		return fmt.Errorf("external stream redirected to unavailable-content placeholder")
 	}
 	if shouldForceReresolveForStatus(resp.StatusCode) {
 		return fmt.Errorf("external stream validation returned %d", resp.StatusCode)
 	}
+	if resp.StatusCode != http.StatusMethodNotAllowed &&
+		!isElfHostedStreamURL(streamURL) &&
+		!isElfHostedStreamURL(finalURL) {
+		return nil
+	}
+
+	rangeReq, err := http.NewRequestWithContext(ctx, http.MethodGet, streamURL, nil)
+	if err != nil {
+		return err
+	}
+	rangeReq.Header.Set("User-Agent", "Mozilla/5.0 (compatible; mediastorm/1.0)")
+	rangeReq.Header.Set("Range", "bytes=0-4095")
+	rangeReq.Header.Set("Accept-Encoding", "identity")
+
+	rangeResp, err := client.Do(rangeReq)
+	if err != nil {
+		return err
+	}
+	defer rangeResp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(rangeResp.Body, 4096))
+	if err != nil {
+		return err
+	}
+	if debrid.IsKnownPlaceholderResponse(rangeResp.Request.URL.String(), body) {
+		return fmt.Errorf("external stream returned unavailable-content placeholder")
+	}
+	if shouldForceReresolveForStatus(rangeResp.StatusCode) {
+		return fmt.Errorf("external stream validation returned %d", rangeResp.StatusCode)
+	}
 
 	return nil
+}
+
+func isElfHostedStreamURL(rawURL string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	return host == "elfhosted.com" || strings.HasSuffix(host, ".elfhosted.com")
 }
 
 func (h *PrequeueHandler) validateReadyEntryForReuse(ctx context.Context, entry *playback.PrequeueEntry) error {
@@ -314,12 +357,13 @@ type prequeueScopePlayback struct {
 }
 
 type prequeueScopeSignature struct {
-	Filtering         models.FilterSettings            `json:"filtering"`
-	AnimeFiltering    models.AnimeFilteringSettings    `json:"animeFiltering"`
-	Ranking           *models.UserRankingSettings      `json:"ranking,omitempty"`
-	ClientRanking     *[]models.ClientRankingCriterion `json:"clientRanking,omitempty"`
-	Playback          prequeueScopePlayback            `json:"playback"`
-	ContentPreference *models.ContentPreference        `json:"contentPreference,omitempty"`
+	Filtering          models.FilterSettings            `json:"filtering"`
+	AnimeFiltering     models.AnimeFilteringSettings    `json:"animeFiltering"`
+	Ranking            *models.UserRankingSettings      `json:"ranking,omitempty"`
+	ClientRanking      *[]models.ClientRankingCriterion `json:"clientRanking,omitempty"`
+	NewestReleaseFirst bool                             `json:"newestReleaseFirst,omitempty"`
+	Playback           prequeueScopePlayback            `json:"playback"`
+	ContentPreference  *models.ContentPreference        `json:"contentPreference,omitempty"`
 }
 
 func configFilterToUserFilter(f config.FilterSettings) models.FilterSettings {
@@ -417,6 +461,9 @@ func applyClientScopeOverrides(sig *prequeueScopeSignature, clientSettings *mode
 	if clientSettings.RankingCriteria != nil {
 		sig.ClientRanking = clientSettings.RankingCriteria
 	}
+	if clientSettings.NewestReleaseFirst != nil {
+		sig.NewestReleaseFirst = *clientSettings.NewestReleaseFirst
+	}
 }
 
 func prequeueScopeHash(sig prequeueScopeSignature) string {
@@ -438,6 +485,7 @@ func (h *PrequeueHandler) prequeueSettingsScopeKey(userID, clientID, titleID str
 			defaults.Playback = configPlaybackToUserPlayback(globalSettings.Playback)
 			global.Filtering = defaults.Filtering
 			global.AnimeFiltering = defaults.AnimeFiltering
+			global.NewestReleaseFirst = globalSettings.Ranking.NewestReleaseFirst
 			global.Playback = prequeueScopePlayback{
 				PreferredAudioLanguage:     defaults.Playback.PreferredAudioLanguage,
 				PreferredSubtitleLanguage:  defaults.Playback.PreferredSubtitleLanguage,
@@ -455,6 +503,9 @@ func (h *PrequeueHandler) prequeueSettingsScopeKey(userID, clientID, titleID str
 			effective.Filtering = userSettings.Filtering
 			effective.AnimeFiltering = userSettings.AnimeFiltering
 			effective.Ranking = userSettings.Ranking
+			if userSettings.Ranking != nil && userSettings.Ranking.NewestReleaseFirst != nil {
+				effective.NewestReleaseFirst = *userSettings.Ranking.NewestReleaseFirst
+			}
 			effective.Playback = prequeueScopePlayback{
 				PreferredAudioLanguage:     userSettings.Playback.PreferredAudioLanguage,
 				PreferredSubtitleLanguage:  userSettings.Playback.PreferredSubtitleLanguage,
@@ -1069,6 +1120,10 @@ func (h *PrequeueHandler) AdoptMigration(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "streamPath is required", http.StatusBadRequest)
 		return
 	}
+	if isM2TSStreamPath(req.StreamPath) {
+		http.Error(w, "unsupported .m2ts migration source", http.StatusUnprocessableEntity)
+		return
+	}
 	if isExternalStreamPath(req.StreamPath) {
 		checkCtx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		err := h.ValidateExternalURL(checkCtx, req.StreamPath)
@@ -1424,6 +1479,10 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 	// Update status to searching
 	if !h.store.UpdateWorker(prequeueID, func(e *playback.PrequeueEntry) {
 		e.Status = playback.PrequeueStatusSearching
+		e.ProgressStage = "metadata"
+		e.ProgressDetail = ""
+		e.ProgressCurrent = 0
+		e.ProgressTotal = 0
 	}) {
 		log.Printf("[prequeue] Worker stopped before search because entry %s was replaced", prequeueID)
 		return
@@ -1444,6 +1503,10 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 		isAnime = seriesMeta.IsAnime
 		targetAirDate = seriesMeta.TargetAirDate
 		episodeAirYear = seriesMeta.EpisodeAirYear
+		if imdbID == "" && seriesMeta.IMDBID != "" {
+			imdbID = seriesMeta.IMDBID
+			log.Printf("[prequeue] Populated IMDb ID %s from series metadata", imdbID)
+		}
 		if year == 0 && seriesMeta.Year > 0 {
 			year = seriesMeta.Year
 			log.Printf("[prequeue] Populated year %d from series metadata", year)
@@ -1470,6 +1533,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 	}
 
 	log.Printf("[prequeue] TIMING: search starting with query: %q (elapsed: %v)", query, time.Since(workerStart))
+	h.updatePrequeueProgress(prequeueID, "searching", query, 0, 0)
 
 	// For movies, check if the movie is anime by looking at genres
 	if mediaType == "movie" && h.movieMetadataSvc != nil {
@@ -1554,7 +1618,9 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 		if scored.FilterStatus == "filtered" {
 			continue
 		}
-		allResults = append(allResults, scored.NZBResult)
+		candidate := scored.NZBResult
+		annotateResultEpisode(&candidate, targetEpisode)
+		allResults = append(allResults, candidate)
 	}
 	if len(allResults) > searchOpts.MaxResults {
 		allResults = allResults[:searchOpts.MaxResults]
@@ -1567,11 +1633,16 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 		h.failPrequeue(prequeueID, errMsg)
 		return
 	}
+	h.updatePrequeueProgress(prequeueID, "ranking", "", len(allResults), len(scoredResults))
 	log.Printf("[prequeue] TIMING: scored search complete, %d passed candidate(s) selected from %d total result(s), badStreams=%d (elapsed: %v)", len(allResults), len(scoredResults), badStreamCount, time.Since(workerStart))
 
 	// Update status to resolving
 	h.store.UpdateWorker(prequeueID, func(e *playback.PrequeueEntry) {
 		e.Status = playback.PrequeueStatusResolving
+		e.ProgressStage = "preparing_candidates"
+		e.ProgressDetail = ""
+		e.ProgressCurrent = 0
+		e.ProgressTotal = len(allResults)
 	})
 
 	// Load filter settings for DV profile compatibility checking
@@ -1635,19 +1706,21 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 	resolveStart := time.Now()
 	log.Printf("[prequeue] TIMING: starting resolution phase (%d results, elapsed: %v)",
 		len(allResults), time.Since(workerStart))
-	allResults = h.playbackSvc.PrepareTorrentCandidates(ctx, allResults)
+	debridCandidatesPrepared := false
 
 	// Cached probe result for DV checking (reused later for track selection)
 	var cachedProbeResult *VideoFullResult
 	var cachedMetadataResult *VideoMetadataResult
 
-	for i, result := range allResults {
+	for i := range allResults {
 		select {
 		case <-ctx.Done():
 			h.failPrequeue(prequeueID, "cancelled")
 			return
 		default:
 		}
+
+		result := allResults[i]
 
 		// Check episode match for anime absolute numbering
 		if targetEpisode != nil && targetEpisode.AbsoluteEpisodeNumber > 0 {
@@ -1665,9 +1738,25 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 			}
 		}
 
+		// Torrent preflight can spend several seconds downloading metainfo to
+		// discover hashes for TorBox cache checks. Defer that work until a
+		// debrid result is actually eligible for resolution so higher-ranked
+		// Usenet candidates can begin resolving immediately.
+		if shouldPrepareTorrentCandidates(result, debridCandidatesPrepared) {
+			preflightStart := time.Now()
+			preparedCandidates := h.playbackSvc.PrepareTorrentCandidates(ctx, allResults[i:])
+			copy(allResults[i:], preparedCandidates)
+			debridCandidatesPrepared = true
+			result = allResults[i]
+			log.Printf("[prequeue] TIMING: deferred debrid candidate preparation complete at result [%d] (elapsed: %v)",
+				i, time.Since(preflightStart))
+		}
+
+		h.updatePrequeueProgress(prequeueID, "resolving_candidate", result.Title, i+1, len(allResults))
 		annotateResultProfile(&result, userID)
 		resolution, lastErr = h.playbackSvc.Resolve(ctx, result)
 		if lastErr == nil && resolution != nil && resolution.QueueID > 0 && strings.TrimSpace(resolution.WebDAVPath) == "" {
+			h.updatePrequeueProgress(prequeueID, "waiting_provider", result.Title, i+1, len(allResults))
 			resolution, lastErr = h.waitForPlaybackQueue(ctx, prequeueID, resolution.QueueID, result.Title)
 		}
 		if lastErr != nil || resolution == nil || resolution.WebDAVPath == "" {
@@ -1690,6 +1779,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 
 		var probeResult *VideoFullResult
 		var metadataResult *VideoMetadataResult
+		h.updatePrequeueProgress(prequeueID, "validating_candidate", result.Title, i+1, len(allResults))
 
 		// Every resolved prequeue candidate must expose a playable video track.
 		// This probe is also reused below for HDR and track selection, so moving it
@@ -1833,6 +1923,10 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 	// Update with resolution
 	h.store.UpdateWorker(prequeueID, func(e *playback.PrequeueEntry) {
 		e.Status = playback.PrequeueStatusProbing
+		e.ProgressStage = "analyzing_media"
+		e.ProgressDetail = ""
+		e.ProgressCurrent = 0
+		e.ProgressTotal = 0
 		e.StreamPath = resolution.WebDAVPath
 		if selectedResult != nil {
 			e.ServiceType = string(selectedResult.ServiceType)
@@ -1871,6 +1965,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 	probeStart := time.Now()
 
 	if h.metadataProber != nil && h.userSettingsSvc != nil {
+		h.updatePrequeueProgress(prequeueID, "selecting_tracks", "", 0, 0)
 		log.Printf("[prequeue] TIMING: starting probe/track selection (elapsed: %v)", time.Since(workerStart))
 		// Build defaults from global settings
 		var defaults models.UserSettings
@@ -2154,6 +2249,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 			}
 			log.Printf("[prequeue] TIMING: probe complete (probe took: %v, total elapsed: %v)", time.Since(probeStart), time.Since(workerStart))
 			log.Printf("[prequeue] Creating HLS session for: %s", reason)
+			h.updatePrequeueProgress(prequeueID, "preparing_playback", reason, 0, 0)
 
 			hlsStart := time.Now()
 			// Create HLS session for HDR content or incompatible audio
@@ -2193,12 +2289,29 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 	// Mark as ready
 	h.store.UpdateWorker(prequeueID, func(e *playback.PrequeueEntry) {
 		e.Status = playback.PrequeueStatusReady
+		e.ProgressStage = "ready"
+		e.ProgressDetail = ""
+		e.ProgressCurrent = 0
+		e.ProgressTotal = 0
 	})
 	if h.prewarmSvc != nil {
 		h.prewarmSvc.UpdateFromPrequeue(prequeueID)
 	}
 
 	log.Printf("[prequeue] TIMING: Prequeue %s is ready (TOTAL: %v)", prequeueID, time.Since(workerStart))
+}
+
+func (h *PrequeueHandler) updatePrequeueProgress(prequeueID, stage, detail string, current, total int) {
+	h.store.UpdateWorker(prequeueID, func(e *playback.PrequeueEntry) {
+		e.ProgressStage = stage
+		e.ProgressDetail = detail
+		e.ProgressCurrent = current
+		e.ProgressTotal = total
+	})
+}
+
+func shouldPrepareTorrentCandidates(candidate models.NZBResult, alreadyPrepared bool) bool {
+	return !alreadyPrepared && candidate.ServiceType == models.ServiceTypeDebrid
 }
 
 func logPrequeueCandidateList(scoredResults []models.ScoredNZBResult) {
@@ -2210,12 +2323,13 @@ func logPrequeueCandidateList(scoredResults []models.ScoredNZBResult) {
 	for i := 0; i < limit; i++ {
 		result := scoredResults[i]
 		badStream := strings.Contains(strings.ToLower(result.FilterReason), "marked bad stream")
-		log.Printf("[prequeue] candidate #%d title=%q provider=%q service=%q status=%q badStream=%v score=%d reason=%q",
+		log.Printf("[prequeue] candidate #%d title=%q provider=%q service=%q status=%q sourceCacheStatus=%q badStream=%v score=%d reason=%q",
 			i+1,
 			result.Title,
 			result.Indexer,
 			result.ServiceType,
 			result.FilterStatus,
+			result.Attributes["sourceCacheStatus"],
 			badStream,
 			result.TotalScore,
 			result.FilterReason,
@@ -2267,6 +2381,10 @@ func (h *PrequeueHandler) failPrequeue(prequeueID, errMsg string) {
 	log.Printf("[prequeue] Prequeue %s failed: %s", prequeueID, errMsg)
 	h.store.UpdateWorker(prequeueID, func(e *playback.PrequeueEntry) {
 		e.Status = playback.PrequeueStatusFailed
+		e.ProgressStage = "failed"
+		e.ProgressDetail = ""
+		e.ProgressCurrent = 0
+		e.ProgressTotal = 0
 		e.Error = errMsg
 	})
 }
@@ -2280,6 +2398,34 @@ func annotateResultProfile(result *models.NZBResult, userID string) {
 		result.Attributes = map[string]string{}
 	}
 	result.Attributes["profileId"] = userID
+}
+
+func annotateResultEpisode(result *models.NZBResult, episode *models.EpisodeReference) {
+	if result == nil || episode == nil {
+		return
+	}
+
+	// Search results may come from the raw-result cache. Clone the attributes so
+	// request-specific episode hints do not mutate the cached result shared by
+	// other searches.
+	attributes := make(map[string]string, len(result.Attributes)+4)
+	for key, value := range result.Attributes {
+		attributes[key] = value
+	}
+	result.Attributes = attributes
+
+	if episode.SeasonNumber > 0 {
+		attributes["targetSeason"] = strconv.Itoa(episode.SeasonNumber)
+	}
+	if episode.EpisodeNumber > 0 {
+		attributes["targetEpisode"] = strconv.Itoa(episode.EpisodeNumber)
+	}
+	if episode.SeasonNumber > 0 && episode.EpisodeNumber > 0 {
+		attributes["targetEpisodeCode"] = fmt.Sprintf("S%02dE%02d", episode.SeasonNumber, episode.EpisodeNumber)
+	}
+	if episode.AbsoluteEpisodeNumber > 0 {
+		attributes["absoluteEpisodeNumber"] = strconv.Itoa(episode.AbsoluteEpisodeNumber)
+	}
 }
 
 // StartSubtitlesRequest is the request body for starting subtitle extraction
@@ -2366,6 +2512,7 @@ type SeriesMetadataResult struct {
 	EpisodeAirYear  int    // Year the target episode aired, used to allow later-season year tags
 	IsAnime         bool   // True for anime content - requires waiting for Nyaa scraper
 	Year            int    // Series premiere year from metadata (used when frontend doesn't provide it)
+	IMDBID          string // Resolved IMDb ID used by ID-aware search providers
 }
 
 // createEpisodeResolverAndLookupAbsoluteEp fetches series metadata, creates an episode resolver,
@@ -2385,6 +2532,7 @@ func (h *PrequeueHandler) createEpisodeResolverAndLookupAbsoluteEp(ctx context.C
 		TitleID: titleID,
 		Name:    titleName,
 		Year:    year,
+		IMDBID:  imdbID,
 	}
 
 	// Fetch series details from metadata service
@@ -2403,6 +2551,7 @@ func (h *PrequeueHandler) createEpisodeResolverAndLookupAbsoluteEp(ctx context.C
 	if details.Title.Year > 0 {
 		result.Year = details.Title.Year
 	}
+	result.IMDBID = strings.TrimSpace(details.Title.IMDBID)
 
 	// Check if this is a daily show from the metadata
 	result.IsDaily = details.Title.IsDaily
@@ -2483,6 +2632,13 @@ func (h *PrequeueHandler) createEpisodeResolverAndLookupAbsoluteEp(ctx context.C
 
 	// Update targetEpisode with canonical season/episode and absolute number if found
 	if foundCanonicalEpisode != nil && targetEpisode != nil {
+		if foundAbsoluteEp == 0 && targetEpisode.AbsoluteEpisodeNumber == 0 {
+			foundAbsoluteEp = inferAbsoluteEpisodeNumber(details.Seasons, *foundCanonicalEpisode)
+			if foundAbsoluteEp > 0 {
+				log.Printf("[prequeue] Inferred absolute episode number %d for S%02dE%02d from adjacent TVDB episodes",
+					foundAbsoluteEp, foundCanonicalEpisode.SeasonNumber, foundCanonicalEpisode.EpisodeNumber)
+			}
+		}
 		// Create a copy to avoid modifying the original
 		updatedEpisode := &models.EpisodeReference{
 			SeasonNumber:          foundCanonicalEpisode.SeasonNumber,
@@ -2519,6 +2675,34 @@ func (h *PrequeueHandler) createEpisodeResolverAndLookupAbsoluteEp(ctx context.C
 
 	result.EpisodeResolver = filter.NewSeriesEpisodeResolver(seasonCounts)
 	return result
+}
+
+// inferAbsoluteEpisodeNumber uses known absolute numbers in the target season as
+// anchors. Providers can publish a newly aired episode before TVDB fills its
+// absoluteEpisodeNumber field, while adjacent episodes already establish the
+// season's absolute numbering offset.
+func inferAbsoluteEpisodeNumber(seasons []models.SeriesSeason, target models.SeriesEpisode) int {
+	inferred := 0
+	for _, season := range seasons {
+		if season.Number != target.SeasonNumber {
+			continue
+		}
+		for _, episode := range season.Episodes {
+			if episode.AbsoluteEpisodeNumber <= 0 || episode.EpisodeNumber <= 0 {
+				continue
+			}
+			candidate := episode.AbsoluteEpisodeNumber + target.EpisodeNumber - episode.EpisodeNumber
+			if candidate <= 0 {
+				continue
+			}
+			if inferred != 0 && inferred != candidate {
+				return 0
+			}
+			inferred = candidate
+		}
+		break
+	}
+	return inferred
 }
 
 // findAudioTrackByLanguage wraps the helper function for backward compatibility

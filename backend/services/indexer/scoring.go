@@ -90,14 +90,18 @@ func ScoreResult(result models.NZBResult, ctx ScoringContext) (int, []models.Sco
 		totalScore += points
 	}
 
-	// A matching year is useful diagnostic information but does not outrank
-	// configured quality criteria. Explicitly wrong years are filtered earlier;
-	// missing years remain neutral.
+	// A general matching year is diagnostic-only. Targeted episode searches use
+	// the narrower episodeYearMatch tag as a correctness priority in the sorter.
+	// Explicitly wrong years are filtered earlier; missing years remain neutral.
 	if result.Attributes["yearMatch"] == "true" {
+		reason := "explicit year matches expected title year"
+		if result.Attributes["episodeYearMatch"] == "true" {
+			reason = "explicit close year and strong title match receive targeted episode priority"
+		}
 		breakdown = append(breakdown, models.ScoreBreakdownItem{
 			Criterion: "Year Match",
 			Points:    0,
-			Reason:    "explicit year matches expected title year",
+			Reason:    reason,
 		})
 	}
 

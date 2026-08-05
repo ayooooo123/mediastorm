@@ -39,6 +39,9 @@ services:
       # plays into the swarm. Set to 0 to keep seeding a manual action.
       - PEARTUBE_AUTOSEED=${PEARTUBE_AUTOSEED:-1}
     restart: unless-stopped
+    # Leave enough time for the synchronous shutdown notification and the
+    # backend's existing 30-second graceful cleanup before Docker sends SIGKILL.
+    stop_grace_period: 45s
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "http://localhost:7777/health"]
       interval: 30s

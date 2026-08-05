@@ -97,6 +97,10 @@ func (h *UserSettingsHandler) PutSettings(w http.ResponseWriter, r *http.Request
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if err := validateUserFilterTerms("filtering", &settings.Filtering); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	if err := h.Service.Update(userID, settings); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -283,6 +287,9 @@ func convertShelves(configShelves []config.ShelfConfig) []models.ShelfConfig {
 			LetterboxdListID:       s.LetterboxdListID,
 			LetterboxdListURL:      s.LetterboxdListURL,
 			Limit:                  s.Limit,
+			ActivityWindowDays:     s.ActivityWindowDays,
+			MinimumProfiles:        s.MinimumProfiles,
+			MaxItemsPerProfile:     s.MaxItemsPerProfile,
 			HideUnreleased:         s.HideUnreleased,
 			Sort:                   s.Sort,
 			AnimateLogoOnlyOnFocus: s.AnimateLogoOnlyOnFocus,

@@ -301,6 +301,52 @@ func TestExternalQueueStatusRejectsMismatchedCompletedPath(t *testing.T) {
 	}
 }
 
+func TestExternalQueueStatusKeepsJobPendingOnTransientStatusError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "temporary engine outage", http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	svc := NewService(config.NewManager(filepath.Join(t.TempDir(), "settings.json")), nil, nil, nil)
+	svc.externalJobs[42] = &externalUsenetJob{
+		ID:             42,
+		EngineJobID:    "altmount-job",
+		SubmittedTitle: "Supergirl.2026.1080p.WEB-DL-GROUP",
+		SourceNZBPath:  "Supergirl.2026.1080p.WEB-DL-GROUP.nzb",
+		Engine: config.UsenetEngineSettings{
+			Name:    "AltMount",
+			Type:    "altmount",
+			BaseURL: server.URL,
+			APIPath: "/sabnzbd/api",
+		},
+		FileSize:   123,
+		LastStatus: "queued",
+	}
+
+	res, handled, err := svc.externalQueueStatus(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("externalQueueStatus: %v", err)
+	}
+	if !handled {
+		t.Fatal("handled = false")
+	}
+	if res == nil {
+		t.Fatal("resolution = nil")
+	}
+	if res.QueueID != 42 {
+		t.Fatalf("QueueID = %d, want 42", res.QueueID)
+	}
+	if res.HealthStatus != "queued" {
+		t.Fatalf("HealthStatus = %q, want queued", res.HealthStatus)
+	}
+	if svc.externalJobs[42] == nil {
+		t.Fatal("external job was deleted after transient status error")
+	}
+	if !strings.Contains(svc.externalJobs[42].LastError, "temporary engine outage") {
+		t.Fatalf("LastError = %q, want temporary outage detail", svc.externalJobs[42].LastError)
+	}
+}
+
 func TestExternalQueueStatusFallsBackToAltMountWebDAVOnMismatchedCompletedPath(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {

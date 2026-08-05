@@ -31,6 +31,7 @@ import (
 	"novastream/internal/netproxy"
 	"novastream/internal/requestsecurity"
 	"novastream/models"
+	"novastream/services/debrid"
 	"novastream/services/streaming"
 	"novastream/utils"
 )
@@ -58,6 +59,8 @@ var hlsRedirectHTTPClient = &http.Client{
 	Timeout:   30 * time.Second,
 	Transport: cdnClient.Transport,
 }
+
+var errExternalStreamPlaceholder = errors.New("external stream resolved to unavailable-content placeholder")
 
 func isHTTPDirectURL(raw string) bool {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
@@ -369,6 +372,7 @@ type HLSSession struct {
 	ProfileID      string
 	ProfileName    string
 	ClientIP       string
+	ClientID       string
 	ViaShareLink   bool // session authenticated by a one-time share link
 	MediaMetadata  StreamMediaMetadata
 	SharePosition  float64
@@ -1459,16 +1463,13 @@ func generateSessionID() string {
 func (m *HLSManager) resolveExternalURL(ctx context.Context, externalURL string) (string, error) {
 	videoTracef("[hls] resolving external URL")
 
-	// Create a request-scoped client that captures the final URL after redirects
-	// while sharing the CDN transport and DNS cache.
-	var finalURL string
+	// Create a request-scoped client that follows redirects while sharing the
+	// CDN transport and DNS cache.
 	client := *hlsRedirectHTTPClient
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 10 {
 			return fmt.Errorf("too many redirects")
 		}
-		// Track the URL we're redirecting to
-		finalURL = req.URL.String()
 		videoTracef("[hls] following external URL redirect")
 		return nil
 	}
@@ -1492,12 +1493,16 @@ func (m *HLSManager) resolveExternalURL(ctx context.Context, externalURL string)
 		return "", fmt.Errorf("HEAD request failed: %w", err)
 	}
 	resp.Body.Close()
+	resolvedURL := resp.Request.URL.String()
+	if debrid.IsKnownPlaceholderURL(resolvedURL) {
+		return "", fmt.Errorf("%w: %s", errExternalStreamPlaceholder, requestsecurity.URLForLog(resolvedURL))
+	}
 
 	// If HEAD succeeded, check for redirects
 	if resp.StatusCode < 400 {
-		if finalURL != "" && finalURL != externalURL {
+		if resolvedURL != externalURL {
 			videoTracef("[hls] resolved external URL via HEAD")
-			return finalURL, nil
+			return resolvedURL, nil
 		}
 		videoTracef("[hls] external URL has no redirects (HEAD)")
 		return externalURL, nil
@@ -1506,7 +1511,6 @@ func (m *HLSManager) resolveExternalURL(ctx context.Context, externalURL string)
 	// HEAD failed (e.g., 405 Method Not Allowed), try GET with Range header
 	// This minimizes data transfer while still following redirects
 	log.Printf("[hls] HEAD returned %d, trying GET with Range header", resp.StatusCode)
-	finalURL = "" // Reset for new request
 
 	req, err = http.NewRequestWithContext(ctx, http.MethodGet, encodedURL, nil)
 	if err != nil {
@@ -1521,15 +1525,19 @@ func (m *HLSManager) resolveExternalURL(ctx context.Context, externalURL string)
 		return "", fmt.Errorf("GET request failed: %w", err)
 	}
 	resp.Body.Close() // Close immediately, we only needed the redirect resolution
+	resolvedURL = resp.Request.URL.String()
+	if debrid.IsKnownPlaceholderURL(resolvedURL) {
+		return "", fmt.Errorf("%w: %s", errExternalStreamPlaceholder, requestsecurity.URLForLog(resolvedURL))
+	}
 
 	if resp.StatusCode >= 400 {
 		return "", fmt.Errorf("GET request returned status %d", resp.StatusCode)
 	}
 
 	// If we followed redirects, use the final URL
-	if finalURL != "" && finalURL != externalURL {
+	if resolvedURL != externalURL {
 		videoTracef("[hls] resolved external URL via GET")
-		return finalURL, nil
+		return resolvedURL, nil
 	}
 
 	// No redirects, use the original URL
@@ -1670,6 +1678,11 @@ func (m *HLSManager) CreateSession(ctx context.Context, path string, originalPat
 	if isExternalURL {
 		resolvedURL, err := m.resolveExternalURL(ctx, path)
 		if err != nil {
+			if errors.Is(err, errExternalStreamPlaceholder) {
+				cancel()
+				_ = os.RemoveAll(outputDir)
+				return nil, err
+			}
 			log.Printf("[hls] session %s: failed to resolve external URL, using original: %v", sessionID, err)
 			// Continue with original URL - ffmpeg/ffprobe can follow redirects
 		} else if resolvedURL != path {
@@ -2157,7 +2170,7 @@ func youtubeTranscodingArgs(videoURL, audioURL, proxyURL, playlistPath, segmentP
 
 // CreateLiveSession creates an HLS session for live TV streams
 // Unlike VOD sessions, live sessions don't have a known duration and don't support seeking
-func (m *HLSManager) CreateLiveSession(ctx context.Context, liveURL, provider, bucketKey, profileID, profileName, clientIP string, tuning LiveTuningSettings) (*HLSSession, error) {
+func (m *HLSManager) CreateLiveSession(ctx context.Context, liveURL, provider, bucketKey, profileID, profileName, clientIP, playbackTarget string, tuning LiveTuningSettings) (*HLSSession, error) {
 	sessionID := generateSessionID()
 	outputDir := filepath.Join(m.baseDir, sessionID)
 
@@ -2195,6 +2208,7 @@ func (m *HLSManager) CreateLiveSession(ctx context.Context, liveURL, provider, b
 		ProfileID:               profileID,
 		ProfileName:             profileName,
 		ClientIP:                clientIP,
+		PlaybackTarget:          strings.ToLower(strings.TrimSpace(playbackTarget)),
 		LiveTuning:              tuning,
 		subtitleExtractOffsets:  make(map[int]float64),
 	}
@@ -2378,32 +2392,17 @@ func (m *HLSManager) startLiveTranscoding(ctx context.Context, session *HLSSessi
 		}
 	}
 
-	args = append(args,
-		"-i", inputArg,
-		// Output options - transcode live video so HLS can start on our keyframe cadence
-		// instead of waiting for the upstream IPTV stream's next keyframe.
-		"-c:v", "libx264",
-		"-preset", "veryfast",
-		"-tune", "zerolatency",
-		"-profile:v", "main",
-		"-pix_fmt", "yuv420p",
-		"-crf", "23",
-		"-max_muxing_queue_size", "1024",
-		"-force_key_frames", "expr:gte(t,n_forced*1)",
-		"-sc_threshold", "0",
-		"-c:a", "aac",
-		"-ac", "2",
-		"-b:a", "128k",
-		"-ar", "48000",
-		// HLS output
-		"-f", "hls",
-		"-hls_init_time", "1",
-		"-hls_time", "2",
-		"-hls_list_size", "10", // Keep last 10 segments for live
-		"-hls_flags", "delete_segments+independent_segments+temp_file",
-		"-hls_segment_filename", segmentPattern,
-		playlistPath,
-	)
+	args = append(args, "-i", inputArg)
+	session.mu.Lock()
+	if isNativeLivePlaybackTarget(session.PlaybackTarget) {
+		session.VideoEncoder = "copy"
+		log.Printf("[hls] live session %s: using native transmux mode (video=copy audio=copy target=%q)", session.ID, session.PlaybackTarget)
+	} else {
+		session.VideoEncoder = "libx264"
+		log.Printf("[hls] live session %s: using compatibility transcode mode (video=libx264 audio=aac target=%q)", session.ID, session.PlaybackTarget)
+	}
+	session.mu.Unlock()
+	args = append(args, liveHLSOutputArgs(session.PlaybackTarget, segmentPattern, playlistPath)...)
 
 	log.Printf("[hls] live session %s: starting FFmpeg with args: %v", session.ID, args)
 
@@ -2511,6 +2510,62 @@ func (m *HLSManager) startLiveTranscoding(ctx context.Context, session *HLSSessi
 
 	log.Printf("[hls] live session %s: FFmpeg completed normally", session.ID)
 	return nil
+}
+
+func isNativeLivePlaybackTarget(playbackTarget string) bool {
+	switch strings.ToLower(strings.TrimSpace(playbackTarget)) {
+	case "native", "android", "ios", "tvos", "mpv", "ksplayer", "exoplayer":
+		return true
+	default:
+		return false
+	}
+}
+
+func liveHLSOutputArgs(playbackTarget, segmentPattern, playlistPath string) []string {
+	args := make([]string, 0, 40)
+	hlsFlags := "delete_segments+independent_segments+temp_file"
+
+	if isNativeLivePlaybackTarget(playbackTarget) {
+		// MPV and KSPlayer can demux/decode normal IPTV codecs themselves. Preserve
+		// the provider's encoded packets, including H.264 SEI closed-caption data,
+		// and let the HLS muxer cut only at upstream keyframes. Do not advertise
+		// independent segments because stream copy cannot create a new keyframe at
+		// each requested segment boundary.
+		args = append(args,
+			"-c:v", "copy",
+			"-c:a", "copy",
+			"-max_muxing_queue_size", "1024",
+		)
+		hlsFlags = "delete_segments+temp_file"
+	} else {
+		// Web and legacy callers retain the compatibility encode with a controlled
+		// keyframe cadence.
+		args = append(args,
+			"-c:v", "libx264",
+			"-preset", "veryfast",
+			"-tune", "zerolatency",
+			"-profile:v", "main",
+			"-pix_fmt", "yuv420p",
+			"-crf", "23",
+			"-max_muxing_queue_size", "1024",
+			"-force_key_frames", "expr:gte(t,n_forced*1)",
+			"-sc_threshold", "0",
+			"-c:a", "aac",
+			"-ac", "2",
+			"-b:a", "128k",
+			"-ar", "48000",
+		)
+	}
+
+	return append(args,
+		"-f", "hls",
+		"-hls_init_time", "1",
+		"-hls_time", "2",
+		"-hls_list_size", "10",
+		"-hls_flags", hlsFlags,
+		"-hls_segment_filename", segmentPattern,
+		playlistPath,
+	)
 }
 
 // waitForFirstSegment polls for the first HLS segment to be available

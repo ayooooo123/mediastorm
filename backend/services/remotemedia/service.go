@@ -34,6 +34,21 @@ type AvailableLibrary struct {
 	ServerName string                       `json:"serverName,omitempty"`
 }
 
+type AvailableServer struct {
+	ID          string                `json:"id"`
+	Name        string                `json:"name"`
+	Platform    string                `json:"platform,omitempty"`
+	Online      bool                  `json:"online"`
+	Connections []plex.PlexConnection `json:"connections"`
+}
+
+type VerifiedServer struct {
+	ServerID   string             `json:"serverId"`
+	ServerName string             `json:"serverName"`
+	ServerURL  string             `json:"serverUrl"`
+	Libraries  []AvailableLibrary `json:"libraries"`
+}
+
 type Service struct {
 	repo     datastore.RemoteMediaRepository
 	cfg      *config.Manager
@@ -110,6 +125,98 @@ func (s *Service) GetItem(ctx context.Context, id string) (*models.RemoteMediaIt
 	return s.repo.GetItem(ctx, id)
 }
 
+func (s *Service) DiscoverPlexServers(accountID string) ([]AvailableServer, error) {
+	settings, err := s.cfg.Load()
+	if err != nil {
+		return nil, err
+	}
+	account := settings.Plex.GetAccountByID(accountID)
+	if account == nil || account.AuthToken == "" {
+		return nil, errors.New("Plex account not connected")
+	}
+	servers, err := s.plex.GetVisibleServers(account.AuthToken)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]AvailableServer, 0, len(servers))
+	for _, server := range servers {
+		connections := make([]plex.PlexConnection, 0, len(server.Connections))
+		for _, connection := range server.Connections {
+			if _, err := plex.NormalizeServerURL(connection.URI); err == nil {
+				connections = append(connections, connection)
+			}
+		}
+		result = append(result, AvailableServer{
+			ID:          server.ClientIdentifier,
+			Name:        server.Name,
+			Platform:    server.Platform,
+			Online:      server.Presence,
+			Connections: connections,
+		})
+	}
+	return result, nil
+}
+
+func (s *Service) VerifyPlexServer(ctx context.Context, accountID, serverID, serverURL string) (*VerifiedServer, error) {
+	settings, err := s.cfg.Load()
+	if err != nil {
+		return nil, err
+	}
+	account := settings.Plex.GetAccountByID(accountID)
+	if account == nil || account.AuthToken == "" {
+		return nil, errors.New("Plex account not connected")
+	}
+	server, err := s.servers.resolve(accountID, account.AuthToken, strings.TrimSpace(serverID), s.plex.GetVisibleServers)
+	if err != nil {
+		return nil, err
+	}
+	normalizedURL, err := plex.NormalizeServerURL(serverURL)
+	if err != nil {
+		return nil, err
+	}
+	verifyCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	libraries, err := s.plex.GetServerLibrariesAt(verifyCtx, server, normalizedURL)
+	if err != nil {
+		return nil, fmt.Errorf("connect to Plex server %q at %s: %w", server.Name, normalizedURL, err)
+	}
+	available := make([]AvailableLibrary, 0, len(libraries))
+	for _, library := range libraries {
+		libraryType := models.LocalMediaLibraryTypeMovie
+		if library.Type == "show" {
+			libraryType = models.LocalMediaLibraryTypeShow
+		}
+		available = append(available, AvailableLibrary{
+			ID:         library.Key,
+			Name:       library.Title,
+			Type:       libraryType,
+			ServerID:   server.ClientIdentifier,
+			ServerName: server.Name,
+		})
+	}
+	return &VerifiedServer{
+		ServerID:   server.ClientIdentifier,
+		ServerName: server.Name,
+		ServerURL:  normalizedURL,
+		Libraries:  available,
+	}, nil
+}
+
+func (s *Service) plexServerForLibrary(library *models.RemoteMediaLibrary, authToken string) (plex.PlexResource, error) {
+	load := s.plex.GetAccessibleServers
+	if strings.TrimSpace(library.ServerURL) != "" {
+		load = s.plex.GetVisibleServers
+	}
+	server, err := s.servers.resolve(library.AccountID, authToken, library.ServerID, load)
+	if err != nil {
+		return plex.PlexResource{}, err
+	}
+	if strings.TrimSpace(library.ServerURL) == "" {
+		return server, nil
+	}
+	return plex.WithConnection(server, library.ServerURL)
+}
+
 func (s *Service) Discover(ctx context.Context, provider, accountID string) ([]AvailableLibrary, error) {
 	settings, err := s.cfg.Load()
 	if err != nil {
@@ -178,8 +285,20 @@ func (s *Service) CreateLibrary(ctx context.Context, input models.RemoteMediaLib
 	for i := range existing {
 		library := &existing[i]
 		if library.Provider == provider && library.AccountID == input.AccountID && library.ServerID == input.ServerID && library.ExternalLibraryID == input.ExternalLibraryID {
+			updated := false
 			if name := strings.TrimSpace(input.Name); name != "" && name != library.Name {
 				library.Name = name
+				updated = true
+			}
+			if provider == models.MediaSourcePlex && input.ServerURL != "" && input.ServerURL != library.ServerURL {
+				normalized, err := plex.NormalizeServerURL(input.ServerURL)
+				if err != nil {
+					return nil, err
+				}
+				library.ServerURL = normalized
+				updated = true
+			}
+			if updated {
 				library.UpdatedAt = time.Now().UTC()
 				if err := s.repo.UpdateLibrary(ctx, library); err != nil {
 					return nil, err
@@ -192,8 +311,15 @@ func (s *Service) CreateLibrary(ctx context.Context, input models.RemoteMediaLib
 		}
 	}
 	now := time.Now().UTC()
+	serverURL := strings.TrimSpace(input.ServerURL)
+	if provider == models.MediaSourcePlex && serverURL != "" {
+		serverURL, err = plex.NormalizeServerURL(serverURL)
+		if err != nil {
+			return nil, err
+		}
+	}
 	library := &models.RemoteMediaLibrary{ID: uuid.NewString(), Name: strings.TrimSpace(input.Name), Type: input.Type,
-		Provider: provider, AccountID: input.AccountID, ServerID: input.ServerID, ServerName: input.ServerName,
+		Provider: provider, AccountID: input.AccountID, ServerID: input.ServerID, ServerName: input.ServerName, ServerURL: serverURL,
 		ExternalLibraryID: input.ExternalLibraryID, CreatedAt: now, UpdatedAt: now, LastSyncStatus: models.LocalMediaScanStatusIdle}
 	if library.Name == "" {
 		library.Name = "Remote Library"
@@ -285,7 +411,7 @@ func (s *Service) fetch(ctx context.Context, library *models.RemoteMediaLibrary)
 	if account == nil {
 		return nil, errors.New("Plex account missing")
 	}
-	server, err := s.servers.resolve(library.AccountID, account.AuthToken, library.ServerID, s.plex.GetAccessibleServers)
+	server, err := s.plexServerForLibrary(library, account.AuthToken)
 	if err != nil {
 		return nil, err
 	}
@@ -807,7 +933,7 @@ func (s *Service) openStream(ctx context.Context, library *models.RemoteMediaLib
 	if account == nil {
 		return nil, ErrNotFound
 	}
-	server, err := s.servers.resolve(library.AccountID, account.AuthToken, library.ServerID, s.plex.GetAccessibleServers)
+	server, err := s.plexServerForLibrary(library, account.AuthToken)
 	if err != nil {
 		return nil, err
 	}
@@ -850,7 +976,7 @@ func (s *Service) OpenArtwork(ctx context.Context, itemID, kind string) (*http.R
 	if kind == "backdrop" {
 		path = item.ProviderData["backdropPath"]
 	}
-	server, err := s.servers.resolve(library.AccountID, account.AuthToken, library.ServerID, s.plex.GetAccessibleServers)
+	server, err := s.plexServerForLibrary(library, account.AuthToken)
 	if err != nil {
 		return nil, err
 	}
