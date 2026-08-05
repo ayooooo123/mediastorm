@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -53,6 +54,10 @@ type continueWatchingPrequeueStore interface {
 
 type activePlaybackTracker interface {
 	ObservePlaybackActivity(userID string, update models.PlaybackProgressUpdate, percentWatched float64) int
+}
+
+type contextualPlaybackProgressService interface {
+	UpdatePlaybackProgressContext(ctx context.Context, userID string, update models.PlaybackProgressUpdate) (models.PlaybackProgress, error)
 }
 
 type HistoryHandler struct {
@@ -578,8 +583,17 @@ func (h *HistoryHandler) UpdatePlaybackProgress(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	progress, err := h.Service.UpdatePlaybackProgress(userID, update)
+	var progress models.PlaybackProgress
+	var err error
+	if contextualService, ok := h.Service.(contextualPlaybackProgressService); ok {
+		progress, err = contextualService.UpdatePlaybackProgressContext(r.Context(), userID, update)
+	} else {
+		progress, err = h.Service.UpdatePlaybackProgress(userID, update)
+	}
 	if err != nil {
+		if r.Context().Err() != nil {
+			return
+		}
 		http.Error(w, err.Error(), watchHistoryErrorStatus(err))
 		return
 	}

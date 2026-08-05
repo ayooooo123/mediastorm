@@ -2,6 +2,7 @@ package handlers_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -26,6 +27,7 @@ type fakeHistoryService struct {
 	setOrderTVDBID int64
 	setOrderType   string
 	setOrderUserID string
+	progressCtx    context.Context
 }
 
 func (f *fakeHistoryService) RecordEpisode(userID string, payload models.EpisodeWatchPayload) (models.SeriesWatchState, error) {
@@ -95,6 +97,11 @@ func (f *fakeHistoryService) IsWatched(userID, mediaType, itemID string) (bool, 
 }
 
 func (f *fakeHistoryService) UpdatePlaybackProgress(userID string, update models.PlaybackProgressUpdate) (models.PlaybackProgress, error) {
+	return models.PlaybackProgress{}, f.err
+}
+
+func (f *fakeHistoryService) UpdatePlaybackProgressContext(ctx context.Context, userID string, update models.PlaybackProgressUpdate) (models.PlaybackProgress, error) {
+	f.progressCtx = ctx
 	return models.PlaybackProgress{}, f.err
 }
 
@@ -390,5 +397,27 @@ func TestSetSeriesOrdering(t *testing.T) {
 	if svc.setOrderUserID != "user1" || svc.setOrderTVDBID != 75805 || svc.setOrderType != "absolute" {
 		t.Fatalf("SetSeriesOrdering recorded (%q, %d, %q), want (user1, 75805, absolute)",
 			svc.setOrderUserID, svc.setOrderTVDBID, svc.setOrderType)
+	}
+}
+
+func TestUpdatePlaybackProgressPropagatesRequestContext(t *testing.T) {
+	type contextKey string
+	const requestMarker contextKey = "request-marker"
+
+	svc := &fakeHistoryService{}
+	handler := handlers.NewHistoryHandler(svc, fakeUserService{}, false)
+	body := bytes.NewBufferString(`{"mediaType":"movie","itemId":"tmdb:movie:1","position":30,"duration":120}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/users/user1/history/progress", body)
+	req = req.WithContext(context.WithValue(req.Context(), requestMarker, "present"))
+	req = mux.SetURLVars(req, map[string]string{"userID": "user1"})
+	rec := httptest.NewRecorder()
+
+	handler.UpdatePlaybackProgress(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if svc.progressCtx == nil || svc.progressCtx.Value(requestMarker) != "present" {
+		t.Fatal("request context was not propagated to playback progress service")
 	}
 }
