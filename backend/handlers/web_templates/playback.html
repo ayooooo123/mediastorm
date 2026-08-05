@@ -971,6 +971,7 @@
     const PROFILES = Array.isArray(RAW_PROFILES) ? RAW_PROFILES : [];
     const ROUTE_PARAMS = new URLSearchParams(window.location.search || '');
     const AUTH_TOKEN = routeParam('token');
+    const CLIENT_ID = routeParam('clientId');
     // Share mode: the page was opened from a one-time share link. Hide navigation
     // affordances (no back buttons / no share button) and do not write playback
     // progress back to the sharer's history.
@@ -3296,6 +3297,7 @@
     function apiAuthHeaders(headers = {}) {
       return {
         ...(AUTH_TOKEN ? { Authorization: `Bearer ${AUTH_TOKEN}` } : {}),
+        ...(CLIENT_ID ? { 'X-Client-ID': CLIENT_ID } : {}),
         ...headers,
       };
     }
