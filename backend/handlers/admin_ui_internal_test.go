@@ -221,6 +221,27 @@ func TestAdminDashboardBasicViewKeepsOnlyUserActivityCards(t *testing.T) {
 	}
 }
 
+func TestAdminDashboardWatchTimeNormalizesRoundedMinutes(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/status.html")
+	if err != nil {
+		t.Fatalf("read status template: %v", err)
+	}
+	source := string(templateBytes)
+
+	for _, marker := range []string{
+		`const totalMinutes = Math.max(1, Math.round(seconds / 60));`,
+		`const hours = Math.floor(totalMinutes / 60);`,
+		`const mins = totalMinutes % 60;`,
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("status template missing normalized watch-time marker %q", marker)
+		}
+	}
+	if strings.Contains(source, `Math.round((seconds % 3600) / 60)`) {
+		t.Fatal("watch-time formatter can still render 60 leftover minutes")
+	}
+}
+
 func TestAdminAccountsSurfacesProfileTaskContext(t *testing.T) {
 	templateBytes, err := adminTemplates.ReadFile("admin_templates/accounts.html")
 	if err != nil {
