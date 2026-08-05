@@ -149,6 +149,39 @@ func TestNonAdminCannotCreateServerOrForeignAutomation(t *testing.T) {
 	}
 }
 
+func TestScheduledTasksSupportAllOwnedIntegrationTypes(t *testing.T) {
+	h := newTestScheduledTasksHandler(t)
+	settings, err := h.configManager.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.Trakt.Accounts = []config.TraktAccount{{ID: "trakt", OwnerAccountID: "acct-1"}}
+	settings.Simkl.Accounts = []config.SimklAccount{{ID: "simkl", OwnerAccountID: "acct-1"}}
+	settings.MDBList.Accounts = []config.MDBListAccount{{ID: "mdblist", OwnerAccountID: "acct-1"}}
+	settings.Jellyfin.Accounts = []config.JellyfinAccount{{ID: "jellyfin", OwnerAccountID: "acct-1"}}
+	settings.ScheduledTasks.Tasks = []config.ScheduledTask{
+		{ID: "trakt", Type: config.ScheduledTaskTypeTraktHistorySync, Config: map[string]string{"profileId": "prof-1", "traktAccountId": "trakt"}},
+		{ID: "simkl", Type: config.ScheduledTaskTypeSimklHistorySync, Config: map[string]string{"profileId": "prof-1", "simklAccountId": "simkl"}},
+		{ID: "mdblist", Type: config.ScheduledTaskTypeMDBListHistorySync, Config: map[string]string{"profileId": "prof-1", "mdblistAccountId": "mdblist"}},
+		{ID: "jellyfin", Type: config.ScheduledTaskTypeJellyfinHistorySync, Config: map[string]string{"profileId": "prof-1", "jellyfinAccountId": "jellyfin"}},
+	}
+	if err := h.configManager.Save(settings); err != nil {
+		t.Fatal(err)
+	}
+	req := withScheduledTaskAccount(httptest.NewRequest(http.MethodGet, "/account/api/scheduled-tasks", nil), "acct-1")
+	rec := httptest.NewRecorder()
+	h.ListTasks(rec, req)
+	var response struct {
+		Tasks []config.ScheduledTask `json:"tasks"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Tasks) != 4 {
+		t.Fatalf("got %d owned integration tasks, want 4: %+v", len(response.Tasks), response.Tasks)
+	}
+}
+
 // postCreateTask is a helper that sends a POST to CreateTask and returns the recorder.
 func postCreateTask(t *testing.T, h *ScheduledTasksHandler, body interface{}) *httptest.ResponseRecorder {
 	t.Helper()
