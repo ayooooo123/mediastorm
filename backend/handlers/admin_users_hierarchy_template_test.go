@@ -29,6 +29,9 @@ func TestAdminUsersPageExplainsAndRendersAccessHierarchy(t *testing.T) {
 		`const STALE_DEVICE_AGE_MS = 7 * 24 * 60 * 60 * 1000`,
 		`function isClientStale(client)`,
 		`function toggleStaleDevices(profileId)`,
+		`const expandedHouseholds = new Set()`,
+		`const expandedPeople = new Set()`,
+		`function togglePerson(event, profileId)`,
 		`not seen in 7+ days`,
 		`Needs attention`,
 		`client.nickname || client.name || 'Unknown device'`,
@@ -41,8 +44,15 @@ func TestAdminUsersPageExplainsAndRendersAccessHierarchy(t *testing.T) {
 	if strings.Contains(source, `id="tab-accounts"`) || strings.Contains(source, `id="tab-profiles">Profiles</button>`) {
 		t.Fatal("admin Users page still exposes separate Accounts or Profiles tabs")
 	}
-	if !strings.Contains(source, `household-card${search ? '' : ' collapsed'}`) {
+	if !strings.Contains(source, `const isExpanded = Boolean(search) || expandedHouseholds.has(a.id)`) ||
+		!strings.Contains(source, `household-card${isExpanded ? '' : ' collapsed'}`) {
 		t.Fatal("admin Users page households do not start collapsed when no search is active")
+	}
+	if !strings.Contains(source, `person-row${isExpanded ? '' : ' collapsed'}`) {
+		t.Fatal("admin Users page people do not start collapsed")
+	}
+	if !strings.Contains(source, `const isExpanded = forceShowStale || expandedPeople.has(profile.id)`) {
+		t.Fatal("admin Users page people do not expand to expose device search matches")
 	}
 }
 
