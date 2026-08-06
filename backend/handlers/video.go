@@ -618,7 +618,7 @@ func (h *VideoHandler) requireLibraryStreamAccess(w http.ResponseWriter, r *http
 			return false
 		}
 	}
-	recognized, allowed, err := h.libraryAccess.CanAccessStream(r.Context(), streamPath, accountID, profileID, auth.IsMaster(r) && profileID == "")
+	recognized, allowed, err := h.libraryAccess.CanAccessStream(r.Context(), streamPath, accountID, profileID, auth.IsMaster(r))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return false

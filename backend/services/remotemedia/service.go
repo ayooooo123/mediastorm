@@ -791,31 +791,61 @@ func (s *Service) FindMatches(ctx context.Context, query models.LocalMediaMatchQ
 	if err != nil {
 		return nil, err
 	}
+	targetType := remoteLookupLibraryType(query.MediaType)
 	result := []models.LocalMediaMatchedGroup{}
-	for _, library := range libraries {
-		groups, err := s.ListGroups(ctx, library.ID, models.LocalMediaItemListQuery{Limit: 200, Query: query.Title})
+	for i := range libraries {
+		library := libraries[i]
+		if targetType != "" && library.Type != targetType {
+			continue
+		}
+		// Scan the full library. ListGroups is paginated (max 200) and title-
+		// prefiltered, which drops later titles (e.g. Zootropolis) and alternate
+		// localized names that still share IMDB/TMDB/TVDB IDs with the details page.
+		items, err := s.repo.ListItems(ctx, library.ID, false)
 		if err != nil {
 			continue
 		}
-		for _, g := range groups.Groups {
+		for _, g := range groupItems(&library, items, false) {
 			if matches(g, query) {
-				result = append(result, models.LocalMediaMatchedGroup{LibraryID: library.ID, LibraryName: library.Name, LibraryType: library.Type, Group: g})
+				result = append(result, models.LocalMediaMatchedGroup{
+					LibraryID:   library.ID,
+					LibraryName: library.Name,
+					LibraryType: library.Type,
+					Group:       g,
+				})
 			}
 		}
 	}
 	return result, nil
 }
+
+func remoteLookupLibraryType(mediaType string) models.LocalMediaLibraryType {
+	switch strings.ToLower(strings.TrimSpace(mediaType)) {
+	case "movie":
+		return models.LocalMediaLibraryTypeMovie
+	case "series", "show", "tv":
+		return models.LocalMediaLibraryTypeShow
+	default:
+		return ""
+	}
+}
+
 func matches(g models.LocalMediaItemGroup, q models.LocalMediaMatchQuery) bool {
-	if q.IMDBID != "" && g.IMDBID == q.IMDBID {
+	queryIMDB := strings.TrimSpace(q.IMDBID)
+	queryTMDB := strings.TrimSpace(q.TMDBID)
+	queryTVDB := strings.TrimSpace(q.TVDBID)
+	if queryIMDB != "" && strings.EqualFold(strings.TrimSpace(g.IMDBID), queryIMDB) {
 		return true
 	}
-	if q.TMDBID != "" && strconv.FormatInt(g.TMDBID, 10) == q.TMDBID {
+	if queryTMDB != "" && strconv.FormatInt(g.TMDBID, 10) == queryTMDB {
 		return true
 	}
-	if q.TVDBID != "" && strconv.FormatInt(g.TVDBID, 10) == q.TVDBID {
+	if queryTVDB != "" && strconv.FormatInt(g.TVDBID, 10) == queryTVDB {
 		return true
 	}
-	return q.Title != "" && strings.EqualFold(strings.TrimSpace(g.Title), strings.TrimSpace(q.Title)) && (q.Year == 0 || g.Year == 0 || q.Year == g.Year)
+	return q.Title != "" &&
+		strings.EqualFold(strings.TrimSpace(g.Title), strings.TrimSpace(q.Title)) &&
+		(q.Year == 0 || g.Year == 0 || q.Year == g.Year)
 }
 
 func (s *Service) Playback(ctx context.Context, itemID string) (*models.LocalMediaPlaybackResponse, error) {

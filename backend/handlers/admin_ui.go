@@ -10892,7 +10892,9 @@ func (h *AdminUIHandler) CreateLocalMediaLibrary(w http.ResponseWriter, r *http.
 			return
 		}
 		if h.libraryAccessService != nil {
-			if err := h.libraryAccessService.Set(r.Context(), models.LibraryAccessPolicy{LibraryID: library.ID, AccessMode: models.LibraryAccessModeRestricted}); err != nil {
+			// New libraries default to open access so they appear in the app
+			// immediately; admins can tighten via the access modal.
+			if err := h.libraryAccessService.Set(r.Context(), models.LibraryAccessPolicy{LibraryID: library.ID, AccessMode: models.LibraryAccessModeAll}); err != nil {
 				_ = h.remoteMediaService.DeleteLibrary(r.Context(), library.ID)
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -10908,7 +10910,9 @@ func (h *AdminUIHandler) CreateLocalMediaLibrary(w http.ResponseWriter, r *http.
 		return
 	}
 	if h.libraryAccessService != nil {
-		if err := h.libraryAccessService.Set(r.Context(), models.LibraryAccessPolicy{LibraryID: library.ID, AccessMode: models.LibraryAccessModeRestricted}); err != nil {
+		// New libraries default to open access so they appear in the app
+		// immediately; admins can tighten via the access modal.
+		if err := h.libraryAccessService.Set(r.Context(), models.LibraryAccessPolicy{LibraryID: library.ID, AccessMode: models.LibraryAccessModeAll}); err != nil {
 			_ = h.localMediaService.DeleteLibrary(r.Context(), library.ID)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

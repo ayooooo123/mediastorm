@@ -62,6 +62,10 @@ func TestCanAccessSupportsAllAccountProfileAndMaster(t *testing.T) {
 			AllowedAccountIDs: []string{"account-1"},
 			AllowedProfileIDs: []string{"profile-2"},
 		},
+		"empty-restricted": {
+			LibraryID:  "empty-restricted",
+			AccessMode: models.LibraryAccessModeRestricted,
+		},
 	}}
 	service := New(repo, nil, nil)
 	tests := []struct {
@@ -76,7 +80,11 @@ func TestCanAccessSupportsAllAccountProfileAndMaster(t *testing.T) {
 		{name: "account grant", libraryID: "restricted", accountID: "account-1", want: true},
 		{name: "profile grant", libraryID: "restricted", accountID: "other", profileID: "profile-2", want: true},
 		{name: "denied", libraryID: "restricted", accountID: "other", profileID: "other", want: false},
-		{name: "master", libraryID: "restricted", master: true, want: true},
+		{name: "master admin no profile", libraryID: "restricted", master: true, want: true},
+		{name: "master active profile without grant", libraryID: "restricted", profileID: "other", master: true, want: false},
+		{name: "master active profile with grant", libraryID: "restricted", profileID: "profile-2", master: true, want: true},
+		{name: "empty restricted master profile", libraryID: "empty-restricted", profileID: "default", master: true, want: true},
+		{name: "empty restricted non-master", libraryID: "empty-restricted", accountID: "other", profileID: "profile-1", want: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
