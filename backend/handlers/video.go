@@ -3569,15 +3569,23 @@ func (h *VideoHandler) StartHLSSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// For warm start sessions, probe for the actual keyframe position FFmpeg will seek to BEFORE creating session
-	// This is critical because FFmpeg seeks to the nearest keyframe, not the exact requested time
-	// Both video and subtitles must start from the same keyframe position for sync
+	// For warm start sessions, probe for the actual keyframe position FFmpeg will seek to
+	// BEFORE creating the session. Native clients need this so video and sidecar subtitles
+	// share the same keyframe anchor.
+	//
+	// Web/browser is different: in-session /seek intentionally skips this probe and works,
+	// while create-with-probed-offset has been observed to buffer HLS segments without ever
+	// reaching canplay (MSE stuck). Match the working seek path for web warm starts.
 	transcodingOffset := startSeconds
 	if startSeconds > 0 {
-		keyframePos := h.hlsManager.probeKeyframePosition(r.Context(), cleanPath, startSeconds)
-		transcodingOffset = keyframePos
-		videoTracef("[video] warm start: probed keyframe position %.3fs (requested %.3fs, delta %.3fs)",
-			keyframePos, startSeconds, keyframePos-startSeconds)
+		if isWebBrowserPlaybackTarget(playbackTarget) {
+			videoTracef("[video] web warm start: skipping keyframe probe (match seek path) start=%.3fs", startSeconds)
+		} else {
+			keyframePos := h.hlsManager.probeKeyframePosition(r.Context(), cleanPath, startSeconds)
+			transcodingOffset = keyframePos
+			videoTracef("[video] warm start: probed keyframe position %.3fs (requested %.3fs, delta %.3fs)",
+				keyframePos, startSeconds, keyframePos-startSeconds)
+		}
 	}
 
 	videoTracef("[video] creating HLS session for path=%q dv=%v dvProfile=%q hdr=%v start=%.3fs transcodingOffset=%.3fs audioTrack=%d subtitleTrack=%d",

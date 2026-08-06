@@ -1477,14 +1477,50 @@ func (m *HLSManager) CreateSession(ctx context.Context, path string, originalPat
 
 	log.Printf("[hls] created session %s for path %q (DV=%v, duration=%.2fs, startOffset=%.2fs)", sessionID, path, hasDV, duration, startOffset)
 
-	// Return immediately - modern HLS players (AVPlayer, ExoPlayer) handle empty playlists
-	// by polling until segments are available. This eliminates the 5-6 second blocking wait.
-	log.Printf("[hls] session %s: returning immediately, FFmpeg transcoding in background", sessionID)
+	// Web warm starts (resume) previously returned before any segment existed. That races the
+	// browser attaching hls.js to a not-yet-stable first segment and has been observed to
+	// buffer forever without canplay. In-session seek waits for the playlist — do the same
+	// for web create-with-offset. Cold starts (offset 0) and native clients still return
+	// immediately so startup latency stays low.
+	if actualTranscodingOffset > 0 && isWebBrowserPlaybackTarget(normalizedPlaybackTarget) {
+		if waited, size := m.waitForPlaylistReady(session, 10*time.Second); waited {
+			log.Printf("[hls] session %s: web warm-start playlist ready (%d bytes)", sessionID, size)
+		} else {
+			log.Printf("[hls] session %s: web warm-start timed out waiting for playlist; returning anyway", sessionID)
+		}
+	} else {
+		// Return immediately - modern HLS players (AVPlayer, ExoPlayer) handle empty playlists
+		// by polling until segments are available. This eliminates the 5-6 second blocking wait.
+		log.Printf("[hls] session %s: returning immediately, FFmpeg transcoding in background", sessionID)
+	}
 
-	// Note: For HLS sessions, FFmpeg will always start segment numbering from 0
-	// The actual start offset is stored in session.StartOffset for the frontend to use
-	// The frontend should seek to the start offset after loading the HLS stream
+	// Note: FFmpeg always numbers segments from 0 for the remaining timeline after -ss.
+	// session.StartOffset is the absolute timeline position for UI/progress only; the
+	// player must keep media currentTime near 0 (hlsPlaybackOffset holds the absolute base).
 	return session, nil
+}
+
+// waitForPlaylistReady blocks until stream.m3u8 exists with media content, or maxWait elapses.
+// Returns whether the playlist was ready and its size in bytes.
+func (m *HLSManager) waitForPlaylistReady(session *HLSSession, maxWait time.Duration) (bool, int) {
+	if session == nil || maxWait <= 0 {
+		return false, 0
+	}
+	session.mu.RLock()
+	outputDir := session.OutputDir
+	session.mu.RUnlock()
+	playlistPath := filepath.Join(outputDir, "stream.m3u8")
+	pollInterval := 25 * time.Millisecond
+	waitStart := time.Now()
+	for {
+		if data, err := os.ReadFile(playlistPath); err == nil && playlistHasMediaSegment(data) {
+			return true, len(data)
+		}
+		if time.Since(waitStart) > maxWait {
+			return false, 0
+		}
+		time.Sleep(pollInterval)
+	}
 }
 
 func resolvedSessionDuration(probedDuration, durationHint float64) float64 {
@@ -4323,30 +4359,11 @@ func (m *HLSManager) Seek(w http.ResponseWriter, r *http.Request, sessionID stri
 
 	// Wait for the playlist file to be created before returning
 	// This prevents the player from trying to load a non-existent playlist
-	session.mu.RLock()
-	outputDir := session.OutputDir
-	session.mu.RUnlock()
-	playlistPath := filepath.Join(outputDir, "stream.m3u8")
-
-	maxWait := 10 * time.Second
-	pollInterval := 25 * time.Millisecond // Reduced from 100ms for faster response
 	waitStart := time.Now()
-
-	for {
-		if _, err := os.Stat(playlistPath); err == nil {
-			// Playlist exists, check if it has content
-			if data, err := os.ReadFile(playlistPath); err == nil && len(data) > 50 {
-				log.Printf("[hls] session %s: playlist ready after %v (%d bytes)", sessionID, time.Since(waitStart), len(data))
-				break
-			}
-		}
-
-		if time.Since(waitStart) > maxWait {
-			log.Printf("[hls] session %s: warning: timed out waiting for playlist after %v", sessionID, maxWait)
-			break
-		}
-
-		time.Sleep(pollInterval)
+	if ready, size := m.waitForPlaylistReady(session, 10*time.Second); ready {
+		log.Printf("[hls] session %s: playlist ready after %v (%d bytes)", sessionID, time.Since(waitStart), size)
+	} else {
+		log.Printf("[hls] session %s: warning: timed out waiting for playlist after %v", sessionID, time.Since(waitStart))
 	}
 
 	// Build playlist URL (without /api/ prefix - frontend adds it)
