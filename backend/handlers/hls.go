@@ -989,8 +989,25 @@ func isWebBrowserPlaybackTarget(playbackTarget string) bool {
 // Input -ss leaves audio/video PTS starting at different offsets (e.g. audio at
 // 1.4s, video at 5.9s in segment0) while the HLS playlist advertises ~0.5s —
 // Chrome/Edge MSE then buffers forever without canplay. Reset both timelines.
+//
+// Must be paired with accurate input seek (see useAccurateHLSInputSeek). With
+// -noaccurate_seek, A/V can start on different content (video at the prior
+// keyframe, audio nearer the request). Independent setpts/asetpts then zeros
+// each clock and produces multi-second content desync equal to the GOP gap
+// (observed ~10s on long-GOP HEVC BD rips).
 func webSeekTimelineResetNeeded(playbackTarget string, transcodingOffset float64) bool {
 	return isWebBrowserPlaybackTarget(playbackTarget) && transcodingOffset > 0
+}
+
+// useAccurateHLSInputSeek chooses accurate -ss (decode+discard to the exact
+// timestamp) instead of -noaccurate_seek (byte-seek to prior keyframe).
+// Accurate seek is required whenever we decode/transcode video or reset web
+// mid-file PTS, so audio and video share the same content anchor.
+func useAccurateHLSInputSeek(playbackTarget string, transcodingOffset float64, videoWillTranscode, subtitleRenditionWanted, stableCastMode bool) bool {
+	if videoWillTranscode || subtitleRenditionWanted || stableCastMode {
+		return true
+	}
+	return webSeekTimelineResetNeeded(playbackTarget, transcodingOffset)
 }
 
 // hlsAudioResampleFilter returns the -af graph for AAC remux/transcode.
@@ -3152,12 +3169,12 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 		!stableCastMode
 
 	// For INPUT seeking, add -ss before -i.
-	// -noaccurate_seek keeps a copied video keyframe-friendly for normal playback. When web
-	// subtitles are selected after a resume/seek, force video transcode and accurate input seek so
-	// video, audio, and the same-pass WebVTT all share the requested timestamp anchor instead of the
-	// earlier keyframe.
+	// -noaccurate_seek is only for pure video-copy: first packet must be a keyframe.
+	// Whenever we decode (transcode, web mid-file PTS reset, same-pass subs, cast),
+	// use accurate seek so A/V (and subs) share the requested content time — not the
+	// prior keyframe for one stream and the request time for the other.
 	if session.TranscodingOffset > 0 && !useOutputSeeking {
-		if videoWillTranscode && (subtitleRenditionWanted || stableCastMode) {
+		if useAccurateHLSInputSeek(session.PlaybackTarget, session.TranscodingOffset, videoWillTranscode, subtitleRenditionWanted, stableCastMode) {
 			args = append(args, "-ss", fmt.Sprintf("%.3f", session.TranscodingOffset))
 			log.Printf("[hls] session %s: using accurate INPUT seeking to %.3fs", session.ID, session.TranscodingOffset)
 		} else {
