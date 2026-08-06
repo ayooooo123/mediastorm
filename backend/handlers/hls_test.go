@@ -781,14 +781,32 @@ func TestLiveHLSOutputArgsNativeTransmuxPreservesCaptionCarryingTS(t *testing.T)
 		"-c:a copy",
 		"-hls_segment_filename /tmp/live/segment%d.ts",
 		"/tmp/live/stream.m3u8",
+		// Wider window + no FFmpeg delete_segments so ExoPlayer can fetch segment0
+		// before the sliding window advances past it under stream-copy.
+		fmt.Sprintf("-hls_list_size %d", liveNativeHLSListSize),
+		"-hls_flags temp_file",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("native live args %q missing %q", joined, expected)
 		}
 	}
-	for _, unexpected := range []string{"libx264", "-force_key_frames", "independent_segments"} {
+	for _, unexpected := range []string{"libx264", "-force_key_frames", "independent_segments", "delete_segments"} {
 		if strings.Contains(joined, unexpected) {
 			t.Fatalf("native live args %q unexpectedly contain %q", joined, unexpected)
+		}
+	}
+}
+
+func TestLiveHLSOutputArgsNativeTargetsAllUseTransmuxNotTranscode(t *testing.T) {
+	// Every native client target must stay on copy/copy — only web re-encodes.
+	for _, target := range []string{"native", "android", "ios", "tvos", "mpv", "ksplayer", "exoplayer"} {
+		args := liveHLSOutputArgs(target, "/tmp/live/segment%d.ts", "/tmp/live/stream.m3u8")
+		joined := strings.Join(args, " ")
+		if !strings.Contains(joined, "-c:v copy") || !strings.Contains(joined, "-c:a copy") {
+			t.Fatalf("target %q must transmux, got %q", target, joined)
+		}
+		if strings.Contains(joined, "libx264") || strings.Contains(joined, "delete_segments") {
+			t.Fatalf("target %q must not transcode or use delete_segments, got %q", target, joined)
 		}
 	}
 }
@@ -802,9 +820,86 @@ func TestLiveHLSOutputArgsWebRetainsCompatibilityTranscode(t *testing.T) {
 		"-c:a aac",
 		"-force_key_frames expr:gte(t,n_forced*1)",
 		"delete_segments+independent_segments+temp_file",
+		"-hls_list_size 10",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("web live args %q missing %q", joined, expected)
+		}
+	}
+	if strings.Contains(joined, "-c:v copy") {
+		t.Fatalf("web live args should re-encode, not copy: %q", joined)
+	}
+}
+
+func TestSummarizeLiveSegmentDirAndPlaylist(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []int{2, 3, 5} {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("segment%d.ts", n)), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	playlist := strings.Join([]string{
+		"#EXTM3U",
+		"#EXT-X-MEDIA-SEQUENCE:2",
+		"#EXTINF:2.0,",
+		"segment2.ts",
+		"#EXTINF:2.0,",
+		"segment3.ts",
+		"#EXTINF:2.0,",
+		"segment5.ts",
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, "stream.m3u8"), []byte(playlist), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	disk := summarizeLiveSegmentDir(dir)
+	if !strings.Contains(disk, "onDisk=3") || !strings.Contains(disk, "min=segment2") || !strings.Contains(disk, "max=segment5") || !strings.Contains(disk, "holes=1") {
+		t.Fatalf("unexpected disk summary: %s", disk)
+	}
+	pl := summarizeLivePlaylistState(dir)
+	if !strings.Contains(pl, "mediaSeq=2") || !strings.Contains(pl, "first=segment2.ts") || !strings.Contains(pl, "last=segment5.ts") || !strings.Contains(pl, "segs=3") {
+		t.Fatalf("unexpected playlist summary: %s", pl)
+	}
+
+	empty := t.TempDir()
+	if got := summarizeLiveSegmentDir(empty); got != "onDisk=0" {
+		t.Fatalf("empty dir summary = %q, want onDisk=0", got)
+	}
+}
+
+func TestDeleteOldLiveTransmuxSegmentsKeepsBehindWindow(t *testing.T) {
+	dir := t.TempDir()
+	// Create a run of segment files 0..80
+	for i := 0; i <= 80; i++ {
+		path := filepath.Join(dir, fmt.Sprintf("segment%d.ts", i))
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mgr := &HLSManager{}
+	session := &HLSSession{
+		ID:                  "live-test",
+		OutputDir:           dir,
+		IsLive:              true,
+		PlaybackTarget:      "native",
+		MaxSegmentRequested: 80,
+		LastSegmentServed:   80,
+	}
+
+	mgr.deleteOldLiveTransmuxSegments(session, 80)
+
+	// highWater=80, keepBehind=60 → cutoff=20; walk start=0 deletes 0..20
+	for i := 0; i <= 20; i++ {
+		if _, err := os.Stat(filepath.Join(dir, fmt.Sprintf("segment%d.ts", i))); !os.IsNotExist(err) {
+			t.Fatalf("segment%d.ts should have been deleted", i)
+		}
+	}
+	// Segments above the cutoff must remain
+	for i := 21; i <= 80; i++ {
+		if _, err := os.Stat(filepath.Join(dir, fmt.Sprintf("segment%d.ts", i))); err != nil {
+			t.Fatalf("segment%d.ts should still exist: %v", i, err)
 		}
 	}
 }
