@@ -594,6 +594,47 @@ func hlsWebVideoWillTranscode(playbackTarget string, probe *UnifiedProbeResult) 
 	return strings.EqualFold(strings.TrimSpace(playbackTarget), "web") && !isBrowserCopyCompatibleVideo(probe)
 }
 
+// isWebBrowserPlaybackTarget is true for the HTML5/web player (and the "browser"
+// alias). Chrome/Edge MSE often fails to decode multi-channel AAC in HLS, so web
+// targets must downmix to stereo when we remux/transcode audio. Cast and native
+// clients keep 5.1 for AVPlayer / Chromecast layout expectations.
+func isWebBrowserPlaybackTarget(playbackTarget string) bool {
+	switch strings.ToLower(strings.TrimSpace(playbackTarget)) {
+	case "web", "browser":
+		return true
+	default:
+		return false
+	}
+}
+
+// hlsAACTranscodeArgs returns FFmpeg flags that encode the selected audio to AAC.
+// mode "indexed0" writes the first output audio stream as AAC and copies others
+// (-c:a:0 / -c:a:1); the default mode encodes a single mapped audio track.
+func hlsAACTranscodeArgs(playbackTarget string, mode string) []string {
+	channels, layout := "6", "5.1"
+	if isWebBrowserPlaybackTarget(playbackTarget) {
+		channels, layout = "2", "stereo"
+	}
+	if mode == "indexed0" {
+		return []string{
+			"-af", "aresample=async=1000",
+			"-c:a:0", "aac", "-ac:a:0", channels, "-ar:a:0", "48000", "-channel_layout:a:0", layout, "-b:a:0", "192k",
+			"-c:a:1", "copy",
+		}
+	}
+	return []string{
+		"-af", "aresample=async=1000",
+		"-c:a", "aac", "-ac", channels, "-ar", "48000", "-channel_layout", layout, "-b:a", "192k",
+	}
+}
+
+func hlsAACChannelLayoutLabel(playbackTarget string) string {
+	if isWebBrowserPlaybackTarget(playbackTarget) {
+		return "stereo"
+	}
+	return "5.1"
+}
+
 func selectedTextSubtitleStream(subtitleStreams []subtitleStreamInfo, trackIndex int) (subtitleStreamInfo, bool) {
 	if trackIndex < 0 {
 		return subtitleStreamInfo{}, false
@@ -2900,6 +2941,7 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 
 	// Audio handling
 	audioCodecHandled := false
+	aacLayout := hlsAACChannelLayoutLabel(session.PlaybackTarget)
 
 	// Check if a specific incompatible audio track was selected (TrueHD, DTS, etc.)
 	if mappedSpecificAudio && session.AudioTrackIndex >= 0 {
@@ -2907,15 +2949,13 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 			if audioStreams[i].Index == session.AudioTrackIndex {
 				needsTranscode := IsIncompatibleAudioCodec(audioStreams[i].Codec)
 				if needsTranscode {
-					// Transcode the selected incompatible track to AAC
-					// Must specify channel_layout for iOS AVPlayer compatibility (otherwise shows "media may be damaged")
-					// TrueHD/DTS have variable timing - use aresample filter with async to maintain A/V sync
-					// async=1000 allows up to 1000 samples of drift correction per second
-					// Note: -start_at_zero (set earlier) normalizes all stream timestamps for proper A/V sync
-					log.Printf("[hls] session %s: transcoding selected %s track to AAC", session.ID, audioStreams[i].Codec)
-					args = append(args,
-						"-af", "aresample=async=1000",
-						"-c:a", "aac", "-ac", "6", "-ar", "48000", "-channel_layout", "5.1", "-b:a", "192k")
+					// Transcode the selected incompatible track to AAC.
+					// Web/browser: stereo (Chrome/Edge MSE rejects multi-channel AAC).
+					// Cast/native: 5.1 with explicit channel_layout for iOS AVPlayer.
+					// TrueHD/DTS have variable timing - aresample async keeps A/V sync.
+					// Note: -start_at_zero (set earlier) normalizes timestamps for A/V sync.
+					log.Printf("[hls] session %s: transcoding selected %s track to AAC (%s)", session.ID, audioStreams[i].Codec, aacLayout)
+					args = append(args, hlsAACTranscodeArgs(session.PlaybackTarget, "")...)
 					audioCodecHandled = true
 				}
 				break
@@ -2925,21 +2965,14 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 
 	if !audioCodecHandled {
 		if forceAAC {
-			// Transcode first audio to AAC, copy others
-			// Must specify channel_layout for iOS AVPlayer compatibility
-			// Use aresample filter with async for proper A/V sync during transcoding
-			args = append(args,
-				"-af", "aresample=async=1000",
-				"-c:a:0", "aac", "-ac:a:0", "6", "-ar:a:0", "48000", "-channel_layout:a:0", "5.1", "-b:a:0", "192k",
-				"-c:a:1", "copy")
+			// Transcode first audio to AAC, copy others.
+			// Channel layout follows playback target (stereo for web, 5.1 otherwise).
+			log.Printf("[hls] session %s: forceAAC transcoding primary audio to AAC (%s)", session.ID, aacLayout)
+			args = append(args, hlsAACTranscodeArgs(session.PlaybackTarget, "indexed0")...)
 		} else if hasTrueHD && !hasCompatibleAudio {
-			// If only TrueHD exists, we must transcode it
-			// Must specify channel_layout for iOS AVPlayer compatibility (otherwise shows "media may be damaged")
-			// TrueHD has variable timing - use aresample filter with async to maintain A/V sync
-			log.Printf("[hls] session %s: transcoding TrueHD to AAC (no compatible alternative)", session.ID)
-			args = append(args,
-				"-af", "aresample=async=1000",
-				"-c:a", "aac", "-ac", "6", "-ar", "48000", "-channel_layout", "5.1", "-b:a", "192k")
+			// If only TrueHD exists, we must transcode it.
+			log.Printf("[hls] session %s: transcoding TrueHD to AAC (no compatible alternative, %s)", session.ID, aacLayout)
+			args = append(args, hlsAACTranscodeArgs(session.PlaybackTarget, "")...)
 		} else {
 			// Copy compatible audio
 			args = append(args, "-c:a", "copy")
