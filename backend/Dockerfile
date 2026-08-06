@@ -17,7 +17,7 @@ COPY frontend/modules ./modules
 RUN --mount=type=cache,target=/root/.npm \
     npm ci
 
-COPY frontend/app.config.js frontend/babel.config.js frontend/metro.config.js frontend/tsconfig.json frontend/version.ts frontend/wdyr.ts ./
+COPY frontend/app.config.js frontend/babel.config.js frontend/metro.config.js frontend/tsconfig.json frontend/version.ts frontend/wdyr.ts frontend/index.ts ./
 COPY frontend/app ./app
 COPY frontend/assets ./assets
 COPY frontend/components ./components
