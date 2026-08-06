@@ -11027,10 +11027,17 @@ func (h *AdminUIHandler) ScanLocalMediaLibrary(w http.ResponseWriter, r *http.Re
 		if errors.Is(err, localmedia.ErrLibraryScanning) {
 			status = http.StatusConflict
 		}
+		if errors.Is(err, localmedia.ErrLibraryNotFound) {
+			status = http.StatusNotFound
+		}
 		http.Error(w, err.Error(), status)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
+	// Async local scans return Accepted so the admin UI is not blocked; poll libraries for progress.
+	if summary.Async {
+		w.WriteHeader(http.StatusAccepted)
+	}
 	_ = json.NewEncoder(w).Encode(summary)
 }
 
