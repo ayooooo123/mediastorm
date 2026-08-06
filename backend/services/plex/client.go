@@ -1049,7 +1049,37 @@ func (c *Client) GetServerLibraryItems(server PlexResource, sectionID, libraryTy
 	return items, nil
 }
 
+// GetServerMetadata fetches full metadata (including Media.Part keys) for one rating key.
+func (c *Client) GetServerMetadata(ctx context.Context, server PlexResource, ratingKey string) (*PlexLibraryItem, error) {
+	ratingKey = strings.TrimSpace(ratingKey)
+	if ratingKey == "" {
+		return nil, errors.New("rating key is empty")
+	}
+	base, err := PreferredConnection(server)
+	if err != nil {
+		return nil, err
+	}
+	var result struct {
+		MediaContainer struct {
+			Metadata []PlexLibraryItem `json:"Metadata"`
+		} `json:"MediaContainer"`
+	}
+	endpoint := fmt.Sprintf("%s/library/metadata/%s", base, url.PathEscape(ratingKey))
+	if err := c.serverJSON(ctx, server, endpoint, url.Values{"includeGuids": {"1"}}, &result); err != nil {
+		return nil, err
+	}
+	if len(result.MediaContainer.Metadata) == 0 {
+		return nil, fmt.Errorf("Plex metadata not found for ratingKey %s", ratingKey)
+	}
+	item := result.MediaContainer.Metadata[0]
+	return &item, nil
+}
+
 func (c *Client) OpenServerPath(ctx context.Context, server PlexResource, path, method, rangeHeader string) (*http.Response, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, errors.New("Plex media path is empty (missing partKey; re-sync the remote library)")
+	}
 	base, err := PreferredConnection(server)
 	if err != nil {
 		return nil, err
@@ -1057,6 +1087,12 @@ func (c *Client) OpenServerPath(ctx context.Context, server PlexResource, path, 
 	endpoint := path
 	if !strings.HasPrefix(endpoint, "http") {
 		endpoint = base + "/" + strings.TrimLeft(path, "/")
+	}
+	// Guard against accidentally requesting the server root (invalid dual Content-Length responses).
+	if parsed, err := url.Parse(endpoint); err == nil {
+		if strings.Trim(parsed.Path, "/") == "" {
+			return nil, fmt.Errorf("Plex media path resolved to server root %q (missing partKey; re-sync the remote library)", endpoint)
+		}
 	}
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, nil)
 	if err != nil {

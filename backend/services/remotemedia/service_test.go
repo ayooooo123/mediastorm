@@ -2,6 +2,7 @@ package remotemedia
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -288,6 +289,26 @@ func TestNormalizePlexMovieParts(t *testing.T) {
 	}
 	if !items[0].CreatedAt.Equal(addedAt) {
 		t.Fatalf("CreatedAt=%v, want Plex AddedAt %v", items[0].CreatedAt, addedAt)
+	}
+}
+
+func TestRemoteMediaItemProviderDataSurvivesJSONRoundTrip(t *testing.T) {
+	// Backup/restore must keep partKey; previously json:"-" dropped it and broke Plex playback.
+	item := models.RemoteMediaItem{
+		ID: "ri1", LibraryID: "rm1", ExternalItemID: "10", ExternalMediaID: "7",
+		Title: "Example", StreamPath: "plexmedia:ri1",
+		ProviderData: map[string]string{"partKey": "/library/parts/7/file.mkv", "posterPath": "/thumb"},
+	}
+	raw, err := json.Marshal(item)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var restored models.RemoteMediaItem
+	if err := json.Unmarshal(raw, &restored); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if restored.ProviderData["partKey"] != "/library/parts/7/file.mkv" {
+		t.Fatalf("providerData lost in JSON round-trip: %#v (raw=%s)", restored.ProviderData, raw)
 	}
 }
 

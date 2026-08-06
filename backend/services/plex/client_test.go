@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -24,6 +25,61 @@ func TestPlexLibraryItemAcceptsLegacyAndProviderGUIDs(t *testing.T) {
 	}
 	if len(item.Guid) != 2 || item.Guid[0].ID != "imdb://tt1234567" || item.Guid[1].ID != "tmdb://42" {
 		t.Fatalf("provider GUIDs = %#v", item.Guid)
+	}
+}
+
+func TestOpenServerPathRejectsEmptyPath(t *testing.T) {
+	client := NewClient("test-client")
+	server := PlexResource{
+		AccessToken: "tok",
+		Connections: []PlexConnection{{Protocol: "https", URI: "https://plex.example:32400"}},
+	}
+	_, err := client.OpenServerPath(context.Background(), server, "", http.MethodGet, "bytes=0-1")
+	if err == nil {
+		t.Fatal("expected error for empty path")
+	}
+	if !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("error=%q, want mention of empty path", err)
+	}
+}
+
+func TestOpenServerPathRejectsServerRoot(t *testing.T) {
+	client := NewClient("test-client")
+	server := PlexResource{
+		AccessToken: "tok",
+		Connections: []PlexConnection{{Protocol: "https", URI: "https://plex.example:32400"}},
+	}
+	// Whitespace-only collapses to empty after TrimSpace.
+	_, err := client.OpenServerPath(context.Background(), server, "   ", http.MethodGet, "")
+	if err == nil {
+		t.Fatal("expected error for blank path")
+	}
+}
+
+func TestGetServerMetadata(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/library/metadata/264995" {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"MediaContainer":{"Metadata":[{"ratingKey":"264995","title":"Test","Media":[{"Part":[{"id":7,"key":"/library/parts/7/x/file.mp4","file":"/f.mp4","size":10}]}]}]}}`))
+	}))
+	defer server.Close()
+
+	client := NewClient("test-client")
+	resource := PlexResource{
+		AccessToken: "tok",
+		Connections: []PlexConnection{{Protocol: "http", URI: server.URL, Local: true}},
+	}
+	item, err := client.GetServerMetadata(context.Background(), resource, "264995")
+	if err != nil {
+		t.Fatalf("GetServerMetadata: %v", err)
+	}
+	if item.RatingKey != "264995" || len(item.Media) != 1 || len(item.Media[0].Part) != 1 {
+		t.Fatalf("unexpected item: %#v", item)
+	}
+	if item.Media[0].Part[0].Key != "/library/parts/7/x/file.mp4" {
+		t.Fatalf("part key=%q", item.Media[0].Part[0].Key)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -1007,7 +1008,71 @@ func (s *Service) openStream(ctx context.Context, library *models.RemoteMediaLib
 	if err != nil {
 		return nil, err
 	}
-	return s.plex.OpenServerPath(ctx, server, item.ProviderData["partKey"], method, rangeHeader)
+	partKey := ""
+	if item.ProviderData != nil {
+		partKey = strings.TrimSpace(item.ProviderData["partKey"])
+	}
+	if partKey == "" {
+		// Backup restore used to drop providerData (json:"-"); repair on demand from Plex.
+		repaired, repairErr := s.repairPlexPartKey(ctx, library, item, server)
+		if repairErr != nil {
+			return nil, fmt.Errorf("Plex item %s missing partKey: %w (re-sync the remote library)", item.ID, repairErr)
+		}
+		partKey = repaired
+	}
+	return s.plex.OpenServerPath(ctx, server, partKey, method, rangeHeader)
+}
+
+// repairPlexPartKey re-fetches Plex metadata for a single item and persists partKey
+// (and poster/backdrop paths) when they were lost (e.g. backup restore without providerData).
+func (s *Service) repairPlexPartKey(ctx context.Context, library *models.RemoteMediaLibrary, item *models.RemoteMediaItem, server plex.PlexResource) (string, error) {
+	if s == nil || s.plex == nil || item == nil {
+		return "", errors.New("unavailable")
+	}
+	ratingKey := strings.TrimSpace(item.ExternalItemID)
+	if ratingKey == "" {
+		return "", errors.New("item has no external rating key")
+	}
+	meta, err := s.plex.GetServerMetadata(ctx, server, ratingKey)
+	if err != nil {
+		return "", err
+	}
+	normalized := normalizePlex(library, []plex.PlexLibraryItem{*meta})
+	var match *models.RemoteMediaItem
+	for i := range normalized {
+		if normalized[i].ExternalMediaID == item.ExternalMediaID ||
+			normalized[i].ID == item.ID ||
+			(item.ExternalMediaID == "" && len(normalized) == 1) {
+			match = &normalized[i]
+			break
+		}
+	}
+	if match == nil && len(normalized) > 0 {
+		// Fall back to first part when media ID is missing from stored row.
+		match = &normalized[0]
+	}
+	if match == nil {
+		return "", errors.New("item not found during repair")
+	}
+	partKey := strings.TrimSpace(match.ProviderData["partKey"])
+	if partKey == "" {
+		return "", errors.New("Plex metadata has empty part key")
+	}
+	if item.ProviderData == nil {
+		item.ProviderData = map[string]string{}
+	}
+	for k, v := range match.ProviderData {
+		item.ProviderData[k] = v
+	}
+	item.LibraryID = library.ID
+	item.UpdatedAt = time.Now().UTC()
+	if err := s.repo.UpsertItem(ctx, item); err != nil {
+		log.Printf("[remotemedia] failed to persist repaired partKey for %s: %v", item.ID, err)
+		// Still return the key so this request can stream.
+	} else {
+		log.Printf("[remotemedia] repaired partKey for plex item %s", item.ID)
+	}
+	return partKey, nil
 }
 
 func (s *Service) OpenArtwork(ctx context.Context, itemID, kind string) (*http.Response, error) {

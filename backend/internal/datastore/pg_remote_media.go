@@ -135,7 +135,12 @@ func (r *pgRemoteMediaRepo) GetItem(ctx context.Context, id string) (*models.Rem
 
 func (r *pgRemoteMediaRepo) UpsertItem(ctx context.Context, v *models.RemoteMediaItem) error {
 	externalIDs, _ := json.Marshal(v.ExternalIDs)
-	providerData, _ := json.Marshal(v.ProviderData)
+	// Never store JSON null for provider_data; nil maps marshal to null and wipe partKeys on restore.
+	providerDataMap := v.ProviderData
+	if providerDataMap == nil {
+		providerDataMap = map[string]string{}
+	}
+	providerData, _ := json.Marshal(providerDataMap)
 	_, err := r.pool.Exec(ctx, `INSERT INTO remote_media_items (`+remoteItemColumns+`) VALUES
 		($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)
 		ON CONFLICT (library_id, external_item_id, external_media_id) DO UPDATE SET id=EXCLUDED.id, group_key=EXCLUDED.group_key,

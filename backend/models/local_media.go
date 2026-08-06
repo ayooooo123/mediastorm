@@ -362,9 +362,11 @@ type RemoteMediaItem struct {
 	DurationSeconds float64                `json:"durationSeconds,omitempty"`
 	SizeBytes       int64                  `json:"sizeBytes,omitempty"`
 	StreamPath      string                 `json:"streamPath"`
-	ProviderData    map[string]string      `json:"-"`
-	LastSeenSyncID  string                 `json:"-"`
-	IsMissing       bool                   `json:"isMissing,omitempty"`
-	CreatedAt       time.Time              `json:"createdAt"`
-	UpdatedAt       time.Time              `json:"updatedAt"`
+	// ProviderData holds provider-specific stream keys (e.g. Plex partKey). Must be
+	// serialized so backup/restore does not wipe playback paths (json:"-" did that).
+	ProviderData   map[string]string `json:"providerData,omitempty"`
+	LastSeenSyncID string            `json:"-"`
+	IsMissing      bool              `json:"isMissing,omitempty"`
+	CreatedAt      time.Time         `json:"createdAt"`
+	UpdatedAt      time.Time         `json:"updatedAt"`
 }
