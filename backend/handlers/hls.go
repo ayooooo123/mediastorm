@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -912,18 +913,37 @@ type castAudioEnvelope struct {
 	allowMultichannel bool
 }
 
-// appendAACTranscodeArgs writes the AAC encode options. env.castSafe enforces
-// AAC-LC. Multichannel AAC is normally rejected outright by TV-integrated
-// receivers (load accepted, then idle/ERROR), so it drops to stereo unless
-// env.allowMultichannel confirms the receiver supports 5.1. Non-Cast targets
-// get 5.1 AAC.
-func appendAACTranscodeArgs(args []string, streamSpecifier string, env castAudioEnvelope) []string {
+// sessionCastAudioEnvelope picks channel policy for this session:
+// web/browser always stereo (MSE), Cast stereo unless the receiver is known to
+// accept multichannel AAC, native/default keeps 5.1.
+func sessionCastAudioEnvelope(session *HLSSession, caps *castcaps.Capabilities) castAudioEnvelope {
+	if session == nil {
+		return castAudioEnvelope{allowMultichannel: true}
+	}
+	if isWebBrowserPlaybackTarget(session.PlaybackTarget) {
+		return castAudioEnvelope{castSafe: false, allowMultichannel: false}
+	}
+	if session.CastMode {
+		allow := caps != nil && caps.Supports(castcaps.VariantTSAACMultichannel)
+		return castAudioEnvelope{castSafe: true, allowMultichannel: allow}
+	}
+	return castAudioEnvelope{castSafe: false, allowMultichannel: true}
+}
+
+// appendAACTranscodeArgs writes the AAC encode options including aresample for
+// TrueHD/DTS timing and optional web mid-file PTS reset. env.castSafe enforces
+// AAC-LC for Cast. Multichannel drops to stereo when env.allowMultichannel is
+// false (web MSE, or Cast receivers that reject 5.1 AAC).
+// ptsFilters enables first_pts/asetpts for mid-file web A/V without same-pass VTT.
+func appendAACTranscodeArgs(args []string, streamSpecifier string, env castAudioEnvelope, playbackTarget string, transcodingOffset float64, ptsFilters bool) []string {
 	option := func(name string) string { return name + streamSpecifier }
 	channels := castAACChannels(env)
 	layout := "5.1"
 	if channels == 2 {
 		layout = "stereo"
 	}
+	af := hlsAudioResampleFilter(playbackTarget, transcodingOffset, ptsFilters)
+	args = append(args, "-af", af)
 	args = append(args,
 		option("-c:a"), "aac",
 		option("-ac:a"), strconv.Itoa(channels),
@@ -940,7 +960,7 @@ func appendAACTranscodeArgs(args []string, streamSpecifier string, env castAudio
 // castAACChannels mirrors the channel count appendAACTranscodeArgs writes, so
 // the capability fingerprint describes the same audio the receiver is handed.
 func castAACChannels(env castAudioEnvelope) int {
-	if env.castSafe && !env.allowMultichannel {
+	if !env.allowMultichannel {
 		return 2
 	}
 	return 6
@@ -951,6 +971,103 @@ func hlsWebVideoWillTranscode(playbackTarget string, probe *UnifiedProbeResult) 
 		return true
 	}
 	return strings.EqualFold(strings.TrimSpace(playbackTarget), "web") && !isBrowserCopyCompatibleVideo(probe)
+}
+
+// isWebBrowserPlaybackTarget is true for the HTML5/web player (and the "browser"
+// alias). Chrome/Edge MSE often fails to decode multi-channel AAC in HLS, so web
+// targets must downmix to stereo when we remux/transcode audio. Cast and native
+// clients keep 5.1 for AVPlayer / Chromecast layout expectations.
+func isWebBrowserPlaybackTarget(playbackTarget string) bool {
+	switch strings.ToLower(strings.TrimSpace(playbackTarget)) {
+	case "web", "browser":
+		return true
+	default:
+		return false
+	}
+}
+
+// webSeekTimelineResetNeeded is true when the browser path starts mid-file.
+// Input -ss leaves audio/video PTS starting at different offsets (e.g. audio at
+// 1.4s, video at 5.9s in segment0) while the HLS playlist advertises ~0.5s —
+// Chrome/Edge MSE then buffers forever without canplay. Reset both timelines.
+//
+// Must be paired with accurate input seek (see useAccurateHLSInputSeek). With
+// -noaccurate_seek, A/V can start on different content (video at the prior
+// keyframe, audio nearer the request). Independent setpts/asetpts then zeros
+// each clock and produces multi-second content desync equal to the GOP gap
+// (observed ~10s on long-GOP HEVC BD rips).
+func webSeekTimelineResetNeeded(playbackTarget string, transcodingOffset float64) bool {
+	return isWebBrowserPlaybackTarget(playbackTarget) && transcodingOffset > 0
+}
+
+// useAccurateHLSInputSeek chooses accurate -ss (decode+discard to the exact
+// timestamp) instead of -noaccurate_seek (byte-seek to prior keyframe).
+// Accurate seek is required whenever we decode/transcode video or reset web
+// mid-file PTS, so audio and video share the same content anchor.
+func useAccurateHLSInputSeek(playbackTarget string, transcodingOffset float64, videoWillTranscode, subtitleRenditionWanted, stableCastMode bool) bool {
+	if videoWillTranscode || subtitleRenditionWanted || stableCastMode {
+		return true
+	}
+	return webSeekTimelineResetNeeded(playbackTarget, transcodingOffset)
+}
+
+// webSeekPTSFiltersNeeded is true when mid-file web A/V should independently
+// zero clocks via setpts/asetpts. Disabled when a same-pass WebVTT subtitle is
+// muxed in this FFmpeg run: those filters shift video/audio relative to the
+// demuxer timeline that WebVTT cues still use, which shows up as ~0.5s late
+// subtitles after resume/seek. Accurate -ss + start_at_zero + make_zero already
+// share one timeline for video, audio, and the synced VTT.
+func webSeekPTSFiltersNeeded(playbackTarget string, transcodingOffset float64, webSubtitleRendition bool) bool {
+	return webSeekTimelineResetNeeded(playbackTarget, transcodingOffset) && !webSubtitleRendition
+}
+
+// hlsAudioResampleFilter returns the -af graph for AAC remux/transcode.
+// ptsFilters controls the mid-file setpts/asetpts path (see webSeekPTSFiltersNeeded).
+func hlsAudioResampleFilter(playbackTarget string, transcodingOffset float64, ptsFilters bool) string {
+	if ptsFilters && webSeekTimelineResetNeeded(playbackTarget, transcodingOffset) {
+		// first_pts=0 + asetpts forces a continuous audio clock from t=0 after -ss.
+		return "aresample=async=1000:first_pts=0,asetpts=PTS-STARTPTS"
+	}
+	return "aresample=async=1000"
+}
+
+// withWebSeekVideoPTSReset prefixes setpts so the video clock restarts at 0 after -ss.
+func withWebSeekVideoPTSReset(filter string) string {
+	const reset = "setpts=PTS-STARTPTS"
+	if strings.TrimSpace(filter) == "" {
+		return reset
+	}
+	return reset + "," + filter
+}
+
+// hlsAACTranscodeArgs returns FFmpeg flags that encode the selected audio to AAC.
+// mode "indexed0" writes the first output audio stream as AAC and copies others
+// (-c:a:0 / -c:a:1); the default mode encodes a single mapped audio track.
+// ptsFilters enables mid-file web asetpts (false when same-pass WebVTT is active).
+func hlsAACTranscodeArgs(playbackTarget string, mode string, transcodingOffset float64, ptsFilters bool) []string {
+	channels, layout := "6", "5.1"
+	if isWebBrowserPlaybackTarget(playbackTarget) {
+		channels, layout = "2", "stereo"
+	}
+	af := hlsAudioResampleFilter(playbackTarget, transcodingOffset, ptsFilters)
+	if mode == "indexed0" {
+		return []string{
+			"-af", af,
+			"-c:a:0", "aac", "-ac:a:0", channels, "-ar:a:0", "48000", "-channel_layout:a:0", layout, "-b:a:0", "192k",
+			"-c:a:1", "copy",
+		}
+	}
+	return []string{
+		"-af", af,
+		"-c:a", "aac", "-ac", channels, "-ar", "48000", "-channel_layout", layout, "-b:a", "192k",
+	}
+}
+
+func hlsAACChannelLayoutLabel(playbackTarget string) string {
+	if isWebBrowserPlaybackTarget(playbackTarget) {
+		return "stereo"
+	}
+	return "5.1"
 }
 
 func selectedTextSubtitleStream(subtitleStreams []subtitleStreamInfo, trackIndex int) (subtitleStreamInfo, bool) {
@@ -1822,14 +1939,50 @@ func (m *HLSManager) CreateSession(ctx context.Context, path string, originalPat
 
 	log.Printf("[hls] created session %s for path %q (DV=%v, duration=%.2fs, startOffset=%.2fs)", sessionID, path, hasDV, duration, startOffset)
 
-	// Return immediately - modern HLS players (AVPlayer, ExoPlayer) handle empty playlists
-	// by polling until segments are available. This eliminates the 5-6 second blocking wait.
-	log.Printf("[hls] session %s: returning immediately, FFmpeg transcoding in background", sessionID)
+	// Web warm starts (resume) previously returned before any segment existed. That races the
+	// browser attaching hls.js to a not-yet-stable first segment and has been observed to
+	// buffer forever without canplay. In-session seek waits for the playlist — do the same
+	// for web create-with-offset. Cold starts (offset 0) and native clients still return
+	// immediately so startup latency stays low.
+	if actualTranscodingOffset > 0 && isWebBrowserPlaybackTarget(normalizedPlaybackTarget) {
+		if waited, size := m.waitForPlaylistReady(session, 10*time.Second); waited {
+			log.Printf("[hls] session %s: web warm-start playlist ready (%d bytes)", sessionID, size)
+		} else {
+			log.Printf("[hls] session %s: web warm-start timed out waiting for playlist; returning anyway", sessionID)
+		}
+	} else {
+		// Return immediately - modern HLS players (AVPlayer, ExoPlayer) handle empty playlists
+		// by polling until segments are available. This eliminates the 5-6 second blocking wait.
+		log.Printf("[hls] session %s: returning immediately, FFmpeg transcoding in background", sessionID)
+	}
 
-	// Note: For HLS sessions, FFmpeg will always start segment numbering from 0
-	// The actual start offset is stored in session.StartOffset for the frontend to use
-	// The frontend should seek to the start offset after loading the HLS stream
+	// Note: FFmpeg always numbers segments from 0 for the remaining timeline after -ss.
+	// session.StartOffset is the absolute timeline position for UI/progress only; the
+	// player must keep media currentTime near 0 (hlsPlaybackOffset holds the absolute base).
 	return session, nil
+}
+
+// waitForPlaylistReady blocks until stream.m3u8 exists with media content, or maxWait elapses.
+// Returns whether the playlist was ready and its size in bytes.
+func (m *HLSManager) waitForPlaylistReady(session *HLSSession, maxWait time.Duration) (bool, int) {
+	if session == nil || maxWait <= 0 {
+		return false, 0
+	}
+	session.mu.RLock()
+	outputDir := session.OutputDir
+	session.mu.RUnlock()
+	playlistPath := filepath.Join(outputDir, "stream.m3u8")
+	pollInterval := 25 * time.Millisecond
+	waitStart := time.Now()
+	for {
+		if data, err := os.ReadFile(playlistPath); err == nil && playlistHasMediaSegment(data) {
+			return true, len(data)
+		}
+		if time.Since(waitStart) > maxWait {
+			return false, 0
+		}
+		time.Sleep(pollInterval)
+	}
 }
 
 func resolvedSessionDuration(probedDuration, durationHint float64) float64 {
@@ -2521,25 +2674,43 @@ func isNativeLivePlaybackTarget(playbackTarget string) bool {
 	}
 }
 
+// liveNativeHLSListSize is the sliding playlist window for native transmux live.
+// Larger than web because stream-copy can emit segments faster than players fetch
+// them, and we intentionally do not use FFmpeg delete_segments for native.
+const liveNativeHLSListSize = 30
+
+// liveNativeSegmentKeepBehind is how many completed segment files to retain on disk
+// behind the highest served/requested index when cleaning up native live sessions.
+// ~2 minutes at 2s segments; covers playlist re-poll and ExoPlayer retry windows.
+const liveNativeSegmentKeepBehind = 60
+
 func liveHLSOutputArgs(playbackTarget, segmentPattern, playlistPath string) []string {
 	args := make([]string, 0, 40)
 	hlsFlags := "delete_segments+independent_segments+temp_file"
+	listSize := "10"
 
 	if isNativeLivePlaybackTarget(playbackTarget) {
-		// MPV and KSPlayer can demux/decode normal IPTV codecs themselves. Preserve
-		// the provider's encoded packets, including H.264 SEI closed-caption data,
-		// and let the HLS muxer cut only at upstream keyframes. Do not advertise
-		// independent segments because stream copy cannot create a new keyframe at
-		// each requested segment boundary.
+		// Native apps (ExoPlayer / KSPlayer / MPV) demux/decode IPTV codecs themselves.
+		// Always transmux (copy) for those targets — never libx264/aac here. Web browser
+		// playback is the only live path that should re-encode for broad codec support.
+		//
+		// Do not use FFmpeg delete_segments for native live: stream-copy produces segments
+		// faster than the player can pull the first URI, so delete_segments removes
+		// segment0.ts before ExoPlayer's first request finishes (SEGMENT_TIMEOUT → 404).
+		// Keep a wider playlist window and clean old files ourselves after serve.
 		args = append(args,
 			"-c:v", "copy",
 			"-c:a", "copy",
 			"-max_muxing_queue_size", "1024",
 		)
-		hlsFlags = "delete_segments+temp_file"
+		// temp_file only: atomic segment publish, no independent_segments (copy cannot
+		// force keyframes at segment boundaries), no delete_segments (see above).
+		hlsFlags = "temp_file"
+		listSize = strconv.Itoa(liveNativeHLSListSize)
 	} else {
 		// Web and legacy callers retain the compatibility encode with a controlled
-		// keyframe cadence.
+		// keyframe cadence. delete_segments is safe here because re-encoding is slower
+		// than typical playlist/segment fetch cadence.
 		args = append(args,
 			"-c:v", "libx264",
 			"-preset", "veryfast",
@@ -2561,7 +2732,7 @@ func liveHLSOutputArgs(playbackTarget, segmentPattern, playlistPath string) []st
 		"-f", "hls",
 		"-hls_init_time", "1",
 		"-hls_time", "2",
-		"-hls_list_size", "10",
+		"-hls_list_size", listSize,
 		"-hls_flags", hlsFlags,
 		"-hls_segment_filename", segmentPattern,
 		playlistPath,
@@ -3011,12 +3182,12 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 		!stableCastMode
 
 	// For INPUT seeking, add -ss before -i.
-	// -noaccurate_seek keeps a copied video keyframe-friendly for normal playback. When web
-	// subtitles are selected after a resume/seek, force video transcode and accurate input seek so
-	// video, audio, and the same-pass WebVTT all share the requested timestamp anchor instead of the
-	// earlier keyframe.
+	// -noaccurate_seek is only for pure video-copy: first packet must be a keyframe.
+	// Whenever we decode (transcode, web mid-file PTS reset, same-pass subs, cast),
+	// use accurate seek so A/V (and subs) share the requested content time — not the
+	// prior keyframe for one stream and the request time for the other.
 	if session.TranscodingOffset > 0 && !useOutputSeeking {
-		if videoWillTranscode && (subtitleRenditionWanted || stableCastMode) {
+		if useAccurateHLSInputSeek(session.PlaybackTarget, session.TranscodingOffset, videoWillTranscode, subtitleRenditionWanted, stableCastMode) {
 			args = append(args, "-ss", fmt.Sprintf("%.3f", session.TranscodingOffset))
 			log.Printf("[hls] session %s: using accurate INPUT seeking to %.3fs", session.ID, session.TranscodingOffset)
 		} else {
@@ -3058,6 +3229,14 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 	// This ensures A/V sync when transcoding TrueHD/DTS audio (which have variable timing)
 	// and helps maintain subtitle sync across seek operations
 	args = append(args, "-start_at_zero")
+
+	// Web mid-file starts also force per-stream PTS reset via filters (see below).
+	// make_zero keeps the MPEG-TS muxer from emitting negative DTS that MSE rejects.
+	if webSeekTimelineResetNeeded(session.PlaybackTarget, session.TranscodingOffset) {
+		args = append(args, "-avoid_negative_ts", "make_zero")
+		log.Printf("[hls] session %s: web seek/resume timeline reset enabled (setpts/asetpts)", session.ID)
+	}
+
 	session.mu.RLock()
 	castSegmentStartNumber := session.SegmentStartNumber
 	session.mu.RUnlock()
@@ -3157,12 +3336,11 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 	}
 
 	// Same-pass WebVTT subtitle rendition (web player only).
-	// To keep subtitles perfectly in sync after seeks, the selected text subtitle is muxed
-	// in THIS ffmpeg pass (sharing the exact -ss/timestamp rebasing as the video) and exposed
-	// as a single synced WebVTT file (a second plain -f webvtt output, added after the main HLS
-	// output below). Because it shares the exact -ss/timestamp rebasing as the video, the web
-	// overlay can render it with a zero offset and it stays in sync across seeks. Gated to
-	// PlaybackTarget=="web" so the native/iOS pipeline is untouched.
+	// The selected text subtitle is muxed in THIS ffmpeg pass (sharing accurate -ss,
+	// start_at_zero, and make_zero with video/audio) and exposed as a single synced
+	// WebVTT file (second -f webvtt output below). Independent setpts/asetpts are
+	// disabled in this mode so WebVTT cues stay on the same demuxer clock as A/V;
+	// the web overlay renders with a zero offset. Gated to PlaybackTarget=="web".
 	webSubtitleRendition := false
 	webSubtitleAbsIndex := -1
 	if session.PlaybackTarget == "web" && session.SubtitleTrackIndex >= 0 {
@@ -3177,6 +3355,12 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 	session.mu.Lock()
 	session.UsesSubtitleRendition = webSubtitleRendition
 	session.mu.Unlock()
+
+	// Independent setpts/asetpts only when there is no same-pass VTT sharing the demuxer clock.
+	applyWebSeekPTSFilters := webSeekPTSFiltersNeeded(session.PlaybackTarget, session.TranscodingOffset, webSubtitleRendition)
+	if webSeekTimelineResetNeeded(session.PlaybackTarget, session.TranscodingOffset) && webSubtitleRendition {
+		log.Printf("[hls] session %s: skipping setpts/asetpts so same-pass WebVTT stays on the shared demuxer timeline", session.ID)
+	}
 
 	// Check if video codec is compatible with iOS (H.264/HEVC only)
 	// Legacy codecs like MPEG-4 Part 2 (XviD/DivX), MPEG-2, etc. need transcoding
@@ -3208,6 +3392,14 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 		needsVideoTranscode = true
 		log.Printf("[hls] session %s: web subtitle seek/resume requires video transcode for accurate subtitle sync", session.ID)
 	}
+	// setpts requires decode; force a web re-encode on mid-file starts even for copy-compatible
+	// H.264 so we can reset the A/V clock after input -ss (skipped when same-pass VTT is active).
+	if applyWebSeekPTSFilters && !needsVideoTranscode {
+		needsVideoTranscode = true
+		// Prefer software here: hardware device init must precede -i, and we are past that point.
+		useWebEncodePlan = false
+		log.Printf("[hls] session %s: web seek/resume forces video transcode for PTS reset", session.ID)
+	}
 
 	if needsVideoTranscode {
 		// Transcode video to H.264 when the source is incompatible or accurate web subtitle seeking
@@ -3218,8 +3410,12 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 			// Web player path: GPU-accelerated H.264 encode (when available) plus
 			// HDR/DV -> SDR tone mapping. webEncodePlan was built above so its
 			// device-init globals could precede -i.
-			if webEncodePlan.Filter != "" {
-				args = append(args, "-vf", webEncodePlan.Filter)
+			vf := webEncodePlan.Filter
+			if applyWebSeekPTSFilters {
+				vf = withWebSeekVideoPTSReset(vf)
+			}
+			if vf != "" {
+				args = append(args, "-vf", vf)
 			}
 			args = append(args, webEncodePlan.EncoderArgs...)
 			args = append(args,
@@ -3233,10 +3429,14 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 				session.ID, webEncodePlan.Kind, webEncodePlan.HardwareEncode, webEncodePlan.Tonemapped)
 		} else {
 			// Native/live transcode of an incompatible codec — CPU H.264, no tone mapping.
+			// Also used for late web seek PTS-reset when a hardware plan was not prepared pre-input.
 			if forceVideoTranscodeForWebSubtitleSeek {
 				log.Printf("[hls] session %s: transcoding video codec %q to H.264 for accurate web subtitle seek/resume (ultrafast)", session.ID, videoCodec)
 			} else {
 				log.Printf("[hls] session %s: video transcode required for codec %q, transcoding to H.264 (ultrafast)", session.ID, videoCodec)
+			}
+			if applyWebSeekPTSFilters {
+				args = append(args, "-vf", "setpts=PTS-STARTPTS,format=yuv420p")
 			}
 			args = append(args,
 				"-c:v", "libx264",
@@ -3338,6 +3538,8 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 
 	// Audio handling
 	audioCodecHandled := false
+
+	aacLayout := hlsAACChannelLayoutLabel(session.PlaybackTarget)
 	// The audio the receiver actually decodes. Channels are only known when we
 	// encode it ourselves; a copied track's channel count is not probed.
 	castPlanAudioCodec, castPlanAudioChannels := "", 0
@@ -3348,15 +3550,14 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 			if audioStreams[i].Index == session.AudioTrackIndex {
 				needsTranscode := IsIncompatibleAudioCodec(audioStreams[i].Codec)
 				if needsTranscode {
-					// Transcode the selected incompatible track to AAC
-					// Must specify channel_layout for iOS AVPlayer compatibility (otherwise shows "media may be damaged")
-					// TrueHD/DTS have variable timing - use aresample filter with async to maintain A/V sync
-					// async=1000 allows up to 1000 samples of drift correction per second
-					// Note: -start_at_zero (set earlier) normalizes all stream timestamps for proper A/V sync
-					log.Printf("[hls] session %s: transcoding selected %s track to AAC", session.ID, audioStreams[i].Codec)
+
+					// Transcode selected incompatible track to AAC.
+					// Web: stereo for MSE. Cast: stereo unless receiver allows multichannel.
+					// Native: 5.1. Always include aresample for TrueHD/DTS timing.
+					log.Printf("[hls] session %s: transcoding selected %s track to AAC (%s)", session.ID, audioStreams[i].Codec, aacLayout)
 					caps := m.castCapabilities(session)
-					env := castAudioEnvelope{castSafe: session.CastMode, allowMultichannel: caps.Supports(castcaps.VariantTSAACMultichannel)}
-					args = appendAACTranscodeArgs(args, "", env)
+					env := sessionCastAudioEnvelope(session, caps)
+					args = appendAACTranscodeArgs(args, "", env, session.PlaybackTarget, session.TranscodingOffset, applyWebSeekPTSFilters)
 					castPlanAudioCodec, castPlanAudioChannels = "aac", castAACChannels(env)
 					audioCodecHandled = true
 				}
@@ -3367,24 +3568,30 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 
 	if !audioCodecHandled {
 		if forceAAC {
-			// Transcode first audio to AAC, copy others
-			// Must specify channel_layout for iOS AVPlayer compatibility
-			// Use aresample filter with async for proper A/V sync during transcoding
+
+			// Transcode first audio to AAC, copy others when not Cast.
+			// Channel layout: web stereo, cast capability-aware, else 5.1.
+			log.Printf("[hls] session %s: forceAAC transcoding primary audio to AAC (%s)", session.ID, aacLayout)
 			caps := m.castCapabilities(session)
-			env := castAudioEnvelope{castSafe: session.CastMode, allowMultichannel: caps.Supports(castcaps.VariantTSAACMultichannel)}
-			args = appendAACTranscodeArgs(args, ":0", env)
+			env := sessionCastAudioEnvelope(session, caps)
+			args = appendAACTranscodeArgs(args, ":0", env, session.PlaybackTarget, session.TranscodingOffset, applyWebSeekPTSFilters)
 			castPlanAudioCodec, castPlanAudioChannels = "aac", castAACChannels(env)
 			if !session.CastMode {
 				args = append(args, "-c:a:1", "copy")
 			}
 		} else if hasTrueHD && !hasCompatibleAudio {
-			// If only TrueHD exists, we must transcode it
-			// Must specify channel_layout for iOS AVPlayer compatibility (otherwise shows "media may be damaged")
-			// TrueHD has variable timing - use aresample filter with async to maintain A/V sync
-			log.Printf("[hls] session %s: transcoding TrueHD to AAC (no compatible alternative)", session.ID)
+			// If only TrueHD exists, we must transcode it.
+			log.Printf("[hls] session %s: transcoding TrueHD to AAC (no compatible alternative, %s)", session.ID, aacLayout)
 			caps := m.castCapabilities(session)
-			env := castAudioEnvelope{castSafe: session.CastMode, allowMultichannel: caps.Supports(castcaps.VariantTSAACMultichannel)}
-			args = appendAACTranscodeArgs(args, "", env)
+			env := sessionCastAudioEnvelope(session, caps)
+			args = appendAACTranscodeArgs(args, "", env, session.PlaybackTarget, session.TranscodingOffset, applyWebSeekPTSFilters)
+			castPlanAudioCodec, castPlanAudioChannels = "aac", castAACChannels(env)
+		} else if applyWebSeekPTSFilters {
+			// Compatible audio still needs asetpts after mid-file input seek so A/V clocks match.
+			log.Printf("[hls] session %s: re-encoding compatible audio to AAC for web seek timeline reset", session.ID)
+			caps := m.castCapabilities(session)
+			env := sessionCastAudioEnvelope(session, caps)
+			args = appendAACTranscodeArgs(args, "", env, session.PlaybackTarget, session.TranscodingOffset, applyWebSeekPTSFilters)
 			castPlanAudioCodec, castPlanAudioChannels = "aac", castAACChannels(env)
 		} else {
 			// Copy compatible audio
@@ -4783,30 +4990,11 @@ func (m *HLSManager) Seek(w http.ResponseWriter, r *http.Request, sessionID stri
 
 	// Wait for the playlist file to be created before returning
 	// This prevents the player from trying to load a non-existent playlist
-	session.mu.RLock()
-	outputDir := session.OutputDir
-	session.mu.RUnlock()
-	playlistPath := filepath.Join(outputDir, "stream.m3u8")
-
-	maxWait := 10 * time.Second
-	pollInterval := 25 * time.Millisecond // Reduced from 100ms for faster response
 	waitStart := time.Now()
-
-	for {
-		if _, err := os.Stat(playlistPath); err == nil {
-			// Playlist exists, check if it has content
-			if data, err := os.ReadFile(playlistPath); err == nil && len(data) > 50 {
-				log.Printf("[hls] session %s: playlist ready after %v (%d bytes)", sessionID, time.Since(waitStart), len(data))
-				break
-			}
-		}
-
-		if time.Since(waitStart) > maxWait {
-			log.Printf("[hls] session %s: warning: timed out waiting for playlist after %v", sessionID, maxWait)
-			break
-		}
-
-		time.Sleep(pollInterval)
+	if ready, size := m.waitForPlaylistReady(session, 10*time.Second); ready {
+		log.Printf("[hls] session %s: playlist ready after %v (%d bytes)", sessionID, time.Since(waitStart), size)
+	} else {
+		log.Printf("[hls] session %s: warning: timed out waiting for playlist after %v", sessionID, time.Since(waitStart))
 	}
 
 	// Build playlist URL (without /api/ prefix - frontend adds it)
@@ -5542,16 +5730,20 @@ func (m *HLSManager) ServeSegment(w http.ResponseWriter, r *http.Request, sessio
 		}
 	}
 
-	// Wait for segment to be created. Stable Cast jumps may need to establish a
-	// fresh upstream request and FFmpeg process before producing the target.
+	// Wait for segment to be created.
+	// Live native transmux: ~15s for first temp_file rename.
+	// VOD re-encode: ~30s. Stable Cast jumps may need a fresh FFmpeg start: ~30s.
+	maxWaitIters := 1200 // ~30s
+	if session.IsLive {
+		maxWaitIters = 600 // ~15s
+	}
+	if session.usesStableCastTimeline() {
+		maxWaitIters = 1200 // cast restart / jump headroom
+	}
 	waitStart := time.Now()
 	segmentReady := false
 	var segmentSize int64
-	waitAttempts := 300
-	if session.usesStableCastTimeline() {
-		waitAttempts = 1200 // 30 seconds at 25ms per attempt
-	}
-	for i := 0; i < waitAttempts; i++ {
+	for i := 0; i < maxWaitIters; i++ {
 		if stat, err := os.Stat(segmentPath); err == nil {
 			segmentSize = stat.Size()
 			segmentReady = true
@@ -5569,8 +5761,8 @@ func (m *HLSManager) ServeSegment(w http.ResponseWriter, r *http.Request, sessio
 		}
 
 		// Check if transcoding has completed - if so, segment will never be created
-		// This prevents waiting 7.5s for segments that won't exist (e.g., when FFmpeg
-		// exits early due to shorter actual content than metadata duration)
+		// This prevents waiting the full timeout for segments that won't exist (e.g.,
+		// when FFmpeg exits early due to shorter actual content than metadata duration)
 		if i%20 == 0 { // Check every ~500ms to avoid lock contention
 			session.mu.RLock()
 			completed := session.Completed
@@ -5587,8 +5779,10 @@ func (m *HLSManager) ServeSegment(w http.ResponseWriter, r *http.Request, sessio
 
 	waitDuration := time.Since(waitStart)
 	if !segmentReady {
-		log.Printf("[hls] SEGMENT_TIMEOUT: session=%s segment=%s waited=%v",
-			sessionID, segmentName, waitDuration)
+		log.Printf("[hls] SEGMENT_TIMEOUT: session=%s segment=%s waited=%v isLive=%v target=%q %s | %s",
+			sessionID, segmentName, waitDuration, session.IsLive, session.PlaybackTarget,
+			summarizeLiveSegmentDir(session.OutputDir),
+			summarizeLivePlaylistState(session.OutputDir))
 		http.Error(w, "segment not found", http.StatusNotFound)
 		return
 	}
@@ -5645,10 +5839,15 @@ func (m *HLSManager) ServeSegment(w http.ResponseWriter, r *http.Request, sessio
 	m.noteCastSegmentDelivery(session, r, servedSegmentNum, segmentSize, serveDuration)
 
 	// Clean up old segments to save disk space.
-	// Live sessions use FFmpeg's delete_segments flag which handles cleanup automatically.
-	// Running deleteOldSegments for live sessions would cause an O(n) syscall loop
-	// growing with session duration (checking every segment ever generated).
-	if !session.IsLive {
+	// Web live sessions use FFmpeg's delete_segments flag (transcode path).
+	// Native live transmux deliberately omits delete_segments (see liveHLSOutputArgs)
+	// so we prune served segment files ourselves with a fixed keep-behind window.
+	// VOD uses buffer-aware deleteOldSegments.
+	if session.IsLive {
+		if isNativeLivePlaybackTarget(session.PlaybackTarget) {
+			go m.deleteOldLiveTransmuxSegments(session, servedSegmentNum)
+		}
+	} else {
 		go m.deleteOldSegments(session, segmentName)
 	}
 }
@@ -6258,7 +6457,132 @@ func (m *HLSManager) Shutdown() {
 	log.Printf("[hls] shutdown complete")
 }
 
-// deleteOldSegments removes old segment files to save disk space, only deleting segments the player no longer needs
+// summarizeLiveSegmentDir reports which segmentN.ts files currently exist under a
+// session output dir. Used on SEGMENT_TIMEOUT to distinguish "never generated"
+// from "generated then deleted / live edge advanced" without listing every file.
+func summarizeLiveSegmentDir(outputDir string) string {
+	entries, err := os.ReadDir(outputDir)
+	if err != nil {
+		return fmt.Sprintf("onDisk=err:%v", err)
+	}
+	var nums []int
+	var otherTS int
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if m := segmentNumRe.FindStringSubmatch(name); m != nil {
+			n, _ := strconv.Atoi(m[1])
+			nums = append(nums, n)
+			continue
+		}
+		if strings.HasSuffix(name, ".ts") || strings.HasSuffix(name, ".m4s") {
+			otherTS++
+		}
+	}
+	if len(nums) == 0 {
+		if otherTS > 0 {
+			return fmt.Sprintf("onDisk=0 otherMediaFiles=%d", otherTS)
+		}
+		return "onDisk=0"
+	}
+	sort.Ints(nums)
+	minN, maxN := nums[0], nums[len(nums)-1]
+	// Compact range check: contiguous min..max vs sparse holes.
+	expected := maxN - minN + 1
+	holes := expected - len(nums)
+	return fmt.Sprintf("onDisk=%d min=segment%d max=segment%d holes=%d otherMediaFiles=%d",
+		len(nums), minN, maxN, holes, otherTS)
+}
+
+// summarizeLivePlaylistState reports media-sequence and the first/last segment
+// names currently advertised in stream.m3u8 (if present).
+func summarizeLivePlaylistState(outputDir string) string {
+	content, err := os.ReadFile(filepath.Join(outputDir, "stream.m3u8"))
+	if err != nil {
+		return fmt.Sprintf("playlist=err:%v", err)
+	}
+	mediaSeq := ""
+	var segs []string
+	for _, line := range strings.Split(string(content), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#EXT-X-MEDIA-SEQUENCE:") {
+			mediaSeq = strings.TrimPrefix(line, "#EXT-X-MEDIA-SEQUENCE:")
+			continue
+		}
+		if strings.HasPrefix(line, "segment") && (strings.HasSuffix(line, ".ts") || strings.HasSuffix(line, ".m4s")) {
+			// Strip query params if any were written into the on-disk playlist
+			if idx := strings.IndexByte(line, '?'); idx >= 0 {
+				line = line[:idx]
+			}
+			segs = append(segs, line)
+		}
+	}
+	if mediaSeq == "" {
+		mediaSeq = "?"
+	}
+	switch len(segs) {
+	case 0:
+		return fmt.Sprintf("playlistBytes=%d mediaSeq=%s segs=0", len(content), mediaSeq)
+	case 1:
+		return fmt.Sprintf("playlistBytes=%d mediaSeq=%s segs=1 first=%s", len(content), mediaSeq, segs[0])
+	default:
+		return fmt.Sprintf("playlistBytes=%d mediaSeq=%s segs=%d first=%s last=%s",
+			len(content), mediaSeq, len(segs), segs[0], segs[len(segs)-1])
+	}
+}
+
+// deleteOldLiveTransmuxSegments removes native live .ts segment files that are far
+// behind the playback edge. Native live omits FFmpeg delete_segments so early
+// segments stay available for the player's first fetch; without this cleanup a long
+// session would accumulate every segment file ever written.
+func (m *HLSManager) deleteOldLiveTransmuxSegments(session *HLSSession, justServedSegment int) {
+	if session == nil || justServedSegment < 0 {
+		return
+	}
+
+	session.mu.RLock()
+	outputDir := session.OutputDir
+	sessionID := session.ID
+	maxRequested := session.MaxSegmentRequested
+	lastServed := session.LastSegmentServed
+	session.mu.RUnlock()
+
+	highWater := justServedSegment
+	if lastServed > highWater {
+		highWater = lastServed
+	}
+	if maxRequested > highWater {
+		highWater = maxRequested
+	}
+
+	cutoff := highWater - liveNativeSegmentKeepBehind
+	if cutoff < 0 {
+		return
+	}
+
+	deletedCount := 0
+	// Bound the walk: only scan the keep window trailing edge, not every segment
+	// from 0 (O(n) over multi-hour live sessions).
+	start := cutoff - liveNativeSegmentKeepBehind
+	if start < 0 {
+		start = 0
+	}
+	for i := start; i <= cutoff; i++ {
+		path := filepath.Join(outputDir, fmt.Sprintf("segment%d.ts", i))
+		if err := os.Remove(path); err == nil {
+			deletedCount++
+		}
+	}
+	if deletedCount > 0 {
+		log.Printf("[hls] session %s: deleted %d old live transmux segments (highWater=%d, keepBehind=%d, cutoff=%d)",
+			sessionID, deletedCount, highWater, liveNativeSegmentKeepBehind, cutoff)
+	}
+}
+
+// deleteOldSegments removes old VOD segment files to save disk space, only deleting
+// segments the player no longer needs (buffer-aware).
 func (m *HLSManager) deleteOldSegments(session *HLSSession, justServedSegment string) {
 	session.mu.RLock()
 	stableCastMode := session.usesStableCastTimeline()

@@ -422,29 +422,7 @@ func parseContentRangeTotal(value string) int64 {
 	return total
 }
 
-// parseContentRangeStart reports the first byte offset an upstream actually
-// served, from a "bytes START-END/TOTAL" header. The spool must confirm this
-// matches the window it asked for: caching a body that starts somewhere else
-// files those bytes under the wrong offset and corrupts every later read.
-func parseContentRangeStart(value string) (int64, bool) {
-	spec := strings.TrimSpace(value)
-	if !strings.HasPrefix(strings.ToLower(spec), "bytes ") {
-		return 0, false
-	}
-	spec = strings.TrimSpace(spec[len("bytes "):])
-	if slash := strings.IndexByte(spec, '/'); slash >= 0 {
-		spec = spec[:slash]
-	}
-	dash := strings.IndexByte(spec, '-')
-	if dash <= 0 {
-		return 0, false
-	}
-	start, err := strconv.ParseInt(strings.TrimSpace(spec[:dash]), 10, 64)
-	if err != nil || start < 0 {
-		return 0, false
-	}
-	return start, true
-}
+// parseContentRangeStart lives in stream_pool.go (shared handlers package helper).
 
 func (c *rangeBlockCache) get(path string, start, end int64) ([]byte, bool) {
 	c.mu.Lock()
@@ -707,7 +685,7 @@ func (h *VideoHandler) requireLibraryStreamAccess(w http.ResponseWriter, r *http
 			return false
 		}
 	}
-	recognized, allowed, err := h.libraryAccess.CanAccessStream(r.Context(), streamPath, accountID, profileID, auth.IsMaster(r) && profileID == "")
+	recognized, allowed, err := h.libraryAccess.CanAccessStream(r.Context(), streamPath, accountID, profileID, auth.IsMaster(r))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return false
@@ -1367,6 +1345,15 @@ func (h *VideoHandler) streamViaProvider(w http.ResponseWriter, r *http.Request,
 	}
 	if expectedLength > 0 {
 		w.Header().Set("Content-Length", strconv.FormatInt(expectedLength, 10))
+	}
+	// Advertise duration on the direct range proxy so native players (and
+	// reverse proxies) can size the stream without waiting for moov.
+	if w.Header().Get("Content-Duration") == "" {
+		if dur := h.providerOrCachedDuration(ctx, cleanPath); dur > 0 {
+			durStr := fmt.Sprintf("%.3f", dur)
+			w.Header().Set("X-Content-Duration", durStr)
+			w.Header().Set("Content-Duration", durStr)
+		}
 	}
 	normalizeMediaContentType(w, filename, cleanPath)
 	writeDlnaHeaders(w, r)
@@ -2083,6 +2070,22 @@ func (h *VideoHandler) buildWebDAVURL(cleanPath string) string {
 	return base + (&url.URL{Path: pathToUse}).EscapedPath()
 }
 
+// providerOrCachedDuration returns a known duration without blocking on ffprobe
+// when possible: catalog DurationProvider first, then in-memory metadata cache.
+func (h *VideoHandler) providerOrCachedDuration(ctx context.Context, cleanPath string) float64 {
+	if h.streamer != nil {
+		if dp, ok := h.streamer.(streaming.DurationProvider); ok {
+			if d, err := dp.GetDuration(ctx, cleanPath); err == nil && d > 0 {
+				return d
+			}
+		}
+	}
+	if cached := h.getCachedMetadata(cleanPath); cached != nil && cached.DurationSeconds > 0 {
+		return cached.DurationSeconds
+	}
+	return 0
+}
+
 func (h *VideoHandler) runFFProbeFromProvider(ctx context.Context, cleanPath string) (*ffprobeOutput, error) {
 	// Check if this is already an external URL (e.g., from AIOStreams pre-resolved streams)
 	// If so, probe it directly without going through the provider
@@ -2132,8 +2135,11 @@ func (h *VideoHandler) runFFProbeFromProvider(ctx context.Context, cleanPath str
 		}
 	}
 
-	// Fall back to piped approach (when direct URL and WebDAV fail)
-	videoTracef("[video] ffprobe falling back to piped probe for: %s", cleanPath)
+	// Fall back to a ranged sample. Progressive MP4s often store moov after
+	// mdat; piping only the first N bytes then reports "moov atom not found"
+	// and can poison metadata with a truncated Format.Size. Detect that case
+	// and probe ftyp+moov via ranged reads while playback stays a direct proxy.
+	videoTracef("[video] ffprobe falling back to ranged sample probe for: %s", cleanPath)
 	request := streaming.Request{Path: cleanPath, Method: http.MethodGet}
 	if providerProbeSampleBytes > 0 {
 		request.RangeHeader = fmt.Sprintf("bytes=0-%d", providerProbeSampleBytes-1)
@@ -2148,13 +2154,48 @@ func (h *VideoHandler) runFFProbeFromProvider(ctx context.Context, cleanPath str
 		return nil, fmt.Errorf("provider ffprobe stream returned empty body")
 	}
 
+	totalSize := providerResponseTotalSize(resp)
+	if totalSize <= 0 {
+		if cr := resp.Headers.Get("Content-Range"); cr != "" {
+			totalSize = parseContentRangeTotal(cr)
+		}
+	}
+	// Cap sample read so a misbehaving provider cannot fill memory.
+	limit := providerProbeSampleBytes
+	if limit <= 0 {
+		limit = 16 * 1024 * 1024
+	}
+	sample, readErr := io.ReadAll(io.LimitReader(resp.Body, limit))
+	_ = resp.Close()
+	if readErr != nil && !errors.Is(readErr, io.EOF) {
+		return nil, readErr
+	}
+	if len(sample) == 0 {
+		return nil, fmt.Errorf("provider ffprobe stream returned empty body")
+	}
+
+	if moovOff, ok := mp4MoovAtEndOffset(sample, totalSize); ok {
+		meta, err := h.runFFProbeProviderMoovAtEnd(ctx, cleanPath, sample, moovOff, totalSize)
+		if err != nil {
+			log.Printf("[video] moov-at-end probe failed for %q: %v; trying piped sample", cleanPath, err)
+		} else {
+			h.enrichBluRayStreamLanguages(ctx, cleanPath, meta)
+			return meta, nil
+		}
+	} else if totalSize > int64(len(sample)) {
+		// Sample may be too short to see the full mdat header; still try a
+		// tail-based moov lookup when the object is larger than the sample.
+		if meta, err := h.runFFProbeProviderMoovAtEnd(ctx, cleanPath, sample, 0, totalSize); err == nil && meta != nil {
+			h.enrichBluRayStreamLanguages(ctx, cleanPath, meta)
+			return meta, nil
+		}
+	}
+
 	pr, pw := io.Pipe()
 	go func() {
-		defer resp.Close()
-		buf := make([]byte, 128*1024)
-		_, copyErr := io.CopyBuffer(pw, resp.Body, buf)
-		if copyErr != nil && !errors.Is(copyErr, io.EOF) && !errors.Is(copyErr, io.ErrClosedPipe) {
-			pw.CloseWithError(copyErr)
+		_, writeErr := pw.Write(sample)
+		if writeErr != nil {
+			pw.CloseWithError(writeErr)
 			return
 		}
 		pw.Close()
@@ -2162,8 +2203,21 @@ func (h *VideoHandler) runFFProbeFromProvider(ctx context.Context, cleanPath str
 
 	meta, err := h.runFFProbe(ctx, "pipe:0", pr)
 	if err != nil {
-		pw.CloseWithError(err)
+		// Final attempt: moov may sit at EOF even when the prefix parser missed it
+		// (e.g. 64-bit mdat size not fully present in the sample).
+		if totalSize > int64(len(sample)) {
+			if moovMeta, moovErr := h.runFFProbeProviderMoovAtEnd(ctx, cleanPath, sample, 0, totalSize); moovErr == nil && moovMeta != nil {
+				h.enrichBluRayStreamLanguages(ctx, cleanPath, moovMeta)
+				return moovMeta, nil
+			}
+		}
 		return nil, err
+	}
+	// Piped sample size is not the media size; restore real length when known.
+	if totalSize > 0 && meta != nil {
+		if sz := parseInt64(meta.Format.Size); sz <= 0 || sz == int64(len(sample)) || sz < totalSize/2 {
+			meta.Format.Size = strconv.FormatInt(totalSize, 10)
+		}
 	}
 	h.enrichBluRayStreamLanguages(ctx, cleanPath, meta)
 	return meta, nil
@@ -2516,15 +2570,24 @@ func (h *VideoHandler) ProbeVideo(w http.ResponseWriter, r *http.Request) {
 			notes = append(notes, "stream metadata unavailable")
 		} else if resp != nil {
 			defer resp.Close()
-			fileSize = resp.ContentLength
+			fileSize = providerResponseTotalSize(resp)
 			if fileSize <= 0 {
-				if resp.Headers != nil {
-					if raw := resp.Headers.Get("Content-Length"); raw != "" {
-						if parsed, parseErr := strconv.ParseInt(raw, 10, 64); parseErr == nil {
-							fileSize = parsed
-						}
+				fileSize = resp.ContentLength
+			}
+			if fileSize <= 0 && resp.Headers != nil {
+				if raw := resp.Headers.Get("Content-Length"); raw != "" {
+					if parsed, parseErr := strconv.ParseInt(raw, 10, 64); parseErr == nil {
+						fileSize = parsed
 					}
 				}
+				if fileSize <= 0 {
+					if cr := resp.Headers.Get("Content-Range"); cr != "" {
+						fileSize = parseContentRangeTotal(cr)
+					}
+				}
+			}
+			if fileSize > 0 {
+				h.rangeCache.setTotal(cleanPath, fileSize)
 			}
 		}
 	} else {
@@ -2548,8 +2611,10 @@ func (h *VideoHandler) ProbeVideo(w http.ResponseWriter, r *http.Request) {
 	if meta != nil {
 		plan := determineAudioPlanWithLanguage(meta, false, preferredAudioLang)
 		response = composeMetadataResponse(meta, sanitizedPath, plan)
-		// Prefer probed file size, but backfill from HEAD if missing
-		if response.FileSizeBytes == 0 && fileSize > 0 {
+		// HEAD/Content-Range reports the real object size. Probes that sample a
+		// prefix (or a synthetic ftyp+moov blob) must not win with a tiny size —
+		// native players need the full length to range-seek moov-at-end MP4s.
+		if fileSize > 0 && (response.FileSizeBytes == 0 || response.FileSizeBytes < fileSize) {
 			response.FileSizeBytes = fileSize
 		}
 	} else {
@@ -4049,15 +4114,23 @@ func (h *VideoHandler) StartHLSSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// For warm start sessions, probe for the actual keyframe position FFmpeg will seek to BEFORE creating session
-	// This is critical because FFmpeg seeks to the nearest keyframe, not the exact requested time
-	// Both video and subtitles must start from the same keyframe position for sync
+	// For warm start sessions, probe for the actual keyframe position FFmpeg will seek to
+	// BEFORE creating the session. Native clients need this so video and sidecar subtitles
+	// share the same keyframe anchor.
+	//
+	// Web/browser is different: in-session /seek intentionally skips this probe and works,
+	// while create-with-probed-offset has been observed to buffer HLS segments without ever
+	// reaching canplay (MSE stuck). Match the working seek path for web warm starts.
 	transcodingOffset := startSeconds
 	if startSeconds > 0 {
-		keyframePos := h.hlsManager.probeKeyframePosition(r.Context(), cleanPath, startSeconds)
-		transcodingOffset = keyframePos
-		videoTracef("[video] warm start: probed keyframe position %.3fs (requested %.3fs, delta %.3fs)",
-			keyframePos, startSeconds, keyframePos-startSeconds)
+		if isWebBrowserPlaybackTarget(playbackTarget) {
+			videoTracef("[video] web warm start: skipping keyframe probe (match seek path) start=%.3fs", startSeconds)
+		} else {
+			keyframePos := h.hlsManager.probeKeyframePosition(r.Context(), cleanPath, startSeconds)
+			transcodingOffset = keyframePos
+			videoTracef("[video] warm start: probed keyframe position %.3fs (requested %.3fs, delta %.3fs)",
+				keyframePos, startSeconds, keyframePos-startSeconds)
+		}
 	}
 
 	videoTracef("[video] creating HLS session for path=%q dv=%v dvProfile=%q hdr=%v start=%.3fs transcodingOffset=%.3fs audioTrack=%d subtitleTrack=%d",

@@ -240,15 +240,13 @@ func (f *fakeLocalMediaRepo) GetItem(ctx context.Context, id string) (*models.Lo
 	return nil, nil
 }
 
-func (f *fakeLocalMediaRepo) MarkItemsMissingNotSeenInScan(ctx context.Context, libraryID, scanID string, missingSince interface{}) error {
-	ts, _ := missingSince.(time.Time)
-	for _, item := range f.items {
+func (f *fakeLocalMediaRepo) DeleteItemsNotSeenInScan(ctx context.Context, libraryID, scanID string) error {
+	for path, item := range f.items {
 		if item.LibraryID != libraryID {
 			continue
 		}
-		if item.LastSeenScanID != scanID && !item.IsMissing {
-			item.IsMissing = true
-			item.MissingSince = &ts
+		if item.LastSeenScanID != scanID {
+			delete(f.items, path)
 		}
 	}
 	return nil
@@ -289,9 +287,9 @@ func TestStartScanCompletesAndPersistsSummary(t *testing.T) {
 		scans:       make(map[string]scanState),
 	}
 
-	summary, err := service.StartScan(context.Background(), "lib1")
+	summary, err := service.RunScan(context.Background(), "lib1")
 	if err != nil {
-		t.Fatalf("StartScan error: %v", err)
+		t.Fatalf("RunScan error: %v", err)
 	}
 	if summary.Discovered != 1 {
 		t.Fatalf("summary.Discovered = %d, want 1", summary.Discovered)
@@ -307,7 +305,86 @@ func TestStartScanCompletesAndPersistsSummary(t *testing.T) {
 	}
 }
 
-func TestStartScanMarksMissingItemsInsteadOfDeleting(t *testing.T) {
+func TestStartScanAcceptsBackgroundScanWithoutBlocking(t *testing.T) {
+	root := t.TempDir()
+	filePath := root + "/Movie.Title.2024.mkv"
+	if err := os.WriteFile(filePath, []byte("not-a-real-video"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	repo := &fakeLocalMediaRepo{
+		library: &models.LocalMediaLibrary{
+			ID:             "lib1",
+			Name:           "Movies",
+			Type:           models.LocalMediaLibraryTypeMovie,
+			RootPath:       root,
+			LastScanStatus: models.LocalMediaScanStatusIdle,
+			CreatedAt:      time.Now().UTC(),
+			UpdatedAt:      time.Now().UTC(),
+		},
+		items: make(map[string]*models.LocalMediaItem),
+	}
+	service := &Service{
+		repo:        repo,
+		ffprobePath: "ffprobe",
+		scans:       make(map[string]scanState),
+	}
+
+	summary, err := service.StartScan(context.Background(), "lib1")
+	if err != nil {
+		t.Fatalf("StartScan error: %v", err)
+	}
+	if !summary.Async {
+		t.Fatal("summary.Async = false, want true")
+	}
+	if summary.Status != string(models.LocalMediaScanStatusScanning) {
+		t.Fatalf("summary.Status = %q, want %q", summary.Status, models.LocalMediaScanStatusScanning)
+	}
+	if repo.library.LastScanStatus != models.LocalMediaScanStatusScanning &&
+		repo.library.LastScanStatus != models.LocalMediaScanStatusComplete {
+		t.Fatalf("LastScanStatus immediately after StartScan = %v, want scanning or complete", repo.library.LastScanStatus)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if repo.library.LastScanStatus == models.LocalMediaScanStatusComplete {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if repo.library.LastScanStatus != models.LocalMediaScanStatusComplete {
+		t.Fatalf("LastScanStatus = %v after wait, want %v", repo.library.LastScanStatus, models.LocalMediaScanStatusComplete)
+	}
+	if len(repo.items) != 1 {
+		t.Fatalf("items stored = %d, want 1", len(repo.items))
+	}
+}
+
+func TestStartScanRejectsWhenAlreadyInProgress(t *testing.T) {
+	repo := &fakeLocalMediaRepo{
+		library: &models.LocalMediaLibrary{
+			ID:             "lib1",
+			Name:           "Movies",
+			Type:           models.LocalMediaLibraryTypeMovie,
+			RootPath:       t.TempDir(),
+			LastScanStatus: models.LocalMediaScanStatusScanning,
+			CreatedAt:      time.Now().UTC(),
+			UpdatedAt:      time.Now().UTC(),
+		},
+	}
+	service := &Service{
+		repo:  repo,
+		scans: map[string]scanState{"lib1": {inProgress: true, startedAt: time.Now().UTC()}},
+	}
+	if _, err := service.StartScan(context.Background(), "lib1"); !errors.Is(err, ErrLibraryScanning) {
+		t.Fatalf("StartScan error = %v, want ErrLibraryScanning", err)
+	}
+	if _, err := service.RunScan(context.Background(), "lib1"); !errors.Is(err, ErrLibraryScanning) {
+		t.Fatalf("RunScan error = %v, want ErrLibraryScanning", err)
+	}
+}
+
+func TestStartScanDeletesItemsNotSeenInScan(t *testing.T) {
 	root := t.TempDir()
 	filePath := root + "/Movie.Title.2024.mkv"
 	if err := os.WriteFile(filePath, []byte("not-a-real-video"), 0o644); err != nil {
@@ -336,6 +413,17 @@ func TestStartScanMarksMissingItemsInsteadOfDeleting(t *testing.T) {
 				CreatedAt:      now,
 				UpdatedAt:      now,
 			},
+			"already-missing.mkv": {
+				ID:             "old2",
+				LibraryID:      "lib1",
+				RelativePath:   "already-missing.mkv",
+				FilePath:       root + "/already-missing.mkv",
+				FileName:       "already-missing.mkv",
+				LastSeenScanID: "prior-scan",
+				IsMissing:      true,
+				CreatedAt:      now,
+				UpdatedAt:      now,
+			},
 		},
 	}
 	service := &Service{
@@ -344,20 +432,22 @@ func TestStartScanMarksMissingItemsInsteadOfDeleting(t *testing.T) {
 		scans:       make(map[string]scanState),
 	}
 
-	_, err := service.StartScan(context.Background(), "lib1")
+	_, err := service.RunScan(context.Background(), "lib1")
 	if err != nil {
-		t.Fatalf("StartScan error: %v", err)
+		t.Fatalf("RunScan error: %v", err)
 	}
 
-	oldItem := repo.items["old.mkv"]
-	if oldItem == nil {
-		t.Fatal("old item deleted, want marked missing")
+	if _, ok := repo.items["old.mkv"]; ok {
+		t.Fatal("old item still present, want deleted after scan")
 	}
-	if !oldItem.IsMissing {
-		t.Fatal("old item IsMissing = false, want true")
+	if _, ok := repo.items["already-missing.mkv"]; ok {
+		t.Fatal("previously missing item still present, want deleted after scan")
 	}
-	if oldItem.MissingSince == nil {
-		t.Fatal("old item MissingSince = nil, want non-nil")
+	if len(repo.items) != 1 {
+		t.Fatalf("items stored = %d, want 1 (only the file still on disk)", len(repo.items))
+	}
+	if _, ok := repo.items["Movie.Title.2024.mkv"]; !ok {
+		t.Fatal("current on-disk file missing from items after scan")
 	}
 }
 
@@ -478,9 +568,9 @@ func TestStartScanDeletesItemsExcludedByFilterTerms(t *testing.T) {
 		scans:       make(map[string]scanState),
 	}
 
-	summary, err := service.StartScan(context.Background(), "lib1")
+	summary, err := service.RunScan(context.Background(), "lib1")
 	if err != nil {
-		t.Fatalf("StartScan error: %v", err)
+		t.Fatalf("RunScan error: %v", err)
 	}
 	if summary.Discovered != 1 {
 		t.Fatalf("summary.Discovered = %d, want 1", summary.Discovered)

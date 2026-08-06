@@ -423,6 +423,9 @@ func (watchStartedRepo) GetObservation(context.Context, string, string) (*models
 func (watchStartedRepo) ListObservations(context.Context, string) ([]models.NotificationObservation, error) {
 	return nil, nil
 }
+func (watchStartedRepo) ListAllObservations(context.Context) ([]models.NotificationObservation, error) {
+	return nil, nil
+}
 func (watchStartedRepo) UpsertObservation(context.Context, *models.NotificationObservation) error {
 	return nil
 }

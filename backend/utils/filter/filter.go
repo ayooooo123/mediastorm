@@ -39,6 +39,7 @@ var (
 	yearRangePattern        = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])((?:19|20)\d{2})\s*[-–]\s*((?:19|20)\d{2})(?:[^a-z0-9]|$)`)
 	episodeCodeTokenPattern = regexp.MustCompile(`(?i)^(?:s\d{1,4}e\d{1,5}|\d{1,4}x\d{1,5})$`)
 	seasonOnlyTokenPattern  = regexp.MustCompile(`(?i)^s\d{1,4}$`)
+	absoluteSuffixPattern   = regexp.MustCompile(`^\d{1,5}$`)
 	releaseBoundaryTokens   = map[string]struct{}{
 		"480p":   {},
 		"576p":   {},
@@ -350,7 +351,27 @@ func ResultsWithDetails(results []models.NZBResult, opts Options) []FilteredResu
 		} else {
 			result.Attributes["titleMatch"] = "loose"
 		}
-		if !opts.IsMovie && isSeriesPrefixExtensionMismatch(parsed.Title, matchedTitle) {
+
+		// ptt-go does not recognize some common anime absolute formats, such as
+		// "Title-01" and "Title 01". Recover a lone numeric suffix after the
+		// matched series title before applying title-extension and episode checks.
+		inferredAbsoluteEpisode := false
+		if !opts.IsMovie && opts.TargetAbsoluteEpisode > 0 && len(parsed.Episodes) == 0 {
+			if episode, ok := trailingAbsoluteEpisode(parsed.Title, matchedTitle); ok {
+				parsedCopy := *parsed
+				parsedCopy.Episodes = []int{episode}
+				parsed = &parsedCopy
+				inferredAbsoluteEpisode = true
+			}
+		}
+
+		if !opts.IsMovie && opts.TargetSeason > 0 && (opts.TargetEpisode > 0 || opts.TargetAbsoluteEpisode > 0) && hasEpisodeSideContentMarker(result.Title, matchedTitle) {
+			reason := "result is side content, not a regular series episode"
+			log.Printf("[filter] Rejecting %q: %s", result.Title, reason)
+			reject(result, reason)
+			continue
+		}
+		if !opts.IsMovie && !inferredAbsoluteEpisode && isSeriesPrefixExtensionMismatch(parsed.Title, matchedTitle) {
 			reason := fmt.Sprintf("parsed title %q extends expected title %q", parsed.Title, matchedTitle)
 			log.Printf("[filter] Rejecting %q: %s", result.Title, reason)
 			reject(result, reason)
@@ -391,8 +412,9 @@ func ResultsWithDetails(results []models.NZBResult, opts Options) []FilteredResu
 			continue
 		}
 
-		if !opts.IsMovie && !hasTVPattern && !isCompletePack && !hasEpisodeResolver && !hasDailyDate && !hasFormulaOneEvent {
-			reason := "no season/episode info for TV show"
+		if !opts.IsMovie && !hasTVPattern && !isCompletePack && !hasDailyDate && !hasFormulaOneEvent &&
+			(!hasEpisodeResolver || !isPlausibleEpisodeLessPack(result.Title, parsed.Title, matchedTitle)) {
+			reason := "no episode info or credible series-pack marker for TV show"
 			log.Printf("[filter] Rejecting %q: searching for TV show but result has no season/episode info",
 				result.Title)
 			reject(result, reason)
@@ -1148,6 +1170,92 @@ func isSeriesPrefixExtensionMismatch(parsedTitle, matchedTitle string) bool {
 	}
 	extraWords := strings.Fields(strings.TrimSpace(parsed[endIdx:]))
 	return len(extraWords) == 1
+}
+
+// trailingAbsoluteEpisode recovers anime release names that ptt-go leaves in
+// the parsed title, for example "Kidou Senkan Nadesico-01". The suffix must be
+// the only content after the matched title so years and arbitrary title text
+// are not reinterpreted as episodes.
+func trailingAbsoluteEpisode(parsedTitle, matchedTitle string) (int, bool) {
+	parsed := normalizeForContainment(parsedTitle)
+	expected := normalizeForContainment(matchedTitle)
+	if parsed == "" || expected == "" || !strings.HasPrefix(parsed, expected) {
+		return 0, false
+	}
+	remainder := strings.TrimSpace(strings.TrimPrefix(parsed, expected))
+	if !absoluteSuffixPattern.MatchString(remainder) {
+		return 0, false
+	}
+	episode, err := strconv.Atoi(remainder)
+	if err != nil || episode <= 0 {
+		return 0, false
+	}
+	return episode, true
+}
+
+// hasEpisodeSideContentMarker identifies release suffixes that describe
+// ancillary anime content rather than a regular numbered episode. It is only
+// used for normal seasons; season-zero searches may legitimately target OVAs.
+func hasEpisodeSideContentMarker(rawTitle, matchedTitle string) bool {
+	suffix, ok := normalizedTitleSuffix(rawTitle, matchedTitle)
+	if !ok || suffix == "" {
+		return false
+	}
+	fields := strings.Fields(suffix)
+	tokens := make(map[string]struct{}, len(fields))
+	for _, field := range fields {
+		tokens[field] = struct{}{}
+	}
+	has := func(token string) bool {
+		_, found := tokens[token]
+		return found
+	}
+
+	for _, marker := range []string{"movie", "film", "ova", "oav", "trailer", "soundtrack", "ost", "ncop", "nced", "creditless"} {
+		if has(marker) {
+			return true
+		}
+	}
+	return strings.Contains(" "+suffix+" ", " motion picture ") ||
+		strings.Contains(" "+suffix+" ", " music cd ") ||
+		(has("op") && has("ed"))
+}
+
+func normalizedTitleSuffix(rawTitle, matchedTitle string) (string, bool) {
+	raw := normalizeForContainment(rawTitle)
+	expected := normalizeForContainment(matchedTitle)
+	if raw == "" || expected == "" {
+		return "", false
+	}
+	start := strings.Index(raw, expected)
+	if start < 0 {
+		return "", false
+	}
+	if start > 0 && raw[start-1] != ' ' {
+		return "", false
+	}
+	end := start + len(expected)
+	if end < len(raw) && raw[end] != ' ' {
+		return "", false
+	}
+	return strings.TrimSpace(raw[end:]), true
+}
+
+// isPlausibleEpisodeLessPack keeps exact-title releases and explicitly marked
+// batches. Those frequently contain the requested episode even when the
+// indexer title has no episode range. Title extensions without a pack marker
+// are too ambiguous and commonly represent sequels, movies, or OVAs.
+func isPlausibleEpisodeLessPack(rawTitle, parsedTitle, matchedTitle string) bool {
+	if normalizeForContainment(parsedTitle) == normalizeForContainment(matchedTitle) {
+		return true
+	}
+	normalizedRaw := normalizeForContainment(rawTitle)
+	for _, field := range strings.Fields(normalizedRaw) {
+		if field == "batch" || field == "complete" {
+			return true
+		}
+	}
+	return false
 }
 
 func isStrongTitleIdentity(parsedTitle, matchedTitle string, titleSimilarity float64) bool {

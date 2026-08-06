@@ -145,14 +145,24 @@ func (r *pgNotificationRepo) GetObservation(ctx context.Context, profileID, item
 }
 
 func (r *pgNotificationRepo) ListObservations(ctx context.Context, profileID string) ([]models.NotificationObservation, error) {
-	rows, err := r.pool.Query(ctx, `
+	return r.listObservations(ctx, `
 		SELECT profile_id, item_key, status, event, updated_at
 		FROM notification_observations WHERE profile_id=$1`, profileID)
+}
+
+func (r *pgNotificationRepo) ListAllObservations(ctx context.Context) ([]models.NotificationObservation, error) {
+	return r.listObservations(ctx, `
+		SELECT profile_id, item_key, status, event, updated_at
+		FROM notification_observations ORDER BY profile_id, item_key`)
+}
+
+func (r *pgNotificationRepo) listObservations(ctx context.Context, query string, args ...any) ([]models.NotificationObservation, error) {
+	rows, err := r.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var observations []models.NotificationObservation
+	observations := make([]models.NotificationObservation, 0)
 	for rows.Next() {
 		var observation models.NotificationObservation
 		var eventJSON []byte

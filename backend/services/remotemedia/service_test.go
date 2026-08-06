@@ -1,6 +1,8 @@
 package remotemedia
 
 import (
+	"context"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -10,6 +12,148 @@ import (
 	"novastream/services/jellyfin"
 	"novastream/services/plex"
 )
+
+type fakeRemoteMediaRepo struct {
+	libraries []models.RemoteMediaLibrary
+	items     map[string][]models.RemoteMediaItem
+}
+
+func (f *fakeRemoteMediaRepo) ListLibraries(context.Context) ([]models.RemoteMediaLibrary, error) {
+	return append([]models.RemoteMediaLibrary(nil), f.libraries...), nil
+}
+func (f *fakeRemoteMediaRepo) GetLibrary(context.Context, string) (*models.RemoteMediaLibrary, error) {
+	return nil, nil
+}
+func (f *fakeRemoteMediaRepo) CreateLibrary(context.Context, *models.RemoteMediaLibrary) error {
+	return nil
+}
+func (f *fakeRemoteMediaRepo) UpdateLibrary(context.Context, *models.RemoteMediaLibrary) error {
+	return nil
+}
+func (f *fakeRemoteMediaRepo) DeleteLibrary(context.Context, string) error { return nil }
+func (f *fakeRemoteMediaRepo) ListItems(_ context.Context, libraryID string, _ bool) ([]models.RemoteMediaItem, error) {
+	return append([]models.RemoteMediaItem(nil), f.items[libraryID]...), nil
+}
+func (f *fakeRemoteMediaRepo) GetItem(context.Context, string) (*models.RemoteMediaItem, error) {
+	return nil, nil
+}
+func (f *fakeRemoteMediaRepo) UpsertItem(context.Context, *models.RemoteMediaItem) error { return nil }
+func (f *fakeRemoteMediaRepo) MarkItemsMissingNotSeenInSync(context.Context, string, string) error {
+	return nil
+}
+
+func TestMatchesByExternalIDsIgnoresLocalizedTitle(t *testing.T) {
+	group := models.LocalMediaItemGroup{
+		Title:  "Zootropolis 2",
+		Year:   2025,
+		IMDBID: "tt26443597",
+		TMDBID: 1084242,
+		TVDBID: 344109,
+	}
+	if !matches(group, models.LocalMediaMatchQuery{
+		Title:  "Zootopia 2",
+		Year:   2025,
+		IMDBID: "tt26443597",
+		TMDBID: "1084242",
+	}) {
+		t.Fatal("expected IMDB/TMDB match despite localized Plex title")
+	}
+	if matches(group, models.LocalMediaMatchQuery{Title: "Zootopia 2", Year: 2025}) {
+		t.Fatal("title-only query must not match a different localized title")
+	}
+}
+
+func TestFindMatchesScansFullLibraryByExternalIDs(t *testing.T) {
+	// Build enough A–Y filler so a title-sorted/paginated approach would drop "Zootropolis 2".
+	filler := make([]models.RemoteMediaItem, 0, 220)
+	for i := 0; i < 220; i++ {
+		id := "filler-" + strconv.Itoa(i)
+		filler = append(filler, models.RemoteMediaItem{
+			ID:          id,
+			LibraryID:   "plex-films",
+			LibraryType: models.LocalMediaLibraryTypeMovie,
+			Title:       "AAA Filler " + strconv.Itoa(i),
+			Year:        2000,
+			GroupKey:    id,
+			FileName:    "filler.mkv",
+		})
+	}
+	zootropolis := []models.RemoteMediaItem{
+		{
+			ID:           "plex-z2-4k",
+			LibraryID:    "plex-films",
+			LibraryType:  models.LocalMediaLibraryTypeMovie,
+			Title:        "Zootropolis 2",
+			Year:         2025,
+			GroupKey:     "755091",
+			FileName:     "Zootopia 2 2160p.mkv",
+			VersionLabel: "2160p · HEVC",
+			ExternalIDs:  &models.LocalMediaExternalIDs{IMDB: "tt26443597", TMDB: "1084242", TVDB: "344109"},
+		},
+		{
+			ID:           "plex-z2-1080",
+			LibraryID:    "plex-films",
+			LibraryType:  models.LocalMediaLibraryTypeMovie,
+			Title:        "Zootropolis 2",
+			Year:         2025,
+			GroupKey:     "755091",
+			FileName:     "Zootopia 2 1080p.mkv",
+			VersionLabel: "1080p · H264",
+			ExternalIDs:  &models.LocalMediaExternalIDs{IMDB: "tt26443597", TMDB: "1084242", TVDB: "344109"},
+		},
+	}
+	repo := &fakeRemoteMediaRepo{
+		libraries: []models.RemoteMediaLibrary{{
+			ID:       "plex-films",
+			Name:     "Films",
+			Type:     models.LocalMediaLibraryTypeMovie,
+			Provider: models.MediaSourcePlex,
+		}},
+		items: map[string][]models.RemoteMediaItem{
+			"plex-films": append(filler, zootropolis...),
+		},
+	}
+	service := &Service{repo: repo}
+	matches, err := service.FindMatches(context.Background(), models.LocalMediaMatchQuery{
+		MediaType: "movie",
+		Title:     "Zootopia 2",
+		Year:      2025,
+		IMDBID:    "tt26443597",
+		TMDBID:    "1084242",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("matches=%d, want 1", len(matches))
+	}
+	if matches[0].LibraryName != "Films" || matches[0].Group.Title != "Zootropolis 2" {
+		t.Fatalf("unexpected match: %+v", matches[0])
+	}
+	if len(matches[0].Group.Items) != 2 {
+		t.Fatalf("items=%d, want 2 plex versions", len(matches[0].Group.Items))
+	}
+	if matches[0].Group.Items[0].SourceType != models.MediaSourcePlex {
+		t.Fatalf("sourceType=%q, want plex", matches[0].Group.Items[0].SourceType)
+	}
+}
+
+func TestLocalLibraryTypeMapsProviderLibraries(t *testing.T) {
+	tests := map[string]models.LocalMediaLibraryType{
+		"movie":      models.LocalMediaLibraryTypeMovie,
+		"movies":     models.LocalMediaLibraryTypeMovie,
+		"show":       models.LocalMediaLibraryTypeShow,
+		"tvshows":    models.LocalMediaLibraryTypeShow,
+		"artist":     models.LocalMediaLibraryTypeOther,
+		"homevideos": models.LocalMediaLibraryTypeOther,
+		"":           models.LocalMediaLibraryTypeOther,
+	}
+	for providerType, want := range tests {
+		if got := localLibraryType(providerType); got != want {
+			t.Errorf("localLibraryType(%q)=%q, want %q", providerType, got, want)
+		}
+	}
+}
 
 func TestPlexServerResolverCollapsesConcurrentLoads(t *testing.T) {
 	resolver := &plexServerResolver{}
@@ -193,6 +337,30 @@ func TestRemotePlaybackSourceAndState(t *testing.T) {
 	}
 	if got := remotePlaybackState(models.PlaybackProgressUpdate{PlaybackEnded: true}, false); got != "stopped" {
 		t.Fatalf("ended state=%q", got)
+	}
+}
+
+func TestRemoteCatalogTitleID(t *testing.T) {
+	if got := remoteCatalogTitleID(&models.RemoteMediaItem{
+		GroupKey:    "264995",
+		LibraryType: models.LocalMediaLibraryTypeMovie,
+		ExternalIDs: &models.LocalMediaExternalIDs{},
+	}); got != "" {
+		t.Fatalf("untagged movie titleID=%q, want empty", got)
+	}
+	if got := remoteCatalogTitleID(&models.RemoteMediaItem{
+		GroupKey:    "264995",
+		LibraryType: models.LocalMediaLibraryTypeMovie,
+		ExternalIDs: &models.LocalMediaExternalIDs{TMDB: "550", IMDB: "tt0137523"},
+	}); got != "tmdb:movie:550" {
+		t.Fatalf("matched movie titleID=%q, want tmdb:movie:550", got)
+	}
+	if got := remoteCatalogTitleID(&models.RemoteMediaItem{
+		GroupKey:    "series-1",
+		LibraryType: models.LocalMediaLibraryTypeShow,
+		ExternalIDs: &models.LocalMediaExternalIDs{TVDB: "121361"},
+	}); got != "tvdb:series:121361" {
+		t.Fatalf("matched show titleID=%q, want tvdb:series:121361", got)
 	}
 }
 

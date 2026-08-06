@@ -2023,13 +2023,24 @@
                         </a>
                     </div>
                 </div>
-                <a href="{{.BasePath}}/settings" class="nav-link {{if or (hasSuffix .CurrentPath "/settings") (hasSuffix .CurrentPath "/integrations")}}active{{end}}" data-walkthrough-target="settings">
+                <div class="nav-dropdown desktop-dropdown">
+                <button class="nav-dropdown-toggle {{if or (hasSuffix .CurrentPath "/settings") (hasSuffix .CurrentPath "/tasks") (hasSuffix .CurrentPath "/integrations")}}has-active{{end}}" type="button" aria-expanded="false" data-nav-dropdown-toggle data-walkthrough-target="settings">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <circle cx="12" cy="12" r="3"/>
                         <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
                     </svg>
-                    Settings
-                </a>
+                    Manage
+                    <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+                <div class="nav-dropdown-menu">
+                    <a href="{{.BasePath}}/settings" class="nav-link {{if hasSuffix .CurrentPath "/settings"}}active{{end}}">Settings</a>
+                    <a href="{{.BasePath}}/tasks" class="nav-link {{if hasSuffix .CurrentPath "/tasks"}}active{{end}}">Automations</a>
+                    <a href="{{.BasePath}}/integrations" class="nav-link {{if hasSuffix .CurrentPath "/integrations"}}active{{end}}">Integrations</a>
+                </div>
+                </div>
+                <a href="{{.BasePath}}/settings" class="nav-link mobile-nav-link {{if hasSuffix .CurrentPath "/settings"}}active{{end}}">Settings</a>
+                <a href="{{.BasePath}}/tasks" class="nav-link mobile-nav-link {{if hasSuffix .CurrentPath "/tasks"}}active{{end}}">Automations</a>
+                <a href="{{.BasePath}}/integrations" class="nav-link mobile-nav-link {{if hasSuffix .CurrentPath "/integrations"}}active{{end}}">Integrations</a>
                 <!-- Media dropdown (desktop only) -->
                 <div class="nav-dropdown desktop-dropdown">
                     <button class="nav-dropdown-toggle {{if or (hasSuffix .CurrentPath "/history") (hasSuffix .CurrentPath "/calendar") (hasSuffix .CurrentPath "/schedule") (hasSuffix .CurrentPath "/library") (hasSuffix .CurrentPath "/recordings")}}has-active{{end}}" type="button" aria-expanded="false" data-nav-dropdown-toggle data-walkthrough-target="media">
@@ -2117,14 +2128,6 @@
                 </a>
                 {{end}}
                 {{if .IsAdmin}}
-                <a href="{{.BasePath}}/tasks" class="nav-link {{if hasSuffix .CurrentPath "/tasks"}}active{{end}}">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="9"/>
-                        <polyline points="12 7 12 12 16 14"/>
-                        <path d="M8 2h8"/>
-                    </svg>
-                    Automations
-                </a>
                 <!-- System dropdown (desktop only) -->
                 <div class="nav-dropdown desktop-dropdown">
                     <button class="nav-dropdown-toggle {{if or (hasSuffix .CurrentPath "/connections") (hasSuffix .CurrentPath "/backup") (hasSuffix .CurrentPath "/performance") (hasSuffix .CurrentPath "/logs") (hasSuffix .CurrentPath "/tools") (hasSuffix .CurrentPath "/search")}}has-active{{end}}" type="button" aria-expanded="false" data-nav-dropdown-toggle data-walkthrough-target="system">
@@ -2241,7 +2244,7 @@
                         <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
                         {{end}}
                     </svg>
-                    {{if .IsAdmin}}Users{{else}}Profiles{{end}}
+                    Users
                 </a>
                 <span class="nav-username" style="align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; color: var(--text-secondary); font-size: 0.875rem; border-left: 1px solid var(--border); margin-left: 0.5rem;">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width: 16px; height: 16px;">

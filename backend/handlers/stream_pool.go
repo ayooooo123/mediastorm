@@ -1160,3 +1160,27 @@ func (p *streamPool) Stats() PoolStats {
 	stats.TotalBufferMB /= 1024 * 1024
 	return stats
 }
+
+// parseContentRangeStart reports the first byte offset an upstream actually
+// served, from a "bytes START-END/TOTAL" header. The pool must confirm this
+// matches the window it asked for: filing a body that starts somewhere else
+// under the requested offset corrupts every later read of that slot.
+func parseContentRangeStart(value string) (int64, bool) {
+	spec := strings.TrimSpace(value)
+	if !strings.HasPrefix(strings.ToLower(spec), "bytes ") {
+		return 0, false
+	}
+	spec = strings.TrimSpace(spec[len("bytes "):])
+	if slash := strings.IndexByte(spec, '/'); slash >= 0 {
+		spec = spec[:slash]
+	}
+	dash := strings.IndexByte(spec, '-')
+	if dash <= 0 {
+		return 0, false
+	}
+	start, err := strconv.ParseInt(strings.TrimSpace(spec[:dash]), 10, 64)
+	if err != nil || start < 0 {
+		return 0, false
+	}
+	return start, true
+}

@@ -15,6 +15,7 @@ frontend/**
 !frontend/tsconfig.json
 !frontend/version.ts
 !frontend/wdyr.ts
+!frontend/index.ts
 !frontend/app/
 !frontend/app/**
 !frontend/assets/

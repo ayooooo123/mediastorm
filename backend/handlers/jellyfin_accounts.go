@@ -9,6 +9,7 @@ import (
 	"github.com/gorilla/mux"
 
 	"novastream/config"
+	"novastream/internal/auth"
 	"novastream/services/jellyfin"
 )
 
@@ -16,6 +17,20 @@ import (
 type JellyfinAccountsHandler struct {
 	configManager  *config.Manager
 	jellyfinClient *jellyfin.Client
+}
+
+func canAccessJellyfinAccount(r *http.Request, account *config.JellyfinAccount) bool {
+	if account == nil {
+		return false
+	}
+	if auth.IsMaster(r) {
+		return true
+	}
+	accountID := auth.GetAccountID(r)
+	if accountID == "" {
+		return true
+	}
+	return account.OwnerAccountID != "" && account.OwnerAccountID == accountID
 }
 
 // NewJellyfinAccountsHandler creates a new Jellyfin accounts handler.
@@ -46,6 +61,9 @@ func (h *JellyfinAccountsHandler) ListAccounts(w http.ResponseWriter, r *http.Re
 
 	accounts := make([]JellyfinAccountResponse, 0, len(settings.Jellyfin.Accounts))
 	for _, acc := range settings.Jellyfin.Accounts {
+		if !canAccessJellyfinAccount(r, &acc) {
+			continue
+		}
 		accounts = append(accounts, JellyfinAccountResponse{
 			ID:        acc.ID,
 			Name:      acc.Name,
@@ -104,6 +122,9 @@ func (h *JellyfinAccountsHandler) CreateAccount(w http.ResponseWriter, r *http.R
 		UserID:    authResult.User.ID,
 		Username:  authResult.User.Name,
 	}
+	if !auth.IsMaster(r) {
+		newAccount.OwnerAccountID = auth.GetAccountID(r)
+	}
 
 	settings, err := h.configManager.Load()
 	if err != nil {
@@ -146,10 +167,12 @@ func (h *JellyfinAccountsHandler) DeleteAccount(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	if !settings.Jellyfin.RemoveAccount(accountID) {
+	account := settings.Jellyfin.GetAccountByID(accountID)
+	if !canAccessJellyfinAccount(r, account) {
 		jsonError(w, "Account not found", http.StatusNotFound)
 		return
 	}
+	settings.Jellyfin.RemoveAccount(accountID)
 
 	if err := h.configManager.Save(settings); err != nil {
 		jsonError(w, "Failed to save settings: "+err.Error(), http.StatusInternalServerError)
@@ -178,7 +201,7 @@ func (h *JellyfinAccountsHandler) TestConnection(w http.ResponseWriter, r *http.
 	}
 
 	account := settings.Jellyfin.GetAccountByID(accountID)
-	if account == nil {
+	if !canAccessJellyfinAccount(r, account) {
 		jsonError(w, "Account not found", http.StatusNotFound)
 		return
 	}

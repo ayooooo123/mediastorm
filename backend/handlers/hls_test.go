@@ -1112,7 +1112,9 @@ func TestCastShouldDropToFallbackHeightOnlyOncePerSession(t *testing.T) {
 }
 
 func TestAppendAACTranscodeArgs_LegacyCastUsesStereoAACLC(t *testing.T) {
-	args := appendAACTranscodeArgs(nil, ":0", castAudioEnvelope{castSafe: true})
+	// Cast target, playing from the start, without the web seek PTS filters:
+	// none of those affect the codec and profile this test pins.
+	args := appendAACTranscodeArgs(nil, ":0", castAudioEnvelope{castSafe: true}, "", 0, false)
 	joined := strings.Join(args, " ")
 
 	for _, required := range []string{
@@ -1156,14 +1158,14 @@ func TestCastCapabilitiesDecisionRules(t *testing.T) {
 
 	t.Run("Audio Envelope Decision", func(t *testing.T) {
 		// Unknown caps drops to stereo AAC-LC
-		args := appendAACTranscodeArgs(nil, ":0", castAudioEnvelope{castSafe: true, allowMultichannel: false})
+		args := appendAACTranscodeArgs(nil, ":0", castAudioEnvelope{castSafe: true, allowMultichannel: false}, "", 0, false)
 		joined := strings.Join(args, " ")
 		if !strings.Contains(joined, "-ac:a:0 2") || !strings.Contains(joined, "-profile:a:0 aac_low") {
 			t.Errorf("expected stereo AAC-LC for unknown caps, got %s", joined)
 		}
 
 		// Multichannel capable caps keeps 5.1 but still uses aac_low
-		args = appendAACTranscodeArgs(nil, ":0", castAudioEnvelope{castSafe: true, allowMultichannel: true})
+		args = appendAACTranscodeArgs(nil, ":0", castAudioEnvelope{castSafe: true, allowMultichannel: true}, "", 0, false)
 		joined = strings.Join(args, " ")
 		if !strings.Contains(joined, "-ac:a:0 6") || !strings.Contains(joined, "-profile:a:0 aac_low") {
 			t.Errorf("expected 5.1 AAC-LC for multichannel caps, got %s", joined)
@@ -1221,14 +1223,32 @@ func TestLiveHLSOutputArgsNativeTransmuxPreservesCaptionCarryingTS(t *testing.T)
 		"-c:a copy",
 		"-hls_segment_filename /tmp/live/segment%d.ts",
 		"/tmp/live/stream.m3u8",
+		// Wider window + no FFmpeg delete_segments so ExoPlayer can fetch segment0
+		// before the sliding window advances past it under stream-copy.
+		fmt.Sprintf("-hls_list_size %d", liveNativeHLSListSize),
+		"-hls_flags temp_file",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("native live args %q missing %q", joined, expected)
 		}
 	}
-	for _, unexpected := range []string{"libx264", "-force_key_frames", "independent_segments"} {
+	for _, unexpected := range []string{"libx264", "-force_key_frames", "independent_segments", "delete_segments"} {
 		if strings.Contains(joined, unexpected) {
 			t.Fatalf("native live args %q unexpectedly contain %q", joined, unexpected)
+		}
+	}
+}
+
+func TestLiveHLSOutputArgsNativeTargetsAllUseTransmuxNotTranscode(t *testing.T) {
+	// Every native client target must stay on copy/copy — only web re-encodes.
+	for _, target := range []string{"native", "android", "ios", "tvos", "mpv", "ksplayer", "exoplayer"} {
+		args := liveHLSOutputArgs(target, "/tmp/live/segment%d.ts", "/tmp/live/stream.m3u8")
+		joined := strings.Join(args, " ")
+		if !strings.Contains(joined, "-c:v copy") || !strings.Contains(joined, "-c:a copy") {
+			t.Fatalf("target %q must transmux, got %q", target, joined)
+		}
+		if strings.Contains(joined, "libx264") || strings.Contains(joined, "delete_segments") {
+			t.Fatalf("target %q must not transcode or use delete_segments, got %q", target, joined)
 		}
 	}
 }
@@ -1242,9 +1262,243 @@ func TestLiveHLSOutputArgsWebRetainsCompatibilityTranscode(t *testing.T) {
 		"-c:a aac",
 		"-force_key_frames expr:gte(t,n_forced*1)",
 		"delete_segments+independent_segments+temp_file",
+		"-hls_list_size 10",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("web live args %q missing %q", joined, expected)
+		}
+	}
+	if strings.Contains(joined, "-c:v copy") {
+		t.Fatalf("web live args should re-encode, not copy: %q", joined)
+	}
+}
+
+func TestIsWebBrowserPlaybackTarget(t *testing.T) {
+	for _, target := range []string{"web", "WEB", " browser ", "browser"} {
+		if !isWebBrowserPlaybackTarget(target) {
+			t.Fatalf("expected %q to be a web browser playback target", target)
+		}
+	}
+	for _, target := range []string{"", "native", "ios", "android", "cast", "mpv"} {
+		if isWebBrowserPlaybackTarget(target) {
+			t.Fatalf("did not expect %q to be a web browser playback target", target)
+		}
+	}
+}
+
+func TestHlsAACTranscodeArgsWebUsesStereo(t *testing.T) {
+	for _, target := range []string{"web", "browser"} {
+		joined := strings.Join(hlsAACTranscodeArgs(target, "", 0, false), " ")
+		for _, expected := range []string{"-c:a aac", "-ac 2", "-channel_layout stereo", "-ar 48000", "-af aresample=async=1000"} {
+			if !strings.Contains(joined, expected) {
+				t.Fatalf("web AAC args for %q missing %q: %q", target, expected, joined)
+			}
+		}
+		if strings.Contains(joined, "-ac 6") || strings.Contains(joined, "5.1") {
+			t.Fatalf("web AAC args for %q must not use 5.1: %q", target, joined)
+		}
+
+		indexed := strings.Join(hlsAACTranscodeArgs(target, "indexed0", 0, false), " ")
+		for _, expected := range []string{"-c:a:0 aac", "-ac:a:0 2", "-channel_layout:a:0 stereo", "-c:a:1 copy"} {
+			if !strings.Contains(indexed, expected) {
+				t.Fatalf("web indexed AAC args for %q missing %q: %q", target, expected, indexed)
+			}
+		}
+
+		// Mid-file web starts without same-pass VTT must reset the audio timeline for MSE.
+		seekAF := strings.Join(hlsAACTranscodeArgs(target, "", 120, true), " ")
+		if !strings.Contains(seekAF, "asetpts=PTS-STARTPTS") || !strings.Contains(seekAF, "first_pts=0") {
+			t.Fatalf("web seek AAC args for %q missing PTS reset: %q", target, seekAF)
+		}
+
+		// Same-pass WebVTT must keep plain aresample so cues share the demuxer clock.
+		withSubs := strings.Join(hlsAACTranscodeArgs(target, "", 120, false), " ")
+		if strings.Contains(withSubs, "asetpts") || strings.Contains(withSubs, "first_pts=0") {
+			t.Fatalf("web seek AAC with same-pass VTT must not use asetpts: %q", withSubs)
+		}
+	}
+}
+
+func TestHlsAACTranscodeArgsNonWebKeeps51(t *testing.T) {
+	for _, target := range []string{"", "native", "ios", "android", "cast"} {
+		joined := strings.Join(hlsAACTranscodeArgs(target, "", 0, false), " ")
+		for _, expected := range []string{"-c:a aac", "-ac 6", "-channel_layout 5.1"} {
+			if !strings.Contains(joined, expected) {
+				t.Fatalf("non-web AAC args for %q missing %q: %q", target, expected, joined)
+			}
+		}
+		if strings.Contains(joined, "-ac 2") || strings.Contains(joined, "stereo") {
+			t.Fatalf("non-web AAC args for %q must keep 5.1: %q", target, joined)
+		}
+
+		indexed := strings.Join(hlsAACTranscodeArgs(target, "indexed0", 250, true), " ")
+		for _, expected := range []string{"-c:a:0 aac", "-ac:a:0 6", "-channel_layout:a:0 5.1", "-c:a:1 copy"} {
+			if !strings.Contains(indexed, expected) {
+				t.Fatalf("non-web indexed AAC args for %q missing %q: %q", target, expected, indexed)
+			}
+		}
+		// Native/cast mid-file must not get the web-only asetpts graph.
+		if strings.Contains(indexed, "asetpts") {
+			t.Fatalf("non-web AAC args for %q must not reset PTS via asetpts: %q", target, indexed)
+		}
+	}
+}
+
+func TestWebSeekPTSFiltersNeeded(t *testing.T) {
+	if !webSeekPTSFiltersNeeded("web", 100, false) {
+		t.Fatal("web mid-file without same-pass VTT should apply setpts/asetpts")
+	}
+	if webSeekPTSFiltersNeeded("web", 100, true) {
+		t.Fatal("web mid-file with same-pass VTT must skip setpts/asetpts")
+	}
+	if webSeekPTSFiltersNeeded("web", 0, false) {
+		t.Fatal("web start-from-zero does not need PTS filters")
+	}
+	if webSeekPTSFiltersNeeded("native", 100, false) {
+		t.Fatal("native mid-file does not use web PTS filters")
+	}
+}
+
+func TestWithWebSeekVideoPTSReset(t *testing.T) {
+	if got := withWebSeekVideoPTSReset(""); got != "setpts=PTS-STARTPTS" {
+		t.Fatalf("empty filter: got %q", got)
+	}
+	if got := withWebSeekVideoPTSReset("format=yuv420p"); got != "setpts=PTS-STARTPTS,format=yuv420p" {
+		t.Fatalf("with format: got %q", got)
+	}
+}
+
+func TestUseAccurateHLSInputSeek(t *testing.T) {
+	// Web mid-file resume always needs accurate seek so setpts/asetpts cannot
+	// zero A/V onto different content (GOP-length desync).
+	if !useAccurateHLSInputSeek("web", 635.87, false, false, false) {
+		t.Fatal("web mid-file must use accurate input seek")
+	}
+	if !useAccurateHLSInputSeek("browser", 100, false, false, false) {
+		t.Fatal("browser mid-file must use accurate input seek")
+	}
+	// Video transcode / cast / same-pass subs also need accurate seek.
+	if !useAccurateHLSInputSeek("web", 100, true, false, false) {
+		t.Fatal("videoWillTranscode must use accurate input seek")
+	}
+	if !useAccurateHLSInputSeek("native", 100, true, false, false) {
+		t.Fatal("native video transcode must use accurate input seek")
+	}
+	if !useAccurateHLSInputSeek("web", 100, false, true, false) {
+		t.Fatal("subtitle rendition must use accurate input seek")
+	}
+	if !useAccurateHLSInputSeek("cast", 100, false, false, true) {
+		t.Fatal("stable cast must use accurate input seek")
+	}
+	// Pure video-copy mid-file keeps keyframe-friendly inaccurate seek.
+	if useAccurateHLSInputSeek("native", 100, false, false, false) {
+		t.Fatal("native video-copy mid-file should keep -noaccurate_seek")
+	}
+	if useAccurateHLSInputSeek("web", 0, false, false, false) {
+		t.Fatal("web start-from-zero does not need accurate mid-file seek")
+	}
+}
+
+func TestWaitForPlaylistReady(t *testing.T) {
+	dir := t.TempDir()
+	m := &HLSManager{}
+	session := &HLSSession{OutputDir: dir}
+
+	// Empty dir times out quickly.
+	ready, size := m.waitForPlaylistReady(session, 40*time.Millisecond)
+	if ready || size != 0 {
+		t.Fatalf("expected timeout on empty dir, got ready=%v size=%d", ready, size)
+	}
+
+	// Header-only playlist is not ready (no media segment line).
+	if err := os.WriteFile(filepath.Join(dir, "stream.m3u8"), []byte("#EXTM3U\n#EXT-X-VERSION:3\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ready, size = m.waitForPlaylistReady(session, 40*time.Millisecond)
+	if ready || size != 0 {
+		t.Fatalf("expected timeout on header-only playlist, got ready=%v size=%d", ready, size)
+	}
+
+	// Media segment present → ready.
+	body := "#EXTM3U\n#EXTINF:2.0,\nsegment0.ts\n"
+	if err := os.WriteFile(filepath.Join(dir, "stream.m3u8"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ready, size = m.waitForPlaylistReady(session, time.Second)
+	if !ready || size != len(body) {
+		t.Fatalf("expected ready playlist, got ready=%v size=%d want %d", ready, size, len(body))
+	}
+}
+
+func TestSummarizeLiveSegmentDirAndPlaylist(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []int{2, 3, 5} {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("segment%d.ts", n)), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	playlist := strings.Join([]string{
+		"#EXTM3U",
+		"#EXT-X-MEDIA-SEQUENCE:2",
+		"#EXTINF:2.0,",
+		"segment2.ts",
+		"#EXTINF:2.0,",
+		"segment3.ts",
+		"#EXTINF:2.0,",
+		"segment5.ts",
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, "stream.m3u8"), []byte(playlist), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	disk := summarizeLiveSegmentDir(dir)
+	if !strings.Contains(disk, "onDisk=3") || !strings.Contains(disk, "min=segment2") || !strings.Contains(disk, "max=segment5") || !strings.Contains(disk, "holes=1") {
+		t.Fatalf("unexpected disk summary: %s", disk)
+	}
+	pl := summarizeLivePlaylistState(dir)
+	if !strings.Contains(pl, "mediaSeq=2") || !strings.Contains(pl, "first=segment2.ts") || !strings.Contains(pl, "last=segment5.ts") || !strings.Contains(pl, "segs=3") {
+		t.Fatalf("unexpected playlist summary: %s", pl)
+	}
+
+	empty := t.TempDir()
+	if got := summarizeLiveSegmentDir(empty); got != "onDisk=0" {
+		t.Fatalf("empty dir summary = %q, want onDisk=0", got)
+	}
+}
+
+func TestDeleteOldLiveTransmuxSegmentsKeepsBehindWindow(t *testing.T) {
+	dir := t.TempDir()
+	// Create a run of segment files 0..80
+	for i := 0; i <= 80; i++ {
+		path := filepath.Join(dir, fmt.Sprintf("segment%d.ts", i))
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mgr := &HLSManager{}
+	session := &HLSSession{
+		ID:                  "live-test",
+		OutputDir:           dir,
+		IsLive:              true,
+		PlaybackTarget:      "native",
+		MaxSegmentRequested: 80,
+		LastSegmentServed:   80,
+	}
+
+	mgr.deleteOldLiveTransmuxSegments(session, 80)
+
+	// highWater=80, keepBehind=60 → cutoff=20; walk start=0 deletes 0..20
+	for i := 0; i <= 20; i++ {
+		if _, err := os.Stat(filepath.Join(dir, fmt.Sprintf("segment%d.ts", i))); !os.IsNotExist(err) {
+			t.Fatalf("segment%d.ts should have been deleted", i)
+		}
+	}
+	// Segments above the cutoff must remain
+	for i := 21; i <= 80; i++ {
+		if _, err := os.Stat(filepath.Join(dir, fmt.Sprintf("segment%d.ts", i))); err != nil {
+			t.Fatalf("segment%d.ts should still exist: %v", i, err)
 		}
 	}
 }

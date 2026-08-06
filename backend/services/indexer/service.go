@@ -2383,9 +2383,24 @@ func (s *Service) resolveAlternateTitles(ctx context.Context, opts SearchOptions
 		chosen = &results[0].Title
 	}
 
+	type alternateTitleCandidate struct {
+		value                     string
+		languageMatch             bool
+		releaseReady              bool
+		asciiReleaseReady         bool
+		romanizedOriginalLanguage bool
+	}
+
 	seen := make(map[string]struct{})
-	var aliases []string
-	add := func(value string) {
+	// The canonical/query titles are already searched and should not consume an
+	// alternate-title slot when an aliases endpoint returns them again.
+	seen[strings.ToLower(query)] = struct{}{}
+	if canonical := strings.TrimSpace(chosen.Name); canonical != "" {
+		seen[strings.ToLower(canonical)] = struct{}{}
+	}
+
+	var candidates []alternateTitleCandidate
+	add := func(value string, languageMatch, originalLanguage bool) {
 		trimmed := strings.TrimSpace(value)
 		if trimmed == "" {
 			return
@@ -2395,11 +2410,18 @@ func (s *Service) resolveAlternateTitles(ctx context.Context, opts SearchOptions
 			return
 		}
 		seen[lowered] = struct{}{}
-		aliases = append(aliases, trimmed)
+		releaseReady := isReleaseFriendlyTitle(trimmed)
+		candidates = append(candidates, alternateTitleCandidate{
+			value:                     trimmed,
+			languageMatch:             languageMatch,
+			releaseReady:              releaseReady,
+			asciiReleaseReady:         releaseReady && isASCIIString(trimmed),
+			romanizedOriginalLanguage: opts.IsAnime && originalLanguage && releaseReady,
+		})
 	}
-	add(chosen.OriginalName)
+	add(chosen.OriginalName, false, true)
 	for _, alt := range chosen.AlternateTitles {
-		add(alt)
+		add(alt, false, false)
 	}
 
 	// Fetch full TVDB aliases (international titles) if the metadata service
@@ -2409,8 +2431,11 @@ func (s *Service) resolveAlternateTitles(ctx context.Context, opts SearchOptions
 	if aliasSvc, ok := s.metadata.(metadataAliasService); ok && chosen.TVDBID > 0 {
 		langAliases := aliasSvc.FetchAliasesWithLanguage(chosen.MediaType, chosen.TVDBID)
 		lang := strings.ToLower(strings.TrimSpace(metadataLang))
+		originalLang := strings.ToLower(strings.TrimSpace(chosen.Language))
 		var langMatched, others []string
+		aliasLanguages := make(map[string]string, len(langAliases))
 		for _, la := range langAliases {
+			aliasLanguages[strings.ToLower(strings.TrimSpace(la.Name))] = strings.ToLower(strings.TrimSpace(la.Language))
 			if lang != "" && strings.ToLower(strings.TrimSpace(la.Language)) == lang {
 				langMatched = append(langMatched, la.Name)
 			} else {
@@ -2418,11 +2443,40 @@ func (s *Service) resolveAlternateTitles(ctx context.Context, opts SearchOptions
 			}
 		}
 		for _, a := range langMatched {
-			add(a)
+			add(a, true, originalLang != "" && aliasLanguages[strings.ToLower(strings.TrimSpace(a))] == originalLang)
 		}
 		for _, a := range others {
-			add(a)
+			add(a, false, originalLang != "" && aliasLanguages[strings.ToLower(strings.TrimSpace(a))] == originalLang)
 		}
+	}
+
+	// Alias APIs often return a native-script original before a provider-supplied
+	// romanized title. Generic transliteration of CJK text can produce the wrong
+	// reading for release searches (for example Japanese kanji transliterated as
+	// Chinese). For anime, a Latin-script alias tagged with the title's original
+	// language is the strongest release-name signal and outranks translated
+	// metadata-language aliases. Otherwise retain metadata-language priority,
+	// then prefer release-friendly Latin titles. Stable sorting preserves provider
+	// order within each quality tier.
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].romanizedOriginalLanguage != candidates[j].romanizedOriginalLanguage {
+			return candidates[i].romanizedOriginalLanguage
+		}
+		if candidates[i].romanizedOriginalLanguage && candidates[i].asciiReleaseReady != candidates[j].asciiReleaseReady {
+			return candidates[i].asciiReleaseReady
+		}
+		if candidates[i].languageMatch != candidates[j].languageMatch {
+			return candidates[i].languageMatch
+		}
+		if candidates[i].releaseReady != candidates[j].releaseReady {
+			return candidates[i].releaseReady
+		}
+		return false
+	})
+
+	aliases := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		aliases = append(aliases, candidate.value)
 	}
 
 	if maxAlternates > 0 && len(aliases) > maxAlternates {
@@ -2434,6 +2488,20 @@ func (s *Service) resolveAlternateTitles(ctx context.Context, opts SearchOptions
 		return nil
 	}
 	return aliases
+}
+
+func isReleaseFriendlyTitle(value string) bool {
+	hasLetter := false
+	for _, r := range value {
+		if !unicode.IsLetter(r) {
+			continue
+		}
+		hasLetter = true
+		if !unicode.In(r, unicode.Latin) {
+			return false
+		}
+	}
+	return hasLetter
 }
 
 func buildSearchQueries(opts SearchOptions, parsed debrid.ParsedQuery, alternateTitles []string) []string {

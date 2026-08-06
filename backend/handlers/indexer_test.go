@@ -288,6 +288,46 @@ func TestIndexerHandler_SearchSeriesAbsoluteEpisode(t *testing.T) {
 	}
 }
 
+func TestIndexerHandler_SearchNadesicoUsesPreservedAnimeMetadata(t *testing.T) {
+	fake := &fakeIndexerService{results: []models.NZBResult{}}
+	seriesSvc := &fakeSeriesMetadataService{
+		details: &models.SeriesDetails{
+			Title: models.Title{
+				Name:         "Martian Successor Nadesico",
+				OriginalName: "機動戦艦ナデシコ",
+				Language:     "eng",
+				Year:         1996,
+				Genres:       []string{"Animation", "Comedy", "Anime"},
+			},
+			Seasons: []models.SeriesSeason{
+				{
+					Number: 1,
+					Episodes: []models.SeriesEpisode{
+						{SeasonNumber: 1, EpisodeNumber: 1, AbsoluteEpisodeNumber: 1, AiredDate: "1996-10-01"},
+					},
+				},
+			},
+		},
+	}
+	handler := NewIndexerHandler(fake, false)
+	handler.SetMetadataService(seriesSvc)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/indexers/search?q=Martian+Successor+Nadesico+S01E01&mediaType=series&year=1996", nil)
+	rec := httptest.NewRecorder()
+
+	handler.Search(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d", http.StatusOK, rec.Code)
+	}
+	if !fake.lastOpts.IsAnime {
+		t.Fatal("expected preserved TVDB Anime genre to classify Nadesico as anime")
+	}
+	if fake.lastOpts.AbsoluteEpisodeNumber != 1 {
+		t.Fatalf("expected absolute episode 1, got %d", fake.lastOpts.AbsoluteEpisodeNumber)
+	}
+}
+
 func TestIndexerHandler_SearchSeriesInfersMissingAbsoluteEpisode(t *testing.T) {
 	fake := &fakeIndexerService{results: []models.NZBResult{}}
 	seriesSvc := &fakeSeriesMetadataService{
@@ -336,6 +376,45 @@ func TestIndexerHandler_SearchSeriesInfersMissingAbsoluteEpisode(t *testing.T) {
 	wrongResults := filter.Results([]models.NZBResult{{Title: "One Piece S01E1171 1080p WEB-DL"}}, filterOpts)
 	if len(wrongResults) != 0 {
 		t.Fatal("expected adjacent S01E1171 result to be rejected for absolute episode 1172")
+	}
+}
+
+func TestIndexerHandler_SearchSeriesUsesReleaseAbsoluteEpisode(t *testing.T) {
+	fake := &fakeIndexerService{results: []models.NZBResult{}}
+	seriesSvc := &fakeSeriesMetadataService{
+		details: &models.SeriesDetails{
+			Title: models.Title{Name: "Kaiju No. 8", Year: 2024, Genres: []string{"Anime"}},
+			Seasons: []models.SeriesSeason{
+				{
+					Number:       0,
+					EpisodeCount: 1,
+					Episodes: []models.SeriesEpisode{
+						{Name: "Hoshina's Day Off", SeasonNumber: 0, EpisodeNumber: 1, AbsoluteEpisodeNumber: 13},
+					},
+				},
+				{Number: 1, EpisodeCount: 12},
+				{
+					Number:       2,
+					EpisodeCount: 11,
+					Episodes: []models.SeriesEpisode{
+						{Name: "Kaiju Weapon", SeasonNumber: 2, EpisodeNumber: 1, AbsoluteEpisodeNumber: 14},
+					},
+				},
+			},
+		},
+	}
+	handler := NewIndexerHandler(fake, false)
+	handler.SetMetadataService(seriesSvc)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/indexers/search?q=Kaiju+No.+8+S02E01&mediaType=series&year=2024", nil)
+	rec := httptest.NewRecorder()
+	handler.Search(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d", http.StatusOK, rec.Code)
+	}
+	if fake.lastOpts.AbsoluteEpisodeNumber != 13 {
+		t.Fatalf("AbsoluteEpisodeNumber = %d, want release-style 13", fake.lastOpts.AbsoluteEpisodeNumber)
 	}
 }
 

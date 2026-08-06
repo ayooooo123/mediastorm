@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"novastream/config"
+	"novastream/models"
 )
 
 // mockConfigManager creates a minimal config manager for testing
@@ -628,6 +629,134 @@ func TestBackupTypes(t *testing.T) {
 				t.Errorf("expected type %s, got %s", tt.backupType, info.Type)
 			}
 		})
+	}
+}
+
+func TestDatabaseExportSectionsCoverDurableTables(t *testing.T) {
+	// Guard against silently dropping durable user/config tables from backups.
+	// When adding a new durable table, include it in export/import and this list
+	// (or document why it is intentionally excluded near databaseExport).
+	required := map[string]bool{}
+	for _, section := range databaseExportSections {
+		required[section] = true
+	}
+	for _, want := range []string{
+		"notificationChannels",
+		"notificationObservations",
+		"hiddenItems",
+		"watchlistTombstones",
+		"seriesOrdering",
+		"shareLinks",
+		"remoteAccessInvites",
+		"localMediaLibraries",
+		"localMediaItems",
+		"remoteMediaLibraries",
+		"remoteMediaItems",
+		"libraryAccessPolicies",
+		"recordings",
+	} {
+		if !required[want] {
+			t.Errorf("databaseExportSections missing required durable section %q", want)
+		}
+	}
+
+	// Empty export should still marshal every section key (except omitempty empties).
+	// Use a populated struct so omitempty fields are present.
+	now := time.Now().UTC()
+	export := databaseExport{
+		Version:     "2.1",
+		ExportedAt:  now,
+		Accounts:    []models.AccountStorage{},
+		Users:       []rawUser{},
+		Sessions:    []models.Session{},
+		Invitations: []models.Invitation{},
+		RemoteAccessInvites: []rawRemoteAccessInvite{{
+			ID: "inv1", TokenHash: "hash", CreatedBy: "master", PeerName: "peer",
+			ExpiresAt: now.Add(time.Hour), CreatedAt: now,
+		}},
+		ShareLinks: []rawShareLink{{
+			Token: "tok", AccountID: "master", Params: map[string]string{"url": "x"},
+			CreatedAt: now, ExpiresAt: now.Add(time.Hour),
+		}},
+		Clients:             []models.Client{},
+		ClientSettings:      map[string]models.ClientFilterSettings{},
+		UserSettings:        map[string]models.UserSettings{},
+		Watchlist:           map[string][]models.WatchlistItem{},
+		WatchlistTombstones: map[string][]models.WatchlistTombstone{"default": {}},
+		HiddenItems:         map[string][]models.HiddenItem{"default": {}},
+		WatchHistory:        map[string][]models.WatchHistoryItem{},
+		PlaybackProgress:    map[string][]models.PlaybackProgress{},
+		ContentPreferences:  map[string][]models.ContentPreference{},
+		SeriesOrdering:      map[string][]models.SeriesOrderingPref{"default": {}},
+		CustomLists:         map[string][]customListExport{},
+		NotificationChannels: []models.NotificationChannel{{
+			ID: "ch1", ProfileID: "default", Name: "Discord", Type: "discord",
+			URL: "https://example.invalid/hook", Enabled: true, Events: []string{"watch.started"},
+			CreatedAt: now, UpdatedAt: now,
+		}},
+		NotificationObservations: []models.NotificationObservation{{
+			ProfileID: "default", ItemKey: "k", Status: "upcoming", UpdatedAt: now,
+		}},
+		LocalMediaLibraries: []models.LocalMediaLibrary{{
+			ID: "lib1", Name: "Movies", Type: models.LocalMediaLibraryTypeMovie,
+			RootPath: "/media", CreatedAt: now, UpdatedAt: now,
+		}},
+		LocalMediaItems: []localMediaItemExport{{
+			ID: "item1", LibraryID: "lib1", RelativePath: "a.mkv", FilePath: "/media/a.mkv",
+			FileName: "a.mkv", CreatedAt: now, UpdatedAt: now,
+		}},
+		RemoteMediaLibraries: []models.RemoteMediaLibrary{{
+			ID: "rm1", Name: "Plex Movies", Provider: "plex", AccountID: "acc",
+			ExternalLibraryID: "1", CreatedAt: now, UpdatedAt: now,
+		}},
+		RemoteMediaItems: []models.RemoteMediaItem{{
+			ID: "ri1", LibraryID: "rm1", ExternalItemID: "e1", Title: "Title",
+			CreatedAt: now, UpdatedAt: now,
+		}},
+		LibraryAccessPolicies: map[string]models.LibraryAccessPolicy{
+			"lib1": {LibraryID: "lib1", AccessMode: models.LibraryAccessModeAll},
+		},
+		Recordings: []models.Recording{{
+			ID: "rec1", UserID: "default", Type: models.RecordingTypeEPG,
+			Status: models.RecordingStatusPending, ChannelID: "ch", ChannelName: "Ch",
+			Title: "Show", SourceURL: "http://example.invalid", StartAt: now, EndAt: now.Add(time.Hour),
+			CreatedAt: now, UpdatedAt: now,
+		}},
+	}
+
+	raw, err := json.Marshal(export)
+	if err != nil {
+		t.Fatalf("marshal export: %v", err)
+	}
+	var asMap map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &asMap); err != nil {
+		t.Fatalf("unmarshal export map: %v", err)
+	}
+	for _, section := range databaseExportSections {
+		if _, ok := asMap[section]; !ok {
+			t.Errorf("marshaled databaseExport missing section %q", section)
+		}
+	}
+
+	// Round-trip must preserve notification webhook URL (the original bug class).
+	var decoded databaseExport
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("round-trip unmarshal: %v", err)
+	}
+	if len(decoded.NotificationChannels) != 1 {
+		t.Fatalf("expected 1 notification channel, got %d", len(decoded.NotificationChannels))
+	}
+	if decoded.NotificationChannels[0].URL != "https://example.invalid/hook" {
+		t.Errorf("notification channel URL not preserved: %q", decoded.NotificationChannels[0].URL)
+	}
+	if len(decoded.ShareLinks) != 1 || decoded.ShareLinks[0].Params["url"] != "x" {
+		t.Errorf("share link params not preserved: %+v", decoded.ShareLinks)
+	}
+	if len(decoded.RemoteAccessInvites) != 1 || decoded.RemoteAccessInvites[0].TokenHash != "hash" {
+		t.Errorf("remote access token hash not preserved: %+v", decoded.RemoteAccessInvites)
+	}
+	if len(decoded.LocalMediaItems) != 1 || decoded.LocalMediaItems[0].FilePath != "/media/a.mkv" {
+		t.Errorf("local media file path not preserved: %+v", decoded.LocalMediaItems)
 	}
 }
 

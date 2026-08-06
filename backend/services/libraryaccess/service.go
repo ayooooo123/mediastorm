@@ -102,9 +102,14 @@ func (s *Service) Delete(ctx context.Context, libraryID string) error {
 }
 
 func (s *Service) CanAccess(ctx context.Context, libraryID, accountID, profileID string, master bool) (bool, error) {
-	if master {
+	accountID = strings.TrimSpace(accountID)
+	profileID = strings.TrimSpace(profileID)
+
+	// Master admin context (no active profile) can always manage/access libraries.
+	if master && profileID == "" {
 		return true, nil
 	}
+
 	policy, err := s.Get(ctx, libraryID)
 	if err != nil {
 		return false, err
@@ -112,8 +117,18 @@ func (s *Service) CanAccess(ctx context.Context, libraryID, accountID, profileID
 	if policy.AccessMode == models.LibraryAccessModeAll {
 		return true, nil
 	}
-	accountID = strings.TrimSpace(accountID)
-	profileID = strings.TrimSpace(profileID)
+
+	// Restricted with no selections: master household only. Matches admin UI copy
+	// ("only the master account can use the library") and keeps the app usable
+	// when a master profile is selected — the frontend always sends profileId.
+	hasGrants := len(policy.AllowedAccountIDs) > 0 || len(policy.AllowedProfileIDs) > 0
+	if !hasGrants {
+		return master, nil
+	}
+
+	// Restricted with explicit grants: selected accounts/profiles only.
+	// Master with an active profile that is not granted is denied so kids/guest
+	// profiles on the master account can be kept out of a library.
 	return contains(policy.AllowedAccountIDs, accountID) || contains(policy.AllowedProfileIDs, profileID), nil
 }
 

@@ -581,3 +581,35 @@ func TestLocalMediaHandlerFindMatchesEnforcesSelectedProfileForMasterAccount(t *
 		t.Fatalf("master account's denied active profile saw matches: %+v", matches)
 	}
 }
+
+func TestLocalMediaHandlerFindMatchesAllowsMasterProfileOnEmptyRestricted(t *testing.T) {
+	handler := NewLocalMediaHandler(&fakeLocalMediaPlaybackService{
+		matches: []models.LocalMediaMatchedGroup{{
+			LibraryID:   "lib1",
+			LibraryName: "Movies",
+			Group:       models.LocalMediaItemGroup{ID: "movie:tmdb:123", Title: "Inception"},
+		}},
+	}, fakeLocalMediaUsersProvider{allowed: true}, true)
+	// Restricted with no grants — admin UI promises master can still use the library.
+	handler.SetLibraryAccessService(libraryaccess.New(&fakeLibraryAccessRepo{policies: map[string]models.LibraryAccessPolicy{
+		"lib1": {LibraryID: "lib1", AccessMode: models.LibraryAccessModeRestricted},
+	}}, nil, nil))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/library/matches?mediaType=movie&tmdbId=123&profileId=default", nil)
+	ctx := context.WithValue(req.Context(), auth.ContextKeyAccountID, "master-account")
+	ctx = context.WithValue(ctx, auth.ContextKeyIsMaster, true)
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+	handler.FindMatches(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var matches []models.LocalMediaMatchedGroup
+	if err := json.NewDecoder(rec.Body).Decode(&matches); err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 || matches[0].LibraryID != "lib1" {
+		t.Fatalf("expected master profile to see empty-restricted library match, got %+v", matches)
+	}
+}

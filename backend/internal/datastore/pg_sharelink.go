@@ -89,6 +89,15 @@ func (r *pgShareLinkRepo) Delete(ctx context.Context, token string) error {
 	return err
 }
 
+// DeleteAll removes every share link (used during backup restore).
+func (r *pgShareLinkRepo) DeleteAll(ctx context.Context) error {
+	_, err := r.pool.Exec(ctx, `DELETE FROM share_links`)
+	if err != nil {
+		return fmt.Errorf("delete all share links: %w", err)
+	}
+	return nil
+}
+
 func (r *pgShareLinkRepo) DeleteExpired(ctx context.Context, now time.Time) error {
 	_, err := r.pool.Exec(ctx, `DELETE FROM share_links WHERE expires_at <= $1`, now)
 	return err

@@ -639,6 +639,73 @@ func isLiveProgressUpdate(update models.PlaybackProgressUpdate) bool {
 	return strings.EqualFold(strings.TrimSpace(update.MediaType), "live")
 }
 
+// hasCatalogExternalIDs reports whether external IDs include a real metadata
+// provider identity (IMDB/TMDB/TVDB). Bare library keys stored as titleId alone
+// (e.g. Plex rating keys for home videos) do not count.
+func hasCatalogExternalIDs(externalIDs map[string]string) bool {
+	if len(externalIDs) == 0 {
+		return false
+	}
+	for _, key := range []string{"imdb", "tmdb", "tvdb", "episodeImdb", "episodeTmdb", "episodeTvdb"} {
+		if strings.TrimSpace(externalIDs[key]) != "" {
+			return true
+		}
+	}
+	return isCatalogMediaID(externalIDs["titleId"])
+}
+
+// isCatalogMediaID reports whether an id is a provider-prefixed catalog identity
+// (tmdb:/tvdb:/imdb:) or an IMDB tt… id. Bare numeric library keys are not.
+func isCatalogMediaID(id string) bool {
+	id = strings.TrimSpace(strings.ToLower(id))
+	if id == "" {
+		return false
+	}
+	if strings.HasPrefix(id, "tt") {
+		if len(id) <= 2 {
+			return false
+		}
+		for _, r := range id[2:] {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+		return true
+	}
+	provider, _, _ := strings.Cut(id, ":")
+	switch provider {
+	case "tmdb", "tvdb", "imdb":
+		return true
+	default:
+		return false
+	}
+}
+
+// lacksCatalogIdentity is true for playback that has no TVDB/IMDB/TMDB (etc)
+// identity — home videos, unmatched Plex/Jellyfin "other" library items, and
+// similar. Like live TV, these may still store progress for resume, but must
+// not enter continue watching or watched history.
+func lacksCatalogIdentity(mediaType, itemID, seriesID string, externalIDs map[string]string) bool {
+	if strings.EqualFold(strings.TrimSpace(mediaType), "live") {
+		return true
+	}
+	if hasCatalogExternalIDs(externalIDs) {
+		return false
+	}
+	if isCatalogMediaID(itemID) || isCatalogMediaID(seriesID) {
+		return false
+	}
+	return true
+}
+
+func isUntaggedMediaProgress(progress models.PlaybackProgress) bool {
+	return lacksCatalogIdentity(progress.MediaType, progress.ItemID, progress.SeriesID, progress.ExternalIDs)
+}
+
+func isUntaggedMediaProgressUpdate(update models.PlaybackProgressUpdate) bool {
+	return lacksCatalogIdentity(update.MediaType, update.ItemID, update.SeriesID, update.ExternalIDs)
+}
+
 func isLegacyRecordingTitleProgress(progress models.PlaybackProgress, recordingTitleSet map[string]struct{}) bool {
 	if len(recordingTitleSet) == 0 || progress.MediaType != "movie" || len(progress.ExternalIDs) > 0 {
 		return false
@@ -918,6 +985,11 @@ func (s *Service) buildSeriesStatesFromHistory(ctx context.Context, userID strin
 		if isSeriesLevelPlaybackMarker(*prog) {
 			continue
 		}
+		// Untagged library media (home videos / no TVDB/IMDB/TMDB) must not
+		// enter continue watching — same policy as live TV.
+		if isUntaggedMediaProgress(*prog) {
+			continue
+		}
 
 		isEpisode := prog.MediaType == "episode" || (prog.SeasonNumber > 0 && prog.EpisodeNumber > 0)
 
@@ -1064,6 +1136,12 @@ func (s *Service) buildSeriesStatesFromHistory(ctx context.Context, userID strin
 			continue
 		}
 		if isLegacyRecordingTitleProgress(*prog, recordingTitleSet) {
+			continue
+		}
+		// Home videos / unmatched library files without catalog IDs must not
+		// appear on continue watching (and must not be name/ID-collided into
+		// unrelated TMDB/TVDB titles).
+		if isUntaggedMediaProgress(*prog) {
 			continue
 		}
 
@@ -4606,6 +4684,10 @@ func (s *Service) UpdatePlaybackProgressContext(ctx context.Context, userID stri
 		return models.PlaybackProgress{}, ErrEpisodeNotAddressable
 	}
 	isLiveProgress := isLiveProgressUpdate(update)
+	// Untagged library media (no IMDB/TMDB/TVDB) is progress-only: keep resume
+	// positions but do not feed continue watching, watched history, or scrobble.
+	isUntaggedProgress := !isLiveProgress && isUntaggedMediaProgressUpdate(update)
+	excludeFromHistoryShelves := isLiveProgress || isUntaggedProgress
 
 	if err := s.acquirePlaybackProgressGate(ctx); err != nil {
 		lockWait = time.Since(lockWaitStartedAt)
@@ -4720,8 +4802,8 @@ func (s *Service) UpdatePlaybackProgressContext(ctx context.Context, userID stri
 	s.recordActiveProgressLocked(userID, progress)
 
 	// Clear hidden flag for related series entries when new progress is logged.
-	// Live TV does not participate in continue-watching state.
-	if !isLiveProgress && update.SeriesID != "" {
+	// Live TV and untagged library media do not participate in continue-watching state.
+	if !excludeFromHistoryShelves && update.SeriesID != "" {
 		// Extract provider/ID from the update's series ID for external ID matching
 		// (e.g. "tvdb:series:73562" → provider="tvdb", numericID="73562")
 		var unhideProvider, unhideNumericID string
@@ -4787,14 +4869,14 @@ func (s *Service) UpdatePlaybackProgressContext(ctx context.Context, userID stri
 	}
 	persistDuration = time.Since(persistStartedAt)
 
-	if !isLiveProgress {
+	if !excludeFromHistoryShelves {
 		// Invalidate continue watching cache for this user since VOD progress changed.
 		s.invalidateContinueWatchingLocked(userID)
 	}
 
 	// Grab real-time scrobbler reference while holding the lock
 	rtScrobbler := s.traktRTScrobbler
-	allowRealtimeScrobble := !isLiveProgress && !isLiveTVRecordingProgressUpdate(update)
+	allowRealtimeScrobble := !excludeFromHistoryShelves && !isLiveTVRecordingProgressUpdate(update)
 	// Disable realtime scrobbling for episodes under a non-official ordering
 	// (season/episode numbers don't match the canonical order used for sync).
 	if allowRealtimeScrobble && update.MediaType == "episode" {
@@ -4804,7 +4886,7 @@ func (s *Service) UpdatePlaybackProgressContext(ctx context.Context, userID stri
 	}
 
 	// Auto-mark as watched if >= 90% complete
-	if !isLiveProgress && percentWatched >= 90 {
+	if !excludeFromHistoryShelves && percentWatched >= 90 {
 		// Local watched-history sync below writes the Trakt watched event. Clear
 		// any active realtime session so we don't also create a scrobble event.
 		if rtScrobbler != nil && allowRealtimeScrobble {

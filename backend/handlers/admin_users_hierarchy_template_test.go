@@ -13,7 +13,7 @@ func TestAdminUsersPageExplainsAndRendersAccessHierarchy(t *testing.T) {
 	source := string(templateBytes)
 
 	for _, marker := range []string{
-		`Households, People &amp; Devices`,
+		`<h1>Users</h1>`,
 		`id="tab-households"`,
 		`class="hierarchy-guide"`,
 		`Household</span><span class="hierarchy-level-tech">Account`,
@@ -25,13 +25,20 @@ func TestAdminUsersPageExplainsAndRendersAccessHierarchy(t *testing.T) {
 		`function renderDeviceRow(client, orphaned)`,
 		`function reassignClient(clientId, newProfileId`,
 		`function pingClient(clientId)`,
+		`function showRenameClientModal(clientId)`,
+		`function renameClient(e, clientId)`,
+		`JSON.stringify({ nickname })`,
 		`function deleteClient(clientId, clientName)`,
 		`const STALE_DEVICE_AGE_MS = 7 * 24 * 60 * 60 * 1000`,
 		`function isClientStale(client)`,
 		`function toggleStaleDevices(profileId)`,
+		`const expandedHouseholds = new Set()`,
+		`const expandedPeople = new Set()`,
+		`function togglePerson(event, profileId)`,
 		`not seen in 7+ days`,
 		`Needs attention`,
 		`client.nickname || client.name || 'Unknown device'`,
+		`onclick="showRenameClientModal('${client.id}')"`,
 	} {
 		if !strings.Contains(source, marker) {
 			t.Fatalf("accounts template missing hierarchy marker %q", marker)
@@ -41,8 +48,15 @@ func TestAdminUsersPageExplainsAndRendersAccessHierarchy(t *testing.T) {
 	if strings.Contains(source, `id="tab-accounts"`) || strings.Contains(source, `id="tab-profiles">Profiles</button>`) {
 		t.Fatal("admin Users page still exposes separate Accounts or Profiles tabs")
 	}
-	if !strings.Contains(source, `household-card${search ? '' : ' collapsed'}`) {
+	if !strings.Contains(source, `const isExpanded = Boolean(search) || expandedHouseholds.has(a.id)`) ||
+		!strings.Contains(source, `household-card${isExpanded ? '' : ' collapsed'}`) {
 		t.Fatal("admin Users page households do not start collapsed when no search is active")
+	}
+	if !strings.Contains(source, `person-row${isExpanded ? '' : ' collapsed'}`) {
+		t.Fatal("admin Users page people do not start collapsed")
+	}
+	if !strings.Contains(source, `const isExpanded = forceShowStale || expandedPeople.has(profile.id)`) {
+		t.Fatal("admin Users page people do not expand to expose device search matches")
 	}
 }
 

@@ -67,6 +67,72 @@ func (h *UsersHandler) SetConfigManager(configManager *config.Manager) {
 	h.configManager = configManager
 }
 
+func (h *UsersHandler) canLinkIntegration(r *http.Request, kind, integrationID string) bool {
+	if auth.IsMaster(r) || auth.GetAccountID(r) == "" {
+		return true
+	}
+	if strings.TrimSpace(integrationID) == "" {
+		return false
+	}
+	// Production wiring always supplies the config manager. Permit direct
+	// handler invocations without one so isolated callers retain old behavior.
+	if h.configManager == nil {
+		return true
+	}
+	settings, err := h.configManager.Load()
+	if err != nil {
+		return false
+	}
+	accountID := auth.GetAccountID(r)
+	switch kind {
+	case "plex":
+		account := settings.Plex.GetAccountByID(integrationID)
+		return account != nil && account.OwnerAccountID == accountID
+	case "trakt":
+		account := settings.Trakt.GetAccountByID(integrationID)
+		return account != nil && account.OwnerAccountID == accountID
+	case "mdblist":
+		account := settings.MDBList.GetAccountByID(integrationID)
+		if account == nil {
+			return false
+		}
+		if account.OwnerAccountID != "" {
+			return account.OwnerAccountID == accountID
+		}
+		linkedToAccount := false
+		for _, profile := range h.Service.List() {
+			if profile.MdblistAccountID != integrationID {
+				continue
+			}
+			if profile.AccountID != accountID {
+				return false
+			}
+			linkedToAccount = true
+		}
+		return linkedToAccount
+	case "simkl":
+		account := settings.Simkl.GetAccountByID(integrationID)
+		if account == nil {
+			return false
+		}
+		if account.OwnerAccountID != "" {
+			return account.OwnerAccountID == accountID
+		}
+		linkedToAccount := false
+		for _, profile := range h.Service.List() {
+			if profile.SimklAccountID != integrationID {
+				continue
+			}
+			if profile.AccountID != accountID {
+				return false
+			}
+			linkedToAccount = true
+		}
+		return linkedToAccount
+	}
+	return false
+}
+
 func (h *UsersHandler) List(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
@@ -534,6 +600,10 @@ func (h *UsersHandler) SetTraktAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !h.canLinkIntegration(r, "trakt", body.TraktAccountID) {
+		http.Error(w, "integration account not found", http.StatusNotFound)
+		return
+	}
 	user, err := h.Service.SetTraktAccountID(id, body.TraktAccountID)
 	if err != nil {
 		status := http.StatusInternalServerError
@@ -614,6 +684,10 @@ func (h *UsersHandler) SetMdblistAccount(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	if !h.canLinkIntegration(r, "mdblist", body.MdblistAccountID) {
+		http.Error(w, "integration account not found", http.StatusNotFound)
+		return
+	}
 	user, err := h.Service.SetMdblistAccountID(id, body.MdblistAccountID)
 	if err != nil {
 		status := http.StatusInternalServerError
@@ -693,6 +767,10 @@ func (h *UsersHandler) SetSimklAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !h.canLinkIntegration(r, "simkl", body.SimklAccountID) {
+		http.Error(w, "integration account not found", http.StatusNotFound)
+		return
+	}
 	user, err := h.Service.SetSimklAccountID(id, body.SimklAccountID)
 	if err != nil {
 		status := http.StatusInternalServerError
@@ -772,6 +850,10 @@ func (h *UsersHandler) SetPlexAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !h.canLinkIntegration(r, "plex", body.PlexAccountID) {
+		http.Error(w, "integration account not found", http.StatusNotFound)
+		return
+	}
 	user, err := h.Service.SetPlexAccountID(id, body.PlexAccountID)
 	if err != nil {
 		status := http.StatusInternalServerError

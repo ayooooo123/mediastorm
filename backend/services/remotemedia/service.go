@@ -34,6 +34,17 @@ type AvailableLibrary struct {
 	ServerName string                       `json:"serverName,omitempty"`
 }
 
+func localLibraryType(providerType string) models.LocalMediaLibraryType {
+	switch strings.ToLower(strings.TrimSpace(providerType)) {
+	case "movie", "movies":
+		return models.LocalMediaLibraryTypeMovie
+	case "show", "tvshows":
+		return models.LocalMediaLibraryTypeShow
+	default:
+		return models.LocalMediaLibraryTypeOther
+	}
+}
+
 type AvailableServer struct {
 	ID          string                `json:"id"`
 	Name        string                `json:"name"`
@@ -182,14 +193,10 @@ func (s *Service) VerifyPlexServer(ctx context.Context, accountID, serverID, ser
 	}
 	available := make([]AvailableLibrary, 0, len(libraries))
 	for _, library := range libraries {
-		libraryType := models.LocalMediaLibraryTypeMovie
-		if library.Type == "show" {
-			libraryType = models.LocalMediaLibraryTypeShow
-		}
 		available = append(available, AvailableLibrary{
 			ID:         library.Key,
 			Name:       library.Title,
-			Type:       libraryType,
+			Type:       localLibraryType(library.Type),
 			ServerID:   server.ClientIdentifier,
 			ServerName: server.Name,
 		})
@@ -234,11 +241,7 @@ func (s *Service) Discover(ctx context.Context, provider, accountID string) ([]A
 		}
 		result := make([]AvailableLibrary, 0, len(libraries))
 		for _, library := range libraries {
-			t := models.LocalMediaLibraryTypeMovie
-			if strings.EqualFold(library.CollectionType, "tvshows") {
-				t = models.LocalMediaLibraryTypeShow
-			}
-			result = append(result, AvailableLibrary{ID: library.ID, Name: library.Name, Type: t, ServerName: account.Name})
+			result = append(result, AvailableLibrary{ID: library.ID, Name: library.Name, Type: localLibraryType(library.CollectionType), ServerName: account.Name})
 		}
 		return result, nil
 	case models.MediaSourcePlex:
@@ -257,11 +260,7 @@ func (s *Service) Discover(ctx context.Context, provider, accountID string) ([]A
 				continue
 			}
 			for _, library := range libraries {
-				t := models.LocalMediaLibraryTypeMovie
-				if library.Type == "show" {
-					t = models.LocalMediaLibraryTypeShow
-				}
-				result = append(result, AvailableLibrary{ID: library.Key, Name: library.Title, Type: t, ServerID: server.ClientIdentifier, ServerName: server.Name})
+				result = append(result, AvailableLibrary{ID: library.Key, Name: library.Title, Type: localLibraryType(library.Type), ServerID: server.ClientIdentifier, ServerName: server.Name})
 			}
 		}
 		return result, nil
@@ -397,8 +396,11 @@ func (s *Service) fetch(ctx context.Context, library *models.RemoteMediaLibrary)
 		if account == nil {
 			return nil, errors.New("Jellyfin account missing")
 		}
-		collectionType := "movies"
-		if library.Type == models.LocalMediaLibraryTypeShow {
+		collectionType := ""
+		switch library.Type {
+		case models.LocalMediaLibraryTypeMovie:
+			collectionType = "movies"
+		case models.LocalMediaLibraryTypeShow:
 			collectionType = "tvshows"
 		}
 		items, err := s.jellyfin.GetLibraryItems(account.ServerURL, account.Token, account.UserID, library.ExternalLibraryID, collectionType)
@@ -789,31 +791,61 @@ func (s *Service) FindMatches(ctx context.Context, query models.LocalMediaMatchQ
 	if err != nil {
 		return nil, err
 	}
+	targetType := remoteLookupLibraryType(query.MediaType)
 	result := []models.LocalMediaMatchedGroup{}
-	for _, library := range libraries {
-		groups, err := s.ListGroups(ctx, library.ID, models.LocalMediaItemListQuery{Limit: 200, Query: query.Title})
+	for i := range libraries {
+		library := libraries[i]
+		if targetType != "" && library.Type != targetType {
+			continue
+		}
+		// Scan the full library. ListGroups is paginated (max 200) and title-
+		// prefiltered, which drops later titles (e.g. Zootropolis) and alternate
+		// localized names that still share IMDB/TMDB/TVDB IDs with the details page.
+		items, err := s.repo.ListItems(ctx, library.ID, false)
 		if err != nil {
 			continue
 		}
-		for _, g := range groups.Groups {
+		for _, g := range groupItems(&library, items, false) {
 			if matches(g, query) {
-				result = append(result, models.LocalMediaMatchedGroup{LibraryID: library.ID, LibraryName: library.Name, LibraryType: library.Type, Group: g})
+				result = append(result, models.LocalMediaMatchedGroup{
+					LibraryID:   library.ID,
+					LibraryName: library.Name,
+					LibraryType: library.Type,
+					Group:       g,
+				})
 			}
 		}
 	}
 	return result, nil
 }
+
+func remoteLookupLibraryType(mediaType string) models.LocalMediaLibraryType {
+	switch strings.ToLower(strings.TrimSpace(mediaType)) {
+	case "movie":
+		return models.LocalMediaLibraryTypeMovie
+	case "series", "show", "tv":
+		return models.LocalMediaLibraryTypeShow
+	default:
+		return ""
+	}
+}
+
 func matches(g models.LocalMediaItemGroup, q models.LocalMediaMatchQuery) bool {
-	if q.IMDBID != "" && g.IMDBID == q.IMDBID {
+	queryIMDB := strings.TrimSpace(q.IMDBID)
+	queryTMDB := strings.TrimSpace(q.TMDBID)
+	queryTVDB := strings.TrimSpace(q.TVDBID)
+	if queryIMDB != "" && strings.EqualFold(strings.TrimSpace(g.IMDBID), queryIMDB) {
 		return true
 	}
-	if q.TMDBID != "" && strconv.FormatInt(g.TMDBID, 10) == q.TMDBID {
+	if queryTMDB != "" && strconv.FormatInt(g.TMDBID, 10) == queryTMDB {
 		return true
 	}
-	if q.TVDBID != "" && strconv.FormatInt(g.TVDBID, 10) == q.TVDBID {
+	if queryTVDB != "" && strconv.FormatInt(g.TVDBID, 10) == queryTVDB {
 		return true
 	}
-	return q.Title != "" && strings.EqualFold(strings.TrimSpace(g.Title), strings.TrimSpace(q.Title)) && (q.Year == 0 || g.Year == 0 || q.Year == g.Year)
+	return q.Title != "" &&
+		strings.EqualFold(strings.TrimSpace(g.Title), strings.TrimSpace(q.Title)) &&
+		(q.Year == 0 || g.Year == 0 || q.Year == g.Year)
 }
 
 func (s *Service) Playback(ctx context.Context, itemID string) (*models.LocalMediaPlaybackResponse, error) {
@@ -834,8 +866,46 @@ func (s *Service) Playback(ctx context.Context, itemID string) (*models.LocalMed
 	if mediaType == "episode" {
 		seriesTitle = item.Title
 	}
-	return &models.LocalMediaPlaybackResponse{ItemID: item.ID, FileName: item.FileName, DisplayName: item.Title, TitleID: item.GroupKey, Title: item.Title, SeriesTitle: seriesTitle, EpisodeTitle: item.EpisodeTitle, Year: item.Year, DurationSeconds: item.DurationSeconds, ExternalIDs: externalMap(item.ExternalIDs), StreamPath: item.StreamPath, StreamURL: "/api/video/stream?" + values.Encode(), DirectStream: true, SourceType: library.Provider, SourceName: strings.Title(library.Provider)}, nil
+	// Only expose a titleId when the item has real catalog external IDs.
+	// Plex/Jellyfin group keys are library-local and collide with TVDB/TMDB
+	// numeric IDs (e.g. home-video rating key 264995 → wrong movie metadata).
+	titleID := remoteCatalogTitleID(item)
+	return &models.LocalMediaPlaybackResponse{ItemID: item.ID, FileName: item.FileName, DisplayName: item.Title, TitleID: titleID, Title: item.Title, SeriesTitle: seriesTitle, EpisodeTitle: item.EpisodeTitle, Year: item.Year, DurationSeconds: item.DurationSeconds, ExternalIDs: externalMap(item.ExternalIDs), StreamPath: item.StreamPath, StreamURL: "/api/video/stream?" + values.Encode(), DirectStream: true, SourceType: library.Provider, SourceName: strings.Title(library.Provider)}, nil
 }
+
+// remoteCatalogTitleID returns a provider-prefixed catalog title id when the
+// remote item has IMDB/TMDB/TVDB tags. Untagged library media returns empty so
+// clients key progress by stream path instead of a bare library rating key.
+func remoteCatalogTitleID(item *models.RemoteMediaItem) string {
+	if item == nil {
+		return ""
+	}
+	ids := item.ExternalIDs
+	if ids == nil {
+		return ""
+	}
+	imdb := strings.TrimSpace(ids.IMDB)
+	tmdb := strings.TrimSpace(ids.TMDB)
+	tvdb := strings.TrimSpace(ids.TVDB)
+	if imdb == "" && tmdb == "" && tvdb == "" {
+		return ""
+	}
+	isShow := item.LibraryType == models.LocalMediaLibraryTypeShow
+	if tmdb != "" {
+		if isShow {
+			return "tmdb:tv:" + tmdb
+		}
+		return "tmdb:movie:" + tmdb
+	}
+	if tvdb != "" {
+		if isShow {
+			return "tvdb:series:" + tvdb
+		}
+		return "tvdb:movie:" + tvdb
+	}
+	return imdb
+}
+
 func externalMap(ids *models.LocalMediaExternalIDs) map[string]string {
 	m := map[string]string{}
 	if ids != nil {

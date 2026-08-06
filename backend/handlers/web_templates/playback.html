@@ -1432,7 +1432,11 @@
         });
 
         renderPlayerShell();
-        attachWebPlayer(document.getElementById('webPlayer'), hlsPlaylistUrl);
+        const video = document.getElementById('webPlayer');
+        if (video && actualOffset > 1) {
+          video.autoplay = true;
+        }
+        attachWebPlayer(video, hlsPlaylistUrl);
         startKeepalive();
         startProgressTracking();
       } catch (error) {

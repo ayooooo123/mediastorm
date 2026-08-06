@@ -38,11 +38,11 @@ type NotificationChannel struct {
 
 // NotificationObservation records the last release state seen for an item.
 type NotificationObservation struct {
-	ProfileID string
-	ItemKey   string
-	Status    string
-	Event     NotificationEvent
-	UpdatedAt time.Time
+	ProfileID string            `json:"profileId"`
+	ItemKey   string            `json:"itemKey"`
+	Status    string            `json:"status"`
+	Event     NotificationEvent `json:"event"`
+	UpdatedAt time.Time         `json:"updatedAt"`
 }
 
 // NotificationProgressMessage stores the Discord message backing an active

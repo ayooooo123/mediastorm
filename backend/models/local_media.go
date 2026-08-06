@@ -231,10 +231,14 @@ type LocalMediaMatchedGroup struct {
 }
 
 type LocalMediaScanSummary struct {
-	Discovered    int `json:"discovered"`
-	Matched       int `json:"matched"`
-	LowConfidence int `json:"lowConfidence"`
-	Unmatched     int `json:"unmatched"`
+	Discovered    int    `json:"discovered"`
+	Matched       int    `json:"matched"`
+	LowConfidence int    `json:"lowConfidence"`
+	Unmatched     int    `json:"unmatched"`
+	Status        string `json:"status,omitempty"`
+	// Async is true when the scan was accepted and is running in the background.
+	// Poll library lastScan* fields for progress and completion.
+	Async bool `json:"async,omitempty"`
 }
 
 type LocalMediaLibraryCreateInput struct {

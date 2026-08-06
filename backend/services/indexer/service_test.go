@@ -1026,6 +1026,17 @@ func TestBuildSearchQueries_AnimeAbsoluteEpisode(t *testing.T) {
 
 	queries := buildSearchQueries(opts, debrid.ParseQuery(opts.Query), nil)
 
+	foundStandard := false
+	for _, query := range queries {
+		if query == "One Piece S23E06" {
+			foundStandard = true
+			break
+		}
+	}
+	if !foundStandard {
+		t.Fatalf("expected multi-season standard query to remain in %v", queries)
+	}
+
 	for _, expected := range []string{"One Piece 1161", "One Piece EP1161", "One Piece E1161"} {
 		found := false
 		for _, query := range queries {
@@ -1426,6 +1437,99 @@ func TestResolveAlternateTitles_LanguagePriorityWithCap(t *testing.T) {
 	if aliases[1] != "Chinese Title" {
 		t.Errorf("expected Chinese alias second, got %q", aliases[1])
 	}
+}
+
+func TestResolveAlternateTitles_PrefersRomanizedReleaseTitleBeforeCap(t *testing.T) {
+	mock := &mockMetadataSearchOnly{
+		results: []models.SearchResult{
+			{
+				Title: models.Title{
+					Name:         "Martian Successor Nadesico",
+					OriginalName: "機動戦艦ナデシコ",
+					TVDBID:       71313,
+					IMDBID:       "tt0115263",
+					MediaType:    "series",
+					Year:         1996,
+					AlternateTitles: []string{
+						"機動戦艦ナデシコ",
+						"Kidou Senkan Nadesico",
+						"Nadesico Martian Successor",
+					},
+				},
+			},
+		},
+	}
+
+	svc := &Service{metadata: mock}
+	aliases := svc.resolveAlternateTitles(context.Background(), SearchOptions{
+		Query:     "Martian Successor Nadesico S01E01",
+		MediaType: "series",
+		Year:      1996,
+		IMDBID:    "tt0115263",
+	}, "eng", 1)
+
+	if len(aliases) != 1 {
+		t.Fatalf("expected one capped alias, got %d: %v", len(aliases), aliases)
+	}
+	if aliases[0] != "Kidou Senkan Nadesico" {
+		t.Fatalf("expected romanized release title to survive cap, got %q", aliases[0])
+	}
+}
+
+func TestResolveAlternateTitles_AnimePrefersOriginalLanguageRomanization(t *testing.T) {
+	mock := &mockMetadataWithAliases{
+		results: []models.SearchResult{
+			{
+				Title: models.Title{
+					Name:         "Kaiju No. 8",
+					OriginalName: "怪獣8号",
+					Language:     "jpn",
+					TVDBID:       423075,
+					IMDBID:       "tt21975436",
+					MediaType:    "series",
+					Year:         2024,
+				},
+			},
+		},
+		langAliases: map[int64][]models.LanguageAlias{
+			423075: {
+				{Name: "Monster #8", Language: "eng"},
+				{Name: "Kaiju No. Eight", Language: "eng"},
+				{Name: "Kaijū 8-gō", Language: "jpn"},
+				{Name: "Kaijuu 8-gou", Language: "jpn"},
+			},
+		},
+	}
+
+	svc := &Service{metadata: mock}
+	aliases := svc.resolveAlternateTitles(context.Background(), SearchOptions{
+		Query:     "Kaiju No. 8 S02E01",
+		MediaType: "series",
+		Year:      2024,
+		IMDBID:    "tt21975436",
+		IsAnime:   true,
+	}, "eng", 1)
+
+	if len(aliases) != 1 {
+		t.Fatalf("expected one capped alias, got %d: %v", len(aliases), aliases)
+	}
+	if aliases[0] != "Kaijuu 8-gou" {
+		t.Fatalf("expected original-language romanized alias before English translation, got %q", aliases[0])
+	}
+
+	queries := buildSearchQueries(SearchOptions{
+		Query:                 "Kaiju No. 8 S02E01",
+		MediaType:             "series",
+		IsAnime:               true,
+		AbsoluteEpisodeNumber: 13,
+	}, debrid.ParseQuery("Kaiju No. 8 S02E01"), aliases)
+	want := "Kaijuu 8-gou 13"
+	for _, query := range queries {
+		if query == want {
+			return
+		}
+	}
+	t.Fatalf("expected romanized absolute query %q in %v", want, queries)
 }
 
 func TestPerResolutionLimiting(t *testing.T) {
