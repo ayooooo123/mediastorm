@@ -11,6 +11,23 @@ import (
 	"novastream/services/plex"
 )
 
+func TestLocalLibraryTypeMapsProviderLibraries(t *testing.T) {
+	tests := map[string]models.LocalMediaLibraryType{
+		"movie":      models.LocalMediaLibraryTypeMovie,
+		"movies":     models.LocalMediaLibraryTypeMovie,
+		"show":       models.LocalMediaLibraryTypeShow,
+		"tvshows":    models.LocalMediaLibraryTypeShow,
+		"artist":     models.LocalMediaLibraryTypeOther,
+		"homevideos": models.LocalMediaLibraryTypeOther,
+		"":           models.LocalMediaLibraryTypeOther,
+	}
+	for providerType, want := range tests {
+		if got := localLibraryType(providerType); got != want {
+			t.Errorf("localLibraryType(%q)=%q, want %q", providerType, got, want)
+		}
+	}
+}
+
 func TestPlexServerResolverCollapsesConcurrentLoads(t *testing.T) {
 	resolver := &plexServerResolver{}
 	var loads atomic.Int32

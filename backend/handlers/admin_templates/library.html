@@ -2571,7 +2571,7 @@ async function verifyPlexServer() {
 function populateRemoteLibraries(libraries) {
   const select = document.getElementById('remoteLibrary');
   select.disabled = false;
-  select.innerHTML = libraries.length ? libraries.map(library => `<option value="${escapeHtml(library.id)}" data-name="${escapeHtml(library.name)}" data-type="${escapeHtml(library.type)}" data-server-id="${escapeHtml(library.serverId || '')}" data-server-name="${escapeHtml(library.serverName || '')}">${escapeHtml((library.serverName ? library.serverName + ' · ' : '') + library.name)} (${escapeHtml(library.type)})</option>`).join('') : '<option value="">No movie/show libraries found</option>';
+  select.innerHTML = libraries.length ? libraries.map(library => `<option value="${escapeHtml(library.id)}" data-name="${escapeHtml(library.name)}" data-type="${escapeHtml(library.type)}" data-server-id="${escapeHtml(library.serverId || '')}" data-server-name="${escapeHtml(library.serverName || '')}">${escapeHtml((library.serverName ? library.serverName + ' · ' : '') + library.name)} (${escapeHtml(library.type)})</option>`).join('') : '<option value="">No libraries found</option>';
   const option = select.selectedOptions[0];
   if (option && !document.getElementById('libraryName').value.trim()) document.getElementById('libraryName').value = option.dataset.name || '';
 }

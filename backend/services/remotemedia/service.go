@@ -34,6 +34,17 @@ type AvailableLibrary struct {
 	ServerName string                       `json:"serverName,omitempty"`
 }
 
+func localLibraryType(providerType string) models.LocalMediaLibraryType {
+	switch strings.ToLower(strings.TrimSpace(providerType)) {
+	case "movie", "movies":
+		return models.LocalMediaLibraryTypeMovie
+	case "show", "tvshows":
+		return models.LocalMediaLibraryTypeShow
+	default:
+		return models.LocalMediaLibraryTypeOther
+	}
+}
+
 type AvailableServer struct {
 	ID          string                `json:"id"`
 	Name        string                `json:"name"`
@@ -182,14 +193,10 @@ func (s *Service) VerifyPlexServer(ctx context.Context, accountID, serverID, ser
 	}
 	available := make([]AvailableLibrary, 0, len(libraries))
 	for _, library := range libraries {
-		libraryType := models.LocalMediaLibraryTypeMovie
-		if library.Type == "show" {
-			libraryType = models.LocalMediaLibraryTypeShow
-		}
 		available = append(available, AvailableLibrary{
 			ID:         library.Key,
 			Name:       library.Title,
-			Type:       libraryType,
+			Type:       localLibraryType(library.Type),
 			ServerID:   server.ClientIdentifier,
 			ServerName: server.Name,
 		})
@@ -234,11 +241,7 @@ func (s *Service) Discover(ctx context.Context, provider, accountID string) ([]A
 		}
 		result := make([]AvailableLibrary, 0, len(libraries))
 		for _, library := range libraries {
-			t := models.LocalMediaLibraryTypeMovie
-			if strings.EqualFold(library.CollectionType, "tvshows") {
-				t = models.LocalMediaLibraryTypeShow
-			}
-			result = append(result, AvailableLibrary{ID: library.ID, Name: library.Name, Type: t, ServerName: account.Name})
+			result = append(result, AvailableLibrary{ID: library.ID, Name: library.Name, Type: localLibraryType(library.CollectionType), ServerName: account.Name})
 		}
 		return result, nil
 	case models.MediaSourcePlex:
@@ -257,11 +260,7 @@ func (s *Service) Discover(ctx context.Context, provider, accountID string) ([]A
 				continue
 			}
 			for _, library := range libraries {
-				t := models.LocalMediaLibraryTypeMovie
-				if library.Type == "show" {
-					t = models.LocalMediaLibraryTypeShow
-				}
-				result = append(result, AvailableLibrary{ID: library.Key, Name: library.Title, Type: t, ServerID: server.ClientIdentifier, ServerName: server.Name})
+				result = append(result, AvailableLibrary{ID: library.Key, Name: library.Title, Type: localLibraryType(library.Type), ServerID: server.ClientIdentifier, ServerName: server.Name})
 			}
 		}
 		return result, nil
@@ -397,8 +396,11 @@ func (s *Service) fetch(ctx context.Context, library *models.RemoteMediaLibrary)
 		if account == nil {
 			return nil, errors.New("Jellyfin account missing")
 		}
-		collectionType := "movies"
-		if library.Type == models.LocalMediaLibraryTypeShow {
+		collectionType := ""
+		switch library.Type {
+		case models.LocalMediaLibraryTypeMovie:
+			collectionType = "movies"
+		case models.LocalMediaLibraryTypeShow:
 			collectionType = "tvshows"
 		}
 		items, err := s.jellyfin.GetLibraryItems(account.ServerURL, account.Token, account.UserID, library.ExternalLibraryID, collectionType)

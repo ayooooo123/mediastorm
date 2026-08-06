@@ -111,7 +111,7 @@ func TestGetServerLibrariesAtUsesSelectedAddress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetServerLibrariesAt() error = %v", err)
 	}
-	if len(libraries) != 2 || libraries[0].Title != "Movies" || libraries[1].Title != "Shows" {
+	if len(libraries) != 3 || libraries[0].Title != "Movies" || libraries[1].Title != "Shows" || libraries[2].Title != "Music" {
 		t.Fatalf("libraries=%#v", libraries)
 	}
 }
