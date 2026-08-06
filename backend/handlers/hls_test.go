@@ -831,6 +831,61 @@ func TestLiveHLSOutputArgsWebRetainsCompatibilityTranscode(t *testing.T) {
 	}
 }
 
+func TestIsWebBrowserPlaybackTarget(t *testing.T) {
+	for _, target := range []string{"web", "WEB", " browser ", "browser"} {
+		if !isWebBrowserPlaybackTarget(target) {
+			t.Fatalf("expected %q to be a web browser playback target", target)
+		}
+	}
+	for _, target := range []string{"", "native", "ios", "android", "cast", "mpv"} {
+		if isWebBrowserPlaybackTarget(target) {
+			t.Fatalf("did not expect %q to be a web browser playback target", target)
+		}
+	}
+}
+
+func TestHlsAACTranscodeArgsWebUsesStereo(t *testing.T) {
+	for _, target := range []string{"web", "browser"} {
+		joined := strings.Join(hlsAACTranscodeArgs(target, ""), " ")
+		for _, expected := range []string{"-c:a aac", "-ac 2", "-channel_layout stereo", "-ar 48000"} {
+			if !strings.Contains(joined, expected) {
+				t.Fatalf("web AAC args for %q missing %q: %q", target, expected, joined)
+			}
+		}
+		if strings.Contains(joined, "-ac 6") || strings.Contains(joined, "5.1") {
+			t.Fatalf("web AAC args for %q must not use 5.1: %q", target, joined)
+		}
+
+		indexed := strings.Join(hlsAACTranscodeArgs(target, "indexed0"), " ")
+		for _, expected := range []string{"-c:a:0 aac", "-ac:a:0 2", "-channel_layout:a:0 stereo", "-c:a:1 copy"} {
+			if !strings.Contains(indexed, expected) {
+				t.Fatalf("web indexed AAC args for %q missing %q: %q", target, expected, indexed)
+			}
+		}
+	}
+}
+
+func TestHlsAACTranscodeArgsNonWebKeeps51(t *testing.T) {
+	for _, target := range []string{"", "native", "ios", "android", "cast"} {
+		joined := strings.Join(hlsAACTranscodeArgs(target, ""), " ")
+		for _, expected := range []string{"-c:a aac", "-ac 6", "-channel_layout 5.1"} {
+			if !strings.Contains(joined, expected) {
+				t.Fatalf("non-web AAC args for %q missing %q: %q", target, expected, joined)
+			}
+		}
+		if strings.Contains(joined, "-ac 2") || strings.Contains(joined, "stereo") {
+			t.Fatalf("non-web AAC args for %q must keep 5.1: %q", target, joined)
+		}
+
+		indexed := strings.Join(hlsAACTranscodeArgs(target, "indexed0"), " ")
+		for _, expected := range []string{"-c:a:0 aac", "-ac:a:0 6", "-channel_layout:a:0 5.1", "-c:a:1 copy"} {
+			if !strings.Contains(indexed, expected) {
+				t.Fatalf("non-web indexed AAC args for %q missing %q: %q", target, expected, indexed)
+			}
+		}
+	}
+}
+
 func TestSummarizeLiveSegmentDirAndPlaylist(t *testing.T) {
 	dir := t.TempDir()
 	for _, n := range []int{2, 3, 5} {
