@@ -624,11 +624,12 @@ func TestUpdatePlaybackProgressEndedStopsRealtimeSession(t *testing.T) {
 
 		_, err = svc.UpdatePlaybackProgress("user", models.PlaybackProgressUpdate{
 			MediaType:     "movie",
-			ItemID:        "movie-1",
+			ItemID:        "tmdb:movie:550",
 			MovieName:     "Movie",
 			Position:      position,
 			Duration:      100,
 			PlaybackEnded: true,
+			ExternalIDs:   map[string]string{"tmdb": "550", "imdb": "tt0137523"},
 		})
 		if err != nil {
 			t.Fatalf("UpdatePlaybackProgress(%.0f) error = %v", position, err)
@@ -5400,6 +5401,133 @@ func TestIsUnresolvedTitleOnlyMovieProgress(t *testing.T) {
 		ExternalIDs: map[string]string{"tmdb": "12"},
 	}, nil) {
 		t.Fatal("expected metadata-backed movie progress not to be treated as unresolved title-only progress")
+	}
+}
+
+func TestLacksCatalogIdentity(t *testing.T) {
+	if !lacksCatalogIdentity("movie", "264995", "", map[string]string{"titleId": "264995"}) {
+		t.Fatal("expected bare Plex rating-key progress to lack catalog identity")
+	}
+	if !lacksCatalogIdentity("movie", "plexmedia:abc", "", nil) {
+		t.Fatal("expected stream-path-only progress to lack catalog identity")
+	}
+	if lacksCatalogIdentity("movie", "tmdb:movie:123", "", nil) {
+		t.Fatal("expected tmdb-prefixed item id to count as catalog identity")
+	}
+	if lacksCatalogIdentity("movie", "264995", "", map[string]string{"imdb": "tt123"}) {
+		t.Fatal("expected imdb external id to count as catalog identity")
+	}
+	if lacksCatalogIdentity("movie", "x", "", map[string]string{"titleId": "tmdb:movie:9"}) {
+		t.Fatal("expected catalog titleId to count as catalog identity")
+	}
+	if !lacksCatalogIdentity("live", "cnn.us", "", map[string]string{"tvgId": "cnn.us"}) {
+		t.Fatal("expected live progress to lack catalog identity")
+	}
+}
+
+func TestListContinueWatching_ExcludesUntaggedLibraryMedia(t *testing.T) {
+	dir := t.TempDir()
+	svc, err := NewService(dir)
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	// Metadata present so continue watching would otherwise try to resolve the
+	// bare numeric key as a title id (the Olympic/home-video collision case).
+	svc.SetMetadataService(&mockMetadataService{
+		movieDetails: &models.Title{
+			ID:     "tmdb:movie:348301",
+			Name:   "Detectives sin piedad",
+			TMDBID: 348301,
+			TVDBID: 264995,
+			IMDBID: "tt0772780",
+		},
+	})
+
+	userID := "untagged-user"
+	if _, err := svc.UpdatePlaybackProgress(userID, models.PlaybackProgressUpdate{
+		MediaType:      "movie",
+		ItemID:         "264995",
+		MovieName:      "Olympic Games Basketball QF",
+		Position:       600,
+		Duration:       3600,
+		PercentWatched: 40,
+		IsPaused:       true,
+		ExternalIDs:    map[string]string{"titleId": "264995"},
+	}); err != nil {
+		t.Fatalf("UpdatePlaybackProgress() untagged error = %v", err)
+	}
+	if _, err := svc.UpdatePlaybackProgress(userID, models.PlaybackProgressUpdate{
+		MediaType:      "movie",
+		ItemID:         "tmdb:movie:550",
+		MovieName:      "Fight Club",
+		Position:       900,
+		Duration:       3600,
+		PercentWatched: 25,
+		IsPaused:       true,
+		ExternalIDs:    map[string]string{"tmdb": "550", "imdb": "tt0137523"},
+	}); err != nil {
+		t.Fatalf("UpdatePlaybackProgress() catalog error = %v", err)
+	}
+
+	items, err := svc.ListContinueWatching(userID)
+	if err != nil {
+		t.Fatalf("ListContinueWatching() error = %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected only catalog movie in continue watching, got %+v", items)
+	}
+	if items[0].SeriesID != "tmdb:movie:550" && items[0].SeriesTitle != "Fight Club" {
+		// SeriesID for movies is ItemID; title may be enriched from mock.
+		if items[0].SeriesID != "tmdb:movie:550" {
+			t.Fatalf("expected Fight Club catalog item, got %+v", items[0])
+		}
+	}
+
+	// Progress is still stored for resume on the details page.
+	progress, err := svc.GetPlaybackProgress(userID, "movie", "264995")
+	if err != nil {
+		t.Fatalf("GetPlaybackProgress() error = %v", err)
+	}
+	if progress == nil || progress.Position < 600 {
+		t.Fatalf("expected untagged progress retained for resume, got %+v", progress)
+	}
+}
+
+func TestUpdatePlaybackProgress_DoesNotAutoWatchUntaggedMedia(t *testing.T) {
+	dir := t.TempDir()
+	svc, err := NewService(dir)
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	scrobbler := newCaptureRealTimeScrobbler()
+	svc.SetTraktRealTimeScrobbler(scrobbler)
+
+	userID := "untagged-auto-watch"
+	if _, err := svc.UpdatePlaybackProgress(userID, models.PlaybackProgressUpdate{
+		MediaType: "movie",
+		ItemID:    "plexmedia:home-video-1",
+		MovieName: "Home Video Clip",
+		Position:  3500,
+		Duration:  3600,
+		IsPaused:  true,
+	}); err != nil {
+		t.Fatalf("UpdatePlaybackProgress() error = %v", err)
+	}
+
+	history, err := svc.ListWatchHistory(userID)
+	if err != nil {
+		t.Fatalf("ListWatchHistory() error = %v", err)
+	}
+	if len(history) != 0 {
+		t.Fatalf("expected untagged media not auto-added to watch history, got %+v", history)
+	}
+
+	select {
+	case update := <-scrobbler.handleCalls:
+		t.Fatalf("expected no real-time scrobble for untagged progress, got itemID %q", update.ItemID)
+	case update := <-scrobbler.stopCalls:
+		t.Fatalf("expected no real-time stop for untagged progress, got itemID %q", update.ItemID)
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 

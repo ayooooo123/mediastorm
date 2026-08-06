@@ -80,26 +80,26 @@ func TestFindMatchesScansFullLibraryByExternalIDs(t *testing.T) {
 	}
 	zootropolis := []models.RemoteMediaItem{
 		{
-			ID:          "plex-z2-4k",
-			LibraryID:   "plex-films",
-			LibraryType: models.LocalMediaLibraryTypeMovie,
-			Title:       "Zootropolis 2",
-			Year:        2025,
-			GroupKey:    "755091",
-			FileName:    "Zootopia 2 2160p.mkv",
+			ID:           "plex-z2-4k",
+			LibraryID:    "plex-films",
+			LibraryType:  models.LocalMediaLibraryTypeMovie,
+			Title:        "Zootropolis 2",
+			Year:         2025,
+			GroupKey:     "755091",
+			FileName:     "Zootopia 2 2160p.mkv",
 			VersionLabel: "2160p · HEVC",
-			ExternalIDs: &models.LocalMediaExternalIDs{IMDB: "tt26443597", TMDB: "1084242", TVDB: "344109"},
+			ExternalIDs:  &models.LocalMediaExternalIDs{IMDB: "tt26443597", TMDB: "1084242", TVDB: "344109"},
 		},
 		{
-			ID:          "plex-z2-1080",
-			LibraryID:   "plex-films",
-			LibraryType: models.LocalMediaLibraryTypeMovie,
-			Title:       "Zootropolis 2",
-			Year:        2025,
-			GroupKey:    "755091",
-			FileName:    "Zootopia 2 1080p.mkv",
+			ID:           "plex-z2-1080",
+			LibraryID:    "plex-films",
+			LibraryType:  models.LocalMediaLibraryTypeMovie,
+			Title:        "Zootropolis 2",
+			Year:         2025,
+			GroupKey:     "755091",
+			FileName:     "Zootopia 2 1080p.mkv",
 			VersionLabel: "1080p · H264",
-			ExternalIDs: &models.LocalMediaExternalIDs{IMDB: "tt26443597", TMDB: "1084242", TVDB: "344109"},
+			ExternalIDs:  &models.LocalMediaExternalIDs{IMDB: "tt26443597", TMDB: "1084242", TVDB: "344109"},
 		},
 	}
 	repo := &fakeRemoteMediaRepo{
@@ -337,6 +337,30 @@ func TestRemotePlaybackSourceAndState(t *testing.T) {
 	}
 	if got := remotePlaybackState(models.PlaybackProgressUpdate{PlaybackEnded: true}, false); got != "stopped" {
 		t.Fatalf("ended state=%q", got)
+	}
+}
+
+func TestRemoteCatalogTitleID(t *testing.T) {
+	if got := remoteCatalogTitleID(&models.RemoteMediaItem{
+		GroupKey:    "264995",
+		LibraryType: models.LocalMediaLibraryTypeMovie,
+		ExternalIDs: &models.LocalMediaExternalIDs{},
+	}); got != "" {
+		t.Fatalf("untagged movie titleID=%q, want empty", got)
+	}
+	if got := remoteCatalogTitleID(&models.RemoteMediaItem{
+		GroupKey:    "264995",
+		LibraryType: models.LocalMediaLibraryTypeMovie,
+		ExternalIDs: &models.LocalMediaExternalIDs{TMDB: "550", IMDB: "tt0137523"},
+	}); got != "tmdb:movie:550" {
+		t.Fatalf("matched movie titleID=%q, want tmdb:movie:550", got)
+	}
+	if got := remoteCatalogTitleID(&models.RemoteMediaItem{
+		GroupKey:    "series-1",
+		LibraryType: models.LocalMediaLibraryTypeShow,
+		ExternalIDs: &models.LocalMediaExternalIDs{TVDB: "121361"},
+	}); got != "tvdb:series:121361" {
+		t.Fatalf("matched show titleID=%q, want tvdb:series:121361", got)
 	}
 }
 
