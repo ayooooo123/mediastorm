@@ -39,6 +39,7 @@ type NotificationRepository interface {
 	DeleteChannel(ctx context.Context, profileID, id string) error
 	GetObservation(ctx context.Context, profileID, itemKey string) (*models.NotificationObservation, error)
 	ListObservations(ctx context.Context, profileID string) ([]models.NotificationObservation, error)
+	ListAllObservations(ctx context.Context) ([]models.NotificationObservation, error)
 	UpsertObservation(ctx context.Context, observation *models.NotificationObservation) error
 	GetProgressMessage(ctx context.Context, channelID, playbackKey string) (*models.NotificationProgressMessage, error)
 	ListProgressMessages(ctx context.Context) ([]models.NotificationProgressMessage, error)
@@ -84,6 +85,7 @@ type ShareLinkRepository interface {
 	ConsumeUse(ctx context.Context, token string, now time.Time) (*models.ShareLink, error)
 	SetActive(ctx context.Context, token string, active bool) error
 	Delete(ctx context.Context, token string) error
+	DeleteAll(ctx context.Context) error
 	DeleteExpired(ctx context.Context, now time.Time) error
 }
 
@@ -210,8 +212,11 @@ type ContentPreferencesRepository interface {
 // SeriesOrderingRepository stores per-user, per-series episode ordering overrides.
 type SeriesOrderingRepository interface {
 	Get(ctx context.Context, userID string, seriesTVDBID int64) (*models.SeriesOrderingPref, error)
+	// ListAll returns every preference keyed by user ID.
+	ListAll(ctx context.Context) (map[string][]models.SeriesOrderingPref, error)
 	Upsert(ctx context.Context, userID string, pref *models.SeriesOrderingPref) error
 	Delete(ctx context.Context, userID string, seriesTVDBID int64) error
+	DeleteAll(ctx context.Context) error
 }
 
 // PrequeueRepository manages prequeue entries.

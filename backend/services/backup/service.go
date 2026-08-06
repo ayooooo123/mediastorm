@@ -727,22 +727,104 @@ func (s *Service) ImportDatabaseJSON(data []byte) error {
 // rawUser aliases models.User to bypass MarshalJSON so PinHash is preserved in exports.
 type rawUser models.User
 
+// rawShareLink preserves fields that API responses intentionally omit.
+type rawShareLink struct {
+	Token      string            `json:"token"`
+	AccountID  string            `json:"accountId"`
+	IsMaster   bool              `json:"isMaster"`
+	Label      string            `json:"label,omitempty"`
+	Params     map[string]string `json:"params"`
+	MaxUses    int               `json:"maxUses"`
+	UseCount   int               `json:"useCount"`
+	Active     bool              `json:"active"`
+	CreatedAt  time.Time         `json:"createdAt"`
+	ExpiresAt  time.Time         `json:"expiresAt"`
+	LastUsedAt *time.Time        `json:"lastUsedAt,omitempty"`
+}
+
+// rawRemoteAccessInvite preserves TokenHash, which is omitted from API JSON.
+type rawRemoteAccessInvite struct {
+	ID             string     `json:"id"`
+	TokenHash      string     `json:"tokenHash"`
+	ConnectionCode string     `json:"connectionCode,omitempty"`
+	IrohInvite     string     `json:"irohInvite,omitempty"`
+	CreatedBy      string     `json:"createdBy"`
+	PeerName       string     `json:"peerName"`
+	ExpiresAt      time.Time  `json:"expiresAt"`
+	UsedAt         *time.Time `json:"usedAt,omitempty"`
+	UsedByPeerID   string     `json:"usedByPeerId,omitempty"`
+	RevokedAt      *time.Time `json:"revokedAt,omitempty"`
+	CreatedAt      time.Time  `json:"createdAt"`
+}
+
+// localMediaItemExport includes file path fields that API models hide with json:"-".
+type localMediaItemExport struct {
+	ID               string                       `json:"id"`
+	LibraryID        string                       `json:"libraryId"`
+	RelativePath     string                       `json:"relativePath"`
+	FilePath         string                       `json:"filePath"`
+	FileName         string                       `json:"fileName"`
+	LibraryType      models.LocalMediaLibraryType `json:"libraryType"`
+	DetectedTitle    string                       `json:"detectedTitle,omitempty"`
+	DetectedYear     int                          `json:"detectedYear,omitempty"`
+	SeasonNumber     int                          `json:"seasonNumber,omitempty"`
+	EpisodeNumber    int                          `json:"episodeNumber,omitempty"`
+	Confidence       float64                      `json:"confidence"`
+	MatchStatus      models.LocalMediaMatchStatus `json:"matchStatus"`
+	MatchedTitleID   string                       `json:"matchedTitleId,omitempty"`
+	MatchedMediaType string                       `json:"matchedMediaType,omitempty"`
+	MatchedName      string                       `json:"matchedName,omitempty"`
+	MatchedYear      int                          `json:"matchedYear,omitempty"`
+	IsMissing        bool                         `json:"isMissing,omitempty"`
+	MissingSince     *time.Time                   `json:"missingSince,omitempty"`
+	Metadata         *models.Title                `json:"metadata,omitempty"`
+	Probe            *models.LocalMediaProbe      `json:"probe,omitempty"`
+	SizeBytes        int64                        `json:"sizeBytes"`
+	ModifiedAt       *time.Time                   `json:"modifiedAt,omitempty"`
+	LastScannedAt    *time.Time                   `json:"lastScannedAt,omitempty"`
+	LastSeenScanID   string                       `json:"lastSeenScanId,omitempty"`
+	CreatedAt        time.Time                    `json:"createdAt"`
+	UpdatedAt        time.Time                    `json:"updatedAt"`
+}
+
 // databaseExport is the JSON structure for database backups.
+//
+// Intentionally excluded (regenerable / ephemeral / system):
+//   - prequeue, prewarm (warm cache, expires)
+//   - notification_progress_messages (live Discord message IDs)
+//   - import_queue, file_health, media_files, queue_stats
+//   - goose_db_version, app_data_migrations
+//
+// Global app settings (scheduled tasks / automations / scrapers / indexers / etc.)
+// live in settings.json and are backed up as a separate archive member.
 type databaseExport struct {
-	Version            string                                 `json:"version"`
-	ExportedAt         time.Time                              `json:"exportedAt"`
-	Accounts           []models.AccountStorage                `json:"accounts"`
-	Users              []rawUser                              `json:"users"`
-	Sessions           []models.Session                       `json:"sessions"`
-	Invitations        []models.Invitation                    `json:"invitations"`
-	Clients            []models.Client                        `json:"clients"`
-	ClientSettings     map[string]models.ClientFilterSettings `json:"clientSettings"`
-	UserSettings       map[string]models.UserSettings         `json:"userSettings"`
-	Watchlist          map[string][]models.WatchlistItem      `json:"watchlist"`
-	WatchHistory       map[string][]models.WatchHistoryItem   `json:"watchHistory"`
-	PlaybackProgress   map[string][]models.PlaybackProgress   `json:"playbackProgress"`
-	ContentPreferences map[string][]models.ContentPreference  `json:"contentPreferences"`
-	CustomLists        map[string][]customListExport          `json:"customLists"`
+	Version                  string                                 `json:"version"`
+	ExportedAt               time.Time                              `json:"exportedAt"`
+	Accounts                 []models.AccountStorage                `json:"accounts"`
+	Users                    []rawUser                              `json:"users"`
+	Sessions                 []models.Session                       `json:"sessions"`
+	Invitations              []models.Invitation                    `json:"invitations"`
+	RemoteAccessInvites      []rawRemoteAccessInvite                `json:"remoteAccessInvites,omitempty"`
+	ShareLinks               []rawShareLink                         `json:"shareLinks,omitempty"`
+	Clients                  []models.Client                        `json:"clients"`
+	ClientSettings           map[string]models.ClientFilterSettings `json:"clientSettings"`
+	UserSettings             map[string]models.UserSettings         `json:"userSettings"`
+	Watchlist                map[string][]models.WatchlistItem      `json:"watchlist"`
+	WatchlistTombstones      map[string][]models.WatchlistTombstone `json:"watchlistTombstones,omitempty"`
+	HiddenItems              map[string][]models.HiddenItem         `json:"hiddenItems,omitempty"`
+	WatchHistory             map[string][]models.WatchHistoryItem   `json:"watchHistory"`
+	PlaybackProgress         map[string][]models.PlaybackProgress   `json:"playbackProgress"`
+	ContentPreferences       map[string][]models.ContentPreference  `json:"contentPreferences"`
+	SeriesOrdering           map[string][]models.SeriesOrderingPref `json:"seriesOrdering,omitempty"`
+	CustomLists              map[string][]customListExport          `json:"customLists"`
+	NotificationChannels     []models.NotificationChannel           `json:"notificationChannels,omitempty"`
+	NotificationObservations []models.NotificationObservation       `json:"notificationObservations,omitempty"`
+	LocalMediaLibraries      []models.LocalMediaLibrary             `json:"localMediaLibraries,omitempty"`
+	LocalMediaItems          []localMediaItemExport                 `json:"localMediaItems,omitempty"`
+	RemoteMediaLibraries     []models.RemoteMediaLibrary            `json:"remoteMediaLibraries,omitempty"`
+	RemoteMediaItems         []models.RemoteMediaItem               `json:"remoteMediaItems,omitempty"`
+	LibraryAccessPolicies    map[string]models.LibraryAccessPolicy  `json:"libraryAccessPolicies,omitempty"`
+	Recordings               []models.Recording                     `json:"recordings,omitempty"`
 }
 
 type customListExport struct {
@@ -750,11 +832,41 @@ type customListExport struct {
 	Items []models.WatchlistItem `json:"items"`
 }
 
-// exportDatabaseBytes queries all tables and returns the export as JSON bytes.
+// databaseExportSections lists durable database sections expected in modern backups.
+// Used by tests to prevent silent coverage regressions.
+var databaseExportSections = []string{
+	"accounts",
+	"users",
+	"sessions",
+	"invitations",
+	"remoteAccessInvites",
+	"shareLinks",
+	"clients",
+	"clientSettings",
+	"userSettings",
+	"watchlist",
+	"watchlistTombstones",
+	"hiddenItems",
+	"watchHistory",
+	"playbackProgress",
+	"contentPreferences",
+	"seriesOrdering",
+	"customLists",
+	"notificationChannels",
+	"notificationObservations",
+	"localMediaLibraries",
+	"localMediaItems",
+	"remoteMediaLibraries",
+	"remoteMediaItems",
+	"libraryAccessPolicies",
+	"recordings",
+}
+
+// exportDatabaseBytes queries durable tables and returns the export as JSON bytes.
 func (s *Service) exportDatabaseBytes() ([]byte, error) {
 	ctx := context.Background()
 	export := databaseExport{
-		Version:    "2.0",
+		Version:    "2.1",
 		ExportedAt: time.Now().UTC(),
 	}
 
@@ -788,6 +900,38 @@ func (s *Service) exportDatabaseBytes() ([]byte, error) {
 	}
 	export.Invitations = invitations
 
+	remoteInvites, err := s.store.RemoteAccessInvites().List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("export remote access invites: %w", err)
+	}
+	export.RemoteAccessInvites = make([]rawRemoteAccessInvite, 0, len(remoteInvites))
+	for _, inv := range remoteInvites {
+		export.RemoteAccessInvites = append(export.RemoteAccessInvites, rawRemoteAccessInvite{
+			ID: inv.ID, TokenHash: inv.TokenHash, ConnectionCode: inv.ConnectionCode,
+			IrohInvite: inv.IrohInvite, CreatedBy: inv.CreatedBy, PeerName: inv.PeerName,
+			ExpiresAt: inv.ExpiresAt, UsedAt: inv.UsedAt, UsedByPeerID: inv.UsedByPeerID,
+			RevokedAt: inv.RevokedAt, CreatedAt: inv.CreatedAt,
+		})
+	}
+
+	shareLinks, err := s.store.ShareLinks().ListAll(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("export share links: %w", err)
+	}
+	export.ShareLinks = make([]rawShareLink, 0, len(shareLinks))
+	for _, link := range shareLinks {
+		params := link.Params
+		if params == nil {
+			params = map[string]string{}
+		}
+		export.ShareLinks = append(export.ShareLinks, rawShareLink{
+			Token: link.Token, AccountID: link.AccountID, IsMaster: link.IsMaster,
+			Label: link.Label, Params: params, MaxUses: link.MaxUses, UseCount: link.UseCount,
+			Active: link.Active, CreatedAt: link.CreatedAt, ExpiresAt: link.ExpiresAt,
+			LastUsedAt: link.LastUsedAt,
+		})
+	}
+
 	clients, err := s.store.Clients().List(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("export clients: %w", err)
@@ -812,6 +956,18 @@ func (s *Service) exportDatabaseBytes() ([]byte, error) {
 	}
 	export.Watchlist = watchlist
 
+	tombstones, err := s.store.Watchlist().ListTombstonesAll(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("export watchlist tombstones: %w", err)
+	}
+	export.WatchlistTombstones = tombstones
+
+	hiddenItems, err := s.store.HiddenItems().ListAll(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("export hidden items: %w", err)
+	}
+	export.HiddenItems = hiddenItems
+
 	watchHistory, err := s.store.WatchHistory().ListAll(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("export watch history: %w", err)
@@ -823,6 +979,78 @@ func (s *Service) exportDatabaseBytes() ([]byte, error) {
 		return nil, fmt.Errorf("export playback progress: %w", err)
 	}
 	export.PlaybackProgress = playbackProgress
+
+	seriesOrdering, err := s.store.SeriesOrdering().ListAll(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("export series ordering: %w", err)
+	}
+	export.SeriesOrdering = seriesOrdering
+
+	notificationChannels, err := s.store.Notifications().ListAllChannels(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("export notification channels: %w", err)
+	}
+	export.NotificationChannels = notificationChannels
+
+	notificationObservations, err := s.store.Notifications().ListAllObservations(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("export notification observations: %w", err)
+	}
+	export.NotificationObservations = notificationObservations
+
+	localLibraries, err := s.store.LocalMedia().ListLibraries(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("export local media libraries: %w", err)
+	}
+	export.LocalMediaLibraries = localLibraries
+	export.LocalMediaItems = make([]localMediaItemExport, 0)
+	for _, library := range localLibraries {
+		items, err := s.store.LocalMedia().ListAllItemsByLibrary(ctx, library.ID)
+		if err != nil {
+			return nil, fmt.Errorf("export local media items for %s: %w", library.ID, err)
+		}
+		for _, item := range items {
+			export.LocalMediaItems = append(export.LocalMediaItems, localMediaItemExport{
+				ID: item.ID, LibraryID: item.LibraryID, RelativePath: item.RelativePath,
+				FilePath: item.FilePath, FileName: item.FileName, LibraryType: item.LibraryType,
+				DetectedTitle: item.DetectedTitle, DetectedYear: item.DetectedYear,
+				SeasonNumber: item.SeasonNumber, EpisodeNumber: item.EpisodeNumber,
+				Confidence: item.Confidence, MatchStatus: item.MatchStatus,
+				MatchedTitleID: item.MatchedTitleID, MatchedMediaType: item.MatchedMediaType,
+				MatchedName: item.MatchedName, MatchedYear: item.MatchedYear,
+				IsMissing: item.IsMissing, MissingSince: item.MissingSince,
+				Metadata: item.Metadata, Probe: item.Probe, SizeBytes: item.SizeBytes,
+				ModifiedAt: item.ModifiedAt, LastScannedAt: item.LastScannedAt,
+				LastSeenScanID: item.LastSeenScanID, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
+			})
+		}
+	}
+
+	remoteLibraries, err := s.store.RemoteMedia().ListLibraries(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("export remote media libraries: %w", err)
+	}
+	export.RemoteMediaLibraries = remoteLibraries
+	export.RemoteMediaItems = make([]models.RemoteMediaItem, 0)
+	for _, library := range remoteLibraries {
+		items, err := s.store.RemoteMedia().ListItems(ctx, library.ID, true)
+		if err != nil {
+			return nil, fmt.Errorf("export remote media items for %s: %w", library.ID, err)
+		}
+		export.RemoteMediaItems = append(export.RemoteMediaItems, items...)
+	}
+
+	libraryAccess, err := s.store.LibraryAccess().List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("export library access policies: %w", err)
+	}
+	export.LibraryAccessPolicies = libraryAccess
+
+	recordings, err := s.store.Recordings().List(ctx, models.RecordingListFilter{IncludeAll: true})
+	if err != nil {
+		return nil, fmt.Errorf("export recordings: %w", err)
+	}
+	export.Recordings = recordings
 
 	export.ContentPreferences = make(map[string][]models.ContentPreference)
 	export.CustomLists = make(map[string][]customListExport)
@@ -863,8 +1091,14 @@ func (s *Service) importDatabaseBytes(data []byte) error {
 
 	ctx := context.Background()
 	err := s.store.WithTx(ctx, func(tx *datastore.Tx) error {
+		// Clear durable data that does not cascade from users/accounts first.
+		if err := clearNonCascadedBackupTables(ctx, tx); err != nil {
+			return err
+		}
+
 		// Delete all existing account/profile data. Profiles no longer cascade
 		// from accounts, so remove them explicitly before inserting the backup.
+		// User delete cascades notifications, hidden items, tombstones, recordings, etc.
 		existingUsers, err := tx.Users().List(ctx)
 		if err != nil {
 			return fmt.Errorf("list existing users: %w", err)
@@ -908,6 +1142,35 @@ func (s *Service) importDatabaseBytes(data []byte) error {
 				return fmt.Errorf("restore invitation %s: %w", export.Invitations[i].ID, err)
 			}
 		}
+		for i := range export.RemoteAccessInvites {
+			inv := models.RemoteAccessInvite{
+				ID: export.RemoteAccessInvites[i].ID, TokenHash: export.RemoteAccessInvites[i].TokenHash,
+				ConnectionCode: export.RemoteAccessInvites[i].ConnectionCode,
+				IrohInvite:     export.RemoteAccessInvites[i].IrohInvite, CreatedBy: export.RemoteAccessInvites[i].CreatedBy,
+				PeerName: export.RemoteAccessInvites[i].PeerName, ExpiresAt: export.RemoteAccessInvites[i].ExpiresAt,
+				UsedAt: export.RemoteAccessInvites[i].UsedAt, UsedByPeerID: export.RemoteAccessInvites[i].UsedByPeerID,
+				RevokedAt: export.RemoteAccessInvites[i].RevokedAt, CreatedAt: export.RemoteAccessInvites[i].CreatedAt,
+			}
+			if err := tx.RemoteAccessInvites().Create(ctx, &inv); err != nil {
+				return fmt.Errorf("restore remote access invite %s: %w", inv.ID, err)
+			}
+		}
+		for i := range export.ShareLinks {
+			params := export.ShareLinks[i].Params
+			if params == nil {
+				params = map[string]string{}
+			}
+			link := models.ShareLink{
+				Token: export.ShareLinks[i].Token, AccountID: export.ShareLinks[i].AccountID,
+				IsMaster: export.ShareLinks[i].IsMaster, Label: export.ShareLinks[i].Label,
+				Params: params, MaxUses: export.ShareLinks[i].MaxUses, UseCount: export.ShareLinks[i].UseCount,
+				Active: export.ShareLinks[i].Active, CreatedAt: export.ShareLinks[i].CreatedAt,
+				ExpiresAt: export.ShareLinks[i].ExpiresAt, LastUsedAt: export.ShareLinks[i].LastUsedAt,
+			}
+			if err := tx.ShareLinks().Create(ctx, &link); err != nil {
+				return fmt.Errorf("restore share link: %w", err)
+			}
+		}
 		for i := range export.Clients {
 			if err := tx.Clients().Create(ctx, &export.Clients[i]); err != nil {
 				return fmt.Errorf("restore client %s: %w", export.Clients[i].ID, err)
@@ -944,6 +1207,16 @@ func (s *Service) importDatabaseBytes(data []byte) error {
 				return fmt.Errorf("restore watchlist for %s: %w", userID, err)
 			}
 		}
+		for userID, items := range export.WatchlistTombstones {
+			if err := tx.Watchlist().BulkUpsertTombstones(ctx, userID, items); err != nil {
+				return fmt.Errorf("restore watchlist tombstones for %s: %w", userID, err)
+			}
+		}
+		for userID, items := range export.HiddenItems {
+			if err := tx.HiddenItems().BulkUpsert(ctx, userID, items); err != nil {
+				return fmt.Errorf("restore hidden items for %s: %w", userID, err)
+			}
+		}
 		for userID, items := range export.WatchHistory {
 			if err := tx.WatchHistory().BulkUpsert(ctx, userID, items); err != nil {
 				return fmt.Errorf("restore watch history for %s: %w", userID, err)
@@ -962,14 +1235,127 @@ func (s *Service) importDatabaseBytes(data []byte) error {
 				}
 			}
 		}
+		for userID, prefs := range export.SeriesOrdering {
+			for _, pref := range prefs {
+				p := pref
+				if err := tx.SeriesOrdering().Upsert(ctx, userID, &p); err != nil {
+					return fmt.Errorf("restore series ordering for %s: %w", userID, err)
+				}
+			}
+		}
+		for i := range export.NotificationChannels {
+			channel := export.NotificationChannels[i]
+			if err := tx.Notifications().CreateChannel(ctx, &channel); err != nil {
+				return fmt.Errorf("restore notification channel %s: %w", channel.ID, err)
+			}
+		}
+		for i := range export.NotificationObservations {
+			observation := export.NotificationObservations[i]
+			if err := tx.Notifications().UpsertObservation(ctx, &observation); err != nil {
+				return fmt.Errorf("restore notification observation %s/%s: %w", observation.ProfileID, observation.ItemKey, err)
+			}
+		}
+		for i := range export.LocalMediaLibraries {
+			library := export.LocalMediaLibraries[i]
+			if err := tx.LocalMedia().CreateLibrary(ctx, &library); err != nil {
+				return fmt.Errorf("restore local media library %s: %w", library.ID, err)
+			}
+		}
+		for i := range export.LocalMediaItems {
+			item := export.LocalMediaItems[i]
+			restored := models.LocalMediaItem{
+				ID: item.ID, LibraryID: item.LibraryID, RelativePath: item.RelativePath,
+				FilePath: item.FilePath, FileName: item.FileName, LibraryType: item.LibraryType,
+				DetectedTitle: item.DetectedTitle, DetectedYear: item.DetectedYear,
+				SeasonNumber: item.SeasonNumber, EpisodeNumber: item.EpisodeNumber,
+				Confidence: item.Confidence, MatchStatus: item.MatchStatus,
+				MatchedTitleID: item.MatchedTitleID, MatchedMediaType: item.MatchedMediaType,
+				MatchedName: item.MatchedName, MatchedYear: item.MatchedYear,
+				IsMissing: item.IsMissing, MissingSince: item.MissingSince,
+				Metadata: item.Metadata, Probe: item.Probe, SizeBytes: item.SizeBytes,
+				ModifiedAt: item.ModifiedAt, LastScannedAt: item.LastScannedAt,
+				LastSeenScanID: item.LastSeenScanID, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
+			}
+			if err := tx.LocalMedia().UpsertItem(ctx, &restored); err != nil {
+				return fmt.Errorf("restore local media item %s: %w", restored.ID, err)
+			}
+		}
+		for i := range export.RemoteMediaLibraries {
+			library := export.RemoteMediaLibraries[i]
+			if err := tx.RemoteMedia().CreateLibrary(ctx, &library); err != nil {
+				return fmt.Errorf("restore remote media library %s: %w", library.ID, err)
+			}
+		}
+		for i := range export.RemoteMediaItems {
+			item := export.RemoteMediaItems[i]
+			if err := tx.RemoteMedia().UpsertItem(ctx, &item); err != nil {
+				return fmt.Errorf("restore remote media item %s: %w", item.ID, err)
+			}
+		}
+		for libraryID, policy := range export.LibraryAccessPolicies {
+			policy.LibraryID = libraryID
+			if err := tx.LibraryAccess().Set(ctx, policy); err != nil {
+				return fmt.Errorf("restore library access policy %s: %w", libraryID, err)
+			}
+		}
+		for i := range export.Recordings {
+			recording := export.Recordings[i]
+			if err := tx.Recordings().Create(ctx, &recording); err != nil {
+				return fmt.Errorf("restore recording %s: %w", recording.ID, err)
+			}
+		}
 		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("database restore transaction: %w", err)
 	}
 
-	log.Printf("[backup] Database restored: %d accounts, %d users, %d sessions",
-		len(export.Accounts), len(export.Users), len(export.Sessions))
+	log.Printf("[backup] Database restored: %d accounts, %d users, %d sessions, %d notification channels, %d local libraries, %d remote libraries",
+		len(export.Accounts), len(export.Users), len(export.Sessions),
+		len(export.NotificationChannels), len(export.LocalMediaLibraries), len(export.RemoteMediaLibraries))
+	return nil
+}
+
+// clearNonCascadedBackupTables removes durable rows that are not FK-cascaded from
+// users/accounts so restore can re-insert backup data without conflicts.
+func clearNonCascadedBackupTables(ctx context.Context, tx *datastore.Tx) error {
+	if err := tx.ShareLinks().DeleteAll(ctx); err != nil {
+		return fmt.Errorf("clear share links: %w", err)
+	}
+	if err := tx.SeriesOrdering().DeleteAll(ctx); err != nil {
+		return fmt.Errorf("clear series ordering: %w", err)
+	}
+
+	// Library access grants reference accounts/profiles; clear policies first.
+	policies, err := tx.LibraryAccess().List(ctx)
+	if err != nil {
+		return fmt.Errorf("list library access policies for clear: %w", err)
+	}
+	for libraryID := range policies {
+		if err := tx.LibraryAccess().Delete(ctx, libraryID); err != nil {
+			return fmt.Errorf("clear library access policy %s: %w", libraryID, err)
+		}
+	}
+
+	localLibraries, err := tx.LocalMedia().ListLibraries(ctx)
+	if err != nil {
+		return fmt.Errorf("list local media libraries for clear: %w", err)
+	}
+	for _, library := range localLibraries {
+		if err := tx.LocalMedia().DeleteLibrary(ctx, library.ID); err != nil {
+			return fmt.Errorf("clear local media library %s: %w", library.ID, err)
+		}
+	}
+
+	remoteLibraries, err := tx.RemoteMedia().ListLibraries(ctx)
+	if err != nil {
+		return fmt.Errorf("list remote media libraries for clear: %w", err)
+	}
+	for _, library := range remoteLibraries {
+		if err := tx.RemoteMedia().DeleteLibrary(ctx, library.ID); err != nil {
+			return fmt.Errorf("clear remote media library %s: %w", library.ID, err)
+		}
+	}
 	return nil
 }
 
