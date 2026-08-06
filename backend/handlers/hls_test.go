@@ -886,6 +886,37 @@ func TestHlsAACTranscodeArgsNonWebKeeps51(t *testing.T) {
 	}
 }
 
+func TestWaitForPlaylistReady(t *testing.T) {
+	dir := t.TempDir()
+	m := &HLSManager{}
+	session := &HLSSession{OutputDir: dir}
+
+	// Empty dir times out quickly.
+	ready, size := m.waitForPlaylistReady(session, 40*time.Millisecond)
+	if ready || size != 0 {
+		t.Fatalf("expected timeout on empty dir, got ready=%v size=%d", ready, size)
+	}
+
+	// Header-only playlist is not ready (no media segment line).
+	if err := os.WriteFile(filepath.Join(dir, "stream.m3u8"), []byte("#EXTM3U\n#EXT-X-VERSION:3\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ready, size = m.waitForPlaylistReady(session, 40*time.Millisecond)
+	if ready || size != 0 {
+		t.Fatalf("expected timeout on header-only playlist, got ready=%v size=%d", ready, size)
+	}
+
+	// Media segment present → ready.
+	body := "#EXTM3U\n#EXTINF:2.0,\nsegment0.ts\n"
+	if err := os.WriteFile(filepath.Join(dir, "stream.m3u8"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ready, size = m.waitForPlaylistReady(session, time.Second)
+	if !ready || size != len(body) {
+		t.Fatalf("expected ready playlist, got ready=%v size=%d want %d", ready, size, len(body))
+	}
+}
+
 func TestSummarizeLiveSegmentDirAndPlaylist(t *testing.T) {
 	dir := t.TempDir()
 	for _, n := range []int{2, 3, 5} {
