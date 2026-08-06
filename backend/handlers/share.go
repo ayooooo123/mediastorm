@@ -167,7 +167,7 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 			streamPath = params["movie"]
 		}
 		profileID := strings.TrimSpace(params["profileId"])
-		recognized, allowed, accessErr := h.libraryAccess.CanAccessStream(r.Context(), streamPath, accountID, profileID, auth.IsMaster(r) && profileID == "")
+		recognized, allowed, accessErr := h.libraryAccess.CanAccessStream(r.Context(), streamPath, accountID, profileID, auth.IsMaster(r))
 		if accessErr != nil {
 			writeShareJSONError(w, http.StatusInternalServerError, "failed to verify library access")
 			return

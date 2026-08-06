@@ -101,10 +101,10 @@ func (h *LocalMediaHandler) ListLibraries(w http.ResponseWriter, r *http.Request
 		if !ok {
 			return
 		}
-		masterBypass := auth.IsMaster(r) && profileID == ""
+		isMaster := auth.IsMaster(r)
 		filtered := libraries[:0]
 		for _, library := range libraries {
-			allowed, accessErr := h.access.CanAccess(r.Context(), library.ID, accountID, profileID, masterBypass)
+			allowed, accessErr := h.access.CanAccess(r.Context(), library.ID, accountID, profileID, isMaster)
 			if accessErr != nil {
 				http.Error(w, accessErr.Error(), http.StatusInternalServerError)
 				return
@@ -143,7 +143,7 @@ func (h *LocalMediaHandler) requireLibraryAccess(w http.ResponseWriter, r *http.
 	if !ok {
 		return false
 	}
-	allowed, err := h.access.CanAccess(r.Context(), libraryID, accountID, profileID, auth.IsMaster(r) && profileID == "")
+	allowed, err := h.access.CanAccess(r.Context(), libraryID, accountID, profileID, auth.IsMaster(r))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return false
@@ -358,10 +358,10 @@ func (h *LocalMediaHandler) FindMatches(w http.ResponseWriter, r *http.Request) 
 		if !ok {
 			return
 		}
-		masterBypass := auth.IsMaster(r) && profileID == ""
+		isMaster := auth.IsMaster(r)
 		filtered := matches[:0]
 		for _, match := range matches {
-			allowed, accessErr := h.access.CanAccess(r.Context(), match.LibraryID, accountID, profileID, masterBypass)
+			allowed, accessErr := h.access.CanAccess(r.Context(), match.LibraryID, accountID, profileID, isMaster)
 			if accessErr != nil {
 				http.Error(w, accessErr.Error(), http.StatusInternalServerError)
 				return
