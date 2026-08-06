@@ -866,8 +866,46 @@ func (s *Service) Playback(ctx context.Context, itemID string) (*models.LocalMed
 	if mediaType == "episode" {
 		seriesTitle = item.Title
 	}
-	return &models.LocalMediaPlaybackResponse{ItemID: item.ID, FileName: item.FileName, DisplayName: item.Title, TitleID: item.GroupKey, Title: item.Title, SeriesTitle: seriesTitle, EpisodeTitle: item.EpisodeTitle, Year: item.Year, DurationSeconds: item.DurationSeconds, ExternalIDs: externalMap(item.ExternalIDs), StreamPath: item.StreamPath, StreamURL: "/api/video/stream?" + values.Encode(), DirectStream: true, SourceType: library.Provider, SourceName: strings.Title(library.Provider)}, nil
+	// Only expose a titleId when the item has real catalog external IDs.
+	// Plex/Jellyfin group keys are library-local and collide with TVDB/TMDB
+	// numeric IDs (e.g. home-video rating key 264995 → wrong movie metadata).
+	titleID := remoteCatalogTitleID(item)
+	return &models.LocalMediaPlaybackResponse{ItemID: item.ID, FileName: item.FileName, DisplayName: item.Title, TitleID: titleID, Title: item.Title, SeriesTitle: seriesTitle, EpisodeTitle: item.EpisodeTitle, Year: item.Year, DurationSeconds: item.DurationSeconds, ExternalIDs: externalMap(item.ExternalIDs), StreamPath: item.StreamPath, StreamURL: "/api/video/stream?" + values.Encode(), DirectStream: true, SourceType: library.Provider, SourceName: strings.Title(library.Provider)}, nil
 }
+
+// remoteCatalogTitleID returns a provider-prefixed catalog title id when the
+// remote item has IMDB/TMDB/TVDB tags. Untagged library media returns empty so
+// clients key progress by stream path instead of a bare library rating key.
+func remoteCatalogTitleID(item *models.RemoteMediaItem) string {
+	if item == nil {
+		return ""
+	}
+	ids := item.ExternalIDs
+	if ids == nil {
+		return ""
+	}
+	imdb := strings.TrimSpace(ids.IMDB)
+	tmdb := strings.TrimSpace(ids.TMDB)
+	tvdb := strings.TrimSpace(ids.TVDB)
+	if imdb == "" && tmdb == "" && tvdb == "" {
+		return ""
+	}
+	isShow := item.LibraryType == models.LocalMediaLibraryTypeShow
+	if tmdb != "" {
+		if isShow {
+			return "tmdb:tv:" + tmdb
+		}
+		return "tmdb:movie:" + tmdb
+	}
+	if tvdb != "" {
+		if isShow {
+			return "tvdb:series:" + tvdb
+		}
+		return "tvdb:movie:" + tvdb
+	}
+	return imdb
+}
+
 func externalMap(ids *models.LocalMediaExternalIDs) map[string]string {
 	m := map[string]string{}
 	if ids != nil {
