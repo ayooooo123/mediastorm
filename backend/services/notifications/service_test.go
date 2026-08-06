@@ -105,6 +105,16 @@ func (r *memoryRepo) ListObservations(_ context.Context, profileID string) ([]mo
 	return observations, nil
 }
 
+func (r *memoryRepo) ListAllObservations(_ context.Context) ([]models.NotificationObservation, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	observations := make([]models.NotificationObservation, 0, len(r.observations))
+	for _, observation := range r.observations {
+		observations = append(observations, observation)
+	}
+	return observations, nil
+}
+
 func (r *memoryRepo) UpsertObservation(_ context.Context, observation *models.NotificationObservation) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

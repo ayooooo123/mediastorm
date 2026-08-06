@@ -31,6 +31,28 @@ func (r *pgSeriesOrderingRepo) Get(ctx context.Context, userID string, seriesTVD
 	return &p, nil
 }
 
+// ListAll returns every series ordering preference keyed by user ID.
+func (r *pgSeriesOrderingRepo) ListAll(ctx context.Context) (map[string][]models.SeriesOrderingPref, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT user_id, series_tvdb_id, season_type, updated_at
+		FROM series_ordering ORDER BY user_id, series_tvdb_id`)
+	if err != nil {
+		return nil, fmt.Errorf("list all series ordering: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string][]models.SeriesOrderingPref)
+	for rows.Next() {
+		var userID string
+		var pref models.SeriesOrderingPref
+		if err := rows.Scan(&userID, &pref.SeriesTVDBID, &pref.SeasonType, &pref.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan series ordering: %w", err)
+		}
+		result[userID] = append(result[userID], pref)
+	}
+	return result, rows.Err()
+}
+
 // Upsert stores the user's chosen ordering for a series.
 func (r *pgSeriesOrderingRepo) Upsert(ctx context.Context, userID string, pref *models.SeriesOrderingPref) error {
 	_, err := r.pool.Exec(ctx, `
@@ -49,4 +71,13 @@ func (r *pgSeriesOrderingRepo) Upsert(ctx context.Context, userID string, pref *
 func (r *pgSeriesOrderingRepo) Delete(ctx context.Context, userID string, seriesTVDBID int64) error {
 	_, err := r.pool.Exec(ctx, `DELETE FROM series_ordering WHERE user_id = $1 AND series_tvdb_id = $2`, userID, seriesTVDBID)
 	return err
+}
+
+// DeleteAll removes every series ordering override (used during backup restore).
+func (r *pgSeriesOrderingRepo) DeleteAll(ctx context.Context) error {
+	_, err := r.pool.Exec(ctx, `DELETE FROM series_ordering`)
+	if err != nil {
+		return fmt.Errorf("delete all series ordering: %w", err)
+	}
+	return nil
 }
