@@ -152,6 +152,48 @@ func TestTestConnection(t *testing.T) {
 	})
 }
 
+func TestGetLibrariesIncludesNonMovieViews(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/Users/user-1/Views" {
+			t.Fatalf("path=%q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"Items":[
+			{"Id":"1","Name":"Movies","CollectionType":"movies"},
+			{"Id":"2","Name":"Shows","CollectionType":"tvshows"},
+			{"Id":"3","Name":"Home Videos","CollectionType":"homevideos"},
+			{"Id":"4","Name":"Music","CollectionType":"music"}
+		]}`))
+	}))
+	defer server.Close()
+
+	libraries, err := NewClient().GetLibraries(server.URL, "token", "user-1")
+	if err != nil {
+		t.Fatalf("GetLibraries() error = %v", err)
+	}
+	if len(libraries) != 4 || libraries[2].CollectionType != "homevideos" || libraries[3].Name != "Music" {
+		t.Fatalf("libraries=%#v", libraries)
+	}
+}
+
+func TestGetLibraryItemsUsesPlayableTypesForOtherLibraries(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/Users/user-1/Items" {
+			t.Fatalf("path=%q", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("IncludeItemTypes"); got != "Movie,Episode,Video,MusicVideo,Audio" {
+			t.Fatalf("IncludeItemTypes=%q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"Items":[],"TotalRecordCount":0}`))
+	}))
+	defer server.Close()
+
+	if _, err := NewClient().GetLibraryItems(server.URL, "token", "user-1", "other-1", ""); err != nil {
+		t.Fatalf("GetLibraryItems() error = %v", err)
+	}
+}
+
 func TestGetFavorites(t *testing.T) {
 	t.Run("fetches favorites with provider ID normalization", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

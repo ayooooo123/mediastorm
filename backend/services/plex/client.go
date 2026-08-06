@@ -996,7 +996,8 @@ func (c *Client) GetServerLibraries(server PlexResource) ([]PlexLibrary, error) 
 }
 
 // GetServerLibrariesAt verifies a specific advertised or custom server address
-// and returns the movie/show libraries available through it.
+// and returns every library available through it. Consumers decide how each
+// Plex library type maps onto the local movie/show/other model.
 func (c *Client) GetServerLibrariesAt(ctx context.Context, server PlexResource, serverURL string) ([]PlexLibrary, error) {
 	pinned, err := WithConnection(server, serverURL)
 	if err != nil {
@@ -1011,13 +1012,7 @@ func (c *Client) GetServerLibrariesAt(ctx context.Context, server PlexResource, 
 	if err := c.serverJSON(ctx, pinned, base+"/library/sections", nil, &result); err != nil {
 		return nil, err
 	}
-	libraries := []PlexLibrary{}
-	for _, library := range result.MediaContainer.Directory {
-		if library.Type == "movie" || library.Type == "show" {
-			libraries = append(libraries, library)
-		}
-	}
-	return libraries, nil
+	return result.MediaContainer.Directory, nil
 }
 
 func (c *Client) GetServerLibraryItems(server PlexResource, sectionID, libraryType string) ([]PlexLibraryItem, error) {

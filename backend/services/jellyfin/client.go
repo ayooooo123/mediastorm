@@ -167,14 +167,7 @@ func (c *Client) GetLibraries(serverURL, token, userID string) ([]JellyfinLibrar
 	if err != nil {
 		return nil, fmt.Errorf("fetch libraries: %w", err)
 	}
-	libraries := make([]JellyfinLibrary, 0, len(result.Items))
-	for _, item := range result.Items {
-		switch strings.ToLower(item.CollectionType) {
-		case "movies", "tvshows":
-			libraries = append(libraries, item)
-		}
-	}
-	return libraries, nil
+	return result.Items, nil
 }
 
 func (c *Client) GetLibraryItems(serverURL, token, userID, libraryID, collectionType string) ([]JellyfinItem, error) {
@@ -185,8 +178,13 @@ func (c *Client) GetLibraryItems(serverURL, token, userID, libraryID, collection
 	}
 	if strings.EqualFold(collectionType, "tvshows") {
 		params.Set("IncludeItemTypes", "Episode")
-	} else {
+	} else if strings.EqualFold(collectionType, "movies") {
 		params.Set("IncludeItemTypes", "Movie")
+	} else {
+		// Mixed, home-video, music-video, and other user-created views can
+		// contain several playable item types. Folder and image-only entries
+		// are deliberately excluded from the remote playback library.
+		params.Set("IncludeItemTypes", "Movie,Episode,Video,MusicVideo,Audio")
 	}
 	start := 0
 	items := []JellyfinItem{}
