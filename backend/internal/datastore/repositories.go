@@ -267,7 +267,7 @@ type LocalMediaRepository interface {
 	ListAllItemsByLibrary(ctx context.Context, libraryID string) ([]models.LocalMediaItem, error)
 	UpsertItem(ctx context.Context, item *models.LocalMediaItem) error
 	GetItem(ctx context.Context, id string) (*models.LocalMediaItem, error)
-	MarkItemsMissingNotSeenInScan(ctx context.Context, libraryID, scanID string, missingSince interface{}) error
+	DeleteItemsNotSeenInScan(ctx context.Context, libraryID, scanID string) error
 	DeleteItem(ctx context.Context, id string) error
 }
 

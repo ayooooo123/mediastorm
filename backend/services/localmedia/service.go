@@ -1477,13 +1477,13 @@ func (s *Service) scanLibrary(ctx context.Context, library models.LocalMediaLibr
 		return summary, err
 	}
 
-	if err := s.repo.MarkItemsMissingNotSeenInScan(ctx, library.ID, scanID, finishedAt); err != nil {
+	if err := s.repo.DeleteItemsNotSeenInScan(ctx, library.ID, scanID); err != nil {
 		library.LastScanStatus = models.LocalMediaScanStatusFailed
 		library.LastScanError = err.Error()
 		if updateErr := s.repo.UpdateLibrary(ctx, &library); updateErr != nil {
 			log.Printf("[localmedia] failed to persist failed delete-missing state library=%q id=%s: %v", library.Name, library.ID, updateErr)
 		}
-		log.Printf("[localmedia] scan failed library=%q id=%s during=mark_missing err=%v", library.Name, library.ID, err)
+		log.Printf("[localmedia] scan failed library=%q id=%s during=delete_missing err=%v", library.Name, library.ID, err)
 		return summary, err
 	}
 

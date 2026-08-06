@@ -326,15 +326,12 @@ func (r *pgLocalMediaRepo) UpsertItem(ctx context.Context, item *models.LocalMed
 	return nil
 }
 
-func (r *pgLocalMediaRepo) MarkItemsMissingNotSeenInScan(ctx context.Context, libraryID, scanID string, missingSince interface{}) error {
+func (r *pgLocalMediaRepo) DeleteItemsNotSeenInScan(ctx context.Context, libraryID, scanID string) error {
 	_, err := r.pool.Exec(ctx, `
-		UPDATE local_media_items
-		SET is_missing = TRUE,
-		    missing_since = COALESCE(missing_since, $3),
-		    updated_at = $3
-		WHERE library_id = $1 AND last_seen_scan_id <> $2 AND is_missing = FALSE`, libraryID, scanID, missingSince)
+		DELETE FROM local_media_items
+		WHERE library_id = $1 AND last_seen_scan_id IS DISTINCT FROM $2`, libraryID, scanID)
 	if err != nil {
-		return fmt.Errorf("mark local media items missing: %w", err)
+		return fmt.Errorf("delete local media items not seen in scan: %w", err)
 	}
 	return nil
 }
