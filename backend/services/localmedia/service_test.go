@@ -240,15 +240,13 @@ func (f *fakeLocalMediaRepo) GetItem(ctx context.Context, id string) (*models.Lo
 	return nil, nil
 }
 
-func (f *fakeLocalMediaRepo) MarkItemsMissingNotSeenInScan(ctx context.Context, libraryID, scanID string, missingSince interface{}) error {
-	ts, _ := missingSince.(time.Time)
-	for _, item := range f.items {
+func (f *fakeLocalMediaRepo) DeleteItemsNotSeenInScan(ctx context.Context, libraryID, scanID string) error {
+	for path, item := range f.items {
 		if item.LibraryID != libraryID {
 			continue
 		}
-		if item.LastSeenScanID != scanID && !item.IsMissing {
-			item.IsMissing = true
-			item.MissingSince = &ts
+		if item.LastSeenScanID != scanID {
+			delete(f.items, path)
 		}
 	}
 	return nil
@@ -386,7 +384,7 @@ func TestStartScanRejectsWhenAlreadyInProgress(t *testing.T) {
 	}
 }
 
-func TestStartScanMarksMissingItemsInsteadOfDeleting(t *testing.T) {
+func TestStartScanDeletesItemsNotSeenInScan(t *testing.T) {
 	root := t.TempDir()
 	filePath := root + "/Movie.Title.2024.mkv"
 	if err := os.WriteFile(filePath, []byte("not-a-real-video"), 0o644); err != nil {
@@ -415,6 +413,17 @@ func TestStartScanMarksMissingItemsInsteadOfDeleting(t *testing.T) {
 				CreatedAt:      now,
 				UpdatedAt:      now,
 			},
+			"already-missing.mkv": {
+				ID:             "old2",
+				LibraryID:      "lib1",
+				RelativePath:   "already-missing.mkv",
+				FilePath:       root + "/already-missing.mkv",
+				FileName:       "already-missing.mkv",
+				LastSeenScanID: "prior-scan",
+				IsMissing:      true,
+				CreatedAt:      now,
+				UpdatedAt:      now,
+			},
 		},
 	}
 	service := &Service{
@@ -428,15 +437,17 @@ func TestStartScanMarksMissingItemsInsteadOfDeleting(t *testing.T) {
 		t.Fatalf("RunScan error: %v", err)
 	}
 
-	oldItem := repo.items["old.mkv"]
-	if oldItem == nil {
-		t.Fatal("old item deleted, want marked missing")
+	if _, ok := repo.items["old.mkv"]; ok {
+		t.Fatal("old item still present, want deleted after scan")
 	}
-	if !oldItem.IsMissing {
-		t.Fatal("old item IsMissing = false, want true")
+	if _, ok := repo.items["already-missing.mkv"]; ok {
+		t.Fatal("previously missing item still present, want deleted after scan")
 	}
-	if oldItem.MissingSince == nil {
-		t.Fatal("old item MissingSince = nil, want non-nil")
+	if len(repo.items) != 1 {
+		t.Fatalf("items stored = %d, want 1 (only the file still on disk)", len(repo.items))
+	}
+	if _, ok := repo.items["Movie.Title.2024.mkv"]; !ok {
+		t.Fatal("current on-disk file missing from items after scan")
 	}
 }
 
