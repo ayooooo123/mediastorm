@@ -133,14 +133,13 @@ func (h *ClientsHandler) Register(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "user not found", http.StatusNotFound)
 		return
 	}
-	if existing, err := h.clients.Get(req.ID); err != nil {
-		writeJSONError(w, err.Error(), http.StatusInternalServerError)
-		return
-	} else if existing != nil && !h.canAccessProfile(r, existing.UserID) {
-		writeJSONError(w, "client not found", http.StatusNotFound)
-		return
-	}
-
+	// Intentionally do not block when the hardware client ID is already tied
+	// to another account's profile (or an orphaned/deleted profile). Client
+	// IDs are device-bound; an authenticated caller may reclaim the device
+	// for a profile they own. The previous check returned 404 "client not
+	// found" here and made nickname save fail forever for guest accounts and
+	// reused hardware. Register overwrites UserID when a non-empty userId is
+	// provided (already authorized above via canAccessProfile).
 	client, err := h.clients.Register(req.ID, req.UserID, req.DeviceType, req.OS, req.AppVersion, req.DeviceName, req.Nickname)
 	if err != nil {
 		if errors.Is(err, clients.ErrUserNotFound) {
