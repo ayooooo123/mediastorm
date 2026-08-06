@@ -608,6 +608,7 @@ function renderDeviceRow(client, orphaned) {
         </div>
         <div class="device-actions">
             <button class="btn btn-secondary btn-sm" onclick="pingClient('${client.id}')">Ping</button>
+            <button class="btn btn-secondary btn-sm" onclick="showRenameClientModal('${client.id}')" title="Set or clear the device nickname">Rename</button>
             <select class="form-select" style="width:auto;max-width:180px;font-size:0.78rem;" aria-label="Move ${escapeHtml(client.nickname || client.name || 'device')} to another person" onchange="reassignClient('${client.id}', this.value, '${client.userId}')">
                 ${renderPersonOptions(client.userId)}
             </select>
@@ -667,6 +668,54 @@ async function pingClient(clientId) {
         if (!response.ok) throw new Error((await response.json()).error || 'Failed to ping device');
         showToast('Ping sent. If the device is active, it will flash.');
     } catch (err) { showToast(err.message, 'error'); }
+}
+
+function showRenameClientModal(clientId) {
+    const client = clients.find(c => c.id === clientId);
+    if (!client) {
+        showToast('Device not found', 'error');
+        return;
+    }
+    const currentNickname = String(client.nickname || '').trim();
+    const fallbackName = client.name || client.deviceName || 'device';
+    showModal(`
+        <div class="card-header"><h2>Rename Device</h2></div>
+        <div class="card-body">
+            <form onsubmit="renameClient(event, '${clientId}')">
+                <div class="form-group">
+                    <label class="form-label">Nickname</label>
+                    <input type="text" name="nickname" class="form-input" value="${escapeHtml(currentNickname)}" maxlength="64" placeholder="${escapeHtml(fallbackName)}" autofocus>
+                    <div style="margin-top:0.45rem;font-size:0.8rem;color:var(--text-muted);">Optional friendly name for this device (max 64 characters). Leave blank to clear and fall back to the generated device name.</div>
+                </div>
+                <div style="display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 1.5rem;">
+                    <button type="button" class="btn btn-secondary" onclick="hideModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save</button>
+                </div>
+            </form>
+        </div>
+    `);
+}
+
+async function renameClient(e, clientId) {
+    e.preventDefault();
+    const nickname = String(e.target.nickname?.value || '').trim();
+    try {
+        const response = await fetch(basePath + '/api/clients/' + encodeURIComponent(clientId), {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ nickname })
+        });
+        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Failed to rename device');
+        const updatedClient = await response.json();
+        const index = clients.findIndex(client => client.id === clientId);
+        if (index !== -1) clients[index] = { ...clients[index], ...updatedClient };
+        hideModal();
+        showToast(nickname ? 'Device nickname saved' : 'Device nickname cleared');
+        renderHouseholds();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
 }
 
 async function reassignClient(clientId, newProfileId, originalProfileId) {

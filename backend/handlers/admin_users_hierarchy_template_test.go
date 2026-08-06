@@ -25,6 +25,9 @@ func TestAdminUsersPageExplainsAndRendersAccessHierarchy(t *testing.T) {
 		`function renderDeviceRow(client, orphaned)`,
 		`function reassignClient(clientId, newProfileId`,
 		`function pingClient(clientId)`,
+		`function showRenameClientModal(clientId)`,
+		`function renameClient(e, clientId)`,
+		`JSON.stringify({ nickname })`,
 		`function deleteClient(clientId, clientName)`,
 		`const STALE_DEVICE_AGE_MS = 7 * 24 * 60 * 60 * 1000`,
 		`function isClientStale(client)`,
@@ -35,6 +38,7 @@ func TestAdminUsersPageExplainsAndRendersAccessHierarchy(t *testing.T) {
 		`not seen in 7+ days`,
 		`Needs attention`,
 		`client.nickname || client.name || 'Unknown device'`,
+		`onclick="showRenameClientModal('${client.id}')"`,
 	} {
 		if !strings.Contains(source, marker) {
 			t.Fatalf("accounts template missing hierarchy marker %q", marker)
