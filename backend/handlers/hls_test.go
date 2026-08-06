@@ -846,7 +846,7 @@ func TestIsWebBrowserPlaybackTarget(t *testing.T) {
 
 func TestHlsAACTranscodeArgsWebUsesStereo(t *testing.T) {
 	for _, target := range []string{"web", "browser"} {
-		joined := strings.Join(hlsAACTranscodeArgs(target, "", 0), " ")
+		joined := strings.Join(hlsAACTranscodeArgs(target, "", 0, false), " ")
 		for _, expected := range []string{"-c:a aac", "-ac 2", "-channel_layout stereo", "-ar 48000", "-af aresample=async=1000"} {
 			if !strings.Contains(joined, expected) {
 				t.Fatalf("web AAC args for %q missing %q: %q", target, expected, joined)
@@ -856,24 +856,30 @@ func TestHlsAACTranscodeArgsWebUsesStereo(t *testing.T) {
 			t.Fatalf("web AAC args for %q must not use 5.1: %q", target, joined)
 		}
 
-		indexed := strings.Join(hlsAACTranscodeArgs(target, "indexed0", 0), " ")
+		indexed := strings.Join(hlsAACTranscodeArgs(target, "indexed0", 0, false), " ")
 		for _, expected := range []string{"-c:a:0 aac", "-ac:a:0 2", "-channel_layout:a:0 stereo", "-c:a:1 copy"} {
 			if !strings.Contains(indexed, expected) {
 				t.Fatalf("web indexed AAC args for %q missing %q: %q", target, expected, indexed)
 			}
 		}
 
-		// Mid-file web starts must reset the audio timeline for MSE.
-		seekAF := strings.Join(hlsAACTranscodeArgs(target, "", 120), " ")
+		// Mid-file web starts without same-pass VTT must reset the audio timeline for MSE.
+		seekAF := strings.Join(hlsAACTranscodeArgs(target, "", 120, true), " ")
 		if !strings.Contains(seekAF, "asetpts=PTS-STARTPTS") || !strings.Contains(seekAF, "first_pts=0") {
 			t.Fatalf("web seek AAC args for %q missing PTS reset: %q", target, seekAF)
+		}
+
+		// Same-pass WebVTT must keep plain aresample so cues share the demuxer clock.
+		withSubs := strings.Join(hlsAACTranscodeArgs(target, "", 120, false), " ")
+		if strings.Contains(withSubs, "asetpts") || strings.Contains(withSubs, "first_pts=0") {
+			t.Fatalf("web seek AAC with same-pass VTT must not use asetpts: %q", withSubs)
 		}
 	}
 }
 
 func TestHlsAACTranscodeArgsNonWebKeeps51(t *testing.T) {
 	for _, target := range []string{"", "native", "ios", "android", "cast"} {
-		joined := strings.Join(hlsAACTranscodeArgs(target, "", 0), " ")
+		joined := strings.Join(hlsAACTranscodeArgs(target, "", 0, false), " ")
 		for _, expected := range []string{"-c:a aac", "-ac 6", "-channel_layout 5.1"} {
 			if !strings.Contains(joined, expected) {
 				t.Fatalf("non-web AAC args for %q missing %q: %q", target, expected, joined)
@@ -883,7 +889,7 @@ func TestHlsAACTranscodeArgsNonWebKeeps51(t *testing.T) {
 			t.Fatalf("non-web AAC args for %q must keep 5.1: %q", target, joined)
 		}
 
-		indexed := strings.Join(hlsAACTranscodeArgs(target, "indexed0", 250), " ")
+		indexed := strings.Join(hlsAACTranscodeArgs(target, "indexed0", 250, true), " ")
 		for _, expected := range []string{"-c:a:0 aac", "-ac:a:0 6", "-channel_layout:a:0 5.1", "-c:a:1 copy"} {
 			if !strings.Contains(indexed, expected) {
 				t.Fatalf("non-web indexed AAC args for %q missing %q: %q", target, expected, indexed)
@@ -893,6 +899,21 @@ func TestHlsAACTranscodeArgsNonWebKeeps51(t *testing.T) {
 		if strings.Contains(indexed, "asetpts") {
 			t.Fatalf("non-web AAC args for %q must not reset PTS via asetpts: %q", target, indexed)
 		}
+	}
+}
+
+func TestWebSeekPTSFiltersNeeded(t *testing.T) {
+	if !webSeekPTSFiltersNeeded("web", 100, false) {
+		t.Fatal("web mid-file without same-pass VTT should apply setpts/asetpts")
+	}
+	if webSeekPTSFiltersNeeded("web", 100, true) {
+		t.Fatal("web mid-file with same-pass VTT must skip setpts/asetpts")
+	}
+	if webSeekPTSFiltersNeeded("web", 0, false) {
+		t.Fatal("web start-from-zero does not need PTS filters")
+	}
+	if webSeekPTSFiltersNeeded("native", 100, false) {
+		t.Fatal("native mid-file does not use web PTS filters")
 	}
 }
 
