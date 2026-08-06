@@ -747,8 +747,8 @@ func main() {
 	videoHandler.SetPrequeueStore(prequeueHandler.GetStore())
 	localBaseURL := fmt.Sprintf("http://127.0.0.1:%d", settings.Server.Port)
 	videoHandler.SetLocalBaseURL(localBaseURL)
-	videoHandler.GetHLSManager().SetPlaybackActivityObserver(notificationService)
-	handlers.GetStreamTracker().SetPlaybackActivityObserver(notificationService)
+	videoHandler.GetHLSManager().AddPlaybackActivityObserver(notificationService)
+	handlers.GetStreamTracker().AddPlaybackActivityObserver(notificationService)
 	historyHandler.SetActivePlaybackTrackers(handlers.GetStreamTracker())
 
 	if videoHandler != nil && settings.WebDAV.Enabled {
