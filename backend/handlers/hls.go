@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -2134,25 +2135,43 @@ func isNativeLivePlaybackTarget(playbackTarget string) bool {
 	}
 }
 
+// liveNativeHLSListSize is the sliding playlist window for native transmux live.
+// Larger than web because stream-copy can emit segments faster than players fetch
+// them, and we intentionally do not use FFmpeg delete_segments for native.
+const liveNativeHLSListSize = 30
+
+// liveNativeSegmentKeepBehind is how many completed segment files to retain on disk
+// behind the highest served/requested index when cleaning up native live sessions.
+// ~2 minutes at 2s segments; covers playlist re-poll and ExoPlayer retry windows.
+const liveNativeSegmentKeepBehind = 60
+
 func liveHLSOutputArgs(playbackTarget, segmentPattern, playlistPath string) []string {
 	args := make([]string, 0, 40)
 	hlsFlags := "delete_segments+independent_segments+temp_file"
+	listSize := "10"
 
 	if isNativeLivePlaybackTarget(playbackTarget) {
-		// MPV and KSPlayer can demux/decode normal IPTV codecs themselves. Preserve
-		// the provider's encoded packets, including H.264 SEI closed-caption data,
-		// and let the HLS muxer cut only at upstream keyframes. Do not advertise
-		// independent segments because stream copy cannot create a new keyframe at
-		// each requested segment boundary.
+		// Native apps (ExoPlayer / KSPlayer / MPV) demux/decode IPTV codecs themselves.
+		// Always transmux (copy) for those targets — never libx264/aac here. Web browser
+		// playback is the only live path that should re-encode for broad codec support.
+		//
+		// Do not use FFmpeg delete_segments for native live: stream-copy produces segments
+		// faster than the player can pull the first URI, so delete_segments removes
+		// segment0.ts before ExoPlayer's first request finishes (SEGMENT_TIMEOUT → 404).
+		// Keep a wider playlist window and clean old files ourselves after serve.
 		args = append(args,
 			"-c:v", "copy",
 			"-c:a", "copy",
 			"-max_muxing_queue_size", "1024",
 		)
-		hlsFlags = "delete_segments+temp_file"
+		// temp_file only: atomic segment publish, no independent_segments (copy cannot
+		// force keyframes at segment boundaries), no delete_segments (see above).
+		hlsFlags = "temp_file"
+		listSize = strconv.Itoa(liveNativeHLSListSize)
 	} else {
 		// Web and legacy callers retain the compatibility encode with a controlled
-		// keyframe cadence.
+		// keyframe cadence. delete_segments is safe here because re-encoding is slower
+		// than typical playlist/segment fetch cadence.
 		args = append(args,
 			"-c:v", "libx264",
 			"-preset", "veryfast",
@@ -2174,7 +2193,7 @@ func liveHLSOutputArgs(playbackTarget, segmentPattern, playlistPath string) []st
 		"-f", "hls",
 		"-hls_init_time", "1",
 		"-hls_time", "2",
-		"-hls_list_size", "10",
+		"-hls_list_size", listSize,
 		"-hls_flags", hlsFlags,
 		"-hls_segment_filename", segmentPattern,
 		playlistPath,
@@ -4825,11 +4844,17 @@ func (m *HLSManager) ServeSegment(w http.ResponseWriter, r *http.Request, sessio
 
 	segmentPath := filepath.Join(session.OutputDir, segmentName)
 
-	// Wait for segment to be created (up to 30 seconds for slow transcoding)
+	// Wait for segment to be created. Live native transmux can still need a few
+	// seconds for FFmpeg to finalize the first temp_file rename; VOD re-encode can
+	// take longer. ~15s live / ~30s VOD at 25ms poll interval.
+	maxWaitIters := 1200 // ~30s
+	if session.IsLive {
+		maxWaitIters = 600 // ~15s
+	}
 	waitStart := time.Now()
 	segmentReady := false
 	var segmentSize int64
-	for i := 0; i < 300; i++ {
+	for i := 0; i < maxWaitIters; i++ {
 		if stat, err := os.Stat(segmentPath); err == nil {
 			segmentSize = stat.Size()
 			segmentReady = true
@@ -4847,8 +4872,8 @@ func (m *HLSManager) ServeSegment(w http.ResponseWriter, r *http.Request, sessio
 		}
 
 		// Check if transcoding has completed - if so, segment will never be created
-		// This prevents waiting 7.5s for segments that won't exist (e.g., when FFmpeg
-		// exits early due to shorter actual content than metadata duration)
+		// This prevents waiting the full timeout for segments that won't exist (e.g.,
+		// when FFmpeg exits early due to shorter actual content than metadata duration)
 		if i%20 == 0 { // Check every ~500ms to avoid lock contention
 			session.mu.RLock()
 			completed := session.Completed
@@ -4865,8 +4890,10 @@ func (m *HLSManager) ServeSegment(w http.ResponseWriter, r *http.Request, sessio
 
 	waitDuration := time.Since(waitStart)
 	if !segmentReady {
-		log.Printf("[hls] SEGMENT_TIMEOUT: session=%s segment=%s waited=%v",
-			sessionID, segmentName, waitDuration)
+		log.Printf("[hls] SEGMENT_TIMEOUT: session=%s segment=%s waited=%v isLive=%v target=%q %s | %s",
+			sessionID, segmentName, waitDuration, session.IsLive, session.PlaybackTarget,
+			summarizeLiveSegmentDir(session.OutputDir),
+			summarizeLivePlaylistState(session.OutputDir))
 		http.Error(w, "segment not found", http.StatusNotFound)
 		return
 	}
@@ -4921,10 +4948,15 @@ func (m *HLSManager) ServeSegment(w http.ResponseWriter, r *http.Request, sessio
 		sessionID, segmentName, segmentSize, serveDuration, totalDuration)
 
 	// Clean up old segments to save disk space.
-	// Live sessions use FFmpeg's delete_segments flag which handles cleanup automatically.
-	// Running deleteOldSegments for live sessions would cause an O(n) syscall loop
-	// growing with session duration (checking every segment ever generated).
-	if !session.IsLive {
+	// Web live sessions use FFmpeg's delete_segments flag (transcode path).
+	// Native live transmux deliberately omits delete_segments (see liveHLSOutputArgs)
+	// so we prune served segment files ourselves with a fixed keep-behind window.
+	// VOD uses buffer-aware deleteOldSegments.
+	if session.IsLive {
+		if isNativeLivePlaybackTarget(session.PlaybackTarget) {
+			go m.deleteOldLiveTransmuxSegments(session, servedSegmentNum)
+		}
+	} else {
 		go m.deleteOldSegments(session, segmentName)
 	}
 }
@@ -5534,7 +5566,132 @@ func (m *HLSManager) Shutdown() {
 	log.Printf("[hls] shutdown complete")
 }
 
-// deleteOldSegments removes old segment files to save disk space, only deleting segments the player no longer needs
+// summarizeLiveSegmentDir reports which segmentN.ts files currently exist under a
+// session output dir. Used on SEGMENT_TIMEOUT to distinguish "never generated"
+// from "generated then deleted / live edge advanced" without listing every file.
+func summarizeLiveSegmentDir(outputDir string) string {
+	entries, err := os.ReadDir(outputDir)
+	if err != nil {
+		return fmt.Sprintf("onDisk=err:%v", err)
+	}
+	var nums []int
+	var otherTS int
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if m := segmentNumRe.FindStringSubmatch(name); m != nil {
+			n, _ := strconv.Atoi(m[1])
+			nums = append(nums, n)
+			continue
+		}
+		if strings.HasSuffix(name, ".ts") || strings.HasSuffix(name, ".m4s") {
+			otherTS++
+		}
+	}
+	if len(nums) == 0 {
+		if otherTS > 0 {
+			return fmt.Sprintf("onDisk=0 otherMediaFiles=%d", otherTS)
+		}
+		return "onDisk=0"
+	}
+	sort.Ints(nums)
+	minN, maxN := nums[0], nums[len(nums)-1]
+	// Compact range check: contiguous min..max vs sparse holes.
+	expected := maxN - minN + 1
+	holes := expected - len(nums)
+	return fmt.Sprintf("onDisk=%d min=segment%d max=segment%d holes=%d otherMediaFiles=%d",
+		len(nums), minN, maxN, holes, otherTS)
+}
+
+// summarizeLivePlaylistState reports media-sequence and the first/last segment
+// names currently advertised in stream.m3u8 (if present).
+func summarizeLivePlaylistState(outputDir string) string {
+	content, err := os.ReadFile(filepath.Join(outputDir, "stream.m3u8"))
+	if err != nil {
+		return fmt.Sprintf("playlist=err:%v", err)
+	}
+	mediaSeq := ""
+	var segs []string
+	for _, line := range strings.Split(string(content), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#EXT-X-MEDIA-SEQUENCE:") {
+			mediaSeq = strings.TrimPrefix(line, "#EXT-X-MEDIA-SEQUENCE:")
+			continue
+		}
+		if strings.HasPrefix(line, "segment") && (strings.HasSuffix(line, ".ts") || strings.HasSuffix(line, ".m4s")) {
+			// Strip query params if any were written into the on-disk playlist
+			if idx := strings.IndexByte(line, '?'); idx >= 0 {
+				line = line[:idx]
+			}
+			segs = append(segs, line)
+		}
+	}
+	if mediaSeq == "" {
+		mediaSeq = "?"
+	}
+	switch len(segs) {
+	case 0:
+		return fmt.Sprintf("playlistBytes=%d mediaSeq=%s segs=0", len(content), mediaSeq)
+	case 1:
+		return fmt.Sprintf("playlistBytes=%d mediaSeq=%s segs=1 first=%s", len(content), mediaSeq, segs[0])
+	default:
+		return fmt.Sprintf("playlistBytes=%d mediaSeq=%s segs=%d first=%s last=%s",
+			len(content), mediaSeq, len(segs), segs[0], segs[len(segs)-1])
+	}
+}
+
+// deleteOldLiveTransmuxSegments removes native live .ts segment files that are far
+// behind the playback edge. Native live omits FFmpeg delete_segments so early
+// segments stay available for the player's first fetch; without this cleanup a long
+// session would accumulate every segment file ever written.
+func (m *HLSManager) deleteOldLiveTransmuxSegments(session *HLSSession, justServedSegment int) {
+	if session == nil || justServedSegment < 0 {
+		return
+	}
+
+	session.mu.RLock()
+	outputDir := session.OutputDir
+	sessionID := session.ID
+	maxRequested := session.MaxSegmentRequested
+	lastServed := session.LastSegmentServed
+	session.mu.RUnlock()
+
+	highWater := justServedSegment
+	if lastServed > highWater {
+		highWater = lastServed
+	}
+	if maxRequested > highWater {
+		highWater = maxRequested
+	}
+
+	cutoff := highWater - liveNativeSegmentKeepBehind
+	if cutoff < 0 {
+		return
+	}
+
+	deletedCount := 0
+	// Bound the walk: only scan the keep window trailing edge, not every segment
+	// from 0 (O(n) over multi-hour live sessions).
+	start := cutoff - liveNativeSegmentKeepBehind
+	if start < 0 {
+		start = 0
+	}
+	for i := start; i <= cutoff; i++ {
+		path := filepath.Join(outputDir, fmt.Sprintf("segment%d.ts", i))
+		if err := os.Remove(path); err == nil {
+			deletedCount++
+		}
+	}
+	if deletedCount > 0 {
+		log.Printf("[hls] session %s: deleted %d old live transmux segments (highWater=%d, keepBehind=%d, cutoff=%d)",
+			sessionID, deletedCount, highWater, liveNativeSegmentKeepBehind, cutoff)
+	}
+}
+
+// deleteOldSegments removes old VOD segment files to save disk space, only deleting
+// segments the player no longer needs (buffer-aware).
 func (m *HLSManager) deleteOldSegments(session *HLSSession, justServedSegment string) {
 	session.mu.RLock()
 	outputDir := session.OutputDir
