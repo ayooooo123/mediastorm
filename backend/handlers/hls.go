@@ -607,23 +607,50 @@ func isWebBrowserPlaybackTarget(playbackTarget string) bool {
 	}
 }
 
+// webSeekTimelineResetNeeded is true when the browser path starts mid-file.
+// Input -ss leaves audio/video PTS starting at different offsets (e.g. audio at
+// 1.4s, video at 5.9s in segment0) while the HLS playlist advertises ~0.5s —
+// Chrome/Edge MSE then buffers forever without canplay. Reset both timelines.
+func webSeekTimelineResetNeeded(playbackTarget string, transcodingOffset float64) bool {
+	return isWebBrowserPlaybackTarget(playbackTarget) && transcodingOffset > 0
+}
+
+// hlsAudioResampleFilter returns the -af graph for AAC remux/transcode.
+func hlsAudioResampleFilter(playbackTarget string, transcodingOffset float64) string {
+	if webSeekTimelineResetNeeded(playbackTarget, transcodingOffset) {
+		// first_pts=0 + asetpts forces a continuous audio clock from t=0 after -ss.
+		return "aresample=async=1000:first_pts=0,asetpts=PTS-STARTPTS"
+	}
+	return "aresample=async=1000"
+}
+
+// withWebSeekVideoPTSReset prefixes setpts so the video clock restarts at 0 after -ss.
+func withWebSeekVideoPTSReset(filter string) string {
+	const reset = "setpts=PTS-STARTPTS"
+	if strings.TrimSpace(filter) == "" {
+		return reset
+	}
+	return reset + "," + filter
+}
+
 // hlsAACTranscodeArgs returns FFmpeg flags that encode the selected audio to AAC.
 // mode "indexed0" writes the first output audio stream as AAC and copies others
 // (-c:a:0 / -c:a:1); the default mode encodes a single mapped audio track.
-func hlsAACTranscodeArgs(playbackTarget string, mode string) []string {
+func hlsAACTranscodeArgs(playbackTarget string, mode string, transcodingOffset float64) []string {
 	channels, layout := "6", "5.1"
 	if isWebBrowserPlaybackTarget(playbackTarget) {
 		channels, layout = "2", "stereo"
 	}
+	af := hlsAudioResampleFilter(playbackTarget, transcodingOffset)
 	if mode == "indexed0" {
 		return []string{
-			"-af", "aresample=async=1000",
+			"-af", af,
 			"-c:a:0", "aac", "-ac:a:0", channels, "-ar:a:0", "48000", "-channel_layout:a:0", layout, "-b:a:0", "192k",
 			"-c:a:1", "copy",
 		}
 	}
 	return []string{
-		"-af", "aresample=async=1000",
+		"-af", af,
 		"-c:a", "aac", "-ac", channels, "-ar", "48000", "-channel_layout", layout, "-b:a", "192k",
 	}
 }
@@ -2728,6 +2755,12 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 	// This ensures A/V sync when transcoding TrueHD/DTS audio (which have variable timing)
 	// and helps maintain subtitle sync across seek operations
 	args = append(args, "-start_at_zero")
+	// Web mid-file starts also force per-stream PTS reset via filters (see below).
+	// make_zero keeps the MPEG-TS muxer from emitting negative DTS that MSE rejects.
+	if webSeekTimelineResetNeeded(session.PlaybackTarget, session.TranscodingOffset) {
+		args = append(args, "-avoid_negative_ts", "make_zero")
+		log.Printf("[hls] session %s: web seek/resume timeline reset enabled (setpts/asetpts)", session.ID)
+	}
 
 	args = append(args,
 		"-map", "0:v:0", // Map primary video stream
@@ -2861,6 +2894,14 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 		needsVideoTranscode = true
 		log.Printf("[hls] session %s: web subtitle seek/resume requires video transcode for accurate subtitle sync", session.ID)
 	}
+	// setpts requires decode; force a web re-encode on mid-file starts even for copy-compatible
+	// H.264 so we can reset the A/V clock after input -ss.
+	if webSeekTimelineResetNeeded(session.PlaybackTarget, session.TranscodingOffset) && !needsVideoTranscode {
+		needsVideoTranscode = true
+		// Prefer software here: hardware device init must precede -i, and we are past that point.
+		useWebEncodePlan = false
+		log.Printf("[hls] session %s: web seek/resume forces video transcode for PTS reset", session.ID)
+	}
 
 	if needsVideoTranscode {
 		// Transcode video to H.264 when the source is incompatible or accurate web subtitle seeking
@@ -2871,8 +2912,12 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 			// Web player path: GPU-accelerated H.264 encode (when available) plus
 			// HDR/DV -> SDR tone mapping. webEncodePlan was built above so its
 			// device-init globals could precede -i.
-			if webEncodePlan.Filter != "" {
-				args = append(args, "-vf", webEncodePlan.Filter)
+			vf := webEncodePlan.Filter
+			if webSeekTimelineResetNeeded(session.PlaybackTarget, session.TranscodingOffset) {
+				vf = withWebSeekVideoPTSReset(vf)
+			}
+			if vf != "" {
+				args = append(args, "-vf", vf)
 			}
 			args = append(args, webEncodePlan.EncoderArgs...)
 			args = append(args,
@@ -2886,10 +2931,14 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 				session.ID, webEncodePlan.Kind, webEncodePlan.HardwareEncode, webEncodePlan.Tonemapped)
 		} else {
 			// Native/live transcode of an incompatible codec — CPU H.264, no tone mapping.
+			// Also used for late web seek PTS-reset when a hardware plan was not prepared pre-input.
 			if forceVideoTranscodeForWebSubtitleSeek {
 				log.Printf("[hls] session %s: transcoding video codec %q to H.264 for accurate web subtitle seek/resume (ultrafast)", session.ID, videoCodec)
 			} else {
 				log.Printf("[hls] session %s: video transcode required for codec %q, transcoding to H.264 (ultrafast)", session.ID, videoCodec)
+			}
+			if webSeekTimelineResetNeeded(session.PlaybackTarget, session.TranscodingOffset) {
+				args = append(args, "-vf", "setpts=PTS-STARTPTS,format=yuv420p")
 			}
 			args = append(args,
 				"-c:v", "libx264",
@@ -2991,7 +3040,7 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 					// TrueHD/DTS have variable timing - aresample async keeps A/V sync.
 					// Note: -start_at_zero (set earlier) normalizes timestamps for A/V sync.
 					log.Printf("[hls] session %s: transcoding selected %s track to AAC (%s)", session.ID, audioStreams[i].Codec, aacLayout)
-					args = append(args, hlsAACTranscodeArgs(session.PlaybackTarget, "")...)
+					args = append(args, hlsAACTranscodeArgs(session.PlaybackTarget, "", session.TranscodingOffset)...)
 					audioCodecHandled = true
 				}
 				break
@@ -3004,11 +3053,15 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 			// Transcode first audio to AAC, copy others.
 			// Channel layout follows playback target (stereo for web, 5.1 otherwise).
 			log.Printf("[hls] session %s: forceAAC transcoding primary audio to AAC (%s)", session.ID, aacLayout)
-			args = append(args, hlsAACTranscodeArgs(session.PlaybackTarget, "indexed0")...)
+			args = append(args, hlsAACTranscodeArgs(session.PlaybackTarget, "indexed0", session.TranscodingOffset)...)
 		} else if hasTrueHD && !hasCompatibleAudio {
 			// If only TrueHD exists, we must transcode it.
 			log.Printf("[hls] session %s: transcoding TrueHD to AAC (no compatible alternative, %s)", session.ID, aacLayout)
-			args = append(args, hlsAACTranscodeArgs(session.PlaybackTarget, "")...)
+			args = append(args, hlsAACTranscodeArgs(session.PlaybackTarget, "", session.TranscodingOffset)...)
+		} else if webSeekTimelineResetNeeded(session.PlaybackTarget, session.TranscodingOffset) {
+			// Compatible audio still needs asetpts after mid-file input seek so A/V clocks match.
+			log.Printf("[hls] session %s: re-encoding compatible audio to AAC for web seek timeline reset", session.ID)
+			args = append(args, hlsAACTranscodeArgs(session.PlaybackTarget, "", session.TranscodingOffset)...)
 		} else {
 			// Copy compatible audio
 			args = append(args, "-c:a", "copy")

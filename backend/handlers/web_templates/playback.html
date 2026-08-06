@@ -1433,55 +1433,15 @@
 
         renderPlayerShell();
         const video = document.getElementById('webPlayer');
-        // Warm starts encode from the absolute resume point with media timeline at 0.
-        // Match the working in-session seek path: force autoplay and recover via seek if
-        // MSE never reaches canplay (observed with create-with-offset + keyframe probe).
         if (video && actualOffset > 1) {
           video.autoplay = true;
         }
         attachWebPlayer(video, hlsPlaylistUrl);
-        if (actualOffset > 1) {
-          armResumeCanplayWatchdog(actualOffset);
-        }
         startKeepalive();
         startProgressTracking();
       } catch (error) {
         renderLoading(`Web player failed: ${error.message || String(error)}`, true);
       }
-    }
-
-    // If a warm-start session buffers fragments but never reaches canplay, re-seek on the
-    // same session (the path that works after cold-start + seek). Clears stuck MSE state.
-    function armResumeCanplayWatchdog(absoluteOffset) {
-      const video = document.getElementById('webPlayer');
-      if (!video || !hlsSessionId) return;
-      let settled = false;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        window.clearTimeout(timer);
-        video.removeEventListener('canplay', onCanPlay);
-      };
-      const onCanPlay = () => finish();
-      const timer = window.setTimeout(async () => {
-        if (settled) return;
-        finish();
-        if (!hlsSessionId || video.readyState >= 3) return;
-        webPlayerDebugLog('warn', 'resume canplay timeout; reseeking', {
-          hlsSessionId,
-          absoluteOffset,
-          readyState: video.readyState,
-          networkState: video.networkState,
-        });
-        try {
-          await seekWebPlayer(absoluteOffset);
-        } catch (error) {
-          webPlayerDebugLog('error', 'resume reseek failed', {
-            error: error?.message || String(error),
-          });
-        }
-      }, 4500);
-      video.addEventListener('canplay', onCanPlay, { once: true });
     }
 
     async function loadTrackMetadata() {
