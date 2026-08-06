@@ -45,7 +45,7 @@ func TestCreateSessionRejectsElfHostedPlaceholderRedirect(t *testing.T) {
 		context.Background(),
 		"https://comet.elfhosted.com/playback/expired",
 		"https://comet.elfhosted.com/playback/expired",
-		false, "", false, false, 0, 0, -1, -1, "", "", "", false, "", "", 0,
+		false, "", false, false, 0, 0, -1, -1, "", "", "", false, "", "", 0, "",
 	)
 	if !errors.Is(err, errExternalStreamPlaceholder) {
 		t.Fatalf("CreateSession error = %v, want external placeholder error", err)

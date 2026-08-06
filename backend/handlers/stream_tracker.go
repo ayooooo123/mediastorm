@@ -241,12 +241,14 @@ func GetStreamTracker() *StreamTracker {
 	return globalStreamTracker
 }
 
-func (t *StreamTracker) SetPlaybackActivityObserver(observer PlaybackActivityObserver) {
+// AddPlaybackActivityObserver registers one more consumer of matched playback
+// activity. See playbackObserverFanout for why there is more than one.
+func (t *StreamTracker) AddPlaybackActivityObserver(observer PlaybackActivityObserver) {
 	if t == nil {
 		return
 	}
 	t.mu.Lock()
-	t.playbackObserver = observer
+	t.playbackObserver = addPlaybackObserver(t.playbackObserver, observer)
 	t.mu.Unlock()
 }
 
@@ -346,6 +348,12 @@ func (t *StreamTracker) ObservePlaybackActivity(userID string, update models.Pla
 		// single playback. Key notifications like the consolidated Active
 		// Streams row, not by an individual transport connection.
 		update.PlaybackSessionID = "direct:" + trackedStreamSlotKey(best)
+		// A player that reported no source path still has one: the request this
+		// heartbeat was matched to names it. Consumers that must reach the source
+		// again, rather than merely name it, depend on that.
+		if strings.TrimSpace(update.SourcePath) == "" {
+			update.SourcePath = best.Path
+		}
 		update = enrichPlaybackUpdateFromStream(update, best.MediaMetadata)
 	}
 	t.mu.RUnlock()

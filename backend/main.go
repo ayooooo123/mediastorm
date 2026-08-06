@@ -747,8 +747,12 @@ func main() {
 	videoHandler.SetPrequeueStore(prequeueHandler.GetStore())
 	localBaseURL := fmt.Sprintf("http://127.0.0.1:%d", settings.Server.Port)
 	videoHandler.SetLocalBaseURL(localBaseURL)
-	videoHandler.GetHLSManager().SetPlaybackActivityObserver(notificationService)
-	handlers.GetStreamTracker().SetPlaybackActivityObserver(notificationService)
+	// Cast capability cache (passive probe + playback observation). HTTP list/describe
+	// endpoints can be mounted later; the store is required for cast session decisions.
+	castCapsHandler := handlers.NewCastCapabilitiesHandler(settings.Cache.Directory)
+	videoHandler.SetCastCapabilities(castCapsHandler.Store())
+	videoHandler.GetHLSManager().AddPlaybackActivityObserver(notificationService)
+	handlers.GetStreamTracker().AddPlaybackActivityObserver(notificationService)
 	historyHandler.SetActivePlaybackTrackers(handlers.GetStreamTracker())
 
 	if videoHandler != nil && settings.WebDAV.Enabled {
