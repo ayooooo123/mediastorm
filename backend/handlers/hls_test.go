@@ -905,6 +905,37 @@ func TestWithWebSeekVideoPTSReset(t *testing.T) {
 	}
 }
 
+func TestUseAccurateHLSInputSeek(t *testing.T) {
+	// Web mid-file resume always needs accurate seek so setpts/asetpts cannot
+	// zero A/V onto different content (GOP-length desync).
+	if !useAccurateHLSInputSeek("web", 635.87, false, false, false) {
+		t.Fatal("web mid-file must use accurate input seek")
+	}
+	if !useAccurateHLSInputSeek("browser", 100, false, false, false) {
+		t.Fatal("browser mid-file must use accurate input seek")
+	}
+	// Video transcode / cast / same-pass subs also need accurate seek.
+	if !useAccurateHLSInputSeek("web", 100, true, false, false) {
+		t.Fatal("videoWillTranscode must use accurate input seek")
+	}
+	if !useAccurateHLSInputSeek("native", 100, true, false, false) {
+		t.Fatal("native video transcode must use accurate input seek")
+	}
+	if !useAccurateHLSInputSeek("web", 100, false, true, false) {
+		t.Fatal("subtitle rendition must use accurate input seek")
+	}
+	if !useAccurateHLSInputSeek("cast", 100, false, false, true) {
+		t.Fatal("stable cast must use accurate input seek")
+	}
+	// Pure video-copy mid-file keeps keyframe-friendly inaccurate seek.
+	if useAccurateHLSInputSeek("native", 100, false, false, false) {
+		t.Fatal("native video-copy mid-file should keep -noaccurate_seek")
+	}
+	if useAccurateHLSInputSeek("web", 0, false, false, false) {
+		t.Fatal("web start-from-zero does not need accurate mid-file seek")
+	}
+}
+
 func TestWaitForPlaylistReady(t *testing.T) {
 	dir := t.TempDir()
 	m := &HLSManager{}
