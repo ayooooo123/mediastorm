@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
+	"novastream/services/castcaps"
 	"os"
 	"os/exec"
 	"path"
@@ -120,6 +121,10 @@ type VideoHandler struct {
 	prewarmSvc    PrewarmService
 	libraryAccess *libraryaccess.Service
 
+	// castCaps answers "what can this receiver actually decode" from cache.
+	// Never probes on this path: a cast start must not wait on a device.
+	castCaps *castcaps.Store
+
 	// External playback URLs commonly redirect through an addon before reaching
 	// the debrid CDN. Keep one hardened client alive for connection reuse and
 	// remember short-lived final redirects so FFmpeg range requests do not pay
@@ -173,6 +178,12 @@ type VideoHandler struct {
 	// User/account services for stream limit enforcement
 	usersSvc    UsersProvider
 	accountsSvc AccountsProvider
+
+	// Hardware encode capabilities for the legacy DLNA MPEG-TS output. The HLS
+	// manager owns the cached detection, so these are only used when transmux is
+	// disabled globally (no manager exists) and a DLNA renderer forces the path.
+	dlnaCapsOnce sync.Once
+	dlnaCaps     HWAccelCaps
 }
 
 const (
@@ -351,11 +362,66 @@ type rangeBlockCache struct {
 	mu     sync.Mutex
 	blocks map[string][]rangeCacheBlock // keyed by file path
 
+	// Total instance length per path, learned from upstream Content-Range or a
+	// HEAD Content-Length. DLNA renderers refuse to seek (and LG webOS aborts
+	// playback outright) when a 206 reports "/*" instead of the real size, so
+	// every partial response must be able to name the full file length.
+	totalMu sync.RWMutex
+	totals  map[string]int64
+
 	// In-flight fetch coalescing: when multiple requests land in the same
 	// fetch window, only one CDN request is made; others wait on the channel.
 	flightMu sync.Mutex
 	inFlight map[string]chan struct{} // key: "path:fetchStart"
 }
+
+// setTotal records the full file length for a path. First writer wins; the
+// value is immutable for a given file so later callers cannot regress it.
+func (c *rangeBlockCache) setTotal(path string, total int64) {
+	if total <= 0 {
+		return
+	}
+	c.totalMu.Lock()
+	defer c.totalMu.Unlock()
+	if c.totals == nil {
+		c.totals = make(map[string]int64)
+	}
+	if _, ok := c.totals[path]; !ok {
+		c.totals[path] = total
+	}
+}
+
+// total returns the known full file length, or 0 when it has not been learned.
+func (c *rangeBlockCache) total(path string) int64 {
+	c.totalMu.RLock()
+	defer c.totalMu.RUnlock()
+	return c.totals[path]
+}
+
+// contentRangeValue formats a Content-Range for a partial response, naming the
+// real instance length when known and falling back to "*" only when it is not.
+func (c *rangeBlockCache) contentRangeValue(path string, start, end int64) string {
+	if total := c.total(path); total > 0 {
+		return fmt.Sprintf("bytes %d-%d/%d", start, end, total)
+	}
+	return fmt.Sprintf("bytes %d-%d/*", start, end)
+}
+
+// parseContentRangeTotal extracts the instance length from an upstream
+// "bytes START-END/TOTAL" header. Returns 0 when the total is absent or "*".
+func parseContentRangeTotal(value string) int64 {
+	slash := strings.LastIndexByte(value, '/')
+	if slash < 0 {
+		return 0
+	}
+	total, err := strconv.ParseInt(strings.TrimSpace(value[slash+1:]), 10, 64)
+	if err != nil || total <= 0 {
+		return 0
+	}
+	return total
+}
+
+// parseContentRangeStart lives in stream_pool.go (shared handlers package helper).
 
 func (c *rangeBlockCache) get(path string, start, end int64) ([]byte, bool) {
 	c.mu.Lock()
@@ -947,6 +1013,7 @@ func (h *VideoHandler) StreamVideo(w http.ResponseWriter, r *http.Request) {
 	// Determine whether transmuxing is desired and possible
 	ext := detectContainerExt(cleanPath)
 	target := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("target")))
+	outputContainer := dlnaStreamProfileFromRequest(r).container()
 	shouldTransmux, overrideTransmux, transmuxReason := h.shouldTransmux(r, cleanPath, ext)
 	if transmuxReason != "" {
 	}
@@ -985,7 +1052,7 @@ func (h *VideoHandler) StreamVideo(w http.ResponseWriter, r *http.Request) {
 			r.Header.Del("Range")
 		}
 
-		handled, err := h.streamWithTransmuxProvider(w, r, cleanPath, forceAAC, overrideTransmux)
+		handled, err := h.streamWithTransmuxProvider(w, r, cleanPath, forceAAC, overrideTransmux, outputContainer)
 		if handled {
 			if err != nil {
 				log.Printf("[video] provider transmux error for %q: %v", cleanPath, err)
@@ -1043,11 +1110,10 @@ func (h *VideoHandler) streamViaProvider(w http.ResponseWriter, r *http.Request,
 				if cached, hit := h.rangeCache.get(cleanPath, rangeStart, rangeEnd+1); hit {
 					videoTracef("[video] range cache HIT: path=%q range=%q (%d bytes)", cleanPath, rangeHeader, rangeLen)
 					h.writeCommonHeaders(w)
-					w.Header().Set("Content-Type", "video/mp4")
-					w.Header().Set("Accept-Ranges", "bytes")
+					normalizeMediaContentType(w, "", cleanPath)
+					writeDlnaHeaders(w, r)
 					w.Header().Set("Content-Length", strconv.FormatInt(int64(len(cached)), 10))
-					// We don't know total file size from cache alone, but the client already knows it
-					// from previous requests. Omit Content-Range for cache hits of tiny requests.
+					w.Header().Set("Content-Range", h.rangeCache.contentRangeValue(cleanPath, rangeStart, rangeStart+int64(len(cached))-1))
 					w.WriteHeader(http.StatusPartialContent)
 					w.Write(cached)
 					return true, nil
@@ -1076,9 +1142,10 @@ func (h *VideoHandler) streamViaProvider(w http.ResponseWriter, r *http.Request,
 					if cached, hit := h.rangeCache.get(cleanPath, rangeStart, rangeEnd+1); hit {
 						videoTracef("[video] range cache HIT (after coalesce): path=%q range=%q (%d bytes)", cleanPath, rangeHeader, rangeLen)
 						h.writeCommonHeaders(w)
-						w.Header().Set("Content-Type", "video/mp4")
-						w.Header().Set("Accept-Ranges", "bytes")
+						normalizeMediaContentType(w, "", cleanPath)
+						writeDlnaHeaders(w, r)
 						w.Header().Set("Content-Length", strconv.FormatInt(int64(len(cached)), 10))
+						w.Header().Set("Content-Range", h.rangeCache.contentRangeValue(cleanPath, rangeStart, rangeStart+int64(len(cached))-1))
 						w.WriteHeader(http.StatusPartialContent)
 						w.Write(cached)
 						return true, nil
@@ -1094,11 +1161,29 @@ func (h *VideoHandler) streamViaProvider(w http.ResponseWriter, r *http.Request,
 						Method:      r.Method,
 					})
 					if fetchErr == nil {
+						// The upstream 206 names the real file length; record it so
+						// every spool response can report a true instance length.
+						h.rangeCache.setTotal(cleanPath, parseContentRangeTotal(fetchResp.Headers.Get("Content-Range")))
+
+						// Only cache a body the upstream actually served at the window
+						// we asked for. Debrid CDNs sometimes ignore Range and answer
+						// 200 from byte 0; filing those bytes under fetchStart poisons
+						// the block and every later read of it returns data from the
+						// wrong offset. The parallel fetcher already rejects non-206
+						// for the same reason — this path has to agree.
+						servedStart, haveStart := parseContentRangeStart(fetchResp.Headers.Get("Content-Range"))
+						honoured := fetchResp.Status == http.StatusPartialContent && haveStart && servedStart == fetchStart
+
 						fetchBuf := make([]byte, rangeCacheMinFetchSize+4096)
 						n, _ := io.ReadFull(fetchResp.Body, fetchBuf)
 						fetchResp.Close()
 						fetchCancel()
 						h.rangeCache.finishFetch(cleanPath, fetchStart)
+						if !honoured {
+							log.Printf("[video] range cache SKIP: upstream ignored window path=%q want=%d status=%d got=%q — falling back to direct stream",
+								cleanPath, fetchStart, fetchResp.Status, fetchResp.Headers.Get("Content-Range"))
+							n = 0
+						}
 						if n > 0 {
 							fetchBuf = fetchBuf[:n]
 							h.rangeCache.put(cleanPath, fetchStart, fetchBuf)
@@ -1109,9 +1194,10 @@ func (h *VideoHandler) streamViaProvider(w http.ResponseWriter, r *http.Request,
 							reqEnd := reqOffset + rangeLen
 							if reqEnd <= int64(n) {
 								h.writeCommonHeaders(w)
-								w.Header().Set("Content-Type", "video/mp4")
-								w.Header().Set("Accept-Ranges", "bytes")
+								normalizeMediaContentType(w, "", cleanPath)
+								writeDlnaHeaders(w, r)
 								w.Header().Set("Content-Length", strconv.FormatInt(rangeLen, 10))
+								w.Header().Set("Content-Range", h.rangeCache.contentRangeValue(cleanPath, reqOffset+fetchStart, reqOffset+fetchStart+rangeLen-1))
 								w.WriteHeader(http.StatusPartialContent)
 								w.Write(fetchBuf[reqOffset:reqEnd])
 								return true, nil
@@ -1194,6 +1280,12 @@ func (h *VideoHandler) streamViaProvider(w http.ResponseWriter, r *http.Request,
 	contentRange := resp.Headers.Get("Content-Range")
 	contentLength := resp.Headers.Get("Content-Length")
 	acceptRanges := resp.Headers.Get("Accept-Ranges")
+	if total := parseContentRangeTotal(contentRange); total > 0 {
+		h.rangeCache.setTotal(cleanPath, total)
+	} else if resp.Status == http.StatusOK && resp.ContentLength > 0 {
+		// A full-body 200 (including the HEAD probe) names the whole file.
+		h.rangeCache.setTotal(cleanPath, resp.ContentLength)
+	}
 	expectedLength := resp.ContentLength
 	if expectedLength <= 0 && contentLength != "" {
 		if parsed, parseErr := strconv.ParseInt(contentLength, 10, 64); parseErr == nil && parsed >= 0 {
@@ -1250,7 +1342,11 @@ func (h *VideoHandler) streamViaProvider(w http.ResponseWriter, r *http.Request,
 		}
 		videoTracef("[video] setting filename headers: %s", filename)
 	}
+	if expectedLength > 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(expectedLength, 10))
+	}
 	normalizeMediaContentType(w, filename, cleanPath)
+	writeDlnaHeaders(w, r)
 
 	status := resp.Status
 	if status == 0 {
@@ -1489,12 +1585,78 @@ func isClientGone(err error) bool {
 	return false
 }
 
+// transmuxContainer selects the muxer used for a transmuxed response. The zero
+// value is the fragmented MP4 output every current caller expects.
+type transmuxContainer int
+
+const (
+	// outputFmp4 is the fragmented MP4 stream consumed by the apps and browsers.
+	outputFmp4 transmuxContainer = iota
+	// outputMpegTs is a 188-byte MPEG-TS stream for legacy DLNA renderers that
+	// accept neither Matroska, MP4 nor HLS. Declaring it as video/mpeg (rather
+	// than video/vnd.dlna.mpeg-tts, which implies 192-byte timestamped packets)
+	// is what pre-2012 renderers actually play.
+	outputMpegTs
+)
+
+func (c transmuxContainer) contentType() string {
+	if c == outputMpegTs {
+		return "video/mpeg"
+	}
+	return "video/mp4"
+}
+
+// dlnaStreamProfile is the ?dlnaProfile= request value. It names a renderer
+// family rather than a codec so the server owns the exact ffmpeg recipe.
+type dlnaStreamProfile string
+
+const (
+	// dlnaProfileNone leaves streaming behaviour untouched.
+	dlnaProfileNone dlnaStreamProfile = ""
+	// dlnaProfileAVCTS is H.264 + AC3 in MPEG-TS (DLNA AVC_TS_HD_24_AC3_ISO).
+	dlnaProfileAVCTS dlnaStreamProfile = "avc-ts"
+)
+
+// parseDLNAStreamProfile accepts the known profile names case-insensitively and
+// maps anything else to dlnaProfileNone, so an unknown value never changes the
+// behaviour a normal client sees.
+func parseDLNAStreamProfile(raw string) dlnaStreamProfile {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case string(dlnaProfileAVCTS):
+		return dlnaProfileAVCTS
+	default:
+		return dlnaProfileNone
+	}
+}
+
+func dlnaStreamProfileFromRequest(r *http.Request) dlnaStreamProfile {
+	if r == nil || r.URL == nil {
+		return dlnaProfileNone
+	}
+	return parseDLNAStreamProfile(r.URL.Query().Get("dlnaProfile"))
+}
+
+func (p dlnaStreamProfile) container() transmuxContainer {
+	if p == dlnaProfileAVCTS {
+		return outputMpegTs
+	}
+	return outputFmp4
+}
+
 func (h *VideoHandler) shouldTransmux(r *http.Request, cleanPath, ext string) (bool, bool, string) {
 	query := r.URL.Query()
 	format := strings.ToLower(strings.TrimSpace(query.Get("format")))
 	target := strings.ToLower(strings.TrimSpace(query.Get("target")))
 	manualFlag := strings.ToLower(strings.TrimSpace(query.Get("transmux")))
 	dvFlag := strings.ToLower(strings.TrimSpace(query.Get("dv"))) == "true"
+
+	// A legacy DLNA renderer needs a full H.264/AC3 MPEG-TS transcode whatever
+	// the source container is, so the profile overrides every other heuristic —
+	// including Dolby Vision, which these SDR panels cannot display.
+	if parseDLNAStreamProfile(query.Get("dlnaProfile")) == dlnaProfileAVCTS {
+		log.Printf("[video] DLNA avc-ts transcode requested for path=%q", cleanPath)
+		return true, true, "dlna avc-ts profile"
+	}
 
 	// Check for Dolby Vision flag - MUST transmux to preserve DV metadata
 	if dvFlag {
@@ -1642,7 +1804,7 @@ func detectContainerExt(name string) string {
 	return strings.ToLower(strings.TrimSpace(path.Ext(lower)))
 }
 
-func (h *VideoHandler) streamWithTransmuxProvider(w http.ResponseWriter, r *http.Request, cleanPath string, forceAAC bool, override bool) (bool, error) {
+func (h *VideoHandler) streamWithTransmuxProvider(w http.ResponseWriter, r *http.Request, cleanPath string, forceAAC bool, override bool, container transmuxContainer) (bool, error) {
 	if !h.transmux && !override {
 		return false, errors.New("transmux disabled")
 	}
@@ -1661,8 +1823,14 @@ func (h *VideoHandler) streamWithTransmuxProvider(w http.ResponseWriter, r *http
 
 	if r.Method == http.MethodHead {
 		h.writeCommonHeaders(w)
-		w.Header().Set("Content-Type", "video/mp4")
+		w.Header().Set("Content-Type", container.contentType())
 		w.Header().Set("Accept-Ranges", "none")
+		if container == outputMpegTs {
+			// DLNA renderers abort when the server never confirms the transfer
+			// mode they asked for. Accept-Ranges stays "none": the transcode is
+			// progressive and cannot answer a byte-seek.
+			writeDlnaMpegTsHeaders(w, r)
+		}
 
 		if h.ffprobePath != "" {
 			if meta, err := h.runFFProbeFromProvider(ctx, cleanPath); err == nil && meta != nil {
@@ -1702,7 +1870,13 @@ func (h *VideoHandler) streamWithTransmuxProvider(w http.ResponseWriter, r *http
 		}
 	}
 
-	plan := h.buildTransmuxPlan(meta, "pipe:0", forceAAC, fallbackReason)
+	var plan transmuxPlan
+	if container == outputMpegTs {
+		plan = h.buildMpegTsPlan(meta, "pipe:0", fallbackReason)
+		log.Printf("[video] DLNA avc-ts output path=%q duration=%.3f ffmpeg=%s", cleanPath, plan.duration, strings.Join(plan.args, " "))
+	} else {
+		plan = h.buildTransmuxPlan(meta, "pipe:0", forceAAC, fallbackReason)
+	}
 
 	resp, err := h.streamer.Stream(ctx, streaming.Request{Path: cleanPath, Method: http.MethodGet})
 	if err != nil {
@@ -1747,12 +1921,32 @@ func (h *VideoHandler) streamWithTransmuxProvider(w http.ResponseWriter, r *http
 	}
 
 	go func() {
-		_, _ = io.Copy(io.Discard, stderr)
+		if plan.container != outputMpegTs {
+			_, _ = io.Copy(io.Discard, stderr)
+			return
+		}
+		// The DLNA arm is the only one that re-encodes video, so surface encoder
+		// failures instead of silently serving a stream the renderer drops.
+		buf := make([]byte, 4096)
+		for {
+			n, readErr := stderr.Read(buf)
+			if n > 0 {
+				if msg := strings.TrimSpace(string(buf[:n])); msg != "" {
+					log.Printf("[video] DLNA avc-ts ffmpeg: %s", msg)
+				}
+			}
+			if readErr != nil {
+				return
+			}
+		}
 	}()
 
 	h.writeCommonHeaders(w)
-	w.Header().Set("Content-Type", "video/mp4")
+	w.Header().Set("Content-Type", plan.container.contentType())
 	w.Header().Set("Accept-Ranges", "none")
+	if plan.container == outputMpegTs {
+		writeDlnaMpegTsHeaders(w, r)
+	}
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Transfer-Encoding", "chunked")
 	if plan.duration > 0 {
@@ -2377,9 +2571,12 @@ func (h *VideoHandler) ProbeVideo(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// buildTransmuxPlan produces the default fragmented MP4 plan: video is stream
+// copied and only incompatible audio is re-encoded.
 func (h *VideoHandler) buildTransmuxPlan(meta *ffprobeOutput, inputSpecifier string, forceAAC bool, fallbackReason string) transmuxPlan {
 	plan := transmuxPlan{
-		videoMap: "0:v:0",
+		container: outputFmp4,
+		videoMap:  "0:v:0",
 		audio: audioPlan{
 			mode:   audioPlanFallback,
 			reason: fallbackReason,
@@ -2692,6 +2889,202 @@ func appendStreamingOutputArgs(args []string, movflags string) []string {
 		"pipe:1",
 	)
 	return args
+}
+
+const (
+	// dlnaMaxWidth and dlnaMaxHeight bound the H.264 output for legacy DLNA
+	// renderers. Their AVC level 4.0 decoders top out at the 1080p box, and a
+	// height-only cap would hand an ultra-wide source a 2578-pixel-wide frame.
+	dlnaMaxWidth  = 1920
+	dlnaMaxHeight = 1080
+	// dlnaMaxAudioChannels is the AC3 encoder's ceiling (5.1).
+	dlnaMaxAudioChannels = 6
+	// dlnaAC3Bitrate is comfortably inside AC3's 640 kbps limit at 5.1.
+	dlnaAC3Bitrate = "448k"
+)
+
+// mpegTsEncodeInput is the probe-derived shape of one legacy DLNA transcode.
+// Zero values are the "probe unavailable" case and stay safe: the scaler is
+// applied (it never upscales) and the audio is downmixed.
+type mpegTsEncodeInput struct {
+	inputURL string
+	videoMap string
+	// audioMap is empty when the source has no audio stream to carry.
+	audioMap       string
+	sourceWidth    int
+	sourceHeight   int
+	audioChannels  int
+	hdr            bool
+	sourceTransfer string
+}
+
+// buildMpegTsArgs assembles the complete ffmpeg invocation for the legacy DLNA
+// output: H.264 + AC3 in a 188-byte transport stream. Nothing is stream copied —
+// these renderers accept exactly one video and one audio codec — so the encoder
+// selection, HDR tone mapping and downscale all come from the same hardware
+// plan the HLS web path uses.
+func buildMpegTsArgs(in mpegTsEncodeInput, caps HWAccelCaps) []string {
+	maxWidth, maxHeight := dlnaMaxWidth, dlnaMaxHeight
+	if in.sourceWidth > 0 && in.sourceHeight > 0 &&
+		in.sourceWidth <= dlnaMaxWidth && in.sourceHeight <= dlnaMaxHeight {
+		// Already inside the renderer's decode box, so drop the scaler entirely
+		// rather than round-tripping a 720p source through it.
+		maxWidth, maxHeight = 0, 0
+	}
+
+	encode := buildVideoEncodePlanWithLimits(caps, in.hdr, maxWidth, maxHeight, 0, in.sourceTransfer)
+	if in.hdr && !encode.Tonemapped {
+		warnMissingTonemapOnce()
+	}
+
+	args := make([]string, 0, 40)
+	args = append(args, "-nostdin", "-loglevel", "error")
+	// Hardware device initialization has to precede -i.
+	args = append(args, encode.GlobalArgs...)
+	args = append(args, "-i", in.inputURL)
+
+	videoMap := strings.TrimSpace(in.videoMap)
+	if videoMap == "" {
+		videoMap = "0:v:0"
+	}
+	args = append(args, "-map", videoMap)
+	if in.audioMap != "" {
+		args = append(args, "-map", in.audioMap)
+	}
+	// MPEG-TS cannot carry the text subtitle codecs these sources ship, and a
+	// legacy demuxer gives up on elementary streams it does not recognize, so
+	// only video and audio are mapped.
+	args = append(args, "-sn", "-dn")
+
+	if encode.Filter != "" {
+		args = append(args, "-vf", encode.Filter)
+	}
+	args = append(args, encode.EncoderArgs...)
+
+	if in.audioMap == "" {
+		args = append(args, "-an")
+	} else {
+		args = append(args, "-c:a", "ac3", "-b:a", dlnaAC3Bitrate)
+		if in.audioChannels > dlnaMaxAudioChannels || in.audioChannels <= 0 {
+			// The AC3 encoder stops at 5.1: a 7.1 source (or an unknown layout,
+			// which may well be 7.1) aborts the whole stream without a downmix.
+			args = append(args, "-ac", strconv.Itoa(dlnaMaxAudioChannels))
+		}
+	}
+
+	return appendMpegTsOutputArgs(args)
+}
+
+// appendMpegTsOutputArgs closes out a 188-byte MPEG-TS pipe. This is the
+// MPEG-TS sibling of appendStreamingOutputArgs; -movflags is MP4-only and
+// FFmpeg warns or errors when it is passed to another muxer.
+func appendMpegTsOutputArgs(args []string) []string {
+	return append(args,
+		// Renderers that parse the stream late still need to find a PAT/PMT.
+		"-mpegts_flags", "+resend_headers",
+		"-muxdelay", "0",
+		"-muxpreload", "0",
+		"-f", "mpegts",
+		"pipe:1",
+	)
+}
+
+var missingTonemapWarning sync.Once
+
+// warnMissingTonemapOnce reports the absence of a tone-map filter once per
+// process. A washed-out picture beats a refused stream, so the transcode goes
+// ahead without tone mapping.
+func warnMissingTonemapOnce() {
+	missingTonemapWarning.Do(func() {
+		log.Printf("[video] no tone-map filter available in this FFmpeg build; HDR sources stream to SDR renderers untone-mapped")
+	})
+}
+
+// sourceNeedsToneMapping reports whether a video stream carries HDR signalling
+// an SDR renderer cannot interpret, along with the source transfer function so
+// HLG is tone mapped from the right curve. detectDolbyVision already covers DV
+// RPUs plus PQ/HLG on HEVC; the raw transfer check catches HDR10 carried by
+// other codecs.
+func sourceNeedsToneMapping(stream *ffprobeStream) (bool, string) {
+	if stream == nil {
+		return false, ""
+	}
+	transfer := strings.ToLower(strings.TrimSpace(stream.ColorTransfer))
+	if hasDV, _, hdrFormat := detectDolbyVision(stream); hasDV || hdrFormat != "" {
+		return true, transfer
+	}
+	return transfer == "smpte2084" || transfer == "arib-std-b67", transfer
+}
+
+// dlnaEncodeCaps returns the hardware encode capabilities for the DLNA MPEG-TS
+// transcode. The HLS manager already caches detection and honours the configured
+// preference, so reuse it; when transmux is disabled globally no manager exists,
+// so detect once and remember it.
+func (h *VideoHandler) dlnaEncodeCaps() HWAccelCaps {
+	if h.hlsManager != nil {
+		return h.hlsManager.hwAccelCaps()
+	}
+	h.dlnaCapsOnce.Do(func() {
+		h.dlnaCaps = detectHWAccel(h.ffmpegPath, currentHWAccelPreference(h.configManager))
+	})
+	return h.dlnaCaps
+}
+
+// buildMpegTsPlan produces the H.264/AC3 MPEG-TS transcode plan for legacy DLNA
+// renderers.
+func (h *VideoHandler) buildMpegTsPlan(meta *ffprobeOutput, inputSpecifier, fallbackReason string) transmuxPlan {
+	plan := transmuxPlan{
+		container: outputMpegTs,
+		videoMap:  "0:v:0",
+		audio: audioPlan{
+			mode:   audioPlanTranscode,
+			reason: "dlna avc-ts renderers require ac3 audio",
+		},
+	}
+	in := mpegTsEncodeInput{
+		inputURL: inputSpecifier,
+		videoMap: plan.videoMap,
+		// The "?" keeps ffmpeg from failing outright on a video-only source.
+		audioMap: "0:a:0?",
+	}
+
+	if meta == nil {
+		if reason := strings.TrimSpace(fallbackReason); reason != "" {
+			plan.audio.reason = reason
+		}
+		plan.args = buildMpegTsArgs(in, h.dlnaEncodeCaps())
+		return plan
+	}
+
+	plan.usedProbe = true
+	plan.duration = parseFloat(meta.Format.Duration)
+
+	if stream := selectPrimaryVideoStream(meta); stream != nil {
+		plan.videoMap = fmt.Sprintf("0:%d", stream.Index)
+		plan.videoCodec = strings.ToLower(strings.TrimSpace(stream.CodecName))
+		hasDV, dvProfile, _ := detectDolbyVision(stream)
+		plan.hasDolbyVision = hasDV
+		plan.dolbyVisionProfile = dvProfile
+		in.videoMap = plan.videoMap
+		in.sourceWidth = stream.Width
+		in.sourceHeight = stream.Height
+		in.hdr, in.sourceTransfer = sourceNeedsToneMapping(stream)
+	}
+
+	// Reuse the shared track selection so the renderer hears the same audio the
+	// app would have picked, then re-encode whatever it lands on to AC3.
+	if audio := determineAudioPlan(meta, false); audio.stream != nil {
+		plan.audio.stream = audio.stream
+		plan.audio.reason = fmt.Sprintf("transcoding audio codec %s to ac3 for dlna renderer", audio.codec())
+		in.audioMap = fmt.Sprintf("0:%d", audio.stream.Index)
+		in.audioChannels = audio.stream.Channels
+	} else {
+		plan.audio = audioPlan{mode: audioPlanNone, reason: "no audio streams detected"}
+		in.audioMap = ""
+	}
+
+	plan.args = buildMpegTsArgs(in, h.dlnaEncodeCaps())
+	return plan
 }
 
 func shouldTagHevcAsHvc1(codec string) bool {
@@ -3098,7 +3491,10 @@ func (p audioPlan) codec() string {
 }
 
 type transmuxPlan struct {
-	args               []string
+	args []string
+	// container is the muxer the args write to and the Content-Type the response
+	// must advertise. Zero value is the fragmented MP4 output.
+	container          transmuxContainer
 	audio              audioPlan
 	videoMap           string
 	videoCodec         string
@@ -3130,6 +3526,7 @@ type ffprobeStream struct {
 	Height         int               `json:"height"`
 	PixFmt         string            `json:"pix_fmt"`
 	Profile        string            `json:"profile"`
+	Level          int               `json:"level"`
 	AvgFrameRate   string            `json:"avg_frame_rate"`
 	ColorSpace     string            `json:"color_space"`
 	ColorTransfer  string            `json:"color_transfer"`
@@ -3309,6 +3706,54 @@ func (h *VideoHandler) writeCommonHeaders(w http.ResponseWriter) {
 	w.Header().Set("Expires", "0")
 }
 
+// dlnaContentFeatures advertises byte-seek support (OP=01), no transcode
+// (CI=0), and the standard streaming flag set: streaming transfer mode,
+// background transfer, connection stalling, DLNA v1.5.
+const dlnaContentFeatures = "DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000"
+
+// writeDlnaHeaders satisfies the DLNA HTTP serving requirements that strict
+// renderers enforce. LG webOS negotiates a stream, then aborts with "file
+// cannot be recognized" when the server never echoes transferMode.dlna.org or
+// confirms contentFeatures.dlna.org, regardless of codec or container. The
+// DIDL-Lite we send already advertises DLNA.ORG_OP=01, so the HTTP responses
+// have to agree or the renderer treats the resource as inconsistent.
+func writeDlnaHeaders(w http.ResponseWriter, r *http.Request) {
+	mode := strings.TrimSpace(r.Header.Get("transferMode.dlna.org"))
+	if mode == "" {
+		mode = "Streaming"
+	}
+	// Assign the header map directly: Set would canonicalize these to
+	// "Transfermode.dlna.org", and DLNA renderers match the spec casing.
+	w.Header()["transferMode.dlna.org"] = []string{mode}
+	w.Header()["contentFeatures.dlna.org"] = []string{dlnaContentFeatures}
+	w.Header().Set("Accept-Ranges", "bytes")
+}
+
+// dlnaMpegTsContentFeatures describes the progressive transport stream. OP=00
+// because a live transcode cannot byte-seek, which is consistent with the
+// Accept-Ranges: none this arm sends; CI=1 because the stream is transcoded.
+const dlnaMpegTsContentFeatures = "DLNA.ORG_PN=AVC_TS_HD_24_AC3_ISO;DLNA.ORG_OP=00;DLNA.ORG_CI=1;DLNA.ORG_FLAGS=01700000000000000000000000000000"
+
+// writeDlnaMpegTsHeaders describes the progressive MPEG-TS transcode to a
+// renderer. It cannot reuse writeDlnaHeaders, which advertises byte seeking this
+// arm does not support. Omitting contentFeatures entirely is not an option: a
+// DLNA 1.0 renderer that asked for it and receives nothing cannot confirm the
+// profile and rejects SetAVTransportURI with UPnP 714 "Illegal MIME-type"
+// (observed on a Sony BRAVIA KDL-46NX700).
+func writeDlnaMpegTsHeaders(w http.ResponseWriter, r *http.Request) {
+	if r == nil {
+		return
+	}
+	mode := strings.TrimSpace(r.Header.Get("transferMode.dlna.org"))
+	if mode == "" {
+		mode = "Streaming"
+	}
+	// Assign the header map directly: Set would canonicalize the keys to
+	// "Transfermode.dlna.org", and DLNA renderers match the spec casing.
+	w.Header()["transferMode.dlna.org"] = []string{mode}
+	w.Header()["contentFeatures.dlna.org"] = []string{dlnaMpegTsContentFeatures}
+}
+
 func sanitizeExternalDisplayName(input string) string {
 	name := strings.TrimSpace(input)
 	if name == "" {
@@ -3467,6 +3912,18 @@ func (h *VideoHandler) StartHLSSession(w http.ResponseWriter, r *http.Request) {
 	forceAAC := r.URL.Query().Get("forceAAC") == "true"
 	castMode := r.URL.Query().Get("cast") == "true"
 	playbackTarget := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("target")))
+	castProfile := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("castProfile")))
+	if castMode && isDirectCastTarget(playbackTarget, castProfile) {
+		playbackTarget = "cast-direct"
+	}
+
+	var castReceiverHost string
+	if castMode {
+		if ip := net.ParseIP(strings.TrimSpace(r.URL.Query().Get("castDeviceIp"))); ip != nil {
+			castReceiverHost = ip.String()
+		}
+	}
+
 	durationHint := 0.0
 	if durationParam := strings.TrimSpace(r.URL.Query().Get("durationHint")); durationParam != "" {
 		if parsed, err := strconv.ParseFloat(durationParam, 64); err == nil {
@@ -3591,7 +4048,7 @@ func (h *VideoHandler) StartHLSSession(w http.ResponseWriter, r *http.Request) {
 	videoTracef("[video] creating HLS session for path=%q dv=%v dvProfile=%q hdr=%v start=%.3fs transcodingOffset=%.3fs audioTrack=%d subtitleTrack=%d",
 		cleanPath, hasDV, dvProfile, hasHDR, startSeconds, transcodingOffset, audioTrackIndex, subtitleTrackIndex)
 
-	session, err := h.hlsManager.CreateSession(r.Context(), cleanPath, path, hasDV, dvProfile, hasHDR, forceAAC, startSeconds, transcodingOffset, audioTrackIndex, subtitleTrackIndex, profileID, profileName, getClientIP(r), castMode, "", playbackTarget, durationHint)
+	session, err := h.hlsManager.CreateSession(r.Context(), cleanPath, path, hasDV, dvProfile, hasHDR, forceAAC, startSeconds, transcodingOffset, audioTrackIndex, subtitleTrackIndex, profileID, profileName, getClientIP(r), castMode, "", playbackTarget, durationHint, castReceiverHost)
 	if err != nil {
 		log.Printf("[video] failed to create HLS session: %v", err)
 		if errors.Is(err, streaming.ErrStaleTorrent) {
@@ -3621,11 +4078,12 @@ func (h *VideoHandler) StartHLSSession(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	response := map[string]interface{}{
-		"sessionId":         session.ID,
-		"playlistUrl":       h.hlsManager.buildSessionPlaylistURL(session),
-		"startOffset":       session.StartOffset,
-		"actualStartOffset": actualStartOffset,
-		"keyframeDelta":     keyframeDelta,
+		"sessionId":          session.ID,
+		"playlistUrl":        h.hlsManager.buildSessionPlaylistURL(session),
+		"startOffset":        session.StartOffset,
+		"actualStartOffset":  actualStartOffset,
+		"keyframeDelta":      keyframeDelta,
+		"stableCastTimeline": session.usesStableCastTimeline() && session.Duration > 0,
 	}
 
 	// Include duration if it was successfully probed
@@ -5131,7 +5589,7 @@ func (h *VideoHandler) CreateHLSSession(ctx context.Context, path string, hasDV 
 		}
 	}
 
-	session, err := h.hlsManager.CreateSession(ctx, path, path, hasDV, dvProfile, hasHDR, false, startOffset, 0, audioTrackIndex, subtitleTrackIndex, profileID, "", "", false, prequeueType, "", 0)
+	session, err := h.hlsManager.CreateSession(ctx, path, path, hasDV, dvProfile, hasHDR, false, startOffset, 0, audioTrackIndex, subtitleTrackIndex, profileID, "", "", false, prequeueType, "", 0, "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HLS session: %w", err)
 	}
@@ -5415,6 +5873,9 @@ func (h *VideoHandler) ProbeVideoFull(ctx context.Context, path string) (*VideoF
 		result.VideoCodec = strings.ToLower(strings.TrimSpace(stream.CodecName))
 		result.VideoPixFmt = strings.ToLower(strings.TrimSpace(stream.PixFmt))
 		result.VideoProfile = strings.ToLower(strings.TrimSpace(stream.Profile))
+		result.VideoWidth = stream.Width
+		result.VideoHeight = stream.Height
+		result.VideoLevel = stream.Level
 		result.AvgFrameRate = strings.TrimSpace(stream.AvgFrameRate)
 
 		// Detect Dolby Vision
@@ -5518,6 +5979,9 @@ func (h *VideoHandler) unifiedProbeToVideoFull(cached *UnifiedProbeResult) *Vide
 		VideoCodec:               cached.VideoCodec,
 		VideoPixFmt:              cached.VideoPixFmt,
 		VideoProfile:             cached.VideoProfile,
+		VideoWidth:               cached.VideoWidth,
+		VideoHeight:              cached.VideoHeight,
+		VideoLevel:               cached.VideoLevel,
 		AvgFrameRate:             cached.AvgFrameRate,
 		HasDolbyVision:           cached.HasDolbyVision,
 		HasHDR10:                 cached.HasHDR10,
@@ -5561,6 +6025,9 @@ func (h *VideoHandler) videoFullToUnifiedProbe(result *VideoFullResult) *Unified
 		VideoCodec:               result.VideoCodec,
 		VideoPixFmt:              result.VideoPixFmt,
 		VideoProfile:             result.VideoProfile,
+		VideoWidth:               result.VideoWidth,
+		VideoHeight:              result.VideoHeight,
+		VideoLevel:               result.VideoLevel,
 		AvgFrameRate:             result.AvgFrameRate,
 		HasDolbyVision:           result.HasDolbyVision,
 		HasHDR10:                 result.HasHDR10,
@@ -6164,29 +6631,29 @@ func (h *VideoHandler) requireAllowedExternalPath(w http.ResponseWriter, r *http
 
 func configuredProviderHostPolicy(configManager ConfigProvider) requestsecurity.RestrictedHostPolicy {
 	allowed := make(map[string]struct{})
-	if configManager != nil {
-		if settings, err := configManager.Load(); err == nil {
-			addURLOrigin := func(raw string) {
-				parsed, err := url.Parse(strings.TrimSpace(raw))
-				if err != nil || parsed == nil {
-					return
-				}
-				scheme := strings.ToLower(parsed.Scheme)
-				if parsed.Hostname() != "" && (scheme == "http" || scheme == "https") {
-					port := parsed.Port()
-					if port == "" {
-						switch scheme {
-						case "http":
-							port = "80"
-						case "https":
-							port = "443"
-						}
-					}
-					if port != "" {
-						allowed[privateMediaEndpointKey(parsed.Hostname(), port)] = struct{}{}
-					}
+	addURLOrigin := func(raw string) {
+		parsed, err := url.Parse(strings.TrimSpace(raw))
+		if err != nil || parsed == nil {
+			return
+		}
+		scheme := strings.ToLower(parsed.Scheme)
+		if parsed.Hostname() != "" && (scheme == "http" || scheme == "https") {
+			port := parsed.Port()
+			if port == "" {
+				switch scheme {
+				case "http":
+					port = "80"
+				case "https":
+					port = "443"
 				}
 			}
+			if port != "" {
+				allowed[privateMediaEndpointKey(parsed.Hostname(), port)] = struct{}{}
+			}
+		}
+	}
+	if configManager != nil {
+		if settings, err := configManager.Load(); err == nil {
 			for _, origin := range settings.Server.AllowedPrivateMediaOrigins {
 				addURLOrigin(origin)
 			}
@@ -6616,6 +7083,7 @@ func (h *VideoHandler) CropDetect(w http.ResponseWriter, r *http.Request) {
 		sort.Float64s(topFractions)
 		sort.Float64s(bottomFractions)
 		medianTop := topFractions[len(topFractions)/2]
+
 		medianBottom := bottomFractions[len(bottomFractions)/2]
 
 		// Asymmetry check: if top and bottom differ by more than 3%, discard both
@@ -6660,9 +7128,20 @@ func (h *VideoHandler) resolveSeekableURL(ctx context.Context, cleanPath string)
 	}
 
 	// Try WebDAV URL (usenet)
+
 	if webdavURL := h.buildWebDAVURL(cleanPath); webdavURL != "" {
 		return webdavURL, nil
 	}
 
 	return "", fmt.Errorf("no seekable URL available")
+}
+
+func (h *VideoHandler) SetCastCapabilities(store *castcaps.Store) {
+	if h == nil {
+		return
+	}
+	h.castCaps = store
+	if h.hlsManager != nil {
+		h.hlsManager.SetCastCapabilities(store)
+	}
 }

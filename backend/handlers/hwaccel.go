@@ -249,12 +249,7 @@ func detectHWAccel(ffmpegPath, pref string) HWAccelCaps {
 	var candidates []HWAccelKind
 	switch pref {
 	case "auto":
-		// NVENC and QSV/VAAPI are the common Docker passthrough cases;
-		// VideoToolbox covers macOS hosts.
-		candidates = []HWAccelKind{HWNVENC, HWQSV, HWVAAPI}
-		if runtime.GOOS == "darwin" {
-			candidates = append([]HWAccelKind{HWVideoToolbox}, candidates...)
-		}
+		candidates = autoEncodeCandidates(encoders)
 	case string(HWNVENC):
 		candidates = []HWAccelKind{HWNVENC}
 	case string(HWQSV):
@@ -282,6 +277,19 @@ func detectHWAccel(ffmpegPath, pref string) HWAccelCaps {
 
 	log.Printf("[hwaccel] no usable hardware encoder found for preference=%s candidates=%v; using libx264", pref, candidates)
 	return caps
+}
+
+// autoEncodeCandidates orders the "auto" preference probes. NVENC and QSV/VAAPI
+// are the common Docker passthrough cases; VideoToolbox covers macOS hosts.
+// Candidacy follows the encoder the configured ffmpeg actually reports rather
+// than this process's GOOS, so a build that exposes VideoToolbox is always
+// tried first. Every candidate still has to pass a real test encode.
+func autoEncodeCandidates(encoders map[string]bool) []HWAccelKind {
+	candidates := []HWAccelKind{HWNVENC, HWQSV, HWVAAPI}
+	if encoders[hwEncoderName(HWVideoToolbox)] || runtime.GOOS == "darwin" {
+		candidates = append([]HWAccelKind{HWVideoToolbox}, candidates...)
+	}
+	return candidates
 }
 
 // detectTonemap returns the best verified tone-mapping implementation.
@@ -543,6 +551,15 @@ func looksLikeCapabilityFlags(s string) bool {
 // sourceTransfer is optional for compatibility with callers that have no probe
 // metadata; those sources conservatively default to PQ.
 func buildVideoEncodePlan(caps HWAccelCaps, tonemapNeeded bool, sourceTransfer ...string) videoEncodePlan {
+	return buildVideoEncodePlanWithLimits(caps, tonemapNeeded, 0, 0, 0, sourceTransfer...)
+}
+
+func buildVideoEncodePlanWithLimits(
+	caps HWAccelCaps,
+	tonemapNeeded bool,
+	maxWidth, maxHeight, maxFPS int,
+	sourceTransfer ...string,
+) videoEncodePlan {
 	plan := videoEncodePlan{Kind: caps.Encode}
 
 	// VAAPI/QSV encoders need their own filter hardware device for the hwupload
@@ -559,6 +576,20 @@ func buildVideoEncodePlan(caps HWAccelCaps, tonemapNeeded bool, sourceTransfer .
 		}
 	}
 	var filters []string
+	if maxWidth > 0 && maxHeight > 0 {
+		// Fit inside the receiver's decode box before tone mapping and hardware
+		// upload. The min() bounds prevent upscaling; the aspect-ratio and
+		// divisibility options keep the output valid for 4:2:0 H.264 encoders.
+		filters = append(filters, fmt.Sprintf(
+			"scale=w='min(%d,iw)':h='min(%d,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
+			maxWidth,
+			maxHeight,
+		))
+	}
+	if maxFPS > 0 {
+		// Cap high-frame-rate input without duplicating lower-rate frames.
+		filters = append(filters, fmt.Sprintf("fps='min(source_fps,%d)'", maxFPS))
+	}
 	if tonemapNeeded && tonemapImpl != "" {
 		plan.Tonemap = tonemapImpl
 		inputTransfer := "smpte2084"
@@ -661,6 +692,9 @@ func buildVideoEncodePlan(caps HWAccelCaps, tonemapNeeded bool, sourceTransfer .
 			"-level", "4.1",
 			"-pix_fmt", "yuv420p",
 		}
+	}
+	if maxFPS > 0 {
+		plan.EncoderArgs = append(plan.EncoderArgs, "-level:v", "4.1")
 	}
 
 	if len(filters) > 0 {

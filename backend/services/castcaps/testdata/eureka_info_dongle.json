@@ -1,0 +1,18 @@
+{
+  "build_version": "291998",
+  "cast_build_revision": "1.56.291998",
+  "closed_caption": {},
+  "connected": true,
+  "has_update": false,
+  "locale": "en-US",
+  "name": "Avery's room TV",
+  "release_track": "stable-channel",
+  "ssdp_udn": "9f8e7d6c-5b4a-4392-8170-6f5e4d3c2b1a",
+  "settings": {
+    "name": "Avery's room TV"
+  },
+  "time_format": 1,
+  "timezone": "America/Los_Angeles",
+  "uptime": 903412.0,
+  "version": 8
+}
