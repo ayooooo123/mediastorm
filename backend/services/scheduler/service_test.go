@@ -50,7 +50,7 @@ func (f *fakeLocalMediaScanner) ListLibraries(ctx context.Context) ([]models.Loc
 	return append([]models.LocalMediaLibrary(nil), f.libraries...), nil
 }
 
-func (f *fakeLocalMediaScanner) StartScan(ctx context.Context, libraryID string) (models.LocalMediaScanSummary, error) {
+func (f *fakeLocalMediaScanner) RunScan(ctx context.Context, libraryID string) (models.LocalMediaScanSummary, error) {
 	f.scanned = append(f.scanned, libraryID)
 	return f.summaries[libraryID], nil
 }

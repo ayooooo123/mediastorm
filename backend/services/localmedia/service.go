@@ -1365,33 +1365,73 @@ func (s *Service) refreshLibrarySummary(ctx context.Context, libraryID string) e
 	return s.repo.UpdateLibrary(ctx, library)
 }
 
+// StartScan accepts a library scan and runs it in the background so long-lived
+// HTTP clients (admin UI) are not tied to scan duration. Progress and completion
+// are exposed via library lastScan* fields.
 func (s *Service) StartScan(ctx context.Context, libraryID string) (models.LocalMediaScanSummary, error) {
-	library, err := s.repo.GetLibrary(ctx, libraryID)
+	library, err := s.beginScan(ctx, libraryID)
 	if err != nil {
 		return models.LocalMediaScanSummary{}, err
 	}
+
+	// Persist scanning status before returning so polls see the job immediately.
+	if err := s.markLibraryScanning(ctx, library); err != nil {
+		s.finishScan(library.ID)
+		return models.LocalMediaScanSummary{}, err
+	}
+
+	libCopy := *library
+	go func() {
+		if _, err := s.scanLibrary(context.Background(), libCopy); err != nil {
+			log.Printf("[localmedia] background scan failed library=%q id=%s: %v", libCopy.Name, libCopy.ID, err)
+		}
+	}()
+
+	return models.LocalMediaScanSummary{
+		Status: string(models.LocalMediaScanStatusScanning),
+		Async:  true,
+	}, nil
+}
+
+// RunScan runs a library scan synchronously and returns the final summary.
+// Used by the scheduler and tests that need completion results.
+func (s *Service) RunScan(ctx context.Context, libraryID string) (models.LocalMediaScanSummary, error) {
+	library, err := s.beginScan(ctx, libraryID)
+	if err != nil {
+		return models.LocalMediaScanSummary{}, err
+	}
+	return s.scanLibrary(context.WithoutCancel(ctx), *library)
+}
+
+func (s *Service) beginScan(ctx context.Context, libraryID string) (*models.LocalMediaLibrary, error) {
+	library, err := s.repo.GetLibrary(ctx, libraryID)
+	if err != nil {
+		return nil, err
+	}
 	if library == nil {
-		return models.LocalMediaScanSummary{}, ErrLibraryNotFound
+		return nil, ErrLibraryNotFound
 	}
 
 	s.mu.Lock()
 	if state, ok := s.scans[libraryID]; ok && state.inProgress {
 		s.mu.Unlock()
-		return models.LocalMediaScanSummary{}, ErrLibraryScanning
+		return nil, ErrLibraryScanning
 	}
 	s.scans[libraryID] = scanState{inProgress: true, startedAt: time.Now().UTC()}
 	s.mu.Unlock()
-
-	return s.scanLibrary(context.WithoutCancel(ctx), *library)
+	return library, nil
 }
 
-func (s *Service) scanLibrary(ctx context.Context, library models.LocalMediaLibrary) (models.LocalMediaScanSummary, error) {
-	defer func() {
-		s.mu.Lock()
-		delete(s.scans, library.ID)
-		s.mu.Unlock()
-	}()
+func (s *Service) finishScan(libraryID string) {
+	s.mu.Lock()
+	delete(s.scans, libraryID)
+	s.mu.Unlock()
+}
 
+func (s *Service) markLibraryScanning(ctx context.Context, library *models.LocalMediaLibrary) error {
+	if library == nil {
+		return ErrLibraryNotFound
+	}
 	startedAt := time.Now().UTC()
 	library.LastScanStartedAt = &startedAt
 	library.LastScanFinishedAt = nil
@@ -1402,9 +1442,21 @@ func (s *Service) scanLibrary(ctx context.Context, library models.LocalMediaLibr
 	library.LastScanMatched = 0
 	library.LastScanLowConf = 0
 	library.UpdatedAt = startedAt
-	log.Printf("[localmedia] scan started library=%q id=%s type=%s root=%q", library.Name, library.ID, library.Type, library.RootPath)
-	if err := s.repo.UpdateLibrary(ctx, &library); err != nil {
+	if err := s.repo.UpdateLibrary(ctx, library); err != nil {
 		log.Printf("[localmedia] failed to mark scan started library=%q id=%s: %v", library.Name, library.ID, err)
+		return err
+	}
+	return nil
+}
+
+func (s *Service) scanLibrary(ctx context.Context, library models.LocalMediaLibrary) (models.LocalMediaScanSummary, error) {
+	defer s.finishScan(library.ID)
+
+	log.Printf("[localmedia] scan started library=%q id=%s type=%s root=%q", library.Name, library.ID, library.Type, library.RootPath)
+	// Always re-assert scanning state at worker start (idempotent with StartScan pre-mark).
+	if err := s.markLibraryScanning(ctx, &library); err != nil {
+		// Continue the scan even if the status write failed; discover/match still needs to run.
+		// Counters may lag until the next successful progress update.
 	}
 
 	scanID := uuid.NewString()

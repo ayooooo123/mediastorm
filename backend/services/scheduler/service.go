@@ -67,7 +67,8 @@ type schedulerUsersProvider interface {
 
 type localMediaScanner interface {
 	ListLibraries(ctx context.Context) ([]models.LocalMediaLibrary, error)
-	StartScan(ctx context.Context, libraryID string) (models.LocalMediaScanSummary, error)
+	// RunScan runs a library scan to completion (synchronous).
+	RunScan(ctx context.Context, libraryID string) (models.LocalMediaScanSummary, error)
 }
 
 type schedulerMetadataService interface {
@@ -410,7 +411,7 @@ func (s *Service) executeLocalMediaScan(task config.ScheduledTask) (SyncResult, 
 		var total models.LocalMediaScanSummary
 		scanned := 0
 		for _, library := range libraries {
-			summary, err := s.localMediaService.StartScan(context.Background(), library.ID)
+			summary, err := s.localMediaService.RunScan(context.Background(), library.ID)
 			if err != nil {
 				return SyncResult{}, fmt.Errorf("scan library %q: %w", library.Name, err)
 			}
@@ -434,7 +435,7 @@ func (s *Service) executeLocalMediaScan(task config.ScheduledTask) (SyncResult, 
 		}, nil
 	}
 
-	summary, err := s.localMediaService.StartScan(context.Background(), libraryID)
+	summary, err := s.localMediaService.RunScan(context.Background(), libraryID)
 	if err != nil {
 		return SyncResult{}, err
 	}

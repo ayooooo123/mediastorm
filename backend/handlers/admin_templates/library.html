@@ -266,12 +266,12 @@
         </div>
         <div class="card-body" style="display:grid;gap:1rem;">
             <label style="display:flex;gap:.65rem;align-items:flex-start;cursor:pointer;">
-                <input type="radio" name="libraryAccessMode" value="all">
+                <input type="radio" name="libraryAccessMode" value="all" checked>
                 <span><strong>All households</strong><span style="display:block;color:var(--text-muted);font-size:.82rem;margin-top:.15rem;">Every authenticated household and profile can use this library.</span></span>
             </label>
             <label style="display:flex;gap:.65rem;align-items:flex-start;cursor:pointer;">
-                <input type="radio" name="libraryAccessMode" value="restricted" checked>
-                <span><strong>Selected households and people</strong><span style="display:block;color:var(--text-muted);font-size:.82rem;margin-top:.15rem;">With no selections, only the master account can use the library.</span></span>
+                <input type="radio" name="libraryAccessMode" value="restricted">
+                <span><strong>Selected households and people</strong><span style="display:block;color:var(--text-muted);font-size:.82rem;margin-top:.15rem;">With no selections, only the master account (any of its profiles) can use the library. Grant other households or people explicitly.</span></span>
             </label>
             <div id="libraryAccessSubjects" style="display:grid;gap:.65rem;"></div>
             <div style="display:flex;justify-content:flex-end;gap:.5rem;">
@@ -914,6 +914,9 @@ let selectedLibraryId = '';
 let currentFilter = 'all';
 let currentBrowsePath = '';
 let librariesPollHandle = 0;
+let librariesLoadSeq = 0;
+let librariesLoadInFlight = false;
+let librariesLoadQueued = false;
 let currentItemsOffset = 0;
 const itemsPageSize = 50;
 let currentItemQuery = '';
@@ -1092,16 +1095,26 @@ async function createLibrary(event) {
 }
 
 async function loadLibraries() {
+  // Coalesce overlapping polls so create/scan activity cannot pile up stale responses.
+  if (librariesLoadInFlight) {
+    librariesLoadQueued = true;
+    return;
+  }
+  librariesLoadInFlight = true;
   const container = document.getElementById('librariesList');
+  const seq = ++librariesLoadSeq;
   try {
     const res = await fetch(basePath + '/api/library/libraries');
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
+    if (seq !== librariesLoadSeq) return;
+    const previousLibraries = libraries.slice();
     const previousSelectedLibrary = selectedLibraryId
-      ? libraries.find(library => library.id === selectedLibraryId)
+      ? previousLibraries.find(library => library.id === selectedLibraryId)
       : null;
     libraries = Array.isArray(data) ? data : [];
     renderLibraries(container);
+    notifyCompletedLibraryScans(previousLibraries, libraries);
     if (!selectedLibraryId && libraries.length > 0) {
       selectedLibraryId = libraries[0].id;
       lastSelectedLibraryScanStatus = libraries[0].lastScanStatus || '';
@@ -1121,8 +1134,42 @@ async function loadLibraries() {
       }
     }
   } catch (err) {
+    if (seq !== librariesLoadSeq) return;
+    // Keep the last good library cards (including live scan progress) on transient failures.
+    if (libraries.length) {
+      showToast(err.message || 'Failed to refresh libraries', 'error');
+      return;
+    }
     container.innerHTML = `<div style="color: var(--danger);">Failed to load libraries: ${escapeHtml(err.message)}</div>`;
+  } finally {
+    librariesLoadInFlight = false;
+    if (librariesLoadQueued) {
+      librariesLoadQueued = false;
+      loadLibraries();
+    }
   }
+}
+
+function notifyCompletedLibraryScans(previousLibraries, nextLibraries) {
+  const previousById = new Map((Array.isArray(previousLibraries) ? previousLibraries : []).map(library => [library.id, library]));
+  (Array.isArray(nextLibraries) ? nextLibraries : []).forEach(library => {
+    const previous = previousById.get(library.id);
+    if (!previous) return;
+    const previousStatus = previous.lastScanStatus || '';
+    const nextStatus = library.lastScanStatus || '';
+    if (previousStatus !== 'scanning' || nextStatus === 'scanning') return;
+    if (nextStatus === 'complete') {
+      const discovered = library.lastScanDiscovered || 0;
+      const matched = library.lastScanMatched || 0;
+      const lowConfidence = library.lastScanLowConfidence || 0;
+      showToast(`Scan complete · ${escapeHtml(library.name || 'Library')}: ${discovered} files, ${matched} matched, ${lowConfidence} low confidence`);
+      return;
+    }
+    if (nextStatus === 'failed') {
+      const label = library.name ? ` · ${escapeHtml(library.name)}` : '';
+      showToast(escapeHtml(library.lastScanError || 'Scan failed') + label, 'error');
+    }
+  });
 }
 
 function renderLibraries(container) {
@@ -1308,6 +1355,13 @@ async function scanLibrary(id) {
     const res = await fetch(basePath + '/api/library/libraries/' + encodeURIComponent(id) + '/scan', { method: 'POST' });
     if (!res.ok) throw new Error(await res.text());
     const summary = await res.json();
+    // Local scans are accepted asynchronously; progress/completion come from polling.
+    if (summary && summary.async) {
+      showToast('Scan started');
+      await loadLibraries();
+      return;
+    }
+    // Remote sync (and any legacy synchronous scan) still returns final counts.
     const discovered = summary && typeof summary.discovered === 'number' ? summary.discovered : 0;
     const matched = summary && typeof summary.matched === 'number' ? summary.matched : 0;
     const lowConfidence = summary && typeof summary.lowConfidence === 'number' ? summary.lowConfidence : 0;
@@ -1317,7 +1371,8 @@ async function scanLibrary(id) {
       await loadItems(id);
     }
   } catch (err) {
-    showToast(err.message || 'Failed to complete scan', 'error');
+    showToast(err.message || 'Failed to start scan', 'error');
+    await loadLibraries();
   }
 }
 
