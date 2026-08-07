@@ -411,6 +411,15 @@ func TestCandidateMatchesEpisode(t *testing.T) {
 		{"Decimal version not episode", "/36 - 1.28.mkv", EpisodeCode{Season: 1, Episode: 1}, false},
 		// Slash-prefixed episode numbers should match (e.g., "/01 - Rebirth.mkv")
 		{"Slash prefix ep match", "/01 - Rebirth.mkv", EpisodeCode{Season: 1, Episode: 1}, true},
+
+		// Zero-padded 3-digit SxxExx (anime packs like Inuyasha Reza BD)
+		// Bug: \d{1,2} made S01E010 parse as S01E01 and S01E001 as S01E00.
+		{"3-digit pad S01E001 is ep 1", "[Reza] Inuyasha/[Reza] - Inuyasha - S01E001 (001).mkv", EpisodeCode{Season: 1, Episode: 1}, true},
+		{"3-digit pad S01E010 is not ep 1", "[Reza] Inuyasha/[Reza] - Inuyasha - S01E010 (010).mkv", EpisodeCode{Season: 1, Episode: 1}, false},
+		{"3-digit pad S01E010 is ep 10", "[Reza] Inuyasha/[Reza] - Inuyasha - S01E010 (010).mkv", EpisodeCode{Season: 1, Episode: 10}, true},
+		{"3-digit pad S01E019 is not ep 1", "[Reza] - Inuyasha - S01E019 (019).mkv", EpisodeCode{Season: 1, Episode: 1}, false},
+		{"3-digit pad S01E002 is ep 2", "[Reza] - Inuyasha - S01E002 (002).mkv", EpisodeCode{Season: 1, Episode: 2}, true},
+		{"3-digit bare paren ep", "[Reza] - Inuyasha - S01E001 (001).mkv", EpisodeCode{Season: 1, Episode: 1}, true},
 	}
 
 	for _, tt := range tests {
@@ -541,6 +550,52 @@ func TestSelectBestCandidate_NoAbsoluteWhenSXXEXXMatches(t *testing.T) {
 		t.Errorf("SelectBestCandidate returned index %d, want 1", idx)
 	}
 	t.Logf("Selection reason: %s", reason)
+}
+
+func TestSelectBestCandidate_ZeroPaddedThreeDigitSxxExx(t *testing.T) {
+	// Exact reproduction of the Inuyasha Reza pack bug:
+	// Files are named S01E001..S01E027. Target S01E01 was matching S01E010-S01E019
+	// because episodeCodePattern only captured \d{1,2} (prefix of 010 → 01).
+	candidates := []Candidate{
+		{Label: "[Reza] Inuyasha/[Reza] - Inuyasha - S01E001 (001).mkv", Priority: 1},
+		{Label: "[Reza] Inuyasha/[Reza] - Inuyasha - S01E002 (002).mkv", Priority: 1},
+		{Label: "[Reza] Inuyasha/[Reza] - Inuyasha - S01E009 (009).mkv", Priority: 1},
+		{Label: "[Reza] Inuyasha/[Reza] - Inuyasha - S01E010 (010).mkv", Priority: 1},
+		{Label: "[Reza] Inuyasha/[Reza] - Inuyasha - S01E011 (011).mkv", Priority: 1},
+		{Label: "[Reza] Inuyasha/[Reza] - Inuyasha - S01E019 (019).mkv", Priority: 1},
+		{Label: "[Reza] Inuyasha/[Reza] - Inuyasha - S01E020 (020).mkv", Priority: 1},
+	}
+
+	hints := SelectionHints{
+		ReleaseTitle:          "[Reza] Inuyasha S1 (001-027) [BDRip 1080p HEVC FLAC] (Dual Audio)",
+		TargetSeason:          1,
+		TargetEpisode:         1,
+		AbsoluteEpisodeNumber: 1,
+		TargetEpisodeCode:     "S01E01",
+	}
+
+	idx, reason := SelectBestCandidate(candidates, hints)
+	if idx != 0 {
+		got := ""
+		if idx >= 0 && idx < len(candidates) {
+			got = candidates[idx].Label
+		}
+		t.Errorf("SelectBestCandidate returned index %d (%q), want 0 (S01E001); reason=%s", idx, got, reason)
+	}
+	t.Logf("Selection reason: %s", reason)
+
+	// Also ensure looking for ep 10 picks S01E010, not S01E001
+	hints.TargetEpisode = 10
+	hints.AbsoluteEpisodeNumber = 10
+	hints.TargetEpisodeCode = "S01E10"
+	idx, reason = SelectBestCandidate(candidates, hints)
+	if idx != 3 {
+		got := ""
+		if idx >= 0 && idx < len(candidates) {
+			got = candidates[idx].Label
+		}
+		t.Errorf("SelectBestCandidate for E10 returned index %d (%q), want 3 (S01E010); reason=%s", idx, got, reason)
+	}
 }
 
 func TestSelectBestCandidate_MultiSeasonBatch(t *testing.T) {

@@ -50,9 +50,12 @@ var (
 		".zip":  {},
 		".7z":   {},
 	}
-	episodeCodePattern     = regexp.MustCompile(`(?i)s(\d{1,2})\s*e(\d{1,2})`)
-	episodeAltPattern      = regexp.MustCompile(`(?i)ep(?:isode)?\.?\s*(\d{1,2})`) // Matches "Ep. 01", "Episode 01", "Ep01"
-	episodeNumberPattern   = regexp.MustCompile(`(?i)[-_\s/](\d{1,2})[-_\s\[\.]`)  // Matches " - 01 - ", "_01_", "_01[", "_01.", "/01 " for season packs
+	// Episode digit width is 1-4 so zero-padded anime packs parse correctly:
+	// S01E001 → ep 1, S01E010 → ep 10 (not a prefix of S01E01).
+	// Previously \d{1,2} made S01E010 match as S01E01 and S01E001 as S01E00.
+	episodeCodePattern   = regexp.MustCompile(`(?i)s(\d{1,2})\s*e(\d{1,4})`)
+	episodeAltPattern    = regexp.MustCompile(`(?i)ep(?:isode)?\.?\s*(\d{1,4})`) // Matches "Ep. 01", "Episode 01", "Ep01", "Ep. 001"
+	episodeNumberPattern = regexp.MustCompile(`(?i)[-_\s/](\d{1,3})[-_\s\[\.]`) // Matches " - 01 - ", "_01_", "_01[", "_01.", "/01 ", " - 001 - " for season packs
 	seasonIndicatorPattern = regexp.MustCompile(`(?i)season[\s._-]*(\d{1,2})`)     // Matches "Season 02", "Season.02", "season_02"
 
 	// Absolute episode patterns for anime (3-4 digit episode numbers)
