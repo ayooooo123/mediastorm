@@ -190,13 +190,14 @@ RUN python3 -m venv /.venv && \
 # Download a checksum-pinned static ffmpeg build with Dolby Vision support.
 # Use TARGETARCH to select the correct binary for multi-platform builds.
 ARG TARGETARCH
-ARG FFMPEG_RELEASE=autobuild-2026-07-19-13-12
+# BtbN prunes old autobuilds; keep this pin on a currently published release.
+ARG FFMPEG_RELEASE=autobuild-2026-08-06-13-39
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
-		FFMPEG_ARCHIVE="ffmpeg-N-125681-gddc587bad1-linuxarm64-gpl.tar.xz"; \
-		FFMPEG_SHA256="989a0213da1ad70e5207df654b416ef8ded7d77a2d5c2beb74c17e82aa02fcf5"; \
+		FFMPEG_ARCHIVE="ffmpeg-N-125978-g95c43d7df7-linuxarm64-gpl.tar.xz"; \
+		FFMPEG_SHA256="6f8cf31b154c68c28c602a34d0bfb0f4f98da7014d5de4b88e4889735720253d"; \
 	else \
-		FFMPEG_ARCHIVE="ffmpeg-N-125674-g9bc73ba344-linux64-gpl.tar.xz"; \
-		FFMPEG_SHA256="4a16a5c14ff81fe06d19beef8e2397cb6b237bfea6761e02082d7410ee756393"; \
+		FFMPEG_ARCHIVE="ffmpeg-N-125978-g95c43d7df7-linux64-gpl.tar.xz"; \
+		FFMPEG_SHA256="6fd6364a237569dc12940079acc636be9ff2b2f444552c0bad699186e3552c3d"; \
 	fi && \
 	wget -q "https://github.com/BtbN/FFmpeg-Builds/releases/download/${FFMPEG_RELEASE}/${FFMPEG_ARCHIVE}" \
 	&& echo "${FFMPEG_SHA256}  ${FFMPEG_ARCHIVE}" | sha256sum -c - \
