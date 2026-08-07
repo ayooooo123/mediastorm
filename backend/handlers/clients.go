@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -92,13 +93,34 @@ func (h *ClientsHandler) canAccessProfile(r *http.Request, profileID string) boo
 	return accountID != "" && h.users != nil && h.users.BelongsToAccount(profileID, accountID)
 }
 
+// getAuthorizedClient loads a client and enforces account/profile ownership.
+// logMiss controls whether missing/forbidden lookups are logged. Callers that
+// poll frequently (ping, messages) should pass false to avoid log spam.
 func (h *ClientsHandler) getAuthorizedClient(w http.ResponseWriter, r *http.Request, clientID string) (*models.Client, bool) {
+	return h.authorizeClient(w, r, clientID, true)
+}
+
+func (h *ClientsHandler) authorizeClient(w http.ResponseWriter, r *http.Request, clientID string, logMiss bool) (*models.Client, bool) {
 	client, err := h.clients.Get(clientID)
 	if err != nil {
+		log.Printf("[clients] get error clientId=%q account=%q master=%v err=%v",
+			clientID, auth.GetAccountID(r), auth.IsMaster(r), err)
 		writeJSONError(w, err.Error(), http.StatusInternalServerError)
 		return nil, false
 	}
-	if client == nil || !h.canAccessProfile(r, client.UserID) {
+	if client == nil {
+		if logMiss {
+			log.Printf("[clients] not found clientId=%q account=%q master=%v reason=missing",
+				clientID, auth.GetAccountID(r), auth.IsMaster(r))
+		}
+		writeJSONError(w, "client not found", http.StatusNotFound)
+		return nil, false
+	}
+	if !h.canAccessProfile(r, client.UserID) {
+		if logMiss {
+			log.Printf("[clients] not found clientId=%q ownerProfile=%q account=%q master=%v reason=forbidden",
+				clientID, client.UserID, auth.GetAccountID(r), auth.IsMaster(r))
+		}
 		writeJSONError(w, "client not found", http.StatusNotFound)
 		return nil, false
 	}
@@ -125,30 +147,65 @@ func (h *ClientsHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	accountID := auth.GetAccountID(r)
+	isMaster := auth.IsMaster(r)
+	nicknameSet := strings.TrimSpace(req.Nickname) != ""
+
 	if req.ID == "" {
+		log.Printf("[clients] register rejected clientId=<empty> userId=%q account=%q master=%v reason=missing_client_id",
+			req.UserID, accountID, isMaster)
 		writeJSONError(w, "client id is required", http.StatusBadRequest)
 		return
 	}
 	if !h.canAccessProfile(r, req.UserID) {
+		log.Printf("[clients] register rejected clientId=%q userId=%q account=%q master=%v reason=profile_forbidden nicknameSet=%v",
+			req.ID, req.UserID, accountID, isMaster, nicknameSet)
 		writeJSONError(w, "user not found", http.StatusNotFound)
 		return
 	}
+
+	// Snapshot prior ownership so we can log reclaim vs update vs create.
 	// Intentionally do not block when the hardware client ID is already tied
 	// to another account's profile (or an orphaned/deleted profile). Client
 	// IDs are device-bound; an authenticated caller may reclaim the device
-	// for a profile they own. The previous check returned 404 "client not
-	// found" here and made nickname save fail forever for guest accounts and
-	// reused hardware. Register overwrites UserID when a non-empty userId is
-	// provided (already authorized above via canAccessProfile).
+	// for a profile they own. Register overwrites UserID when a non-empty
+	// userId is provided (already authorized above via canAccessProfile).
+	prevUserID := ""
+	existed := false
+	if existing, err := h.clients.Get(req.ID); err != nil {
+		log.Printf("[clients] register get-existing failed clientId=%q account=%q master=%v err=%v",
+			req.ID, accountID, isMaster, err)
+		writeJSONError(w, err.Error(), http.StatusInternalServerError)
+		return
+	} else if existing != nil {
+		existed = true
+		prevUserID = existing.UserID
+	}
+
 	client, err := h.clients.Register(req.ID, req.UserID, req.DeviceType, req.OS, req.AppVersion, req.DeviceName, req.Nickname)
 	if err != nil {
 		if errors.Is(err, clients.ErrUserNotFound) {
+			log.Printf("[clients] register failed clientId=%q userId=%q account=%q master=%v reason=user_not_found nicknameSet=%v",
+				req.ID, req.UserID, accountID, isMaster, nicknameSet)
 			writeJSONError(w, "user not found: "+req.UserID, http.StatusBadRequest)
 			return
 		}
+		log.Printf("[clients] register failed clientId=%q userId=%q prevUserId=%q account=%q master=%v nicknameSet=%v err=%v",
+			req.ID, req.UserID, prevUserID, accountID, isMaster, nicknameSet, err)
 		writeJSONError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	action := "created"
+	if existed {
+		if prevUserID != "" && prevUserID != client.UserID {
+			action = "reclaimed"
+		} else {
+			action = "updated"
+		}
+	}
+	log.Printf("[clients] register ok action=%s clientId=%q userId=%q prevUserId=%q account=%q master=%v deviceType=%q os=%q nicknameSet=%v nickname=%q",
+		action, client.ID, client.UserID, prevUserID, accountID, isMaster, client.DeviceType, client.OS, nicknameSet, client.Nickname)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -259,9 +316,13 @@ func (h *ClientsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if req.Nickname != nil {
 		updated, err := h.clients.SetNickname(clientID, *req.Nickname)
 		if err != nil {
+			log.Printf("[clients] set nickname failed clientId=%q userId=%q account=%q master=%v err=%v",
+				clientID, client.UserID, auth.GetAccountID(r), auth.IsMaster(r), err)
 			writeJSONError(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		log.Printf("[clients] set nickname ok clientId=%q userId=%q account=%q master=%v nickname=%q",
+			clientID, updated.UserID, auth.GetAccountID(r), auth.IsMaster(r), updated.Nickname)
 		client = &updated
 	}
 
@@ -408,7 +469,8 @@ func (h *ClientsHandler) Ping(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify client exists
-	if _, ok := h.getAuthorizedClient(w, r, clientID); !ok {
+	client, ok := h.getAuthorizedClient(w, r, clientID)
+	if !ok {
 		return
 	}
 
@@ -416,6 +478,9 @@ func (h *ClientsHandler) Ping(w http.ResponseWriter, r *http.Request) {
 	h.pingMu.Lock()
 	h.pendingPings[clientID] = pendingPing{timestamp: time.Now()}
 	h.pingMu.Unlock()
+
+	log.Printf("[clients] admin ping queued clientId=%q userId=%q account=%q master=%v",
+		clientID, client.UserID, auth.GetAccountID(r), auth.IsMaster(r))
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -435,7 +500,8 @@ func (h *ClientsHandler) CheckPing(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "client id is required", http.StatusBadRequest)
 		return
 	}
-	if _, ok := h.getAuthorizedClient(w, r, clientID); !ok {
+	// Quiet miss logs: clients poll this every few seconds while Settings is open.
+	if _, ok := h.authorizeClient(w, r, clientID, false); !ok {
 		return
 	}
 
@@ -538,7 +604,8 @@ func (h *ClientsHandler) CheckMessages(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "profileId is required", http.StatusBadRequest)
 		return
 	}
-	client, ok := h.getAuthorizedClient(w, r, clientID)
+	// Quiet miss logs: clients may poll messages frequently.
+	client, ok := h.authorizeClient(w, r, clientID, false)
 	if !ok {
 		return
 	}
