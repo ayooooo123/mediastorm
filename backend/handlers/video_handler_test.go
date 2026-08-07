@@ -238,6 +238,130 @@ func TestProxyExternalURLRejectsElfHostedPlaceholderAndInvalidatesPrequeue(t *te
 	}
 }
 
+func TestExternalProxyResumeRangeHeader(t *testing.T) {
+	if got := externalProxyResumeRangeHeader(0, 0, false, 100); got != "bytes=100-" {
+		t.Fatalf("open-ended from zero: got %q", got)
+	}
+	if got := externalProxyResumeRangeHeader(1000, 5000, true, 250); got != "bytes=1250-5000" {
+		t.Fatalf("finite range: got %q", got)
+	}
+	if got := externalProxyResumeRangeHeader(100, 200, true, 101); got != "" {
+		t.Fatalf("exhausted finite range: got %q, want empty", got)
+	}
+}
+
+func TestIsRecoverableExternalProxyReadError(t *testing.T) {
+	if isRecoverableExternalProxyReadError(io.EOF) {
+		t.Fatal("clean EOF should not be recoverable")
+	}
+	if !isRecoverableExternalProxyReadError(io.ErrUnexpectedEOF) {
+		t.Fatal("unexpected EOF should be recoverable")
+	}
+	if !isRecoverableExternalProxyReadError(errors.New("read tcp 1.2.3.4:443: connection reset by peer")) {
+		t.Fatal("connection reset should be recoverable")
+	}
+	if isRecoverableExternalProxyReadError(errors.New("certificate invalid")) {
+		t.Fatal("non-transport errors should not be recoverable")
+	}
+}
+
+func TestProxyExternalURLReconnectsAfterUpstreamUnexpectedEOF(t *testing.T) {
+	payload := []byte("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghij")
+	splitAt := 16
+	var upstreamRequests atomic.Int32
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := upstreamRequests.Add(1)
+		rangeHdr := r.Header.Get("Range")
+		start, end, hasEnd, ok := parseSingleByteRange(rangeHdr)
+		if !ok {
+			start = 0
+		}
+		if !hasEnd {
+			end = int64(len(payload) - 1)
+		}
+		if start < 0 || start >= int64(len(payload)) {
+			http.Error(w, "range not satisfiable", http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
+		if end >= int64(len(payload)) {
+			end = int64(len(payload) - 1)
+		}
+
+		// First open: advertise the full remaining body, write only a prefix,
+		// then hard-close so the proxy sees unexpected EOF (idle CDN kill).
+		if n == 1 {
+			if start != 0 {
+				t.Fatalf("first request start = %d, want 0", start)
+			}
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				t.Fatal("ResponseWriter does not support Hijack")
+				return
+			}
+			conn, bufrw, err := hj.Hijack()
+			if err != nil {
+				t.Fatalf("Hijack: %v", err)
+				return
+			}
+			chunk := payload[:splitAt]
+			// Claim the full file length so the client still expects more bytes
+			// when we drop the connection after the prefix.
+			_, _ = fmt.Fprintf(bufrw,
+				"HTTP/1.1 206 Partial Content\r\n"+
+					"Content-Type: video/x-matroska\r\n"+
+					"Accept-Ranges: bytes\r\n"+
+					"Content-Range: bytes 0-%d/%d\r\n"+
+					"Content-Length: %d\r\n"+
+					"Connection: close\r\n"+
+					"\r\n",
+				len(payload)-1, len(payload), len(payload))
+			_, _ = bufrw.Write(chunk)
+			_ = bufrw.Flush()
+			_ = conn.Close()
+			return
+		}
+
+		// Reconnect: serve from the requested offset to EOF.
+		if start != int64(splitAt) {
+			t.Errorf("reconnect Range start = %d, want %d (header=%q)", start, splitAt, rangeHdr)
+		}
+		body := payload[start : end+1]
+		w.Header().Set("Content-Type", "video/x-matroska")
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(payload)))
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(body)
+	}))
+	defer upstream.Close()
+
+	handler := NewVideoHandler(false, "", "")
+	settings := config.DefaultSettings()
+	settings.Server.AllowedPrivateMediaOrigins = []string{upstream.URL}
+	handler.SetConfigManager(staticVideoConfigProvider{settings: settings})
+
+	req := httptest.NewRequest(http.MethodGet, "/video/stream", nil)
+	req.Header.Set("Range", "bytes=0-")
+	rec := httptest.NewRecorder()
+	handled, err := handler.proxyExternalURL(rec, req, upstream.URL+"/Silo.S03E06.mkv")
+	if err != nil {
+		t.Fatalf("proxyExternalURL: %v", err)
+	}
+	if !handled {
+		t.Fatal("handled = false")
+	}
+	if rec.Code != http.StatusPartialContent {
+		t.Fatalf("status = %d, want 206", rec.Code)
+	}
+	if got := upstreamRequests.Load(); got < 2 {
+		t.Fatalf("upstream requests = %d, want at least 2 (initial + reconnect)", got)
+	}
+	if !bytes.Equal(rec.Body.Bytes(), payload) {
+		t.Fatalf("body mismatch: got %q want %q", rec.Body.Bytes(), payload)
+	}
+}
+
 func TestProxyExternalURLStartupExperimentServesRepeatedRangeFromPrefixSpool(t *testing.T) {
 	payload := bytes.Repeat([]byte("matroska"), 256)
 	var upstreamRequests atomic.Int32

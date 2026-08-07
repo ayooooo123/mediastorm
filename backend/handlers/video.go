@@ -334,6 +334,72 @@ func externalResponseTotalSize(contentRange, contentLength string) int64 {
 	return 0
 }
 
+// externalProxyMaxReconnects is how many times a single client response may
+// reopen its upstream body after a transport failure (idle CDN kill, reset).
+const externalProxyMaxReconnects = 8
+
+// isRecoverableExternalProxyReadError reports transport failures that are safe
+// to recover from by issuing a fresh ranged GET at the next absolute offset.
+// Normal io.EOF (upstream finished cleanly) is not recoverable — it is success.
+func isRecoverableExternalProxyReadError(err error) bool {
+	if err == nil || errors.Is(err, io.EOF) {
+		return false
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) || errors.Is(err, os.ErrClosed) {
+		return true
+	}
+	var netErr *net.OpError
+	if errors.As(err, &netErr) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "unexpected eof"),
+		strings.Contains(msg, "connection reset"),
+		strings.Contains(msg, "broken pipe"),
+		strings.Contains(msg, "connection refused"),
+		strings.Contains(msg, "i/o timeout"),
+		strings.Contains(msg, "use of closed network connection"),
+		strings.Contains(msg, "server closed idle connection"),
+		strings.Contains(msg, "http2: stream closed"),
+		strings.Contains(msg, "stream error"):
+		return true
+	default:
+		return false
+	}
+}
+
+// externalProxyResumeRangeHeader builds the Range value for a mid-stream
+// reconnect after `bytesDelivered` have already been written to the client.
+// Returns "" when nothing remains to fetch for a finite client range.
+func externalProxyResumeRangeHeader(clientStart, clientEnd int64, hasEnd bool, bytesDelivered int64) string {
+	if bytesDelivered < 0 {
+		bytesDelivered = 0
+	}
+	next := clientStart + bytesDelivered
+	if hasEnd {
+		if next > clientEnd {
+			return ""
+		}
+		return fmt.Sprintf("bytes=%d-%d", next, clientEnd)
+	}
+	return fmt.Sprintf("bytes=%d-", next)
+}
+
+// externalProxySkipToOffset discards body bytes so the next Read starts at
+// wantStart when the upstream served an earlier Content-Range start.
+func externalProxySkipToOffset(body io.Reader, servedStart, wantStart int64) error {
+	if wantStart <= servedStart {
+		return nil
+	}
+	skip := wantStart - servedStart
+	_, err := io.CopyN(io.Discard, body, skip)
+	return err
+}
+
 // UsersProvider interface for resolving profile → account
 type UsersProvider interface {
 	Get(id string) (models.User, bool)
@@ -6257,12 +6323,8 @@ func (h *VideoHandler) proxyExternalURL(w http.ResponseWriter, r *http.Request, 
 			return true, nil
 		}
 	}
-	upstreamURL, usedRedirectCache := h.cachedExternalRedirectURL(cleanURL)
-	if err := requestsecurity.ValidateOutboundURL(ctx, upstreamURL, allowRestricted); err != nil {
-		h.forgetExternalRedirect(cleanURL)
-		upstreamURL = cleanURL
-		usedRedirectCache = false
-	}
+	// Snapshot for startup diagnostics only; live opens re-check the cache.
+	_, usedRedirectCache := h.cachedExternalRedirectURL(cleanURL)
 
 	var traceMu sync.Mutex
 	var dnsStartedAt time.Time
@@ -6324,7 +6386,7 @@ func (h *VideoHandler) proxyExternalURL(w http.ResponseWriter, r *http.Request, 
 		},
 	}
 
-	buildProxyRequest := func(target string) (*http.Request, error) {
+	buildProxyRequest := func(target string, rangeValue string) (*http.Request, error) {
 		proxyReq, requestErr := http.NewRequestWithContext(
 			httptrace.WithClientTrace(ctx, trace),
 			r.Method,
@@ -6334,8 +6396,8 @@ func (h *VideoHandler) proxyExternalURL(w http.ResponseWriter, r *http.Request, 
 		if requestErr != nil {
 			return nil, requestErr
 		}
-		if rangeHeader != "" {
-			proxyReq.Header.Set("Range", rangeHeader)
+		if rangeValue != "" {
+			proxyReq.Header.Set("Range", rangeValue)
 		}
 		proxyReq.Header.Set("User-Agent", "VLC/3.0.18 LibVLC/3.0.18")
 		proxyReq.Header.Set("Accept", "*/*")
@@ -6348,25 +6410,52 @@ func (h *VideoHandler) proxyExternalURL(w http.ResponseWriter, r *http.Request, 
 		return proxyReq, nil
 	}
 
-	proxyReq, err := buildProxyRequest(upstreamURL)
-	if err != nil {
-		http.Error(w, "failed to create proxy request", http.StatusInternalServerError)
-		return true, fmt.Errorf("create proxy request: %w", err)
-	}
-	videoTracef("[video] external proxy request: method=%s host=%s path=%s range=%q redirectCache=%t",
-		proxyReq.Method, proxyReq.URL.Host, proxyReq.URL.Path, rangeHeader, usedRedirectCache)
-
-	resp, err := h.externalProxyHTTPClient.Do(proxyReq)
-	if err != nil && usedRedirectCache {
-		// A cached signed CDN URL may expire. Retry through the stable addon URL
-		// once and refresh the redirect without surfacing a playback error.
-		h.forgetExternalRedirect(cleanURL)
-		usedRedirectCache = false
-		proxyReq, err = buildProxyRequest(cleanURL)
-		if err == nil {
-			resp, err = h.externalProxyHTTPClient.Do(proxyReq)
+	// doExternalProxyOpen issues one upstream request, refreshing a stale cached
+	// redirect once when needed. Caller owns the response body.
+	doExternalProxyOpen := func(rangeValue string) (*http.Response, error) {
+		target, fromCache := h.cachedExternalRedirectURL(cleanURL)
+		if err := requestsecurity.ValidateOutboundURL(ctx, target, allowRestricted); err != nil {
+			h.forgetExternalRedirect(cleanURL)
+			target = cleanURL
+			fromCache = false
 		}
+		proxyReq, reqErr := buildProxyRequest(target, rangeValue)
+		if reqErr != nil {
+			return nil, reqErr
+		}
+		videoTracef("[video] external proxy request: method=%s host=%s path=%s range=%q redirectCache=%t",
+			proxyReq.Method, proxyReq.URL.Host, proxyReq.URL.Path, rangeValue, fromCache)
+
+		resp, doErr := h.externalProxyHTTPClient.Do(proxyReq)
+		if doErr != nil && fromCache {
+			// A cached signed CDN URL may expire. Retry through the stable addon URL
+			// once and refresh the redirect without surfacing a playback error.
+			h.forgetExternalRedirect(cleanURL)
+			fromCache = false
+			proxyReq, doErr = buildProxyRequest(cleanURL, rangeValue)
+			if doErr == nil {
+				resp, doErr = h.externalProxyHTTPClient.Do(proxyReq)
+			}
+		}
+		if doErr != nil {
+			return nil, doErr
+		}
+		if fromCache && shouldForceReresolveForStatus(resp.StatusCode) {
+			_ = resp.Body.Close()
+			h.forgetExternalRedirect(cleanURL)
+			proxyReq, doErr = buildProxyRequest(cleanURL, rangeValue)
+			if doErr != nil {
+				return nil, doErr
+			}
+			resp, doErr = h.externalProxyHTTPClient.Do(proxyReq)
+			if doErr != nil {
+				return nil, doErr
+			}
+		}
+		return resp, nil
 	}
+
+	resp, err := doExternalProxyOpen(rangeHeader)
 	if err != nil {
 		if startupExperiment {
 			log.Printf("[video-startup] request=%d range=%q failed after=%s redirectCache=%t err=%v",
@@ -6376,24 +6465,11 @@ func (h *VideoHandler) proxyExternalURL(w http.ResponseWriter, r *http.Request, 
 		http.Error(w, "failed to fetch external stream", http.StatusBadGateway)
 		return true, fmt.Errorf("external request: %w", err)
 	}
-	if usedRedirectCache && shouldForceReresolveForStatus(resp.StatusCode) {
-		_ = resp.Body.Close()
-		h.forgetExternalRedirect(cleanURL)
-		usedRedirectCache = false
-		proxyReq, err = buildProxyRequest(cleanURL)
-		if err == nil {
-			resp, err = h.externalProxyHTTPClient.Do(proxyReq)
+	defer func() {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
 		}
-		if err != nil {
-			if startupExperiment {
-				log.Printf("[video-startup] request=%d range=%q redirect refresh failed after=%s err=%v",
-					requestID, rangeHeader, time.Since(requestStartedAt).Round(time.Millisecond), err)
-			}
-			http.Error(w, "failed to refresh external stream", http.StatusBadGateway)
-			return true, fmt.Errorf("refresh external request: %w", err)
-		}
-	}
-	defer resp.Body.Close()
+	}()
 	headersAt := time.Now()
 	finalURL := resp.Request.URL.String()
 	if debrid.IsKnownPlaceholderURL(finalURL) {
@@ -6457,7 +6533,17 @@ func (h *VideoHandler) proxyExternalURL(w http.ResponseWriter, r *http.Request, 
 	acceptRanges := resp.Header.Get("Accept-Ranges")
 	location := resp.Header.Get("Location")
 	responseTotalSize := externalResponseTotalSize(contentRange, contentLength)
-	rangeStart, _, _, rangeOK := parseSingleByteRange(rangeHeader)
+	rangeStart, rangeEnd, rangeHasEnd, rangeOK := parseSingleByteRange(rangeHeader)
+	// Absolute file positions for mid-stream reconnect range requests. When the
+	// client did not send a Range header, treat the body as starting at offset 0.
+	clientRangeStart := int64(0)
+	clientRangeEnd := int64(0)
+	clientHasEnd := false
+	if rangeOK {
+		clientRangeStart = rangeStart
+		clientRangeEnd = rangeEnd
+		clientHasEnd = rangeHasEnd
+	}
 	spoolPrefix := startupExperiment &&
 		r.Method == http.MethodGet &&
 		rangeOK &&
@@ -6603,6 +6689,7 @@ func (h *VideoHandler) proxyExternalURL(w http.ResponseWriter, r *http.Request, 
 
 	videoTracef("[video] starting external proxy stream: host=%q streamID=%s", parsedURL.Host, streamID)
 
+	reconnects := 0
 	for {
 		// Check if context is cancelled (client disconnected)
 		select {
@@ -6610,6 +6697,25 @@ func (h *VideoHandler) proxyExternalURL(w http.ResponseWriter, r *http.Request, 
 			videoTracef("[video] external proxy cancelled: host=%q total=%d reason=%v", parsedURL.Host, total, ctx.Err())
 			return true, ctx.Err()
 		default:
+		}
+
+		// Already delivered everything the original response promised (or the
+		// finite client range requested) — treat further upstream errors as done.
+		if expectedLength > 0 && total >= expectedLength {
+			if flusher != nil {
+				flusher.Flush()
+			}
+			videoTracef("[video] external proxy complete (expected length reached): host=%q total=%d", parsedURL.Host, total)
+			logStartupTiming("eof")
+			break
+		}
+		if responseTotalSize > 0 && clientRangeStart+total >= responseTotalSize {
+			if flusher != nil {
+				flusher.Flush()
+			}
+			videoTracef("[video] external proxy complete (file end): host=%q total=%d", parsedURL.Host, total)
+			logStartupTiming("eof")
+			break
 		}
 
 		upstreamWatch.begin()
@@ -6680,18 +6786,144 @@ func (h *VideoHandler) proxyExternalURL(w http.ResponseWriter, r *http.Request, 
 				flushCounter = 0
 			}
 		}
-		if readErr != nil {
-			if readErr != io.EOF {
-				logStartupTiming("upstream-read-error")
-				log.Printf("[video] external proxy read error: host=%q total=%d err=%v", parsedURL.Host, total, readErr)
-				return true, readErr
-			}
-			// Final flush on EOF
+		if readErr == nil {
+			continue
+		}
+		if errors.Is(readErr, io.EOF) {
+			// Final flush on clean EOF
 			if flusher != nil {
 				flusher.Flush()
 			}
 			videoTracef("[video] external proxy complete: host=%q total=%d", parsedURL.Host, total)
 			logStartupTiming("eof")
+			break
+		}
+
+		// Headers are already committed. Transport failures mid-body (idle CDN
+		// kill after pause, reset) are recovered by a fresh ranged GET at the
+		// next absolute file offset so external players keep the same response.
+		if !isRecoverableExternalProxyReadError(readErr) || reconnects >= externalProxyMaxReconnects {
+			logStartupTiming("upstream-read-error")
+			log.Printf("[video] external proxy read error: host=%q total=%d reconnects=%d err=%v",
+				parsedURL.Host, total, reconnects, readErr)
+			return true, readErr
+		}
+
+		nextRange := externalProxyResumeRangeHeader(clientRangeStart, clientRangeEnd, clientHasEnd, total)
+		if nextRange == "" {
+			if flusher != nil {
+				flusher.Flush()
+			}
+			videoTracef("[video] external proxy complete (finite range exhausted after error): host=%q total=%d err=%v",
+				parsedURL.Host, total, readErr)
+			logStartupTiming("eof")
+			break
+		}
+
+		_ = resp.Body.Close()
+		resp.Body = nil
+
+		wantStart := clientRangeStart + total
+		var reopened *http.Response
+		var reopenErr error
+		for {
+			if reconnects >= externalProxyMaxReconnects {
+				logStartupTiming("upstream-read-error")
+				log.Printf("[video] external proxy reconnect budget exhausted: host=%q total=%d err=%v",
+					parsedURL.Host, total, readErr)
+				if reopenErr != nil {
+					return true, reopenErr
+				}
+				return true, readErr
+			}
+			reconnects++
+			log.Printf("[video] external proxy reconnecting after upstream read error: host=%q delivered=%d wantStart=%d reconnect=%d/%d range=%q err=%v",
+				parsedURL.Host, total, wantStart, reconnects, externalProxyMaxReconnects, nextRange, readErr)
+
+			backoff := time.Duration(reconnects) * 250 * time.Millisecond
+			if backoff > 2*time.Second {
+				backoff = 2 * time.Second
+			}
+			select {
+			case <-ctx.Done():
+				videoTracef("[video] external proxy cancelled during reconnect: host=%q total=%d", parsedURL.Host, total)
+				return true, ctx.Err()
+			case <-time.After(backoff):
+			}
+
+			reopened, reopenErr = doExternalProxyOpen(nextRange)
+			if reopenErr != nil {
+				if isRecoverableExternalProxyReadError(reopenErr) {
+					log.Printf("[video] external proxy reconnect open failed (will retry): host=%q range=%q err=%v",
+						parsedURL.Host, nextRange, reopenErr)
+					continue
+				}
+				logStartupTiming("upstream-read-error")
+				log.Printf("[video] external proxy reconnect open failed: host=%q total=%d range=%q err=%v",
+					parsedURL.Host, total, nextRange, reopenErr)
+				return true, reopenErr
+			}
+			if reopened.StatusCode >= 400 {
+				body, _ := io.ReadAll(io.LimitReader(reopened.Body, 512))
+				_ = reopened.Body.Close()
+				reopenErr = fmt.Errorf("external stream reconnect returned %d", reopened.StatusCode)
+				// Retry transient 5xx; permanent 4xx ends the stream.
+				if reopened.StatusCode >= 500 && reopened.StatusCode <= 599 {
+					log.Printf("[video] external proxy reconnect status error (will retry): host=%q status=%d body=%q",
+						parsedURL.Host, reopened.StatusCode, string(body))
+					continue
+				}
+				logStartupTiming("upstream-read-error")
+				log.Printf("[video] external proxy reconnect status error: host=%q total=%d status=%d body=%q",
+					parsedURL.Host, total, reopened.StatusCode, string(body))
+				return true, reopenErr
+			}
+			finalReconnectURL := ""
+			if reopened.Request != nil && reopened.Request.URL != nil {
+				finalReconnectURL = reopened.Request.URL.String()
+			}
+			if debrid.IsKnownPlaceholderURL(finalReconnectURL) {
+				_ = reopened.Body.Close()
+				h.forgetExternalRedirect(cleanURL)
+				h.invalidatePrequeuesForFailedPath(externalURL)
+				if cleanURL != externalURL {
+					h.invalidatePrequeuesForFailedPath(cleanURL)
+				}
+				return true, fmt.Errorf("%w: %s", errExternalStreamPlaceholder, requestsecurity.URLForLog(finalReconnectURL))
+			}
+			if finalReconnectURL != "" && finalReconnectURL != cleanURL {
+				h.rememberExternalRedirect(cleanURL, finalReconnectURL)
+			}
+			// Prefer Content-Range start; if missing, assume the server honoured Range.
+			servedStart, hasServedStart := parseContentRangeStart(reopened.Header.Get("Content-Range"))
+			if !hasServedStart {
+				servedStart = wantStart
+			}
+			if servedStart > wantStart {
+				_ = reopened.Body.Close()
+				logStartupTiming("upstream-read-error")
+				log.Printf("[video] external proxy reconnect offset ahead: host=%q wantStart=%d servedStart=%d",
+					parsedURL.Host, wantStart, servedStart)
+				return true, fmt.Errorf("external reconnect served offset %d ahead of %d", servedStart, wantStart)
+			}
+			if skipErr := externalProxySkipToOffset(reopened.Body, servedStart, wantStart); skipErr != nil {
+				_ = reopened.Body.Close()
+				reopenErr = skipErr
+				if isRecoverableExternalProxyReadError(skipErr) || errors.Is(skipErr, io.EOF) {
+					log.Printf("[video] external proxy reconnect skip failed (will retry): host=%q wantStart=%d err=%v",
+						parsedURL.Host, wantStart, skipErr)
+					continue
+				}
+				logStartupTiming("upstream-read-error")
+				log.Printf("[video] external proxy reconnect skip failed: host=%q wantStart=%d err=%v",
+					parsedURL.Host, wantStart, skipErr)
+				return true, skipErr
+			}
+			if newSize := externalResponseTotalSize(reopened.Header.Get("Content-Range"), reopened.Header.Get("Content-Length")); newSize > 0 {
+				responseTotalSize = newSize
+			}
+			resp = reopened
+			reopenErr = nil
 			break
 		}
 	}
