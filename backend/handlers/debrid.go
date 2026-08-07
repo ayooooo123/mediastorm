@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -175,21 +176,49 @@ func (h *DebridHandler) CheckCachedBulk(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	startedAt := time.Now()
+	contentLength := r.ContentLength
+
 	var request struct {
 		Results []models.NZBResult `json:"results"`
 	}
 
 	dec := json.NewDecoder(r.Body)
 	if err := dec.Decode(&request); err != nil {
+		log.Printf("[DebridCachedBulk] decode failed contentLength=%d elapsed=%s err=%v", contentLength, time.Since(startedAt), err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
+	count := len(request.Results)
+	log.Printf("[DebridCachedBulk] start count=%d contentLength=%d", count, contentLength)
+
 	res, err := h.healthService.CheckQuickCacheOnlyBulk(r.Context(), request.Results)
 	if err != nil {
+		log.Printf("[DebridCachedBulk] failed count=%d elapsed=%s err=%v", count, time.Since(startedAt), err)
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
+
+	cached, uncached, skipped := 0, 0, 0
+	for _, item := range res {
+		if item == nil || item.Status == "skipped" {
+			skipped++
+		} else if item.Cached {
+			cached++
+		} else {
+			uncached++
+		}
+	}
+	log.Printf(
+		"[DebridCachedBulk] success count=%d response=%d cached=%d uncached=%d skipped=%d elapsed=%s",
+		count,
+		len(res),
+		cached,
+		uncached,
+		skipped,
+		time.Since(startedAt),
+	)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(res)

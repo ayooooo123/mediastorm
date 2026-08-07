@@ -26,9 +26,10 @@ const LEGACY_INVITE_PREFIX: &str = "mshost-iroh-direct-";
 // The whole proxied request (request line + headers + body) is buffered in memory
 // before being forwarded upstream, so this cap bounds per-stream memory. 64 KiB was
 // too small: app requests carrying a JSON body (list/settings sync, uploads) exceeded
-// it and quinn's read_to_end rejected the stream with "stream too long". 4 MiB covers
+// it and quinn's read_to_end rejected the stream with "stream too long". 4 MiB then
+// failed for bulk debrid cache checks (~6+ MiB full NZB result lists). 16 MiB covers
 // those payloads while keeping a single misbehaving stream bounded.
-const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
+const MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 const SPEED_CHUNK_BYTES: usize = 1024 * 1024;
 const STREAM_CHUNK_BYTES: usize = 64 * 1024;
