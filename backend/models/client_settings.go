@@ -81,6 +81,7 @@ type ClientFilterSettings struct {
 	CreditsDetectionEnabled       *bool     `json:"creditsDetectionEnabled,omitempty"`
 	CreditsAutoSkip               *bool     `json:"creditsAutoSkip,omitempty"`
 	MatchFrameRate                *bool     `json:"matchFrameRate,omitempty"`
+	LiveClosedCaptionExtraction   *bool     `json:"liveClosedCaptionExtraction,omitempty"`
 	MaxResultsPerResolution       *int      `json:"maxResultsPerResolution,omitempty"`
 
 	// Ranking criteria overrides
@@ -163,6 +164,7 @@ func (c *ClientFilterSettings) IsEmpty() bool {
 		c.CreditsDetectionEnabled == nil &&
 		c.CreditsAutoSkip == nil &&
 		c.MatchFrameRate == nil &&
+		c.LiveClosedCaptionExtraction == nil &&
 		c.MaxResultsPerResolution == nil &&
 		c.HomeWifiSSID == nil &&
 		c.HomeBackendUrl == nil &&

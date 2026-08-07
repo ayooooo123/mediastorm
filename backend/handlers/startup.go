@@ -1477,6 +1477,7 @@ func (h *StartupHandler) getDefaultsFromGlobal() models.UserSettings {
 			CreditsDetectionEnabled:       models.BoolPtr(globalSettings.Playback.CreditsDetectionEnabled),
 			CreditsAutoSkip:               globalSettings.Playback.CreditsAutoSkip || globalSettings.Playback.CreditsDetection,
 			MatchFrameRate:                models.BoolPtr(globalSettings.Playback.MatchFrameRate),
+			LiveClosedCaptionExtraction:   models.BoolPtr(globalSettings.Playback.LiveClosedCaptionExtraction),
 			MaxResultsPerResolution:       models.IntPtr(globalSettings.Playback.MaxResultsPerResolution),
 		},
 		HomeShelves: models.HomeShelvesSettings{

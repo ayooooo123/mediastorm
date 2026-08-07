@@ -461,6 +461,7 @@ type PlaybackSettings struct {
 	CreditsAutoSkip               bool                      `json:"creditsAutoSkip"`                     // Automatically play the next episode after credits are detected
 	CreditsDetection              bool                      `json:"creditsDetection"`                    // Legacy name for creditsAutoSkip
 	MatchFrameRate                bool                      `json:"matchFrameRate"`                      // Request TV display refresh rate matching during playback
+	LiveClosedCaptionExtraction   bool                      `json:"liveClosedCaptionExtraction"`         // Extract EIA-608 closed captions from live TV (server-side, default on)
 	MaxConcurrentStreams          int                       `json:"maxConcurrentStreams"`                // Global max concurrent VOD streams across all accounts (0 = unlimited)
 	MaxResultsPerResolution       int                       `json:"maxResultsPerResolution"`             // Maximum number of results per resolution tier (0 = no limit)
 	YouTubeProxyURL               string                    `json:"youtubeProxyUrl,omitempty"`           // Optional proxy URL passed to yt-dlp for YouTube extraction/downloads
@@ -1711,7 +1712,7 @@ func DefaultSettings() Settings {
 		SABnzbd:   SABnzbdSettings{Enabled: &sabnzbdEnabled, FallbackHost: "", FallbackAPIKey: ""},
 		AltMount:  nil,
 		Transmux:  TransmuxSettings{Enabled: true, FFmpegPath: "ffmpeg", FFprobePath: "ffprobe", HLSTempDirectory: "/tmp/novastream-hls", HardwareAcceleration: "auto"},
-		Playback:  PlaybackSettings{PreferredPlayer: "native", PreferredAudioLanguage: "eng", PauseWhenAppInactive: false, UseLoadingScreen: false, SubtitleSize: 1.0, SubtitleUseCropDetectPosition: true, SubtitleColor: "#FFFFFF", SubtitleOpacity: 1.0, SubtitleBold: false, SubtitleOutlineEnabled: false, SubtitleOutlineColor: "#000000", SubtitleOutlineWeight: 0.35, SubtitleBackgroundEnabled: true, SubtitleBackgroundColor: "#000000", SubtitleBackgroundOpacity: 0.6, SeekForwardSeconds: 30, SeekBackwardSeconds: 10, StreamMigrationEnabled: true, CreditsDetectionEnabled: false, MatchFrameRate: false, Thumbnails: PlaybackThumbnailSettings{Enabled: false, Workers: 1}},
+		Playback:  PlaybackSettings{PreferredPlayer: "native", PreferredAudioLanguage: "eng", PauseWhenAppInactive: false, UseLoadingScreen: false, SubtitleSize: 1.0, SubtitleUseCropDetectPosition: true, SubtitleColor: "#FFFFFF", SubtitleOpacity: 1.0, SubtitleBold: false, SubtitleOutlineEnabled: false, SubtitleOutlineColor: "#000000", SubtitleOutlineWeight: 0.35, SubtitleBackgroundEnabled: true, SubtitleBackgroundColor: "#000000", SubtitleBackgroundOpacity: 0.6, SeekForwardSeconds: 30, SeekBackwardSeconds: 10, StreamMigrationEnabled: true, CreditsDetectionEnabled: false, MatchFrameRate: false, LiveClosedCaptionExtraction: true, Thumbnails: PlaybackThumbnailSettings{Enabled: false, Workers: 1}},
 		Live:      LiveSettings{Mode: "m3u", PlaylistURL: "", MaxStreams: 0, PlaylistCacheTTLHours: 24},
 		HomeShelves: HomeShelvesSettings{
 			Shelves:                      DefaultHomeShelfConfigs(),
@@ -2149,6 +2150,9 @@ func (m *Manager) Load() (Settings, error) {
 		}
 		if _, exists := playbackRaw["streamMigrationEnabled"]; !exists {
 			playbackRaw["streamMigrationEnabled"] = true
+		}
+		if _, exists := playbackRaw["liveClosedCaptionExtraction"]; !exists {
+			playbackRaw["liveClosedCaptionExtraction"] = true
 		}
 		if _, exists := playbackRaw["subtitleColor"]; !exists {
 			playbackRaw["subtitleColor"] = "#FFFFFF"

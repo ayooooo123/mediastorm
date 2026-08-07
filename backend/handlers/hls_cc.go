@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -17,46 +18,125 @@ import (
 	"time"
 )
 
-// CC (Closed Caption) support for live TV streams
+// CC (Closed Caption) support for live TV streams.
 // EIA-608 closed captions are embedded in H.264 SEI NAL units (ATSC A53 Part 4)
 // and are NOT detectable by ffprobe as separate streams.
+//
+// Extraction prefers ccextractor (bitstream parse, cheap) feeding only new
+// segment bytes once. When ccextractor is unavailable, falls back to a small
+// sliding-window ffmpeg decode (never re-decode the whole session).
 
-// detectClosedCaptions runs a short ffmpeg decode against a live URL to check
-// for embedded EIA-608 closed captions. Returns true if CC data is found.
-// This is non-blocking and meant to be called in a background goroutine.
-func detectClosedCaptions(ctx context.Context, ffmpegPath, liveURL string) bool {
-	// Use a short timeout — we only need a few seconds of decoded video
+// segmentNumRe extracts the numeric portion from segment filenames like "segment12.ts"
+var segmentNumRe = regexp.MustCompile(`segment(\d+)\.ts$`)
+
+// maxFallbackWindowBytes caps the ffmpeg fallback window so we never re-decode
+// a long-lived concat file. ~12 MB is roughly several live segments.
+const maxFallbackWindowBytes = 12 * 1024 * 1024
+
+// listLiveSegments returns sorted segment paths currently on disk.
+func listLiveSegments(outputDir string) []string {
+	entries, err := os.ReadDir(outputDir)
+	if err != nil {
+		return nil
+	}
+	type segInfo struct {
+		num  int
+		path string
+	}
+	var segments []segInfo
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		m := segmentNumRe.FindStringSubmatch(entry.Name())
+		if m == nil {
+			continue
+		}
+		num, _ := strconv.Atoi(m[1])
+		segments = append(segments, segInfo{num: num, path: filepath.Join(outputDir, entry.Name())})
+	}
+	sort.Slice(segments, func(i, j int) bool {
+		return segments[i].num < segments[j].num
+	})
+	paths := make([]string, 0, len(segments))
+	for _, seg := range segments {
+		paths = append(paths, seg.path)
+	}
+	return paths
+}
+
+// waitForLiveSegment waits until at least one TS segment exists or ctx is done.
+func waitForLiveSegment(ctx context.Context, outputDir string) string {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if segs := listLiveSegments(outputDir); len(segs) > 0 {
+			return segs[len(segs)-1]
+		}
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-ticker.C:
+		}
+	}
+}
+
+// detectClosedCaptionsInSegments sniffs local HLS segments for EIA-608.
+// Prefer ccextractor (no pixel decode); fall back to a short ffmpeg probe on one segment.
+func detectClosedCaptionsInSegments(ctx context.Context, outputDir, ffmpegPath string) bool {
+	segPath := waitForLiveSegment(ctx, outputDir)
+	if segPath == "" {
+		return false
+	}
+
+	if ccPath, err := exec.LookPath("ccextractor"); err == nil {
+		tmpSRT := filepath.Join(outputDir, "cc_detect.srt")
+		defer os.Remove(tmpSRT)
+		detectCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(detectCtx, ccPath, // #nosec G204
+			segPath,
+			"--out", "srt",
+			"-o", tmpSRT,
+		)
+		_ = cmd.Run()
+		if data, err := os.ReadFile(tmpSRT); err == nil && strings.TrimSpace(string(data)) != "" {
+			return true
+		}
+		// Empty SRT does not always mean no CC (some streams need more data);
+		// fall through to ffmpeg showinfo on the same local segment.
+	}
+
+	if strings.TrimSpace(ffmpegPath) == "" {
+		var err error
+		ffmpegPath, err = exec.LookPath("ffmpeg")
+		if err != nil {
+			return false
+		}
+	}
+
 	detectCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-
-	// Run ffmpeg with showinfo filter which logs CC data to stderr
 	cmd := exec.CommandContext(detectCtx, ffmpegPath, // #nosec G204
 		"-hide_banner",
 		"-loglevel", "verbose",
-		"-i", liveURL,
+		"-i", segPath,
 		"-vf", "showinfo",
 		"-f", "null",
 		"-t", "3",
 		"-",
 	)
-
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		log.Printf("[hls-cc] failed to create stderr pipe for CC detection: %v", err)
 		return false
 	}
-
 	if err := cmd.Start(); err != nil {
-		log.Printf("[hls-cc] failed to start CC detection ffmpeg: %v", err)
 		return false
 	}
-
-	// Scan stderr for CC indicators
 	scanner := bufio.NewScanner(stderr)
 	found := false
 	for scanner.Scan() {
 		line := scanner.Text()
-		// FFmpeg logs "ATSC A53 Part 4 Closed Captions" when it encounters CC data
 		if strings.Contains(line, "ATSC A53 Part 4 Closed Captions") ||
 			strings.Contains(line, "Closed Captions") ||
 			strings.Contains(line, "cc_data") {
@@ -64,62 +144,109 @@ func detectClosedCaptions(ctx context.Context, ffmpegPath, liveURL string) bool 
 			break
 		}
 	}
-
-	// Kill and wait — we don't care about the exit code
-	cmd.Process.Kill()
-	cmd.Wait()
-
+	if cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
+	_ = cmd.Wait()
 	return found
 }
 
-// maxConcatBytes is the maximum size of the CC concat file before it gets
-// rebuilt from on-disk segments. 250 MB caps disk usage for long live sessions.
-const maxConcatBytes = 250 * 1024 * 1024
-
-// ccExtractor manages periodic CC extraction from local TS segments.
-// Appends new segments to a concat file (preserving PTS for correct timestamps),
-// and rebuilds it from on-disk segments when it exceeds maxConcatBytes.
+// ccExtractor feeds local live TS segments into a long-lived ccextractor process
+// (preferred) or a bounded ffmpeg sliding window (fallback).
 type ccExtractor struct {
-	mu          sync.Mutex
-	cancel      context.CancelFunc
-	outputPath  string       // SRT output file path
-	concatPath  string       // Append-only concatenated TS file
-	outputDir   string       // Session output directory (where TS segments live)
-	ffmpegPath  string
-	running     bool
-	seenSegs    map[int]bool // All segments ever seen (prevents re-appending)
-	lastMaxSeen int          // Highest segment number seen (skip when unchanged)
+	mu         sync.Mutex
+	cancel     context.CancelFunc
+	outputPath string
+	outputDir  string
+	ffmpegPath string
+	ccPath     string // empty => ffmpeg fallback
+	cmd        *exec.Cmd
+	stdin      io.WriteCloser
+	running    bool
+	seenSegs   map[int]bool
+	lastMaxSeen int
+	mode       string // "ccextractor" or "ffmpeg"
 }
 
-// startCCExtraction starts a background goroutine that periodically runs ffmpeg
-// to extract EIA-608 closed captions from local TS segments.
+// startCCExtraction starts background CC extraction for a live session directory.
 func startCCExtraction(ctx context.Context, outputDir string) (*ccExtractor, error) {
-	ffmpegPath, err := exec.LookPath("ffmpeg")
-	if err != nil {
-		return nil, fmt.Errorf("ffmpeg not found: %w", err)
-	}
-
 	srtPath := filepath.Join(outputDir, "captions.srt")
 	extractCtx, cancel := context.WithCancel(ctx)
 
 	ext := &ccExtractor{
 		cancel:      cancel,
 		outputPath:  srtPath,
-		concatPath:  filepath.Join(outputDir, "cc_concat.ts"),
 		outputDir:   outputDir,
-		ffmpegPath:  ffmpegPath,
 		running:     true,
 		seenSegs:    make(map[int]bool),
 		lastMaxSeen: -1,
+	}
+
+	if ccPath, err := exec.LookPath("ccextractor"); err == nil {
+		ext.ccPath = ccPath
+		ext.mode = "ccextractor"
+		if err := ext.startCCExtractorProcess(extractCtx); err != nil {
+			cancel()
+			return nil, err
+		}
+	} else {
+		ffmpegPath, err := exec.LookPath("ffmpeg")
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("neither ccextractor nor ffmpeg found for live CC extraction")
+		}
+		ext.ffmpegPath = ffmpegPath
+		ext.mode = "ffmpeg"
+		log.Printf("[hls-cc] ccextractor not found; using bounded ffmpeg sliding-window fallback for %s", outputDir)
 	}
 
 	go ext.extractionLoop(extractCtx)
 	return ext, nil
 }
 
-// extractionLoop periodically scans for new TS segments and extracts CC
+func (e *ccExtractor) startCCExtractorProcess(ctx context.Context) error {
+	// -s 120: treat stdin as a continuous live stream; exit if no data for 2m
+	// (session stop closes stdin / kills the process sooner).
+	// --forceflush / --koc: keep SRT readable while still growing.
+	cmd := exec.CommandContext(ctx, e.ccPath, // #nosec G204
+		"--stdin",
+		"-s", "120",
+		"--out", "srt",
+		"-o", e.outputPath,
+		"--forceflush",
+		"--koc",
+	)
+	cmd.Dir = e.outputDir
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("ccextractor stdin: %w", err)
+	}
+	// Discard noisy logs; failures still surface via process exit.
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	if err := cmd.Start(); err != nil {
+		_ = stdin.Close()
+		return fmt.Errorf("start ccextractor: %w", err)
+	}
+	e.cmd = cmd
+	e.stdin = stdin
+	log.Printf("[hls-cc] started ccextractor (PID=%d) for %s", cmd.Process.Pid, e.outputDir)
+
+	go func() {
+		err := cmd.Wait()
+		e.mu.Lock()
+		e.running = false
+		e.mu.Unlock()
+		if err != nil && ctx.Err() == nil {
+			log.Printf("[hls-cc] ccextractor exited for %s: %v", e.outputDir, err)
+		}
+	}()
+	return nil
+}
+
+// extractionLoop periodically appends new TS segment bytes for CC extraction.
 func (e *ccExtractor) extractionLoop(ctx context.Context) {
-	log.Printf("[hls-cc] starting extraction loop for %s", e.outputDir)
+	log.Printf("[hls-cc] starting %s extraction loop for %s", e.mode, e.outputDir)
 
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
@@ -127,31 +254,32 @@ func (e *ccExtractor) extractionLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			e.mu.Lock()
-			e.running = false
-			e.mu.Unlock()
+			e.shutdownProcess()
 			log.Printf("[hls-cc] extraction loop stopped for %s", e.outputDir)
 			return
 		case <-ticker.C:
-			e.processNewSegments(ctx)
+			if e.mode == "ccextractor" {
+				e.feedNewSegmentsToCCExtractor()
+			} else {
+				e.processFallbackWindow(ctx)
+			}
 		}
 	}
 }
 
-// segmentNumRe extracts the numeric portion from segment filenames like "segment12.ts"
-var segmentNumRe = regexp.MustCompile(`segment(\d+)\.ts$`)
+func (e *ccExtractor) feedNewSegmentsToCCExtractor() {
+	e.mu.Lock()
+	stdin := e.stdin
+	running := e.running
+	e.mu.Unlock()
+	if !running || stdin == nil {
+		return
+	}
 
-// processNewSegments appends new TS segments to the concat file, then runs
-// ffmpeg's movie filter with subcc to extract EIA-608 CC. The concat file is
-// append-only so PTS stays continuous and ffmpeg produces correct timestamps.
-// When the concat file exceeds maxConcatBytes, it is rebuilt from only the
-// segments currently on disk (which HLS already trims to ~10 for live streams).
-func (e *ccExtractor) processNewSegments(ctx context.Context) {
 	entries, err := os.ReadDir(e.outputDir)
 	if err != nil {
 		return
 	}
-
 	type segInfo struct {
 		num  int
 		path string
@@ -168,16 +296,11 @@ func (e *ccExtractor) processNewSegments(ctx context.Context) {
 		num, _ := strconv.Atoi(m[1])
 		segments = append(segments, segInfo{num: num, path: filepath.Join(e.outputDir, entry.Name())})
 	}
-
 	if len(segments) == 0 {
 		return
 	}
+	sort.Slice(segments, func(i, j int) bool { return segments[i].num < segments[j].num })
 
-	sort.Slice(segments, func(i, j int) bool {
-		return segments[i].num < segments[j].num
-	})
-
-	// Skip if no new segments since last run
 	maxOnDisk := segments[len(segments)-1].num
 	e.mu.Lock()
 	if maxOnDisk <= e.lastMaxSeen {
@@ -185,10 +308,6 @@ func (e *ccExtractor) processNewSegments(ctx context.Context) {
 		return
 	}
 	e.lastMaxSeen = maxOnDisk
-	e.mu.Unlock()
-
-	// Find new segments to append
-	e.mu.Lock()
 	var newSegs []segInfo
 	for _, seg := range segments {
 		if !e.seenSegs[seg.num] {
@@ -196,125 +315,146 @@ func (e *ccExtractor) processNewSegments(ctx context.Context) {
 		}
 	}
 	e.mu.Unlock()
-
 	if len(newSegs) == 0 {
 		return
 	}
 
-	// Check if concat file needs rebuilding (exceeds size cap)
-	needsRebuild := false
-	if fi, err := os.Stat(e.concatPath); err == nil && fi.Size() > maxConcatBytes {
-		needsRebuild = true
-	}
-
-	if needsRebuild {
-		// Rebuild from only the segments currently on disk (HLS keeps ~10)
-		concatFile, err := os.OpenFile(e.concatPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	var fed int
+	var fedBytes int64
+	for _, seg := range newSegs {
+		data, err := os.ReadFile(seg.path)
 		if err != nil {
-			log.Printf("[hls-cc] failed to open concat file for rebuild: %v", err)
+			continue
+		}
+		e.mu.Lock()
+		stdin := e.stdin
+		e.mu.Unlock()
+		if stdin == nil {
 			return
 		}
-		for _, seg := range segments {
-			data, err := os.ReadFile(seg.path)
-			if err != nil {
-				continue
-			}
-			concatFile.Write(data)
-		}
-		concatFile.Close()
-
-		// Reset seen set to match what's on disk now
-		e.mu.Lock()
-		e.seenSegs = make(map[int]bool)
-		for _, seg := range segments {
-			e.seenSegs[seg.num] = true
-		}
-		e.mu.Unlock()
-
-		log.Printf("[hls-cc] rebuilt concat file from %d on-disk segments (size cap exceeded)", len(segments))
-	} else {
-		// Normal path: append only new segments
-		concatFile, err := os.OpenFile(e.concatPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-		if err != nil {
-			log.Printf("[hls-cc] failed to open concat file: %v", err)
+		if _, err := stdin.Write(data); err != nil {
+			log.Printf("[hls-cc] ccextractor stdin write failed: %v", err)
 			return
 		}
-		for _, seg := range newSegs {
-			data, err := os.ReadFile(seg.path)
-			if err != nil {
-				continue
-			}
-			concatFile.Write(data)
-		}
-		concatFile.Close()
-
+		fed++
+		fedBytes += int64(len(data))
 		e.mu.Lock()
-		for _, seg := range newSegs {
-			e.seenSegs[seg.num] = true
-		}
+		e.seenSegs[seg.num] = true
 		e.mu.Unlock()
 	}
+	if fed > 0 {
+		log.Printf("[hls-cc] fed %d new segment(s) (%.1fKB) to ccextractor", fed, float64(fedBytes)/1024)
+	}
+}
 
-	// Run ffmpeg on the concat file to extract CC.
-	// Write to a temp file then atomic-rename to avoid serving partial/empty SRT.
+// processFallbackWindow re-extracts CC from a small trailing window of segments
+// using ffmpeg. Cost stays O(window), not O(session length).
+func (e *ccExtractor) processFallbackWindow(ctx context.Context) {
+	paths := listLiveSegments(e.outputDir)
+	if len(paths) == 0 {
+		return
+	}
+
+	// Build a trailing window under the size cap.
+	var window []string
+	var total int64
+	for i := len(paths) - 1; i >= 0; i-- {
+		fi, err := os.Stat(paths[i])
+		if err != nil {
+			continue
+		}
+		if total > 0 && total+fi.Size() > maxFallbackWindowBytes {
+			break
+		}
+		window = append([]string{paths[i]}, window...)
+		total += fi.Size()
+	}
+	if len(window) == 0 {
+		return
+	}
+
+	// Skip work when the highest segment hasn't advanced.
+	lastName := filepath.Base(window[len(window)-1])
+	m := segmentNumRe.FindStringSubmatch(lastName)
+	maxNum := -1
+	if m != nil {
+		maxNum, _ = strconv.Atoi(m[1])
+	}
+	e.mu.Lock()
+	if maxNum >= 0 && maxNum <= e.lastMaxSeen {
+		e.mu.Unlock()
+		return
+	}
+	if maxNum >= 0 {
+		e.lastMaxSeen = maxNum
+	}
+	e.mu.Unlock()
+
+	concatPath := filepath.Join(e.outputDir, "cc_window.ts")
+	f, err := os.OpenFile(concatPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return
+	}
+	for _, p := range window {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		_, _ = f.Write(data)
+	}
+	_ = f.Close()
+
 	tmpPath := e.outputPath + ".tmp"
-	movieSrc := fmt.Sprintf("movie=%s[out+subcc]", e.concatPath)
-
-	execCtx, execCancel := context.WithTimeout(ctx, 30*time.Second)
+	movieSrc := fmt.Sprintf("movie=%s[out+subcc]", concatPath)
+	execCtx, execCancel := context.WithTimeout(ctx, 20*time.Second)
 	defer execCancel()
 	cmd := exec.CommandContext(execCtx, e.ffmpegPath, // #nosec G204
 		"-y",
-		"-copyts", // Preserve original PTS so SRT timestamps match HLS player timeline
+		"-copyts",
 		"-f", "lavfi", "-i", movieSrc,
 		"-map", "0:s", "-c:s", "text",
 		"-f", "srt",
 		tmpPath,
 	)
 	output, err := cmd.CombinedOutput()
-
 	if err != nil {
 		if ctx.Err() != nil {
 			return
 		}
-		log.Printf("[hls-cc] ffmpeg CC extraction failed: %v (output: %.500s)", err, string(output))
-		os.Remove(tmpPath)
+		log.Printf("[hls-cc] ffmpeg fallback CC extraction failed: %v (output: %.300s)", err, string(output))
+		_ = os.Remove(tmpPath)
 		return
 	}
-
-	// Post-process: strip \h (non-breaking space markers from ffmpeg CC decoder)
-	srtData, err := os.ReadFile(tmpPath)
-	if err == nil {
+	if srtData, err := os.ReadFile(tmpPath); err == nil {
 		content := strings.ReplaceAll(string(srtData), "\\h", " ")
-		os.WriteFile(tmpPath, []byte(content), 0644)
+		_ = os.WriteFile(tmpPath, []byte(content), 0644)
 	}
-
-	// Atomic rename so readers never see a partial file
-	os.Rename(tmpPath, e.outputPath)
-
-	log.Printf("[hls-cc] extracted CC (%d new segments, concat %s)", len(newSegs), e.concatSizeStr())
+	_ = os.Rename(tmpPath, e.outputPath)
+	log.Printf("[hls-cc] ffmpeg fallback extracted CC (window=%d segs, %.1fMB)", len(window), float64(total)/(1024*1024))
 }
 
-// concatSizeStr returns a human-readable size of the concat file
-func (e *ccExtractor) concatSizeStr() string {
-	fi, err := os.Stat(e.concatPath)
-	if err != nil {
-		return "0B"
-	}
-	size := fi.Size()
-	if size > 1024*1024 {
-		return fmt.Sprintf("%.1fMB", float64(size)/(1024*1024))
-	}
-	return fmt.Sprintf("%.1fKB", float64(size)/1024)
-}
-
-// stop terminates the extraction loop
-func (e *ccExtractor) stop() {
+func (e *ccExtractor) shutdownProcess() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.cancel != nil {
-		e.cancel()
-	}
 	e.running = false
+	if e.stdin != nil {
+		_ = e.stdin.Close()
+		e.stdin = nil
+	}
+	if e.cmd != nil && e.cmd.Process != nil {
+		_ = e.cmd.Process.Kill()
+	}
+}
+
+// stop terminates the extraction loop and any child process.
+func (e *ccExtractor) stop() {
+	e.mu.Lock()
+	cancel := e.cancel
+	e.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	e.shutdownProcess()
 }
 
 // srtTimestampRe matches SRT timestamp lines like "00:01:23,456 --> 00:01:25,789"
@@ -432,8 +572,8 @@ func formatSRTTimestamp(totalMs int) string {
 	return fmt.Sprintf("%02d:%02d:%02d,%03d", h, m, s, ms)
 }
 
-// ServeLiveCaptions serves the WebVTT captions for a live session.
-// It reads the SRT output from ccextractor, converts to WebVTT, and serves it.
+// ServeLiveCaptions serves SRT captions for a live session.
+// Extraction is started lazily on first request (when enabled and CC was detected).
 // Called on GET /video/hls/{sessionID}/captions.srt
 func (m *HLSManager) ServeLiveCaptions(w http.ResponseWriter, r *http.Request, sessionID string) {
 	session, exists := m.GetSession(sessionID)
@@ -444,9 +584,9 @@ func (m *HLSManager) ServeLiveCaptions(w http.ResponseWriter, r *http.Request, s
 
 	session.mu.RLock()
 	isLive := session.IsLive
+	enabled := session.LiveCCExtractionEnabled
 	hasCaptions := session.HasClosedCaptions
 	outputDir := session.OutputDir
-	_ = session.ccExtractor // extraction starts automatically on detection
 	session.mu.RUnlock()
 
 	if !isLive {
@@ -454,43 +594,40 @@ func (m *HLSManager) ServeLiveCaptions(w http.ResponseWriter, r *http.Request, s
 		return
 	}
 
-	if !hasCaptions {
+	emptySRT := func() {
 		w.Header().Set("Content-Type", "application/x-subrip; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Write([]byte(""))
+	}
+
+	if !enabled || !hasCaptions {
+		emptySRT()
 		return
 	}
 
-	// Start extraction if not already running (fallback — normally started on detection)
+	// Lazy start: only run ccextractor/ffmpeg once the player asks for captions.
 	session.mu.Lock()
 	if session.ccExtractor == nil {
 		ext, err := startCCExtraction(context.Background(), outputDir)
 		if err != nil {
 			session.mu.Unlock()
 			log.Printf("[hls-cc] failed to start CC extraction for session %s: %v", sessionID, err)
-			w.Header().Set("Content-Type", "application/x-subrip; charset=utf-8")
-			w.Header().Set("Cache-Control", "no-cache")
-			w.Header().Set("Access-Control-Allow-Origin", "*")
-			w.Write([]byte(""))
+			emptySRT()
 			return
 		}
 		session.ccExtractor = ext
+		log.Printf("[hls-cc] session %s: lazy-started %s CC extraction", sessionID, ext.mode)
 	}
 	srtPath := session.ccExtractor.outputPath
 	session.mu.Unlock()
 
-	// Read the SRT file (may be partially written)
 	srtData, err := os.ReadFile(srtPath)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/x-subrip; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Write([]byte(""))
+		emptySRT()
 		return
 	}
 
-	// Clean up: deduplicate roll-up lines, trim whitespace, keep <i> tags
 	cleaned := cleanSRT(string(srtData))
 
 	w.Header().Set("Content-Type", "application/x-subrip; charset=utf-8")
@@ -499,20 +636,29 @@ func (m *HLSManager) ServeLiveCaptions(w http.ResponseWriter, r *http.Request, s
 	w.Write([]byte(cleaned))
 }
 
-// detectAndSetClosedCaptions runs CC detection in background and updates the session.
-// Called from CreateLiveSession after the session is started.
+// detectAndSetClosedCaptions sniffs local segments for CC and updates the session.
+// Does NOT start continuous extraction — that is lazy on ServeLiveCaptions.
 func (m *HLSManager) detectAndSetClosedCaptions(session *HLSSession) {
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 		defer cancel()
 
 		session.mu.RLock()
-		liveURL := session.Path
 		sessionID := session.ID
+		outputDir := session.OutputDir
+		enabled := session.LiveCCExtractionEnabled
 		session.mu.RUnlock()
 
+		if !enabled {
+			session.mu.Lock()
+			session.HasClosedCaptions = false
+			session.CCDetectionDone = true
+			session.mu.Unlock()
+			return
+		}
+
 		log.Printf("[hls-cc] detecting closed captions for session %s", sessionID)
-		hasCC := detectClosedCaptions(ctx, m.ffmpegPath, liveURL)
+		hasCC := detectClosedCaptionsInSegments(ctx, outputDir, m.ffmpegPath)
 
 		session.mu.Lock()
 		session.HasClosedCaptions = hasCC
@@ -520,20 +666,7 @@ func (m *HLSManager) detectAndSetClosedCaptions(session *HLSSession) {
 		session.mu.Unlock()
 
 		if hasCC {
-			log.Printf("[hls-cc] session %s: closed captions DETECTED — starting extraction immediately", sessionID)
-			// Start extraction right away so cues are ready before the player needs them
-			session.mu.RLock()
-			outputDir := session.OutputDir
-			session.mu.RUnlock()
-
-			ext, err := startCCExtraction(context.Background(), outputDir)
-			if err != nil {
-				log.Printf("[hls-cc] session %s: failed to start immediate extraction: %v", sessionID, err)
-			} else {
-				session.mu.Lock()
-				session.ccExtractor = ext
-				session.mu.Unlock()
-			}
+			log.Printf("[hls-cc] session %s: closed captions DETECTED — extraction will start on first captions request", sessionID)
 		} else {
 			log.Printf("[hls-cc] session %s: no closed captions found", sessionID)
 		}

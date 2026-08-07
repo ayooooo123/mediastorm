@@ -105,9 +105,10 @@ func TestServeLiveCaptions_NoCCDetected(t *testing.T) {
 
 	// Create a live session with no CC
 	session := &HLSSession{
-		ID:                "test-live-nocc",
-		IsLive:            true,
-		HasClosedCaptions: false,
+		ID:                      "test-live-nocc",
+		IsLive:                  true,
+		LiveCCExtractionEnabled: true,
+		HasClosedCaptions:       false,
 	}
 	manager.mu.Lock()
 	manager.sessions["test-live-nocc"] = session
@@ -126,6 +127,37 @@ func TestServeLiveCaptions_NoCCDetected(t *testing.T) {
 	}
 	if rr.Body.String() != "" {
 		t.Errorf("expected empty body, got %q", rr.Body.String())
+	}
+}
+
+func TestServeLiveCaptions_ExtractionDisabled(t *testing.T) {
+	tmpDir := t.TempDir()
+	manager := NewHLSManager(tmpDir, "", "", nil)
+	defer manager.Shutdown()
+
+	session := &HLSSession{
+		ID:                      "test-live-disabled",
+		IsLive:                  true,
+		LiveCCExtractionEnabled: false,
+		HasClosedCaptions:       true, // even if detection would find CC, setting wins
+		OutputDir:               tmpDir,
+	}
+	manager.mu.Lock()
+	manager.sessions["test-live-disabled"] = session
+	manager.mu.Unlock()
+
+	req := httptest.NewRequest(http.MethodGet, "/video/hls/test-live-disabled/captions.srt", nil)
+	rr := httptest.NewRecorder()
+	manager.ServeLiveCaptions(rr, req, "test-live-disabled")
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rr.Code)
+	}
+	if rr.Body.String() != "" {
+		t.Fatalf("expected empty body when extraction disabled, got %q", rr.Body.String())
+	}
+	if session.ccExtractor != nil {
+		t.Fatal("expected no extractor process when extraction is disabled")
 	}
 }
 

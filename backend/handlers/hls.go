@@ -455,9 +455,10 @@ type HLSSession struct {
 	LiveTuning   LiveTuningSettings // FFmpeg tuning settings for live sessions
 
 	// Closed caption support (live TV EIA-608)
-	HasClosedCaptions bool         // True if EIA-608 CC detected in stream
-	CCDetectionDone   bool         // True once CC detection has completed (regardless of result)
-	ccExtractor       *ccExtractor // Running ccextractor process for this session (nil if not started)
+	LiveCCExtractionEnabled bool         // Resolved playback.liveClosedCaptionExtraction setting
+	HasClosedCaptions       bool         // True if EIA-608 CC detected in stream
+	CCDetectionDone         bool         // True once CC detection has completed (regardless of result)
+	ccExtractor             *ccExtractor // Running extractor for this session (nil until first captions request)
 
 	// Prequeue tracking
 	PrequeueType   string // "", "details" (details page), or "next_episode" (auto-play next)
@@ -2323,7 +2324,7 @@ func youtubeTranscodingArgs(videoURL, audioURL, proxyURL, playlistPath, segmentP
 
 // CreateLiveSession creates an HLS session for live TV streams
 // Unlike VOD sessions, live sessions don't have a known duration and don't support seeking
-func (m *HLSManager) CreateLiveSession(ctx context.Context, liveURL, provider, bucketKey, profileID, profileName, clientIP, playbackTarget string, tuning LiveTuningSettings) (*HLSSession, error) {
+func (m *HLSManager) CreateLiveSession(ctx context.Context, liveURL, provider, bucketKey, profileID, profileName, clientIP, playbackTarget string, tuning LiveTuningSettings, liveCCExtractionEnabled bool) (*HLSSession, error) {
 	sessionID := generateSessionID()
 	outputDir := filepath.Join(m.baseDir, sessionID)
 
@@ -2363,6 +2364,7 @@ func (m *HLSManager) CreateLiveSession(ctx context.Context, liveURL, provider, b
 		ClientIP:                clientIP,
 		PlaybackTarget:          strings.ToLower(strings.TrimSpace(playbackTarget)),
 		LiveTuning:              tuning,
+		LiveCCExtractionEnabled: liveCCExtractionEnabled,
 		subtitleExtractOffsets:  make(map[int]float64),
 	}
 
@@ -2380,8 +2382,17 @@ func (m *HLSManager) CreateLiveSession(ctx context.Context, liveURL, provider, b
 		}
 	}()
 
-	// Detect closed captions in background (non-blocking)
-	m.detectAndSetClosedCaptions(session)
+	// Detect closed captions in background when extraction is enabled.
+	// Continuous extraction is lazy — starts on first captions.srt request.
+	if liveCCExtractionEnabled {
+		m.detectAndSetClosedCaptions(session)
+	} else {
+		session.mu.Lock()
+		session.HasClosedCaptions = false
+		session.CCDetectionDone = true
+		session.mu.Unlock()
+		log.Printf("[hls] live session %s: closed caption extraction disabled by settings", sessionID)
+	}
 
 	log.Printf("[hls] created live session %s for host %q", sessionID, requestsecurity.URLForLog(liveURL))
 	return session, nil

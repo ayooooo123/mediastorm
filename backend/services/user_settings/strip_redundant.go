@@ -151,6 +151,7 @@ func globalToUserSettings(g config.Settings) models.UserSettings {
 			CreditsDetectionEnabled:       models.BoolPtr(g.Playback.CreditsDetectionEnabled),
 			CreditsAutoSkip:               g.Playback.CreditsAutoSkip || g.Playback.CreditsDetection,
 			MatchFrameRate:                models.BoolPtr(g.Playback.MatchFrameRate),
+			LiveClosedCaptionExtraction:   models.BoolPtr(g.Playback.LiveClosedCaptionExtraction),
 			MaxResultsPerResolution:       models.IntPtr(g.Playback.MaxResultsPerResolution),
 		},
 		Filtering: models.FilterSettings{
@@ -422,6 +423,9 @@ func mergeWithGlobal(us models.UserSettings, g config.Settings) models.UserSetti
 	}
 	if eff.Playback.MatchFrameRate == nil {
 		eff.Playback.MatchFrameRate = models.BoolPtr(g.Playback.MatchFrameRate)
+	}
+	if eff.Playback.LiveClosedCaptionExtraction == nil {
+		eff.Playback.LiveClosedCaptionExtraction = models.BoolPtr(g.Playback.LiveClosedCaptionExtraction)
 	}
 	if eff.Playback.MaxResultsPerResolution == nil {
 		eff.Playback.MaxResultsPerResolution = models.IntPtr(g.Playback.MaxResultsPerResolution)
@@ -751,6 +755,10 @@ func stripPlayback(p *models.PlaybackSettings, g config.PlaybackSettings) bool {
 	}
 	if p.MatchFrameRate != nil && *p.MatchFrameRate == g.MatchFrameRate {
 		p.MatchFrameRate = nil
+		changed = true
+	}
+	if p.LiveClosedCaptionExtraction != nil && *p.LiveClosedCaptionExtraction == g.LiveClosedCaptionExtraction {
+		p.LiveClosedCaptionExtraction = nil
 		changed = true
 	}
 	if p.DisablePrequeue && p.DisablePrequeue == g.DisablePrequeue {
@@ -1189,6 +1197,10 @@ func stripClientSettings(cs *models.ClientFilterSettings, eff models.UserSetting
 	}
 	if cs.MatchFrameRate != nil && eff.Playback.MatchFrameRate != nil && *cs.MatchFrameRate == *eff.Playback.MatchFrameRate {
 		cs.MatchFrameRate = nil
+		changed = true
+	}
+	if cs.LiveClosedCaptionExtraction != nil && eff.Playback.LiveClosedCaptionExtraction != nil && *cs.LiveClosedCaptionExtraction == *eff.Playback.LiveClosedCaptionExtraction {
+		cs.LiveClosedCaptionExtraction = nil
 		changed = true
 	}
 	if cs.DisablePrequeue != nil && *cs.DisablePrequeue == eff.Playback.DisablePrequeue {

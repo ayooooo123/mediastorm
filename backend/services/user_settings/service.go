@@ -262,6 +262,9 @@ func (s *Service) GetWithDefaults(userID string, defaults models.UserSettings) (
 		if settings.Playback.MatchFrameRate == nil {
 			settings.Playback.MatchFrameRate = defaults.Playback.MatchFrameRate
 		}
+		if settings.Playback.LiveClosedCaptionExtraction == nil {
+			settings.Playback.LiveClosedCaptionExtraction = defaults.Playback.LiveClosedCaptionExtraction
+		}
 		if settings.Metadata.PrimaryLanguage == "" {
 			settings.Metadata.PrimaryLanguage = defaults.Metadata.PrimaryLanguage
 		}
@@ -613,6 +616,7 @@ func isSettingsEmpty(s models.UserSettings) bool {
 		s.Playback.AutoPlayTrailersTV ||
 		s.Playback.StreamMigrationEnabled != nil ||
 		s.Playback.MatchFrameRate != nil ||
+		s.Playback.LiveClosedCaptionExtraction != nil ||
 		s.Playback.DisablePrequeue {
 		return false
 	}

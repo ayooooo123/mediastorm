@@ -31,6 +31,17 @@ func TestDefaultUserSettingsDisablesMatchFrameRate(t *testing.T) {
 	}
 }
 
+func TestDefaultUserSettingsEnablesLiveClosedCaptionExtraction(t *testing.T) {
+	settings := DefaultUserSettings()
+
+	if settings.Playback.LiveClosedCaptionExtraction == nil {
+		t.Fatal("expected live closed caption extraction default to be set")
+	}
+	if !*settings.Playback.LiveClosedCaptionExtraction {
+		t.Fatal("expected live closed caption extraction to default to enabled")
+	}
+}
+
 func TestDefaultUserSettingsEnablesApplicationAnimations(t *testing.T) {
 	settings := DefaultUserSettings()
 	if settings.Display.EnableAnimations == nil || !*settings.Display.EnableAnimations {

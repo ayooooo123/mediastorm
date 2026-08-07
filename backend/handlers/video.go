@@ -5101,7 +5101,9 @@ func (h *VideoHandler) StartLiveHLSSession(w http.ResponseWriter, r *http.Reques
 		RequestHeaders:     stremioRequestHeaders,
 	}
 	playbackTarget := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("target")))
-	session, err := h.hlsManager.CreateLiveSession(r.Context(), liveURL, target.Provider, target.BucketKey, profileID, profileName, getClientIP(r), playbackTarget, tuning)
+	clientID := requestClientID(r)
+	liveCCEnabled := h.liveClosedCaptionExtractionEnabled(profileID, clientID)
+	session, err := h.hlsManager.CreateLiveSession(r.Context(), liveURL, target.Provider, target.BucketKey, profileID, profileName, getClientIP(r), playbackTarget, tuning, liveCCEnabled)
 	if err != nil {
 		log.Printf("[video] failed to create live HLS session: %v", err)
 		http.Error(w, fmt.Sprintf("failed to create live HLS session: %v", err), http.StatusInternalServerError)
@@ -5109,7 +5111,7 @@ func (h *VideoHandler) StartLiveHLSSession(w http.ResponseWriter, r *http.Reques
 	}
 	session.mu.Lock()
 	session.MediaMetadata = mediaMetadata
-	session.ClientID = requestClientID(r)
+	session.ClientID = clientID
 	session.mu.Unlock()
 
 	response := map[string]interface{}{
@@ -6899,6 +6901,36 @@ func (h *VideoHandler) GetDirectURL(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{
 		"url": directURL,
 	})
+}
+
+// liveClosedCaptionExtractionEnabled resolves playback.liveClosedCaptionExtraction
+// with global → profile → client precedence. Default is enabled.
+func (h *VideoHandler) liveClosedCaptionExtractionEnabled(profileID, clientID string) bool {
+	enabled := true
+
+	if h.configManager != nil {
+		if globalSettings, err := h.configManager.Load(); err == nil {
+			enabled = globalSettings.Playback.LiveClosedCaptionExtraction
+		}
+	}
+
+	if h.userSettingsSvc != nil && profileID != "" {
+		if userSettings, err := h.userSettingsSvc.Get(profileID); err == nil && userSettings != nil {
+			if userSettings.Playback.LiveClosedCaptionExtraction != nil {
+				enabled = *userSettings.Playback.LiveClosedCaptionExtraction
+			}
+		}
+	}
+
+	if h.clientSettingsSvc != nil && clientID != "" {
+		if clientSettings, err := h.clientSettingsSvc.Get(clientID); err == nil && clientSettings != nil {
+			if clientSettings.LiveClosedCaptionExtraction != nil {
+				enabled = *clientSettings.LiveClosedCaptionExtraction
+			}
+		}
+	}
+
+	return enabled
 }
 
 // getHDRDVPolicy returns the effective HDR/DV policy for a user/client
