@@ -81,6 +81,94 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     cargo build --release && \
     cp target/release/iroh-direct-spike /iroh/iroh-direct-spike
 
+# ccextractor builder. Live TV EIA-608 extraction prefers this bitstream tool
+# over re-decoding segments with ffmpeg. Built from a checksum-pinned source
+# tarball for multi-arch (amd64/arm64); minimal feature set (no OCR/hardsubx).
+FROM rust:1-bookworm@sha256:77fac8b98f9f46062bb680b6d25d5bcaabfc400143952ebc572e924bcbedc3fa AS ccextractor-builder
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates wget xz-utils gcc g++ make cmake pkg-config bash \
+    zlib1g-dev libpng-dev libjpeg-dev libssl-dev libfreetype-dev \
+    libxml2-dev libcurl4-gnutls-dev clang libclang-dev git \
+    && rm -rf /var/lib/apt/lists/*
+
+# GPAC is required by ccextractor and is not packaged for bookworm.
+ARG GPAC_VERSION=v2.4.0
+WORKDIR /root
+RUN git clone -b "${GPAC_VERSION}" --depth 1 https://github.com/gpac/gpac.git
+WORKDIR /root/gpac
+RUN ./configure && make -j"$(nproc)" lib && make install-lib && ldconfig
+
+ARG CCEXTRACTOR_VERSION=0.96.6
+ARG CCEXTRACTOR_SHA256=cc292b6627067e0cdb5325fe74cade5a3881cbfb86096a527301a7320ff46486
+WORKDIR /root
+RUN wget -q "https://github.com/CCExtractor/ccextractor/releases/download/v${CCEXTRACTOR_VERSION}/ccextractor.${CCEXTRACTOR_VERSION}.tar.gz" -O /tmp/ccextractor.tar.gz \
+	&& echo "${CCEXTRACTOR_SHA256}  /tmp/ccextractor.tar.gz" | sha256sum -c - \
+	&& tar -xzf /tmp/ccextractor.tar.gz -C /root \
+	&& rm /tmp/ccextractor.tar.gz
+
+WORKDIR /root/ccextractor/linux
+RUN ./pre-build.sh
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/root/ccextractor/linux/rust,sharing=locked \
+    cd ../src/rust && CARGO_TARGET_DIR=../../linux/rust cargo build --release \
+	&& cp ../../linux/rust/release/libccx_rust.a ../../linux/libccx_rust.a
+# Minimal build: EIA-608/708 from TS, no tesseract OCR / hardsubx.
+RUN BLD_FLAGS="-std=gnu99 -Wno-write-strings -Wno-pointer-sign -D_FILE_OFFSET_BITS=64 -DVERSION_FILE_PRESENT -DFT2_BUILD_LIBRARY -DGPAC_DISABLE_VTT -DGPAC_DISABLE_OD_DUMP -DGPAC_DISABLE_REMOTERY -DNO_GZIP -DGPAC_64_BITS" \
+	&& BLD_INCLUDE="-I../src -I../src/lib_ccx/ -I/usr/local/include -I/usr/include/gpac -I../src/thirdparty/libpng -I../src/thirdparty/zlib -I../src/lib_ccx/zvbi -I../src/thirdparty/lib_hash -I../src/thirdparty -I../src/thirdparty/freetype/include" \
+	&& BLD_LINKER="-lm -Wl,--allow-multiple-definition -lpthread -ldl -L/usr/local/lib -lgpac ./libccx_rust.a" \
+	&& SRC_LIBPNG="$(find ../src/thirdparty/libpng/ -name '*.c')" \
+	&& SRC_ZLIB="$(find ../src/thirdparty/zlib/ -name '*.c')" \
+	&& SRC_CCX="$(find ../src/lib_ccx/ -name '*.c')" \
+	&& SRC_HASH="$(find ../src/thirdparty/lib_hash/ -name '*.c')" \
+	&& SRC_UTF8PROC="../src/thirdparty/utf8proc/utf8proc.c" \
+	&& SRC_FREETYPE="../src/thirdparty/freetype/autofit/autofit.c \
+		../src/thirdparty/freetype/base/ftbase.c \
+		../src/thirdparty/freetype/base/ftbbox.c \
+		../src/thirdparty/freetype/base/ftbdf.c \
+		../src/thirdparty/freetype/base/ftbitmap.c \
+		../src/thirdparty/freetype/base/ftcid.c \
+		../src/thirdparty/freetype/base/ftfntfmt.c \
+		../src/thirdparty/freetype/base/ftfstype.c \
+		../src/thirdparty/freetype/base/ftgasp.c \
+		../src/thirdparty/freetype/base/ftglyph.c \
+		../src/thirdparty/freetype/base/ftgxval.c \
+		../src/thirdparty/freetype/base/ftinit.c \
+		../src/thirdparty/freetype/base/ftlcdfil.c \
+		../src/thirdparty/freetype/base/ftmm.c \
+		../src/thirdparty/freetype/base/ftotval.c \
+		../src/thirdparty/freetype/base/ftpatent.c \
+		../src/thirdparty/freetype/base/ftpfr.c \
+		../src/thirdparty/freetype/base/ftstroke.c \
+		../src/thirdparty/freetype/base/ftsynth.c \
+		../src/thirdparty/freetype/base/ftsystem.c \
+		../src/thirdparty/freetype/base/fttype1.c \
+		../src/thirdparty/freetype/base/ftwinfnt.c \
+		../src/thirdparty/freetype/bdf/bdf.c \
+		../src/thirdparty/freetype/bzip2/ftbzip2.c \
+		../src/thirdparty/freetype/cache/ftcache.c \
+		../src/thirdparty/freetype/cff/cff.c \
+		../src/thirdparty/freetype/cid/type1cid.c \
+		../src/thirdparty/freetype/gzip/ftgzip.c \
+		../src/thirdparty/freetype/lzw/ftlzw.c \
+		../src/thirdparty/freetype/pcf/pcf.c \
+		../src/thirdparty/freetype/pfr/pfr.c \
+		../src/thirdparty/freetype/psaux/psaux.c \
+		../src/thirdparty/freetype/pshinter/pshinter.c \
+		../src/thirdparty/freetype/psnames/psnames.c \
+		../src/thirdparty/freetype/raster/raster.c \
+		../src/thirdparty/freetype/sfnt/sfnt.c \
+		../src/thirdparty/freetype/smooth/smooth.c \
+		../src/thirdparty/freetype/truetype/truetype.c \
+		../src/thirdparty/freetype/type1/type1.c \
+		../src/thirdparty/freetype/type42/type42.c \
+		../src/thirdparty/freetype/winfonts/winfnt.c" \
+	&& gcc $BLD_FLAGS $BLD_INCLUDE -o ccextractor ../src/ccextractor.c $SRC_CCX $SRC_ZLIB $SRC_LIBPNG $SRC_HASH $SRC_UTF8PROC $SRC_FREETYPE $BLD_LINKER \
+	&& mkdir -p /out \
+	&& cp ccextractor /out/ccextractor \
+	&& cp -a /usr/local/lib/libgpac.so* /out/ \
+	&& chmod 0755 /out/ccextractor
+
 # Final stage
 FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
 
@@ -90,6 +178,7 @@ FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bb
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates wget xz-utils python3 python3-venv python3-pip \
     libvulkan1 mesa-vulkan-drivers \
+    libssl3 libpng16-16 libjpeg62-turbo libopenjp2-7 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN ln -sf "$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' | head -n 1)" /usr/share/vulkan/icd.d/lavapipe_icd.json
@@ -130,6 +219,13 @@ RUN LIBGL_ALWAYS_SOFTWARE=1 \
         -vf "libplacebo=w=16:h=16:colorspace=bt709:color_primaries=bt709:color_trc=bt709,format=yuv420p" \
         -f null - \
     || echo "warning: libplacebo runtime probe failed during image build; application runtime probe will select fallback"
+
+# Live TV closed-caption extractor (EIA-608 bitstream parse). Built multi-arch
+# in the ccextractor-builder stage; libgpac is a shared runtime dependency.
+COPY --from=ccextractor-builder --chown=root:root --chmod=0755 /out/ccextractor /usr/local/bin/ccextractor
+COPY --from=ccextractor-builder /out/libgpac.so* /usr/local/lib/
+RUN ldconfig \
+	&& ccextractor -V >/dev/null
 
 # Install a checksum-pinned yt-dlp release for YouTube trailer support.
 ARG YTDLP_VERSION=2026.06.09
