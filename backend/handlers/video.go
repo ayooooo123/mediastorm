@@ -6922,8 +6922,8 @@ func (h *VideoHandler) liveClosedCaptionExtractionEnabled(profileID, clientID st
 		}
 	}
 
-	if h.clientSettingsSvc != nil && clientID != "" {
-		if clientSettings, err := h.clientSettingsSvc.Get(clientID); err == nil && clientSettings != nil {
+	if h.clientSettingsSvc != nil && clientID != "" && profileID != "" {
+		if clientSettings, err := h.clientSettingsSvc.Get(clientID, profileID); err == nil && clientSettings != nil {
 			if clientSettings.LiveClosedCaptionExtraction != nil {
 				enabled = *clientSettings.LiveClosedCaptionExtraction
 			}
@@ -6955,8 +6955,8 @@ func (h *VideoHandler) getHDRDVPolicy(userID, clientID string) models.HDRDVPolic
 	}
 
 	// Layer 3: Client settings override user
-	if h.clientSettingsSvc != nil && clientID != "" {
-		clientSettings, err := h.clientSettingsSvc.Get(clientID)
+	if h.clientSettingsSvc != nil && clientID != "" && userID != "" {
+		clientSettings, err := h.clientSettingsSvc.Get(clientID, userID)
 		if err == nil && clientSettings != nil && clientSettings.HDRDVPolicy != nil {
 			policy = *clientSettings.HDRDVPolicy
 			log.Printf("[video] Using client-specific HDR/DV policy: %s", policy)

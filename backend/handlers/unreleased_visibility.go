@@ -59,8 +59,8 @@ func resolveUnreleasedVisibilityPolicy(
 			applyDisplayUnreleasedVisibility(&policy, profileSettings.Display, scope)
 		}
 	}
-	if clientSettings != nil && strings.TrimSpace(clientID) != "" {
-		if cs, err := clientSettings.Get(clientID); err == nil && cs != nil {
+	if clientSettings != nil && strings.TrimSpace(clientID) != "" && strings.TrimSpace(userID) != "" {
+		if cs, err := clientSettings.Get(clientID, userID); err == nil && cs != nil {
 			applyClientUnreleasedVisibility(&policy, cs, scope)
 		}
 	}

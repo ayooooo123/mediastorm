@@ -201,6 +201,16 @@ func migrateClients(ctx context.Context, store *DataStore, filePath string) erro
 			if err := tx.Clients().Create(ctx, &c); err != nil {
 				return fmt.Errorf("insert client %s: %w", id, err)
 			}
+			if c.UserID != "" {
+				if err := tx.Clients().UpsertProfile(ctx, models.ClientProfileAssociation{
+					ClientID:    c.ID,
+					UserID:      c.UserID,
+					FirstSeenAt: c.FirstSeenAt,
+					LastSeenAt:  c.LastSeenAt,
+				}); err != nil {
+					return fmt.Errorf("insert client profile %s/%s: %w", id, c.UserID, err)
+				}
+			}
 		}
 		return nil
 	})
@@ -211,10 +221,28 @@ func migrateClientSettings(ctx context.Context, store *DataStore, filePath strin
 	if err := readJSONFile(filePath, &raw); err != nil {
 		return fmt.Errorf("read client_settings.json: %w", err)
 	}
+	// Resolve device-only keys to the client's last-active profile.
+	clients, err := store.Clients().List(ctx)
+	if err != nil {
+		return fmt.Errorf("list clients for settings migration: %w", err)
+	}
+	clientUser := make(map[string]string, len(clients))
+	for _, c := range clients {
+		clientUser[c.ID] = c.UserID
+	}
 	return store.WithTx(ctx, func(tx *Tx) error {
-		for clientID, settings := range raw {
-			if err := tx.ClientSettings().Upsert(ctx, clientID, &settings); err != nil {
-				return fmt.Errorf("insert client settings %s: %w", clientID, err)
+		for key, settings := range raw {
+			clientID, userID, ok := models.SplitClientSettingsKey(key)
+			if !ok {
+				clientID = key
+				userID = clientUser[clientID]
+			}
+			if userID == "" {
+				continue
+			}
+			cs := settings
+			if err := tx.ClientSettings().Upsert(ctx, clientID, userID, &cs); err != nil {
+				return fmt.Errorf("insert client settings %s/%s: %w", clientID, userID, err)
 			}
 		}
 		return nil

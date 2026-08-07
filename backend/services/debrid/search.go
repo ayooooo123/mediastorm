@@ -32,9 +32,9 @@ type userSettingsProvider interface {
 	Get(userID string) (*models.UserSettings, error)
 }
 
-// clientSettingsProvider retrieves per-client filter settings.
+// clientSettingsProvider retrieves per-(device, person) filter settings.
 type clientSettingsProvider interface {
-	Get(clientID string) (*models.ClientFilterSettings, error)
+	Get(clientID, userID string) (*models.ClientFilterSettings, error)
 }
 
 // imdbResolver resolves IMDB IDs from title metadata when not available from primary sources.
@@ -368,10 +368,10 @@ func (s *SearchService) getEffectiveFilterSettings(userID, clientID string, glob
 	}
 
 	// Layer 3: Client settings override profile (field-by-field, only if set)
-	if clientID != "" && s.clientSettings != nil {
-		clientSettings, err := s.clientSettings.Get(clientID)
+	if clientID != "" && userID != "" && s.clientSettings != nil {
+		clientSettings, err := s.clientSettings.Get(clientID, userID)
 		if err != nil {
-			log.Printf("[debrid] failed to get client settings for %s: %v", clientID, err)
+			log.Printf("[debrid] failed to get client settings for %s/%s: %v", clientID, userID, err)
 		} else if clientSettings != nil && !clientSettings.IsEmpty() {
 			log.Printf("[debrid] applying per-client filtering overrides for client %s", clientID)
 			if clientSettings.MaxSizeMovieGB != nil {

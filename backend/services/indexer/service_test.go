@@ -94,7 +94,7 @@ func newMutableClientSettingsProvider(settings *models.ClientFilterSettings) *mu
 	return p
 }
 
-func (p *mutableClientSettingsProvider) Get(string) (*models.ClientFilterSettings, error) {
+func (p *mutableClientSettingsProvider) Get(string, string) (*models.ClientFilterSettings, error) {
 	settings, _ := p.settings.Load().(*models.ClientFilterSettings)
 	return settings, nil
 }
@@ -107,7 +107,7 @@ type mapClientSettingsProvider struct {
 	settings map[string]*models.ClientFilterSettings
 }
 
-func (p mapClientSettingsProvider) Get(clientID string) (*models.ClientFilterSettings, error) {
+func (p mapClientSettingsProvider) Get(clientID, userID string) (*models.ClientFilterSettings, error) {
 	return p.settings[clientID], nil
 }
 

@@ -612,7 +612,7 @@ function renderDeviceRow(client, orphaned) {
             <select class="form-select" style="width:auto;max-width:180px;font-size:0.78rem;" aria-label="Move ${escapeHtml(client.nickname || client.name || 'device')} to another person" onchange="reassignClient('${client.id}', this.value, '${client.userId}')">
                 ${renderPersonOptions(client.userId)}
             </select>
-            <button class="btn btn-danger btn-sm" onclick="deleteClient('${client.id}', '${escapeHtml(client.nickname || client.name || 'this device')}')">Remove</button>
+            <button class="btn btn-danger btn-sm" onclick="deleteClient('${client.id}', '${escapeHtml(client.nickname || client.name || 'this device')}', '${escapeHtml(client.userId || '')}')">Remove</button>
         </div>
     </div>`;
 }
@@ -721,12 +721,21 @@ async function renameClient(e, clientId) {
 async function reassignClient(clientId, newProfileId, originalProfileId) {
     try {
         const response = await fetch(basePath + '/api/clients/' + encodeURIComponent(clientId) + '/reassign', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ userId: newProfileId })
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ userId: newProfileId, fromUserId: originalProfileId })
         });
         if (!response.ok) throw new Error((await response.json()).error || 'Failed to move device');
         const updatedClient = await response.json();
-        const index = clients.findIndex(client => client.id === clientId);
+        // Replace the person×device instance that was moved (same device id may appear under multiple people).
+        const index = clients.findIndex(client => client.id === clientId && client.userId === originalProfileId);
         if (index !== -1) clients[index] = updatedClient;
+        else {
+            const byId = clients.findIndex(client => client.id === clientId);
+            if (byId !== -1) clients[byId] = updatedClient;
+            else clients.push(updatedClient);
+        }
         showToast('Device moved successfully');
         renderHouseholds();
     } catch (err) {
@@ -735,13 +744,23 @@ async function reassignClient(clientId, newProfileId, originalProfileId) {
     }
 }
 
-async function deleteClient(clientId, clientName) {
-    if (!confirm(`Remove "${clientName}"?\n\nThe device can register again the next time it connects.`)) return;
+async function deleteClient(clientId, clientName, profileId) {
+    const scoped = !!profileId;
+    const msg = scoped
+        ? `Remove "${clientName}" from this person?\n\nOther people who use this device keep their assignment and settings. The device can register again the next time this person connects.`
+        : `Remove "${clientName}" entirely?\n\nThe device can register again the next time it connects.`;
+    if (!confirm(msg)) return;
     try {
-        const response = await fetch(basePath + '/api/clients/' + encodeURIComponent(clientId), { method: 'DELETE', credentials: 'same-origin' });
+        let url = basePath + '/api/clients/' + encodeURIComponent(clientId);
+        if (profileId) url += '?userId=' + encodeURIComponent(profileId);
+        const response = await fetch(url, { method: 'DELETE', credentials: 'same-origin' });
         if (!response.ok && response.status !== 204) throw new Error((await response.json()).error || 'Failed to remove device');
-        clients = clients.filter(client => client.id !== clientId);
-        showToast('Device removed');
+        if (profileId) {
+            clients = clients.filter(client => !(client.id === clientId && client.userId === profileId));
+        } else {
+            clients = clients.filter(client => client.id !== clientId);
+        }
+        showToast(scoped ? 'Device removed from this person' : 'Device removed');
         renderHouseholds();
     } catch (err) { showToast(err.message, 'error'); }
 }

@@ -3864,8 +3864,8 @@ func (h *AdminUIHandler) PropagateSettings(w http.ResponseWriter, r *http.Reques
 			if h.clientsService != nil && h.clientSettingsService != nil {
 				clients := h.clientsService.ListByUser(user.ID)
 				for _, client := range clients {
-					// Delete client overrides so they inherit from profile
-					_ = h.clientSettingsService.Delete(client.ID)
+					// Delete person×device overrides so they inherit from profile
+					_ = h.clientSettingsService.Delete(client.ID, user.ID)
 					propagatedClients++
 				}
 			}
@@ -3888,8 +3888,8 @@ func (h *AdminUIHandler) PropagateSettings(w http.ResponseWriter, r *http.Reques
 		if h.clientsService != nil && h.clientSettingsService != nil {
 			clients := h.clientsService.ListByUser(userID)
 			for _, client := range clients {
-				// Delete client overrides so they inherit from profile
-				_ = h.clientSettingsService.Delete(client.ID)
+				// Delete person×device overrides so they inherit from profile
+				_ = h.clientSettingsService.Delete(client.ID, userID)
 				propagatedClients++
 			}
 			// If we want to explicitly set settings on clients instead of just deleting overrides:

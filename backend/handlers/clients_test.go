@@ -34,13 +34,17 @@ func (f *fakeClientOwnership) BelongsToAccount(profileID, accountID string) bool
 
 type recordingClientSettings struct{}
 
-func (recordingClientSettings) Get(clientID string) (*models.ClientFilterSettings, error) {
+func (recordingClientSettings) Get(clientID, userID string) (*models.ClientFilterSettings, error) {
 	return nil, nil
 }
-func (recordingClientSettings) Update(clientID string, settings models.ClientFilterSettings) error {
+func (recordingClientSettings) Update(clientID, userID string, settings models.ClientFilterSettings) error {
 	return nil
 }
-func (recordingClientSettings) Delete(clientID string) error { return nil }
+func (recordingClientSettings) Delete(clientID, userID string) error { return nil }
+func (recordingClientSettings) DeleteByClient(clientID string) error  { return nil }
+func (recordingClientSettings) Move(clientID, fromUserID, toUserID string) error {
+	return nil
+}
 
 func clientsAuthRequest(method, path string, body any, vars map[string]string, accountID string, isMaster bool) *http.Request {
 	var buf bytes.Buffer
@@ -57,7 +61,7 @@ func clientsAuthRequest(method, path string, body any, vars map[string]string, a
 	return r.WithContext(ctx)
 }
 
-func TestClientsHandler_Register_ReclaimsDeviceFromOtherAccount(t *testing.T) {
+func TestClientsHandler_Register_LinksDeviceToAdditionalProfile(t *testing.T) {
 	svc, err := clients.NewService(t.TempDir())
 	if err != nil {
 		t.Fatalf("new clients service: %v", err)
@@ -100,10 +104,17 @@ func TestClientsHandler_Register_ReclaimsDeviceFromOtherAccount(t *testing.T) {
 		t.Fatalf("decode response: %v", err)
 	}
 	if resp.Client.UserID != "profile-b" {
-		t.Fatalf("userId = %q, want profile-b (reclaimed)", resp.Client.UserID)
+		t.Fatalf("userId = %q, want profile-b (last active)", resp.Client.UserID)
 	}
 	if resp.Client.Nickname != "Living Room" {
 		t.Fatalf("nickname = %q, want Living Room", resp.Client.Nickname)
+	}
+	// Device remains listed under both people.
+	if got := svc.ListByUser("profile-a"); len(got) != 1 || got[0].ID != "device-1" {
+		t.Fatalf("profile-a devices = %+v, want device-1", got)
+	}
+	if got := svc.ListByUser("profile-b"); len(got) != 1 || got[0].ID != "device-1" {
+		t.Fatalf("profile-b devices = %+v, want device-1", got)
 	}
 }
 

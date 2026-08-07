@@ -342,9 +342,9 @@ func (h *PrequeueHandler) validateReadyEntryForReuse(ctx context.Context, entry 
 	return validator(checkCtx, entry.StreamPath)
 }
 
-// ClientSettingsProvider interface for accessing per-client filter settings
+// ClientSettingsProvider interface for accessing per-(device, person) filter settings
 type ClientSettingsProvider interface {
-	Get(clientID string) (*models.ClientFilterSettings, error)
+	Get(clientID, userID string) (*models.ClientFilterSettings, error)
 }
 
 type prequeueScopePlayback struct {
@@ -520,8 +520,8 @@ func (h *PrequeueHandler) prequeueSettingsScopeKey(userID, clientID, titleID str
 	}
 
 	var clientSettings *models.ClientFilterSettings
-	if clientID != "" && h.clientSettingsSvc != nil {
-		if cs, err := h.clientSettingsSvc.Get(clientID); err == nil {
+	if clientID != "" && userID != "" && h.clientSettingsSvc != nil {
+		if cs, err := h.clientSettingsSvc.Get(clientID, userID); err == nil {
 			clientSettings = cs
 			applyClientScopeOverrides(&effective, cs)
 		} else {
@@ -1671,8 +1671,8 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 	}
 
 	// Layer 3: Client/device settings override user
-	if clientID != "" && h.clientSettingsSvc != nil {
-		clientSettings, err := h.clientSettingsSvc.Get(clientID)
+	if clientID != "" && userID != "" && h.clientSettingsSvc != nil {
+		clientSettings, err := h.clientSettingsSvc.Get(clientID, userID)
 		if err == nil && clientSettings != nil && clientSettings.HDRDVPolicy != nil {
 			hdrDVPolicy = *clientSettings.HDRDVPolicy
 			log.Printf("[prequeue] Using client-specific HDR/DV policy: %s", hdrDVPolicy)
@@ -2002,8 +2002,8 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 			userSettings.Playback.PreferredSubtitleLanguage,
 			userSettings.Playback.PreferredSubtitleMode)
 
-		if clientID != "" && h.clientSettingsSvc != nil {
-			if clientSettings, err := h.clientSettingsSvc.Get(clientID); err == nil && clientSettings != nil {
+		if clientID != "" && userID != "" && h.clientSettingsSvc != nil {
+			if clientSettings, err := h.clientSettingsSvc.Get(clientID, userID); err == nil && clientSettings != nil {
 				if clientSettings.PreferredAudioLanguage != nil {
 					userSettings.Playback.PreferredAudioLanguage = *clientSettings.PreferredAudioLanguage
 				}

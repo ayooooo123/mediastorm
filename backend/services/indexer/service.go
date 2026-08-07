@@ -117,9 +117,9 @@ type userSettingsProvider interface {
 	Get(userID string) (*models.UserSettings, error)
 }
 
-// clientSettingsProvider retrieves per-client filter settings.
+// clientSettingsProvider retrieves per-(device, person) filter settings.
 type clientSettingsProvider interface {
-	Get(clientID string) (*models.ClientFilterSettings, error)
+	Get(clientID, userID string) (*models.ClientFilterSettings, error)
 }
 
 type (
@@ -410,7 +410,7 @@ func (s *Service) getEffectiveFilterSettings(userID, clientID string, globalSett
 
 	// Layer 3: Client settings override profile (field-by-field, only if set)
 	if clientID != "" && s.clientSettings != nil {
-		clientSettings, err := s.clientSettings.Get(clientID)
+		clientSettings, err := s.clientSettings.Get(clientID, userID)
 		if err != nil {
 			log.Printf("[indexer] failed to get client settings for %s: %v", clientID, err)
 		} else if clientSettings != nil && !clientSettings.IsEmpty() {
@@ -511,7 +511,7 @@ func (s *Service) getEffectiveFilterBundle(userID, clientID string, globalSettin
 	}
 
 	if clientID != "" && s.clientSettings != nil {
-		clientSettings, err := s.clientSettings.Get(clientID)
+		clientSettings, err := s.clientSettings.Get(clientID, userID)
 		if err != nil {
 			log.Printf("[indexer] failed to get client split filtering settings for %s: %v", clientID, err)
 		} else if clientSettings != nil {
@@ -569,7 +569,7 @@ func (s *Service) getEffectiveRankingCriteria(userID, clientID string, globalSet
 
 	// Layer 3: Client settings override profile
 	if clientID != "" && s.clientSettings != nil {
-		clientSettings, err := s.clientSettings.Get(clientID)
+		clientSettings, err := s.clientSettings.Get(clientID, userID)
 		if err != nil {
 			log.Printf("[indexer] failed to get client settings for ranking %s: %v", clientID, err)
 		} else if clientSettings != nil && clientSettings.RankingCriteria != nil && len(*clientSettings.RankingCriteria) > 0 {
@@ -645,7 +645,7 @@ func (s *Service) getEffectiveRankingBundle(userID, clientID string, globalSetti
 	}
 
 	if clientID != "" && s.clientSettings != nil {
-		clientSettings, err := s.clientSettings.Get(clientID)
+		clientSettings, err := s.clientSettings.Get(clientID, userID)
 		if err != nil {
 			log.Printf("[indexer] failed to get client split ranking settings for %s: %v", clientID, err)
 		} else if clientSettings != nil {

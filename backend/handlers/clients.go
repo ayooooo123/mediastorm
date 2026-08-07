@@ -25,15 +25,20 @@ type clientsService interface {
 	Rename(id, name string) (models.Client, error)
 	SetNickname(id, nickname string) (models.Client, error)
 	SetFilterEnabled(id string, enabled bool) (models.Client, error)
-	ReassignUser(id, newUserID string) (models.Client, error)
+	ReassignUser(id, fromUserID, newUserID string) (models.Client, error)
+	UnassignProfile(id, userID string) (deletedDevice bool, err error)
+	HasProfile(clientID, userID string) bool
+	ProfileIDs(clientID string) []string
 	UpdateLastSeen(id string) error
 	Delete(id string) error
 }
 
 type clientSettingsService interface {
-	Get(clientID string) (*models.ClientFilterSettings, error)
-	Update(clientID string, settings models.ClientFilterSettings) error
-	Delete(clientID string) error
+	Get(clientID, userID string) (*models.ClientFilterSettings, error)
+	Update(clientID, userID string, settings models.ClientFilterSettings) error
+	Delete(clientID, userID string) error
+	DeleteByClient(clientID string) error
+	Move(clientID, fromUserID, toUserID string) error
 }
 
 type clientOwnershipService interface {
@@ -116,7 +121,7 @@ func (h *ClientsHandler) authorizeClient(w http.ResponseWriter, r *http.Request,
 		writeJSONError(w, "client not found", http.StatusNotFound)
 		return nil, false
 	}
-	if !h.canAccessProfile(r, client.UserID) {
+	if !h.canAccessClient(r, clientID, client.UserID) {
 		if logMiss {
 			log.Printf("[clients] not found clientId=%q ownerProfile=%q account=%q master=%v reason=forbidden",
 				clientID, client.UserID, auth.GetAccountID(r), auth.IsMaster(r))
@@ -126,6 +131,46 @@ func (h *ClientsHandler) authorizeClient(w http.ResponseWriter, r *http.Request,
 	}
 	return client, true
 }
+
+// canAccessClient is true if the caller can access the last-active profile or any
+// person associated with the device.
+func (h *ClientsHandler) canAccessClient(r *http.Request, clientID, lastUserID string) bool {
+	if h.canAccessProfile(r, lastUserID) {
+		return true
+	}
+	for _, profileID := range h.clients.ProfileIDs(clientID) {
+		if h.canAccessProfile(r, profileID) {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveSettingsUserID picks the profile for person×device settings.
+// Prefer explicit ?userId=; otherwise last-active client.UserID (backward compatible).
+func (h *ClientsHandler) resolveSettingsUserID(r *http.Request, client *models.Client) (string, error) {
+	userID := strings.TrimSpace(r.URL.Query().Get("userId"))
+	if userID == "" {
+		userID = strings.TrimSpace(client.UserID)
+	}
+	if userID == "" {
+		return "", errors.New("userId is required")
+	}
+	if !h.canAccessProfile(r, userID) {
+		return "", errSettingsProfileForbidden
+	}
+	// Allow settings for a profile that has used the device, or last-active, or
+	// any profile the caller can access when creating first overrides before
+	// re-registration (admin configuring under a person).
+	if !h.clients.HasProfile(client.ID, userID) && client.UserID != userID {
+		// Still allow if the caller is configuring settings under a person they own;
+		// Register will create the association on next use. Admin UI lists devices
+		// only under associated people, so this is mainly for API convenience.
+	}
+	return userID, nil
+}
+
+var errSettingsProfileForbidden = errors.New("user not found")
 
 // ClientRegistrationRequest is the request body for registering a client
 type ClientRegistrationRequest struct {
@@ -164,14 +209,12 @@ func (h *ClientsHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Snapshot prior ownership so we can log reclaim vs update vs create.
-	// Intentionally do not block when the hardware client ID is already tied
-	// to another account's profile (or an orphaned/deleted profile). Client
-	// IDs are device-bound; an authenticated caller may reclaim the device
-	// for a profile they own. Register overwrites UserID when a non-empty
-	// userId is provided (already authorized above via canAccessProfile).
+	// Snapshot prior last-active profile for logging. Client IDs are device-bound;
+	// Register records a person×device association without removing other people
+	// who have used the device. Last-active UserID is updated when userId is set.
 	prevUserID := ""
 	existed := false
+	alreadyLinked := false
 	if existing, err := h.clients.Get(req.ID); err != nil {
 		log.Printf("[clients] register get-existing failed clientId=%q account=%q master=%v err=%v",
 			req.ID, accountID, isMaster, err)
@@ -180,6 +223,7 @@ func (h *ClientsHandler) Register(w http.ResponseWriter, r *http.Request) {
 	} else if existing != nil {
 		existed = true
 		prevUserID = existing.UserID
+		alreadyLinked = h.clients.HasProfile(req.ID, req.UserID)
 	}
 
 	client, err := h.clients.Register(req.ID, req.UserID, req.DeviceType, req.OS, req.AppVersion, req.DeviceName, req.Nickname)
@@ -198,8 +242,8 @@ func (h *ClientsHandler) Register(w http.ResponseWriter, r *http.Request) {
 
 	action := "created"
 	if existed {
-		if prevUserID != "" && prevUserID != client.UserID {
-			action = "reclaimed"
+		if !alreadyLinked && req.UserID != "" {
+			action = "linked"
 		} else {
 			action = "updated"
 		}
@@ -239,12 +283,14 @@ func (h *ClientsHandler) List(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Enrich with override information
+	// Enrich with per-(device, person) override information
 	result := make([]ClientWithOverrides, len(clientList))
 	for i, c := range clientList {
 		hasOverrides := false
-		if settings, err := h.settings.Get(c.ID); err == nil && settings != nil {
-			hasOverrides = !settings.IsEmpty()
+		if c.UserID != "" {
+			if settings, err := h.settings.Get(c.ID, c.UserID); err == nil && settings != nil {
+				hasOverrides = !settings.IsEmpty()
+			}
 		}
 		result[i] = ClientWithOverrides{
 			Client:       c,
@@ -340,6 +386,8 @@ func (h *ClientsHandler) Update(w http.ResponseWriter, r *http.Request) {
 }
 
 // Delete handles DELETE /api/clients/{clientID}
+// With ?userId=, removes only that person×device association (and their settings).
+// Without userId, removes the entire device and all person×device settings.
 func (h *ClientsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	clientID := strings.TrimSpace(vars["clientID"])
@@ -351,8 +399,37 @@ func (h *ClientsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Also delete client settings
-	if err := h.settings.Delete(clientID); err != nil {
+	profileID := strings.TrimSpace(r.URL.Query().Get("userId"))
+	if profileID != "" {
+		if !h.canAccessProfile(r, profileID) {
+			writeJSONError(w, "user not found", http.StatusNotFound)
+			return
+		}
+		if err := h.settings.Delete(clientID, profileID); err != nil {
+			writeJSONError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		deletedDevice, err := h.clients.UnassignProfile(clientID, profileID)
+		if err != nil {
+			if errors.Is(err, clients.ErrClientNotFound) {
+				writeJSONError(w, "client not found", http.StatusNotFound)
+				return
+			}
+			if errors.Is(err, clients.ErrProfileNotLinked) {
+				writeJSONError(w, "device is not associated with that person", http.StatusNotFound)
+				return
+			}
+			writeJSONError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if deletedDevice {
+			_ = h.settings.DeleteByClient(clientID)
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	if err := h.settings.DeleteByClient(clientID); err != nil {
 		writeJSONError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -369,7 +446,7 @@ func (h *ClientsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// GetSettings handles GET /api/clients/{clientID}/settings
+// GetSettings handles GET /api/clients/{clientID}/settings?userId=
 func (h *ClientsHandler) GetSettings(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	clientID := strings.TrimSpace(vars["clientID"])
@@ -378,12 +455,21 @@ func (h *ClientsHandler) GetSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify client exists
-	if _, ok := h.getAuthorizedClient(w, r, clientID); !ok {
+	client, ok := h.getAuthorizedClient(w, r, clientID)
+	if !ok {
+		return
+	}
+	userID, err := h.resolveSettingsUserID(r, client)
+	if err != nil {
+		if errors.Is(err, errSettingsProfileForbidden) {
+			writeJSONError(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	settings, err := h.settings.Get(clientID)
+	settings, err := h.settings.Get(clientID, userID)
 	if err != nil {
 		writeJSONError(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -398,7 +484,7 @@ func (h *ClientsHandler) GetSettings(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(settings)
 }
 
-// UpdateSettings handles PUT /api/clients/{clientID}/settings
+// UpdateSettings handles PUT /api/clients/{clientID}/settings?userId=
 func (h *ClientsHandler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	clientID := strings.TrimSpace(vars["clientID"])
@@ -407,8 +493,17 @@ func (h *ClientsHandler) UpdateSettings(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Verify client exists
-	if _, ok := h.getAuthorizedClient(w, r, clientID); !ok {
+	client, ok := h.getAuthorizedClient(w, r, clientID)
+	if !ok {
+		return
+	}
+	userID, err := h.resolveSettingsUserID(r, client)
+	if err != nil {
+		if errors.Is(err, errSettingsProfileForbidden) {
+			writeJSONError(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -422,7 +517,7 @@ func (h *ClientsHandler) UpdateSettings(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if err := h.settings.Update(clientID, settings); err != nil {
+	if err := h.settings.Update(clientID, userID, settings); err != nil {
 		writeJSONError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -431,8 +526,8 @@ func (h *ClientsHandler) UpdateSettings(w http.ResponseWriter, r *http.Request) 
 	json.NewEncoder(w).Encode(settings)
 }
 
-// ResetSettings handles DELETE /api/clients/{clientID}/settings
-// Resets all client-specific settings to inherit from profile/global defaults
+// ResetSettings handles DELETE /api/clients/{clientID}/settings?userId=
+// Resets person×device settings to inherit from profile/global defaults
 func (h *ClientsHandler) ResetSettings(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	clientID := strings.TrimSpace(vars["clientID"])
@@ -441,12 +536,21 @@ func (h *ClientsHandler) ResetSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify client exists
-	if _, ok := h.getAuthorizedClient(w, r, clientID); !ok {
+	client, ok := h.getAuthorizedClient(w, r, clientID)
+	if !ok {
+		return
+	}
+	userID, err := h.resolveSettingsUserID(r, client)
+	if err != nil {
+		if errors.Is(err, errSettingsProfileForbidden) {
+			writeJSONError(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	if err := h.settings.Delete(clientID); err != nil {
+	if err := h.settings.Delete(clientID, userID); err != nil {
 		writeJSONError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -605,11 +709,16 @@ func (h *ClientsHandler) CheckMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Quiet miss logs: clients may poll messages frequently.
-	client, ok := h.authorizeClient(w, r, clientID, false)
-	if !ok {
+	if _, ok := h.authorizeClient(w, r, clientID, false); !ok {
 		return
 	}
-	if client.UserID != profileID || !h.canAccessProfile(r, profileID) {
+	if !h.canAccessProfile(r, profileID) {
+		writeJSONError(w, "client not found", http.StatusNotFound)
+		return
+	}
+	// Deliver when this profile is (or becomes) linked to the device. Require either
+	// an existing association or last-active match so random profiles cannot drain messages.
+	if !h.clients.HasProfile(clientID, profileID) {
 		writeJSONError(w, "client not found", http.StatusNotFound)
 		return
 	}
@@ -679,13 +788,14 @@ func targetProfileCount(targetAll bool, profileIDs map[string]struct{}) int {
 	return len(profileIDs)
 }
 
-// ReassignRequest is the request body for reassigning a client to a different profile
+// ReassignRequest is the request body for moving a person×device association.
 type ReassignRequest struct {
-	UserID string `json:"userId"`
+	UserID     string `json:"userId"`
+	FromUserID string `json:"fromUserId,omitempty"`
 }
 
 // Reassign handles POST /api/clients/{clientID}/reassign
-// Reassigns a client to a different profile/user
+// Moves a device association (and its person×device settings) from one person to another.
 func (h *ClientsHandler) Reassign(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	clientID := strings.TrimSpace(vars["clientID"])
@@ -704,22 +814,41 @@ func (h *ClientsHandler) Reassign(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "userId is required", http.StatusBadRequest)
 		return
 	}
-	if _, ok := h.getAuthorizedClient(w, r, clientID); !ok {
+	existing, ok := h.getAuthorizedClient(w, r, clientID)
+	if !ok {
 		return
 	}
 	if !h.canAccessProfile(r, req.UserID) {
 		writeJSONError(w, "user not found", http.StatusNotFound)
 		return
 	}
+	fromUserID := strings.TrimSpace(req.FromUserID)
+	if fromUserID == "" {
+		fromUserID = existing.UserID
+	}
+	if fromUserID != "" && !h.canAccessProfile(r, fromUserID) {
+		writeJSONError(w, "user not found", http.StatusNotFound)
+		return
+	}
 
-	client, err := h.clients.ReassignUser(clientID, req.UserID)
+	client, err := h.clients.ReassignUser(clientID, fromUserID, req.UserID)
 	if err != nil {
 		if errors.Is(err, clients.ErrClientNotFound) {
 			writeJSONError(w, "client not found", http.StatusNotFound)
 			return
 		}
+		if errors.Is(err, clients.ErrProfileNotLinked) {
+			writeJSONError(w, "device is not associated with that person", http.StatusNotFound)
+			return
+		}
 		writeJSONError(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if fromUserID != "" {
+		if err := h.settings.Move(clientID, fromUserID, req.UserID); err != nil {
+			log.Printf("[clients] reassign settings move failed clientId=%q from=%q to=%q err=%v",
+				clientID, fromUserID, req.UserID, err)
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

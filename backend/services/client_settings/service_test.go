@@ -20,7 +20,8 @@ func TestLoadMigratesWatchlistNavigationVisibility(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	got, err := svc.Get("client-1")
+	// Legacy device-only key still readable when looking up any profile (fallback).
+	got, err := svc.Get("client-1", "user-1")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -42,7 +43,7 @@ func TestUpdatePreservesExplicitlyHiddenWatchlistAcrossReload(t *testing.T) {
 		t.Fatalf("NewService: %v", err)
 	}
 	tabs := []string{"home", "search", "lists"}
-	if err := svc.Update("client-1", models.ClientFilterSettings{NavigationTabVisibility: &tabs}); err != nil {
+	if err := svc.Update("client-1", "user-1", models.ClientFilterSettings{NavigationTabVisibility: &tabs}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 
@@ -50,7 +51,7 @@ func TestUpdatePreservesExplicitlyHiddenWatchlistAcrossReload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload service: %v", err)
 	}
-	got, err := reloaded.Get("client-1")
+	got, err := reloaded.Get("client-1", "user-1")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -78,10 +79,10 @@ func TestServiceSanitizesAllowedTrackLanguages(t *testing.T) {
 		t.Fatal(err)
 	}
 	languages := []string{" ENG ", "'fra'", "eng"}
-	if err := svc.Update("client-languages", models.ClientFilterSettings{AllowedTrackLanguages: &languages}); err != nil {
+	if err := svc.Update("client-languages", "user-1", models.ClientFilterSettings{AllowedTrackLanguages: &languages}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := svc.Get("client-languages")
+	got, err := svc.Get("client-languages", "user-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +113,7 @@ func TestClearAppearanceOverrides_RemovesOnlyAppearance(t *testing.T) {
 
 	accent := "#ff00cc"
 	resolution := "1080p"
-	if err := svc.Update("client1", models.ClientFilterSettings{
+	if err := svc.Update("client1", "user-1", models.ClientFilterSettings{
 		MaxResolution: &resolution,
 		Appearance: &models.AppearanceSettings{
 			AccentColor: accent,
@@ -129,7 +130,7 @@ func TestClearAppearanceOverrides_RemovesOnlyAppearance(t *testing.T) {
 		t.Fatalf("cleared count = %d, want 1", count)
 	}
 
-	got, err := svc.Get("client1")
+	got, err := svc.Get("client1", "user-1")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -152,7 +153,7 @@ func TestClearAppearanceOverrides_DeletesAppearanceOnlySettings(t *testing.T) {
 	}
 
 	accent := "#ff00cc"
-	if err := svc.Update("client1", models.ClientFilterSettings{
+	if err := svc.Update("client1", "user-1", models.ClientFilterSettings{
 		Appearance: &models.AppearanceSettings{
 			AccentColor: accent,
 		},
@@ -168,11 +169,35 @@ func TestClearAppearanceOverrides_DeletesAppearanceOnlySettings(t *testing.T) {
 		t.Fatalf("cleared count = %d, want 1", count)
 	}
 
-	got, err := svc.Get("client1")
+	got, err := svc.Get("client1", "user-1")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
 	if got != nil {
 		t.Fatalf("appearance-only settings should be deleted, got %+v", got)
+	}
+}
+
+func TestPersonDeviceSettingsAreIsolated(t *testing.T) {
+	dir := t.TempDir()
+	svc, err := NewService(dir)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	resA := "720p"
+	resB := "4K"
+	if err := svc.Update("tv-1", "person-a", models.ClientFilterSettings{MaxResolution: &resA}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Update("tv-1", "person-b", models.ClientFilterSettings{MaxResolution: &resB}); err != nil {
+		t.Fatal(err)
+	}
+	gotA, err := svc.Get("tv-1", "person-a")
+	if err != nil || gotA == nil || gotA.MaxResolution == nil || *gotA.MaxResolution != "720p" {
+		t.Fatalf("person-a settings = %+v err=%v", gotA, err)
+	}
+	gotB, err := svc.Get("tv-1", "person-b")
+	if err != nil || gotB == nil || gotB.MaxResolution == nil || *gotB.MaxResolution != "4K" {
+		t.Fatalf("person-b settings = %+v err=%v", gotB, err)
 	}
 }

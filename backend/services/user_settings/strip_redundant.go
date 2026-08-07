@@ -62,9 +62,10 @@ func (s *Service) StripRedundantOverrides(globalSettings config.Settings, client
 		return
 	}
 
-	// Build client→userID mapping
+	// Build device→last-active user for legacy device-only keys
 	clientToUser := make(map[string]string)
 	for _, c := range clientsLister.List() {
+		// List expands person×device instances; last write wins for last-active fallback
 		clientToUser[c.ID] = c.UserID
 	}
 
@@ -72,9 +73,14 @@ func (s *Service) StripRedundantOverrides(globalSettings config.Settings, client
 	effectiveProfiles := make(map[string]models.UserSettings)
 
 	clientChanged := false
-	for clientID, cs := range allClients {
-		userID, ok := clientToUser[clientID]
+	for key, cs := range allClients {
+		clientID, userID, ok := models.SplitClientSettingsKey(key)
 		if !ok {
+			// Legacy device-only key
+			clientID = key
+			userID = clientToUser[clientID]
+		}
+		if userID == "" {
 			continue
 		}
 
@@ -86,9 +92,9 @@ func (s *Service) StripRedundantOverrides(globalSettings config.Settings, client
 
 		if stripClientSettings(&cs, effective) {
 			if cs.IsEmpty() {
-				delete(allClients, clientID)
+				delete(allClients, key)
 			} else {
-				allClients[clientID] = cs
+				allClients[key] = cs
 			}
 			clientChanged = true
 		}

@@ -22,15 +22,23 @@ type fakeUnreleasedVisibilityClientSettings struct {
 	err      error
 }
 
-func (f fakeUnreleasedVisibilityClientSettings) Get(clientID string) (*models.ClientFilterSettings, error) {
+func (f fakeUnreleasedVisibilityClientSettings) Get(clientID, userID string) (*models.ClientFilterSettings, error) {
 	return f.settings, f.err
 }
 
-func (f fakeUnreleasedVisibilityClientSettings) Update(clientID string, settings models.ClientFilterSettings) error {
+func (f fakeUnreleasedVisibilityClientSettings) Update(clientID, userID string, settings models.ClientFilterSettings) error {
 	return nil
 }
 
-func (f fakeUnreleasedVisibilityClientSettings) Delete(clientID string) error {
+func (f fakeUnreleasedVisibilityClientSettings) Delete(clientID, userID string) error {
+	return nil
+}
+
+func (f fakeUnreleasedVisibilityClientSettings) DeleteByClient(clientID string) error {
+	return nil
+}
+
+func (f fakeUnreleasedVisibilityClientSettings) Move(clientID, fromUserID, toUserID string) error {
 	return nil
 }
 

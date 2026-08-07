@@ -1172,8 +1172,19 @@ func (s *Service) importDatabaseBytes(data []byte) error {
 			}
 		}
 		for i := range export.Clients {
-			if err := tx.Clients().Create(ctx, &export.Clients[i]); err != nil {
-				return fmt.Errorf("restore client %s: %w", export.Clients[i].ID, err)
+			c := export.Clients[i]
+			if err := tx.Clients().Create(ctx, &c); err != nil {
+				return fmt.Errorf("restore client %s: %w", c.ID, err)
+			}
+			if c.UserID != "" {
+				if err := tx.Clients().UpsertProfile(ctx, models.ClientProfileAssociation{
+					ClientID:    c.ID,
+					UserID:      c.UserID,
+					FirstSeenAt: c.FirstSeenAt,
+					LastSeenAt:  c.LastSeenAt,
+				}); err != nil {
+					return fmt.Errorf("restore client profile %s/%s: %w", c.ID, c.UserID, err)
+				}
 			}
 		}
 		for userID, lists := range export.CustomLists {
@@ -1190,10 +1201,29 @@ func (s *Service) importDatabaseBytes(data []byte) error {
 				}
 			}
 		}
-		for clientID, settings := range export.ClientSettings {
+		clientLastUser := make(map[string]string, len(export.Clients))
+		for _, c := range export.Clients {
+			clientLastUser[c.ID] = c.UserID
+		}
+		for key, settings := range export.ClientSettings {
 			cs := settings
-			if err := tx.ClientSettings().Upsert(ctx, clientID, &cs); err != nil {
-				return fmt.Errorf("restore client settings %s: %w", clientID, err)
+			clientID, userID, ok := models.SplitClientSettingsKey(key)
+			if !ok {
+				clientID = key
+				userID = clientLastUser[clientID]
+			}
+			if userID == "" {
+				return fmt.Errorf("restore client settings %s: missing user id", key)
+			}
+			if err := tx.ClientSettings().Upsert(ctx, clientID, userID, &cs); err != nil {
+				return fmt.Errorf("restore client settings %s/%s: %w", clientID, userID, err)
+			}
+			// Ensure association exists when settings imply a person×device pair
+			if err := tx.Clients().UpsertProfile(ctx, models.ClientProfileAssociation{
+				ClientID: clientID,
+				UserID:   userID,
+			}); err != nil {
+				return fmt.Errorf("restore client profile from settings %s/%s: %w", clientID, userID, err)
 			}
 		}
 		for userID, settings := range export.UserSettings {

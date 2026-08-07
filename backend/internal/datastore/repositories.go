@@ -109,13 +109,22 @@ type ClientRepository interface {
 	Update(ctx context.Context, client *models.Client) error
 	Delete(ctx context.Context, id string) error
 	Count(ctx context.Context) (int64, error)
+
+	// Profile associations (person × device sightings)
+	ListProfiles(ctx context.Context) ([]models.ClientProfileAssociation, error)
+	ListProfilesByClient(ctx context.Context, clientID string) ([]models.ClientProfileAssociation, error)
+	UpsertProfile(ctx context.Context, assoc models.ClientProfileAssociation) error
+	DeleteProfile(ctx context.Context, clientID, userID string) error
+	DeleteProfilesByClient(ctx context.Context, clientID string) error
 }
 
-// ClientSettingsRepository manages per-client filter settings.
+// ClientSettingsRepository manages per-(device, person) filter settings.
+// List returns a map keyed by models.ClientSettingsKey(clientID, userID).
 type ClientSettingsRepository interface {
-	Get(ctx context.Context, clientID string) (*models.ClientFilterSettings, error)
-	Upsert(ctx context.Context, clientID string, settings *models.ClientFilterSettings) error
-	Delete(ctx context.Context, clientID string) error
+	Get(ctx context.Context, clientID, userID string) (*models.ClientFilterSettings, error)
+	Upsert(ctx context.Context, clientID, userID string, settings *models.ClientFilterSettings) error
+	Delete(ctx context.Context, clientID, userID string) error
+	DeleteByClient(ctx context.Context, clientID string) error
 	List(ctx context.Context) (map[string]models.ClientFilterSettings, error)
 	Count(ctx context.Context) (int64, error)
 }

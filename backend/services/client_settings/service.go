@@ -18,9 +18,11 @@ import (
 var (
 	ErrStorageDirRequired = errors.New("storage directory not provided")
 	ErrClientIDRequired   = errors.New("client id is required")
+	ErrUserIDRequired     = errors.New("user id is required")
 )
 
-// Service manages persistence of per-client filter settings.
+// Service manages persistence of per-(device, person) filter settings.
+// In-memory and JSON keys use models.ClientSettingsKey(clientID, userID).
 type Service struct {
 	mu       sync.RWMutex
 	path     string
@@ -57,7 +59,6 @@ func markNavigationVisibilityMigrated(settings *models.ClientFilterSettings) {
 	settings.NavigationTabVisibilityIncludesWatchlist = &migrated
 }
 
-// useDB returns true when the service is backed by PostgreSQL.
 func (s *Service) useDB() bool { return s.store != nil }
 
 // NewServiceWithStore creates a client settings service backed by PostgreSQL.
@@ -94,16 +95,26 @@ func NewService(storageDir string) (*Service, error) {
 	return svc, nil
 }
 
-// Get returns the client's filter settings, or nil if not set.
-func (s *Service) Get(clientID string) (*models.ClientFilterSettings, error) {
+// Get returns settings for a person×device pair, or nil if not set.
+// Falls back to a legacy device-only key when no composite entry exists.
+func (s *Service) Get(clientID, userID string) (*models.ClientFilterSettings, error) {
 	clientID = strings.TrimSpace(clientID)
+	userID = strings.TrimSpace(userID)
 	if clientID == "" {
 		return nil, ErrClientIDRequired
+	}
+	if userID == "" {
+		return nil, ErrUserIDRequired
 	}
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	if settings, ok := s.settings[models.ClientSettingsKey(clientID, userID)]; ok {
+		copy := settings
+		return &copy, nil
+	}
+	// Legacy device-only key (pre multi-person migration)
 	if settings, ok := s.settings[clientID]; ok {
 		copy := settings
 		return &copy, nil
@@ -112,11 +123,15 @@ func (s *Service) Get(clientID string) (*models.ClientFilterSettings, error) {
 	return nil, nil
 }
 
-// Update saves the client's filter settings.
-func (s *Service) Update(clientID string, settings models.ClientFilterSettings) error {
+// Update saves settings for a person×device pair.
+func (s *Service) Update(clientID, userID string, settings models.ClientFilterSettings) error {
 	clientID = strings.TrimSpace(clientID)
+	userID = strings.TrimSpace(userID)
 	if clientID == "" {
 		return ErrClientIDRequired
+	}
+	if userID == "" {
+		return ErrUserIDRequired
 	}
 	sanitizeAllowedTrackLanguages(&settings)
 	markNavigationVisibilityMigrated(&settings)
@@ -124,17 +139,19 @@ func (s *Service) Update(clientID string, settings models.ClientFilterSettings) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// If all settings are nil, remove the entry instead
+	key := models.ClientSettingsKey(clientID, userID)
+	// Prefer composite key; drop legacy device-only entry when writing composite.
+	delete(s.settings, clientID)
 	if settings.IsEmpty() {
-		delete(s.settings, clientID)
+		delete(s.settings, key)
 	} else {
-		s.settings[clientID] = settings
+		s.settings[key] = settings
 	}
 
 	return s.saveLocked()
 }
 
-// GetAll returns a copy of all client settings.
+// GetAll returns a copy of all client settings (composite keys).
 func (s *Service) GetAll() map[string]models.ClientFilterSettings {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -147,7 +164,7 @@ func (s *Service) GetAll() map[string]models.ClientFilterSettings {
 }
 
 // UpdateBatch replaces all client settings with the provided map and saves.
-// Empty entries are removed.
+// Empty entries are removed. Keys should be composite; legacy keys are accepted.
 func (s *Service) UpdateBatch(settings map[string]models.ClientFilterSettings) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -164,8 +181,30 @@ func (s *Service) UpdateBatch(settings map[string]models.ClientFilterSettings) e
 	return s.saveLocked()
 }
 
-// Delete removes a client's filter settings.
-func (s *Service) Delete(clientID string) error {
+// Delete removes settings for a person×device pair.
+func (s *Service) Delete(clientID, userID string) error {
+	clientID = strings.TrimSpace(clientID)
+	userID = strings.TrimSpace(userID)
+	if clientID == "" {
+		return ErrClientIDRequired
+	}
+	if userID == "" {
+		return ErrUserIDRequired
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := models.ClientSettingsKey(clientID, userID)
+	delete(s.settings, key)
+	// Also clear legacy device-only key when deleting for any profile
+	delete(s.settings, clientID)
+
+	return s.saveLocked()
+}
+
+// DeleteByClient removes all person×device settings for a device.
+func (s *Service) DeleteByClient(clientID string) error {
 	clientID = strings.TrimSpace(clientID)
 	if clientID == "" {
 		return ErrClientIDRequired
@@ -174,32 +213,73 @@ func (s *Service) Delete(clientID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, exists := s.settings[clientID]; !exists {
-		return nil
-	}
-
 	delete(s.settings, clientID)
+	prefix := clientID + models.ClientSettingsKeySep
+	for k := range s.settings {
+		if strings.HasPrefix(k, prefix) {
+			delete(s.settings, k)
+		}
+	}
 
 	return s.saveLocked()
 }
 
+// Move reassigns settings from one profile to another for the same device.
+// If the destination already has settings, the source is dropped without overwrite.
+func (s *Service) Move(clientID, fromUserID, toUserID string) error {
+	clientID = strings.TrimSpace(clientID)
+	fromUserID = strings.TrimSpace(fromUserID)
+	toUserID = strings.TrimSpace(toUserID)
+	if clientID == "" {
+		return ErrClientIDRequired
+	}
+	if fromUserID == "" || toUserID == "" {
+		return ErrUserIDRequired
+	}
+	if fromUserID == toUserID {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	fromKey := models.ClientSettingsKey(clientID, fromUserID)
+	toKey := models.ClientSettingsKey(clientID, toUserID)
+
+	src, ok := s.settings[fromKey]
+	if !ok {
+		// Legacy device-only
+		if legacy, lok := s.settings[clientID]; lok {
+			src = legacy
+			ok = true
+			delete(s.settings, clientID)
+		}
+	}
+	if !ok {
+		return nil
+	}
+	delete(s.settings, fromKey)
+	if _, exists := s.settings[toKey]; !exists {
+		s.settings[toKey] = src
+	}
+	return s.saveLocked()
+}
+
 // ClearAppearanceOverrides removes client-level display appearance overrides.
-// It is intended for one-time cleanup of appearance values previously saved by
-// the removed mobile settings UI.
 func (s *Service) ClearAppearanceOverrides() (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	changed := 0
-	for clientID, settings := range s.settings {
+	for key, settings := range s.settings {
 		if settings.Appearance == nil {
 			continue
 		}
 		settings.Appearance = nil
 		if settings.IsEmpty() {
-			delete(s.settings, clientID)
+			delete(s.settings, key)
 		} else {
-			s.settings[clientID] = settings
+			s.settings[key] = settings
 		}
 		changed++
 	}
@@ -265,7 +345,7 @@ func (s *Service) load() error {
 
 func normalizeNavigationTabVisibility(settings map[string]models.ClientFilterSettings) bool {
 	needsSave := false
-	for clientID, cs := range settings {
+	for key, cs := range settings {
 		changed := false
 		if cs.NavigationTabVisibilityIncludesSystemTabs == nil || !*cs.NavigationTabVisibilityIncludesSystemTabs {
 			if cs.NavigationTabVisibility != nil {
@@ -288,7 +368,7 @@ func normalizeNavigationTabVisibility(settings map[string]models.ClientFilterSet
 			changed = true
 		}
 		if changed {
-			settings[clientID] = cs
+			settings[key] = cs
 			needsSave = true
 		}
 	}
@@ -332,30 +412,35 @@ func (s *Service) saveLocked() error {
 	return nil
 }
 
-// syncToDB writes the full in-memory client settings state to PostgreSQL.
 func (s *Service) syncToDB() error {
 	ctx := context.Background()
 	return s.store.WithTx(ctx, func(tx *datastore.Tx) error {
-		// Get existing DB state to detect deletes
 		existing, err := tx.ClientSettings().List(ctx)
 		if err != nil {
 			return err
 		}
-		dbIDs := make(map[string]bool, len(existing))
+		dbKeys := make(map[string]bool, len(existing))
 		for id := range existing {
-			dbIDs[id] = true
+			dbKeys[id] = true
 		}
-		// Upsert all in-memory settings
-		for clientID, settings := range s.settings {
+		for key, settings := range s.settings {
+			clientID, userID, ok := models.SplitClientSettingsKey(key)
+			if !ok {
+				// Skip legacy keys that cannot be written without a user
+				continue
+			}
 			cs := settings
-			if err := tx.ClientSettings().Upsert(ctx, clientID, &cs); err != nil {
+			if err := tx.ClientSettings().Upsert(ctx, clientID, userID, &cs); err != nil {
 				return err
 			}
-			delete(dbIDs, clientID)
+			delete(dbKeys, key)
 		}
-		// Delete settings removed from memory
-		for id := range dbIDs {
-			if err := tx.ClientSettings().Delete(ctx, id); err != nil {
+		for key := range dbKeys {
+			clientID, userID, ok := models.SplitClientSettingsKey(key)
+			if !ok {
+				continue
+			}
+			if err := tx.ClientSettings().Delete(ctx, clientID, userID); err != nil {
 				return err
 			}
 		}

@@ -684,6 +684,13 @@
     let clientSettings = null;
     let originalClientSettings = null;
     let clientsForUser = []; // Clients for the selected user
+
+    function clientSettingsUrl(clientId, userId) {
+        let url = basePath + '/api/clients/' + encodeURIComponent(clientId) + '/settings';
+        const profileId = userId || selectedUserId;
+        if (profileId) url += '?userId=' + encodeURIComponent(profileId);
+        return url;
+    }
     let settingsScopeClients = []; // All visible clients used by the scope tree
     let profilesData = []; // Profiles with PIN status
     let accountsData = []; // User accounts with profiles
@@ -1571,7 +1578,7 @@
     async function recalculateAllClientOverrides() {
         for (const client of clientsForUser) {
             try {
-                const response = await fetch(basePath + '/api/clients/' + encodeURIComponent(client.id) + '/settings', {
+                const response = await fetch(clientSettingsUrl(client.id), {
                     credentials: 'same-origin'
                 });
                 if (response.ok) {
@@ -1901,7 +1908,7 @@
         if (clientId) {
             // Load client-specific settings
             try {
-                const response = await fetch(basePath + '/api/clients/' + encodeURIComponent(clientId) + '/settings', {
+                const response = await fetch(clientSettingsUrl(clientId), {
                     credentials: 'same-origin'
                 });
                 if (response.ok) {
@@ -2018,7 +2025,7 @@
             let response;
             if (isClient) {
                 // Reset client settings
-                response = await fetch(basePath + '/api/clients/' + encodeURIComponent(selectedClientId) + '/settings', {
+                response = await fetch(clientSettingsUrl(selectedClientId), {
                     method: 'DELETE',
                     credentials: 'same-origin'
                 });
@@ -2873,7 +2880,7 @@
                     const applicableGroups = selectedGroups.filter(group => group.clientPaths.length > 0);
                     if (applicableGroups.length === 0) continue;
                     try {
-                        const loadResponse = await fetch(basePath + '/api/clients/' + encodeURIComponent(clientId) + '/settings', {
+                        const loadResponse = await fetch(clientSettingsUrl(clientId), {
                             credentials: 'same-origin'
                         });
                         if (!loadResponse.ok) {
@@ -2884,7 +2891,7 @@
                         for (const group of applicableGroups) {
                             clearClientPropagationGroup(targetSettings, group);
                         }
-                        const response = await fetch(basePath + '/api/clients/' + encodeURIComponent(clientId) + '/settings', {
+                        const response = await fetch(clientSettingsUrl(clientId), {
                             method: 'PUT',
                             headers: { 'Content-Type': 'application/json' },
                             credentials: 'same-origin',
@@ -5986,7 +5993,7 @@
 
         try {
             if (selectedClientId && clientSettings !== null) {
-                const response = await fetch(basePath + '/api/clients/' + encodeURIComponent(selectedClientId) + '/settings', {
+                const response = await fetch(clientSettingsUrl(selectedClientId), {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     credentials: 'same-origin',
@@ -11086,7 +11093,7 @@
 
             if (selectedClientId && clientSettings !== null) {
                 // Save client-specific settings
-                const response = await fetch(basePath + '/api/clients/' + encodeURIComponent(selectedClientId) + '/settings', {
+                const response = await fetch(clientSettingsUrl(selectedClientId), {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     credentials: 'same-origin',

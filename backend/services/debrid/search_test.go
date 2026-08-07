@@ -36,7 +36,7 @@ type stubClientSettings struct {
 	settings *models.ClientFilterSettings
 }
 
-func (s stubClientSettings) Get(_ string) (*models.ClientFilterSettings, error) {
+func (s stubClientSettings) Get(_, _ string) (*models.ClientFilterSettings, error) {
 	return s.settings, nil
 }
 
