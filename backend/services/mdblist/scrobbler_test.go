@@ -107,8 +107,9 @@ func TestScrobbleEpisodeSyncWatchedUsesExternalShowIDsAndCanonicalEpisode(t *tes
 	if show.Seasons[0].Number != 2 {
 		t.Fatalf("season = %d, want 2", show.Seasons[0].Number)
 	}
+	// Primary attempt uses pure seasonal; hybrid absolute is only a not_found retry.
 	if show.Seasons[0].Episodes[0].Number != 13 {
-		t.Fatalf("episode = %d, want 13", show.Seasons[0].Episodes[0].Number)
+		t.Fatalf("episode = %d, want seasonal 13", show.Seasons[0].Episodes[0].Number)
 	}
 	if show.Seasons[0].Episodes[0].WatchedAt != "2026-05-25T03:46:31Z" {
 		t.Fatalf("watched_at = %q", show.Seasons[0].Episodes[0].WatchedAt)
@@ -199,6 +200,214 @@ func TestBuildScrobbleRequest_EpisodeFallbackToSeriesID(t *testing.T) {
 	}
 	if req.Show.IDs.TMDB != 12345 {
 		t.Errorf("expected TMDB 12345 from seriesID fallback, got %d", req.Show.IDs.TMDB)
+	}
+}
+
+func TestBuildScrobbleRequest_EpisodeFallbackToTMDBTVSeriesID(t *testing.T) {
+	update := models.PlaybackProgressUpdate{
+		MediaType:     "episode",
+		ItemID:        "tmdb:tv:82782:s03e01",
+		SeasonNumber:  3,
+		EpisodeNumber: 1,
+		SeriesID:      "tmdb:tv:82782",
+		ExternalIDs:   map[string]string{"titleId": "tmdb:tv:82782", "episodeTvdb": "9784333"},
+	}
+
+	req := BuildScrobbleRequest(update, 95.0)
+	if req.Show == nil {
+		t.Fatal("expected show to be set")
+	}
+	if req.Show.IDs.TMDB != 82782 {
+		t.Fatalf("expected TMDB 82782 from tmdb:tv seriesID, got %d", req.Show.IDs.TMDB)
+	}
+}
+
+func TestBuildScrobbleRequest_UsesSeasonalNotAbsolute(t *testing.T) {
+	// absoluteEpisode is present on many normal shows; primary scrobble must stay seasonal.
+	update := models.PlaybackProgressUpdate{
+		MediaType:     "episode",
+		ItemID:        "tmdb:tv:37854:s23e17",
+		SeasonNumber:  23,
+		EpisodeNumber: 17,
+		SeriesID:      "tmdb:tv:37854",
+		ExternalIDs: map[string]string{
+			"tmdb":            "37854",
+			"imdb":            "tt0388629",
+			"absoluteEpisode": "1172",
+		},
+	}
+
+	req := BuildScrobbleRequest(update, 95.0)
+	if req.Show == nil || req.Show.Season == nil || req.Show.Season.Episode == nil {
+		t.Fatal("expected show.season.episode")
+	}
+	if req.Show.Season.Number != 23 {
+		t.Fatalf("season = %d, want 23", req.Show.Season.Number)
+	}
+	if req.Show.Season.Episode.Number != 17 {
+		t.Fatalf("episode = %d, want seasonal 17", req.Show.Season.Episode.Number)
+	}
+
+	hybrid := BuildScrobbleRequestHybrid(update, 95.0)
+	if hybrid.Show.Season.Episode.Number != 1172 {
+		t.Fatalf("hybrid episode = %d, want absolute 1172", hybrid.Show.Season.Episode.Number)
+	}
+}
+
+func TestHybridEpisodeNumber(t *testing.T) {
+	// Distinct absolute → candidate for hybrid retry.
+	if got := HybridEpisodeNumber(17, map[string]string{"absoluteEpisode": "1172"}); got != 1172 {
+		t.Fatalf("got %d, want 1172", got)
+	}
+	// Same as seasonal / missing → no hybrid retry.
+	if got := HybridEpisodeNumber(5, nil); got != 0 {
+		t.Fatalf("got %d, want 0 (no hybrid)", got)
+	}
+	if got := HybridEpisodeNumber(5, map[string]string{"absoluteEpisode": "5"}); got != 0 {
+		t.Fatalf("got %d, want 0 when abs equals seasonal", got)
+	}
+}
+
+func TestScrobbleEpisode_RetriesHybridOnNotFound(t *testing.T) {
+	var episodeNumbers []int
+	client := NewScrobbleClient("")
+	client.httpClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			var body SyncWatchedRequest
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			epNum := body.Shows[0].Seasons[0].Episodes[0].Number
+			episodeNumbers = append(episodeNumbers, epNum)
+			// First call (seasonal 17) not found; hybrid 1172 accepted.
+			resp := `{"updated":{"movies":0,"shows":0,"seasons":0,"episodes":1},"not_found":{"movies":[],"shows":[],"seasons":[],"episodes":[]}}`
+			if epNum == 17 {
+				resp = `{"updated":{"movies":0,"shows":0,"seasons":0,"episodes":0},"not_found":{"movies":[],"shows":[],"seasons":[],"episodes":[{"season":23,"number":17,"show":{"ids":{"tmdb":37854}}}]}}`
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(resp)),
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+
+	cfgMgr := newTestConfigManager(t, config.Settings{
+		MDBList: config.MDBListSettings{
+			Enabled: true,
+			Accounts: []config.MDBListAccount{
+				{ID: "mdb1", Name: "MDBList", APIKey: "test-key"},
+			},
+		},
+	})
+	scrobbler := NewScrobbler(client, cfgMgr)
+	scrobbler.SetUserService(&mockMDBListUserService{
+		users: map[string]models.User{"user1": {ID: "user1", MdblistAccountID: "mdb1"}},
+	})
+
+	err := scrobbler.ScrobbleEpisode("user1", 81797, 23, 17, time.Date(2026, 8, 5, 18, 21, 0, 0, time.UTC), map[string]string{
+		"tmdb":            "37854",
+		"imdb":            "tt0388629",
+		"absoluteEpisode": "1172",
+	})
+	if err != nil {
+		t.Fatalf("ScrobbleEpisode() error = %v", err)
+	}
+	if len(episodeNumbers) != 2 || episodeNumbers[0] != 17 || episodeNumbers[1] != 1172 {
+		t.Fatalf("episode attempts = %v, want [17, 1172]", episodeNumbers)
+	}
+}
+
+func TestStopSession_SendsStopWithoutExistingSession(t *testing.T) {
+	var stopCalls int
+	client := NewScrobbleClient("")
+	client.httpClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if strings.Contains(req.URL.Path, "/scrobble/stop") {
+				stopCalls++
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`{}`)),
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+
+	cfgMgr := newTestConfigManager(t, config.Settings{
+		MDBList: config.MDBListSettings{
+			Enabled: true,
+			Accounts: []config.MDBListAccount{
+				{ID: "mdb1", Name: "MDBList", APIKey: "test-key"},
+			},
+		},
+	})
+	scrobbler := NewScrobbler(client, cfgMgr)
+	scrobbler.SetUserService(&mockMDBListUserService{
+		users: map[string]models.User{
+			"user1": {ID: "user1", MdblistAccountID: "mdb1"},
+		},
+	})
+	tracker := NewScrobbleStateTracker(client, scrobbler, time.Minute)
+
+	// No prior HandleProgressUpdate — session map is empty (ClearSession path).
+	tracker.StopSession("user1", models.PlaybackProgressUpdate{
+		MediaType:     "episode",
+		ItemID:        "tmdb:tv:82782:s03e01",
+		SeriesID:      "tmdb:tv:82782",
+		SeasonNumber:  3,
+		EpisodeNumber: 1,
+		ExternalIDs:   map[string]string{"titleId": "tmdb:tv:82782"},
+	}, 95)
+
+	if stopCalls != 1 {
+		t.Fatalf("expected 1 scrobble/stop call without local session, got %d", stopCalls)
+	}
+}
+
+func TestScrobbleEpisode_UsesTitleIDWhenShowKeysMissing(t *testing.T) {
+	var receivedBody SyncWatchedRequest
+	client := NewScrobbleClient("")
+	client.httpClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if err := json.NewDecoder(req.Body).Decode(&receivedBody); err != nil {
+				t.Fatalf("decode request body: %v", err)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`{}`)),
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+
+	cfgMgr := newTestConfigManager(t, config.Settings{
+		MDBList: config.MDBListSettings{
+			Enabled: true,
+			Accounts: []config.MDBListAccount{
+				{ID: "mdb1", Name: "MDBList", APIKey: "test-key"},
+			},
+		},
+	})
+	scrobbler := NewScrobbler(client, cfgMgr)
+	scrobbler.SetUserService(&mockMDBListUserService{
+		users: map[string]models.User{
+			"user1": {ID: "user1", MdblistAccountID: "mdb1"},
+		},
+	})
+
+	err := scrobbler.ScrobbleEpisode("user1", 0, 3, 1, time.Date(2026, 8, 4, 2, 51, 0, 0, time.UTC), map[string]string{
+		"titleId":     "tmdb:tv:82782",
+		"episodeTvdb": "9784333",
+	})
+	if err != nil {
+		t.Fatalf("ScrobbleEpisode() error = %v", err)
+	}
+	if len(receivedBody.Shows) != 1 {
+		t.Fatalf("shows len = %d, want 1", len(receivedBody.Shows))
+	}
+	if receivedBody.Shows[0].IDs.TMDB != 82782 {
+		t.Fatalf("show tmdb = %d, want 82782", receivedBody.Shows[0].IDs.TMDB)
 	}
 }
 

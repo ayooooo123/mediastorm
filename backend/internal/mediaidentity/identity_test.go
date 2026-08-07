@@ -189,6 +189,31 @@ func TestStorageExternalIDsScrubsConflictingSeriesProviderIDs(t *testing.T) {
 	}
 }
 
+func TestStorageExternalIDsPromotesTitleIDToShowProvider(t *testing.T) {
+	ids := StorageExternalIDs("episode", "tmdb:tv:82782:s03e01", "tmdb:tv:82782", map[string]string{
+		"titleId":     "tmdb:tv:82782",
+		"episodeTvdb": "9784333",
+	})
+	if ids["tmdb"] != "82782" {
+		t.Fatalf("tmdb = %q, want 82782 promoted from titleId (ids=%#v)", ids["tmdb"], ids)
+	}
+	if ids["titleId"] != "tmdb:tv:82782" {
+		t.Fatalf("titleId should be preserved: %#v", ids)
+	}
+	if ids["episodeTvdb"] != "9784333" {
+		t.Fatalf("episodeTvdb should be preserved: %#v", ids)
+	}
+}
+
+func TestEnrichShowExternalIDsFromSeriesID(t *testing.T) {
+	ids := EnrichShowExternalIDs("tmdb:tv:82782", "tmdb:tv:82782:s03e02", map[string]string{
+		"titleId": "tmdb:tv:82782",
+	})
+	if ids["tmdb"] != "82782" {
+		t.Fatalf("tmdb = %q, want 82782 (ids=%#v)", ids["tmdb"], ids)
+	}
+}
+
 func TestCanonicalSeriesExternalIDsExcludesEpisodeNumbering(t *testing.T) {
 	ids := CanonicalSeriesExternalIDs("tmdb:tv:220102", "tmdb:tv:220102:s01e05", map[string]string{
 		"tmdb":            "220102",

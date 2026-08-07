@@ -124,35 +124,70 @@ func (c *ScrobbleClient) ScrobbleStop(req ScrobbleRequest) error {
 	return c.scrobble("stop", req)
 }
 
+// SyncWatchedResult captures MDBList /sync/watched acceptance counts.
+type SyncWatchedResult struct {
+	UpdatedEpisodes  int
+	NotFoundEpisodes int
+	// NotFoundEpisodeKeys are "season:number" entries reported missing.
+	NotFoundEpisodeKeys []string
+}
+
 // SyncWatched sends a batch of watched items.
 func (c *ScrobbleClient) SyncWatched(req SyncWatchedRequest) error {
+	_, err := c.SyncWatchedDetailed(req)
+	return err
+}
+
+// SyncWatchedDetailed sends a batch of watched items and returns not_found info.
+func (c *ScrobbleClient) SyncWatchedDetailed(req SyncWatchedRequest) (SyncWatchedResult, error) {
+	var result SyncWatchedResult
 	apiKey := c.getAPIKey()
 	if apiKey == "" {
-		return fmt.Errorf("mdblist API key not configured")
+		return result, fmt.Errorf("mdblist API key not configured")
 	}
 
 	body, err := json.Marshal(req)
 	if err != nil {
-		return fmt.Errorf("marshal sync request: %w", err)
+		return result, fmt.Errorf("marshal sync request: %w", err)
 	}
 
 	url := fmt.Sprintf("%s/sync/watched?apikey=%s", baseURL, apiKey)
 	httpReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("create sync request: %w", err)
+		return result, fmt.Errorf("create sync request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return fmt.Errorf("sync watched: %w", err)
+		return result, fmt.Errorf("sync watched: %w", err)
 	}
 	defer resp.Body.Close()
 
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("mdblist sync/watched returned %d", resp.StatusCode)
+		return result, fmt.Errorf("mdblist sync/watched returned %d: %s", resp.StatusCode, string(respBody))
 	}
-	return nil
+
+	var parsed struct {
+		Updated struct {
+			Episodes int `json:"episodes"`
+		} `json:"updated"`
+		NotFound struct {
+			Episodes []struct {
+				Season int `json:"season"`
+				Number int `json:"number"`
+			} `json:"episodes"`
+		} `json:"not_found"`
+	}
+	if err := json.Unmarshal(respBody, &parsed); err == nil {
+		result.UpdatedEpisodes = parsed.Updated.Episodes
+		result.NotFoundEpisodes = len(parsed.NotFound.Episodes)
+		for _, ep := range parsed.NotFound.Episodes {
+			result.NotFoundEpisodeKeys = append(result.NotFoundEpisodeKeys, fmt.Sprintf("%d:%d", ep.Season, ep.Number))
+		}
+	}
+	return result, nil
 }
 
 // ErrScrobble400 is returned for 400 responses so callers can detect bad requests.

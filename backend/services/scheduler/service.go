@@ -16,8 +16,10 @@ import (
 	"time"
 
 	"novastream/config"
+	"novastream/internal/mediaidentity"
 	"novastream/models"
 	"novastream/services/backup"
+	"novastream/services/mdblist"
 	"novastream/services/epg"
 	"novastream/services/history"
 	"novastream/services/jellyfin"
@@ -4959,9 +4961,21 @@ func (s *Service) syncLocalHistoryToMDBList(task config.ScheduledTask, account *
 		return result, fmt.Errorf("list local history: %w", err)
 	}
 
-	// Filter to items watched since last run (with 5min safety buffer)
+	// Incremental export uses LastRunAt - 5min. That misses older watches that
+	// never landed on MDBList (sparse-ID scrobble failures). Periodically do a
+	// full export; MDBList /sync/watched is idempotent so re-export is safe.
+	// Force with task config fullExport=true for one-shot healing.
+	const fullExportInterval = 6 * time.Hour
+	exportKey := task.ID + ":mdblist_export"
+	forceFull := task.Config["fullExport"] == "true"
+
+	s.lastFullSyncTimesMu.Lock()
+	lastFull, ok := s.lastFullSyncTimes[exportKey]
+	s.lastFullSyncTimesMu.Unlock()
+
+	isFullExport := forceFull || !ok || time.Since(lastFull) >= fullExportInterval
 	var since time.Time
-	if task.LastRunAt != nil {
+	if !isFullExport && task.LastRunAt != nil {
 		since = task.LastRunAt.Add(-5 * time.Minute)
 	}
 
@@ -4974,9 +4988,15 @@ func (s *Service) syncLocalHistoryToMDBList(task config.ScheduledTask, account *
 		}
 	}
 
-	log.Printf("[scheduler] Found %d watched items to sync to MDBList (since %v)", len(toSync), since)
+	log.Printf("[scheduler] Found %d watched items to sync to MDBList (since %v fullExport=%v force=%v)",
+		len(toSync), since, isFullExport, forceFull)
 
 	if len(toSync) == 0 {
+		if isFullExport && !dryRun {
+			s.lastFullSyncTimesMu.Lock()
+			s.lastFullSyncTimes[exportKey] = time.Now().UTC()
+			s.lastFullSyncTimesMu.Unlock()
+		}
 		return result, nil
 	}
 
@@ -4998,6 +5018,7 @@ func (s *Service) syncLocalHistoryToMDBList(task config.ScheduledTask, account *
 	apiKey := account.APIKey
 
 	// Collect movies
+	skippedNoIDs := 0
 	var moviePayloads []map[string]interface{}
 	for _, item := range toSync {
 		if item.MediaType != "movie" {
@@ -5005,6 +5026,7 @@ func (s *Service) syncLocalHistoryToMDBList(task config.ScheduledTask, account *
 		}
 		ids := extractMDBListIDs(item.ExternalIDs)
 		if ids.imdb == "" && ids.tmdb == 0 {
+			skippedNoIDs++
 			continue
 		}
 		m := map[string]interface{}{
@@ -5025,6 +5047,7 @@ func (s *Service) syncLocalHistoryToMDBList(task config.ScheduledTask, account *
 		season    int
 		episode   int
 		watchedAt time.Time
+		absolute  int // distinct absoluteEpisode for hybrid retry; 0 if N/A
 	}
 	showMap := make(map[showKey][]epEntry)
 	showOrder := make([]showKey, 0)
@@ -5032,18 +5055,24 @@ func (s *Service) syncLocalHistoryToMDBList(task config.ScheduledTask, account *
 		if item.MediaType != "episode" {
 			continue
 		}
-		ids := extractMDBListIDs(item.ExternalIDs)
+		// Enrich sparse rows that only store titleId (e.g. tmdb:tv:82782)
+		// so bidirectional history export can heal MDBList after missed scrobbles.
+		ids := extractMDBListIDs(mediaidentity.EnrichShowExternalIDs(item.SeriesID, item.ItemID, item.ExternalIDs))
 		if ids.imdb == "" && ids.tmdb == 0 {
+			skippedNoIDs++
 			continue
 		}
 		key := showKey{imdb: ids.imdb, tmdb: ids.tmdb}
 		if _, exists := showMap[key]; !exists {
 			showOrder = append(showOrder, key)
 		}
+		// Pure seasonal first. Hybrid absolute retry happens after not_found
+		// responses (absoluteEpisode is common on non-anime shows too).
 		showMap[key] = append(showMap[key], epEntry{
 			season:    item.SeasonNumber,
 			episode:   item.EpisodeNumber,
 			watchedAt: item.WatchedAt,
+			absolute:  mdblist.HybridEpisodeNumber(item.EpisodeNumber, item.ExternalIDs),
 		})
 	}
 
@@ -5099,7 +5128,15 @@ func (s *Service) syncLocalHistoryToMDBList(task config.ScheduledTask, account *
 		syncCount += end - i
 	}
 
-	// Sync shows in batches
+	// Sync shows in batches (seasonal numbering). Collect not_found for hybrid retry.
+	type hybridRetry struct {
+		key       showKey
+		season    int
+		absolute  int
+		watchedAt time.Time
+	}
+	var hybridRetries []hybridRetry
+
 	for i := 0; i < len(showPayloads); i += batchSize {
 		end := i + batchSize
 		if end > len(showPayloads) {
@@ -5109,19 +5146,108 @@ func (s *Service) syncLocalHistoryToMDBList(task config.ScheduledTask, account *
 			"shows": showPayloads[i:end],
 		}
 		body, _ := json.Marshal(batch)
-		if err := postToMDBList(apiKey, "/sync/watched", string(body)); err != nil {
+		respBody, err := postToMDBListBody(apiKey, "/sync/watched", string(body))
+		if err != nil {
 			log.Printf("[scheduler] MDBList sync shows batch error: %v", err)
 			continue
 		}
+		notFound := parseMDBListNotFoundEpisodes(respBody)
+		accepted := 0
 		for _, show := range showPayloads[i:end] {
 			for _, season := range show["seasons"].([]map[string]interface{}) {
-				syncCount += len(season["episodes"].([]map[string]interface{}))
+				accepted += len(season["episodes"].([]map[string]interface{}))
+			}
+		}
+		accepted -= len(notFound)
+		if accepted > 0 {
+			syncCount += accepted
+		}
+		// Map not_found seasonal keys back to absolute candidates (scoped by show ids).
+		for _, key := range showOrder {
+			for _, ep := range showMap[key] {
+				if ep.absolute <= 0 {
+					continue
+				}
+				nfKey := mdblistNotFoundKey(key.imdb, key.tmdb, ep.season, ep.episode)
+				if !notFound[nfKey] {
+					continue
+				}
+				hybridRetries = append(hybridRetries, hybridRetry{
+					key:       key,
+					season:    ep.season,
+					absolute:  ep.absolute,
+					watchedAt: ep.watchedAt,
+				})
+			}
+		}
+	}
+
+	if len(hybridRetries) > 0 {
+		log.Printf("[scheduler] MDBList hybrid absolute retry for %d not_found episodes", len(hybridRetries))
+		// Group hybrid retries by show
+		hybridByShow := make(map[showKey][]hybridRetry)
+		var hybridOrder []showKey
+		for _, hr := range hybridRetries {
+			if _, ok := hybridByShow[hr.key]; !ok {
+				hybridOrder = append(hybridOrder, hr.key)
+			}
+			hybridByShow[hr.key] = append(hybridByShow[hr.key], hr)
+		}
+		var hybridPayloads []map[string]interface{}
+		for _, key := range hybridOrder {
+			seasonMap := make(map[int][]map[string]interface{})
+			for _, hr := range hybridByShow[key] {
+				epObj := map[string]interface{}{"number": hr.absolute}
+				if !hr.watchedAt.IsZero() {
+					epObj["watched_at"] = hr.watchedAt.UTC().Format(time.RFC3339)
+				}
+				seasonMap[hr.season] = append(seasonMap[hr.season], epObj)
+			}
+			var seasons []map[string]interface{}
+			for sNum, sEps := range seasonMap {
+				seasons = append(seasons, map[string]interface{}{"number": sNum, "episodes": sEps})
+			}
+			hybridPayloads = append(hybridPayloads, map[string]interface{}{
+				"ids":     formatMDBListIDsMap(mdblistIDs{imdb: key.imdb, tmdb: key.tmdb}),
+				"seasons": seasons,
+			})
+		}
+		for i := 0; i < len(hybridPayloads); i += batchSize {
+			end := i + batchSize
+			if end > len(hybridPayloads) {
+				end = len(hybridPayloads)
+			}
+			batch := map[string]interface{}{"shows": hybridPayloads[i:end]}
+			body, _ := json.Marshal(batch)
+			respBody, err := postToMDBListBody(apiKey, "/sync/watched", string(body))
+			if err != nil {
+				log.Printf("[scheduler] MDBList hybrid sync batch error: %v", err)
+				continue
+			}
+			nf := parseMDBListNotFoundEpisodes(respBody)
+			count := 0
+			for _, show := range hybridPayloads[i:end] {
+				for _, season := range show["seasons"].([]map[string]interface{}) {
+					count += len(season["episodes"].([]map[string]interface{}))
+				}
+			}
+			count -= len(nf)
+			if count > 0 {
+				syncCount += count
 			}
 		}
 	}
 
 	result.Count = syncCount
-	log.Printf("[scheduler] Synced %d/%d items to MDBList", syncCount, len(toSync))
+	log.Printf("[scheduler] Synced %d/%d items to MDBList (skippedNoIDs=%d fullExport=%v)",
+		syncCount, len(toSync), skippedNoIDs, isFullExport)
+
+	if isFullExport && !dryRun {
+		s.lastFullSyncTimesMu.Lock()
+		s.lastFullSyncTimes[exportKey] = time.Now().UTC()
+		s.lastFullSyncTimesMu.Unlock()
+		log.Printf("[scheduler] Full MDBList history export complete, next full export in %v", fullExportInterval)
+	}
 
 	return result, nil
 }
@@ -5155,15 +5281,54 @@ func formatMDBListIDsMap(ids mdblistIDs) map[string]interface{} {
 }
 
 func postToMDBList(apiKey, path, body string) error {
+	_, err := postToMDBListBody(apiKey, path, body)
+	return err
+}
+
+func postToMDBListBody(apiKey, path, body string) ([]byte, error) {
 	url := fmt.Sprintf("https://api.mdblist.com%s?apikey=%s", path, apiKey)
 	resp, err := http.Post(url, "application/json", strings.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("mdblist %s: %w", path, err)
+		return nil, fmt.Errorf("mdblist %s: %w", path, err)
 	}
 	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	if resp.StatusCode >= 400 {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("mdblist %s returned %d: %s", path, resp.StatusCode, string(respBody))
+		return respBody, fmt.Errorf("mdblist %s returned %d: %s", path, resp.StatusCode, string(respBody))
 	}
-	return nil
+	return respBody, nil
+}
+
+// parseMDBListNotFoundEpisodes returns show-scoped "imdb|tmdb|season:number" keys
+// from a /sync/watched response.
+func parseMDBListNotFoundEpisodes(respBody []byte) map[string]bool {
+	out := make(map[string]bool)
+	if len(respBody) == 0 {
+		return out
+	}
+	var parsed struct {
+		NotFound struct {
+			Episodes []struct {
+				Season int `json:"season"`
+				Number int `json:"number"`
+				Show   struct {
+					IDs struct {
+						IMDB string `json:"imdb"`
+						TMDB int    `json:"tmdb"`
+					} `json:"ids"`
+				} `json:"show"`
+			} `json:"episodes"`
+		} `json:"not_found"`
+	}
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		return out
+	}
+	for _, ep := range parsed.NotFound.Episodes {
+		out[mdblistNotFoundKey(ep.Show.IDs.IMDB, ep.Show.IDs.TMDB, ep.Season, ep.Number)] = true
+	}
+	return out
+}
+
+func mdblistNotFoundKey(imdb string, tmdb, season, number int) string {
+	return fmt.Sprintf("%s|%d|%d:%d", imdb, tmdb, season, number)
 }

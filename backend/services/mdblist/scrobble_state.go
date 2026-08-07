@@ -3,6 +3,7 @@ package mdblist
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"strings"
 	"sync"
@@ -96,7 +97,7 @@ func (t *ScrobbleStateTracker) HandleProgressUpdate(userID string, update models
 
 	if update.IsPaused {
 		if sess.state == stateWatching {
-			if err := t.client.ScrobblePause(req); err != nil {
+			if err := t.scrobbleWithHybridFallback("pause", update, percentWatched, req); err != nil {
 				log.Printf("[mdblist-scrobble] pause failed for %s: %v", key, err)
 				if is400(err) {
 					sess.failedWith400 = true
@@ -111,9 +112,11 @@ func (t *ScrobbleStateTracker) HandleProgressUpdate(userID string, update models
 
 	switch sess.state {
 	case stateIdle, statePaused:
-		if err := t.client.ScrobbleStart(req); err != nil {
+		if err := t.scrobbleWithHybridFallback("start", update, percentWatched, req); err != nil {
 			log.Printf("[mdblist-scrobble] start failed for %s: %v", key, err)
-			if is400(err) {
+			if is400(err) || isEpisodeNotFound(err) {
+				// 404 not-found is permanent for this seasonal numbering without a
+				// working hybrid fallback; stop hammering the API every progress tick.
 				sess.failedWith400 = true
 			}
 		} else {
@@ -122,9 +125,9 @@ func (t *ScrobbleStateTracker) HandleProgressUpdate(userID string, update models
 		}
 	case stateWatching:
 		if now.Sub(sess.lastAPICall) >= t.refreshInterval {
-			if err := t.client.ScrobbleStart(req); err != nil {
+			if err := t.scrobbleWithHybridFallback("start", update, percentWatched, req); err != nil {
 				log.Printf("[mdblist-scrobble] refresh failed for %s: %v", key, err)
-				if is400(err) {
+				if is400(err) || isEpisodeNotFound(err) {
 					sess.failedWith400 = true
 				}
 			} else {
@@ -135,6 +138,10 @@ func (t *ScrobbleStateTracker) HandleProgressUpdate(userID string, update models
 }
 
 // StopSession sends scrobble/stop and removes the session.
+// Always POSTs stop when MDBList is enabled for the user — even if the local
+// realtime session was already cleared (e.g. after the ≥90% ClearSession path).
+// Matching Simkl: history scrobble may have already run, but sparse IDs can make
+// that path a no-op, so stop is the reliable export.
 func (t *ScrobbleStateTracker) StopSession(userID string, update models.PlaybackProgressUpdate, percentWatched float64) {
 	if !t.scrobbler.IsEnabledForUser(userID) {
 		return
@@ -143,12 +150,9 @@ func (t *ScrobbleStateTracker) StopSession(userID string, update models.Playback
 	key := mdblistSessionKey(userID, update.MediaType, update.ItemID)
 
 	t.mu.Lock()
-	_, exists := t.sessions[key]
-	if !exists {
-		t.mu.Unlock()
-		return
+	if _, exists := t.sessions[key]; exists {
+		delete(t.sessions, key)
 	}
-	delete(t.sessions, key)
 	t.mu.Unlock()
 
 	// Resolve API key from user's linked account
@@ -159,8 +163,44 @@ func (t *ScrobbleStateTracker) StopSession(userID string, update models.Playback
 	t.client.UpdateAPIKey(account.APIKey)
 
 	req := BuildScrobbleRequest(update, percentWatched)
-	if err := t.client.ScrobbleStop(req); err != nil {
+	if err := t.scrobbleWithHybridFallback("stop", update, percentWatched, req); err != nil {
 		log.Printf("[mdblist-scrobble] stop failed for %s: %v", key, err)
+	}
+}
+
+// scrobbleWithHybridFallback tries pure seasonal first, then seasonal season +
+// absolute episode when MDBList reports the episode missing (One Piece hybrid).
+func (t *ScrobbleStateTracker) scrobbleWithHybridFallback(action string, update models.PlaybackProgressUpdate, percentWatched float64, seasonalReq ScrobbleRequest) error {
+	var err error
+	switch action {
+	case "start":
+		err = t.client.ScrobbleStart(seasonalReq)
+	case "pause":
+		err = t.client.ScrobblePause(seasonalReq)
+	case "stop":
+		err = t.client.ScrobbleStop(seasonalReq)
+	default:
+		return fmt.Errorf("unknown scrobble action %q", action)
+	}
+	if err == nil || !isEpisodeNotFound(err) {
+		return err
+	}
+	absolute := HybridEpisodeNumber(update.EpisodeNumber, update.ExternalIDs)
+	if absolute <= 0 {
+		return err
+	}
+	log.Printf("[mdblist-scrobble] %s seasonal s%02de%02d not found; retrying hybrid absolute e%d",
+		action, update.SeasonNumber, update.EpisodeNumber, absolute)
+	hybridReq := BuildScrobbleRequestHybrid(update, percentWatched)
+	switch action {
+	case "start":
+		return t.client.ScrobbleStart(hybridReq)
+	case "pause":
+		return t.client.ScrobblePause(hybridReq)
+	case "stop":
+		return t.client.ScrobbleStop(hybridReq)
+	default:
+		return err
 	}
 }
 
@@ -206,4 +246,12 @@ func (t *ScrobbleStateTracker) cleanupStaleSessions() {
 func is400(err error) bool {
 	var e *ErrScrobble400
 	return errors.As(err, &e)
+}
+
+func isEpisodeNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "episode not found") || strings.Contains(msg, "returned 404")
 }

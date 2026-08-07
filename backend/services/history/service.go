@@ -357,18 +357,22 @@ func (s *Service) doScrobble(scrobbler TraktScrobbler, userID string, item model
 		return
 	}
 
-	// Extract IDs from the item
+	// Promote show-level IDs from seriesID / titleId so sparse history rows
+	// (e.g. only {"titleId":"tmdb:tv:82782"}) still scrobble to providers.
+	externalIDs := mediaidentity.EnrichShowExternalIDs(item.SeriesID, item.ItemID, item.ExternalIDs)
+
+	// Extract IDs from the enriched map
 	var tmdbID, tvdbID int
 	var imdbID string
 
-	if item.ExternalIDs != nil {
-		if id, ok := item.ExternalIDs["tmdb"]; ok {
+	if externalIDs != nil {
+		if id, ok := externalIDs["tmdb"]; ok {
 			tmdbID, _ = strconv.Atoi(id)
 		}
-		if id, ok := item.ExternalIDs["tvdb"]; ok {
+		if id, ok := externalIDs["tvdb"]; ok {
 			tvdbID, _ = strconv.Atoi(id)
 		}
-		if id, ok := item.ExternalIDs["imdb"]; ok {
+		if id, ok := externalIDs["imdb"]; ok {
 			imdbID = id
 		}
 	}
@@ -406,7 +410,7 @@ func (s *Service) doScrobble(scrobbler TraktScrobbler, userID string, item model
 			episode := item.EpisodeNumber
 			seriesName := item.SeriesName
 			go func() {
-				if err := scrobbler.ScrobbleEpisode(userID, tvdbID, season, episode, watchedAt, item.ExternalIDs); err != nil {
+				if err := scrobbler.ScrobbleEpisode(userID, tvdbID, season, episode, watchedAt, externalIDs); err != nil {
 					log.Printf("[trakt] failed to scrobble episode %s S%02dE%02d for user %s: %v", seriesName, season, episode, userID, err)
 				} else {
 					log.Printf("[trakt] scrobbled episode: %s S%02dE%02d for user %s", seriesName, season, episode, userID)

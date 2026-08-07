@@ -4,6 +4,16 @@ import "strings"
 
 // StorageExternalIDs normalizes external IDs for persistence while preserving
 // legacy contradiction signals such as titleId.
+//
+// For episodes it also promotes show-level provider keys (tmdb/tvdb/imdb) from
+// titleId when those keys are missing. Sparse clients that only send
+// titleId:tmdb:tv:82782 still persist tmdb:82782 so scrobblers and history
+// export can resolve the show without re-parsing free-form IDs.
+//
+// seriesID alone is NOT used to invent provider keys here: empty external-ID
+// rows for the same show under different ID schemes (tmdb:tv:X vs tvdb:series:Y)
+// rely on title-name continue-watching dedupe, which breaks if each row gets a
+// distinct provider signature.
 func StorageExternalIDs(mediaType, itemID, seriesID string, externalIDs map[string]string) map[string]string {
 	normalized := NormalizeExternalIDs(externalIDs)
 	if NormalizeMediaType(mediaType) != "episode" || len(normalized) == 0 {
@@ -22,36 +32,93 @@ func StorageExternalIDs(mediaType, itemID, seriesID string, externalIDs map[stri
 			copied[key] = value
 		}
 		if provider != "" && numericID != "" {
-			copied[provider] = numericID
+			copied[provider] = formatShowProviderID(provider, numericID)
 		}
 		addEpisodeItemSeriesExternalID(copied, provider, itemProvider, itemNumericID)
-		if len(copied) > 0 {
-			return copied
-		}
-		return nil
-	}
-	if strings.TrimSpace(normalized["titleId"]) != "" {
-		return normalized
+		return promoteTitleIDShowProviders(copied)
 	}
 
 	inferredSeriesID := InferSeriesIDFromEpisodeItemID(itemID)
 	inferredProvider, inferredNumericID := itemProvider, itemNumericID
 	if inferredProvider == "" || inferredNumericID == "" {
-		return normalized
+		return promoteTitleIDShowProviders(normalized)
 	}
 
 	bridgesDifferentSeriesID := provider != "" && numericID != "" &&
 		(provider != inferredProvider || numericID != inferredNumericID)
 	if !bridgesDifferentSeriesID && !HasContradictorySeriesExternalIDs(seriesID, itemID, normalized) {
-		return normalized
+		return promoteTitleIDShowProviders(normalized)
 	}
 
 	copied := make(map[string]string, len(normalized)+1)
 	for key, value := range normalized {
 		copied[key] = value
 	}
-	copied["titleId"] = inferredSeriesID
-	return copied
+	if strings.TrimSpace(copied["titleId"]) == "" {
+		copied["titleId"] = inferredSeriesID
+	}
+	return promoteTitleIDShowProviders(copied)
+}
+
+// EnrichShowExternalIDs returns a copy of externalIDs with missing show-level
+// tmdb/tvdb/imdb keys filled from seriesID, itemID, and titleId when possible.
+// Safe for scrobble/export paths that receive sparse history rows.
+func EnrichShowExternalIDs(seriesID, itemID string, externalIDs map[string]string) map[string]string {
+	return enrichMissingShowProviderIDs(seriesID, itemID, NormalizeExternalIDs(externalIDs))
+}
+
+// promoteTitleIDShowProviders fills missing tmdb/tvdb/imdb from titleId only.
+func promoteTitleIDShowProviders(extIDs map[string]string) map[string]string {
+	if len(extIDs) == 0 {
+		return nil
+	}
+	titleID := strings.TrimSpace(extIDs["titleId"])
+	if titleID == "" {
+		return extIDs
+	}
+	provider, numericID := SeriesProviderAndID(titleID)
+	if provider == "" || numericID == "" || strings.TrimSpace(extIDs[provider]) != "" {
+		return extIDs
+	}
+	out := make(map[string]string, len(extIDs)+1)
+	for key, value := range extIDs {
+		out[key] = value
+	}
+	out[provider] = formatShowProviderID(provider, numericID)
+	return out
+}
+
+func enrichMissingShowProviderIDs(seriesID, itemID string, extIDs map[string]string) map[string]string {
+	if len(extIDs) == 0 && strings.TrimSpace(seriesID) == "" && strings.TrimSpace(itemID) == "" {
+		return nil
+	}
+	out := make(map[string]string, len(extIDs)+3)
+	for key, value := range extIDs {
+		if value != "" {
+			out[key] = value
+		}
+	}
+	for _, candidate := range []string{seriesID, InferSeriesIDFromEpisodeItemID(itemID), out["titleId"]} {
+		provider, numericID := SeriesProviderAndID(candidate)
+		if provider == "" || numericID == "" {
+			continue
+		}
+		if strings.TrimSpace(out[provider]) != "" {
+			continue
+		}
+		out[provider] = formatShowProviderID(provider, numericID)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func formatShowProviderID(provider, numericID string) string {
+	if provider == "imdb" {
+		return normalizeIMDB(numericID)
+	}
+	return numericID
 }
 
 // IdentityExternalIDs returns the external IDs that should participate in
