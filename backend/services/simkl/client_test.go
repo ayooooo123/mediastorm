@@ -390,3 +390,162 @@ func TestBuildScrobbleRequestEpisodeUsesShowAndEpisode(t *testing.T) {
 		t.Fatalf("episode = %+v", req.Episode)
 	}
 }
+
+func TestUndoShowsWithAllEpisodesNotFound_RemovesShow(t *testing.T) {
+	var removeCalled bool
+	client := NewClient()
+	client.SetHTTPClientForTest(&http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.URL.Path == "/sync/history/remove" {
+				removeCalled = true
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(strings.NewReader(`{"deleted":{"shows":1}}`)),
+					Header:     make(http.Header),
+				}, nil
+			}
+			t.Fatalf("unexpected path %s", req.URL.Path)
+			return nil, nil
+		}),
+	})
+
+	requested := []SyncHistoryShow{{
+		IDs: IDs{TMDB: 873, TVDB: 70369, IMDB: "tt1466074"},
+		Seasons: []SyncHistorySeason{{
+			Number:   10,
+			Episodes: []SyncHistoryEpisode{{Number: 14}},
+		}},
+	}}
+	resp := &SyncHistoryResponse{}
+	resp.Added.Episodes = 61
+	resp.NotFound.Episodes = []struct {
+		IDs     IDs `json:"ids"`
+		Seasons []struct {
+			Number   int `json:"number"`
+			Episodes []struct {
+				Number int `json:"number"`
+			} `json:"episodes"`
+		} `json:"seasons"`
+	}{{
+		IDs: IDs{TMDB: 873, TVDB: 70369, IMDB: "tt1466074"},
+		Seasons: []struct {
+			Number   int `json:"number"`
+			Episodes []struct {
+				Number int `json:"number"`
+			} `json:"episodes"`
+		}{{
+			Number: 10,
+			Episodes: []struct {
+				Number int `json:"number"`
+			}{{Number: 14}},
+		}},
+	}}
+
+	undone := client.UndoShowsWithAllEpisodesNotFound("cid", "tok", requested, resp)
+	if undone != 1 {
+		t.Fatalf("undone = %d, want 1", undone)
+	}
+	if !removeCalled {
+		t.Fatal("expected history/remove to be called")
+	}
+}
+
+func TestUndoShowsWithAllEpisodesNotFound_PartialMatchKeepsShow(t *testing.T) {
+	client := NewClient()
+	client.SetHTTPClientForTest(&http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			t.Fatalf("should not remove on partial not_found, path=%s", req.URL.Path)
+			return nil, nil
+		}),
+	})
+
+	// Sent two episodes; only one not_found.
+	requested := []SyncHistoryShow{{
+		IDs: IDs{TMDB: 1406},
+		Seasons: []SyncHistorySeason{{
+			Number: 1,
+			Episodes: []SyncHistoryEpisode{
+				{Number: 1},
+				{Number: 2},
+			},
+		}},
+	}}
+	resp := &SyncHistoryResponse{}
+	resp.Added.Episodes = 1
+	resp.NotFound.Episodes = []struct {
+		IDs     IDs `json:"ids"`
+		Seasons []struct {
+			Number   int `json:"number"`
+			Episodes []struct {
+				Number int `json:"number"`
+			} `json:"episodes"`
+		} `json:"seasons"`
+	}{{
+		IDs: IDs{TMDB: 1406},
+		Seasons: []struct {
+			Number   int `json:"number"`
+			Episodes []struct {
+				Number int `json:"number"`
+			} `json:"episodes"`
+		}{{
+			Number: 1,
+			Episodes: []struct {
+				Number int `json:"number"`
+			}{{Number: 2}},
+		}},
+	}}
+
+	if undone := client.UndoShowsWithAllEpisodesNotFound("cid", "tok", requested, resp); undone != 0 {
+		t.Fatalf("undone = %d, want 0", undone)
+	}
+}
+
+func TestSyncHistorySafe_UndoesOnNotFound(t *testing.T) {
+	var paths []string
+	client := NewClient()
+	client.SetHTTPClientForTest(&http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			paths = append(paths, req.URL.Path)
+			switch req.URL.Path {
+			case "/sync/history":
+				body := `{
+					"added":{"movies":0,"shows":1,"episodes":61,"statuses":[]},
+					"not_found":{"movies":[],"shows":[],"episodes":[{
+						"ids":{"tmdb":873,"tvdb":70369,"imdb":"tt1466074"},
+						"seasons":[{"number":10,"episodes":[{"number":14}]}]
+					}]}
+				}`
+				return &http.Response{
+					StatusCode: http.StatusCreated,
+					Body:       io.NopCloser(strings.NewReader(body)),
+					Header:     make(http.Header),
+				}, nil
+			case "/sync/history/remove":
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(strings.NewReader(`{"deleted":{"shows":1}}`)),
+					Header:     make(http.Header),
+				}, nil
+			default:
+				t.Fatalf("unexpected path %s", req.URL.Path)
+				return nil, nil
+			}
+		}),
+	})
+
+	req := SyncHistoryRequest{
+		Shows: []SyncHistoryShow{{
+			IDs: IDs{TMDB: 873, TVDB: 70369, IMDB: "tt1466074"},
+			Seasons: []SyncHistorySeason{{
+				Number:   10,
+				Episodes: []SyncHistoryEpisode{{Number: 14, WatchedAt: "2023-11-21T16:34:05Z"}},
+			}},
+		}},
+	}
+	if _, err := client.SyncHistorySafe("cid", "tok", req); err != nil {
+		t.Fatalf("SyncHistorySafe error: %v", err)
+	}
+	if len(paths) != 2 || paths[0] != "/sync/history" || paths[1] != "/sync/history/remove" {
+		t.Fatalf("paths = %v, want [/sync/history /sync/history/remove]", paths)
+	}
+}

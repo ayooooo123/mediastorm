@@ -125,7 +125,19 @@ func (s *Scrobbler) ScrobbleEpisode(userID string, showTVDBID, season, episode i
 	}
 
 	log.Printf("[simkl] syncing watched episode for user %s (tvdb=%d tmdb=%d imdb=%s s%02de%02d)", userID, showIDs.TVDB, showIDs.TMDB, showIDs.IMDB, season, episode)
-	return s.client.SyncHistory(account.ClientID, account.AccessToken, req)
+	// SyncHistorySafe undoes accidental full-series completes when S/E numbers
+	// are not_found (Simkl default for ended shows with unmatched episodes).
+	resp, err := s.client.SyncHistorySafe(account.ClientID, account.AccessToken, req)
+	if err != nil {
+		return err
+	}
+	if resp != nil && len(resp.NotFound.Episodes) > 0 {
+		// Episode was not matched; safety undo already ran. Surface a soft log
+		// so operators know the mark did not land on Simkl.
+		log.Printf("[simkl] episode s%02de%02d not matched on Simkl for user %s (tvdb=%d tmdb=%d); skipped accidental full-series complete",
+			season, episode, userID, showIDs.TVDB, showIDs.TMDB)
+	}
+	return nil
 }
 
 // showSyncIDs builds show-level Simkl IDs from the explicit TVDB ID plus any

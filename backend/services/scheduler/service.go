@@ -2607,7 +2607,8 @@ func (s *Service) syncHistoryBidirectional(task config.ScheduledTask, traktAccou
 	return combined, nil
 }
 
-// executeSimklHistorySync imports watch history from Simkl into local history.
+// executeSimklHistorySync syncs watch history between Simkl and local.
+// Live scrobble already uses POST /sync/history; scheduled export heals misses.
 func (s *Service) executeSimklHistorySync(task config.ScheduledTask) (SyncResult, error) {
 	s.mu.RLock()
 	historySvc := s.historyService
@@ -2629,6 +2630,11 @@ func (s *Service) executeSimklHistorySync(task config.ScheduledTask) (SyncResult
 	if err != nil {
 		return SyncResult{}, err
 	}
+
+	syncDirection := task.Config["syncDirection"]
+	if syncDirection == "" {
+		syncDirection = "simkl_to_local"
+	}
 	dryRun := task.Config["dryRun"] == "true"
 
 	settings, err := s.configManager.Load()
@@ -2643,9 +2649,44 @@ func (s *Service) executeSimklHistorySync(task config.ScheduledTask) (SyncResult
 		return SyncResult{}, errors.New("simkl account not authenticated")
 	}
 
+	switch syncDirection {
+	case "simkl_to_local":
+		return s.syncSimklHistoryToLocal(task, simklAccount, profileID, dryRun)
+	case "local_to_simkl":
+		return s.syncLocalHistoryToSimkl(task, simklAccount, profileID, dryRun)
+	case "bidirectional":
+		importResult, err := s.syncSimklHistoryToLocal(task, simklAccount, profileID, dryRun)
+		if err != nil {
+			return importResult, err
+		}
+		exportResult, err := s.syncLocalHistoryToSimkl(task, simklAccount, profileID, dryRun)
+		if err != nil {
+			return exportResult, err
+		}
+		merged := SyncResult{
+			Count:  importResult.Count + exportResult.Count,
+			DryRun: dryRun,
+			ToAdd:  append(importResult.ToAdd, exportResult.ToAdd...),
+			Config: importResult.Config,
+		}
+		return merged, nil
+	default:
+		return SyncResult{}, fmt.Errorf("unknown sync direction: %s", syncDirection)
+	}
+}
+
+// syncSimklHistoryToLocal imports watch history from Simkl into local history.
+func (s *Service) syncSimklHistoryToLocal(task config.ScheduledTask, simklAccount *config.SimklAccount, profileID string, dryRun bool) (SyncResult, error) {
+	s.mu.RLock()
+	historySvc := s.historyService
+	simklClient := s.simklClient
+	s.mu.RUnlock()
+
+	result := SyncResult{DryRun: dryRun}
+
 	activities, err := simklClient.GetActivities(simklAccount.ClientID, simklAccount.AccessToken)
 	if err != nil {
-		return SyncResult{}, fmt.Errorf("fetch simkl activities: %w", err)
+		return result, fmt.Errorf("fetch simkl activities: %w", err)
 	}
 	latestActivity := latestTimeInSimklActivity(activities)
 	savedActivity := strings.TrimSpace(task.Config["lastSimklActivityAt"])
@@ -2653,7 +2694,7 @@ func (s *Service) executeSimklHistorySync(task config.ScheduledTask) (SyncResult
 		savedAt, parseErr := time.Parse(time.RFC3339, savedActivity)
 		if parseErr == nil && !latestActivity.After(savedAt) {
 			log.Printf("[scheduler] Simkl history unchanged since %s; skipping listing calls", savedActivity)
-			return SyncResult{DryRun: dryRun, Count: 0}, nil
+			return result, nil
 		}
 	}
 
@@ -2663,7 +2704,7 @@ func (s *Service) executeSimklHistorySync(task config.ScheduledTask) (SyncResult
 		for _, bucket := range []string{"movies", "shows", "anime"} {
 			resp, err := simklClient.GetInitialSyncItems(simklAccount.ClientID, simklAccount.AccessToken, bucket)
 			if err != nil {
-				return SyncResult{DryRun: dryRun}, fmt.Errorf("fetch simkl %s history: %w", bucket, err)
+				return result, fmt.Errorf("fetch simkl %s history: %w", bucket, err)
 			}
 			responses = append(responses, resp)
 		}
@@ -2671,7 +2712,7 @@ func (s *Service) executeSimklHistorySync(task config.ScheduledTask) (SyncResult
 		log.Printf("[scheduler] Fetching Simkl history delta since %s", savedActivity)
 		resp, err := simklClient.GetAllItemsSince(simklAccount.ClientID, simklAccount.AccessToken, savedActivity)
 		if err != nil {
-			return SyncResult{DryRun: dryRun}, fmt.Errorf("fetch simkl history delta: %w", err)
+			return result, fmt.Errorf("fetch simkl history delta: %w", err)
 		}
 		responses = append(responses, resp)
 	}
@@ -2679,7 +2720,6 @@ func (s *Service) executeSimklHistorySync(task config.ScheduledTask) (SyncResult
 	watched := true
 	seen := make(map[string]bool)
 	var updates []models.WatchHistoryUpdate
-	result := SyncResult{DryRun: dryRun}
 	for _, resp := range responses {
 		for _, update := range s.simklAllItemsToWatchHistory(resp, &watched) {
 			key := strings.ToLower(update.MediaType) + ":" + strings.ToLower(update.ItemID)
@@ -2711,6 +2751,252 @@ func (s *Service) executeSimklHistorySync(task config.ScheduledTask) (SyncResult
 	}
 	log.Printf("[scheduler] Imported %d/%d items from Simkl history", result.Count, len(updates))
 	return result, nil
+}
+
+// syncLocalHistoryToSimkl exports local watch history to Simkl via POST /sync/history.
+func (s *Service) syncLocalHistoryToSimkl(task config.ScheduledTask, simklAccount *config.SimklAccount, profileID string, dryRun bool) (SyncResult, error) {
+	result := SyncResult{DryRun: dryRun}
+
+	s.mu.RLock()
+	historySvc := s.historyService
+	simklClient := s.simklClient
+	s.mu.RUnlock()
+
+	items, err := historySvc.ListWatchHistory(profileID)
+	if err != nil {
+		return result, fmt.Errorf("list local history: %w", err)
+	}
+
+	// Incremental export with periodic full export (heals missed live scrobbles).
+	const fullExportInterval = 6 * time.Hour
+	exportKey := task.ID + ":simkl_export"
+	forceFull := task.Config["fullExport"] == "true"
+
+	s.lastFullSyncTimesMu.Lock()
+	lastFull, ok := s.lastFullSyncTimes[exportKey]
+	s.lastFullSyncTimesMu.Unlock()
+
+	isFullExport := forceFull || !ok || time.Since(lastFull) >= fullExportInterval
+	var since time.Time
+	if !isFullExport && task.LastRunAt != nil {
+		since = task.LastRunAt.Add(-5 * time.Minute)
+	}
+
+	var toSync []models.WatchHistoryItem
+	for _, item := range items {
+		if !item.Watched {
+			continue
+		}
+		if since.IsZero() || item.WatchedAt.After(since) {
+			toSync = append(toSync, item)
+		}
+	}
+
+	log.Printf("[scheduler] Found %d watched items to sync to Simkl (since %v fullExport=%v force=%v)",
+		len(toSync), since, isFullExport, forceFull)
+
+	if len(toSync) == 0 {
+		if isFullExport && !dryRun {
+			s.lastFullSyncTimesMu.Lock()
+			s.lastFullSyncTimes[exportKey] = time.Now().UTC()
+			s.lastFullSyncTimesMu.Unlock()
+		}
+		return result, nil
+	}
+
+	if dryRun {
+		for _, item := range toSync {
+			result.ToAdd = append(result.ToAdd, config.DryRunItem{
+				Name:      item.Name,
+				MediaType: item.MediaType,
+				ID:        item.ItemID,
+			})
+		}
+		result.Count = len(result.ToAdd)
+		return result, nil
+	}
+
+	var movies []simkl.SyncHistoryMovie
+	// Group episodes by show ID key so we batch seasons/episodes.
+	type showKey struct {
+		simkl int
+		imdb  string
+		tmdb  int
+		tvdb  int
+	}
+	type epEntry struct {
+		season    int
+		episode   int
+		watchedAt time.Time
+	}
+	showMap := make(map[showKey][]epEntry)
+	var showOrder []showKey
+	skippedNoIDs := 0
+
+	for _, item := range toSync {
+		switch item.MediaType {
+		case "movie":
+			ids := extractSimklIDs(item.MediaType, item.ItemID, "", item.ExternalIDs)
+			if ids.IMDB == "" && ids.TMDB == 0 && ids.TVDB == 0 && ids.Simkl == 0 {
+				skippedNoIDs++
+				continue
+			}
+			m := simkl.SyncHistoryMovie{IDs: ids}
+			if !item.WatchedAt.IsZero() {
+				m.WatchedAt = item.WatchedAt.UTC().Format(time.RFC3339)
+			}
+			if item.Name != "" {
+				m.Title = item.Name
+			}
+			if item.Year > 0 {
+				m.Year = item.Year
+			}
+			movies = append(movies, m)
+		case "episode":
+			if item.SeasonNumber <= 0 || item.EpisodeNumber <= 0 {
+				skippedNoIDs++
+				continue
+			}
+			ids := extractSimklIDs(item.MediaType, item.ItemID, item.SeriesID, item.ExternalIDs)
+			if ids.IMDB == "" && ids.TMDB == 0 && ids.TVDB == 0 && ids.Simkl == 0 {
+				skippedNoIDs++
+				continue
+			}
+			key := showKey{simkl: ids.Simkl, imdb: ids.IMDB, tmdb: ids.TMDB, tvdb: ids.TVDB}
+			if _, exists := showMap[key]; !exists {
+				showOrder = append(showOrder, key)
+			}
+			showMap[key] = append(showMap[key], epEntry{
+				season:    item.SeasonNumber,
+				episode:   item.EpisodeNumber,
+				watchedAt: item.WatchedAt,
+			})
+		}
+	}
+
+	var shows []simkl.SyncHistoryShow
+	for _, key := range showOrder {
+		eps := showMap[key]
+		seasonMap := make(map[int][]simkl.SyncHistoryEpisode)
+		for _, ep := range eps {
+			entry := simkl.SyncHistoryEpisode{Number: ep.episode}
+			if !ep.watchedAt.IsZero() {
+				entry.WatchedAt = ep.watchedAt.UTC().Format(time.RFC3339)
+			}
+			seasonMap[ep.season] = append(seasonMap[ep.season], entry)
+		}
+		var seasons []simkl.SyncHistorySeason
+		for sNum, sEps := range seasonMap {
+			seasons = append(seasons, simkl.SyncHistorySeason{Number: sNum, Episodes: sEps})
+		}
+		shows = append(shows, simkl.SyncHistoryShow{
+			IDs:     simkl.IDs{Simkl: key.simkl, IMDB: key.imdb, TMDB: key.tmdb, TVDB: key.tvdb},
+			Seasons: seasons,
+		})
+	}
+
+	syncCount := 0
+	const batchSize = 50
+
+	for i := 0; i < len(movies); i += batchSize {
+		end := i + batchSize
+		if end > len(movies) {
+			end = len(movies)
+		}
+		req := simkl.SyncHistoryRequest{Movies: movies[i:end]}
+		if err := simklClient.SyncHistory(simklAccount.ClientID, simklAccount.AccessToken, req); err != nil {
+			log.Printf("[scheduler] Simkl sync movies batch error: %v", err)
+			continue
+		}
+		syncCount += end - i
+	}
+
+	for i := 0; i < len(shows); i += batchSize {
+		end := i + batchSize
+		if end > len(shows) {
+			end = len(shows)
+		}
+		batch := shows[i:end]
+		req := simkl.SyncHistoryRequest{Shows: batch}
+		// SyncHistorySafe undoes accidental full-series completes when every
+		// requested episode for a show is not_found (Columbo/DBZ numbering).
+		resp, err := simklClient.SyncHistorySafe(simklAccount.ClientID, simklAccount.AccessToken, req)
+		if err != nil {
+			log.Printf("[scheduler] Simkl sync shows batch error: %v", err)
+			continue
+		}
+		intended := 0
+		for _, show := range batch {
+			for _, season := range show.Seasons {
+				intended += len(season.Episodes)
+			}
+		}
+		notFoundEps := 0
+		if resp != nil {
+			for _, nf := range resp.NotFound.Episodes {
+				for _, season := range nf.Seasons {
+					notFoundEps += len(season.Episodes)
+				}
+			}
+		}
+		// Prefer Simkl's added count when present; fall back to intended−not_found.
+		if resp != nil && resp.Added.Episodes > 0 && notFoundEps == 0 {
+			syncCount += resp.Added.Episodes
+		} else {
+			matched := intended - notFoundEps
+			if matched > 0 {
+				syncCount += matched
+			}
+		}
+	}
+
+	result.Count = syncCount
+	log.Printf("[scheduler] Synced %d items to Simkl (skippedNoIDs=%d fullExport=%v)",
+		syncCount, skippedNoIDs, isFullExport)
+
+	if isFullExport {
+		s.lastFullSyncTimesMu.Lock()
+		s.lastFullSyncTimes[exportKey] = time.Now().UTC()
+		s.lastFullSyncTimesMu.Unlock()
+		log.Printf("[scheduler] Full Simkl history export complete, next full export in %v", fullExportInterval)
+	}
+
+	return result, nil
+}
+
+// extractSimklIDs builds Simkl show/movie IDs from local history identity fields.
+func extractSimklIDs(mediaType, itemID, seriesID string, extIDs map[string]string) simkl.IDs {
+	ids := simkl.IDs{}
+	if mediaType == "episode" {
+		extIDs = mediaidentity.EnrichShowExternalIDs(seriesID, itemID, extIDs)
+	} else {
+		extIDs = mediaidentity.NormalizeExternalIDs(extIDs)
+		// Promote provider from catalog item IDs like tmdb:movie:123.
+		if provider, numeric := mediaidentity.SeriesProviderAndID(itemID); provider != "" && numeric != "" {
+			if extIDs == nil {
+				extIDs = map[string]string{}
+			}
+			if strings.TrimSpace(extIDs[provider]) == "" {
+				extIDs[provider] = numeric
+			}
+		}
+	}
+	if extIDs == nil {
+		return ids
+	}
+	if v := strings.TrimSpace(extIDs["imdb"]); v != "" {
+		ids.IMDB = v
+	}
+	if v, err := strconv.Atoi(strings.TrimSpace(extIDs["tmdb"])); err == nil && v > 0 {
+		ids.TMDB = v
+	}
+	if v, err := strconv.Atoi(strings.TrimSpace(extIDs["tvdb"])); err == nil && v > 0 {
+		ids.TVDB = v
+	}
+	if v, err := strconv.Atoi(strings.TrimSpace(extIDs["simkl"])); err == nil && v > 0 {
+		ids.Simkl = v
+	}
+	return ids
 }
 
 func latestTimeInSimklActivity(activity simkl.ActivityResponse) time.Time {

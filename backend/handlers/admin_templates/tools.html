@@ -770,7 +770,17 @@
                             <select id="newTaskHistorySimklAccount" class="form-select">
                                 <!-- Populated by JavaScript -->
                             </select>
-                            <small class="text-muted">Select a connected Simkl account to import history from</small>
+                            <small class="text-muted">Select a connected Simkl account to sync history with</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">Sync Direction</label>
+                            <select id="newTaskSimklSyncDirection" class="form-select">
+                                <option value="simkl_to_local" selected>Simkl → Local (Import from Simkl)</option>
+                                <option value="local_to_simkl">Local → Simkl (Export to Simkl)</option>
+                                <option value="bidirectional">Bidirectional (Sync both ways)</option>
+                            </select>
+                            <small class="text-muted">Live scrobble already writes watches; scheduled export heals misses. Uses Simkl POST /sync/history.</small>
                         </div>
 
                         <div class="form-group">
@@ -1147,6 +1157,16 @@
                             <select id="editTaskHistorySimklAccount" class="form-select">
                                 <!-- Populated by JavaScript -->
                             </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">Sync Direction</label>
+                            <select id="editTaskSimklSyncDirection" class="form-select">
+                                <option value="simkl_to_local">Simkl → Local (Import from Simkl)</option>
+                                <option value="local_to_simkl">Local → Simkl (Export to Simkl)</option>
+                                <option value="bidirectional">Bidirectional (Sync both ways)</option>
+                            </select>
+                            <small class="text-muted">Live scrobble already writes watches; scheduled export heals misses.</small>
                         </div>
 
                         <div class="form-group">
@@ -5063,7 +5083,8 @@
                     const simklAccount = simklAccounts.find(a => a.id === task.config.simklAccountId);
                     if (simklAccount) accountName = simklAccount.name || simklAccount.username || 'Simkl Account';
                     accountSource = 'Simkl';
-                    listTypeLabel = 'Import';
+                    const simklDirLabels = { simkl_to_local: 'Import', local_to_simkl: 'Export', bidirectional: 'Bidirectional' };
+                    listTypeLabel = simklDirLabels[task.config.syncDirection] || 'Import';
                 } else if (task.type === 'mdblist_watchlist_sync') {
                     const mdbWLAccount = mdblistAccounts.find(a => a.id === task.config.mdblistAccountId);
                     if (mdbWLAccount) accountName = mdbWLAccount.name || 'MDBList Account';
@@ -5778,6 +5799,7 @@
         } else if (taskType === 'simkl_history_sync') {
             config.simklAccountId = document.getElementById('newTaskHistorySimklAccount').value;
             config.profileId = document.getElementById('newTaskSimklHistoryProfile').value;
+            config.syncDirection = document.getElementById('newTaskSimklSyncDirection').value;
 
             if (!config.simklAccountId || !config.profileId) {
                 showToast('Please select a Simkl account and profile', 'error');
@@ -6058,6 +6080,7 @@
                 `<option value="${account.id}">${escapeHtml(account.name || account.username || 'Simkl Account')}</option>`
             ).join('');
             historySimklSelect.value = task.config.simklAccountId || '';
+            document.getElementById('editTaskSimklSyncDirection').value = task.config.syncDirection || 'simkl_to_local';
             document.getElementById('editTaskSimklHistoryProfile').value = task.config.profileId || '';
         }
 
@@ -6289,6 +6312,7 @@
         } else if (taskType === 'simkl_history_sync') {
             config.simklAccountId = document.getElementById('editTaskHistorySimklAccount').value;
             config.profileId = document.getElementById('editTaskSimklHistoryProfile').value;
+            config.syncDirection = document.getElementById('editTaskSimklSyncDirection').value;
             const existingTask = scheduledTasks.find(t => t.id === taskId);
             if (existingTask && existingTask.config && existingTask.config.lastSimklActivityAt) {
                 config.lastSimklActivityAt = existingTask.config.lastSimklActivityAt;

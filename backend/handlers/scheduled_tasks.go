@@ -197,7 +197,14 @@ func validateScheduledTaskConfig(taskType config.ScheduledTaskType, taskConfig m
 			return fmt.Errorf("Invalid sync direction. Must be trakt_to_local, local_to_trakt, or bidirectional")
 		}
 	case config.ScheduledTaskTypeSimklHistorySync:
-		return requireProfile("simklAccountId", "Simkl history sync requires simklAccountId and profileId in config")
+		if err := requireProfile("simklAccountId", "Simkl history sync requires simklAccountId and profileId in config"); err != nil {
+			return err
+		}
+		if taskConfig["syncDirection"] == "" {
+			taskConfig["syncDirection"] = "simkl_to_local"
+		} else if taskConfig["syncDirection"] != "simkl_to_local" && taskConfig["syncDirection"] != "local_to_simkl" && taskConfig["syncDirection"] != "bidirectional" {
+			return fmt.Errorf("Invalid sync direction. Must be simkl_to_local, local_to_simkl, or bidirectional")
+		}
 	case config.ScheduledTaskTypeLocalMediaScan:
 		if taskConfig == nil || strings.TrimSpace(taskConfig["libraryId"]) == "" {
 			return errors.New("Local media scan requires libraryId in config")

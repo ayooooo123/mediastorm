@@ -639,6 +639,27 @@ func TestCreateTask_SimklHistorySyncValidation(t *testing.T) {
 		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
 	}
 
+	body["config"] = map[string]string{
+		"simklAccountId": "simkl-1",
+		"profileId":      "prof-1",
+		"syncDirection":  "sideways",
+	}
+	rec = postCreateTask(t, h, body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid direction, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	body["config"] = map[string]string{
+		"simklAccountId": "simkl-1",
+		"profileId":      "prof-1",
+		"syncDirection":  "bidirectional",
+	}
+	body["frequency"] = string(config.ScheduledTaskFrequencyHourly)
+	rec = postCreateTask(t, h, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for bidirectional, got %d: %s", rec.Code, rec.Body.String())
+	}
+
 	body["config"] = map[string]string{"simklAccountId": "simkl-1", "profileId": "prof-1"}
 	body["frequency"] = string(config.ScheduledTaskFrequency5Min)
 	rec = postCreateTask(t, h, body)

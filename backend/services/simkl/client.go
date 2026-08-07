@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -167,9 +168,177 @@ func (c *Client) ScrobbleStop(clientID, accessToken string, req ScrobbleRequest)
 	return c.scrobble(apiCredentials{clientID: clientID, accessToken: accessToken}, "stop", req)
 }
 
+// SyncHistoryResponse is the body returned by POST /sync/history.
+// Critical: if requested season/episode numbers don't match Simkl's catalog,
+// they appear under NotFound — but Simkl may STILL mark the whole ended show
+// completed (all aired episodes). Callers must check NotFound and undo.
+type SyncHistoryResponse struct {
+	Added struct {
+		Movies   int `json:"movies"`
+		Shows    int `json:"shows"`
+		Episodes int `json:"episodes"`
+		Statuses []struct {
+			Request struct {
+				IDs  IDs    `json:"ids"`
+				Type string `json:"type"`
+			} `json:"request"`
+			Response struct {
+				Status    string `json:"status"`
+				SimklType string `json:"simkl_type"`
+			} `json:"response"`
+		} `json:"statuses"`
+	} `json:"added"`
+	NotFound struct {
+		Movies   []json.RawMessage `json:"movies"`
+		Shows    []json.RawMessage `json:"shows"`
+		Episodes []struct {
+			IDs     IDs `json:"ids"`
+			Seasons []struct {
+				Number   int `json:"number"`
+				Episodes []struct {
+					Number int `json:"number"`
+				} `json:"episodes"`
+			} `json:"seasons"`
+		} `json:"episodes"`
+	} `json:"not_found"`
+}
+
 func (c *Client) SyncHistory(clientID, accessToken string, req SyncHistoryRequest) error {
-	_, err := c.post(apiCredentials{clientID: clientID, accessToken: accessToken}, "/sync/history", req, nil)
+	_, err := c.SyncHistorySafe(clientID, accessToken, req)
 	return err
+}
+
+// SyncHistoryDetailed posts /sync/history and returns the parsed response
+// without applying the not_found safety undo.
+func (c *Client) SyncHistoryDetailed(clientID, accessToken string, req SyncHistoryRequest) (*SyncHistoryResponse, error) {
+	var out SyncHistoryResponse
+	if _, err := c.post(apiCredentials{clientID: clientID, accessToken: accessToken}, "/sync/history", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// SyncHistorySafe posts /sync/history and undoes accidental full-series
+// completes when every requested episode for a show is not_found.
+//
+// Simkl docs: adding an ended show without valid episodes marks the entire
+// series completed. Unmatched S/E numbers put episodes in not_found but the
+// show can still be fully completed (Columbo 61/61, DBZ 291/291).
+func (c *Client) SyncHistorySafe(clientID, accessToken string, req SyncHistoryRequest) (*SyncHistoryResponse, error) {
+	resp, err := c.SyncHistoryDetailed(clientID, accessToken, req)
+	if err != nil {
+		return resp, err
+	}
+	if undone := c.UndoShowsWithAllEpisodesNotFound(clientID, accessToken, req.Shows, resp); undone > 0 {
+		log.Printf("[simkl] undid %d accidental full-series complete(s) after episode not_found", undone)
+	}
+	return resp, nil
+}
+
+// RemoveFromHistory posts /sync/history/remove (undo accidental full-show completes).
+func (c *Client) RemoveFromHistory(clientID, accessToken string, req SyncHistoryRequest) error {
+	_, err := c.post(apiCredentials{clientID: clientID, accessToken: accessToken}, "/sync/history/remove", req, nil)
+	return err
+}
+
+// UndoShowsWithAllEpisodesNotFound removes shows where every episode we
+// requested landed in not_found (Simkl may have completed the whole series).
+// Partial not_found (some episodes matched) does not remove the show.
+func (c *Client) UndoShowsWithAllEpisodesNotFound(clientID, accessToken string, requested []SyncHistoryShow, resp *SyncHistoryResponse) int {
+	if c == nil || resp == nil || len(resp.NotFound.Episodes) == 0 || len(requested) == 0 {
+		return 0
+	}
+
+	// Build not_found set per show: "s:e" keys.
+	type nfShow struct {
+		ids IDs
+		eps map[string]bool
+	}
+	var notFound []nfShow
+	for _, nf := range resp.NotFound.Episodes {
+		eps := make(map[string]bool)
+		for _, season := range nf.Seasons {
+			for _, ep := range season.Episodes {
+				eps[fmt.Sprintf("%d:%d", season.Number, ep.Number)] = true
+			}
+		}
+		if len(eps) == 0 {
+			continue
+		}
+		notFound = append(notFound, nfShow{ids: nf.IDs, eps: eps})
+	}
+	if len(notFound) == 0 {
+		return 0
+	}
+
+	undone := 0
+	for _, show := range requested {
+		intended := make(map[string]bool)
+		for _, season := range show.Seasons {
+			for _, ep := range season.Episodes {
+				intended[fmt.Sprintf("%d:%d", season.Number, ep.Number)] = true
+			}
+		}
+		if len(intended) == 0 {
+			// Show-level add with no episodes — that path intentionally
+			// completes ended series; not our partial-export case.
+			continue
+		}
+
+		var match *nfShow
+		for i := range notFound {
+			if idsOverlap(show.IDs, notFound[i].ids) {
+				match = &notFound[i]
+				break
+			}
+		}
+		if match == nil {
+			continue
+		}
+
+		// Undo only when every intended episode was not_found.
+		allMissing := true
+		for key := range intended {
+			if !match.eps[key] {
+				allMissing = false
+				break
+			}
+		}
+		if !allMissing {
+			continue
+		}
+
+		removeReq := SyncHistoryRequest{Shows: []SyncHistoryShow{{IDs: show.IDs}}}
+		// Prefer not_found IDs if they include a stronger match set.
+		if match.ids != (IDs{}) {
+			removeReq.Shows[0].IDs = match.ids
+		}
+		if err := c.RemoveFromHistory(clientID, accessToken, removeReq); err != nil {
+			log.Printf("[simkl] undo full-complete failed for tmdb=%d tvdb=%d imdb=%s: %v",
+				show.IDs.TMDB, show.IDs.TVDB, show.IDs.IMDB, err)
+			continue
+		}
+		log.Printf("[simkl] undid accidental full-series complete (all %d requested episode(s) not_found) tmdb=%d tvdb=%d imdb=%s",
+			len(intended), show.IDs.TMDB, show.IDs.TVDB, show.IDs.IMDB)
+		undone++
+	}
+	return undone
+}
+
+func idsOverlap(a, b IDs) bool {
+	if a.Simkl > 0 && a.Simkl == b.Simkl {
+		return true
+	}
+	if a.TMDB > 0 && a.TMDB == b.TMDB {
+		return true
+	}
+	if a.TVDB > 0 && a.TVDB == b.TVDB {
+		return true
+	}
+	if a.IMDB != "" && b.IMDB != "" && strings.EqualFold(a.IMDB, b.IMDB) {
+		return true
+	}
+	return false
 }
 
 func (c *Client) GetActivities(clientID, accessToken string) (ActivityResponse, error) {
