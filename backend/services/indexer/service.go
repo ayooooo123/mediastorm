@@ -1148,6 +1148,7 @@ type SearchOptions struct {
 	IsDaily               bool                        // True for daily shows (talk shows, news) that use date-based naming
 	TargetAirDate         string                      // For daily shows: air date in YYYY-MM-DD format
 	EpisodeAirYear        int                         // Year the target episode aired (for year filter tolerance)
+	EpisodeReleased       bool                        // True only when metadata confirms the target episode has aired
 	IncludeFiltered       bool                        // When true, return filtered results alongside passed results
 	SkipFilter            bool                        // When true, skip filtering entirely (used by SearchTest)
 	UseDownloadRanking    bool                        // When true, apply download-only preferred terms as a final ranking boost
@@ -1210,6 +1211,7 @@ type searchCacheOptions struct {
 	IsDaily               bool
 	TargetAirDate         string
 	EpisodeAirYear        int
+	EpisodeReleased       bool
 	IncludeFiltered       bool
 	SkipFilter            bool
 	UseDownloadRanking    bool
@@ -1231,6 +1233,7 @@ func buildSearchCacheOptions(opts SearchOptions) searchCacheOptions {
 		IsDaily:               opts.IsDaily,
 		TargetAirDate:         opts.TargetAirDate,
 		EpisodeAirYear:        opts.EpisodeAirYear,
+		EpisodeReleased:       opts.EpisodeReleased,
 		IncludeFiltered:       opts.IncludeFiltered,
 		SkipFilter:            opts.SkipFilter,
 		UseDownloadRanking:    opts.UseDownloadRanking,
@@ -1496,6 +1499,7 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBR
 				IsDaily:               opts.IsDaily,
 				TargetAirDate:         opts.TargetAirDate,
 				EpisodeAirYear:        opts.EpisodeAirYear,
+				EpisodeReleased:       opts.EpisodeReleased,
 				SkipFilter:            opts.SkipFilter,
 			}
 			debridResults, err := s.debrid.Search(ctx, debOpts)
@@ -1900,6 +1904,7 @@ func (s *Service) searchRawResults(ctx context.Context, opts SearchOptions) ([]m
 				IsDaily:               opts.IsDaily,
 				TargetAirDate:         opts.TargetAirDate,
 				EpisodeAirYear:        opts.EpisodeAirYear,
+				EpisodeReleased:       opts.EpisodeReleased,
 				SkipFilter:            opts.SkipFilter,
 			}
 			debridResults, err := s.debrid.Search(ctx, debOpts)
@@ -2185,6 +2190,7 @@ func (s *Service) SearchSplit(ctx context.Context, opts SearchOptions) (debridCh
 			IsDaily:               opts.IsDaily,
 			TargetAirDate:         opts.TargetAirDate,
 			EpisodeAirYear:        opts.EpisodeAirYear,
+			EpisodeReleased:       opts.EpisodeReleased,
 		}
 
 		debridResults, err := s.debrid.Search(ctx, debOpts)
@@ -3147,6 +3153,21 @@ func (s *Service) searchTorznab(ctx context.Context, idx config.IndexerConfig, o
 			ServiceType: svcType,
 		}
 		results = append(results, result)
+	}
+
+	if len(results) == 0 && opts.EpisodeReleased {
+		parsed := debrid.ParseQuery(opts.Query)
+		if parsed.Season > 0 && parsed.Episode > 0 &&
+			(strings.EqualFold(strings.TrimSpace(opts.MediaType), "series") || parsed.MediaType == debrid.MediaTypeSeries) {
+			fallbackOpts := opts
+			fallbackOpts.Query = fmt.Sprintf("%s S%02d", parsed.Title, parsed.Season)
+			// The fallback query has no episode component, but clear this flag as
+			// an explicit recursion guard if parsing rules change later.
+			fallbackOpts.EpisodeReleased = false
+			log.Printf("[indexer/torznab] %s returned no results for %q; retrying released episode with season query %q",
+				idx.Name, opts.Query, fallbackOpts.Query)
+			return s.searchTorznab(ctx, idx, fallbackOpts)
+		}
 	}
 
 	return results, nil

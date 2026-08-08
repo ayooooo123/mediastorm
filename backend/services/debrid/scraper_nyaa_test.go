@@ -341,6 +341,39 @@ func TestNyaaSearchTVQueryConstruction(t *testing.T) {
 	}
 }
 
+func TestNyaaReleasedEpisodeFallsBackToSeason(t *testing.T) {
+	var queries []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.Query().Get("q"))
+		w.Header().Set("Content-Type", "application/xml")
+		if len(queries) == 1 {
+			_, _ = w.Write([]byte(`<?xml version="1.0"?><rss><channel></channel></rss>`))
+			return
+		}
+		_, _ = w.Write([]byte(`<?xml version="1.0"?><rss xmlns:nyaa="https://nyaa.si/xmlns/nyaa"><channel><item><title>Attack on Titan S01 Complete</title><guid>https://nyaa.si/view/1</guid><link>https://nyaa.si/download/1.torrent</link><nyaa:infoHash>0123456789abcdef0123456789abcdef01234567</nyaa:infoHash></item></channel></rss>`))
+	}))
+	defer server.Close()
+
+	scraper := NewNyaaScraper(server.URL, "Nyaa", "1_2", "0", nil)
+	results, err := scraper.Search(context.Background(), SearchRequest{
+		Query:           "Attack on Titan S01E05",
+		EpisodeReleased: true,
+		Parsed: ParsedQuery{
+			Title: "Attack on Titan", Season: 1, Episode: 5, MediaType: MediaTypeSeries,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	want := []string{"Attack on Titan 05", "Attack on Titan S01"}
+	if strings.Join(queries, "|") != strings.Join(want, "|") {
+		t.Fatalf("queries = %v, want %v", queries, want)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results = %d, want 1", len(results))
+	}
+}
+
 func TestNyaaSearchErrorHandling(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)

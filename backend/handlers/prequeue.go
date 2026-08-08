@@ -1495,6 +1495,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 	var isAnime bool
 	var targetAirDate string
 	var episodeAirYear int
+	var episodeReleased bool
 	if mediaType == "series" && h.metadataSvc != nil {
 		seriesMeta := h.createEpisodeResolverAndLookupAbsoluteEp(ctx, titleID, titleName, year, imdbID, targetEpisode)
 		episodeResolver = seriesMeta.EpisodeResolver
@@ -1503,6 +1504,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 		isAnime = seriesMeta.IsAnime
 		targetAirDate = seriesMeta.TargetAirDate
 		episodeAirYear = seriesMeta.EpisodeAirYear
+		episodeReleased = seriesMeta.EpisodeReleased
 		if imdbID == "" && seriesMeta.IMDBID != "" {
 			imdbID = seriesMeta.IMDBID
 			log.Printf("[prequeue] Populated IMDb ID %s from series metadata", imdbID)
@@ -1567,6 +1569,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 		IsAnime:         isAnime,
 		TargetAirDate:   targetAirDate,
 		EpisodeAirYear:  episodeAirYear,
+		EpisodeReleased: episodeReleased,
 	}
 	// Pass absolute episode number for anime matching (if available)
 	if targetEpisode != nil && targetEpisode.AbsoluteEpisodeNumber > 0 {
@@ -1588,6 +1591,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 		IsDaily:               searchOpts.IsDaily,
 		TargetAirDate:         searchOpts.TargetAirDate,
 		EpisodeAirYear:        searchOpts.EpisodeAirYear,
+		EpisodeReleased:       searchOpts.EpisodeReleased,
 		IncludeFiltered:       true,
 	})
 	if searchErr != nil {
@@ -2510,6 +2514,7 @@ type SeriesMetadataResult struct {
 	IsDaily         bool   // True for daily shows (talk shows, news) that use date-based naming
 	TargetAirDate   string // Air date from TVDB in YYYY-MM-DD format
 	EpisodeAirYear  int    // Year the target episode aired, used to allow later-season year tags
+	EpisodeReleased bool   // True only when metadata confirms the target episode has aired
 	IsAnime         bool   // True for anime content - requires waiting for Nyaa scraper
 	Year            int    // Series premiere year from metadata (used when frontend doesn't provide it)
 	IMDBID          string // Resolved IMDb ID used by ID-aware search providers
@@ -2633,6 +2638,7 @@ func (h *PrequeueHandler) createEpisodeResolverAndLookupAbsoluteEp(ctx context.C
 
 	// Update targetEpisode with canonical season/episode and absolute number if found
 	if foundCanonicalEpisode != nil && targetEpisode != nil {
+		result.EpisodeReleased = models.SeriesEpisodeHasAired(*foundCanonicalEpisode, time.Now())
 		providerAbsoluteEp := foundAbsoluteEp
 		if providerAbsoluteEp == 0 {
 			providerAbsoluteEp = targetEpisode.AbsoluteEpisodeNumber

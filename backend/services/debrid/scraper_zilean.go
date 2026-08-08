@@ -152,6 +152,11 @@ func (z *ZileanScraper) Search(ctx context.Context, req SearchRequest) ([]Scrape
 	} else if req.Parsed.MediaType == MediaTypeSeries && req.Parsed.Season > 0 && req.Parsed.Episode > 0 {
 		// TV show search: title + season + episode
 		results, err = z.searchTV(ctx, cleanTitle, req.Parsed.Season, req.Parsed.Episode, false, req.IMDBID)
+		if err == nil && len(results) == 0 && req.EpisodeReleased {
+			log.Printf("[zilean] Exact episode search returned no results for %q S%02dE%02d; retrying season-only search",
+				cleanTitle, req.Parsed.Season, req.Parsed.Episode)
+			results, err = z.searchTV(ctx, cleanTitle, req.Parsed.Season, req.Parsed.Episode, true, req.IMDBID)
+		}
 	} else if req.Parsed.MediaType == MediaTypeMovie || req.Parsed.Year > 0 {
 		// Movie search: title + year
 		results, err = z.searchMovie(ctx, cleanTitle, req.Parsed.Year, req.IMDBID)

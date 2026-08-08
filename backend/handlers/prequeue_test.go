@@ -600,6 +600,9 @@ func TestCreateEpisodeResolverPopulatesEpisodeAirYear(t *testing.T) {
 	if got.EpisodeAirYear != 2026 {
 		t.Fatalf("EpisodeAirYear = %d, want 2026", got.EpisodeAirYear)
 	}
+	if !got.EpisodeReleased {
+		t.Fatal("EpisodeReleased = false, want true")
+	}
 }
 
 func TestCreateEpisodeResolverNormalizesLegacyAbsoluteEpisode(t *testing.T) {

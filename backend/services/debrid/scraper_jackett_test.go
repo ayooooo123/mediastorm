@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -486,6 +487,97 @@ func TestJackettSearchTV(t *testing.T) {
 
 	if results[0].Title != "Breaking.Bad.S05E16.1080p.BluRay" {
 		t.Errorf("unexpected title: %s", results[0].Title)
+	}
+}
+
+func TestJackettSearchReleasedEpisodeFallsBackToSeason(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		query := r.URL.Query()
+		if query.Get("t") != "tvsearch" || query.Get("q") != "Captain Star" || query.Get("season") != "1" {
+			t.Errorf("unexpected query: %s", r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/xml")
+		if requests == 1 {
+			if query.Get("ep") != "1" {
+				t.Errorf("exact request ep = %q, want 1", query.Get("ep"))
+			}
+			_, _ = w.Write([]byte(`<rss><channel></channel></rss>`))
+			return
+		}
+		if query.Get("ep") != "" {
+			t.Errorf("season fallback ep = %q, want empty", query.Get("ep"))
+		}
+		_, _ = w.Write([]byte(`<rss><channel><item><title>Captain Star (1997-1998) S01-S02 Complete 480p WEB x264</title><guid>magnet:?xt=urn:btih:abcdef1234567890abcdef1234567890abcdef12</guid></item></channel></rss>`))
+	}))
+	defer server.Close()
+
+	scraper := NewJackettScraper(server.URL, "testkey", "Jackett", nil)
+	results, err := scraper.Search(context.Background(), SearchRequest{
+		Query:           "Captain Star S01E01",
+		EpisodeReleased: true,
+		Parsed: ParsedQuery{
+			Title: "Captain Star", Season: 1, Episode: 1, MediaType: MediaTypeSeries,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d, want 2", requests)
+	}
+	if len(results) != 1 || !strings.Contains(results[0].Title, "S01-S02 Complete") {
+		t.Fatalf("results = %+v, want complete-series fallback", results)
+	}
+}
+
+func TestJackettSearchUnreleasedEpisodeDoesNotFallback(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = w.Write([]byte(`<rss><channel></channel></rss>`))
+	}))
+	defer server.Close()
+
+	scraper := NewJackettScraper(server.URL, "testkey", "Jackett", nil)
+	results, err := scraper.Search(context.Background(), SearchRequest{
+		Query: "Future Show S01E01",
+		Parsed: ParsedQuery{
+			Title: "Future Show", Season: 1, Episode: 1, MediaType: MediaTypeSeries,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 0 || requests != 1 {
+		t.Fatalf("results = %d, requests = %d; want 0, 1", len(results), requests)
+	}
+}
+
+func TestJackettSearchExactResultDoesNotFallback(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = w.Write([]byte(`<rss><channel><item><title>Captain Star S01E01</title><guid>magnet:?xt=urn:btih:abcdef1234567890abcdef1234567890abcdef12</guid></item></channel></rss>`))
+	}))
+	defer server.Close()
+
+	scraper := NewJackettScraper(server.URL, "testkey", "Jackett", nil)
+	results, err := scraper.Search(context.Background(), SearchRequest{
+		Query:           "Captain Star S01E01",
+		EpisodeReleased: true,
+		Parsed: ParsedQuery{
+			Title: "Captain Star", Season: 1, Episode: 1, MediaType: MediaTypeSeries,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 1 || requests != 1 {
+		t.Fatalf("results = %d, requests = %d; want 1, 1", len(results), requests)
 	}
 }
 

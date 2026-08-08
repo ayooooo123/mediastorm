@@ -41,6 +41,41 @@ func TestZileanSearchSendsIMDBID(t *testing.T) {
 	}
 }
 
+func TestZileanReleasedEpisodeFallsBackToSeason(t *testing.T) {
+	var episodes []string
+	client := &http.Client{Transport: zileanRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		episodes = append(episodes, r.URL.Query().Get("Episode"))
+		body := `[]`
+		if len(episodes) == 2 {
+			body = `[{"raw_title":"Captain Star S01-S02 Complete","info_hash":"0123456789abcdef0123456789abcdef01234567","season":1}]`
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    r,
+		}, nil
+	})}
+
+	scraper := NewZileanScraper("https://zilean.test", "Zilean", client)
+	results, err := scraper.Search(context.Background(), SearchRequest{
+		Query:           "Captain Star S01E01",
+		EpisodeReleased: true,
+		Parsed: ParsedQuery{
+			Title: "Captain Star", Season: 1, Episode: 1, MediaType: MediaTypeSeries,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if strings.Join(episodes, "|") != "1|" {
+		t.Fatalf("Episode parameters = %v, want [1 empty]", episodes)
+	}
+	if len(results) != 1 || !strings.Contains(results[0].Title, "Complete") {
+		t.Fatalf("results = %+v, want season fallback", results)
+	}
+}
+
 func TestZileanParseResponsePreservesIngestedAt(t *testing.T) {
 	scraper := NewZileanScraper("https://zilean.test", "Zilean", nil)
 	results, err := scraper.parseResponse([]byte(`[

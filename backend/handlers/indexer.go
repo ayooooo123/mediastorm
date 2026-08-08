@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"novastream/models"
 	"novastream/services/badstreams"
@@ -83,6 +84,7 @@ func (h *IndexerHandler) Search(w http.ResponseWriter, r *http.Request) {
 	var isAnime bool
 	var targetAirDate string
 	var episodeAirYear int
+	var episodeReleased bool
 	var absoluteEpisodeNumber int
 	if mediaType == "series" && h.MetadataSvc != nil {
 		seriesMeta := h.getSeriesSearchMetadata(r.Context(), query, year, imdbID)
@@ -92,6 +94,7 @@ func (h *IndexerHandler) Search(w http.ResponseWriter, r *http.Request) {
 			isAnime = seriesMeta.IsAnime
 			targetAirDate = seriesMeta.TargetAirDate
 			episodeAirYear = seriesMeta.EpisodeAirYear
+			episodeReleased = seriesMeta.EpisodeReleased
 			absoluteEpisodeNumber = seriesMeta.AbsoluteEpisodeNumber
 			if year == 0 && seriesMeta.Year > 0 {
 				year = seriesMeta.Year
@@ -137,6 +140,7 @@ func (h *IndexerHandler) Search(w http.ResponseWriter, r *http.Request) {
 		IsAnime:               isAnime,
 		TargetAirDate:         targetAirDate,
 		EpisodeAirYear:        episodeAirYear,
+		EpisodeReleased:       episodeReleased,
 		AbsoluteEpisodeNumber: absoluteEpisodeNumber,
 	}
 
@@ -268,6 +272,7 @@ func (h *IndexerHandler) SearchTest(w http.ResponseWriter, r *http.Request) {
 	var isAnime bool
 	var targetAirDate string
 	var episodeAirYear int
+	var episodeReleased bool
 	var absoluteEpisodeNumber int
 	if mediaType == "series" && h.MetadataSvc != nil {
 		seriesMeta := h.getSeriesSearchMetadata(r.Context(), query, year, imdbID)
@@ -277,6 +282,7 @@ func (h *IndexerHandler) SearchTest(w http.ResponseWriter, r *http.Request) {
 			isAnime = seriesMeta.IsAnime
 			targetAirDate = seriesMeta.TargetAirDate
 			episodeAirYear = seriesMeta.EpisodeAirYear
+			episodeReleased = seriesMeta.EpisodeReleased
 			absoluteEpisodeNumber = seriesMeta.AbsoluteEpisodeNumber
 			if year == 0 && seriesMeta.Year > 0 {
 				year = seriesMeta.Year
@@ -314,6 +320,7 @@ func (h *IndexerHandler) SearchTest(w http.ResponseWriter, r *http.Request) {
 		IsAnime:               isAnime,
 		TargetAirDate:         targetAirDate,
 		EpisodeAirYear:        episodeAirYear,
+		EpisodeReleased:       episodeReleased,
 		AbsoluteEpisodeNumber: absoluteEpisodeNumber,
 		UseDownloadRanking:    useDownloadRanking,
 	}
@@ -438,6 +445,7 @@ type seriesSearchMetadata struct {
 	TargetAirDate         string // YYYY-MM-DD format for daily shows
 	Year                  int    // Series premiere year from metadata
 	EpisodeAirYear        int    // Year the target episode actually aired (may differ from series premiere year)
+	EpisodeReleased       bool   // True only when metadata confirms the target episode has aired
 	AbsoluteEpisodeNumber int
 }
 
@@ -510,6 +518,7 @@ func (h *IndexerHandler) getSeriesSearchMetadata(ctx context.Context, query stri
 			if season.Number == parsed.Season {
 				for _, ep := range season.Episodes {
 					if ep.EpisodeNumber == parsed.Episode {
+						result.EpisodeReleased = models.SeriesEpisodeHasAired(ep, time.Now())
 						if releaseAbsolute := releaseAbsoluteEpisodeNumber(details.Seasons, ep); releaseAbsolute > 0 {
 							result.AbsoluteEpisodeNumber = releaseAbsolute
 							if ep.AbsoluteEpisodeNumber > 0 && ep.AbsoluteEpisodeNumber != releaseAbsolute {

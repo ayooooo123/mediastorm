@@ -126,6 +126,16 @@ func (n *NyaaScraper) Search(ctx context.Context, req SearchRequest) ([]ScrapeRe
 		return nil, err
 	}
 
+	if len(results) == 0 && req.EpisodeReleased && req.Parsed.MediaType == MediaTypeSeries &&
+		req.Parsed.Season > 0 && req.Parsed.Episode > 0 {
+		seasonQuery := fmt.Sprintf("%s S%02d", cleanTitle, req.Parsed.Season)
+		log.Printf("[nyaa] Exact episode search returned no results for %q; retrying season query %q", query, seasonQuery)
+		results, err = n.searchRSS(ctx, seasonQuery)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	// If no results and we searched with year, try without year
 	if len(results) == 0 && req.Parsed.Year > 0 && req.Parsed.MediaType == MediaTypeMovie {
 		log.Printf("[nyaa] No results with year, retrying without year for %q", cleanTitle)

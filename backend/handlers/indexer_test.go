@@ -286,6 +286,9 @@ func TestIndexerHandler_SearchSeriesAbsoluteEpisode(t *testing.T) {
 	if fake.lastOpts.EpisodeAirYear != 2026 {
 		t.Fatalf("expected episode air year 2026, got %d", fake.lastOpts.EpisodeAirYear)
 	}
+	if !fake.lastOpts.EpisodeReleased {
+		t.Fatal("expected episode to be marked released")
+	}
 }
 
 func TestIndexerHandler_SearchNonAnimeUsesReleaseAbsoluteEpisode(t *testing.T) {

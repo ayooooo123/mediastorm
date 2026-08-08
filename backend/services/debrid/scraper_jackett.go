@@ -131,6 +131,11 @@ func (j *JackettScraper) Search(ctx context.Context, req SearchRequest) ([]Scrap
 	} else if req.Parsed.MediaType == MediaTypeSeries && req.Parsed.Season > 0 && req.Parsed.Episode > 0 {
 		// TV show search: title + SxxExx
 		results, err = j.searchTV(ctx, cleanTitle, req.Parsed.Season, req.Parsed.Episode)
+		if err == nil && len(results) == 0 && req.EpisodeReleased {
+			log.Printf("[%s] Exact episode search returned no results for %q S%02dE%02d; retrying season-only search",
+				strings.ToLower(j.Name()), cleanTitle, req.Parsed.Season, req.Parsed.Episode)
+			results, err = j.searchTVSeason(ctx, cleanTitle, req.Parsed.Season)
+		}
 	} else if req.Parsed.MediaType == MediaTypeMovie || req.Parsed.Year > 0 {
 		if eventQuery := sportsEventSearchQuery(cleanTitle); eventQuery != "" {
 			results, err = j.searchGeneric(ctx, eventQuery)
@@ -247,6 +252,20 @@ func (j *JackettScraper) searchTV(ctx context.Context, title string, season, epi
 	params.Set("ep", strconv.Itoa(episode))
 
 	log.Printf("[jackett] TV search: q=%q, season=%d, ep=%d", title, season, episode)
+	return j.fetchResults(ctx, params)
+}
+
+// searchTVSeason performs a season-scoped TV search. It is used only when an
+// aired episode's exact search returns nothing, allowing season and complete
+// series packs to be discovered without broadening successful searches.
+func (j *JackettScraper) searchTVSeason(ctx context.Context, title string, season int) ([]ScrapeResult, error) {
+	params := url.Values{}
+	params.Set("apikey", j.apiKey)
+	params.Set("t", "tvsearch")
+	params.Set("q", title)
+	params.Set("season", strconv.Itoa(season))
+
+	log.Printf("[jackett] Season fallback search: q=%q, season=%d", title, season)
 	return j.fetchResults(ctx, params)
 }
 

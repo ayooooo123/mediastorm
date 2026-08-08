@@ -60,6 +60,7 @@ type SearchOptions struct {
 	IsDaily               bool                        // True for daily shows (talk shows, news) - enables date-based matching
 	TargetAirDate         string                      // For daily shows: air date in YYYY-MM-DD format
 	EpisodeAirYear        int                         // Year the target episode aired (for year filter tolerance)
+	EpisodeReleased       bool                        // True only when metadata confirms the target episode has aired
 	SkipFilter            bool                        // When true, skip result filtering (used by SearchTest)
 }
 
@@ -484,13 +485,14 @@ func (s *SearchService) Search(ctx context.Context, opts SearchOptions) ([]model
 	}
 
 	req := SearchRequest{
-		Query:         opts.Query,
-		Categories:    append([]string(nil), opts.Categories...),
-		MaxResults:    opts.MaxResults,
-		Parsed:        parsed,
-		IMDBID:        imdbID,
-		IsDaily:       opts.IsDaily,
-		TargetAirDate: opts.TargetAirDate,
+		Query:           opts.Query,
+		Categories:      append([]string(nil), opts.Categories...),
+		MaxResults:      opts.MaxResults,
+		Parsed:          parsed,
+		IMDBID:          imdbID,
+		IsDaily:         opts.IsDaily,
+		TargetAirDate:   opts.TargetAirDate,
+		EpisodeReleased: opts.EpisodeReleased,
 	}
 	log.Printf("[debrid] Using metadata: Title=%q, Season=%d, Episode=%d, Year=%d, MediaType=%s, IMDBID=%s",
 		parsed.Title, parsed.Season, parsed.Episode, parsed.Year, parsed.MediaType, imdbID)

@@ -53,6 +53,62 @@ func TestSearchTorznabRateLimitSkipsProviderAndAllowsFallback(t *testing.T) {
 	}
 }
 
+func TestSearchTorznabReleasedEpisodeFallsBackToSeasonAfterEmptyExactSearch(t *testing.T) {
+	var queries []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.Query().Get("q"))
+		w.Header().Set("Content-Type", "application/xml")
+		if r.URL.Query().Get("q") == "Captain Star S01" {
+			_, _ = w.Write([]byte(`<rss><channel><item><title>Captain Star S01-S02 Complete</title><guid>pack</guid></item></channel></rss>`))
+			return
+		}
+		_, _ = w.Write([]byte(`<rss><channel></channel></rss>`))
+	}))
+	defer server.Close()
+
+	svc := &Service{httpc: server.Client(), providerBreaker: providerbreaker.New()}
+	results, err := svc.searchTorznab(context.Background(), config.IndexerConfig{Name: "Test", URL: server.URL}, SearchOptions{
+		Query:           "Captain Star S01E01",
+		MediaType:       "series",
+		EpisodeReleased: true,
+	})
+	if err != nil {
+		t.Fatalf("searchTorznab: %v", err)
+	}
+	if len(results) != 1 || results[0].Title != "Captain Star S01-S02 Complete" {
+		t.Fatalf("results = %+v, want complete-series fallback", results)
+	}
+	want := []string{"Captain Star S01E01", "Captain Star S01"}
+	if strings.Join(queries, "|") != strings.Join(want, "|") {
+		t.Fatalf("queries = %v, want %v", queries, want)
+	}
+}
+
+func TestSearchTorznabDoesNotFallbackForUnreleasedEpisode(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = w.Write([]byte(`<rss><channel></channel></rss>`))
+	}))
+	defer server.Close()
+
+	svc := &Service{httpc: server.Client(), providerBreaker: providerbreaker.New()}
+	results, err := svc.searchTorznab(context.Background(), config.IndexerConfig{Name: "Test", URL: server.URL}, SearchOptions{
+		Query:     "Future Show S01E01",
+		MediaType: "series",
+	})
+	if err != nil {
+		t.Fatalf("searchTorznab: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("results = %d, want 0", len(results))
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want 1", requests)
+	}
+}
+
 type stubDebridSearchService struct {
 	results []models.NZBResult
 	err     error
