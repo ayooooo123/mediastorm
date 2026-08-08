@@ -79,6 +79,13 @@ func (h *ScheduledTasksHandler) taskIntegrationBelongsToAccount(task config.Sche
 				return account.OwnerAccountID == accountID
 			}
 		}
+	case config.ScheduledTaskTypeScrobHistorySync:
+		integrationID := strings.TrimSpace(task.Config["scrobAccountId"])
+		for _, account := range settings.Scrob.Accounts {
+			if account.ID == integrationID {
+				return account.OwnerAccountID == accountID
+			}
+		}
 	case config.ScheduledTaskTypeMDBListWatchlistSync, config.ScheduledTaskTypeMDBListHistorySync:
 		integrationID := strings.TrimSpace(task.Config["mdblistAccountId"])
 		for _, account := range settings.MDBList.Accounts {
@@ -204,6 +211,15 @@ func validateScheduledTaskConfig(taskType config.ScheduledTaskType, taskConfig m
 			taskConfig["syncDirection"] = "simkl_to_local"
 		} else if taskConfig["syncDirection"] != "simkl_to_local" && taskConfig["syncDirection"] != "local_to_simkl" && taskConfig["syncDirection"] != "bidirectional" {
 			return fmt.Errorf("Invalid sync direction. Must be simkl_to_local, local_to_simkl, or bidirectional")
+		}
+	case config.ScheduledTaskTypeScrobHistorySync:
+		if err := requireProfile("scrobAccountId", "Scrob history sync requires scrobAccountId and profileId in config"); err != nil {
+			return err
+		}
+		if taskConfig["syncDirection"] == "" {
+			taskConfig["syncDirection"] = "scrob_to_local"
+		} else if taskConfig["syncDirection"] != "scrob_to_local" && taskConfig["syncDirection"] != "local_to_scrob" && taskConfig["syncDirection"] != "bidirectional" {
+			return fmt.Errorf("Invalid sync direction. Must be scrob_to_local, local_to_scrob, or bidirectional")
 		}
 	case config.ScheduledTaskTypeLocalMediaScan:
 		if taskConfig == nil || strings.TrimSpace(taskConfig["libraryId"]) == "" {

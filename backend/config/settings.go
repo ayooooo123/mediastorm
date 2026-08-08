@@ -42,6 +42,7 @@ type Settings struct {
 	MDBList         MDBListSettings         `json:"mdblist"`
 	Trakt           TraktSettings           `json:"trakt,omitempty"`
 	Simkl           SimklSettings           `json:"simkl,omitempty"`
+	Scrob           ScrobSettings           `json:"scrob,omitempty"`
 	Plex            PlexSettings            `json:"plex,omitempty"`
 	Jellyfin        JellyfinSettings        `json:"jellyfin,omitempty"`
 	Log             LogConfig               `json:"log"`
@@ -1389,6 +1390,44 @@ type SimklSettings struct {
 	Accounts []SimklAccount `json:"accounts,omitempty"`
 }
 
+// ScrobAccount represents a user on a self-hosted Scrob instance. The API key
+// is sufficient for inbound history reads. Username/password are optional and
+// are used to obtain Scrob's short-lived bearer token for outbound writes.
+type ScrobAccount struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	OwnerAccountID string `json:"ownerAccountId,omitempty"`
+	BaseURL        string `json:"baseUrl"`
+	APIKey         string `json:"apiKey"`
+	Username       string `json:"username,omitempty"`
+	Password       string `json:"password,omitempty"`
+	TOTPSecret     string `json:"totpSecret,omitempty"`
+}
+
+// ScrobSettings defines self-hosted Scrob integrations.
+type ScrobSettings struct {
+	Accounts []ScrobAccount `json:"accounts,omitempty"`
+}
+
+func (s *ScrobSettings) GetAccountByID(id string) *ScrobAccount {
+	for i := range s.Accounts {
+		if s.Accounts[i].ID == id {
+			return &s.Accounts[i]
+		}
+	}
+	return nil
+}
+
+func (s *ScrobSettings) RemoveAccount(id string) bool {
+	for i := range s.Accounts {
+		if s.Accounts[i].ID == id {
+			s.Accounts = append(s.Accounts[:i], s.Accounts[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
 // GetAccountByID returns a Simkl account by its ID, or nil if not found.
 func (s *SimklSettings) GetAccountByID(id string) *SimklAccount {
 	for i := range s.Accounts {
@@ -1569,6 +1608,7 @@ const (
 	ScheduledTaskTypeJellyfinHistorySync   ScheduledTaskType = "jellyfin_history_sync"
 	ScheduledTaskTypeMDBListWatchlistSync  ScheduledTaskType = "mdblist_watchlist_sync"
 	ScheduledTaskTypeMDBListHistorySync    ScheduledTaskType = "mdblist_history_sync"
+	ScheduledTaskTypeScrobHistorySync      ScheduledTaskType = "scrob_history_sync"
 )
 
 const ScheduledTaskLocalMediaAllLibraries = "__all__"
@@ -1770,6 +1810,7 @@ func DefaultSettings() Settings {
 		},
 		Trakt: TraktSettings{},
 		Simkl: SimklSettings{},
+		Scrob: ScrobSettings{},
 		Plex:  PlexSettings{},
 		Log: LogConfig{
 			File:       "cache/logs/backend.log",

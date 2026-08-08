@@ -32,6 +32,7 @@ type User struct {
 	PlexAccountID    string `json:"plexAccountId,omitempty"`    // ID of the linked Plex account (from config.PlexAccount)
 	MdblistAccountID string `json:"mdblistAccountId,omitempty"` // ID of the linked MDBList account (from config.MDBListAccount)
 	SimklAccountID   string `json:"simklAccountId,omitempty"`   // ID of the linked Simkl account (from config.SimklAccount)
+	ScrobAccountID   string `json:"scrobAccountId,omitempty"`   // ID of the linked self-hosted Scrob account
 	IsKidsProfile    bool   `json:"isKidsProfile"`              // Whether this is a kids profile with content restrictions
 	AllowShareLinks  bool   `json:"allowShareLinks"`            // Whether this profile may mint shareable playback links (master-controlled, default off)
 	// ActivityPrivacy controls whether this profile's watch activity appears in
@@ -91,6 +92,7 @@ func (u User) MarshalJSON() ([]byte, error) {
 		PlexAccountID    string    `json:"plexAccountId,omitempty"`
 		MdblistAccountID string    `json:"mdblistAccountId,omitempty"`
 		SimklAccountID   string    `json:"simklAccountId,omitempty"`
+		ScrobAccountID   string    `json:"scrobAccountId,omitempty"`
 		ActivityPrivacy  string    `json:"activityPrivacy"`
 	}{
 		UserAlias:        UserAlias(u),
@@ -101,6 +103,7 @@ func (u User) MarshalJSON() ([]byte, error) {
 		PlexAccountID:    u.PlexAccountID,
 		MdblistAccountID: u.MdblistAccountID,
 		SimklAccountID:   u.SimklAccountID,
+		ScrobAccountID:   u.ScrobAccountID,
 		ActivityPrivacy:  NormalizeActivityPrivacy(u.ActivityPrivacy),
 	})
 }

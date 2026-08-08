@@ -40,6 +40,8 @@ type usersService interface {
 	ClearTraktAccountID(id string) (models.User, error)
 	SetSimklAccountID(id, simklAccountID string) (models.User, error)
 	ClearSimklAccountID(id string) (models.User, error)
+	SetScrobAccountID(id, scrobAccountID string) (models.User, error)
+	ClearScrobAccountID(id string) (models.User, error)
 	SetPlexAccountID(id, plexAccountID string) (models.User, error)
 	ClearPlexAccountID(id string) (models.User, error)
 	SetKidsProfile(id string, isKids bool) (models.User, error)
@@ -129,6 +131,9 @@ func (h *UsersHandler) canLinkIntegration(r *http.Request, kind, integrationID s
 			linkedToAccount = true
 		}
 		return linkedToAccount
+	case "scrob":
+		account := settings.Scrob.GetAccountByID(integrationID)
+		return account != nil && account.OwnerAccountID == accountID
 	}
 	return false
 }
@@ -817,6 +822,77 @@ func (h *UsersHandler) ClearSimklAccount(w http.ResponseWriter, r *http.Request)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(user)
+}
+
+// SetScrobAccount associates a self-hosted Scrob account with a user profile.
+func (h *UsersHandler) SetScrobAccount(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(mux.Vars(r)["userID"])
+	if id == "" {
+		http.Error(w, "user id is required", http.StatusBadRequest)
+		return
+	}
+	if !auth.IsMaster(r) {
+		if !h.Service.BelongsToAccount(id, auth.GetAccountID(r)) {
+			http.Error(w, "profile not found", http.StatusNotFound)
+			return
+		}
+	} else if !h.Service.Exists(id) {
+		http.Error(w, "profile not found", http.StatusNotFound)
+		return
+	}
+	var body struct {
+		ScrobAccountID string `json:"scrobAccountId"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !h.canLinkIntegration(r, "scrob", body.ScrobAccountID) {
+		http.Error(w, "integration account not found", http.StatusNotFound)
+		return
+	}
+	user, err := h.Service.SetScrobAccountID(id, body.ScrobAccountID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, users.ErrUserNotFound) {
+			status = http.StatusNotFound
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(user)
+}
+
+// ClearScrobAccount removes the Scrob account association from a user profile.
+func (h *UsersHandler) ClearScrobAccount(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(mux.Vars(r)["userID"])
+	if id == "" {
+		http.Error(w, "user id is required", http.StatusBadRequest)
+		return
+	}
+	if !auth.IsMaster(r) {
+		if !h.Service.BelongsToAccount(id, auth.GetAccountID(r)) {
+			http.Error(w, "profile not found", http.StatusNotFound)
+			return
+		}
+	} else if !h.Service.Exists(id) {
+		http.Error(w, "profile not found", http.StatusNotFound)
+		return
+	}
+	user, err := h.Service.ClearScrobAccountID(id)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, users.ErrUserNotFound) {
+			status = http.StatusNotFound
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(user)
 }
 
 // SetPlexAccount associates a Plex account with a user profile.

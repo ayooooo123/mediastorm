@@ -632,6 +632,13 @@ func redactSettings(s *config.Settings) {
 		mask(&s.Simkl.Accounts[i].AccessToken)
 	}
 
+	// Self-hosted Scrob credentials
+	for i := range s.Scrob.Accounts {
+		mask(&s.Scrob.Accounts[i].APIKey)
+		mask(&s.Scrob.Accounts[i].Password)
+		mask(&s.Scrob.Accounts[i].TOTPSecret)
+	}
+
 	// Plex (legacy field + account-level tokens)
 	mask(&s.Plex.AuthToken)
 	for i := range s.Plex.Accounts {
@@ -777,6 +784,15 @@ func preserveRedactedFields(incoming *config.Settings, existing *config.Settings
 		if i < len(existing.Simkl.Accounts) {
 			restore(&incoming.Simkl.Accounts[i].ClientSecret, existing.Simkl.Accounts[i].ClientSecret)
 			restore(&incoming.Simkl.Accounts[i].AccessToken, existing.Simkl.Accounts[i].AccessToken)
+		}
+	}
+
+	// Self-hosted Scrob credentials
+	for i := range incoming.Scrob.Accounts {
+		if i < len(existing.Scrob.Accounts) {
+			restore(&incoming.Scrob.Accounts[i].APIKey, existing.Scrob.Accounts[i].APIKey)
+			restore(&incoming.Scrob.Accounts[i].Password, existing.Scrob.Accounts[i].Password)
+			restore(&incoming.Scrob.Accounts[i].TOTPSecret, existing.Scrob.Accounts[i].TOTPSecret)
 		}
 	}
 

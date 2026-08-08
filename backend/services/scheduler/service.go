@@ -19,13 +19,14 @@ import (
 	"novastream/internal/mediaidentity"
 	"novastream/models"
 	"novastream/services/backup"
-	"novastream/services/mdblist"
 	"novastream/services/epg"
 	"novastream/services/history"
 	"novastream/services/jellyfin"
 	"novastream/services/localmedia"
+	"novastream/services/mdblist"
 	"novastream/services/plex"
 	"novastream/services/prewarm"
+	"novastream/services/scrob"
 	"novastream/services/simkl"
 	"novastream/services/trakt"
 	"novastream/services/watchlist"
@@ -37,6 +38,7 @@ type Service struct {
 	plexClient         *plex.Client
 	traktClient        *trakt.Client
 	simklClient        *simkl.Client
+	scrobClient        *scrob.Client
 	jellyfinClient     *jellyfin.Client
 	usersService       schedulerUsersProvider
 	watchlistService   *watchlist.Service
@@ -331,6 +333,8 @@ func (s *Service) executeTask(task config.ScheduledTask) {
 		result, err = s.executeTraktHistorySync(task)
 	case config.ScheduledTaskTypeSimklHistorySync:
 		result, err = s.executeSimklHistorySync(task)
+	case config.ScheduledTaskTypeScrobHistorySync:
+		result, err = s.executeScrobHistorySync(task)
 	case config.ScheduledTaskTypePrewarm:
 		result, err = s.executePrewarm(task)
 	case config.ScheduledTaskTypePlexHistorySync:
@@ -600,6 +604,13 @@ func (s *Service) SetSimklClient(simklClient *simkl.Client) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.simklClient = simklClient
+}
+
+// SetScrobClient sets the client used for self-hosted Scrob history tasks.
+func (s *Service) SetScrobClient(scrobClient *scrob.Client) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.scrobClient = scrobClient
 }
 
 // SetPrewarmService sets the prewarm service for scheduled prewarm tasks.

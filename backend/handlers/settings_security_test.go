@@ -40,6 +40,7 @@ func TestRedactSettings(t *testing.T) {
 				{ID: "t1", ClientSecret: "trakt-secret", AccessToken: "trakt-access", RefreshToken: "trakt-refresh"},
 			},
 		},
+		Scrob: config.ScrobSettings{Accounts: []config.ScrobAccount{{ID: "s1", APIKey: "scrob-key", Password: "scrob-password", TOTPSecret: "scrob-totp"}}},
 		Plex: config.PlexSettings{
 			Accounts: []config.PlexAccount{
 				{ID: "p1", AuthToken: "plex-token"},
@@ -98,6 +99,9 @@ func TestRedactSettings(t *testing.T) {
 	}
 	if s.Trakt.Accounts[0].RefreshToken != redacted {
 		t.Errorf("Trakt account RefreshToken not redacted: %q", s.Trakt.Accounts[0].RefreshToken)
+	}
+	if s.Scrob.Accounts[0].APIKey != redacted || s.Scrob.Accounts[0].Password != redacted || s.Scrob.Accounts[0].TOTPSecret != redacted {
+		t.Errorf("Scrob credentials not redacted: key=%q password=%q totp=%q", s.Scrob.Accounts[0].APIKey, s.Scrob.Accounts[0].Password, s.Scrob.Accounts[0].TOTPSecret)
 	}
 	if s.Plex.Accounts[0].AuthToken != redacted {
 		t.Errorf("Plex account AuthToken not redacted: %q", s.Plex.Accounts[0].AuthToken)
@@ -350,6 +354,7 @@ func TestRedactSettings_LiveURLsAndAccountKeys(t *testing.T) {
 func TestPreserveRedactedFields_LiveURLsAndAccountKeys(t *testing.T) {
 	existing := config.Settings{
 		MDBList: config.MDBListSettings{Accounts: []config.MDBListAccount{{ID: "mdb-1", APIKey: "real-account-key"}}},
+		Scrob:   config.ScrobSettings{Accounts: []config.ScrobAccount{{ID: "scrob-1", APIKey: "real-scrob-key", Password: "real-scrob-password", TOTPSecret: "real-scrob-totp"}}},
 		Live: config.LiveSettings{
 			PlaylistURL: "real-playlist", ManifestURL: "real-manifest", ProxyURL: "real-proxy", XtreamHost: "real-host", XtreamUsername: "real-user", XtreamPassword: "real-pass",
 			EPG: config.EPGSettings{XmltvUrl: "real-xmltv", Sources: []config.EPGSource{{URL: "real-epg-source"}}},
@@ -377,6 +382,9 @@ func TestPreserveRedactedFields_LiveURLsAndAccountKeys(t *testing.T) {
 
 	if incoming.MDBList.Accounts[0].APIKey != existing.MDBList.Accounts[0].APIKey {
 		t.Fatal("MDBList account key was not restored")
+	}
+	if incoming.Scrob.Accounts[0].APIKey != existing.Scrob.Accounts[0].APIKey || incoming.Scrob.Accounts[0].Password != existing.Scrob.Accounts[0].Password || incoming.Scrob.Accounts[0].TOTPSecret != existing.Scrob.Accounts[0].TOTPSecret {
+		t.Fatal("Scrob credentials were not restored")
 	}
 	if incoming.Live.PlaylistURL != existing.Live.PlaylistURL || incoming.Live.XtreamUsername != existing.Live.XtreamUsername || incoming.Live.EPG.Sources[0].URL != existing.Live.EPG.Sources[0].URL {
 		t.Fatal("global live provider values were not restored")

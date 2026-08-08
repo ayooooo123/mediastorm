@@ -174,7 +174,7 @@
         </div>
         <div class="section-content">
             <p class="text-muted" style="margin-bottom: 1rem;">
-                Register Trakt, Simkl, and MDBList accounts here, then link them to profiles in the <strong style="color: var(--text-secondary);">Profile Scrobbling</strong> section below.
+                Register Trakt, Simkl, MDBList, and self-hosted Scrob accounts here. Scrob accounts are selected directly by history sync automations.
                 Scrobbling pushes watched items to the linked service. To pull watch history, create a sync automation.
             </p>
 
@@ -285,6 +285,24 @@
                 </div>
             </div>
 
+            <!-- Scrob Accounts -->
+            <h4 style="font-size: 0.9rem; font-weight: 600; margin: 1.5rem 0 0.5rem; color: var(--text-secondary);">Scrob (self-hosted)</h4>
+            <p class="text-muted" style="font-size: 0.8rem; margin-bottom: 0.75rem;">
+                Enter your Scrob instance URL and user API key. Username/password are optional for imports, but required for Local → Scrob writes. For a 2FA-enabled account, also enter its Base32 TOTP secret or full otpauth URI so scheduled tasks can generate fresh codes.
+            </p>
+            <div id="scrobAccountsList" style="margin-bottom: 1rem;"></div>
+            <button class="btn btn-primary" onclick="showAddScrobAccountForm()" id="addScrobAccountBtn" style="margin-bottom: 1.5rem;">Add Scrob Account</button>
+            <div id="scrobAddAccountForm" style="display: none; margin-top: 1rem; padding: 1rem; background: var(--bg-surface); border-radius: 8px; border: 1px solid var(--border);">
+                <h4 style="margin-bottom: 1rem;">Add Scrob Account</h4>
+                <div class="form-group"><label class="form-label">Account Name</label><input type="text" class="form-input" id="newScrobAccountName" placeholder="e.g., Home Scrob"></div>
+                <div class="form-group"><label class="form-label">Instance URL</label><input type="url" class="form-input" id="newScrobBaseUrl" placeholder="https://scrob.example.com"></div>
+                <div class="form-group"><label class="form-label">API Key</label><input type="password" class="form-input" id="newScrobApiKey" placeholder="Scrob profile API key"></div>
+                <div class="form-group"><label class="form-label">Username (for outbound sync)</label><input type="text" class="form-input" id="newScrobUsername" autocomplete="username"></div>
+                <div class="form-group"><label class="form-label">Password (for outbound sync)</label><input type="password" class="form-input" id="newScrobPassword" autocomplete="new-password"></div>
+                <div class="form-group"><label class="form-label">TOTP secret or otpauth URI (if 2FA is enabled)</label><input type="password" class="form-input" id="newScrobTotpSecret" autocomplete="off"><small class="text-muted">This is the reusable seed shown when enabling 2FA, not the rotating six-digit code. It is stored as a write-only secret.</small></div>
+                <div class="btn-group" style="margin-top: 1rem;"><button class="btn btn-secondary" onclick="hideAddScrobAccountForm()">Cancel</button><button class="btn btn-primary" onclick="createScrobAccount()">Create Account</button></div>
+            </div>
+
             <!-- MDBList Accounts -->
             <h4 style="font-size: 0.9rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-secondary);">MDBList</h4>
             <p class="text-muted" style="font-size: 0.8rem; margin-bottom: 0.75rem;">
@@ -338,8 +356,8 @@
         </div>
         <div class="section-content">
             <p class="text-muted" style="margin-bottom: 1rem;">
-                Link each profile to Trakt, Simkl, and/or MDBList. When a profile watches content, it will automatically scrobble to their linked services (one-way push).
-                To sync history in the other direction (e.g. items watched in other apps), use a <strong style="color: var(--text-secondary);">Trakt History Sync</strong> automation.
+                Link each profile to Trakt, Simkl, MDBList, and/or self-hosted Scrob. When a profile watches content, it will automatically scrobble to its linked services (one-way push).
+                To sync history in either direction, use the corresponding <strong style="color: var(--text-secondary);">History Sync</strong> automation.
             </p>
             <div id="profileTraktLinkingList">
                 <!-- Profile linking rows will be rendered here -->
@@ -611,6 +629,7 @@
                             <option value="trakt_list_sync">Trakt List Sync</option>
                             <option value="trakt_history_sync">Trakt History Sync</option>
                             <option value="simkl_history_sync">Simkl History Sync</option>
+                            <option value="scrob_history_sync">Scrob History Sync</option>
                             <option value="mdblist_watchlist_sync">MDBList Watchlist Sync</option>
                             <option value="mdblist_history_sync">MDBList History Sync</option>
                             <option value="jellyfin_favorites_sync">Jellyfin Favorites Sync</option>
@@ -791,6 +810,15 @@
                                 {{end}}
                             </select>
                         </div>
+                    </div>
+
+                    <!-- Scrob History Sync specific config -->
+                    <div id="scrobHistorySyncConfig" style="display: none;">
+                        <div class="form-group"><label class="form-label">Scrob Account</label><select id="newTaskHistoryScrobAccount" class="form-select"></select></div>
+                        <div class="form-group"><label class="form-label">Sync Direction</label><select id="newTaskScrobSyncDirection" class="form-select">
+                            <option value="scrob_to_local" selected>Scrob → Local (Import from Scrob)</option><option value="local_to_scrob">Local → Scrob (Export to Scrob)</option><option value="bidirectional">Bidirectional (Sync both ways)</option>
+                        </select><small class="text-muted">Outbound sync requires the username/password stored on the Scrob account.</small></div>
+                        <div class="form-group"><label class="form-label">Sync to Profile</label><select id="newTaskScrobHistoryProfile" class="form-select">{{range .Users}}<option value="{{.ID}}">{{.Name}}</option>{{end}}</select></div>
                     </div>
 
                     <!-- MDBList Watchlist Sync specific config -->
@@ -1005,6 +1033,7 @@
                             <option value="trakt_list_sync">Trakt List Sync</option>
                             <option value="trakt_history_sync">Trakt History Sync</option>
                             <option value="simkl_history_sync">Simkl History Sync</option>
+                            <option value="scrob_history_sync">Scrob History Sync</option>
                             <option value="mdblist_watchlist_sync">MDBList Watchlist Sync</option>
                             <option value="mdblist_history_sync">MDBList History Sync</option>
                             <option value="jellyfin_favorites_sync">Jellyfin Favorites Sync</option>
@@ -1177,6 +1206,15 @@
                                 {{end}}
                             </select>
                         </div>
+                    </div>
+
+                    <!-- Scrob History Sync specific config (edit) -->
+                    <div id="editScrobHistorySyncConfig" style="display: none;">
+                        <div class="form-group"><label class="form-label">Scrob Account</label><select id="editTaskHistoryScrobAccount" class="form-select"></select></div>
+                        <div class="form-group"><label class="form-label">Sync Direction</label><select id="editTaskScrobSyncDirection" class="form-select">
+                            <option value="scrob_to_local">Scrob → Local (Import from Scrob)</option><option value="local_to_scrob">Local → Scrob (Export to Scrob)</option><option value="bidirectional">Bidirectional (Sync both ways)</option>
+                        </select></div>
+                        <div class="form-group"><label class="form-label">Sync to Profile</label><select id="editTaskScrobHistoryProfile" class="form-select">{{range .Users}}<option value="{{.ID}}">{{.Name}}</option>{{end}}</select></div>
                     </div>
 
                     <!-- MDBList Watchlist Sync specific config (edit) -->
@@ -2427,6 +2465,7 @@
     let userProfiles = [];
     let mdblistAccounts = [];
     let simklAccounts = [];
+    let scrobAccounts = [];
     let simklAuthAccountId = null;
     let simklPollInterval = null;
     let localMediaLibraries = [];
@@ -2471,16 +2510,16 @@
         // Then load everything else in parallel
         if (isTasksPage) {
             const accountLoads = isAdmin
-                ? [loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadJellyfinAccounts(), loadLocalMediaLibraries()]
-                : [loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadJellyfinAccounts()];
+                ? [loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadScrobAccounts(), loadJellyfinAccounts(), loadLocalMediaLibraries()]
+                : [loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadScrobAccounts(), loadJellyfinAccounts()];
             await Promise.all([...accountLoads, loadScheduledTasks()]);
         } else if (isIntegrationsPage) {
             const accountLoads = isAdmin
-                ? [loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadJellyfinAccounts()]
-                : [loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadJellyfinAccounts()];
+                ? [loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadScrobAccounts(), loadJellyfinAccounts()]
+                : [loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadScrobAccounts(), loadJellyfinAccounts()];
             await Promise.all(accountLoads);
         } else {
-            await Promise.all([loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadJellyfinAccounts(), loadLocalMediaLibraries(), loadUpdateStatus(false), loadWorkers(), loadShareLogsClients()]);
+            await Promise.all([loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadScrobAccounts(), loadJellyfinAccounts(), loadLocalMediaLibraries(), loadUpdateStatus(false), loadWorkers(), loadShareLogsClients()]);
         }
     });
 
@@ -2848,6 +2887,69 @@
         }
     }
 
+    // ========== Scrob Accounts Functions ==========
+    async function loadScrobAccounts() {
+        try {
+            const response = await fetch(basePath + '/api/scrob/accounts');
+            if (response.ok) {
+                scrobAccounts = await response.json() || [];
+                renderScrobAccountsList();
+                updateTraktStatusBadge();
+                renderProfileTraktLinking();
+            }
+        } catch (err) {
+            console.error('Failed to load Scrob accounts:', err);
+        }
+    }
+
+    function renderScrobAccountsList() {
+        const container = document.getElementById('scrobAccountsList');
+        if (!container) return;
+        if (scrobAccounts.length === 0) {
+            container.innerHTML = '<p class="text-muted">No Scrob accounts configured.</p>';
+            return;
+        }
+        container.innerHTML = scrobAccounts.map(account => `
+            <div style="padding: 0.75rem; margin-bottom: 0.5rem; background: var(--bg-surface); border-radius: 8px; border: 1px solid var(--border);">
+                <div style="display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:0.5rem;">
+                    <div><strong>${escapeHtml(account.name || 'Scrob Account')}</strong><span class="status-badge connected" style="font-size:0.75rem;">API Key Set</span>
+                    <div class="text-muted" style="font-size:0.8rem; margin-top:0.25rem;">${escapeHtml(account.baseUrl)}${account.username ? ' • ' + escapeHtml(account.username) : ' • pull only'}${account.hasTotpSecret ? ' • 2FA' : ''}</div></div>
+                    <div style="display:flex; gap:0.5rem;"><button class="btn btn-secondary btn-sm" onclick="testScrobAccount('${account.id}')">Test</button><button class="btn btn-secondary btn-sm" onclick="deleteScrobAccount('${account.id}')" style="color:var(--danger);">Delete</button></div>
+                </div>
+            </div>`).join('');
+    }
+
+    function showAddScrobAccountForm() { document.getElementById('scrobAddAccountForm').style.display = 'block'; document.getElementById('addScrobAccountBtn').style.display = 'none'; }
+    function hideAddScrobAccountForm() {
+        document.getElementById('scrobAddAccountForm').style.display = 'none'; document.getElementById('addScrobAccountBtn').style.display = 'inline-flex';
+        ['newScrobAccountName','newScrobBaseUrl','newScrobApiKey','newScrobUsername','newScrobPassword','newScrobTotpSecret'].forEach(id => document.getElementById(id).value = '');
+    }
+    async function createScrobAccount() {
+        const body = { name: document.getElementById('newScrobAccountName').value.trim() || 'Scrob Account', baseUrl: document.getElementById('newScrobBaseUrl').value.trim(), apiKey: document.getElementById('newScrobApiKey').value.trim(), username: document.getElementById('newScrobUsername').value.trim(), password: document.getElementById('newScrobPassword').value, totpSecret: document.getElementById('newScrobTotpSecret').value.trim() };
+        if (!body.baseUrl || !body.apiKey) { showToast('Scrob URL and API key are required', 'error'); return; }
+        try {
+            const response = await fetch(basePath + '/api/scrob/accounts', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+            if (!response.ok) throw new Error(await response.text() || 'Failed to create Scrob account');
+            showToast('Scrob account created', 'success'); hideAddScrobAccountForm(); await loadScrobAccounts();
+        } catch (err) { showToast(err.message, 'error'); }
+    }
+    async function testScrobAccount(accountId) {
+        try {
+            const response = await fetch(`${basePath}/api/scrob/accounts/${accountId}/test`, {method:'POST'});
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data.error || 'Scrob connection failed');
+            showToast(data.message || 'Connected to Scrob', 'success');
+        } catch (err) { showToast(err.message, 'error'); }
+    }
+    async function deleteScrobAccount(accountId) {
+        if (!confirm('Delete this Scrob account? Any linked profiles will be unlinked.')) return;
+        try {
+            const response = await fetch(`${basePath}/api/scrob/accounts/${accountId}`, {method:'DELETE'});
+            if (!response.ok) throw new Error(await response.text() || 'Failed to delete Scrob account');
+            showToast('Scrob account deleted', 'success'); await loadScrobAccounts(); await loadUserProfiles();
+        } catch (err) { showToast(err.message, 'error'); }
+    }
+
     // ========== MDBList Accounts Functions ==========
     async function loadMdblistAccounts() {
         try {
@@ -3167,9 +3269,10 @@
         const badge = document.getElementById('traktStatusBadge');
         const traktConnected = traktAccounts.filter(a => a.connected).length;
         const simklConnected = simklAccounts.filter(a => a.connected).length;
+        const scrobConnected = scrobAccounts.filter(a => a.hasApiKey).length;
         const mdblistCount = mdblistAccounts.length;
-        const totalConnected = traktConnected + simklConnected + mdblistCount;
-        const totalAccounts = traktAccounts.length + simklAccounts.length + mdblistCount;
+        const totalConnected = traktConnected + simklConnected + scrobConnected + mdblistCount;
+        const totalAccounts = traktAccounts.length + simklAccounts.length + scrobAccounts.length + mdblistCount;
 
         if (totalConnected > 0) {
             badge.textContent = `${totalConnected} Connected`;
@@ -3237,15 +3340,19 @@
 
         const connectedAccounts = traktAccounts.filter(a => a.connected);
         const connectedSimklAccounts = simklAccounts.filter(a => a.connected);
+        const writableScrobAccounts = scrobAccounts.filter(a => a.username && a.hasPassword);
 
         container.innerHTML = userProfiles.map(profile => {
             const currentTraktId = profile.traktAccountId || '';
             const currentMdblistId = profile.mdblistAccountId || '';
             const currentSimklId = profile.simklAccountId || '';
+            const currentScrobId = profile.scrobAccountId || '';
             const currentAccountExists = currentTraktId && traktAccounts.some(a => a.id === currentTraktId);
             const orphanedLink = currentTraktId && !currentAccountExists;
             const mdblistOrphaned = currentMdblistId && !mdblistAccounts.some(a => a.id === currentMdblistId);
             const simklOrphaned = currentSimklId && !simklAccounts.some(a => a.id === currentSimklId);
+            const scrobOrphaned = currentScrobId && !scrobAccounts.some(a => a.id === currentScrobId);
+            const scrobMissingWriteAuth = currentScrobId && !scrobOrphaned && !writableScrobAccounts.some(a => a.id === currentScrobId);
 
             return `
                 <div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; padding: 0.75rem; margin-bottom: 0.5rem; background: var(--bg-surface); border-radius: 8px; border: 1px solid var(--border); gap: 0.5rem;">
@@ -3283,6 +3390,18 @@
                             ${mdblistAccounts.map(acc => `
                                 <option value="${acc.id}" ${currentMdblistId === acc.id ? 'selected' : ''}>
                                     ${escapeHtml(acc.name || 'MDBList Account')}
+                                </option>
+                            `).join('')}
+                        </select>
+                        ${scrobOrphaned ? `<span class="status-badge" style="background: var(--warning); color: #000; font-size: 0.7rem;">Orphaned Scrob</span>` : ''}
+                        ${scrobMissingWriteAuth ? `<span class="status-badge" style="background: var(--warning); color: #000; font-size: 0.7rem;">Scrob pull only</span>` : ''}
+                        <select class="form-select" style="max-width: 180px; min-width: 140px;" onchange="updateProfileScrobLink('${profile.id}', this.value)" title="Scrob account">
+                            <option value="" ${!currentScrobId ? 'selected' : ''}>No Scrob</option>
+                            ${scrobOrphaned ? `<option value="${currentScrobId}" selected style="color: var(--warning);">⚠ Unknown</option>` : ''}
+                            ${scrobMissingWriteAuth ? `<option value="${currentScrobId}" selected style="color: var(--warning);">⚠ Pull only</option>` : ''}
+                            ${writableScrobAccounts.map(acc => `
+                                <option value="${acc.id}" ${currentScrobId === acc.id ? 'selected' : ''}>
+                                    ${escapeHtml(acc.name || 'Scrob Account')}
                                 </option>
                             `).join('')}
                         </select>
@@ -3485,6 +3604,27 @@
             showToast(simklAccountId ? 'Profile linked to Simkl account' : 'Profile unlinked from Simkl', 'success');
             await loadUserProfiles();
             await loadSimklAccounts();
+        } catch (err) {
+            showToast(err.message, 'error');
+            await loadUserProfiles();
+        }
+    }
+
+    async function updateProfileScrobLink(profileId, scrobAccountId) {
+        try {
+            const method = scrobAccountId ? 'PUT' : 'DELETE';
+            const response = await fetch(`${basePath}/api/users/${profileId}/scrob`, {
+                method,
+                headers: { 'Content-Type': 'application/json' },
+                body: scrobAccountId ? JSON.stringify({ scrobAccountId }) : undefined
+            });
+            if (!response.ok) {
+                const error = await response.json().catch(() => ({}));
+                throw new Error(error.error || 'Failed to update profile');
+            }
+            showToast(scrobAccountId ? 'Profile linked to Scrob account' : 'Profile unlinked from Scrob', 'success');
+            await loadUserProfiles();
+            await loadScrobAccounts();
         } catch (err) {
             showToast(err.message, 'error');
             await loadUserProfiles();
@@ -5085,6 +5225,12 @@
                     accountSource = 'Simkl';
                     const simklDirLabels = { simkl_to_local: 'Import', local_to_simkl: 'Export', bidirectional: 'Bidirectional' };
                     listTypeLabel = simklDirLabels[task.config.syncDirection] || 'Import';
+                } else if (task.type === 'scrob_history_sync') {
+                    const scrobAccount = scrobAccounts.find(a => a.id === task.config.scrobAccountId);
+                    if (scrobAccount) accountName = scrobAccount.name || 'Scrob Account';
+                    accountSource = 'Scrob';
+                    const scrobDirLabels = { scrob_to_local: 'Import', local_to_scrob: 'Export', bidirectional: 'Bidirectional' };
+                    listTypeLabel = scrobDirLabels[task.config.syncDirection] || 'Import';
                 } else if (task.type === 'mdblist_watchlist_sync') {
                     const mdbWLAccount = mdblistAccounts.find(a => a.id === task.config.mdblistAccountId);
                     if (mdbWLAccount) accountName = mdbWLAccount.name || 'MDBList Account';
@@ -5282,6 +5428,7 @@
             case 'trakt_list_sync': return 'Trakt List';
             case 'trakt_history_sync': return 'Trakt History';
             case 'simkl_history_sync': return 'Simkl History';
+            case 'scrob_history_sync': return 'Scrob History';
             case 'mdblist_watchlist_sync': return 'MDBList Watchlist';
             case 'mdblist_history_sync': return 'MDBList History';
             case 'jellyfin_favorites_sync': return 'Jellyfin Favorites';
@@ -5552,6 +5699,7 @@
         const traktConfig = document.getElementById('traktListSyncConfig');
         const traktHistoryConfig = document.getElementById('traktHistorySyncConfig');
         const simklHistoryConfig = document.getElementById('simklHistorySyncConfig');
+        const scrobHistoryConfig = document.getElementById('scrobHistorySyncConfig');
         const plexHistoryConfig = document.getElementById('plexHistorySyncConfig');
         const jellyfinFavConfig = document.getElementById('jellyfinFavoritesSyncConfig');
         const jellyfinHistConfig = document.getElementById('jellyfinHistorySyncConfig');
@@ -5566,6 +5714,7 @@
         traktConfig.style.display = taskType === 'trakt_list_sync' ? 'block' : 'none';
         traktHistoryConfig.style.display = taskType === 'trakt_history_sync' ? 'block' : 'none';
         simklHistoryConfig.style.display = taskType === 'simkl_history_sync' ? 'block' : 'none';
+        scrobHistoryConfig.style.display = taskType === 'scrob_history_sync' ? 'block' : 'none';
         const mdblistWatchlistConfig = document.getElementById('mdblistWatchlistSyncConfig');
         mdblistWatchlistConfig.style.display = taskType === 'mdblist_watchlist_sync' ? 'block' : 'none';
         const mdblistHistoryConfig = document.getElementById('mdblistHistorySyncConfig');
@@ -5591,6 +5740,12 @@
             const connectedSimklAccounts = simklAccounts.filter(a => a.connected);
             historySimklSelect.innerHTML = connectedSimklAccounts.map(account =>
                 `<option value="${account.id}">${escapeHtml(account.name || account.username || 'Simkl Account')}</option>`
+            ).join('');
+        }
+
+        if (taskType === 'scrob_history_sync') {
+            document.getElementById('newTaskHistoryScrobAccount').innerHTML = scrobAccounts.map(account =>
+                `<option value="${account.id}">${escapeHtml(account.name || 'Scrob Account')}</option>`
             ).join('');
         }
 
@@ -5660,7 +5815,7 @@
         // Show sync options and dry run for appropriate task types
         // Hide generic sync options for history sync types (they have their own controls or no direction needed)
         const isSyncTask = taskType.includes('sync');
-        const hasOwnDirection = taskType === 'trakt_history_sync' || taskType === 'simkl_history_sync' || taskType === 'mdblist_history_sync' || taskType === 'plex_history_sync' || taskType === 'jellyfin_history_sync';
+        const hasOwnDirection = taskType === 'trakt_history_sync' || taskType === 'simkl_history_sync' || taskType === 'scrob_history_sync' || taskType === 'mdblist_history_sync' || taskType === 'plex_history_sync' || taskType === 'jellyfin_history_sync';
         syncOptions.style.display = (isSyncTask && !hasOwnDirection) ? 'block' : 'none';
         document.getElementById('dryRunGroup').style.display = isSyncTask ? 'block' : 'none';
     }
@@ -5805,6 +5960,11 @@
                 showToast('Please select a Simkl account and profile', 'error');
                 return;
             }
+        } else if (taskType === 'scrob_history_sync') {
+            config.scrobAccountId = document.getElementById('newTaskHistoryScrobAccount').value;
+            config.profileId = document.getElementById('newTaskScrobHistoryProfile').value;
+            config.syncDirection = document.getElementById('newTaskScrobSyncDirection').value;
+            if (!config.scrobAccountId || !config.profileId) { showToast('Please select a Scrob account and profile', 'error'); return; }
         } else if (taskType === 'mdblist_watchlist_sync') {
             config.mdblistAccountId = document.getElementById('newTaskMdblistWatchlistAccount').value;
             config.profileId = document.getElementById('newTaskMdblistWatchlistProfile').value;
@@ -5863,7 +6023,7 @@
         }
 
         // Add sync options for sync-type tasks (but not history sync types which have their own controls)
-        const historyTypes = ['trakt_history_sync', 'simkl_history_sync', 'mdblist_history_sync', 'plex_history_sync', 'jellyfin_history_sync'];
+        const historyTypes = ['trakt_history_sync', 'simkl_history_sync', 'scrob_history_sync', 'mdblist_history_sync', 'plex_history_sync', 'jellyfin_history_sync'];
         if (taskType.includes('sync') && !historyTypes.includes(taskType)) {
             config.syncDirection = document.getElementById('newTaskSyncDirection').value;
             config.deleteBehavior = document.getElementById('newTaskDeleteBehavior').value;
@@ -6021,6 +6181,7 @@
         document.getElementById('editTraktListSyncConfig').style.display = 'none';
         document.getElementById('editTraktHistorySyncConfig').style.display = 'none';
         document.getElementById('editSimklHistorySyncConfig').style.display = 'none';
+        document.getElementById('editScrobHistorySyncConfig').style.display = 'none';
         document.getElementById('editMdblistWatchlistSyncConfig').style.display = 'none';
         document.getElementById('editMdblistHistorySyncConfig').style.display = 'none';
         document.getElementById('editPlexHistorySyncConfig').style.display = 'none';
@@ -6082,6 +6243,15 @@
             historySimklSelect.value = task.config.simklAccountId || '';
             document.getElementById('editTaskSimklSyncDirection').value = task.config.syncDirection || 'simkl_to_local';
             document.getElementById('editTaskSimklHistoryProfile').value = task.config.profileId || '';
+        }
+
+        if (task.type === 'scrob_history_sync' && task.config) {
+            document.getElementById('editScrobHistorySyncConfig').style.display = 'block';
+            const select = document.getElementById('editTaskHistoryScrobAccount');
+            select.innerHTML = scrobAccounts.map(account => `<option value="${account.id}">${escapeHtml(account.name || 'Scrob Account')}</option>`).join('');
+            select.value = task.config.scrobAccountId || '';
+            document.getElementById('editTaskScrobSyncDirection').value = task.config.syncDirection || 'scrob_to_local';
+            document.getElementById('editTaskScrobHistoryProfile').value = task.config.profileId || '';
         }
 
         // Set config values for MDBList watchlist sync
@@ -6183,7 +6353,7 @@
 
         // Set sync options for sync-type tasks (but not history sync types which have their own controls)
         const isSyncTask = task.type.includes('sync');
-        const editHistoryTypes = ['trakt_history_sync', 'simkl_history_sync', 'mdblist_history_sync', 'plex_history_sync', 'jellyfin_history_sync'];
+        const editHistoryTypes = ['trakt_history_sync', 'simkl_history_sync', 'scrob_history_sync', 'mdblist_history_sync', 'plex_history_sync', 'jellyfin_history_sync'];
         const isHistorySync = editHistoryTypes.includes(task.type);
         document.getElementById('editSyncOptionsConfig').style.display = (isSyncTask && !isHistorySync) ? 'block' : 'none';
 
@@ -6322,6 +6492,11 @@
                 showToast('Please select a Simkl account and profile', 'error');
                 return;
             }
+        } else if (taskType === 'scrob_history_sync') {
+            config.scrobAccountId = document.getElementById('editTaskHistoryScrobAccount').value;
+            config.profileId = document.getElementById('editTaskScrobHistoryProfile').value;
+            config.syncDirection = document.getElementById('editTaskScrobSyncDirection').value;
+            if (!config.scrobAccountId || !config.profileId) { showToast('Please select a Scrob account and profile', 'error'); return; }
         } else if (taskType === 'mdblist_watchlist_sync') {
             config.mdblistAccountId = document.getElementById('editTaskMdblistWatchlistAccount').value;
             config.profileId = document.getElementById('editTaskMdblistWatchlistProfile').value;
@@ -6380,7 +6555,7 @@
         }
 
         // Add sync options for sync-type tasks (but not history sync types which have their own controls)
-        const editHistTypes = ['trakt_history_sync', 'simkl_history_sync', 'mdblist_history_sync', 'plex_history_sync', 'jellyfin_history_sync'];
+        const editHistTypes = ['trakt_history_sync', 'simkl_history_sync', 'scrob_history_sync', 'mdblist_history_sync', 'plex_history_sync', 'jellyfin_history_sync'];
         if (taskType.includes('sync') && !editHistTypes.includes(taskType)) {
             config.syncDirection = document.getElementById('editTaskSyncDirection').value;
             config.deleteBehavior = document.getElementById('editTaskDeleteBehavior').value;

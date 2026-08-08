@@ -18,6 +18,24 @@ func TestNotificationsTemplateLoads(t *testing.T) {
 	}
 }
 
+func TestToolsTemplateIncludesProfileScrobLinking(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/tools.html")
+	if err != nil {
+		t.Fatalf("read tools template: %v", err)
+	}
+	source := string(templateBytes)
+	for _, marker := range []string{
+		"profile.scrobAccountId",
+		"updateProfileScrobLink",
+		"/api/users/${profileId}/scrob",
+		"No Scrob",
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("tools template missing profile Scrob marker %q", marker)
+		}
+	}
+}
+
 func TestNotificationsTemplateDoesNotRedeclareBasePath(t *testing.T) {
 	templateBytes, err := adminTemplates.ReadFile("admin_templates/notifications.html")
 	if err != nil {
@@ -272,9 +290,10 @@ func TestRegularAccountToolsExposeAutomationsAndAllIntegrations(t *testing.T) {
 		"<!-- AUTOMATION CATEGORY -->\n<div class=\"settings-group\">",
 		`id="scheduledTasksSection"`,
 		`id="simklAccountsList"`,
+		`id="scrobAccountsList"`,
 		`id="mdblistAccountsList"`,
 		`id="jellyfinAccountsSection"`,
-		`[loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadJellyfinAccounts()]`,
+		`[loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadScrobAccounts(), loadJellyfinAccounts()]`,
 	} {
 		if !strings.Contains(source, marker) {
 			t.Fatalf("tools template missing regular-account marker %q", marker)

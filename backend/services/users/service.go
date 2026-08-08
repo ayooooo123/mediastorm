@@ -1143,6 +1143,47 @@ func (s *Service) GetUsersBySimklAccountID(simklAccountID string) []models.User 
 	return users
 }
 
+// SetScrobAccountID associates a self-hosted Scrob account with the user.
+func (s *Service) SetScrobAccountID(id, scrobAccountID string) (models.User, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return models.User{}, ErrUserNotFound
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	user, ok := s.users[id]
+	if !ok {
+		return models.User{}, ErrUserNotFound
+	}
+	user.ScrobAccountID = strings.TrimSpace(scrobAccountID)
+	user.UpdatedAt = time.Now().UTC()
+	s.users[id] = user
+	if err := s.saveLocked(); err != nil {
+		return models.User{}, err
+	}
+	return user, nil
+}
+
+// ClearScrobAccountID removes the Scrob account association from the user.
+func (s *Service) ClearScrobAccountID(id string) (models.User, error) {
+	return s.SetScrobAccountID(id, "")
+}
+
+// GetUsersByScrobAccountID returns all users linked to a Scrob account.
+func (s *Service) GetUsersByScrobAccountID(scrobAccountID string) []models.User {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []models.User
+	for _, user := range s.users {
+		if user.ScrobAccountID == scrobAccountID {
+			result = append(result, user)
+		}
+	}
+	return result
+}
+
 // SetPlexAccountID associates a Plex account with the user.
 func (s *Service) SetPlexAccountID(id, plexAccountID string) (models.User, error) {
 	id = strings.TrimSpace(id)

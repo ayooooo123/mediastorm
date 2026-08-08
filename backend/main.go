@@ -60,6 +60,7 @@ import (
 	"novastream/services/remoteaccess"
 	"novastream/services/remotemedia"
 	"novastream/services/scheduler"
+	"novastream/services/scrob"
 	"novastream/services/sessions"
 	"novastream/services/simkl"
 	"novastream/services/streaming"
@@ -570,13 +571,18 @@ func main() {
 
 	// Wire up Simkl scrobbler
 	simklClient := simkl.NewClient()
+	scrobClient := scrob.NewClient()
 	simklScrobbler := simkl.NewScrobbler(simklClient, cfgManager)
 	simklScrobbler.SetUserService(userService)
+	scrobScrobbler := scrob.NewScrobbler(scrobClient, cfgManager)
+	scrobScrobbler.SetUserService(userService)
+	scrobRTScrobbler := scrob.NewScrobbleStateTracker(scrobClient, scrobScrobbler, 15*time.Second)
+	go scrobRTScrobbler.StartCleanup(context.Background())
 	simklRTScrobbler := simkl.NewScrobbleStateTracker(simklClient, simklScrobbler, 15*time.Minute)
 	go simklRTScrobbler.StartCleanup(context.Background())
 
 	// Wire up multi-scrobblers that fan out to all enabled providers
-	multiScrobbler := history.NewMultiScrobbler(traktScrobbler, mdblistScrobbler, simklScrobbler)
+	multiScrobbler := history.NewMultiScrobbler(traktScrobbler, mdblistScrobbler, simklScrobbler, scrobScrobbler)
 	historyService.SetTraktScrobbler(multiScrobbler)
 
 	// Wire up history service to metadata handler for hideWatched filtering
@@ -636,6 +642,7 @@ func main() {
 		scrobbleTracker,
 		mdblistRTScrobbler,
 		simklRTScrobbler,
+		scrobRTScrobbler,
 		remotePlaybackReporter,
 	)
 	historyService.SetTraktRealTimeScrobbler(multiRTScrobbler)
@@ -911,6 +918,7 @@ func main() {
 	schedulerService.SetHistoryService(historyService)
 	schedulerService.SetMetadataService(metadataService)
 	schedulerService.SetSimklClient(simklClient)
+	schedulerService.SetScrobClient(scrobClient)
 	schedulerService.SetUsersService(userService)
 	usersHandler.SetConfigManager(cfgManager)
 	schedulerService.SetJellyfinClient(jellyfinClient)
@@ -1219,6 +1227,8 @@ func main() {
 	r.HandleFunc("/admin/api/users/{userID}/mdblist", adminUIHandler.RequireAuth(usersHandler.ClearMdblistAccount)).Methods(http.MethodDelete)
 	r.HandleFunc("/admin/api/users/{userID}/simkl", adminUIHandler.RequireAuth(usersHandler.SetSimklAccount)).Methods(http.MethodPut)
 	r.HandleFunc("/admin/api/users/{userID}/simkl", adminUIHandler.RequireAuth(usersHandler.ClearSimklAccount)).Methods(http.MethodDelete)
+	r.HandleFunc("/admin/api/users/{userID}/scrob", adminUIHandler.RequireAuth(usersHandler.SetScrobAccount)).Methods(http.MethodPut)
+	r.HandleFunc("/admin/api/users/{userID}/scrob", adminUIHandler.RequireAuth(usersHandler.ClearScrobAccount)).Methods(http.MethodDelete)
 
 	// MDBList multi-account management (admin routes)
 	r.HandleFunc("/admin/api/mdblist/accounts", adminUIHandler.RequireAuth(adminUIHandler.GetMDBListAccounts)).Methods(http.MethodGet)
@@ -1232,6 +1242,11 @@ func main() {
 	r.HandleFunc("/admin/api/simkl/accounts/{accountID}/auth/start", adminUIHandler.RequireAuth(adminUIHandler.StartSimklAuth)).Methods(http.MethodPost)
 	r.HandleFunc("/admin/api/simkl/accounts/{accountID}/auth/check/{userCode}", adminUIHandler.RequireAuth(adminUIHandler.CheckSimklAuth)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/simkl/accounts/{accountID}/disconnect", adminUIHandler.RequireAuth(adminUIHandler.DisconnectSimklAccount)).Methods(http.MethodPost)
+	r.HandleFunc("/admin/api/scrob/accounts", adminUIHandler.RequireAuth(adminUIHandler.GetScrobAccounts)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/api/scrob/accounts", adminUIHandler.RequireAuth(adminUIHandler.CreateScrobAccount)).Methods(http.MethodPost)
+	r.HandleFunc("/admin/api/scrob/accounts/{accountID}", adminUIHandler.RequireAuth(adminUIHandler.UpdateScrobAccount)).Methods(http.MethodPatch)
+	r.HandleFunc("/admin/api/scrob/accounts/{accountID}", adminUIHandler.RequireAuth(adminUIHandler.DeleteScrobAccount)).Methods(http.MethodDelete)
+	r.HandleFunc("/admin/api/scrob/accounts/{accountID}/test", adminUIHandler.RequireAuth(adminUIHandler.TestScrobAccount)).Methods(http.MethodPost)
 
 	// Plex multi-account management (admin routes)
 	r.HandleFunc("/admin/api/plex/accounts", adminUIHandler.RequireAuth(plexAccountsHandler.ListAccounts)).Methods(http.MethodGet)
@@ -1464,6 +1479,11 @@ func main() {
 	r.HandleFunc("/account/api/simkl/accounts/{accountID}/auth/start", adminUIHandler.RequireAuth(adminUIHandler.StartSimklAuth)).Methods(http.MethodPost)
 	r.HandleFunc("/account/api/simkl/accounts/{accountID}/auth/check/{userCode}", adminUIHandler.RequireAuth(adminUIHandler.CheckSimklAuth)).Methods(http.MethodGet)
 	r.HandleFunc("/account/api/simkl/accounts/{accountID}/disconnect", adminUIHandler.RequireAuth(adminUIHandler.DisconnectSimklAccount)).Methods(http.MethodPost)
+	r.HandleFunc("/account/api/scrob/accounts", adminUIHandler.RequireAuth(adminUIHandler.GetScrobAccounts)).Methods(http.MethodGet)
+	r.HandleFunc("/account/api/scrob/accounts", adminUIHandler.RequireAuth(adminUIHandler.CreateScrobAccount)).Methods(http.MethodPost)
+	r.HandleFunc("/account/api/scrob/accounts/{accountID}", adminUIHandler.RequireAuth(adminUIHandler.UpdateScrobAccount)).Methods(http.MethodPatch)
+	r.HandleFunc("/account/api/scrob/accounts/{accountID}", adminUIHandler.RequireAuth(adminUIHandler.DeleteScrobAccount)).Methods(http.MethodDelete)
+	r.HandleFunc("/account/api/scrob/accounts/{accountID}/test", adminUIHandler.RequireAuth(adminUIHandler.TestScrobAccount)).Methods(http.MethodPost)
 	r.HandleFunc("/account/api/jellyfin/accounts", adminUIHandler.RequireAuth(jellyfinAccountsHandler.ListAccounts)).Methods(http.MethodGet)
 	r.HandleFunc("/account/api/jellyfin/accounts", adminUIHandler.RequireAuth(jellyfinAccountsHandler.CreateAccount)).Methods(http.MethodPost)
 	r.HandleFunc("/account/api/jellyfin/accounts/{accountID}", adminUIHandler.RequireAuth(jellyfinAccountsHandler.DeleteAccount)).Methods(http.MethodDelete)
@@ -1472,6 +1492,8 @@ func main() {
 	r.HandleFunc("/account/api/users/{userID}/mdblist", adminUIHandler.RequireAuth(usersHandler.ClearMdblistAccount)).Methods(http.MethodDelete)
 	r.HandleFunc("/account/api/users/{userID}/simkl", adminUIHandler.RequireAuth(usersHandler.SetSimklAccount)).Methods(http.MethodPut)
 	r.HandleFunc("/account/api/users/{userID}/simkl", adminUIHandler.RequireAuth(usersHandler.ClearSimklAccount)).Methods(http.MethodDelete)
+	r.HandleFunc("/account/api/users/{userID}/scrob", adminUIHandler.RequireAuth(usersHandler.SetScrobAccount)).Methods(http.MethodPut)
+	r.HandleFunc("/account/api/users/{userID}/scrob", adminUIHandler.RequireAuth(usersHandler.ClearScrobAccount)).Methods(http.MethodDelete)
 	r.HandleFunc("/account/api/notifications", adminUIHandler.RequireAuth(adminUIHandler.ListNotificationChannels)).Methods(http.MethodGet)
 	r.HandleFunc("/account/api/notifications", adminUIHandler.RequireAuth(adminUIHandler.SaveNotificationChannel)).Methods(http.MethodPost)
 	r.HandleFunc("/account/api/notifications", adminUIHandler.RequireAuth(adminUIHandler.DeleteNotificationChannel)).Methods(http.MethodDelete)

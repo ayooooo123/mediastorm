@@ -720,3 +720,17 @@ func TestUpdateTask_InvalidProfileIDValidation(t *testing.T) {
 		t.Fatalf("expected invalid profile error, got %v", got)
 	}
 }
+
+func TestValidateScrobHistorySyncConfig(t *testing.T) {
+	taskConfig := map[string]string{"scrobAccountId": "scrob-1", "profileId": "profile-1"}
+	if err := validateScheduledTaskConfig(config.ScheduledTaskTypeScrobHistorySync, taskConfig, nil); err != nil {
+		t.Fatalf("validate Scrob task: %v", err)
+	}
+	if got := taskConfig["syncDirection"]; got != "scrob_to_local" {
+		t.Fatalf("default direction = %q", got)
+	}
+	taskConfig["syncDirection"] = "sideways"
+	if err := validateScheduledTaskConfig(config.ScheduledTaskTypeScrobHistorySync, taskConfig, nil); err == nil {
+		t.Fatal("expected invalid direction error")
+	}
+}

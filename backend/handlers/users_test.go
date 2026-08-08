@@ -132,6 +132,12 @@ func (f *fakeUsersService) SetSimklAccountID(id, simklAccountID string) (models.
 func (f *fakeUsersService) ClearSimklAccountID(id string) (models.User, error) {
 	return models.User{ID: id}, nil
 }
+func (f *fakeUsersService) SetScrobAccountID(id, scrobAccountID string) (models.User, error) {
+	return models.User{ID: id, ScrobAccountID: scrobAccountID}, nil
+}
+func (f *fakeUsersService) ClearScrobAccountID(id string) (models.User, error) {
+	return models.User{ID: id}, nil
+}
 func (f *fakeUsersService) SetPlexAccountID(id, plexAccountID string) (models.User, error) {
 	return f.setPlexUser, f.setPlexErr
 }
@@ -536,6 +542,24 @@ func TestUsersHandler_ClearTraktAccount_Success(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestUsersHandler_SetScrobAccount_Master(t *testing.T) {
+	svc := &fakeUsersService{existsVal: true}
+	h := handlers.NewUsersHandler(svc)
+	r := usersRequest(http.MethodPut, "/", map[string]string{"scrobAccountId": "scrob-1"}, map[string]string{"userID": "u1"}, "acct-1", true)
+	w := httptest.NewRecorder()
+	h.SetScrobAccount(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	var user models.User
+	if err := json.NewDecoder(w.Body).Decode(&user); err != nil {
+		t.Fatal(err)
+	}
+	if user.ScrobAccountID != "scrob-1" {
+		t.Fatalf("scrobAccountId = %q", user.ScrobAccountID)
 	}
 }
 
