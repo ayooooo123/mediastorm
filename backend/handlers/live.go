@@ -1665,12 +1665,26 @@ func (h *LiveHandler) resolveProfileLiveSource(r *http.Request, globalSettings c
 
 // GetChannels returns parsed and filtered channels from the configured playlist.
 func (h *LiveHandler) GetChannels(w http.ResponseWriter, r *http.Request) {
+	requestStartedAt := time.Now()
 	var allChannels []LiveChannel
 	offset, limit, paginated, err := parseLiveChannelPagination(r)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
 		return
 	}
+	profileID := strings.TrimSpace(r.URL.Query().Get("profileId"))
+	requestedSourceID := strings.TrimSpace(r.URL.Query().Get("sourceId"))
+	log.Printf(
+		"[live] GetChannels request start profileId=%q sourceId=%q paginated=%t offset=%d limit=%d categoryCount=%d favoriteCount=%d favoritesOnly=%q",
+		profileID,
+		requestedSourceID,
+		paginated,
+		offset,
+		limit,
+		len(r.URL.Query()["category"]),
+		len(r.URL.Query()["favoriteId"]),
+		r.URL.Query().Get("favoritesOnly"),
+	)
 
 	settings, err := h.cfgManager.Load()
 	if err != nil {
@@ -1687,15 +1701,40 @@ func (h *LiveHandler) GetChannels(w http.ResponseWriter, r *http.Request) {
 
 	sources := resolvedLiveSources(src)
 	if len(sources) == 0 {
-		log.Printf("[live] GetChannels error: no playlist URL configured")
+		log.Printf(
+			"[live] GetChannels error: no configured source profileId=%q sourceId=%q duration=%s",
+			profileID,
+			requestedSourceID,
+			time.Since(requestStartedAt).Round(time.Millisecond),
+		)
 		http.Error(w, `{"error":"failed to fetch playlist"}`, http.StatusBadGateway)
 		return
 	}
-	selectedSources := selectM3USources(sources, r.URL.Query().Get("sourceId"))
+	selectedSources := selectM3USources(sources, requestedSourceID)
 	if len(selectedSources) == 0 {
+		log.Printf(
+			"[live] GetChannels error: unknown source profileId=%q sourceId=%q resolvedSourceCount=%d",
+			profileID,
+			requestedSourceID,
+			len(sources),
+		)
 		http.Error(w, `{"error":"unknown source"}`, http.StatusBadRequest)
 		return
 	}
+	selectedModes := make([]string, 0, len(selectedSources))
+	for _, source := range selectedSources {
+		selectedModes = append(selectedModes, source.Mode)
+	}
+	log.Printf(
+		"[live] GetChannels sources resolved profileId=%q sourceId=%q resolved=%d selected=%d modes=%v filterCategoryCount=%d maxChannels=%d",
+		profileID,
+		requestedSourceID,
+		len(sources),
+		len(selectedSources),
+		selectedModes,
+		len(filter.EnabledCategories),
+		filter.MaxChannels,
+	)
 	includeSourceInID := len(sources) > 1
 	totalBeforeFilter := 0
 	for _, liveSource := range selectedSources {
@@ -1799,6 +1838,17 @@ func (h *LiveHandler) GetChannels(w http.ResponseWriter, r *http.Request) {
 		AvailableCategories: availableCategories,
 		Sources:             liveSourceOptions(resolvedLiveSources(src)),
 	}
+	log.Printf(
+		"[live] GetChannels response profileId=%q sourceId=%q returned=%d total=%d totalBeforeFilter=%d availableCategories=%d hasMore=%t duration=%s",
+		profileID,
+		requestedSourceID,
+		len(pageChannels),
+		total,
+		totalBeforeFilter,
+		len(availableCategories),
+		response.HasMore,
+		time.Since(requestStartedAt).Round(time.Millisecond),
+	)
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
