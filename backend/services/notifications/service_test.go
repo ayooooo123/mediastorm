@@ -1053,6 +1053,123 @@ func TestDiscordProgressNotificationDeletesAfterHeartbeatTimeout(t *testing.T) {
 	}
 }
 
+func TestDiscordProgressNotificationIsSharedAcrossOverlappingPlaybackSessions(t *testing.T) {
+	type request struct {
+		method string
+		path   string
+	}
+	received := make(chan request, 5)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received <- request{method: r.Method, path: r.URL.Path}
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			_, _ = w.Write([]byte(`{"id":"discord-shared-message"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	repo := newMemoryRepo()
+	repo.channels["channel"] = models.NotificationChannel{
+		ID: "channel", ProfileID: "profile", Type: models.NotificationChannelDiscord,
+		URL: server.URL + "/api/webhooks/1/token", Enabled: true,
+		Events:        []string{models.NotificationEventWatchProgress},
+		TitleTemplate: defaultTitleTemplate, BodyTemplate: defaultBodyTemplate,
+	}
+	service := New(repo)
+	defer service.Close()
+
+	first := models.PlaybackProgressUpdate{
+		MediaType: "episode", ItemID: "tvdb:123:3:3", SeriesName: "Series",
+		SeasonNumber: 3, EpisodeNumber: 3, Duration: 100, PlaybackSessionID: "first",
+	}
+	service.HandlePlaybackUpdate("profile", first, 0)
+	created := waitForNotificationRequest(t, received)
+	if created.method != http.MethodPost {
+		t.Fatalf("initial request = %s %s", created.method, created.path)
+	}
+	waitForDurableProgressMessage(t, repo, "channel", notificationPlaybackKey(first))
+
+	// Simulate an old durable timestamp while the original process still owns
+	// the message. A second playback session must adopt the same in-memory
+	// message instead of replacing the durable row and orphaning the new post.
+	repo.mu.Lock()
+	recordID := progressMessageID("channel", notificationPlaybackKey(first))
+	record := repo.progress[recordID]
+	record.UpdatedAt = time.Now().Add(-progressHeartbeatTimeout)
+	repo.progress[recordID] = record
+	repo.mu.Unlock()
+
+	second := first
+	second.PlaybackSessionID = "second"
+	service.HandlePlaybackUpdate("profile", second, 1)
+	updated := waitForNotificationRequest(t, received)
+	if updated.method != http.MethodPatch ||
+		updated.path != "/api/webhooks/1/token/messages/discord-shared-message" {
+		t.Fatalf("overlapping-session update = %s %s", updated.method, updated.path)
+	}
+
+	first.PlaybackEnded = true
+	first.IsPaused = true
+	service.HandlePlaybackUpdate("profile", first, 1)
+	select {
+	case item := <-received:
+		t.Fatalf("first overlapping stop emitted %s %s", item.method, item.path)
+	case <-time.After(75 * time.Millisecond):
+	}
+
+	second.PlaybackEnded = true
+	second.IsPaused = true
+	service.HandlePlaybackUpdate("profile", second, 1)
+	deleted := waitForNotificationRequest(t, received)
+	if deleted.method != http.MethodDelete ||
+		deleted.path != "/api/webhooks/1/token/messages/discord-shared-message" {
+		t.Fatalf("final overlapping stop = %s %s", deleted.method, deleted.path)
+	}
+}
+
+func TestDurableDiscordProgressSkippedAtStartupCanBeReapedLater(t *testing.T) {
+	type request struct {
+		method string
+		path   string
+	}
+	received := make(chan request, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received <- request{method: r.Method, path: r.URL.Path}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	now := time.Now().UTC()
+	repo := newMemoryRepo()
+	repo.channels["channel"] = models.NotificationChannel{
+		ID: "channel", ProfileID: "profile", Type: models.NotificationChannelDiscord,
+		URL: server.URL + "/api/webhooks/1/token", Enabled: true,
+		Events: []string{models.NotificationEventWatchProgress},
+	}
+	repo.progress[progressMessageID("channel", "episode:tvdb%3A123%3A3%3A3")] = models.NotificationProgressMessage{
+		ChannelID: "channel", ProfileID: "profile",
+		PlaybackKey: "episode:tvdb%3A123%3A3%3A3", MessageID: "discord-restart-message",
+		UpdatedAt: now,
+	}
+
+	service := New(repo)
+	defer service.Close()
+	select {
+	case item := <-received:
+		t.Fatalf("fresh startup record unexpectedly emitted %s %s", item.method, item.path)
+	case <-time.After(75 * time.Millisecond):
+	}
+
+	service.reapDurableProgressMessages(now.Add(progressHeartbeatTimeout))
+	deleted := waitForNotificationRequest(t, received)
+	if deleted.method != http.MethodDelete ||
+		deleted.path != "/api/webhooks/1/token/messages/discord-restart-message" {
+		t.Fatalf("periodic durable cleanup = %s %s", deleted.method, deleted.path)
+	}
+}
+
 func TestDiscordProgressNotificationSurvivesServiceRestart(t *testing.T) {
 	type request struct {
 		method string

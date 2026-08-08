@@ -383,8 +383,16 @@ func (s *Service) HandlePlaybackUpdate(userID string, update models.PlaybackProg
 	}
 	state.paused = update.IsPaused || update.IsBuffering
 	state.updatedAt = now
+	deleteUnfinishedProgress := update.PlaybackEnded && percent < 90
 	if update.PlaybackEnded {
 		delete(s.sessions, key)
+		for _, other := range s.sessions {
+			if other.profileID == userID && other.playbackKey == persistedPlaybackKey &&
+				other.progressSent && !other.watched {
+				deleteUnfinishedProgress = false
+				break
+			}
+		}
 	} else {
 		s.sessions[key] = state
 	}
@@ -428,7 +436,7 @@ func (s *Service) HandlePlaybackUpdate(userID string, update models.PlaybackProg
 			s.Notify(event)
 		}
 	}
-	if update.PlaybackEnded && percent < 90 {
+	if deleteUnfinishedProgress {
 		s.deletePlaybackProgressNotification(userID, notificationSession, persistedPlaybackKey, sequence)
 	}
 }
@@ -775,6 +783,7 @@ func (s *Service) run() {
 			cancel()
 		case now := <-reaper.C:
 			s.reapStalePlaybackSessions(now.UTC())
+			s.reapDurableProgressMessages(now.UTC())
 		case <-s.stop:
 			return
 		}
@@ -788,7 +797,7 @@ func (s *Service) reapStalePlaybackSessions(now time.Time) {
 		recordKey string
 		sequence  uint64
 	}
-	var stale []staleSession
+	staleByPlayback := make(map[string]staleSession)
 
 	s.sessionMu.Lock()
 	for key, state := range s.sessions {
@@ -799,16 +808,21 @@ func (s *Service) reapStalePlaybackSessions(now time.Time) {
 		if state.watched || !state.progressSent {
 			continue
 		}
-		stale = append(stale, staleSession{
+		staleByPlayback[state.profileID+"\x00"+state.playbackKey] = staleSession{
 			profileID: state.profileID,
 			session:   key + "\x00" + state.notificationID,
 			recordKey: state.playbackKey,
 			sequence:  state.sequence + 1,
-		})
+		}
+	}
+	for _, state := range s.sessions {
+		if state.progressSent && !state.watched {
+			delete(staleByPlayback, state.profileID+"\x00"+state.playbackKey)
+		}
 	}
 	s.sessionMu.Unlock()
 
-	for _, session := range stale {
+	for _, session := range staleByPlayback {
 		s.deletePlaybackProgressNotification(session.profileID, session.session, session.recordKey, session.sequence)
 	}
 }
@@ -882,7 +896,6 @@ func (s *Service) pruneProgressDeliveries() {
 		if updatedAt.Before(cutoff) {
 			delete(s.progressUpdated, key)
 			delete(s.progressSequences, key)
-			delete(s.progressMessages, key)
 		}
 	}
 }
@@ -959,7 +972,7 @@ func progressBar(percent float64) string {
 }
 
 func (s *Service) upsertDiscordProgress(ctx context.Context, item delivery, complete bool) error {
-	key := item.channel.ID + "\x00" + item.session
+	key := progressMessageCacheKey(item.channel.ID, item.recordKey)
 	messageID := s.progressMessages[key]
 	if messageID == "" {
 		record, err := s.repo.GetProgressMessage(ctx, item.channel.ID, item.recordKey)
@@ -1052,7 +1065,7 @@ func (s *Service) upsertDiscordProgress(ctx context.Context, item delivery, comp
 }
 
 func (s *Service) deleteDiscordProgress(ctx context.Context, item delivery) error {
-	key := item.channel.ID + "\x00" + item.session
+	key := progressMessageCacheKey(item.channel.ID, item.recordKey)
 	messageID := s.progressMessages[key]
 	if messageID == "" {
 		record, err := s.repo.GetProgressMessage(ctx, item.channel.ID, item.recordKey)
@@ -1073,6 +1086,10 @@ func (s *Service) deleteDiscordProgress(ctx context.Context, item delivery) erro
 	}
 	delete(s.progressMessages, key)
 	return nil
+}
+
+func progressMessageCacheKey(channelID, recordKey string) string {
+	return channelID + "\x00" + recordKey
 }
 
 func (s *Service) persistDiscordProgressMessage(ctx context.Context, item delivery, messageID string) error {
