@@ -6,11 +6,85 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"novastream/config"
 )
+
+func TestRefreshInfersXtreamEPGURLWhenXMLTVURLIsEmpty(t *testing.T) {
+	now := time.Now().UTC()
+	start := now.Add(-30 * time.Minute).Format("20060102150405 -0700")
+	stop := now.Add(30 * time.Minute).Format("20060102150405 -0700")
+
+	var xmltvRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/player_api.php" {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `[]`)
+			return
+		}
+		if r.URL.Path != "/xmltv.php" {
+			http.NotFound(w, r)
+			return
+		}
+		xmltvRequests.Add(1)
+		if got := r.URL.Query().Get("username"); got != "user name" {
+			t.Errorf("username = %q, want %q", got, "user name")
+		}
+		if got := r.URL.Query().Get("password"); got != "p@ss&word" {
+			t.Errorf("password = %q, want %q", got, "p@ss&word")
+		}
+		w.Header().Set("Content-Type", "application/xml")
+		fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?>
+<tv>
+  <channel id="xtream.channel"><display-name>Xtream Channel</display-name></channel>
+  <programme start="%s" stop="%s" channel="xtream.channel"><title>Xtream Program</title></programme>
+</tv>`, start, stop)
+	}))
+	defer server.Close()
+
+	enabled := true
+	settings := config.DefaultSettings()
+	settings.Cache.Directory = t.TempDir()
+	settings.Live.EPG.Enabled = false
+	settings.Live.EPG.XmltvUrl = ""
+	settings.Live.EPG.Sources = nil
+	settings.Live.Sources = []config.LivePlaylistSource{
+		{
+			ID:             "xtream-source",
+			Name:           "Xtream Source",
+			Mode:           "xtream",
+			Enabled:        &enabled,
+			XtreamHost:     server.URL + "/",
+			XtreamUsername: "user name",
+			XtreamPassword: "p@ss&word",
+			EPG: config.EPGSettings{
+				Enabled:  true,
+				XmltvUrl: "",
+			},
+		},
+	}
+
+	manager := config.NewManager(filepath.Join(t.TempDir(), "settings.json"))
+	if err := manager.Save(settings); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	service := NewService(settings.Cache.Directory, manager)
+	if err := service.Refresh(context.Background()); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+
+	if got := xmltvRequests.Load(); got != 1 {
+		t.Fatalf("xmltv requests = %d, want 1", got)
+	}
+	status := service.GetStatus()
+	if status.ChannelCount != 1 || status.ProgramCount != 1 {
+		t.Fatalf("status = %+v, want one channel and one program", status)
+	}
+}
 
 func TestRefreshFetchesSourceLevelUniversalEPG(t *testing.T) {
 	now := time.Now().UTC()
