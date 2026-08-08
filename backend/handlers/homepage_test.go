@@ -121,6 +121,19 @@ func TestDashboardShelfUsesPresentationSafeCanonicalStreams(t *testing.T) {
 				ExternalIDs:   map[string]string{"tmdb": "456"},
 				BytesStreamed: 1,
 			},
+			{
+				ID:              "stream-live",
+				ProfileID:       "profile-liam",
+				ProfileName:     "Liam",
+				CreatedAt:       createdAt,
+				MediaType:       "channel",
+				ItemID:          "news-1",
+				Title:           "News One",
+				LiveSourceURL:   "https://iptv.example/news.m3u8",
+				LiveSourceID:    "provider-1",
+				LiveChannelLogo: "https://images.example/news.png",
+				BytesStreamed:   1,
+			},
 		},
 	}})
 
@@ -135,8 +148,8 @@ func TestDashboardShelfUsesPresentationSafeCanonicalStreams(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if response.Count != 1 || len(response.Streams) != 1 {
-		t.Fatalf("count/streams = %d/%d, want 1/1", response.Count, len(response.Streams))
+	if response.Count != 2 || len(response.Streams) != 2 {
+		t.Fatalf("count/streams = %d/%d, want 2/2", response.Count, len(response.Streams))
 	}
 	stream := response.Streams[0]
 	if !stream.IsPaused || stream.Status != "paused" || stream.PercentWatched != 25 {
@@ -152,6 +165,10 @@ func TestDashboardShelfUsesPresentationSafeCanonicalStreams(t *testing.T) {
 		if strings.Contains(body, sensitive) {
 			t.Fatalf("dashboard shelf response leaked %q", sensitive)
 		}
+	}
+	live := response.Streams[1]
+	if live.MediaType != "channel" || live.LiveSourceURL != "https://iptv.example/news.m3u8" || live.LiveChannelLogo != "https://images.example/news.png" {
+		t.Fatalf("live dashboard stream missing channel playback metadata: %+v", live)
 	}
 }
 

@@ -185,15 +185,18 @@ type StreamInfo struct {
 	CurrentPosition float64 `json:"current_position,omitempty"` // Estimated current playback position (seconds)
 	PercentWatched  float64 `json:"percent_watched,omitempty"`  // Progress percentage (0-100)
 	// Media identification (from matched playback progress)
-	ItemID        string            `json:"item_id,omitempty"`
-	MediaType     string            `json:"media_type,omitempty"`     // "movie" or "episode"
-	Title         string            `json:"title,omitempty"`          // Movie name or series name
-	Year          int               `json:"year,omitempty"`           // Release year (for movies)
-	SeasonNumber  int               `json:"season_number,omitempty"`  // Season number (for episodes)
-	EpisodeNumber int               `json:"episode_number,omitempty"` // Episode number (for episodes)
-	EpisodeName   string            `json:"episode_name,omitempty"`   // Episode title (for episodes)
-	PosterURL     string            `json:"posterUrl,omitempty"`      // Poster already known by the player/search result
-	ExternalIDs   map[string]string `json:"externalIds,omitempty"`    // tmdbId, tvdbId, imdbId
+	ItemID          string            `json:"item_id,omitempty"`
+	MediaType       string            `json:"media_type,omitempty"`     // "movie" or "episode"
+	Title           string            `json:"title,omitempty"`          // Movie name or series name
+	Year            int               `json:"year,omitempty"`           // Release year (for movies)
+	SeasonNumber    int               `json:"season_number,omitempty"`  // Season number (for episodes)
+	EpisodeNumber   int               `json:"episode_number,omitempty"` // Episode number (for episodes)
+	EpisodeName     string            `json:"episode_name,omitempty"`   // Episode title (for episodes)
+	PosterURL       string            `json:"posterUrl,omitempty"`      // Poster already known by the player/search result
+	ExternalIDs     map[string]string `json:"externalIds,omitempty"`    // tmdbId, tvdbId, imdbId
+	LiveSourceURL   string            `json:"-"`
+	LiveSourceID    string            `json:"-"`
+	LiveChannelLogo string            `json:"-"`
 	// Pause detection
 	IsPaused    bool      `json:"is_paused,omitempty"`    // True if no recent activity (likely paused)
 	PausedSince time.Time `json:"paused_since,omitempty"` // When the stream was detected as paused
@@ -445,33 +448,36 @@ func (h *AdminHandler) ActiveStreams() StreamsResponse {
 			}
 
 			info := StreamInfo{
-				ID:            session.ID,
-				Type:          "hls",
-				Path:          session.Path,
-				OriginalPath:  session.OriginalPath,
-				Filename:      filename,
-				ClientIP:      session.ClientIP,
-				ProfileID:     session.ProfileID,
-				ProfileName:   profileName,
-				CreatedAt:     session.CreatedAt,
-				LastAccess:    lastActivity,
-				Duration:      session.Duration,
-				BytesStreamed: session.BytesStreamed,
-				HasDV:         session.HasDV && !session.DVDisabled,
-				HasHDR:        session.HasHDR,
-				DVProfile:     session.DVProfile,
-				Segments:      session.SegmentsCreated,
-				StartOffset:   session.StartOffset,
-				ItemID:        session.MediaMetadata.ItemID,
-				MediaType:     session.MediaMetadata.MediaType,
-				Title:         session.MediaMetadata.Title,
-				Year:          session.MediaMetadata.Year,
-				SeasonNumber:  session.MediaMetadata.SeasonNumber,
-				EpisodeNumber: session.MediaMetadata.EpisodeNumber,
-				EpisodeName:   session.MediaMetadata.EpisodeName,
-				PosterURL:     session.MediaMetadata.PosterURL,
-				ExternalIDs:   session.MediaMetadata.ExternalIDs,
-				ViaShareLink:  session.ViaShareLink,
+				ID:              session.ID,
+				Type:            "hls",
+				Path:            session.Path,
+				OriginalPath:    session.OriginalPath,
+				Filename:        filename,
+				ClientIP:        session.ClientIP,
+				ProfileID:       session.ProfileID,
+				ProfileName:     profileName,
+				CreatedAt:       session.CreatedAt,
+				LastAccess:      lastActivity,
+				Duration:        session.Duration,
+				BytesStreamed:   session.BytesStreamed,
+				HasDV:           session.HasDV && !session.DVDisabled,
+				HasHDR:          session.HasHDR,
+				DVProfile:       session.DVProfile,
+				Segments:        session.SegmentsCreated,
+				StartOffset:     session.StartOffset,
+				ItemID:          session.MediaMetadata.ItemID,
+				MediaType:       session.MediaMetadata.MediaType,
+				Title:           session.MediaMetadata.Title,
+				Year:            session.MediaMetadata.Year,
+				SeasonNumber:    session.MediaMetadata.SeasonNumber,
+				EpisodeNumber:   session.MediaMetadata.EpisodeNumber,
+				EpisodeName:     session.MediaMetadata.EpisodeName,
+				PosterURL:       session.MediaMetadata.PosterURL,
+				ExternalIDs:     session.MediaMetadata.ExternalIDs,
+				LiveSourceURL:   session.MediaMetadata.LiveSourceURL,
+				LiveSourceID:    session.MediaMetadata.LiveSourceID,
+				LiveChannelLogo: session.MediaMetadata.LiveChannelLogo,
+				ViaShareLink:    session.ViaShareLink,
 			}
 
 			session.mu.RUnlock()
@@ -494,28 +500,31 @@ func (h *AdminHandler) ActiveStreams() StreamsResponse {
 		}
 
 		info := StreamInfo{
-			ID:            stream.ID,
-			Type:          "direct",
-			Path:          stream.Path,
-			Filename:      stream.Filename,
-			ClientIP:      stream.ClientIP,
-			ProfileID:     stream.ProfileID,
-			ProfileName:   profileName,
-			CreatedAt:     stream.StartTime,
-			LastAccess:    stream.LastActivity,
-			BytesStreamed: stream.BytesStreamed,
-			ContentLength: stream.ContentLength,
-			UserAgent:     stream.UserAgent,
-			ItemID:        stream.MediaMetadata.ItemID,
-			MediaType:     stream.MediaMetadata.MediaType,
-			Title:         stream.MediaMetadata.Title,
-			Year:          stream.MediaMetadata.Year,
-			SeasonNumber:  stream.MediaMetadata.SeasonNumber,
-			EpisodeNumber: stream.MediaMetadata.EpisodeNumber,
-			EpisodeName:   stream.MediaMetadata.EpisodeName,
-			PosterURL:     stream.MediaMetadata.PosterURL,
-			ExternalIDs:   stream.MediaMetadata.ExternalIDs,
-			ViaShareLink:  stream.ViaShareLink,
+			ID:              stream.ID,
+			Type:            "direct",
+			Path:            stream.Path,
+			Filename:        stream.Filename,
+			ClientIP:        stream.ClientIP,
+			ProfileID:       stream.ProfileID,
+			ProfileName:     profileName,
+			CreatedAt:       stream.StartTime,
+			LastAccess:      stream.LastActivity,
+			BytesStreamed:   stream.BytesStreamed,
+			ContentLength:   stream.ContentLength,
+			UserAgent:       stream.UserAgent,
+			ItemID:          stream.MediaMetadata.ItemID,
+			MediaType:       stream.MediaMetadata.MediaType,
+			Title:           stream.MediaMetadata.Title,
+			Year:            stream.MediaMetadata.Year,
+			SeasonNumber:    stream.MediaMetadata.SeasonNumber,
+			EpisodeNumber:   stream.MediaMetadata.EpisodeNumber,
+			EpisodeName:     stream.MediaMetadata.EpisodeName,
+			PosterURL:       stream.MediaMetadata.PosterURL,
+			ExternalIDs:     stream.MediaMetadata.ExternalIDs,
+			LiveSourceURL:   stream.MediaMetadata.LiveSourceURL,
+			LiveSourceID:    stream.MediaMetadata.LiveSourceID,
+			LiveChannelLogo: stream.MediaMetadata.LiveChannelLogo,
+			ViaShareLink:    stream.ViaShareLink,
 		}
 		rawStreams = append(rawStreams, rawStream{info: info, streamID: stream.ID})
 		directCount++

@@ -102,6 +102,9 @@ type DashboardShelfStream struct {
 	ExternalIDs     map[string]string `json:"externalIds,omitempty"`
 	PosterURL       string            `json:"posterUrl,omitempty"`
 	BackdropURL     string            `json:"backdropUrl,omitempty"`
+	LiveSourceURL   string            `json:"liveSourceUrl,omitempty"`
+	LiveSourceID    string            `json:"liveSourceId,omitempty"`
+	LiveChannelLogo string            `json:"liveChannelLogo,omitempty"`
 }
 
 type DashboardShelfResponse struct {
@@ -326,6 +329,9 @@ func dashboardShelfStreamFromDashboard(source StreamInfo, profileNames []string)
 		EpisodeName:     source.EpisodeName,
 		ExternalIDs:     source.ExternalIDs,
 		PosterURL:       source.PosterURL,
+		LiveSourceURL:   source.LiveSourceURL,
+		LiveSourceID:    source.LiveSourceID,
+		LiveChannelLogo: source.LiveChannelLogo,
 	}
 }
 

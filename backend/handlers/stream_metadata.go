@@ -22,6 +22,9 @@ type StreamMediaMetadata struct {
 	MovieName            string
 	PosterURL            string
 	NotificationImageURL string
+	LiveSourceURL        string
+	LiveSourceID         string
+	LiveChannelLogo      string
 	ExternalIDs          map[string]string
 }
 
@@ -37,6 +40,9 @@ func parseStreamMediaMetadata(r *http.Request) StreamMediaMetadata {
 		MovieName:            strings.TrimSpace(q.Get("movieName")),
 		PosterURL:            strings.TrimSpace(q.Get("posterUrl")),
 		NotificationImageURL: strings.TrimSpace(q.Get("notificationImageUrl")),
+		LiveSourceURL:        strings.TrimSpace(q.Get("liveSourceUrl")),
+		LiveSourceID:         strings.TrimSpace(q.Get("liveSourceId")),
+		LiveChannelLogo:      strings.TrimSpace(q.Get("liveChannelLogo")),
 	}
 
 	if meta.Title == "" {
@@ -91,6 +97,15 @@ func addStreamMediaMetadataParams(values url.Values, meta StreamMediaMetadata) {
 	}
 	if meta.NotificationImageURL != "" {
 		values.Set("notificationImageUrl", meta.NotificationImageURL)
+	}
+	if meta.LiveSourceURL != "" {
+		values.Set("liveSourceUrl", meta.LiveSourceURL)
+	}
+	if meta.LiveSourceID != "" {
+		values.Set("liveSourceId", meta.LiveSourceID)
+	}
+	if meta.LiveChannelLogo != "" {
+		values.Set("liveChannelLogo", meta.LiveChannelLogo)
 	}
 	if meta.Year > 0 {
 		values.Set("year", strconv.Itoa(meta.Year))
