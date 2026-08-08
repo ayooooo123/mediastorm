@@ -410,6 +410,34 @@ func TestPrequeueEpisodeMatches(t *testing.T) {
 			existing:  &models.EpisodeReference{SeasonNumber: 23, EpisodeNumber: 7},
 			want:      true,
 		},
+		{
+			name:      "canonical identity prevents absolute numbering collision",
+			requested: &models.EpisodeReference{SeasonNumber: 1, EpisodeNumber: 9, AbsoluteEpisodeNumber: 8},
+			existing: &models.EpisodeReference{
+				SeasonNumber: 1, EpisodeNumber: 8, AbsoluteEpisodeNumber: 8, EpisodeID: "tvdb:episode:85757",
+			},
+			want: false,
+		},
+		{
+			name: "same canonical episode id survives legacy numbering difference",
+			requested: &models.EpisodeReference{
+				SeasonNumber: 23, EpisodeNumber: 1162, AbsoluteEpisodeNumber: 1162, EpisodeID: "tvdb:episode:11700059",
+			},
+			existing: &models.EpisodeReference{
+				SeasonNumber: 23, EpisodeNumber: 7, AbsoluteEpisodeNumber: 1162, EpisodeID: "tvdb:episode:11700059",
+			},
+			want: true,
+		},
+		{
+			name: "different canonical episode ids reject matching absolute",
+			requested: &models.EpisodeReference{
+				SeasonNumber: 1, EpisodeNumber: 9, AbsoluteEpisodeNumber: 8, EpisodeID: "tvdb:episode:85758",
+			},
+			existing: &models.EpisodeReference{
+				SeasonNumber: 1, EpisodeNumber: 8, AbsoluteEpisodeNumber: 8, EpisodeID: "tvdb:episode:85757",
+			},
+			want: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -703,6 +731,44 @@ func TestCreateEpisodeResolverUsesReleaseAbsoluteEpisodeInsteadOfSpecialShift(t 
 	}
 	if got.TargetEpisode.AbsoluteEpisodeNumber != 13 {
 		t.Fatalf("AbsoluteEpisodeNumber = %d, want release-style 13", got.TargetEpisode.AbsoluteEpisodeNumber)
+	}
+}
+
+func TestCreateEpisodeResolverUsesReleaseAbsoluteEpisodeForNonAnime(t *testing.T) {
+	handler := &PrequeueHandler{
+		metadataSvc: &mockSeriesDetailsProvider{
+			details: &models.SeriesDetails{
+				Title: models.Title{Name: "Non-Anime Series", Year: 1997, Genres: []string{"Action", "Science Fiction"}},
+				Seasons: []models.SeriesSeason{
+					{Number: 0, EpisodeCount: 1, Episodes: []models.SeriesEpisode{
+						{SeasonNumber: 0, EpisodeNumber: 1, AbsoluteEpisodeNumber: 13},
+					}},
+					{Number: 1, EpisodeCount: 12},
+					{Number: 2, EpisodeCount: 11, Episodes: []models.SeriesEpisode{
+						{ID: "tvdb:episode:85757", TVDBID: 85757, SeasonNumber: 2, EpisodeNumber: 1, AbsoluteEpisodeNumber: 14},
+					}},
+				},
+			},
+		},
+	}
+
+	got := handler.createEpisodeResolverAndLookupAbsoluteEp(
+		context.Background(),
+		"tvdb:series:12345",
+		"Non-Anime Series",
+		1997,
+		"tt0118480",
+		&models.EpisodeReference{SeasonNumber: 2, EpisodeNumber: 1, AbsoluteEpisodeNumber: 14},
+	)
+
+	if got.TargetEpisode == nil {
+		t.Fatal("TargetEpisode is nil")
+	}
+	if got.IsAnime {
+		t.Fatal("expected series to remain non-anime")
+	}
+	if got.TargetEpisode.AbsoluteEpisodeNumber != 13 {
+		t.Fatalf("AbsoluteEpisodeNumber = %d, want release absolute 13", got.TargetEpisode.AbsoluteEpisodeNumber)
 	}
 }
 

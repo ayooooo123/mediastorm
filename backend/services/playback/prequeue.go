@@ -58,7 +58,7 @@ type PrequeueRequest struct {
 	// For series: episode info (determined by backend based on watch history)
 	SeasonNumber          int     `json:"seasonNumber,omitempty"`
 	EpisodeNumber         int     `json:"episodeNumber,omitempty"`
-	AbsoluteEpisodeNumber int     `json:"absoluteEpisodeNumber,omitempty"` // For anime: absolute episode number
+	AbsoluteEpisodeNumber int     `json:"absoluteEpisodeNumber,omitempty"` // Release absolute number; excludes season-zero specials.
 	StartOffset           float64 `json:"startOffset,omitempty"`           // Resume position in seconds for subtitle extraction
 	// Prequeue reason: "details" (user opened details page) or "next_episode" (auto-queue for next episode)
 	// Defaults to "details" if not specified
@@ -1105,18 +1105,29 @@ func (s *PrequeueStore) ListExpiringBefore(deadline time.Time) []*PrequeueEntry 
 }
 
 // EpisodeReferencesMatch reports whether two episode references point at the same
-// episode. It reconciles absolute numbering (common for anime like One Piece) against
-// season-relative numbering so a warmed entry can be compared against the current
-// next-up episode regardless of how each side was numbered.
+// episode. Canonical identifiers and season-relative numbering take precedence;
+// release absolute numbering remains a fallback for legacy anime references.
 func EpisodeReferencesMatch(a, b *models.EpisodeReference) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
 	}
-	if a.AbsoluteEpisodeNumber > 0 && b.AbsoluteEpisodeNumber > 0 {
-		return a.AbsoluteEpisodeNumber == b.AbsoluteEpisodeNumber
-	}
 	if a.SeasonNumber == b.SeasonNumber && a.EpisodeNumber == b.EpisodeNumber {
 		return true
+	}
+	if a.EpisodeID != "" && b.EpisodeID != "" {
+		return a.EpisodeID == b.EpisodeID
+	}
+	if a.TvdbID != "" && b.TvdbID != "" {
+		return a.TvdbID == b.TvdbID
+	}
+	// A persisted prequeue may already carry canonical metadata while an older
+	// client request still carries TVDB's provider absolute number. Do not let
+	// that legacy value override a concrete, mismatched season/episode identity.
+	if hasCanonicalEpisodeIdentity(a) || hasCanonicalEpisodeIdentity(b) {
+		return false
+	}
+	if a.AbsoluteEpisodeNumber > 0 && b.AbsoluteEpisodeNumber > 0 {
+		return a.AbsoluteEpisodeNumber == b.AbsoluteEpisodeNumber
 	}
 	if a.AbsoluteEpisodeNumber > 0 && b.AbsoluteEpisodeNumber == 0 {
 		return a.AbsoluteEpisodeNumber == b.EpisodeNumber
@@ -1125,6 +1136,10 @@ func EpisodeReferencesMatch(a, b *models.EpisodeReference) bool {
 		return b.AbsoluteEpisodeNumber == a.EpisodeNumber
 	}
 	return false
+}
+
+func hasCanonicalEpisodeIdentity(episode *models.EpisodeReference) bool {
+	return episode != nil && (episode.EpisodeID != "" || episode.TvdbID != "")
 }
 
 // ToResponse converts an entry to a status response

@@ -123,7 +123,7 @@ type SeriesEpisode struct {
 	Overview              string `json:"overview"`
 	SeasonNumber          int    `json:"seasonNumber"`
 	EpisodeNumber         int    `json:"episodeNumber"`
-	AbsoluteEpisodeNumber int    `json:"absoluteEpisodeNumber,omitempty"`
+	AbsoluteEpisodeNumber int    `json:"absoluteEpisodeNumber,omitempty"` // Release absolute number; excludes season-zero specials.
 	AiredDate             string `json:"airedDate,omitempty"`
 	AiredDateTimeUTC      string `json:"airedDateTimeUTC,omitempty"`
 	Runtime               int    `json:"runtimeMinutes,omitempty"`

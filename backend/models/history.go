@@ -6,7 +6,7 @@ import "time"
 type EpisodeReference struct {
 	SeasonNumber          int       `json:"seasonNumber"`
 	EpisodeNumber         int       `json:"episodeNumber"`
-	AbsoluteEpisodeNumber int       `json:"absoluteEpisodeNumber,omitempty"`
+	AbsoluteEpisodeNumber int       `json:"absoluteEpisodeNumber,omitempty"` // Release absolute number; excludes season-zero specials.
 	EpisodeID             string    `json:"episodeId,omitempty"`
 	TvdbID                string    `json:"tvdbId,omitempty"`
 	Title                 string    `json:"title,omitempty"`

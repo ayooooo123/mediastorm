@@ -1153,6 +1153,9 @@ func TestSeriesDetailsUpgradesCachedLiteSeasonNames(t *testing.T) {
 	if lite.Seasons[0].Name != "Season 1" {
 		t.Fatalf("expected lite season name to be generic, got %q", lite.Seasons[0].Name)
 	}
+	if got := lite.Seasons[0].Episodes[0].AbsoluteEpisodeNumber; got != 1 {
+		t.Fatalf("lite absolute episode = %d, want release absolute 1", got)
+	}
 
 	full, err := service.SeriesDetails(context.Background(), query)
 	if err != nil {
@@ -1166,6 +1169,9 @@ func TestSeriesDetailsUpgradesCachedLiteSeasonNames(t *testing.T) {
 	}
 	if full.Seasons[0].Overview != "Saga overview" {
 		t.Fatalf("expected upgraded season overview %q, got %q", "Saga overview", full.Seasons[0].Overview)
+	}
+	if got := full.Seasons[0].Episodes[0].AbsoluteEpisodeNumber; got != 1 {
+		t.Fatalf("full absolute episode = %d, want release absolute 1", got)
 	}
 	if seasonTranslationHit == 0 {
 		t.Fatal("expected full SeriesDetails to fetch season translations for cached lite data")
@@ -1228,7 +1234,7 @@ func TestSeriesDetailsLiteFallsBackToTMDBAndKeepsLogoOnCachedProviderMismatch(t 
 	if err := cache.set(seriesTVDBResolutionCacheKey(107124), int64(375642)); err != nil {
 		t.Fatalf("seed resolution cache: %v", err)
 	}
-	liteCacheID := cacheKey("tvdb", "series", "details", "v14-lite", "eng", "375642", "default")
+	liteCacheID := cacheKey("tvdb", "series", "details", "v15-lite", "eng", "375642", "default")
 	if err := cache.set(liteCacheID, models.SeriesDetails{
 		Title: models.Title{
 			ID:        "tvdb:series:375642",

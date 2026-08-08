@@ -1390,7 +1390,7 @@ func seriesDetailsCacheKey(lang string, tvdbID int64, seasonType string) string 
 	if st == "" {
 		st = "default"
 	}
-	return cacheKey("tvdb", "series", "details", "v14", lang, strconv.FormatInt(tvdbID, 10), st)
+	return cacheKey("tvdb", "series", "details", "v15", lang, strconv.FormatInt(tvdbID, 10), st)
 }
 
 func applyTVDBSeriesIdentity(title *models.Title, extended tvdbSeriesExtendedData) {
@@ -3579,10 +3579,11 @@ func (s *Service) tmdbSeriesDetailsFallback(ctx context.Context, req models.Seri
 	if req.TMDBID <= 0 || s.tmdb == nil || !s.tmdb.isConfigured() {
 		return nil, cause
 	}
-	cacheID := cacheKey("tmdb", "series", "details-fallback", "v2", s.client.language, strconv.FormatInt(req.TMDBID, 10))
+	cacheID := cacheKey("tmdb", "series", "details-fallback", "v3", s.client.language, strconv.FormatInt(req.TMDBID, 10))
 	var cached models.SeriesDetails
 	if ok, _ := s.cache.get(cacheID, &cached); ok && strings.TrimSpace(cached.Title.Name) != "" {
 		normalizeSeriesDetailsReleaseStatus(&cached)
+		models.NormalizeReleaseAbsoluteEpisodeNumbers(&cached)
 		if s.backfillSeriesIMDBID(ctx, &cached.Title, req) {
 			_ = s.cache.set(cacheID, cached)
 		}
@@ -3617,6 +3618,7 @@ func (s *Service) tmdbSeriesDetailsFallback(ctx context.Context, req models.Seri
 	if details.Seasons == nil {
 		details.Seasons = []models.SeriesSeason{}
 	}
+	models.NormalizeReleaseAbsoluteEpisodeNumbers(details)
 	metadataTracef("[metadata] using TMDB series details fallback tmdbId=%d name=%q seasons=%d cause=%v", req.TMDBID, details.Title.Name, len(details.Seasons), cause)
 	_ = s.cache.set(cacheID, *details)
 	return details, nil
@@ -3664,6 +3666,9 @@ func (s *Service) SeriesDetails(ctx context.Context, req models.SeriesDetailsQue
 	var cached models.SeriesDetails
 	if ok, _ := s.cache.get(cacheID, &cached); ok && len(cached.Seasons) > 0 {
 		normalizeSeriesDetailsReleaseStatus(&cached)
+		if models.NormalizeReleaseAbsoluteEpisodeNumbers(&cached) {
+			_ = s.cache.set(cacheID, cached)
+		}
 		metadataTracef("[metadata] series details cache hit tvdbId=%d lang=%s seasons=%d hasPoster=%v hasBackdrop=%v",
 			tvdbID, s.client.language, len(cached.Seasons), cached.Title.Poster != nil, cached.Title.Backdrop != nil)
 
@@ -4270,6 +4275,7 @@ func (s *Service) SeriesDetails(ctx context.Context, req models.SeriesDetailsQue
 		AvailableOrderings: availableOrderings,
 		ActiveOrdering:     activeSeasonType,
 	}
+	models.NormalizeReleaseAbsoluteEpisodeNumbers(&details)
 	seriesTitle.Status = models.SeriesReleaseStatusFromSeasons(details.Seasons)
 	details.Title = seriesTitle
 
@@ -4570,6 +4576,9 @@ func (s *Service) SeriesDetailsLite(ctx context.Context, req models.SeriesDetail
 	fullCacheID := seriesDetailsCacheKey(s.client.language, tvdbID, req.SeasonType)
 	var fullCached models.SeriesDetails
 	if ok, _ := s.cache.get(fullCacheID, &fullCached); ok && len(fullCached.Seasons) > 0 {
+		if models.NormalizeReleaseAbsoluteEpisodeNumbers(&fullCached) {
+			_ = s.cache.set(fullCacheID, fullCached)
+		}
 		log.Printf("[metadata] series details lite full-cache hit tvdbId=%d seasons=%d", tvdbID, len(fullCached.Seasons))
 		if seriesTMDBIDMismatch(fullCached.Title, req.TMDBID) {
 			log.Printf("[metadata] lite full-cache tmdb mismatch tvdbId=%d cachedTmdbId=%d requestedTmdbId=%d; using TMDB fallback",
@@ -4586,10 +4595,13 @@ func (s *Service) SeriesDetailsLite(ctx context.Context, req models.SeriesDetail
 	if liteSeasonType == "" {
 		liteSeasonType = "default"
 	}
-	cacheID := cacheKey("tvdb", "series", "details", "v14-lite", s.client.language, strconv.FormatInt(tvdbID, 10), liteSeasonType)
+	cacheID := cacheKey("tvdb", "series", "details", "v15-lite", s.client.language, strconv.FormatInt(tvdbID, 10), liteSeasonType)
 	var cached models.SeriesDetails
 	if ok, _ := s.cache.get(cacheID, &cached); ok && len(cached.Seasons) > 0 {
 		normalizeSeriesDetailsReleaseStatus(&cached)
+		if models.NormalizeReleaseAbsoluteEpisodeNumbers(&cached) {
+			_ = s.cache.set(cacheID, cached)
+		}
 		log.Printf("[metadata] series details lite cache hit tvdbId=%d seasons=%d", tvdbID, len(cached.Seasons))
 		if seriesTMDBIDMismatch(cached.Title, req.TMDBID) {
 			log.Printf("[metadata] lite cache tmdb mismatch tvdbId=%d cachedTmdbId=%d requestedTmdbId=%d; using TMDB fallback",
@@ -4883,6 +4895,7 @@ func (s *Service) SeriesDetailsLite(ctx context.Context, req models.SeriesDetail
 		AvailableOrderings: availableOrderings,
 		ActiveOrdering:     activeSeasonType,
 	}
+	models.NormalizeReleaseAbsoluteEpisodeNumbers(&details)
 	seriesTitle.Status = models.SeriesReleaseStatusFromSeasons(details.Seasons)
 	details.Title = seriesTitle
 
@@ -4990,6 +5003,7 @@ func (s *Service) BatchSeriesDetails(ctx context.Context, queries []models.Serie
 		cacheID := seriesDetailsCacheKey(s.client.language, tvdbID, query.SeasonType)
 		var cached models.SeriesDetails
 		if ok, _ := s.cache.get(cacheID, &cached); ok && len(cached.Seasons) > 0 {
+			models.NormalizeReleaseAbsoluteEpisodeNumbers(&cached)
 			log.Printf("[metadata] batch series cache hit index=%d tvdbId=%d name=%q", i, tvdbID, query.Name)
 			results[i].Details = &cached
 		} else {

@@ -288,6 +288,52 @@ func TestIndexerHandler_SearchSeriesAbsoluteEpisode(t *testing.T) {
 	}
 }
 
+func TestIndexerHandler_SearchNonAnimeUsesReleaseAbsoluteEpisode(t *testing.T) {
+	fake := &fakeIndexerService{results: []models.NZBResult{}}
+	seriesSvc := &fakeSeriesMetadataService{
+		details: &models.SeriesDetails{
+			Title: models.Title{
+				Name:   "Non-Anime Series",
+				Year:   1997,
+				Genres: []string{"Action", "Science Fiction"},
+			},
+			Seasons: []models.SeriesSeason{
+				{
+					Number:       0,
+					EpisodeCount: 1,
+					Episodes: []models.SeriesEpisode{
+						{SeasonNumber: 0, EpisodeNumber: 1, AbsoluteEpisodeNumber: 13},
+					},
+				},
+				{Number: 1, EpisodeCount: 12},
+				{
+					Number:       2,
+					EpisodeCount: 11,
+					Episodes: []models.SeriesEpisode{
+						{SeasonNumber: 2, EpisodeNumber: 1, AbsoluteEpisodeNumber: 14},
+					},
+				},
+			},
+		},
+	}
+	handler := NewIndexerHandler(fake, false)
+	handler.SetMetadataService(seriesSvc)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/indexers/search?q=Non-Anime+Series+S02E01&mediaType=series&year=1997", nil)
+	rec := httptest.NewRecorder()
+	handler.Search(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d", http.StatusOK, rec.Code)
+	}
+	if fake.lastOpts.IsAnime {
+		t.Fatal("expected series to remain non-anime")
+	}
+	if fake.lastOpts.AbsoluteEpisodeNumber != 13 {
+		t.Fatalf("AbsoluteEpisodeNumber = %d, want release absolute 13", fake.lastOpts.AbsoluteEpisodeNumber)
+	}
+}
+
 func TestIndexerHandler_SearchNadesicoUsesPreservedAnimeMetadata(t *testing.T) {
 	fake := &fakeIndexerService{results: []models.NZBResult{}}
 	seriesSvc := &fakeSeriesMetadataService{
