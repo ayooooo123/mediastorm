@@ -2699,6 +2699,13 @@ func dashboardStreamServiceType(isLive bool, paths ...string) string {
 	}
 	for _, sourcePath := range paths {
 		normalized := strings.ToLower(strings.TrimSpace(sourcePath))
+		// Pre-resolved AIOStreams and Comet results are remote HTTP URLs rather
+		// than mediastorm's /debrid/... proxy paths. These scrapers are part of
+		// the debrid search pipeline, while Usenet playback is represented by a
+		// local/WebDAV path, so classify remote VOD URLs as debrid.
+		if strings.HasPrefix(normalized, "http://") || strings.HasPrefix(normalized, "https://") {
+			return "debrid"
+		}
 		normalized = strings.TrimPrefix(normalized, "/")
 		normalized = strings.TrimPrefix(normalized, "webdav/")
 		if strings.HasPrefix(normalized, "debrid/") || strings.Contains(normalized, "/debrid/") {

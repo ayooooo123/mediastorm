@@ -458,6 +458,8 @@ func TestDashboardStreamServiceType(t *testing.T) {
 		{name: "debrid path", paths: []string{"/debrid/realdebrid/torrent/file/0/movie.mkv"}, wanted: "debrid"},
 		{name: "webdav debrid path", paths: []string{"/webdav/debrid/torbox/torrent/file/0/movie.mkv"}, wanted: "debrid"},
 		{name: "original debrid path", paths: []string{"https://cdn.test/file", "/debrid/realdebrid/torrent/file/0/movie.mkv"}, wanted: "debrid"},
+		{name: "AIOStreams HTTP URL", paths: []string{"https://aiostreams.example/stream/movie.mkv"}, wanted: "debrid"},
+		{name: "Comet HTTP URL", paths: []string{"http://comet.example/playback/token?name=Movie"}, wanted: "debrid"},
 		{name: "usenet path", paths: []string{"/nzbs/job/movie.mkv"}, wanted: "usenet"},
 	}
 	for _, tt := range tests {
