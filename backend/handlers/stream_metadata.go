@@ -10,6 +10,7 @@ import (
 // StreamMediaMetadata carries canonical media identity alongside an active stream/session.
 // This lets dashboards render exact titles and progress without reparsing filenames.
 type StreamMediaMetadata struct {
+	SourceServiceType    string
 	MediaType            string
 	ItemID               string
 	Title                string
@@ -31,6 +32,7 @@ type StreamMediaMetadata struct {
 func parseStreamMediaMetadata(r *http.Request) StreamMediaMetadata {
 	q := r.URL.Query()
 	meta := StreamMediaMetadata{
+		SourceServiceType:    normalizeStreamSourceServiceType(q.Get("sourceServiceType")),
 		MediaType:            strings.ToLower(strings.TrimSpace(q.Get("mediaType"))),
 		ItemID:               strings.ToLower(strings.TrimSpace(q.Get("itemId"))),
 		Title:                strings.TrimSpace(q.Get("title")),
@@ -71,6 +73,9 @@ func parseStreamMediaMetadata(r *http.Request) StreamMediaMetadata {
 }
 
 func addStreamMediaMetadataParams(values url.Values, meta StreamMediaMetadata) {
+	if serviceType := normalizeStreamSourceServiceType(meta.SourceServiceType); serviceType != "" {
+		values.Set("sourceServiceType", serviceType)
+	}
 	if meta.MediaType != "" {
 		values.Set("mediaType", meta.MediaType)
 	}
@@ -120,6 +125,15 @@ func addStreamMediaMetadataParams(values url.Values, meta StreamMediaMetadata) {
 		if strings.TrimSpace(value) != "" {
 			values.Set(key, value)
 		}
+	}
+}
+
+func normalizeStreamSourceServiceType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "debrid", "usenet", "local", "plex", "jellyfin":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return ""
 	}
 }
 

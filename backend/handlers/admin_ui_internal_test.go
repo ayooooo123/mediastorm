@@ -449,22 +449,25 @@ func TestAddDashboardDeviceInfoPrefersNickname(t *testing.T) {
 
 func TestDashboardStreamServiceType(t *testing.T) {
 	tests := []struct {
-		name   string
-		live   bool
-		paths  []string
-		wanted string
+		name        string
+		live        bool
+		serviceType string
+		paths       []string
+		wanted      string
 	}{
-		{name: "live TV", live: true, paths: []string{"https://provider.test/channel.ts"}, wanted: "stream"},
+		{name: "live TV", live: true, serviceType: "debrid", paths: []string{"https://provider.test/channel.ts"}, wanted: "stream"},
+		{name: "explicit debrid HTTP URL", serviceType: "debrid", paths: []string{"https://comet.example/playback/token"}, wanted: "debrid"},
+		{name: "explicit usenet HTTP URL", serviceType: "usenet", paths: []string{"https://webdav.example/movie.mkv"}, wanted: "usenet"},
+		{name: "explicit local source", serviceType: "local", paths: []string{"/library/movie.mkv"}, wanted: "local"},
 		{name: "debrid path", paths: []string{"/debrid/realdebrid/torrent/file/0/movie.mkv"}, wanted: "debrid"},
 		{name: "webdav debrid path", paths: []string{"/webdav/debrid/torbox/torrent/file/0/movie.mkv"}, wanted: "debrid"},
 		{name: "original debrid path", paths: []string{"https://cdn.test/file", "/debrid/realdebrid/torrent/file/0/movie.mkv"}, wanted: "debrid"},
-		{name: "AIOStreams HTTP URL", paths: []string{"https://aiostreams.example/stream/movie.mkv"}, wanted: "debrid"},
-		{name: "Comet HTTP URL", paths: []string{"http://comet.example/playback/token?name=Movie"}, wanted: "debrid"},
+		{name: "legacy HTTP URL", paths: []string{"https://comet.example/playback/token"}, wanted: "usenet"},
 		{name: "usenet path", paths: []string{"/nzbs/job/movie.mkv"}, wanted: "usenet"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := dashboardStreamServiceType(tt.live, tt.paths...); got != tt.wanted {
+			if got := dashboardStreamServiceType(tt.live, tt.serviceType, tt.paths...); got != tt.wanted {
 				t.Fatalf("dashboardStreamServiceType() = %q, want %q", got, tt.wanted)
 			}
 		})

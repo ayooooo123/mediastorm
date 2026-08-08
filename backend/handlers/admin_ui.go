@@ -2330,7 +2330,7 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 				"id":               session.ID,
 				"type":             "hls",
 				"is_live":          session.IsLive,
-				"service_type":     dashboardStreamServiceType(session.IsLive, session.Path, session.OriginalPath),
+				"service_type":     dashboardStreamServiceType(session.IsLive, session.MediaMetadata.SourceServiceType, session.Path, session.OriginalPath),
 				"path":             session.Path,
 				"original_path":    session.OriginalPath,
 				"filename":         filename,
@@ -2467,7 +2467,7 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 			"id":               stream.ID,
 			"type":             "direct",
 			"is_live":          streamMetadataIsLive(stream.MediaMetadata, stream.Path),
-			"service_type":     dashboardStreamServiceType(streamMetadataIsLive(stream.MediaMetadata, stream.Path), stream.Path),
+			"service_type":     dashboardStreamServiceType(streamMetadataIsLive(stream.MediaMetadata, stream.Path), stream.MediaMetadata.SourceServiceType, stream.Path),
 			"path":             stream.Path,
 			"filename":         stream.Filename,
 			"item_id":          stream.MediaMetadata.ItemID,
@@ -2693,19 +2693,15 @@ func streamMetadataIsLive(meta StreamMediaMetadata, path string) bool {
 // dashboardStreamServiceType returns the playback source category shown by the
 // active-stream dashboard. Live TV is intentionally labelled "stream" while
 // VOD paths resolve to the two searchable playback services.
-func dashboardStreamServiceType(isLive bool, paths ...string) string {
+func dashboardStreamServiceType(isLive bool, sourceServiceType string, paths ...string) string {
 	if isLive {
 		return "stream"
 	}
+	if serviceType := normalizeStreamSourceServiceType(sourceServiceType); serviceType != "" {
+		return serviceType
+	}
 	for _, sourcePath := range paths {
 		normalized := strings.ToLower(strings.TrimSpace(sourcePath))
-		// Pre-resolved AIOStreams and Comet results are remote HTTP URLs rather
-		// than mediastorm's /debrid/... proxy paths. These scrapers are part of
-		// the debrid search pipeline, while Usenet playback is represented by a
-		// local/WebDAV path, so classify remote VOD URLs as debrid.
-		if strings.HasPrefix(normalized, "http://") || strings.HasPrefix(normalized, "https://") {
-			return "debrid"
-		}
 		normalized = strings.TrimPrefix(normalized, "/")
 		normalized = strings.TrimPrefix(normalized, "webdav/")
 		if strings.HasPrefix(normalized, "debrid/") || strings.Contains(normalized, "/debrid/") {
