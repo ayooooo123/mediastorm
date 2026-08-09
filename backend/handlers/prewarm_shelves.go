@@ -112,7 +112,7 @@ func prewarmDisplayListQuery(shelf models.ShelfConfig) (url.Values, bool) {
 	case "my-recommended", "recommended":
 		query.Set("source", "personalized")
 		return query, true
-	case "popular-on-server", "recently-watched":
+	case "popular-on-server", "recently-watched", "permanent-prequeue":
 		return url.Values{}, false
 	}
 

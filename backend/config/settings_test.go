@@ -34,6 +34,27 @@ func TestEnsureDefaultHomeShelvesBackfillsSharedShelfLimits(t *testing.T) {
 	}
 }
 
+func TestEnsureDefaultHomeShelvesAddsDisabledPermanentPrequeue(t *testing.T) {
+	shelves, changed := EnsureDefaultHomeShelves([]ShelfConfig{
+		{ID: "recently-watched", Name: "Recent", Enabled: true, Order: 4},
+	})
+	if !changed {
+		t.Fatal("expected permanent prequeue shelf to be backfilled")
+	}
+	for _, shelf := range shelves {
+		if shelf.ID == "permanent-prequeue" {
+			if shelf.Enabled {
+				t.Fatal("permanent prequeue shelf should default disabled")
+			}
+			if shelf.Name != "Permanent Prequeue" {
+				t.Fatalf("unexpected shelf name %q", shelf.Name)
+			}
+			return
+		}
+	}
+	t.Fatal("permanent prequeue shelf was not added")
+}
+
 func TestMigrateLibraryShelfConfigs(t *testing.T) {
 	shelves := []ShelfConfig{{ID: "local-library-library-123", Type: "local-library"}}
 

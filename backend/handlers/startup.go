@@ -1006,7 +1006,7 @@ func isStartupFetchableCustomShelf(shelf models.ShelfConfig) bool {
 		return ok
 	default:
 		switch shelf.ID {
-		case "popular-on-server", "recently-watched":
+		case "popular-on-server", "recently-watched", "permanent-prequeue":
 			return true
 		default:
 			return false
@@ -1113,6 +1113,9 @@ func startupDisplayListQueryForShelf(shelf models.ShelfConfig, homeShelfLimit in
 				query.Set("maxItemsPerProfile", strconv.Itoa(shelf.MaxItemsPerProfile))
 			}
 			return query, true
+		case "permanent-prequeue":
+			query.Set("source", "permanent-prequeue")
+			return query, true
 		default:
 			return nil, false
 		}
@@ -1215,6 +1218,8 @@ func homeShelfSourceKey(shelf models.ShelfConfig) string {
 			return fmt.Sprintf("popular-on-server:%d:%d", shelf.ActivityWindowDays, shelf.MinimumProfiles)
 		case "recently-watched":
 			return fmt.Sprintf("recently-watched:%d:%d", shelf.ActivityWindowDays, shelf.MaxItemsPerProfile)
+		case "permanent-prequeue":
+			return "permanent-prequeue"
 		}
 		if strings.TrimSpace(shelf.ListURL) != "" {
 			return "mdblist:" + strings.TrimSpace(shelf.ListURL)

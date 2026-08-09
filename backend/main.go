@@ -684,6 +684,7 @@ func main() {
 		prequeueHandler.GetStore().SetDataStore(store)
 	}
 	prequeueHandler.GetStore().SetStoragePath(settings.Cache.Directory)
+	displayListHandler.SetPrequeueStore(prequeueHandler.GetStore())
 	historyHandler.SetPrequeueStore(prequeueHandler.GetStore())
 	startupHandler.SetPrequeueStore(prequeueHandler.GetStore())
 

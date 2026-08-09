@@ -8,11 +8,13 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
 	"novastream/models"
 	"novastream/services/customlists"
+	"novastream/services/playback"
 	"novastream/services/watchlist"
 
 	"github.com/gorilla/mux"
@@ -27,6 +29,11 @@ type DisplayListHandler struct {
 	MetadataService    metadataService
 	MetadataHandler    *MetadataHandler
 	HiddenItemsService hiddenItemsService
+	PrequeueStore      persistentPrequeueStore
+}
+
+type persistentPrequeueStore interface {
+	ListAll() []*playback.PrequeueEntry
 }
 
 type DisplayListResponse struct {
@@ -71,6 +78,10 @@ func (h *DisplayListHandler) SetHiddenItemsService(service hiddenItemsService) {
 	h.HiddenItemsService = service
 }
 
+func (h *DisplayListHandler) SetPrequeueStore(store persistentPrequeueStore) {
+	h.PrequeueStore = store
+}
+
 func (h *DisplayListHandler) Get(w http.ResponseWriter, r *http.Request) {
 	userID, ok := h.requireUser(w, r)
 	if !ok {
@@ -86,7 +97,8 @@ func (h *DisplayListHandler) Get(w http.ResponseWriter, r *http.Request) {
 		source != "custom_user_list" &&
 		source != "custom-user-list" &&
 		source != "continue-watching" &&
-		source != "continue_watching"
+		source != "continue_watching" &&
+		source != "permanent-prequeue"
 	if metadataSource && h.MetadataHandler == nil {
 		http.Error(w, "metadata source is unavailable", http.StatusServiceUnavailable)
 		return
@@ -122,6 +134,12 @@ func (h *DisplayListHandler) Get(w http.ResponseWriter, r *http.Request) {
 		}
 		h.delegateMetadata(w, r, source, h.HistoryHandler.ListContinueWatching, displayListQuery(r, userID, nil))
 		return
+	case "permanent-prequeue":
+		if h.PrequeueStore == nil {
+			http.Error(w, "permanent prequeue source is unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		items = permanentPrequeueWatchlistItems(h.PrequeueStore.ListAll(), userID)
 	case "top-ten":
 		h.delegateMetadata(w, r, source, h.MetadataHandler.TopTen, displayListQuery(r, userID, map[string]string{
 			"type": firstQueryValue(r, "mediaType", "type"),
@@ -245,15 +263,114 @@ func (h *DisplayListHandler) Get(w http.ResponseWriter, r *http.Request) {
 		items = []models.WatchlistItem{}
 	}
 	logDisplayListWatchlistArtworkTrace(userID, source, items)
+	responseItems := interface{}(items)
+	if source == "permanent-prequeue" {
+		responseItems = watchlistItemsToTrending(items)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(DisplayListResponse{
 		Source:          source,
 		ListID:          listID,
-		Items:           items,
+		Items:           responseItems,
 		Total:           total,
 		Genres:          genres,
 		AlphabetBuckets: alphabet,
 	})
+}
+
+func permanentPrequeueWatchlistItems(entries []*playback.PrequeueEntry, userID string) []models.WatchlistItem {
+	filtered := make([]*playback.PrequeueEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry == nil || !entry.Persistent || entry.UserID != userID {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	sort.SliceStable(filtered, func(i, j int) bool {
+		return filtered[i].CreatedAt.After(filtered[j].CreatedAt)
+	})
+
+	items := make([]models.WatchlistItem, 0, len(filtered))
+	for _, entry := range filtered {
+		items = append(items, models.WatchlistItem{
+			ID:          entry.TitleID,
+			MediaType:   entry.MediaType,
+			Name:        entry.TitleName,
+			Year:        entry.Year,
+			AddedAt:     entry.CreatedAt,
+			ExternalIDs: canonicalTitleExternalIDs(entry.TitleID),
+		})
+	}
+	return items
+}
+
+func canonicalTitleExternalIDs(titleID string) map[string]string {
+	parts := strings.Split(strings.TrimSpace(titleID), ":")
+	ids := make(map[string]string)
+	if len(parts) >= 2 {
+		switch strings.ToLower(parts[0]) {
+		case "tmdb":
+			ids["tmdb"] = parts[len(parts)-1]
+		case "tvdb":
+			ids["tvdb"] = parts[len(parts)-1]
+		case "imdb":
+			ids["imdb"] = parts[len(parts)-1]
+		}
+	} else if strings.HasPrefix(strings.ToLower(titleID), "tt") {
+		ids["imdb"] = titleID
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	return ids
+}
+
+func watchlistItemsToTrending(items []models.WatchlistItem) []models.TrendingItem {
+	result := make([]models.TrendingItem, 0, len(items))
+	for i, item := range items {
+		title := models.Title{
+			ID:              item.ID,
+			Name:            item.Name,
+			Overview:        item.Overview,
+			Year:            item.Year,
+			MediaType:       item.MediaType,
+			Genres:          item.Genres,
+			RuntimeMinutes:  item.RuntimeMinutes,
+			WatchState:      item.WatchState,
+			UnwatchedCount:  item.UnwatchedCount,
+			Ratings:         item.Ratings,
+			Status:          item.Status,
+			LifecycleStatus: item.LifecycleStatus,
+			Theatrical:      item.Theatrical,
+			HomeRelease:     item.HomeRelease,
+		}
+		if value := item.ExternalIDs["tmdb"]; value != "" {
+			title.TMDBID, _ = strconv.ParseInt(value, 10, 64)
+		}
+		if value := item.ExternalIDs["tvdb"]; value != "" {
+			title.TVDBID, _ = strconv.ParseInt(value, 10, 64)
+		}
+		title.IMDBID = item.ExternalIDs["imdb"]
+		if item.PosterURL != "" {
+			title.Poster = &models.Image{URL: item.PosterURL, Type: "poster"}
+		}
+		if item.TextPosterURL != "" {
+			title.TextPoster = &models.Image{URL: item.TextPosterURL, Type: "poster"}
+		}
+		if item.BackdropURL != "" {
+			title.Backdrop = &models.Image{URL: item.BackdropURL, Type: "backdrop"}
+		}
+		if item.TextBackdropURL != "" {
+			title.TextBackdrop = &models.Image{URL: item.TextBackdropURL, Type: "backdrop"}
+		}
+		for _, url := range item.BackdropURLs {
+			if url != "" {
+				title.Backdrops = append(title.Backdrops, models.Image{URL: url, Type: "backdrop"})
+			}
+		}
+		result = append(result, models.TrendingItem{Rank: i + 1, Title: title})
+	}
+	return result
 }
 
 func (h *DisplayListHandler) Options(w http.ResponseWriter, r *http.Request) {

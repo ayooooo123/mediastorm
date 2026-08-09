@@ -38,6 +38,20 @@ func TestPrewarmDisplayListQuerySupportsPlayableHomeShelves(t *testing.T) {
 	if _, ok := prewarmDisplayListQuery(models.ShelfConfig{ID: "calendar"}); ok {
 		t.Fatal("calendar navigation shelf should not be prewarmable")
 	}
+	if _, ok := prewarmDisplayListQuery(models.ShelfConfig{ID: "permanent-prequeue"}); ok {
+		t.Fatal("already-prequeued items should not be prewarmed again")
+	}
+}
+
+func TestStartupDisplayListQuerySupportsPermanentPrequeueShelf(t *testing.T) {
+	shelf := models.ShelfConfig{ID: "permanent-prequeue", Name: "Permanent Prequeue", Enabled: true}
+	if !isStartupFetchableCustomShelf(shelf) {
+		t.Fatal("permanent prequeue should be included in startup shelf fetching")
+	}
+	query, ok := startupDisplayListQueryForShelf(shelf, 20, false, "")
+	if !ok || query.Get("source") != "permanent-prequeue" {
+		t.Fatalf("unexpected startup query: ok=%v query=%v", ok, query)
+	}
 }
 
 func TestDecodePrewarmShelfItemSupportsTrendingAndWatchlistShapes(t *testing.T) {

@@ -741,6 +741,7 @@ func DefaultHomeShelfConfigs() []ShelfConfig {
 		{ID: "live-favorites", Name: "Favorite Channels", Enabled: false, Order: 11},
 		{ID: "popular-on-server", Name: "Popular on This Server", Enabled: false, Order: 12, Limit: 20, ActivityWindowDays: 90, MinimumProfiles: 2},
 		{ID: "recently-watched", Name: "Recently Watched", Enabled: false, Order: 13, Limit: 20, ActivityWindowDays: 14, MaxItemsPerProfile: 3},
+		{ID: "permanent-prequeue", Name: "Permanent Prequeue", Enabled: false, Order: 14},
 	}
 }
 
@@ -1064,6 +1065,34 @@ func EnsureDefaultHomeShelves(shelves []ShelfConfig) ([]ShelfConfig, bool) {
 			Limit:              20,
 			ActivityWindowDays: 14,
 			MaxItemsPerProfile: 3,
+		})
+		changed = true
+	}
+
+	if !hasShelf("permanent-prequeue") {
+		insertOrder := -1
+		for _, shelf := range nextShelves {
+			if shelf.ID == "recently-watched" {
+				insertOrder = shelf.Order + 1
+				break
+			}
+			if shelf.Order > insertOrder {
+				insertOrder = shelf.Order + 1
+			}
+		}
+		if insertOrder < 0 {
+			insertOrder = 0
+		}
+		for i := range nextShelves {
+			if nextShelves[i].Order >= insertOrder {
+				nextShelves[i].Order++
+			}
+		}
+		nextShelves = append(nextShelves, ShelfConfig{
+			ID:      "permanent-prequeue",
+			Name:    "Permanent Prequeue",
+			Enabled: false,
+			Order:   insertOrder,
 		})
 		changed = true
 	}

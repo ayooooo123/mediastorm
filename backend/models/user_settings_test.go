@@ -137,6 +137,27 @@ func TestEnsureDefaultHomeShelvesAddsDisabledDashboardShelf(t *testing.T) {
 	t.Fatal("expected dashboard shelf to be added")
 }
 
+func TestEnsureDefaultHomeShelvesAddsDisabledPermanentPrequeueShelf(t *testing.T) {
+	migrated, changed := EnsureDefaultHomeShelves([]ShelfConfig{
+		{ID: "dashboard", Name: "Dashboard", Enabled: false, Order: 2},
+	})
+	if !changed {
+		t.Fatal("expected missing permanent prequeue shelf to trigger migration")
+	}
+	for _, shelf := range migrated {
+		if shelf.ID == "permanent-prequeue" {
+			if shelf.Enabled {
+				t.Fatal("permanent prequeue shelf should be disabled by default")
+			}
+			if shelf.Name != "Permanent Prequeue" {
+				t.Fatalf("unexpected permanent prequeue shelf name %q", shelf.Name)
+			}
+			return
+		}
+	}
+	t.Fatal("expected permanent prequeue shelf to be added")
+}
+
 func newGlobal() *ResolvedLiveSource {
 	return &ResolvedLiveSource{
 		Mode:                  "m3u",
