@@ -101,6 +101,12 @@ func (h *JellyfinAccountsHandler) CreateAccount(w http.ResponseWriter, r *http.R
 		jsonError(w, "Server URL and username are required", http.StatusBadRequest)
 		return
 	}
+	normalizedServerURL, err := jellyfin.NormalizeServerURL(req.ServerURL)
+	if err != nil {
+		jsonError(w, "Invalid server URL: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	req.ServerURL = normalizedServerURL
 
 	// Authenticate with Jellyfin
 	authResult, err := h.jellyfinClient.Authenticate(req.ServerURL, req.Username, req.Password)

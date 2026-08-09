@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gorilla/mux"
@@ -157,7 +158,7 @@ func TestCreateJellyfinAccount_Success(t *testing.T) {
 
 	body, _ := json.Marshal(map[string]string{
 		"name":      "My Server",
-		"serverUrl": mockJF.URL,
+		"serverUrl": strings.TrimPrefix(mockJF.URL, "http://"),
 		"username":  "testuser",
 		"password":  "pass123",
 	})
@@ -202,6 +203,9 @@ func TestCreateJellyfinAccount_Success(t *testing.T) {
 	}
 	if s.Jellyfin.Accounts[0].Token != "test-token-123" {
 		t.Errorf("expected saved token 'test-token-123', got %q", s.Jellyfin.Accounts[0].Token)
+	}
+	if s.Jellyfin.Accounts[0].ServerURL != mockJF.URL {
+		t.Errorf("expected normalized server URL %q, got %q", mockJF.URL, s.Jellyfin.Accounts[0].ServerURL)
 	}
 }
 

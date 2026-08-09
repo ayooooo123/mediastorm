@@ -36,6 +36,20 @@ func TestToolsTemplateIncludesProfileScrobLinking(t *testing.T) {
 	}
 }
 
+func TestLibraryTemplateDirectsRemoteAccountsToIntegrations(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/library.html")
+	if err != nil {
+		t.Fatalf("read library template: %v", err)
+	}
+	source := string(templateBytes)
+	if !strings.Contains(source, "Accounts are managed on the Integrations page.") {
+		t.Fatal("library template does not direct remote account management to Integrations")
+	}
+	if strings.Contains(source, "Accounts are managed on the Tools page.") {
+		t.Fatal("library template still directs remote account management to Tools")
+	}
+}
+
 func TestNotificationsTemplateDoesNotRedeclareBasePath(t *testing.T) {
 	templateBytes, err := adminTemplates.ReadFile("admin_templates/notifications.html")
 	if err != nil {
