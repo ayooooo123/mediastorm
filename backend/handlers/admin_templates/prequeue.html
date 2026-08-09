@@ -2,15 +2,47 @@
 
 {{define "title"}}Active Prequeues - {{if .IsAdmin}}mediastorm Admin{{else}}mediastorm account{{end}}{{end}}
 
+{{define "styles"}}
+<style>
+    .prequeue-header-actions {
+        display: flex;
+        gap: 0.5rem;
+        align-items: center;
+    }
+
+    .prequeue-header-actions .btn,
+    .prequeue-auto-refresh-label {
+        white-space: nowrap;
+    }
+
+    @media (max-width: 768px) {
+        .prequeue-header-actions {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            width: 100%;
+        }
+
+        .prequeue-auto-refresh-label,
+        .prequeue-back-button {
+            grid-column: 1 / -1;
+        }
+
+        .prequeue-header-actions .btn {
+            width: 100%;
+        }
+    }
+</style>
+{{end}}
+
 {{define "content"}}
-<div class="page-header" style="display: flex; align-items: center; justify-content: space-between;">
+<div class="page-header page-header-flex" style="display: flex; align-items: center; justify-content: space-between;">
     <div>
         <h1>Active Prequeues</h1>
         <p>Pre-resolved and in-progress playback queue entries, including permanent manual items</p>
     </div>
-    <div style="display: flex; gap: 0.5rem; align-items: center;">
-        <a class="btn btn-secondary" href="{{.BasePath}}/tools">Back to Maintenance</a>
-        <span id="autoRefreshLabel" style="font-size: 0.8rem; color: var(--text-muted);">Auto-refresh: on</span>
+    <div class="page-header-controls prequeue-header-actions">
+        <a class="btn btn-secondary prequeue-back-button" href="{{.BasePath}}/tools">Back to Maintenance</a>
+        <span class="prequeue-auto-refresh-label" id="autoRefreshLabel" style="font-size: 0.8rem; color: var(--text-muted);">Auto-refresh: on</span>
         <button class="btn btn-secondary" onclick="toggleAutoRefresh()" id="autoRefreshBtn">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
                 <polyline points="1 4 1 10 7 10"/>
