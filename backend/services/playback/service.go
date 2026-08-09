@@ -368,10 +368,20 @@ func (s *Service) PrepareTorrentCandidates(ctx context.Context, candidates []mod
 
 func (s *Service) buildInternalPlaybackResolution(cfg config.Settings, candidate models.NZBResult, storagePath, sourceNZBPath string, fileSize int64, healthStatus string) (*models.PlaybackResolution, error) {
 	finalPath := storagePath
-	if s.metadataSvc != nil && s.isLikelyDirectory(storagePath) {
-		log.Printf("[playback] storagePath appears to be a directory, scanning for media files: %q", storagePath)
-		hints := buildSelectionHintsFromCandidate(candidate, storagePath)
-		mediaFile, findErr := s.findBestMediaFile(storagePath, hints)
+	scanPath := storagePath
+	needsScan := s.isLikelyDirectory(storagePath)
+	if s.metadataSvc != nil && !needsScan && resolvedFileConflictsWithTargetEpisode(storagePath, candidate) {
+		// Older resolved-cache entries may contain the arbitrary first file from
+		// a season archive. Re-scan its containing directory so the requested
+		// episode wins without requiring the NZB to be downloaded again.
+		scanPath = path.Dir(storagePath)
+		needsScan = true
+		log.Printf("[playback] cached media file conflicts with target episode; rescanning directory: file=%q directory=%q", storagePath, scanPath)
+	}
+	if s.metadataSvc != nil && needsScan {
+		log.Printf("[playback] scanning storage directory for media files: %q", scanPath)
+		hints := buildSelectionHintsFromCandidate(candidate, scanPath)
+		mediaFile, findErr := s.findBestMediaFile(scanPath, hints)
 		if findErr != nil {
 			return nil, fmt.Errorf("directory contains no playable media files: %w", findErr)
 		}
@@ -399,6 +409,17 @@ func (s *Service) buildInternalPlaybackResolution(cfg config.Settings, candidate
 	}
 	log.Printf("[playback] NZB processed and ready for playback, webdavPath=%q", webdavPath)
 	return resolution, nil
+}
+
+func resolvedFileConflictsWithTargetEpisode(filePath string, candidate models.NZBResult) bool {
+	hints := buildSelectionHintsFromCandidate(candidate, path.Dir(filePath))
+	if hints.TargetSeason <= 0 || hints.TargetEpisode <= 0 {
+		return false
+	}
+	return !mediaresolve.CandidateMatchesEpisode(filePath, mediaresolve.EpisodeCode{
+		Season:  hints.TargetSeason,
+		Episode: hints.TargetEpisode,
+	})
 }
 
 // ParallelHealthCheck performs health checks on multiple candidates concurrently.

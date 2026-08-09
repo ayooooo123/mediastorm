@@ -4,16 +4,18 @@ import (
 	"strings"
 	"testing"
 
+	"novastream/config"
 	metapb "novastream/internal/nzb/metadata/proto"
 	"novastream/models"
 )
 
 type validationMetadataService struct {
 	fileSizes map[string]int64
+	files     map[string][]string
 }
 
-func (s validationMetadataService) ListDirectory(string) ([]string, error) {
-	return nil, nil
+func (s validationMetadataService) ListDirectory(virtualPath string) ([]string, error) {
+	return s.files[virtualPath], nil
 }
 
 func (s validationMetadataService) ListSubdirectories(string) ([]string, error) {
@@ -167,5 +169,53 @@ func TestValidateResolvedMediaFileSizePolicy(t *testing.T) {
 				t.Fatalf("validateResolvedMediaFile returned error: %v", err)
 			}
 		})
+	}
+}
+
+func TestResolvedFileConflictsWithTargetEpisode(t *testing.T) {
+	candidate := models.NZBResult{Attributes: map[string]string{
+		"targetSeason":  "1",
+		"targetEpisode": "1",
+	}}
+
+	if !resolvedFileConflictsWithTargetEpisode("/release/Show.S01E11.mkv", candidate) {
+		t.Fatal("expected S01E11 to conflict with requested S01E01")
+	}
+	if resolvedFileConflictsWithTargetEpisode("/release/Show.S01E01.mkv", candidate) {
+		t.Fatal("did not expect S01E01 to conflict with requested S01E01")
+	}
+}
+
+func TestBuildInternalPlaybackResolutionReselectsCachedSeasonPackEpisode(t *testing.T) {
+	const releaseDir = "/release/Jackie.Chan.Adventures.S01"
+	service := &Service{metadataSvc: validationMetadataService{
+		files: map[string][]string{
+			releaseDir: {
+				"Jackie.Chan.Adventures.S01E11.mkv",
+				"Jackie.Chan.Adventures.S01E01.mkv",
+			},
+		},
+	}}
+	candidate := models.NZBResult{
+		Title: "Jackie.Chan.Adventures.S01.1080p.WEB-DL",
+		Attributes: map[string]string{
+			"targetSeason":  "1",
+			"targetEpisode": "1",
+		},
+	}
+
+	resolution, err := service.buildInternalPlaybackResolution(
+		config.Settings{WebDAV: config.WebDAVSettings{Prefix: "/webdav"}},
+		candidate,
+		releaseDir+"/Jackie.Chan.Adventures.S01E11.mkv",
+		"Jackie.Chan.Adventures.S01.nzb",
+		0,
+		"healthy",
+	)
+	if err != nil {
+		t.Fatalf("buildInternalPlaybackResolution returned error: %v", err)
+	}
+	if !strings.HasSuffix(resolution.WebDAVPath, "/Jackie.Chan.Adventures.S01E01.mkv") {
+		t.Fatalf("selected %q, want S01E01", resolution.WebDAVPath)
 	}
 }

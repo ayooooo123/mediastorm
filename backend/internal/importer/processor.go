@@ -437,6 +437,7 @@ func (proc *Processor) processRarArchiveWithDir(ctx context.Context, parsed *Par
 		// Track if we've found the first video file for early availability
 		firstVideoFound := false
 		var firstVideoPath string
+		contentVideoCount := 0
 
 		// Collect nested RAR files for recursive processing
 		var nestedRarContents []rarContent
@@ -498,13 +499,16 @@ func (proc *Processor) processRarArchiveWithDir(ctx context.Context, parsed *Par
 			// If this is the first content video file, mark it for early playback.
 			// Samples and extras are still materialized, but must never become the
 			// path returned to playback.
-			if isVideo && proc.isContentVideoPath(rc.InternalPath) && !firstVideoFound {
-				firstVideoFound = true
-				firstVideoPath = virtualFilePath
-				proc.log.Info("First video file discovered - playback can start",
-					"file", rc.Filename,
-					"path", virtualFilePath,
-					"size", rc.Size)
+			if isVideo && proc.isContentVideoPath(rc.InternalPath) {
+				contentVideoCount++
+				if !firstVideoFound {
+					firstVideoFound = true
+					firstVideoPath = virtualFilePath
+					proc.log.Info("First video file discovered - playback can start",
+						"file", rc.Filename,
+						"path", virtualFilePath,
+						"size", rc.Size)
+				}
 			}
 
 			return true // Continue analyzing remaining files
@@ -553,7 +557,17 @@ func (proc *Processor) processRarArchiveWithDir(ctx context.Context, parsed *Par
 			"archive", nzbBaseName,
 			"files_processed", len(rarContents))
 
-		// If we found a video file, return its path instead of the directory
+		// A multi-video archive needs downstream selection hints (for example,
+		// S01E01) to choose the right file. Returning whichever entry the RAR
+		// reader discovered first makes season-pack playback nondeterministic.
+		if contentVideoCount > 1 {
+			proc.log.Info("Returning archive directory for multi-video selection",
+				"nzb_virtual_dir", nzbVirtualDir,
+				"content_video_count", contentVideoCount)
+			return nzbVirtualDir, nil
+		}
+
+		// Single-video archives can still bypass an unnecessary directory scan.
 		if firstVideoFound && firstVideoPath != "" {
 			proc.log.Info("Returning first video file path for immediate playback",
 				"video_path", firstVideoPath,
@@ -1039,6 +1053,7 @@ func (proc *Processor) process7zArchiveWithDir(ctx context.Context, parsed *Pars
 		// Track if we've found the first video file for early availability
 		firstVideoFound := false
 		var firstVideoPath string
+		contentVideoCount := 0
 
 		// Analyze 7z content using progressive analysis with callback
 		analysisStart := time.Now()
@@ -1085,13 +1100,16 @@ func (proc *Processor) process7zArchiveWithDir(ctx context.Context, parsed *Pars
 
 			// If this is the first content video file, mark it for early playback.
 			// Samples and extras remain indexed but cannot be selected.
-			if isVideo && proc.isContentVideoPath(sc.InternalPath) && !firstVideoFound {
-				firstVideoFound = true
-				firstVideoPath = virtualFilePath
-				proc.log.Info("First video file discovered - playback can start",
-					"file", sc.Filename,
-					"path", virtualFilePath,
-					"size", sc.Size)
+			if isVideo && proc.isContentVideoPath(sc.InternalPath) {
+				contentVideoCount++
+				if !firstVideoFound {
+					firstVideoFound = true
+					firstVideoPath = virtualFilePath
+					proc.log.Info("First video file discovered - playback can start",
+						"file", sc.Filename,
+						"path", virtualFilePath,
+						"size", sc.Size)
+				}
 			}
 
 			return true // Continue analyzing remaining files
@@ -1121,7 +1139,14 @@ func (proc *Processor) process7zArchiveWithDir(ctx context.Context, parsed *Pars
 			"archive", nzbBaseName,
 			"files_processed", len(szContents))
 
-		// If we found a video file, return its path instead of the directory
+		if contentVideoCount > 1 {
+			proc.log.Info("Returning archive directory for multi-video selection",
+				"nzb_virtual_dir", nzbVirtualDir,
+				"content_video_count", contentVideoCount)
+			return nzbVirtualDir, nil
+		}
+
+		// Single-video archives can still bypass an unnecessary directory scan.
 		if firstVideoFound && firstVideoPath != "" {
 			proc.log.Info("Returning first video file path for immediate playback",
 				"video_path", firstVideoPath,
