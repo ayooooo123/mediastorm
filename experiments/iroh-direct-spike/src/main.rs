@@ -186,37 +186,71 @@ async fn run_rendezvous_publisher(path: String, invite: String) {
     }
 }
 
+fn decode_secret_key(contents: &str) -> Result<SecretKey> {
+    let decoded = BASE64_URL_SAFE_NO_PAD
+        .decode(contents.trim())
+        .context("decode secret key file")?;
+    let bytes: [u8; 32] = decoded
+        .as_slice()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("secret key file must contain 32 bytes"))?;
+    Ok(SecretKey::from_bytes(&bytes))
+}
+
+async fn create_secret_key(path: &str) -> Result<SecretKey> {
+    let key = SecretKey::generate();
+    let encoded = BASE64_URL_SAFE_NO_PAD.encode(key.to_bytes());
+    let temporary_path = format!(
+        "{path}.tmp-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+    tokio::fs::write(&temporary_path, encoded.as_bytes())
+        .await
+        .context("write temporary secret key file")?;
+    // The key is equivalent to a private identity; keep it owner-only.
+    #[cfg(unix)]
+    tokio::fs::set_permissions(
+        &temporary_path,
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+    )
+    .await
+    .context("restrict temporary secret key file permissions")?;
+    tokio::fs::rename(&temporary_path, path)
+        .await
+        .context("install secret key file")?;
+    Ok(key)
+}
+
 /// Load the host's persistent iroh secret key from `path`, creating and saving a fresh one
 /// if the file is absent. The key is stored base64url-encoded (32 raw bytes). A stable key
 /// keeps the node ID — and therefore the published invite — constant across host restarts.
+/// A malformed key cannot preserve that identity, so retain it for diagnosis and recover
+/// with a replacement rather than leaving remote access permanently unavailable.
 async fn load_or_create_secret_key(path: &str) -> Result<SecretKey> {
     match tokio::fs::read_to_string(path).await {
-        Ok(contents) => {
-            let decoded = BASE64_URL_SAFE_NO_PAD
-                .decode(contents.trim())
-                .context("decode secret key file")?;
-            let bytes: [u8; 32] = decoded
-                .as_slice()
-                .try_into()
-                .map_err(|_| anyhow::anyhow!("secret key file must contain 32 bytes"))?;
-            Ok(SecretKey::from_bytes(&bytes))
-        }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            let key = SecretKey::generate();
-            let encoded = BASE64_URL_SAFE_NO_PAD.encode(key.to_bytes());
-            tokio::fs::write(path, encoded.as_bytes())
-                .await
-                .context("write secret key file")?;
-            // The key is equivalent to a private identity; keep it owner-only.
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        Ok(contents) => match decode_secret_key(&contents) {
+            Ok(key) => Ok(key),
+            Err(parse_err) => {
+                let backup_path = format!(
+                    "{path}.corrupt-{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis()
+                );
+                tokio::fs::rename(path, &backup_path)
                     .await
-                    .context("restrict secret key file permissions")?;
+                    .context("preserve malformed secret key file")?;
+                let key = create_secret_key(path).await?;
+                println!("host_secret_key_recovered reason={parse_err:#} backup={backup_path}");
+                Ok(key)
             }
-            Ok(key)
-        }
+        },
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => create_secret_key(path).await,
         Err(err) => Err(err).context("read secret key file"),
     }
 }
@@ -747,9 +781,10 @@ mod tests {
         tokio::fs::remove_dir_all(&dir).await.ok();
     }
 
-    // A corrupt key file is a hard error rather than silently minting a new identity.
+    // A corrupt key cannot preserve the old identity. Keep it as a backup and mint a
+    // valid replacement so remote access does not remain permanently unavailable.
     #[tokio::test]
-    async fn secret_key_rejects_wrong_length() {
+    async fn secret_key_recovers_from_wrong_length() {
         let dir = std::env::temp_dir().join(format!("strmr-secret-bad-{}", std::process::id()));
         tokio::fs::create_dir_all(&dir).await.unwrap();
         let path = dir.join("bad.key");
@@ -757,7 +792,28 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(load_or_create_secret_key(path.to_str().unwrap()).await.is_err());
+        let recovered = load_or_create_secret_key(path.to_str().unwrap())
+            .await
+            .unwrap();
+        let persisted = tokio::fs::read_to_string(&path).await.unwrap();
+        assert_eq!(
+            decode_secret_key(&persisted).unwrap().public(),
+            recovered.public()
+        );
+
+        let backup_prefix = "bad.key.corrupt-";
+        let mut entries = tokio::fs::read_dir(&dir).await.unwrap();
+        let mut found_backup = false;
+        while let Some(entry) = entries.next_entry().await.unwrap() {
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(backup_prefix)
+            {
+                found_backup = true;
+            }
+        }
+        assert!(found_backup, "malformed key should be retained as a backup");
 
         tokio::fs::remove_dir_all(&dir).await.ok();
     }

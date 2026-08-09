@@ -198,6 +198,7 @@ func (m *IrohHostManager) Ensure(ctx context.Context) (string, error) {
 	m.cancel = cancel
 	m.state = "starting"
 	m.invite = ""
+	m.lastErr = ""
 	m.ready = make(chan struct{})
 	ready := m.ready
 
@@ -331,7 +332,11 @@ func (m *IrohHostManager) wait(cmd *exec.Cmd) {
 	m.cancel = nil
 	if err != nil {
 		m.state = "error"
-		m.lastErr = err.Error()
+		// scanOutput usually captures a much more useful stderr message (for example,
+		// a malformed secret-key path). Do not replace it with the generic exit status.
+		if strings.TrimSpace(m.lastErr) == "" {
+			m.lastErr = err.Error()
+		}
 		m.closeReadyLocked()
 		return
 	}
