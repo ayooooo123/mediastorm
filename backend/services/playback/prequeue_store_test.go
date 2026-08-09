@@ -91,6 +91,69 @@ func TestPrequeueStoreReadyUpdatePersistsOnlyChangedEntry(t *testing.T) {
 	}
 }
 
+func TestManualPrequeueRemainsUntilExplicitlyDeleted(t *testing.T) {
+	store := NewPrequeueStore(time.Millisecond)
+	entry, _ := store.Create("movie:manual", "Pinned", "user1", "movie", 2024, nil, ManualPrequeueReason)
+
+	if !entry.Persistent || entry.Reason != ManualPrequeueReason {
+		t.Fatalf("manual entry was not marked persistent: %#v", entry)
+	}
+	store.ForceExpiry(entry.ID, time.Now().Add(-time.Hour))
+	if !store.MakePersistent(entry.ID) {
+		t.Fatal("MakePersistent returned false")
+	}
+	if _, ok := store.Get(entry.ID); !ok {
+		t.Fatal("manual entry expired")
+	}
+
+	store.Delete(entry.ID)
+	if _, ok := store.Get(entry.ID); ok {
+		t.Fatal("manual entry remained after explicit delete")
+	}
+}
+
+func TestMakePersistentAdoptsExistingDetailsPrequeue(t *testing.T) {
+	store := NewPrequeueStore(time.Hour)
+	entry, _ := store.Create("movie:1", "Existing", "user1", "movie", 2024, nil, "details")
+
+	if !store.MakePersistent(entry.ID) {
+		t.Fatal("MakePersistent returned false")
+	}
+	got, ok := store.Get(entry.ID)
+	if !ok || !got.Persistent || got.Reason != ManualPrequeueReason || got.ExpiresAt.Year() != 9999 {
+		t.Fatalf("existing entry was not pinned: %#v", got)
+	}
+}
+
+func TestPersistentPrequeueCarriesForwardWhenEpisodeChanges(t *testing.T) {
+	store := NewPrequeueStore(time.Hour)
+	first, _ := store.Create(
+		"series:1",
+		"Series",
+		"user1",
+		"series",
+		2024,
+		&models.EpisodeReference{SeasonNumber: 1, EpisodeNumber: 1},
+		ManualPrequeueReason,
+	)
+	second, _ := store.Create(
+		"series:1",
+		"Series",
+		"user1",
+		"series",
+		2024,
+		&models.EpisodeReference{SeasonNumber: 1, EpisodeNumber: 2},
+		"details",
+	)
+
+	if first.ID == second.ID {
+		t.Fatal("expected the episode replacement to create a new entry")
+	}
+	if !second.Persistent || second.Reason != ManualPrequeueReason || second.ExpiresAt.Year() != 9999 {
+		t.Fatalf("replacement did not carry the manual pin forward: %#v", second)
+	}
+}
+
 func TestPrequeueStoreValidatesReadyEntryOnLookup(t *testing.T) {
 	store := NewPrequeueStore(time.Hour)
 	entry, created := store.Create("tvdb:series:353546", "Bluey", "default", "series", 2018, nil, "details")

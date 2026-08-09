@@ -96,6 +96,7 @@ func (h *AdminHandler) GetPrequeueEntries(w http.ResponseWriter, r *http.Request
 		MediaType     string                   `json:"mediaType"`
 		TargetEpisode *models.EpisodeReference `json:"targetEpisode,omitempty"`
 		Reason        string                   `json:"reason"`
+		Persistent    bool                     `json:"persistent"`
 		Status        playback.PrequeueStatus  `json:"status"`
 		StreamPath    string                   `json:"streamPath,omitempty"`
 		Error         string                   `json:"error,omitempty"`
@@ -114,6 +115,7 @@ func (h *AdminHandler) GetPrequeueEntries(w http.ResponseWriter, r *http.Request
 			MediaType:     e.MediaType,
 			TargetEpisode: e.TargetEpisode,
 			Reason:        e.Reason,
+			Persistent:    e.Persistent,
 			Status:        e.Status,
 			StreamPath:    e.StreamPath,
 			Error:         e.Error,

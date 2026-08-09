@@ -32,6 +32,10 @@ const (
 
 const readyStreamValidationTTL = 5 * time.Minute
 
+const ManualPrequeueReason = "manual"
+
+var manualPrequeueExpiry = time.Date(9999, time.December, 31, 23, 59, 59, 0, time.UTC)
+
 // WarmRef is a lightweight reference to a pre-warmed prequeue entry
 type WarmRef struct {
 	PrequeueID string
@@ -60,7 +64,7 @@ type PrequeueRequest struct {
 	EpisodeNumber         int     `json:"episodeNumber,omitempty"`
 	AbsoluteEpisodeNumber int     `json:"absoluteEpisodeNumber,omitempty"` // Release absolute number; excludes season-zero specials.
 	StartOffset           float64 `json:"startOffset,omitempty"`           // Resume position in seconds for subtitle extraction
-	// Prequeue reason: "details" (user opened details page) or "next_episode" (auto-queue for next episode)
+	// Prequeue reason: "details", "next_episode", or "manual" (kept until explicitly removed)
 	// Defaults to "details" if not specified
 	Reason  string `json:"reason,omitempty"`
 	SkipHLS bool   `json:"skipHLS,omitempty"` // Native clients set this to skip HLS session creation
@@ -161,6 +165,7 @@ type PrequeueEntry struct {
 	MediaType        string                   `json:"mediaType"`
 	TargetEpisode    *models.EpisodeReference `json:"targetEpisode,omitempty"`
 	Reason           string                   `json:"reason"`
+	Persistent       bool                     `json:"persistent,omitempty"`
 
 	Status          PrequeueStatus `json:"status"`
 	ProgressStage   string         `json:"progressStage,omitempty"`
@@ -371,6 +376,10 @@ func (s *PrequeueStore) loadFromDisk() error {
 	now := time.Now()
 	restored := 0
 	for _, e := range stored {
+		if e.Reason == ManualPrequeueReason {
+			e.Persistent = true
+			e.ExpiresAt = manualPrequeueExpiry
+		}
 		if now.After(e.ExpiresAt) || e.Status != PrequeueStatusReady || e.StreamPath == "" {
 			continue
 		}
@@ -415,6 +424,10 @@ func (s *PrequeueStore) loadFromDB() error {
 		if err := json.Unmarshal(data, &e); err != nil {
 			log.Printf("[prequeue] Warning: failed to unmarshal DB entry: %v", err)
 			continue
+		}
+		if e.Reason == ManualPrequeueReason {
+			e.Persistent = true
+			e.ExpiresAt = manualPrequeueExpiry
 		}
 		if now.After(e.ExpiresAt) || e.Status != PrequeueStatusReady || e.StreamPath == "" {
 			continue
@@ -572,10 +585,12 @@ func (s *PrequeueStore) CreateScoped(titleID, titleName, userID, mediaType strin
 
 	settingsScopeKey = normalizeSettingsScopeKey(settingsScopeKey)
 	key := titleUserKey(titleID, userID, settingsScopeKey)
+	preservePersistent := false
 
 	// Check if there's an existing entry for this title+user
 	if existingID, exists := s.byTitleUser[key]; exists {
 		if existing, ok := s.entries[existingID]; ok {
+			preservePersistent = existing.Persistent || existing.Reason == ManualPrequeueReason
 			// Cancel the existing prequeue
 			if existing.cancelFunc != nil {
 				existing.cancelFunc()
@@ -597,6 +612,9 @@ func (s *PrequeueStore) CreateScoped(titleID, titleName, userID, mediaType strin
 	if reason == "" {
 		reason = "details"
 	}
+	if preservePersistent {
+		reason = ManualPrequeueReason
+	}
 	entry := &PrequeueEntry{
 		ID:                    id,
 		TitleID:               titleID,
@@ -607,6 +625,7 @@ func (s *PrequeueStore) CreateScoped(titleID, titleName, userID, mediaType strin
 		MediaType:             mediaType,
 		TargetEpisode:         targetEpisode,
 		Reason:                reason,
+		Persistent:            reason == ManualPrequeueReason,
 		Status:                PrequeueStatusQueued,
 		ProgressStage:         "queued",
 		SelectedAudioTrack:    -1, // Default: use all/default
@@ -619,6 +638,9 @@ func (s *PrequeueStore) CreateScoped(titleID, titleName, userID, mediaType strin
 		dynTTL = s.defaultTTL
 	}
 	entry.ExpiresAt = time.Now().Add(dynTTL)
+	if entry.Persistent {
+		entry.ExpiresAt = manualPrequeueExpiry
+	}
 
 	s.entries[id] = entry
 	s.byTitleUser[key] = id
@@ -626,6 +648,25 @@ func (s *PrequeueStore) CreateScoped(titleID, titleName, userID, mediaType strin
 	log.Printf("[prequeue] Created prequeue %s for title=%s user=%s scope=%s mediaType=%s", id, titleID, userID, settingsScopeKey, mediaType)
 
 	return entry, true
+}
+
+// MakePersistent pins an existing entry until it is explicitly deleted. This
+// lets a manual request adopt work already started by the details prequeue.
+func (s *PrequeueStore) MakePersistent(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entry, ok := s.entries[id]
+	if !ok {
+		return false
+	}
+	entry.Persistent = true
+	entry.Reason = ManualPrequeueReason
+	entry.ExpiresAt = manualPrequeueExpiry
+	if entry.Status == PrequeueStatusReady && entry.StreamPath != "" {
+		s.saveReadyEntry(entry)
+	}
+	return true
 }
 
 // Get retrieves a prequeue entry by ID
@@ -770,6 +811,10 @@ func (s *PrequeueStore) Update(id string, updateFn func(*PrequeueEntry)) bool {
 
 	oldValidationKey := streamPathValidationKey(id, entry.StreamPath)
 	updateFn(entry)
+	if entry.Persistent {
+		entry.Reason = ManualPrequeueReason
+		entry.ExpiresAt = manualPrequeueExpiry
+	}
 	if streamPathValidationKey(id, entry.StreamPath) != oldValidationKey {
 		delete(s.streamPathValidated, oldValidationKey)
 	}
@@ -811,6 +856,10 @@ func (s *PrequeueStore) UpdateWorker(id string, updateFn func(*PrequeueEntry)) b
 
 	oldValidationKey := streamPathValidationKey(id, entry.StreamPath)
 	updateFn(entry)
+	if entry.Persistent {
+		entry.Reason = ManualPrequeueReason
+		entry.ExpiresAt = manualPrequeueExpiry
+	}
 	if streamPathValidationKey(id, entry.StreamPath) != oldValidationKey {
 		delete(s.streamPathValidated, oldValidationKey)
 	}

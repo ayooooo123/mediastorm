@@ -951,6 +951,11 @@ func (h *PrequeueHandler) Prequeue(w http.ResponseWriter, r *http.Request) {
 					h.store.Delete(warm.PrequeueID)
 				} else {
 					if prequeueEpisodeMatches(targetEpisode, warmEntry.TargetEpisode) {
+						if req.Reason == playback.ManualPrequeueReason {
+							h.store.MakePersistent(warmEntry.ID)
+							h.prewarmSvc.AdoptEntry(warmEntry.ID)
+							h.prewarmSvc.UpdateFromPrequeue(warmEntry.ID)
+						}
 						log.Printf("[prequeue] Using pre-warmed entry %s for title=%s user=%s scope=%s", warm.PrequeueID, req.TitleID, req.UserID, settingsScopeKey)
 						resp := playback.PrequeueResponse{
 							PrequeueID:    warm.PrequeueID,
@@ -989,6 +994,13 @@ func (h *PrequeueHandler) Prequeue(w http.ResponseWriter, r *http.Request) {
 						existing.ID, err)
 					h.store.Delete(existing.ID)
 				} else {
+					if req.Reason == playback.ManualPrequeueReason {
+						h.store.MakePersistent(existing.ID)
+						if h.prewarmSvc != nil {
+							h.prewarmSvc.AdoptEntry(existing.ID)
+							h.prewarmSvc.UpdateFromPrequeue(existing.ID)
+						}
+					}
 					log.Printf("[prequeue] Reusing existing ready entry %s for title=%s user=%s scope=%s", existing.ID, req.TitleID, req.UserID, settingsScopeKey)
 					resp := playback.PrequeueResponse{
 						PrequeueID:    existing.ID,
@@ -1003,6 +1015,9 @@ func (h *PrequeueHandler) Prequeue(w http.ResponseWriter, r *http.Request) {
 				log.Printf("[prequeue] Existing ready entry %s missing stream path or reusable preparation metadata, resolving fresh", existing.ID)
 			}
 		} else if isPrequeueInProgress(existing.Status) {
+			if req.Reason == playback.ManualPrequeueReason {
+				h.store.MakePersistent(existing.ID)
+			}
 			log.Printf("[prequeue] Reusing existing in-progress entry %s status=%s for title=%s user=%s scope=%s",
 				existing.ID, existing.Status, req.TitleID, req.UserID, settingsScopeKey)
 			resp := playback.PrequeueResponse{

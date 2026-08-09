@@ -6,7 +6,7 @@
 <div class="page-header" style="display: flex; align-items: center; justify-content: space-between;">
     <div>
         <h1>Active Prequeues</h1>
-        <p>Pre-resolved and in-progress playback queue entries</p>
+        <p>Pre-resolved and in-progress playback queue entries, including permanent manual items</p>
     </div>
     <div style="display: flex; gap: 0.5rem; align-items: center;">
         <a class="btn btn-secondary" href="{{.BasePath}}/tools">Back to Maintenance</a>
@@ -181,6 +181,7 @@
             }
 
             const isWarm = entry.reason === 'prewarm';
+            const isManual = entry.persistent || entry.reason === 'manual';
             const profileName = entry.profileName ? escapeHtml(entry.profileName) : escapeHtml(entry.userId);
             const streamPath = entry.streamPath
                 ? escapeHtml(entry.streamPath)
@@ -194,11 +195,13 @@
                         '</div>' +
                         '<div style="display: flex; gap: 0.35rem; flex-shrink: 0; align-items: center;">' +
                             (isWarm ? '<span style="font-size: 0.7rem; font-weight: 600; background: #f59e0b22; color: #f59e0b; padding: 1px 6px; border-radius: 4px;">WARM</span>' : '') +
+                            (isManual ? '<span style="font-size: 0.7rem; font-weight: 600; background: #8b5cf622; color: #a78bfa; padding: 1px 6px; border-radius: 4px;">MANUAL · FOREVER</span>' : '') +
                             '<span style="font-size: 0.75rem; font-weight: 600; padding: 2px 8px; border-radius: 10px; background: ' + statusColor + '22; color: ' + statusColor + ';">' + entry.status + '</span>' +
                         '</div>' +
                     '</div>' +
                     '<div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 3px;">' +
                         profileName + ' &middot; ' + (entry.mediaType || '—') + ' &middot; ' + formatRelativeTime(entry.createdAt) +
+                        (isManual ? ' &middot; kept until removed' : '') +
                     '</div>' +
                     (streamPath ? '<div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="' + escapeHtml(entry.streamPath || '') + '">' + streamPath + '</div>' : '') +
                     (entry.error ? '<div style="font-size: 0.75rem; color: #ef4444; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="' + escapeHtml(entry.error) + '">' + escapeHtml(entry.error) + '</div>' : '') +
