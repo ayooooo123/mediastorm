@@ -58,8 +58,8 @@ The profile-scoped API supports:
 - Invitees must be profiles already associated with the host account.
 - Synchronization uses polling and is deliberately best-effort; simultaneous commands are last-write-wins.
 - There is no explicit server-side playback-leader role.
-- The route does not yet define a complete room re-entry flow after leaving the player.
-- Expired and ended room records do not yet have a dedicated cleanup worker.
+- Host disconnect and all-away detection use a two-minute grace period rather than a transport-level disconnect signal.
+- Ended room records are retained for 24 hours before cleanup; this is an operational audit window, not permanent history.
 
 ## Next steps
 
@@ -69,29 +69,29 @@ Invitations should target an account-level identity rather than only a local pro
 
 The room service should represent invitees as principals such as `(account_id, profile_id?)`, avoid exposing an account's full profile list to another account, and issue a short-lived, single-purpose invitation token for deep links or notification delivery. Authorization must be checked against the accepted invitation on every room request. Cross-server rooms would additionally need a shared relay or one authoritative host server reachable by every participant.
 
-### Enforce the native player
+### Enforce the native player (implemented)
 
-Room playback should carry an explicit `watchRoomPlayback` route/session flag. Playback selection must use that flag to bypass external-player preferences and the player picker, reject unsupported cast/external handoffs, and select a synchronization-capable native implementation.
+Room playback now carries explicit `watchRoomPlayback` and `watchRoomId` route/session flags. Playback selection uses the flag to bypass external-player preferences and the player picker, ignores Cast/DLNA launch intents, hides in-player Cast/DLNA actions, and selects the synchronization-capable native implementation. Synchronization activates only for an explicitly flagged room session instead of any playback that happens to match a persisted room.
 
-The client should report a small capability set when joining, for example `nativePlayback`, `stateSync`, and protocol version. The backend can then refuse incompatible joins or show them clearly in the lobby instead of allowing a client that cannot follow room state.
+Clients now report `nativePlayback`, `stateSync`, and protocol version when creating or joining a room. The backend rejects clients without both synchronization capabilities or protocol version 1 support, and the accepted capability set is retained with each member.
 
-### Allow rejoining after player exit
+### Allow rejoining after player exit (implemented)
 
-Exiting playback should be distinct from leaving the room. A normal Back/Exit should return to the lobby, retain membership and the active-room reference, and offer **Resume room** while the room remains active. **Leave room** should remain an explicit action that removes membership.
+Exiting playback is distinct from leaving the room. A normal Back/Exit replaces the player with the lobby, retains membership and the active-room reference, suppresses the guest auto-open behavior for that return, and offers **Resume room** while the room remains active. **Leave room** remains an explicit action that removes guest membership, while the host has an explicit **End room** action.
 
-On application launch or profile activation, the client should validate the persisted active room against the server and restore either the lobby or active playback prompt. If the room ended, expired, changed title, or the profile lost access, the client should clear the stale local reference.
+On application launch or profile activation, the client validates the persisted room, profile, and media identity against the server and restores the lobby. Ended rooms, mismatched media/profile state, and authorization/not-found responses clear the stale local reference. Temporary connectivity failures preserve it for a later retry.
 
-### Deterministic room teardown
+### Deterministic room teardown (implemented)
 
-Define teardown semantics for four cases:
+Teardown semantics are defined for four cases:
 
-1. **Host ends room:** immediately mark it ended, notify polling clients, stop state updates, and clear active-room references.
-2. **Host disconnects:** keep the room recoverable for a short grace period, then either elect no leader and pause or end automatically.
-3. **All participants leave:** end after a configurable idle grace period rather than retaining an apparently active room.
-4. **Expiry:** a scheduled cleanup job should delete expired/ended room data after a short audit window.
+1. **Host ends room:** immediately and idempotently mark it ended with `host_ended`; polling clients receive the terminal room, stop synchronization, clear local state, and return to the lobby.
+2. **Host disconnects:** retain the room for a two-minute grace period, then end it with `host_disconnected` when another participant remains active.
+3. **All participants leave or go stale:** end after the same grace period with `all_left`.
+4. **Expiry:** mark the room ended with `expired`, retain the terminal response for 24 hours, and then delete it transactionally through cascading room data cleanup.
 
-Teardown should be idempotent and transactional. The service should record an end reason and timestamp, reject subsequent join/state mutations, and return a terminal room response long enough for clients to cleanly dismiss their UI. Metrics for active rooms, stale members, sync errors, and teardown reasons will make the lifecycle operable.
+Teardown records an end reason and timestamp, rejects subsequent join/state mutations, and returns a terminal response during the audit window. The cleanup worker logs ended/deleted counts; richer active-room and synchronization metrics can be added when the project has a metrics exporter.
 
 ## Verification status
 
-Backend tests cover room creation, invitation filtering, invited-versus-joined membership, joining, readiness/state authorization, and playback-position advancement. The full Go test suite passes. Frontend TypeScript and focused lint checks pass; native multi-device playback, focus behavior, rejoining, and teardown remain manual acceptance work.
+Backend tests cover room creation, invitation filtering, capability rejection, invited-versus-joined membership, joining, readiness/state authorization, playback-position advancement, terminal mutation rejection, and stale-room cleanup. Frontend tests cover explicit native-playback enforcement plus persisted-session storage and legacy migration. Native multi-device playback, device-level external-player suppression, lobby focus behavior, re-entry, background restoration, and disconnect teardown remain manual acceptance work.

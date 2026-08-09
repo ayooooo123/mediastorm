@@ -53,10 +53,11 @@ func (h *WatchRoomsHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 func (h *WatchRoomsHandler) Join(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		ClientID string `json:"clientId"`
+		ClientID     string                             `json:"clientId"`
+		Capabilities models.WatchRoomClientCapabilities `json:"capabilities"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	room, err := h.service.Join(r.Context(), mux.Vars(r)["roomID"], mux.Vars(r)["userID"], body.ClientID)
+	room, err := h.service.Join(r.Context(), mux.Vars(r)["roomID"], mux.Vars(r)["userID"], body.ClientID, body.Capabilities)
 	if err != nil {
 		h.writeError(w, err)
 		return
@@ -134,8 +135,10 @@ func (h *WatchRoomsHandler) writeError(w http.ResponseWriter, err error) {
 		status = http.StatusNotFound
 	case errors.Is(err, watchrooms.ErrNotMember), errors.Is(err, watchrooms.ErrNotCreator):
 		status = http.StatusForbidden
-	case errors.Is(err, watchrooms.ErrInvalidMedia), errors.Is(err, watchrooms.ErrInvalidState):
+	case errors.Is(err, watchrooms.ErrInvalidMedia), errors.Is(err, watchrooms.ErrInvalidState), errors.Is(err, watchrooms.ErrIncompatibleClient):
 		status = http.StatusBadRequest
+	case errors.Is(err, watchrooms.ErrRoomEnded):
+		status = http.StatusGone
 	}
 	writeJSONError(w, strings.TrimSpace(err.Error()), status)
 }

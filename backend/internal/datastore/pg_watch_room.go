@@ -15,9 +15,9 @@ type pgWatchRoomRepo struct{ pool DB }
 
 const watchRoomCols = `r.id, r.creator_profile_id, creator.name, r.title, r.media_type, r.item_id,
 	r.poster_url, r.backdrop_url, r.params, r.status, r.position, r.duration, r.revision,
-	r.updated_by, r.anchor_updated_at, r.created_at, r.expires_at`
+	r.updated_by, r.anchor_updated_at, r.created_at, r.expires_at, r.ended_at, r.end_reason`
 
-func (r *pgWatchRoomRepo) Create(ctx context.Context, room *models.WatchRoom, invitees []string, clientID string) error {
+func (r *pgWatchRoomRepo) Create(ctx context.Context, room *models.WatchRoom, invitees []string, clientID string, capabilities models.WatchRoomClientCapabilities) error {
 	params, err := json.Marshal(room.Params)
 	if err != nil {
 		return fmt.Errorf("marshal watch room params: %w", err)
@@ -37,9 +37,13 @@ func (r *pgWatchRoomRepo) Create(ctx context.Context, room *models.WatchRoom, in
 	if err != nil {
 		return fmt.Errorf("create watch room: %w", err)
 	}
+	capabilitiesJSON, err := json.Marshal(capabilities)
+	if err != nil {
+		return fmt.Errorf("marshal watch room capabilities: %w", err)
+	}
 	_, err = tx.Exec(ctx, `INSERT INTO watch_room_members
-		(room_id, profile_id, client_id, is_creator, ready, joined_at, last_seen_at)
-		VALUES ($1,$2,$3,true,true,$4,$4)`, room.ID, room.CreatorProfileID, clientID, room.CreatedAt)
+		(room_id, profile_id, client_id, is_creator, ready, joined_at, last_seen_at, capabilities)
+		VALUES ($1,$2,$3,true,true,$4,$4,$5)`, room.ID, room.CreatorProfileID, clientID, room.CreatedAt, capabilitiesJSON)
 	if err != nil {
 		return fmt.Errorf("add room creator: %w", err)
 	}
@@ -112,10 +116,15 @@ func (r *pgWatchRoomRepo) IsInvited(ctx context.Context, roomID, profileID strin
 	return allowed, err
 }
 
-func (r *pgWatchRoomRepo) Join(ctx context.Context, roomID, profileID, clientID string, now time.Time) error {
-	_, err := r.pool.Exec(ctx, `INSERT INTO watch_room_members
-		(room_id, profile_id, client_id, joined_at, last_seen_at) VALUES ($1,$2,$3,$4,$4)
-		ON CONFLICT (room_id, profile_id) DO UPDATE SET client_id=EXCLUDED.client_id, last_seen_at=EXCLUDED.last_seen_at`, roomID, profileID, clientID, now)
+func (r *pgWatchRoomRepo) Join(ctx context.Context, roomID, profileID, clientID string, capabilities models.WatchRoomClientCapabilities, now time.Time) error {
+	capabilitiesJSON, err := json.Marshal(capabilities)
+	if err != nil {
+		return fmt.Errorf("marshal watch room capabilities: %w", err)
+	}
+	_, err = r.pool.Exec(ctx, `INSERT INTO watch_room_members
+		(room_id, profile_id, client_id, joined_at, last_seen_at, capabilities) VALUES ($1,$2,$3,$4,$4,$5)
+		ON CONFLICT (room_id, profile_id) DO UPDATE SET client_id=EXCLUDED.client_id,
+		last_seen_at=EXCLUDED.last_seen_at, capabilities=EXCLUDED.capabilities`, roomID, profileID, clientID, now, capabilitiesJSON)
 	return err
 }
 
@@ -141,8 +150,42 @@ func (r *pgWatchRoomRepo) Leave(ctx context.Context, roomID, profileID string) e
 }
 
 func (r *pgWatchRoomRepo) End(ctx context.Context, roomID, profileID string, now time.Time) (bool, error) {
-	tag, err := r.pool.Exec(ctx, `UPDATE watch_rooms SET status='ended',revision=revision+1,updated_by=$2,anchor_updated_at=$3 WHERE id=$1 AND creator_profile_id=$2`, roomID, profileID, now)
+	tag, err := r.pool.Exec(ctx, `UPDATE watch_rooms SET status='ended',revision=revision+1,updated_by=$2,
+		anchor_updated_at=$3,ended_at=$3,end_reason='host_ended' WHERE id=$1 AND creator_profile_id=$2 AND status<>'ended'`, roomID, profileID, now)
 	return err == nil && tag.RowsAffected() > 0, err
+}
+
+func (r *pgWatchRoomRepo) EndExpired(ctx context.Context, roomID string, now time.Time) error {
+	_, err := r.pool.Exec(ctx, `UPDATE watch_rooms SET status='ended',revision=revision+1,anchor_updated_at=$2,
+		ended_at=COALESCE(ended_at,$2),end_reason=CASE WHEN end_reason='' THEN 'expired' ELSE end_reason END
+		WHERE id=$1 AND status<>'ended'`, roomID, now)
+	return err
+}
+
+func (r *pgWatchRoomRepo) Sweep(ctx context.Context, now, disconnectCutoff, deleteBefore time.Time) (int64, int64, error) {
+	expired, err := r.pool.Exec(ctx, `UPDATE watch_rooms SET status='ended',revision=revision+1,
+		anchor_updated_at=$1,ended_at=$1,end_reason='expired' WHERE status<>'ended' AND expires_at<=$1`, now)
+	if err != nil {
+		return 0, 0, err
+	}
+	inactive, err := r.pool.Exec(ctx, `WITH activity AS (
+		SELECT r.id,
+			MAX(m.last_seen_at) AS latest_seen,
+			MAX(m.last_seen_at) FILTER (WHERE m.profile_id=r.creator_profile_id) AS host_seen
+		FROM watch_rooms r LEFT JOIN watch_room_members m ON m.room_id=r.id
+		WHERE r.status<>'ended' GROUP BY r.id
+	)
+	UPDATE watch_rooms r SET status='ended',revision=revision+1,anchor_updated_at=$1,ended_at=$1,
+		end_reason=CASE WHEN COALESCE(a.latest_seen,r.created_at)<$2 THEN 'all_left' ELSE 'host_disconnected' END
+	FROM activity a WHERE r.id=a.id AND COALESCE(a.host_seen,r.created_at)<$2`, now, disconnectCutoff)
+	if err != nil {
+		return 0, 0, err
+	}
+	deleted, err := r.pool.Exec(ctx, `DELETE FROM watch_rooms WHERE ended_at IS NOT NULL AND ended_at<$1`, deleteBefore)
+	if err != nil {
+		return 0, 0, err
+	}
+	return expired.RowsAffected() + inactive.RowsAffected(), deleted.RowsAffected(), nil
 }
 
 func (r *pgWatchRoomRepo) listMembers(ctx context.Context, roomID string) ([]models.WatchRoomMember, error) {
@@ -154,7 +197,7 @@ func (r *pgWatchRoomRepo) listMembers(ctx context.Context, roomID string) ([]mod
 		SELECT p.profile_id,u.name,u.color,u.icon_url,COALESCE(m.client_id,''),
 			(p.profile_id=r.creator_profile_id),COALESCE(m.ready,false),COALESCE(m.buffering,false),
 			(m.profile_id IS NOT NULL),COALESCE(m.joined_at,r.created_at),
-			COALESCE(m.last_seen_at,r.created_at - interval '1 day')
+			COALESCE(m.last_seen_at,r.created_at - interval '1 day'),COALESCE(m.capabilities,'{}'::jsonb)
 		FROM people p
 		JOIN watch_rooms r ON r.id=$1
 		JOIN users u ON u.id=p.profile_id
@@ -167,7 +210,11 @@ func (r *pgWatchRoomRepo) listMembers(ctx context.Context, roomID string) ([]mod
 	members := make([]models.WatchRoomMember, 0)
 	for rows.Next() {
 		var m models.WatchRoomMember
-		if err := rows.Scan(&m.ProfileID, &m.Name, &m.Color, &m.IconURL, &m.ClientID, &m.IsCreator, &m.Ready, &m.Buffering, &m.Joined, &m.JoinedAt, &m.LastSeenAt); err != nil {
+		var capabilities []byte
+		if err := rows.Scan(&m.ProfileID, &m.Name, &m.Color, &m.IconURL, &m.ClientID, &m.IsCreator, &m.Ready, &m.Buffering, &m.Joined, &m.JoinedAt, &m.LastSeenAt, &capabilities); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(capabilities, &m.Capabilities); err != nil {
 			return nil, err
 		}
 		members = append(members, m)
@@ -188,7 +235,7 @@ func scanWatchRoomRow(row pgx.Row) (*models.WatchRoom, error) {
 	var params []byte
 	if err := row.Scan(&room.ID, &room.CreatorProfileID, &room.CreatorName, &room.Title, &room.MediaType, &room.ItemID,
 		&room.PosterURL, &room.BackdropURL, &params, &room.Status, &room.Position, &room.Duration, &room.Revision,
-		&room.UpdatedBy, &room.AnchorUpdatedAt, &room.CreatedAt, &room.ExpiresAt); err != nil {
+		&room.UpdatedBy, &room.AnchorUpdatedAt, &room.CreatedAt, &room.ExpiresAt, &room.EndedAt, &room.EndReason); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal(params, &room.Params); err != nil {

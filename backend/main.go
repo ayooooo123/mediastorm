@@ -865,7 +865,26 @@ func main() {
 	shareHandler.SetLibraryAccessService(libraryAccessService)
 	var watchRoomsHandler *handlers.WatchRoomsHandler
 	if store != nil {
-		watchRoomsHandler = handlers.NewWatchRoomsHandler(watchrooms.New(store.WatchRooms(), userService))
+		watchRoomsService := watchrooms.New(store.WatchRooms(), userService)
+		watchRoomsHandler = handlers.NewWatchRoomsHandler(watchRoomsService)
+		go func() {
+			runCleanup := func() {
+				ended, deleted, err := watchRoomsService.Cleanup(context.Background())
+				if err != nil {
+					log.Printf("[watch-together] lifecycle cleanup failed: %v", err)
+					return
+				}
+				if ended > 0 || deleted > 0 {
+					log.Printf("[watch-together] lifecycle cleanup ended=%d deleted=%d", ended, deleted)
+				}
+			}
+			runCleanup()
+			ticker := time.NewTicker(time.Minute)
+			defer ticker.Stop()
+			for range ticker.C {
+				runCleanup()
+			}
+		}()
 	}
 
 	api.Register(

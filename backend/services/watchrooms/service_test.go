@@ -19,7 +19,9 @@ type fakeRoomRepo struct {
 	stateSet bool
 }
 
-func (r *fakeRoomRepo) Create(_ context.Context, room *models.WatchRoom, invitees []string, clientID string) error {
+var supportedCapabilities = models.WatchRoomClientCapabilities{NativePlayback: true, StateSync: true, ProtocolVersion: 1}
+
+func (r *fakeRoomRepo) Create(_ context.Context, room *models.WatchRoom, invitees []string, clientID string, capabilities models.WatchRoomClientCapabilities) error {
 	copy := *room
 	r.room = &copy
 	r.invites = map[string]bool{room.CreatorProfileID: true}
@@ -27,7 +29,7 @@ func (r *fakeRoomRepo) Create(_ context.Context, room *models.WatchRoom, invitee
 		r.invites[id] = true
 	}
 	r.members = map[string]models.WatchRoomMember{
-		room.CreatorProfileID: {ProfileID: room.CreatorProfileID, IsCreator: true, Ready: true, Joined: true, ClientID: clientID, JoinedAt: room.CreatedAt, LastSeenAt: room.CreatedAt},
+		room.CreatorProfileID: {ProfileID: room.CreatorProfileID, IsCreator: true, Ready: true, Joined: true, ClientID: clientID, JoinedAt: room.CreatedAt, LastSeenAt: room.CreatedAt, Capabilities: capabilities},
 	}
 	return nil
 }
@@ -57,8 +59,8 @@ func (r *fakeRoomRepo) ListInvitations(_ context.Context, profileID string, _ ti
 func (r *fakeRoomRepo) IsInvited(_ context.Context, roomID, profileID string) (bool, error) {
 	return r.room != nil && r.room.ID == roomID && r.invites[profileID], nil
 }
-func (r *fakeRoomRepo) Join(_ context.Context, _, profileID, clientID string, now time.Time) error {
-	r.members[profileID] = models.WatchRoomMember{ProfileID: profileID, ClientID: clientID, Joined: true, JoinedAt: now, LastSeenAt: now}
+func (r *fakeRoomRepo) Join(_ context.Context, _, profileID, clientID string, capabilities models.WatchRoomClientCapabilities, now time.Time) error {
+	r.members[profileID] = models.WatchRoomMember{ProfileID: profileID, ClientID: clientID, Joined: true, JoinedAt: now, LastSeenAt: now, Capabilities: capabilities}
 	return nil
 }
 func (r *fakeRoomRepo) SetReady(_ context.Context, _, profileID string, ready bool, now time.Time) error {
@@ -94,7 +96,45 @@ func (r *fakeRoomRepo) End(_ context.Context, _, profileID string, now time.Time
 	}
 	r.room.Status = models.WatchRoomStatusEnded
 	r.room.AnchorUpdatedAt = now
+	r.room.EndedAt = &now
+	r.room.EndReason = "host_ended"
 	return true, nil
+}
+func (r *fakeRoomRepo) EndExpired(_ context.Context, _ string, now time.Time) error {
+	r.room.Status = models.WatchRoomStatusEnded
+	r.room.AnchorUpdatedAt = now
+	r.room.EndedAt = &now
+	r.room.EndReason = "expired"
+	return nil
+}
+func (r *fakeRoomRepo) Sweep(_ context.Context, now, disconnectCutoff, deleteBefore time.Time) (int64, int64, error) {
+	if r.room == nil {
+		return 0, 0, nil
+	}
+	if r.room.EndedAt != nil && r.room.EndedAt.Before(deleteBefore) {
+		r.room = nil
+		return 0, 1, nil
+	}
+	if r.room.Status != models.WatchRoomStatusEnded {
+		host := r.members[r.room.CreatorProfileID]
+		if !host.LastSeenAt.After(disconnectCutoff) {
+			latest := host.LastSeenAt
+			for _, member := range r.members {
+				if member.LastSeenAt.After(latest) {
+					latest = member.LastSeenAt
+				}
+			}
+			reason := "host_disconnected"
+			if !latest.After(disconnectCutoff) {
+				reason = "all_left"
+			}
+			r.room.Status = models.WatchRoomStatusEnded
+			r.room.EndedAt = &now
+			r.room.EndReason = reason
+			return 1, 0, nil
+		}
+	}
+	return 0, 0, nil
 }
 
 func TestCreateJoinAndUpdateWatchRoom(t *testing.T) {
@@ -109,7 +149,7 @@ func TestCreateJoinAndUpdateWatchRoom(t *testing.T) {
 
 	room, err := svc.Create(context.Background(), "host", models.WatchRoomCreate{
 		Title: "Movie", MediaType: "movie", ItemID: "tmdb:movie:1",
-		InviteeProfileIDs: []string{"guest", "missing"}, ClientID: "host-tv",
+		InviteeProfileIDs: []string{"guest", "missing"}, ClientID: "host-tv", Capabilities: supportedCapabilities,
 	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
@@ -141,7 +181,7 @@ func TestCreateJoinAndUpdateWatchRoom(t *testing.T) {
 		t.Fatalf("unselected profile received %d invitation(s), want 0", len(otherInvitations))
 	}
 
-	joined, err := svc.Join(context.Background(), room.ID, "guest", "guest-tv")
+	joined, err := svc.Join(context.Background(), room.ID, "guest", "guest-tv", supportedCapabilities)
 	if err != nil {
 		t.Fatalf("Join() error = %v", err)
 	}
@@ -177,7 +217,7 @@ func TestUpdateStateRejectsNonMemberAndInvalidValues(t *testing.T) {
 	repo := &fakeRoomRepo{}
 	svc := New(repo, fakeProfiles{"host": {ID: "host"}, "guest": {ID: "guest"}})
 	svc.now = func() time.Time { return time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC) }
-	room, err := svc.Create(context.Background(), "host", models.WatchRoomCreate{Title: "Movie", MediaType: "movie", ItemID: "one", InviteeProfileIDs: []string{"guest"}})
+	room, err := svc.Create(context.Background(), "host", models.WatchRoomCreate{Title: "Movie", MediaType: "movie", ItemID: "one", InviteeProfileIDs: []string{"guest"}, Capabilities: supportedCapabilities})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,5 +226,46 @@ func TestUpdateStateRejectsNonMemberAndInvalidValues(t *testing.T) {
 	}
 	if _, err := svc.UpdateState(context.Background(), room.ID, "host", models.WatchRoomStateUpdate{Status: "lobby"}); err != ErrInvalidState {
 		t.Fatalf("invalid state error = %v, want %v", err, ErrInvalidState)
+	}
+}
+
+func TestRejectsIncompatibleClients(t *testing.T) {
+	repo := &fakeRoomRepo{}
+	svc := New(repo, fakeProfiles{"host": {ID: "host"}, "guest": {ID: "guest"}})
+	if _, err := svc.Create(context.Background(), "host", models.WatchRoomCreate{Title: "Movie", MediaType: "movie", ItemID: "one"}); err != ErrIncompatibleClient {
+		t.Fatalf("Create() error = %v, want %v", err, ErrIncompatibleClient)
+	}
+	room, err := svc.Create(context.Background(), "host", models.WatchRoomCreate{Title: "Movie", MediaType: "movie", ItemID: "one", InviteeProfileIDs: []string{"guest"}, Capabilities: supportedCapabilities})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Join(context.Background(), room.ID, "guest", "guest-tv", models.WatchRoomClientCapabilities{NativePlayback: true}); err != ErrIncompatibleClient {
+		t.Fatalf("Join() error = %v, want %v", err, ErrIncompatibleClient)
+	}
+}
+
+func TestCleanupEndsDisconnectedRoomAndRetainsTerminalResponse(t *testing.T) {
+	repo := &fakeRoomRepo{}
+	svc := New(repo, fakeProfiles{"host": {ID: "host"}})
+	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	svc.now = func() time.Time { return now }
+	room, err := svc.Create(context.Background(), "host", models.WatchRoomCreate{Title: "Movie", MediaType: "movie", ItemID: "one", Capabilities: supportedCapabilities})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(disconnectGrace + time.Second)
+	ended, deleted, err := svc.Cleanup(context.Background())
+	if err != nil || ended != 1 || deleted != 0 {
+		t.Fatalf("Cleanup() = (%d,%d,%v), want (1,0,nil)", ended, deleted, err)
+	}
+	terminal, err := svc.Get(context.Background(), room.ID, "host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if terminal.Status != models.WatchRoomStatusEnded || terminal.EndReason != "all_left" || terminal.EndedAt == nil {
+		t.Fatalf("terminal room = %#v", terminal)
+	}
+	if _, err := svc.UpdateState(context.Background(), room.ID, "host", models.WatchRoomStateUpdate{Status: "playing"}); err != ErrRoomEnded {
+		t.Fatalf("UpdateState() error = %v, want %v", err, ErrRoomEnded)
 	}
 }

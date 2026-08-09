@@ -30,33 +30,43 @@ type WatchRoom struct {
 	AnchorUpdatedAt  time.Time         `json:"anchorUpdatedAt"`
 	CreatedAt        time.Time         `json:"createdAt"`
 	ExpiresAt        time.Time         `json:"expiresAt"`
+	EndedAt          *time.Time        `json:"endedAt,omitempty"`
+	EndReason        string            `json:"endReason,omitempty"`
 	Members          []WatchRoomMember `json:"members"`
 }
 
+type WatchRoomClientCapabilities struct {
+	NativePlayback  bool `json:"nativePlayback"`
+	StateSync       bool `json:"stateSync"`
+	ProtocolVersion int  `json:"protocolVersion"`
+}
+
 type WatchRoomMember struct {
-	ProfileID  string    `json:"profileId"`
-	Name       string    `json:"name"`
-	Color      string    `json:"color,omitempty"`
-	IconURL    string    `json:"iconUrl,omitempty"`
-	ClientID   string    `json:"clientId,omitempty"`
-	IsCreator  bool      `json:"isCreator"`
-	Ready      bool      `json:"ready"`
-	Buffering  bool      `json:"buffering"`
-	Joined     bool      `json:"joined"`
-	Present    bool      `json:"present"`
-	JoinedAt   time.Time `json:"joinedAt"`
-	LastSeenAt time.Time `json:"lastSeenAt"`
+	ProfileID    string                      `json:"profileId"`
+	Name         string                      `json:"name"`
+	Color        string                      `json:"color,omitempty"`
+	IconURL      string                      `json:"iconUrl,omitempty"`
+	ClientID     string                      `json:"clientId,omitempty"`
+	IsCreator    bool                        `json:"isCreator"`
+	Ready        bool                        `json:"ready"`
+	Buffering    bool                        `json:"buffering"`
+	Joined       bool                        `json:"joined"`
+	Present      bool                        `json:"present"`
+	JoinedAt     time.Time                   `json:"joinedAt"`
+	LastSeenAt   time.Time                   `json:"lastSeenAt"`
+	Capabilities WatchRoomClientCapabilities `json:"capabilities"`
 }
 
 type WatchRoomCreate struct {
-	Title             string            `json:"title"`
-	MediaType         string            `json:"mediaType"`
-	ItemID            string            `json:"itemId"`
-	PosterURL         string            `json:"posterUrl,omitempty"`
-	BackdropURL       string            `json:"backdropUrl,omitempty"`
-	Params            map[string]string `json:"params"`
-	InviteeProfileIDs []string          `json:"inviteeProfileIds"`
-	ClientID          string            `json:"clientId,omitempty"`
+	Title             string                      `json:"title"`
+	MediaType         string                      `json:"mediaType"`
+	ItemID            string                      `json:"itemId"`
+	PosterURL         string                      `json:"posterUrl,omitempty"`
+	BackdropURL       string                      `json:"backdropUrl,omitempty"`
+	Params            map[string]string           `json:"params"`
+	InviteeProfileIDs []string                    `json:"inviteeProfileIds"`
+	ClientID          string                      `json:"clientId,omitempty"`
+	Capabilities      WatchRoomClientCapabilities `json:"capabilities"`
 }
 
 type WatchRoomStateUpdate struct {

@@ -13,17 +13,22 @@ import (
 )
 
 var (
-	ErrNotFound     = errors.New("watch room not found")
-	ErrNotInvited   = errors.New("profile is not invited to this watch room")
-	ErrNotMember    = errors.New("profile has not joined this watch room")
-	ErrNotCreator   = errors.New("only the room creator can end this watch room")
-	ErrInvalidMedia = errors.New("title, mediaType, and itemId are required")
-	ErrInvalidState = errors.New("invalid watch room state")
+	ErrNotFound           = errors.New("watch room not found")
+	ErrNotInvited         = errors.New("profile is not invited to this watch room")
+	ErrNotMember          = errors.New("profile has not joined this watch room")
+	ErrNotCreator         = errors.New("only the room creator can end this watch room")
+	ErrInvalidMedia       = errors.New("title, mediaType, and itemId are required")
+	ErrInvalidState       = errors.New("invalid watch room state")
+	ErrRoomEnded          = errors.New("watch room has ended")
+	ErrIncompatibleClient = errors.New("client does not support Watch Together native playback protocol")
 )
 
 const (
-	roomLifetime = 24 * time.Hour
-	presenceTTL  = 15 * time.Second
+	roomLifetime     = 24 * time.Hour
+	presenceTTL      = 15 * time.Second
+	disconnectGrace  = 2 * time.Minute
+	endedAuditWindow = 24 * time.Hour
+	protocolVersion  = 1
 )
 
 type profileProvider interface {
@@ -40,6 +45,10 @@ func New(repo datastore.WatchRoomRepository, profiles profileProvider) *Service 
 	return &Service{repo: repo, profiles: profiles, now: time.Now}
 }
 
+func supportsWatchTogether(capabilities models.WatchRoomClientCapabilities) bool {
+	return capabilities.NativePlayback && capabilities.StateSync && capabilities.ProtocolVersion >= protocolVersion
+}
+
 func (s *Service) Create(ctx context.Context, creatorID string, in models.WatchRoomCreate) (*models.WatchRoom, error) {
 	in.Title = strings.TrimSpace(in.Title)
 	in.MediaType = strings.TrimSpace(in.MediaType)
@@ -49,6 +58,9 @@ func (s *Service) Create(ctx context.Context, creatorID string, in models.WatchR
 	}
 	if _, ok := s.profiles.Get(creatorID); !ok {
 		return nil, ErrNotFound
+	}
+	if !supportsWatchTogether(in.Capabilities) {
+		return nil, ErrIncompatibleClient
 	}
 
 	invitees := make([]string, 0, len(in.InviteeProfileIDs))
@@ -75,7 +87,7 @@ func (s *Service) Create(ctx context.Context, creatorID string, in models.WatchR
 	if room.Params == nil {
 		room.Params = map[string]string{}
 	}
-	if err := s.repo.Create(ctx, room, invitees, strings.TrimSpace(in.ClientID)); err != nil {
+	if err := s.repo.Create(ctx, room, invitees, strings.TrimSpace(in.ClientID), in.Capabilities); err != nil {
 		return nil, err
 	}
 	return s.Get(ctx, room.ID, creatorID)
@@ -104,18 +116,34 @@ func (s *Service) Get(ctx context.Context, roomID, profileID string) (*models.Wa
 	if err != nil {
 		return nil, err
 	}
-	if room == nil || !room.ExpiresAt.After(s.now()) {
+	if room == nil {
 		return nil, ErrNotFound
+	}
+	if room.Status != models.WatchRoomStatusEnded && !room.ExpiresAt.After(s.now()) {
+		if err := s.repo.EndExpired(ctx, roomID, s.now().UTC()); err != nil {
+			return nil, err
+		}
+		room, err = s.repo.Get(ctx, roomID)
+		if err != nil || room == nil {
+			return room, err
+		}
 	}
 	s.decorate(room)
 	return room, nil
 }
 
-func (s *Service) Join(ctx context.Context, roomID, profileID, clientID string) (*models.WatchRoom, error) {
-	if _, err := s.Get(ctx, roomID, profileID); err != nil {
+func (s *Service) Join(ctx context.Context, roomID, profileID, clientID string, capabilities models.WatchRoomClientCapabilities) (*models.WatchRoom, error) {
+	if !supportsWatchTogether(capabilities) {
+		return nil, ErrIncompatibleClient
+	}
+	room, err := s.Get(ctx, roomID, profileID)
+	if err != nil {
 		return nil, err
 	}
-	if err := s.repo.Join(ctx, roomID, profileID, strings.TrimSpace(clientID), s.now().UTC()); err != nil {
+	if room.Status == models.WatchRoomStatusEnded {
+		return nil, ErrRoomEnded
+	}
+	if err := s.repo.Join(ctx, roomID, profileID, strings.TrimSpace(clientID), capabilities, s.now().UTC()); err != nil {
 		return nil, err
 	}
 	return s.Get(ctx, roomID, profileID)
@@ -160,15 +188,23 @@ func (s *Service) Heartbeat(ctx context.Context, roomID, profileID, clientID str
 }
 
 func (s *Service) Leave(ctx context.Context, roomID, profileID string) error {
-	if _, err := s.Get(ctx, roomID, profileID); err != nil {
+	room, err := s.Get(ctx, roomID, profileID)
+	if err != nil {
 		return err
+	}
+	if room.Status == models.WatchRoomStatusEnded {
+		return ErrRoomEnded
 	}
 	return s.repo.Leave(ctx, roomID, profileID)
 }
 
 func (s *Service) End(ctx context.Context, roomID, profileID string) error {
-	if _, err := s.Get(ctx, roomID, profileID); err != nil {
+	room, err := s.Get(ctx, roomID, profileID)
+	if err != nil {
 		return err
+	}
+	if room.Status == models.WatchRoomStatusEnded {
+		return nil
 	}
 	ok, err := s.repo.End(ctx, roomID, profileID, s.now().UTC())
 	if err != nil {
@@ -180,10 +216,18 @@ func (s *Service) End(ctx context.Context, roomID, profileID string) error {
 	return nil
 }
 
+func (s *Service) Cleanup(ctx context.Context) (ended int64, deleted int64, err error) {
+	now := s.now().UTC()
+	return s.repo.Sweep(ctx, now, now.Add(-disconnectGrace), now.Add(-endedAuditWindow))
+}
+
 func (s *Service) requireMember(ctx context.Context, roomID, profileID string) error {
 	room, err := s.Get(ctx, roomID, profileID)
 	if err != nil {
 		return err
+	}
+	if room.Status == models.WatchRoomStatusEnded {
+		return ErrRoomEnded
 	}
 	for _, member := range room.Members {
 		if member.ProfileID == profileID && member.Joined {
