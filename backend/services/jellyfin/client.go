@@ -108,7 +108,10 @@ func authHeader(token string) string {
 
 // Authenticate authenticates with a Jellyfin server using username/password.
 func (c *Client) Authenticate(serverURL, username, password string) (*AuthResult, error) {
-	serverURL = strings.TrimRight(serverURL, "/")
+	serverURL, err := NormalizeServerURL(serverURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid server URL: %w", err)
+	}
 
 	body := fmt.Sprintf(`{"Username":%q,"Pw":%q}`, username, password)
 	req, err := http.NewRequest(http.MethodPost, serverURL+"/Users/AuthenticateByName", strings.NewReader(body))
@@ -139,7 +142,10 @@ func (c *Client) Authenticate(serverURL, username, password string) (*AuthResult
 
 // TestConnection tests connectivity to a Jellyfin server.
 func (c *Client) TestConnection(serverURL, token string) error {
-	serverURL = strings.TrimRight(serverURL, "/")
+	serverURL, err := NormalizeServerURL(serverURL)
+	if err != nil {
+		return fmt.Errorf("invalid server URL: %w", err)
+	}
 
 	req, err := http.NewRequest(http.MethodGet, serverURL+"/System/Info", nil)
 	if err != nil {
@@ -243,7 +249,11 @@ func (c *Client) openStream(ctx context.Context, serverURL, token, itemID, media
 	if mediaSourceID != "" {
 		params.Set("MediaSourceId", mediaSourceID)
 	}
-	endpoint := strings.TrimRight(serverURL, "/") + "/Videos/" + url.PathEscape(itemID) + "/stream?" + params.Encode()
+	serverURL, err := NormalizeServerURL(serverURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid server URL: %w", err)
+	}
+	endpoint := serverURL + "/Videos/" + url.PathEscape(itemID) + "/stream?" + params.Encode()
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, nil)
 	if err != nil {
 		return nil, err
@@ -313,7 +323,11 @@ func (c *Client) ReportPlayback(ctx context.Context, serverURL, token, event str
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(serverURL, "/")+path, bytes.NewReader(body))
+	serverURL, err = NormalizeServerURL(serverURL)
+	if err != nil {
+		return fmt.Errorf("invalid server URL: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, serverURL+path, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -337,7 +351,11 @@ func (c *Client) OpenImage(ctx context.Context, serverURL, token, itemID, kind s
 	if kind == "" {
 		kind = "Primary"
 	}
-	endpoint := strings.TrimRight(serverURL, "/") + "/Items/" + url.PathEscape(itemID) + "/Images/" + url.PathEscape(kind)
+	serverURL, err := NormalizeServerURL(serverURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid server URL: %w", err)
+	}
+	endpoint := serverURL + "/Items/" + url.PathEscape(itemID) + "/Images/" + url.PathEscape(kind)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
@@ -347,7 +365,11 @@ func (c *Client) OpenImage(ctx context.Context, serverURL, token, itemID, kind s
 }
 
 func (c *Client) getJSON(serverURL, token, path string, params url.Values, out interface{}) error {
-	endpoint := strings.TrimRight(serverURL, "/") + path
+	serverURL, err := NormalizeServerURL(serverURL)
+	if err != nil {
+		return fmt.Errorf("invalid server URL: %w", err)
+	}
+	endpoint := serverURL + path
 	if len(params) > 0 {
 		endpoint += "?" + params.Encode()
 	}
@@ -371,7 +393,10 @@ func (c *Client) getJSON(serverURL, token, path string, params url.Values, out i
 
 // GetFavorites fetches favorited movies and series from Jellyfin.
 func (c *Client) GetFavorites(serverURL, token, userID string) ([]JellyfinItem, error) {
-	serverURL = strings.TrimRight(serverURL, "/")
+	serverURL, err := NormalizeServerURL(serverURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid server URL: %w", err)
+	}
 
 	params := url.Values{
 		"Filters":          {"IsFavorite"},
@@ -416,7 +441,10 @@ func (c *Client) GetFavorites(serverURL, token, userID string) ([]JellyfinItem, 
 
 // GetWatchHistory fetches played movies, series, and episodes from Jellyfin.
 func (c *Client) GetWatchHistory(serverURL, token, userID string) ([]JellyfinItem, error) {
-	serverURL = strings.TrimRight(serverURL, "/")
+	serverURL, err := NormalizeServerURL(serverURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid server URL: %w", err)
+	}
 
 	params := url.Values{
 		"Filters":          {"IsPlayed"},

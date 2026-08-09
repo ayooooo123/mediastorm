@@ -10,6 +10,39 @@ import (
 	"testing"
 )
 
+func TestNormalizeServerURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{name: "bare IPv4 and port", input: "192.168.1.100:8096", want: "http://192.168.1.100:8096"},
+		{name: "bare hostname and port", input: "Mac-mini:8096/", want: "http://Mac-mini:8096"},
+		{name: "preserves HTTPS and base path", input: " https://media.example.com/jellyfin/ ", want: "https://media.example.com/jellyfin"},
+		{name: "rejects unsupported scheme", input: "ftp://media.example.com", wantErr: true},
+		{name: "rejects query", input: "http://media.example.com?token=value", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := NormalizeServerURL(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("NormalizeServerURL(%q) = %q, want error", tt.input, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("NormalizeServerURL(%q) error = %v", tt.input, err)
+			}
+			if got != tt.want {
+				t.Fatalf("NormalizeServerURL(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestOpenStreamRetriesStaleMediaSource(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -160,6 +193,22 @@ func TestAuthenticate(t *testing.T) {
 		}
 		if result.User.Name != "testuser" {
 			t.Errorf("expected User.Name 'testuser', got %s", result.User.Name)
+		}
+	})
+
+	t.Run("adds HTTP scheme to bare address", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/Users/AuthenticateByName" {
+				t.Fatalf("path=%q", r.URL.Path)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"AccessToken":"token","User":{"Id":"user-id","Name":"user"}}`))
+		}))
+		defer server.Close()
+
+		bareAddress := strings.TrimPrefix(server.URL, "http://")
+		if _, err := NewClient().Authenticate(bareAddress, "user", "password"); err != nil {
+			t.Fatalf("Authenticate() error = %v", err)
 		}
 	})
 
