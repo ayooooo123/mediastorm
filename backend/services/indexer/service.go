@@ -868,12 +868,11 @@ func compareDownloadPreferredTerms(i, j models.NZBResult, terms []filter.Compile
 	return 0
 }
 
-// compareEpisodeYearMatch gives targeted episode results with a confirmed
-// close year precedence over lenient yearless matches. Filtering only sets the
-// tag after both the title identity and target episode have been validated.
+// compareEpisodeYearMatch gives targeted episode results matching the series
+// year precedence only when another passed result has a conflicting year.
 func compareEpisodeYearMatch(i, j models.NZBResult) int {
-	iMatch := i.Attributes["episodeYearMatch"] == "true"
-	jMatch := j.Attributes["episodeYearMatch"] == "true"
+	iMatch := i.Attributes["episodeYearPriority"] == "true"
+	jMatch := j.Attributes["episodeYearPriority"] == "true"
 	if iMatch && !jMatch {
 		return -1
 	}
@@ -881,6 +880,51 @@ func compareEpisodeYearMatch(i, j models.NZBResult) int {
 		return 1
 	}
 	return 0
+}
+
+func episodeYearWithinTolerance(candidate, expected int) bool {
+	if candidate <= 0 || expected <= 0 {
+		return false
+	}
+	difference := candidate - expected
+	if difference < 0 {
+		difference = -difference
+	}
+	return difference <= filter.MaxYearDifference
+}
+
+// applyEpisodeYearPriority activates series-year precedence only when an
+// explicit, conflicting year remains in the passed result set. A target
+// episode's air year is valid and must not be treated as a reboot conflict.
+func applyEpisodeYearPriority(results []models.NZBResult, seriesYear, episodeAirYear int) {
+	for i := range results {
+		delete(results[i].Attributes, "episodeYearPriority")
+	}
+	if seriesYear <= 0 {
+		return
+	}
+
+	hasConflict := false
+	for _, result := range results {
+		releaseYear, err := strconv.Atoi(result.Attributes["episodeReleaseYear"])
+		if err != nil || releaseYear <= 0 {
+			continue
+		}
+		if episodeYearWithinTolerance(releaseYear, seriesYear) || episodeYearWithinTolerance(releaseYear, episodeAirYear) {
+			continue
+		}
+		hasConflict = true
+		break
+	}
+	if !hasConflict {
+		return
+	}
+
+	for i := range results {
+		if results[i].Attributes["episodeYearMatch"] == "true" {
+			results[i].Attributes["episodeYearPriority"] = "true"
+		}
+	}
 }
 
 func compareDeterministicTieBreaker(i, j models.NZBResult) int {
@@ -1542,6 +1586,12 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBR
 		return nil, lastErr
 	}
 
+	expectedYear := opts.Year
+	if expectedYear == 0 {
+		expectedYear = parsedQuery.Year
+	}
+	applyEpisodeYearPriority(aggregated, expectedYear, opts.EpisodeAirYear)
+
 	// Check if ranking should be bypassed for AIOStreams-only mode
 	// Only bypass when: setting is enabled, AIOStreams is the only scraper, and no usenet results are mixed in
 	bypassRanking := shouldBypassAIOStreamsRanking(settings, filterOverrides, includeUsenet)
@@ -1701,6 +1751,24 @@ func (s *Service) SearchWithScoring(ctx context.Context, opts SearchOptions) ([]
 		resultDetails := filter.ResultsWithDetails([]models.NZBResult{raw}, filterOpts)
 		if len(resultDetails) > 0 {
 			detailed = append(detailed, resultDetails[0])
+		}
+	}
+	passedResults := make([]models.NZBResult, 0, len(detailed))
+	for _, result := range detailed {
+		if result.Passed {
+			passedResults = append(passedResults, result.Result)
+		}
+	}
+	expectedYear := rawOpts.Year
+	if expectedYear == 0 {
+		expectedYear = debrid.ParseQuery(rawOpts.Query).Year
+	}
+	applyEpisodeYearPriority(passedResults, expectedYear, rawOpts.EpisodeAirYear)
+	passedIndex := 0
+	for i := range detailed {
+		if detailed[i].Passed {
+			detailed[i].Result = passedResults[passedIndex]
+			passedIndex++
 		}
 	}
 	scoringCtx := s.buildScoringContextWithCriteria(opts, settings, filterSettings, animeSettings, rankingBundle.Default)

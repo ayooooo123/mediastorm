@@ -324,7 +324,7 @@ func TestSortResultsByScore_YearMatchAloneDoesNotSupersedeCriteria(t *testing.T)
 	}
 }
 
-func TestSortResultsByScore_TargetEpisodeYearMatchSupersedesCriteria(t *testing.T) {
+func TestSortResultsByScore_TargetEpisodeYearMatchDoesNotSupersedeCriteriaWithoutConflict(t *testing.T) {
 	ctx := ScoringContext{
 		RankingCriteria: []config.RankingCriterion{
 			{ID: config.RankingResolution, Name: "Resolution", Enabled: true, Order: 0},
@@ -336,6 +336,7 @@ func TestSortResultsByScore_TargetEpisodeYearMatchSupersedesCriteria(t *testing.
 	results := filter.Results([]models.NZBResult{
 		{Title: "Little.House.On.The.Prairie.S01E01.2160p.BluRay.x265", SizeBytes: 20 * 1024 * 1024 * 1024},
 		{Title: matchingYearTitle, SizeBytes: 2 * 1024 * 1024 * 1024},
+		{Title: "Little.House.On.The.Prairie.2026.S01E01.1080p.WEB-DL.x264", SizeBytes: 4 * 1024 * 1024 * 1024},
 	}, filter.Options{
 		ExpectedTitle: "Little House on the Prairie",
 		ExpectedYear:  1974,
@@ -344,11 +345,70 @@ func TestSortResultsByScore_TargetEpisodeYearMatchSupersedesCriteria(t *testing.
 		TargetEpisode: 1,
 	})
 	if len(results) != 2 {
-		t.Fatalf("expected both Little House episode results to pass filtering, got %d", len(results))
+		t.Fatalf("expected the yearless and matching-year results to pass while the conflict is filtered, got %d", len(results))
 	}
+	applyEpisodeYearPriority(results, 1974, 1974)
+	(&Service{}).sortResultsByScore(results, ctx)
+	if results[0].Title == matchingYearTitle {
+		t.Fatalf("expected normal quality ranking without a surviving conflicting year, got %q", results[0].Title)
+	}
+}
+
+func TestSortResultsByScore_TargetEpisodeYearMatchSupersedesCriteriaWithConflict(t *testing.T) {
+	ctx := ScoringContext{
+		RankingCriteria: []config.RankingCriterion{
+			{ID: config.RankingResolution, Name: "Resolution", Enabled: true, Order: 0},
+			{ID: config.RankingSize, Name: "Size", Enabled: true, Order: 1},
+		},
+	}
+
+	matchingYearTitle := "Little.House.On.The.Prairie.1974.S01E01.720p.BluRay.x264"
+	results := []models.NZBResult{
+		{Title: "Little.House.On.The.Prairie.S01E01.2160p.BluRay.x265", SizeBytes: 20 * 1024 * 1024 * 1024},
+		{
+			Title:      matchingYearTitle,
+			SizeBytes:  2 * 1024 * 1024 * 1024,
+			Attributes: map[string]string{"episodeYearMatch": "true", "episodeReleaseYear": "1974"},
+		},
+		{
+			Title:      "Little.House.On.The.Prairie.2026.S01E01.1080p.WEB-DL.x264",
+			SizeBytes:  4 * 1024 * 1024 * 1024,
+			Attributes: map[string]string{"episodeReleaseYear": "2026"},
+		},
+	}
+
+	applyEpisodeYearPriority(results, 1974, 1974)
 	(&Service{}).sortResultsByScore(results, ctx)
 	if results[0].Title != matchingYearTitle {
-		t.Fatalf("expected matching-year target episode to receive priority boost, got %q", results[0].Title)
+		t.Fatalf("expected matching series year to receive priority with a surviving conflict, got %q", results[0].Title)
+	}
+}
+
+func TestApplyEpisodeYearPriority_EpisodeAirYearIsNotConflict(t *testing.T) {
+	results := filter.Results([]models.NZBResult{
+		{Title: "The.Office.2005.S04E01.720p.WEB-DL.x264", SizeBytes: 2 * 1024 * 1024 * 1024},
+		{Title: "The.Office.2009.S04E01.1080p.WEB-DL.x264", SizeBytes: 4 * 1024 * 1024 * 1024},
+		{Title: "The.Office.S04E01.2160p.WEB-DL.x265", SizeBytes: 8 * 1024 * 1024 * 1024},
+	}, filter.Options{
+		ExpectedTitle:  "The Office",
+		ExpectedYear:   2005,
+		EpisodeAirYear: 2009,
+		IsMovie:        false,
+		TargetSeason:   4,
+		TargetEpisode:  1,
+	})
+	if len(results) != 3 {
+		t.Fatalf("expected series-year, episode-air-year, and yearless results to pass, got %d", len(results))
+	}
+
+	applyEpisodeYearPriority(results, 2005, 2009)
+	for _, result := range results {
+		if result.Attributes["episodeYearPriority"] == "true" {
+			t.Fatalf("valid episode air year activated conflict priority for %q", result.Title)
+		}
+		if strings.Contains(result.Title, ".2009.") && result.Attributes["episodeAirYearMatch"] != "true" {
+			t.Fatalf("expected 2009 result to be tagged as a valid episode air year, got %+v", result.Attributes)
+		}
 	}
 }
 

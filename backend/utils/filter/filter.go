@@ -440,6 +440,7 @@ func ResultsWithDetails(results []models.NZBResult, opts Options) []FilteredResu
 			}
 			if parsedYear > 0 {
 				yearDiff := abs(opts.ExpectedYear - parsedYear)
+				seriesYearMatch := yearDiff <= MaxYearDifference
 				// Also accept if the parsed year matches the episode's air year (±1)
 				// This handles shows where S02 airs years after the series premiere
 				episodeYearMatch := opts.EpisodeAirYear > 0 && abs(opts.EpisodeAirYear-parsedYear) <= MaxYearDifference
@@ -457,13 +458,21 @@ func ResultsWithDetails(results []models.NZBResult, opts Options) []FilteredResu
 					reject(result, reason)
 					continue
 				}
-				result.Attributes["yearMatch"] = "true"
+				if seriesYearMatch {
+					result.Attributes["yearMatch"] = "true"
+				}
 				// A confirmed year is especially valuable for a targeted episode
-				// search because otherwise same-named reboots with yearless release
-				// titles can rank alongside the intended series. Keep the broader
-				// yearMatch tag diagnostic-only; this narrower tag drives ranking.
+				// search when a different series year also survives filtering. Preserve
+				// the parsed year so ranking can make that decision over the complete
+				// passed result set. An episode's air year remains valid, but is not a
+				// match for the series premiere year.
 				if !opts.IsMovie && (opts.TargetEpisode > 0 || opts.TargetAbsoluteEpisode > 0 || opts.TargetAirDate != "") {
-					result.Attributes["episodeYearMatch"] = "true"
+					result.Attributes["episodeReleaseYear"] = strconv.Itoa(parsedYear)
+					if seriesYearMatch {
+						result.Attributes["episodeYearMatch"] = "true"
+					} else if episodeYearMatch {
+						result.Attributes["episodeAirYearMatch"] = "true"
+					}
 				}
 				if episodeYearMatch && yearDiff > MaxYearDifference {
 					log.Printf("[filter] Accepted %q: year %d matches episode air year %d (series year: %d)",
