@@ -12,11 +12,85 @@ type fakeProfiles map[string]models.User
 
 func (p fakeProfiles) Get(id string) (models.User, bool) { user, ok := p[id]; return user, ok }
 
+type fakeAccounts map[string]models.Account
+
+func (a fakeAccounts) GetByUsername(username string) (models.Account, bool) {
+	for _, account := range a {
+		if account.Username == username {
+			return account, true
+		}
+	}
+	return models.Account{}, false
+}
+
 type fakeRoomRepo struct {
-	room     *models.WatchRoom
-	invites  map[string]bool
-	members  map[string]models.WatchRoomMember
-	stateSet bool
+	room           *models.WatchRoom
+	invites        map[string]bool
+	members        map[string]models.WatchRoomMember
+	stateSet       bool
+	accountInvites map[string]models.WatchRoomAccountInvite
+}
+
+func (r *fakeRoomRepo) CreateAccountInvite(_ context.Context, invite *models.WatchRoomAccountInvite) (bool, error) {
+	if r.accountInvites == nil {
+		r.accountInvites = map[string]models.WatchRoomAccountInvite{}
+	}
+	for id, existing := range r.accountInvites {
+		if existing.RoomID == invite.RoomID && existing.InviteeAccountID == invite.InviteeAccountID {
+			if existing.Status != models.WatchRoomAccountInviteDeclined && existing.Status != models.WatchRoomAccountInviteRevoked {
+				return false, nil
+			}
+			delete(r.accountInvites, id)
+		}
+	}
+	r.accountInvites[invite.ID] = *invite
+	return true, nil
+}
+func (r *fakeRoomRepo) ListAccountInvites(_ context.Context, accountID string, now time.Time) ([]models.WatchRoomAccountInvite, error) {
+	result := []models.WatchRoomAccountInvite{}
+	for _, invite := range r.accountInvites {
+		if invite.InviteeAccountID == accountID && invite.Status == models.WatchRoomAccountInvitePending && invite.ExpiresAt.After(now) {
+			result = append(result, invite)
+		}
+	}
+	return result, nil
+}
+func (r *fakeRoomRepo) ListRoomAccountInvites(_ context.Context, roomID string, now time.Time) ([]models.WatchRoomAccountInvite, error) {
+	result := []models.WatchRoomAccountInvite{}
+	for _, invite := range r.accountInvites {
+		if invite.RoomID == roomID && invite.Status == models.WatchRoomAccountInvitePending && invite.ExpiresAt.After(now) {
+			result = append(result, invite)
+		}
+	}
+	return result, nil
+}
+func (r *fakeRoomRepo) AcceptAccountInvite(_ context.Context, inviteID, accountID, profileID string, now time.Time) (string, bool, error) {
+	invite, ok := r.accountInvites[inviteID]
+	if !ok || invite.InviteeAccountID != accountID || invite.Status != models.WatchRoomAccountInvitePending || !invite.ExpiresAt.After(now) {
+		return "", false, nil
+	}
+	invite.Status, invite.AcceptedProfileID, invite.RespondedAt = models.WatchRoomAccountInviteAccepted, profileID, &now
+	r.accountInvites[inviteID] = invite
+	r.invites[profileID] = true
+	return invite.RoomID, true, nil
+}
+func (r *fakeRoomRepo) DeclineAccountInvite(_ context.Context, inviteID, accountID string, now time.Time) (bool, error) {
+	invite, ok := r.accountInvites[inviteID]
+	if !ok || invite.InviteeAccountID != accountID || invite.Status != models.WatchRoomAccountInvitePending {
+		return false, nil
+	}
+	invite.Status, invite.RespondedAt = models.WatchRoomAccountInviteDeclined, &now
+	r.accountInvites[inviteID] = invite
+	return true, nil
+}
+func (r *fakeRoomRepo) RevokeAccountInvite(_ context.Context, inviteID, roomID, creatorProfileID string, now time.Time) (bool, error) {
+	invite, ok := r.accountInvites[inviteID]
+	if !ok || invite.RoomID != roomID || r.room.CreatorProfileID != creatorProfileID || invite.Status != models.WatchRoomAccountInvitePending {
+		return false, nil
+	}
+	invite.Status, invite.RevokedAt = models.WatchRoomAccountInviteRevoked, &now
+	r.accountInvites[inviteID] = invite
+	return true, nil
 }
 
 var supportedCapabilities = models.WatchRoomClientCapabilities{NativePlayback: true, StateSync: true, ProtocolVersion: 1}
@@ -140,14 +214,14 @@ func (r *fakeRoomRepo) Sweep(_ context.Context, now, disconnectCutoff, deleteBef
 func TestCreateJoinAndUpdateWatchRoom(t *testing.T) {
 	repo := &fakeRoomRepo{}
 	svc := New(repo, fakeProfiles{
-		"host":  {ID: "host", Name: "Host"},
-		"guest": {ID: "guest", Name: "Guest"},
-		"other": {ID: "other", Name: "Other"},
-	})
+		"host":  {ID: "host", AccountID: "home", Name: "Host"},
+		"guest": {ID: "guest", AccountID: "home", Name: "Guest"},
+		"other": {ID: "other", AccountID: "home", Name: "Other"},
+	}, fakeAccounts{"home": {ID: "home", Username: "home"}})
 	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
 	svc.now = func() time.Time { return now }
 
-	room, err := svc.Create(context.Background(), "host", models.WatchRoomCreate{
+	room, err := svc.Create(context.Background(), "home", "host", models.WatchRoomCreate{
 		Title: "Movie", MediaType: "movie", ItemID: "tmdb:movie:1",
 		InviteeProfileIDs: []string{"guest", "missing"}, ClientID: "host-tv", Capabilities: supportedCapabilities,
 	})
@@ -215,9 +289,9 @@ func TestCreateJoinAndUpdateWatchRoom(t *testing.T) {
 
 func TestUpdateStateRejectsNonMemberAndInvalidValues(t *testing.T) {
 	repo := &fakeRoomRepo{}
-	svc := New(repo, fakeProfiles{"host": {ID: "host"}, "guest": {ID: "guest"}})
+	svc := New(repo, fakeProfiles{"host": {ID: "host", AccountID: "home"}, "guest": {ID: "guest", AccountID: "home"}}, fakeAccounts{})
 	svc.now = func() time.Time { return time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC) }
-	room, err := svc.Create(context.Background(), "host", models.WatchRoomCreate{Title: "Movie", MediaType: "movie", ItemID: "one", InviteeProfileIDs: []string{"guest"}, Capabilities: supportedCapabilities})
+	room, err := svc.Create(context.Background(), "home", "host", models.WatchRoomCreate{Title: "Movie", MediaType: "movie", ItemID: "one", InviteeProfileIDs: []string{"guest"}, Capabilities: supportedCapabilities})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,11 +305,11 @@ func TestUpdateStateRejectsNonMemberAndInvalidValues(t *testing.T) {
 
 func TestRejectsIncompatibleClients(t *testing.T) {
 	repo := &fakeRoomRepo{}
-	svc := New(repo, fakeProfiles{"host": {ID: "host"}, "guest": {ID: "guest"}})
-	if _, err := svc.Create(context.Background(), "host", models.WatchRoomCreate{Title: "Movie", MediaType: "movie", ItemID: "one"}); err != ErrIncompatibleClient {
+	svc := New(repo, fakeProfiles{"host": {ID: "host", AccountID: "home"}, "guest": {ID: "guest", AccountID: "home"}}, fakeAccounts{})
+	if _, err := svc.Create(context.Background(), "home", "host", models.WatchRoomCreate{Title: "Movie", MediaType: "movie", ItemID: "one"}); err != ErrIncompatibleClient {
 		t.Fatalf("Create() error = %v, want %v", err, ErrIncompatibleClient)
 	}
-	room, err := svc.Create(context.Background(), "host", models.WatchRoomCreate{Title: "Movie", MediaType: "movie", ItemID: "one", InviteeProfileIDs: []string{"guest"}, Capabilities: supportedCapabilities})
+	room, err := svc.Create(context.Background(), "home", "host", models.WatchRoomCreate{Title: "Movie", MediaType: "movie", ItemID: "one", InviteeProfileIDs: []string{"guest"}, Capabilities: supportedCapabilities})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,12 +318,105 @@ func TestRejectsIncompatibleClients(t *testing.T) {
 	}
 }
 
-func TestCleanupEndsDisconnectedRoomAndRetainsTerminalResponse(t *testing.T) {
+func TestCrossAccountInvitationRequiresRecipientAcceptance(t *testing.T) {
 	repo := &fakeRoomRepo{}
-	svc := New(repo, fakeProfiles{"host": {ID: "host"}})
+	profiles := fakeProfiles{
+		"host":   {ID: "host", AccountID: "home", Name: "Host"},
+		"local":  {ID: "local", AccountID: "home", Name: "Local"},
+		"friend": {ID: "friend", AccountID: "friends", Name: "Friend"},
+	}
+	accounts := fakeAccounts{
+		"home":    {ID: "home", Username: "home"},
+		"friends": {ID: "friends", Username: "friends"},
+	}
+	svc := New(repo, profiles, accounts)
 	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
 	svc.now = func() time.Time { return now }
-	room, err := svc.Create(context.Background(), "host", models.WatchRoomCreate{Title: "Movie", MediaType: "movie", ItemID: "one", Capabilities: supportedCapabilities})
+
+	if _, err := svc.Create(context.Background(), "home", "host", models.WatchRoomCreate{
+		Title: "Movie", MediaType: "movie", ItemID: "one", InviteeProfileIDs: []string{"friend"}, Capabilities: supportedCapabilities,
+	}); err != ErrForeignProfile {
+		t.Fatalf("foreign direct invite error = %v, want %v", err, ErrForeignProfile)
+	}
+
+	room, err := svc.Create(context.Background(), "home", "host", models.WatchRoomCreate{
+		Title: "Movie", MediaType: "movie", ItemID: "one", InviteeProfileIDs: []string{"local"}, Capabilities: supportedCapabilities,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invite, err := svc.InviteAccount(context.Background(), "home", "host", room.ID, "friends")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo.invites["friend"] {
+		t.Fatal("recipient profile was exposed before acceptance")
+	}
+	pending, err := svc.AccountInvitations(context.Background(), "friends")
+	if err != nil || len(pending) != 1 || pending[0].ID != invite.ID {
+		t.Fatalf("AccountInvitations() = %#v, %v", pending, err)
+	}
+	if _, err := svc.AcceptAccountInvitation(context.Background(), "home", "friend", invite.ID); err != ErrNotFound {
+		t.Fatalf("foreign acceptance error = %v, want %v", err, ErrNotFound)
+	}
+	accepted, err := svc.AcceptAccountInvitation(context.Background(), "friends", "friend", invite.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accepted.ID != room.ID || !repo.invites["friend"] {
+		t.Fatalf("accepted room = %#v invites=%v", accepted, repo.invites)
+	}
+	if _, err := svc.AcceptAccountInvitation(context.Background(), "friends", "friend", invite.ID); err != ErrInviteUnavailable {
+		t.Fatalf("replay error = %v, want %v", err, ErrInviteUnavailable)
+	}
+}
+
+func TestCrossAccountInvitationCanBeDeclinedRevokedAndReissued(t *testing.T) {
+	repo := &fakeRoomRepo{}
+	svc := New(repo, fakeProfiles{
+		"host":   {ID: "host", AccountID: "home"},
+		"friend": {ID: "friend", AccountID: "friends"},
+	}, fakeAccounts{
+		"home":    {ID: "home", Username: "home"},
+		"friends": {ID: "friends", Username: "friends"},
+	})
+	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	svc.now = func() time.Time { return now }
+	room, err := svc.Create(context.Background(), "home", "host", models.WatchRoomCreate{
+		Title: "Movie", MediaType: "movie", ItemID: "one", Capabilities: supportedCapabilities,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := svc.InviteAccount(context.Background(), "home", "host", room.ID, "friends")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DeclineAccountInvitation(context.Background(), "home", first.ID); err != ErrInviteUnavailable {
+		t.Fatalf("foreign decline error = %v, want %v", err, ErrInviteUnavailable)
+	}
+	if err := svc.DeclineAccountInvitation(context.Background(), "friends", first.ID); err != nil {
+		t.Fatal(err)
+	}
+	second, err := svc.InviteAccount(context.Background(), "home", "host", room.ID, "friends")
+	if err != nil {
+		t.Fatalf("reissue after decline: %v", err)
+	}
+	if err := svc.RevokeAccountInvitation(context.Background(), "home", "host", room.ID, second.ID); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := svc.AccountInvitations(context.Background(), "friends"); err != nil || len(pending) != 0 {
+		t.Fatalf("pending after revoke = %#v, %v", pending, err)
+	}
+}
+
+func TestCleanupEndsDisconnectedRoomAndRetainsTerminalResponse(t *testing.T) {
+	repo := &fakeRoomRepo{}
+	svc := New(repo, fakeProfiles{"host": {ID: "host", AccountID: "home"}}, fakeAccounts{})
+	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	svc.now = func() time.Time { return now }
+	room, err := svc.Create(context.Background(), "home", "host", models.WatchRoomCreate{Title: "Movie", MediaType: "movie", ItemID: "one", Capabilities: supportedCapabilities})
 	if err != nil {
 		t.Fatal(err)
 	}

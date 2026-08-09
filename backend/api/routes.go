@@ -142,6 +142,7 @@ func Register(
 	// Rate limiters for resource-intensive endpoints (spawn FFmpeg processes)
 	probeLimiter := NewIPRateLimiter(rate.Every(6*time.Second), 10)    // 10/min per IP
 	hlsStartLimiter := NewIPRateLimiter(rate.Every(12*time.Second), 5) // 5/min per IP
+	watchRoomInviteLimiter := NewIPRateLimiter(rate.Every(6*time.Second), 10)
 
 	// Auth routes (no authentication required)
 	authHandler := handlers.NewAuthHandler(accountsSvc, sessionsSvc)
@@ -225,6 +226,13 @@ func Register(
 	profileProtected.Use(ProfileOwnershipMiddleware(usersSvc))
 	if watchRoomsHandler != nil {
 		profileProtected.HandleFunc("/{userID}/watch-rooms", watchRoomsHandler.Create).Methods(http.MethodPost)
+		profileProtected.HandleFunc("/{userID}/watch-rooms/{roomID}/account-invites", RateLimitHandlerFunc(watchRoomInviteLimiter, watchRoomsHandler.InviteAccount)).Methods(http.MethodPost)
+		profileProtected.HandleFunc("/{userID}/watch-rooms/{roomID}/account-invites", watchRoomsHandler.RoomAccountInvitations).Methods(http.MethodGet)
+		profileProtected.HandleFunc("/{userID}/watch-rooms/{roomID}/account-invites", watchRoomsHandler.Options).Methods(http.MethodOptions)
+		profileProtected.HandleFunc("/{userID}/watch-rooms/{roomID}/account-invites/{inviteID}", watchRoomsHandler.RevokeAccountInvitation).Methods(http.MethodDelete)
+		profileProtected.HandleFunc("/{userID}/watch-rooms/{roomID}/account-invites/{inviteID}", watchRoomsHandler.Options).Methods(http.MethodOptions)
+		profileProtected.HandleFunc("/{userID}/watch-room-account-invitations/{inviteID}/accept", watchRoomsHandler.AcceptAccountInvitation).Methods(http.MethodPost)
+		profileProtected.HandleFunc("/{userID}/watch-room-account-invitations/{inviteID}/accept", watchRoomsHandler.Options).Methods(http.MethodOptions)
 		profileProtected.HandleFunc("/{userID}/watch-rooms/invitations", watchRoomsHandler.Invitations).Methods(http.MethodGet)
 		profileProtected.HandleFunc("/{userID}/watch-rooms/{roomID}", watchRoomsHandler.Get).Methods(http.MethodGet)
 		profileProtected.HandleFunc("/{userID}/watch-rooms/{roomID}/join", watchRoomsHandler.Join).Methods(http.MethodPost)
@@ -234,6 +242,10 @@ func Register(
 		profileProtected.HandleFunc("/{userID}/watch-rooms/{roomID}/leave", watchRoomsHandler.Leave).Methods(http.MethodPost)
 		profileProtected.HandleFunc("/{userID}/watch-rooms/{roomID}/end", watchRoomsHandler.End).Methods(http.MethodPost)
 		profileProtected.HandleFunc("/{userID}/watch-rooms/{roomID}", watchRoomsHandler.Options).Methods(http.MethodOptions)
+		protected.HandleFunc("/watch-room-account-invitations", watchRoomsHandler.AccountInvitations).Methods(http.MethodGet)
+		protected.HandleFunc("/watch-room-account-invitations", watchRoomsHandler.Options).Methods(http.MethodOptions)
+		protected.HandleFunc("/watch-room-account-invitations/{inviteID}/decline", watchRoomsHandler.DeclineAccountInvitation).Methods(http.MethodPost)
+		protected.HandleFunc("/watch-room-account-invitations/{inviteID}/decline", watchRoomsHandler.Options).Methods(http.MethodOptions)
 	}
 
 	// Settings routes - GET for all authenticated, PUT/POST for master only

@@ -188,6 +188,110 @@ func (r *pgWatchRoomRepo) Sweep(ctx context.Context, now, disconnectCutoff, dele
 	return expired.RowsAffected() + inactive.RowsAffected(), deleted.RowsAffected(), nil
 }
 
+func (r *pgWatchRoomRepo) CreateAccountInvite(ctx context.Context, invite *models.WatchRoomAccountInvite) (bool, error) {
+	tag, err := r.pool.Exec(ctx, `INSERT INTO watch_room_account_invites
+		(id,room_id,inviter_account_id,invitee_account_id,status,created_at,expires_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)
+		ON CONFLICT (room_id,invitee_account_id) DO UPDATE SET id=EXCLUDED.id,status='pending',
+			accepted_profile_id=NULL,created_at=EXCLUDED.created_at,expires_at=EXCLUDED.expires_at,
+			responded_at=NULL,revoked_at=NULL
+		WHERE watch_room_account_invites.status IN ('declined','revoked')`,
+		invite.ID, invite.RoomID, invite.InviterAccountID, invite.InviteeAccountID, invite.Status, invite.CreatedAt, invite.ExpiresAt)
+	return err == nil && tag.RowsAffected() > 0, err
+}
+
+func (r *pgWatchRoomRepo) ListAccountInvites(ctx context.Context, accountID string, now time.Time) ([]models.WatchRoomAccountInvite, error) {
+	rows, err := r.pool.Query(ctx, `SELECT i.id,i.room_id,i.status,creator.name,r.title,r.media_type,r.item_id,
+		r.poster_url,r.backdrop_url,i.created_at,i.expires_at,i.responded_at,i.revoked_at
+		FROM watch_room_account_invites i
+		JOIN watch_rooms r ON r.id=i.room_id
+		JOIN users creator ON creator.id=r.creator_profile_id
+		WHERE i.invitee_account_id=$1 AND i.status='pending' AND i.expires_at>$2
+			AND r.status<>'ended' AND r.expires_at>$2 ORDER BY i.created_at DESC`, accountID, now)
+	if err != nil {
+		return nil, fmt.Errorf("list watch room account invitations: %w", err)
+	}
+	defer rows.Close()
+	invites := make([]models.WatchRoomAccountInvite, 0)
+	for rows.Next() {
+		var invite models.WatchRoomAccountInvite
+		if err := rows.Scan(&invite.ID, &invite.RoomID, &invite.Status, &invite.CreatorName, &invite.Title,
+			&invite.MediaType, &invite.ItemID, &invite.PosterURL, &invite.BackdropURL, &invite.CreatedAt,
+			&invite.ExpiresAt, &invite.RespondedAt, &invite.RevokedAt); err != nil {
+			return nil, err
+		}
+		invites = append(invites, invite)
+	}
+	return invites, rows.Err()
+}
+
+func (r *pgWatchRoomRepo) ListRoomAccountInvites(ctx context.Context, roomID string, now time.Time) ([]models.WatchRoomAccountInvite, error) {
+	rows, err := r.pool.Query(ctx, `SELECT i.id,i.room_id,i.invitee_account_id,target.username,COALESCE(i.accepted_profile_id,''),
+		i.status,i.created_at,i.expires_at,i.responded_at,i.revoked_at
+		FROM watch_room_account_invites i JOIN accounts target ON target.id=i.invitee_account_id
+		WHERE i.room_id=$1 AND i.status='pending' AND i.expires_at>$2 ORDER BY i.created_at`, roomID, now)
+	if err != nil {
+		return nil, fmt.Errorf("list room account invitations: %w", err)
+	}
+	defer rows.Close()
+	invites := make([]models.WatchRoomAccountInvite, 0)
+	for rows.Next() {
+		var invite models.WatchRoomAccountInvite
+		if err := rows.Scan(&invite.ID, &invite.RoomID, &invite.InviteeAccountID, &invite.InviteeUsername,
+			&invite.AcceptedProfileID, &invite.Status, &invite.CreatedAt, &invite.ExpiresAt,
+			&invite.RespondedAt, &invite.RevokedAt); err != nil {
+			return nil, err
+		}
+		invites = append(invites, invite)
+	}
+	return invites, rows.Err()
+}
+
+func (r *pgWatchRoomRepo) AcceptAccountInvite(ctx context.Context, inviteID, accountID, profileID string, now time.Time) (string, bool, error) {
+	tx, err := beginDBTx(ctx, r.pool)
+	if err != nil {
+		return "", false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var roomID string
+	err = tx.QueryRow(ctx, `SELECT i.room_id FROM watch_room_account_invites i
+		JOIN watch_rooms r ON r.id=i.room_id
+		WHERE i.id=$1 AND i.invitee_account_id=$2 AND i.status='pending' AND i.expires_at>$3
+			AND r.status<>'ended' AND r.expires_at>$3 FOR UPDATE`, inviteID, accountID, now).Scan(&roomID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO watch_room_invites(room_id,profile_id,invited_at)
+		VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, roomID, profileID, now); err != nil {
+		return "", false, err
+	}
+	tag, err := tx.Exec(ctx, `UPDATE watch_room_account_invites SET status='accepted',accepted_profile_id=$2,
+		responded_at=$3 WHERE id=$1 AND status='pending'`, inviteID, profileID, now)
+	if err != nil || tag.RowsAffected() == 0 {
+		return "", false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", false, err
+	}
+	return roomID, true, nil
+}
+
+func (r *pgWatchRoomRepo) DeclineAccountInvite(ctx context.Context, inviteID, accountID string, now time.Time) (bool, error) {
+	tag, err := r.pool.Exec(ctx, `UPDATE watch_room_account_invites SET status='declined',responded_at=$3
+		WHERE id=$1 AND invitee_account_id=$2 AND status='pending'`, inviteID, accountID, now)
+	return err == nil && tag.RowsAffected() > 0, err
+}
+
+func (r *pgWatchRoomRepo) RevokeAccountInvite(ctx context.Context, inviteID, roomID, creatorProfileID string, now time.Time) (bool, error) {
+	tag, err := r.pool.Exec(ctx, `UPDATE watch_room_account_invites i SET status='revoked',revoked_at=$4
+		FROM watch_rooms r WHERE i.id=$1 AND i.room_id=$2 AND r.id=i.room_id
+			AND r.creator_profile_id=$3 AND i.status='pending'`, inviteID, roomID, creatorProfileID, now)
+	return err == nil && tag.RowsAffected() > 0, err
+}
+
 func (r *pgWatchRoomRepo) listMembers(ctx context.Context, roomID string) ([]models.WatchRoomMember, error) {
 	rows, err := r.pool.Query(ctx, `WITH people AS (
 			SELECT creator_profile_id AS profile_id FROM watch_rooms WHERE id=$1

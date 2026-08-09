@@ -35,6 +35,35 @@ type WatchRoom struct {
 	Members          []WatchRoomMember `json:"members"`
 }
 
+const (
+	WatchRoomAccountInvitePending  = "pending"
+	WatchRoomAccountInviteAccepted = "accepted"
+	WatchRoomAccountInviteDeclined = "declined"
+	WatchRoomAccountInviteRevoked  = "revoked"
+)
+
+// WatchRoomAccountInvite addresses another account without exposing its
+// profiles. The recipient chooses a profile when accepting the invitation.
+type WatchRoomAccountInvite struct {
+	ID                string     `json:"id"`
+	RoomID            string     `json:"roomId"`
+	InviterAccountID  string     `json:"-"`
+	InviteeAccountID  string     `json:"-"`
+	InviteeUsername   string     `json:"inviteeUsername,omitempty"`
+	AcceptedProfileID string     `json:"acceptedProfileId,omitempty"`
+	Status            string     `json:"status"`
+	CreatorName       string     `json:"creatorName,omitempty"`
+	Title             string     `json:"title,omitempty"`
+	MediaType         string     `json:"mediaType,omitempty"`
+	ItemID            string     `json:"itemId,omitempty"`
+	PosterURL         string     `json:"posterUrl,omitempty"`
+	BackdropURL       string     `json:"backdropUrl,omitempty"`
+	CreatedAt         time.Time  `json:"createdAt"`
+	ExpiresAt         time.Time  `json:"expiresAt"`
+	RespondedAt       *time.Time `json:"respondedAt,omitempty"`
+	RevokedAt         *time.Time `json:"revokedAt,omitempty"`
+}
+
 type WatchRoomClientCapabilities struct {
 	NativePlayback  bool `json:"nativePlayback"`
 	StateSync       bool `json:"stateSync"`

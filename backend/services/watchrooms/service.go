@@ -21,6 +21,11 @@ var (
 	ErrInvalidState       = errors.New("invalid watch room state")
 	ErrRoomEnded          = errors.New("watch room has ended")
 	ErrIncompatibleClient = errors.New("client does not support Watch Together native playback protocol")
+	ErrForeignProfile     = errors.New("invitee profiles must belong to the creator account")
+	ErrAccountNotFound    = errors.New("account not found")
+	ErrSameAccount        = errors.New("account already belongs to this household")
+	ErrInviteUnavailable  = errors.New("watch room invitation is no longer available")
+	ErrAlreadyInvited     = errors.New("account is already invited to this watch room")
 )
 
 const (
@@ -35,28 +40,34 @@ type profileProvider interface {
 	Get(id string) (models.User, bool)
 }
 
+type accountProvider interface {
+	GetByUsername(username string) (models.Account, bool)
+}
+
 type Service struct {
 	repo     datastore.WatchRoomRepository
 	profiles profileProvider
+	accounts accountProvider
 	now      func() time.Time
 }
 
-func New(repo datastore.WatchRoomRepository, profiles profileProvider) *Service {
-	return &Service{repo: repo, profiles: profiles, now: time.Now}
+func New(repo datastore.WatchRoomRepository, profiles profileProvider, accounts accountProvider) *Service {
+	return &Service{repo: repo, profiles: profiles, accounts: accounts, now: time.Now}
 }
 
 func supportsWatchTogether(capabilities models.WatchRoomClientCapabilities) bool {
 	return capabilities.NativePlayback && capabilities.StateSync && capabilities.ProtocolVersion >= protocolVersion
 }
 
-func (s *Service) Create(ctx context.Context, creatorID string, in models.WatchRoomCreate) (*models.WatchRoom, error) {
+func (s *Service) Create(ctx context.Context, actorAccountID, creatorID string, in models.WatchRoomCreate) (*models.WatchRoom, error) {
 	in.Title = strings.TrimSpace(in.Title)
 	in.MediaType = strings.TrimSpace(in.MediaType)
 	in.ItemID = strings.TrimSpace(in.ItemID)
 	if in.Title == "" || in.MediaType == "" || in.ItemID == "" {
 		return nil, ErrInvalidMedia
 	}
-	if _, ok := s.profiles.Get(creatorID); !ok {
+	creator, ok := s.profiles.Get(creatorID)
+	if !ok || creator.AccountID != actorAccountID {
 		return nil, ErrNotFound
 	}
 	if !supportsWatchTogether(in.Capabilities) {
@@ -70,8 +81,12 @@ func (s *Service) Create(ctx context.Context, creatorID string, in models.WatchR
 		if id == "" || seen[id] {
 			continue
 		}
-		if _, ok := s.profiles.Get(id); !ok {
+		profile, ok := s.profiles.Get(id)
+		if !ok {
 			continue
+		}
+		if profile.AccountID != creator.AccountID {
+			return nil, ErrForeignProfile
 		}
 		seen[id] = true
 		invitees = append(invitees, id)
@@ -91,6 +106,107 @@ func (s *Service) Create(ctx context.Context, creatorID string, in models.WatchR
 		return nil, err
 	}
 	return s.Get(ctx, room.ID, creatorID)
+}
+
+func (s *Service) InviteAccount(ctx context.Context, actorAccountID, creatorProfileID, roomID, username string) (*models.WatchRoomAccountInvite, error) {
+	creator, ok := s.profiles.Get(creatorProfileID)
+	if !ok || creator.AccountID != actorAccountID {
+		return nil, ErrNotFound
+	}
+	room, err := s.Get(ctx, roomID, creatorProfileID)
+	if err != nil {
+		return nil, err
+	}
+	if room.CreatorProfileID != creatorProfileID {
+		return nil, ErrNotCreator
+	}
+	if room.Status == models.WatchRoomStatusEnded {
+		return nil, ErrRoomEnded
+	}
+	if s.accounts == nil {
+		return nil, ErrAccountNotFound
+	}
+	account, ok := s.accounts.GetByUsername(strings.TrimSpace(username))
+	if !ok || account.IsExpired() {
+		return nil, ErrAccountNotFound
+	}
+	if account.ID == actorAccountID {
+		return nil, ErrSameAccount
+	}
+	now := s.now().UTC()
+	invite := &models.WatchRoomAccountInvite{
+		ID: uuid.NewString(), RoomID: roomID, InviterAccountID: actorAccountID,
+		InviteeAccountID: account.ID, InviteeUsername: account.Username,
+		Status: models.WatchRoomAccountInvitePending, CreatedAt: now, ExpiresAt: room.ExpiresAt,
+	}
+	created, err := s.repo.CreateAccountInvite(ctx, invite)
+	if err != nil {
+		return nil, err
+	}
+	if !created {
+		return nil, ErrAlreadyInvited
+	}
+	return invite, nil
+}
+
+func (s *Service) AccountInvitations(ctx context.Context, accountID string) ([]models.WatchRoomAccountInvite, error) {
+	return s.repo.ListAccountInvites(ctx, accountID, s.now().UTC())
+}
+
+func (s *Service) RoomAccountInvitations(ctx context.Context, actorAccountID, creatorProfileID, roomID string) ([]models.WatchRoomAccountInvite, error) {
+	creator, ok := s.profiles.Get(creatorProfileID)
+	if !ok || creator.AccountID != actorAccountID {
+		return nil, ErrNotFound
+	}
+	room, err := s.Get(ctx, roomID, creatorProfileID)
+	if err != nil {
+		return nil, err
+	}
+	if room.CreatorProfileID != creatorProfileID {
+		return nil, ErrNotCreator
+	}
+	return s.repo.ListRoomAccountInvites(ctx, roomID, s.now().UTC())
+}
+
+func (s *Service) AcceptAccountInvitation(ctx context.Context, actorAccountID, profileID, inviteID string) (*models.WatchRoom, error) {
+	profile, ok := s.profiles.Get(profileID)
+	if !ok || profile.AccountID != actorAccountID {
+		return nil, ErrNotFound
+	}
+	roomID, accepted, err := s.repo.AcceptAccountInvite(ctx, inviteID, actorAccountID, profileID, s.now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	if !accepted {
+		return nil, ErrInviteUnavailable
+	}
+	return s.Get(ctx, roomID, profileID)
+}
+
+func (s *Service) DeclineAccountInvitation(ctx context.Context, actorAccountID, inviteID string) error {
+	ok, err := s.repo.DeclineAccountInvite(ctx, inviteID, actorAccountID, s.now().UTC())
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrInviteUnavailable
+	}
+	return nil
+}
+
+func (s *Service) RevokeAccountInvitation(ctx context.Context, actorAccountID, creatorProfileID, roomID, inviteID string) error {
+	creator, ok := s.profiles.Get(creatorProfileID)
+	if !ok || creator.AccountID != actorAccountID {
+		return ErrNotFound
+	}
+	ok, err := s.repo.RevokeAccountInvite(ctx, inviteID, roomID, creatorProfileID, s.now().UTC())
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrInviteUnavailable
+	}
+	return nil
 }
 
 func (s *Service) Invitations(ctx context.Context, profileID string) ([]models.WatchRoom, error) {

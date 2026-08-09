@@ -103,6 +103,12 @@ type WatchRoomRepository interface {
 	End(ctx context.Context, roomID, profileID string, now time.Time) (bool, error)
 	EndExpired(ctx context.Context, roomID string, now time.Time) error
 	Sweep(ctx context.Context, now, disconnectCutoff, deleteBefore time.Time) (ended int64, deleted int64, err error)
+	CreateAccountInvite(ctx context.Context, invite *models.WatchRoomAccountInvite) (bool, error)
+	ListAccountInvites(ctx context.Context, accountID string, now time.Time) ([]models.WatchRoomAccountInvite, error)
+	ListRoomAccountInvites(ctx context.Context, roomID string, now time.Time) ([]models.WatchRoomAccountInvite, error)
+	AcceptAccountInvite(ctx context.Context, inviteID, accountID, profileID string, now time.Time) (string, bool, error)
+	DeclineAccountInvite(ctx context.Context, inviteID, accountID string, now time.Time) (bool, error)
+	RevokeAccountInvite(ctx context.Context, inviteID, roomID, creatorProfileID string, now time.Time) (bool, error)
 }
 
 type RemoteAccessInviteRepository interface {

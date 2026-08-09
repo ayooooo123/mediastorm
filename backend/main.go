@@ -865,7 +865,7 @@ func main() {
 	shareHandler.SetLibraryAccessService(libraryAccessService)
 	var watchRoomsHandler *handlers.WatchRoomsHandler
 	if store != nil {
-		watchRoomsService := watchrooms.New(store.WatchRooms(), userService)
+		watchRoomsService := watchrooms.New(store.WatchRooms(), userService, accountsService)
 		watchRoomsHandler = handlers.NewWatchRoomsHandler(watchRoomsService)
 		go func() {
 			runCleanup := func() {

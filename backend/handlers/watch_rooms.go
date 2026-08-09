@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/gorilla/mux"
+	"novastream/internal/auth"
 	"novastream/models"
 	"novastream/services/watchrooms"
 )
@@ -25,12 +26,72 @@ func (h *WatchRoomsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	room, err := h.service.Create(r.Context(), mux.Vars(r)["userID"], in)
+	room, err := h.service.Create(r.Context(), auth.GetAccountID(r), mux.Vars(r)["userID"], in)
 	if err != nil {
 		h.writeError(w, err)
 		return
 	}
 	writeWatchRoomJSON(w, http.StatusCreated, room)
+}
+
+func (h *WatchRoomsHandler) InviteAccount(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Username string `json:"username"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSONError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	invite, err := h.service.InviteAccount(r.Context(), auth.GetAccountID(r), mux.Vars(r)["userID"], mux.Vars(r)["roomID"], body.Username)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	writeWatchRoomJSON(w, http.StatusCreated, invite)
+}
+
+func (h *WatchRoomsHandler) AccountInvitations(w http.ResponseWriter, r *http.Request) {
+	invites, err := h.service.AccountInvitations(r.Context(), auth.GetAccountID(r))
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	writeWatchRoomJSON(w, http.StatusOK, invites)
+}
+
+func (h *WatchRoomsHandler) RoomAccountInvitations(w http.ResponseWriter, r *http.Request) {
+	invites, err := h.service.RoomAccountInvitations(r.Context(), auth.GetAccountID(r), mux.Vars(r)["userID"], mux.Vars(r)["roomID"])
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	writeWatchRoomJSON(w, http.StatusOK, invites)
+}
+
+func (h *WatchRoomsHandler) AcceptAccountInvitation(w http.ResponseWriter, r *http.Request) {
+	room, err := h.service.AcceptAccountInvitation(r.Context(), auth.GetAccountID(r), mux.Vars(r)["userID"], mux.Vars(r)["inviteID"])
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	writeWatchRoomJSON(w, http.StatusOK, room)
+}
+
+func (h *WatchRoomsHandler) DeclineAccountInvitation(w http.ResponseWriter, r *http.Request) {
+	if err := h.service.DeclineAccountInvitation(r.Context(), auth.GetAccountID(r), mux.Vars(r)["inviteID"]); err != nil {
+		h.writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *WatchRoomsHandler) RevokeAccountInvitation(w http.ResponseWriter, r *http.Request) {
+	err := h.service.RevokeAccountInvitation(r.Context(), auth.GetAccountID(r), mux.Vars(r)["userID"], mux.Vars(r)["roomID"], mux.Vars(r)["inviteID"])
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *WatchRoomsHandler) Invitations(w http.ResponseWriter, r *http.Request) {
@@ -133,10 +194,16 @@ func (h *WatchRoomsHandler) writeError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, watchrooms.ErrNotFound), errors.Is(err, watchrooms.ErrNotInvited):
 		status = http.StatusNotFound
-	case errors.Is(err, watchrooms.ErrNotMember), errors.Is(err, watchrooms.ErrNotCreator):
+	case errors.Is(err, watchrooms.ErrNotMember), errors.Is(err, watchrooms.ErrNotCreator), errors.Is(err, watchrooms.ErrForeignProfile):
 		status = http.StatusForbidden
-	case errors.Is(err, watchrooms.ErrInvalidMedia), errors.Is(err, watchrooms.ErrInvalidState), errors.Is(err, watchrooms.ErrIncompatibleClient):
+	case errors.Is(err, watchrooms.ErrInvalidMedia), errors.Is(err, watchrooms.ErrInvalidState), errors.Is(err, watchrooms.ErrIncompatibleClient), errors.Is(err, watchrooms.ErrSameAccount):
 		status = http.StatusBadRequest
+	case errors.Is(err, watchrooms.ErrAccountNotFound):
+		status = http.StatusNotFound
+	case errors.Is(err, watchrooms.ErrInviteUnavailable):
+		status = http.StatusGone
+	case errors.Is(err, watchrooms.ErrAlreadyInvited):
+		status = http.StatusConflict
 	case errors.Is(err, watchrooms.ErrRoomEnded):
 		status = http.StatusGone
 	}
