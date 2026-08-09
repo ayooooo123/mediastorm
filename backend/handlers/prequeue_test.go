@@ -355,6 +355,58 @@ func TestCanonicalPrequeueTitleID(t *testing.T) {
 	}
 }
 
+func TestManualPrequeueStatusAndRemovalUseCanonicalProfileIdentity(t *testing.T) {
+	h := NewPrequeueHandler(nil, nil, nil, nil, nil, false)
+	entry, _ := h.GetStore().Create(
+		"tmdb:movie:42",
+		"Permanent Movie",
+		"profile-1",
+		"movie",
+		2026,
+		nil,
+		playback.ManualPrequeueReason,
+	)
+
+	statusURL := "/api/playback/prequeue/manual?userId=profile-1&titleId=raw-id&mediaType=movie&tmdbId=42"
+	statusReq := httptest.NewRequest(http.MethodGet, statusURL, nil)
+	statusRec := httptest.NewRecorder()
+	h.ManualPrequeueStatus(statusRec, statusReq)
+	if statusRec.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want 200: %s", statusRec.Code, statusRec.Body.String())
+	}
+	var status manualPrequeueStatusResponse
+	if err := json.Unmarshal(statusRec.Body.Bytes(), &status); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if !status.Prequeued || status.PrequeueID != entry.ID {
+		t.Fatalf("unexpected status: %+v", status)
+	}
+
+	otherReq := httptest.NewRequest(http.MethodGet, strings.Replace(statusURL, "profile-1", "profile-2", 1), nil)
+	otherRec := httptest.NewRecorder()
+	h.ManualPrequeueStatus(otherRec, otherReq)
+	if otherRec.Code != http.StatusOK {
+		t.Fatalf("other profile status code = %d, want 200", otherRec.Code)
+	}
+	var otherStatus manualPrequeueStatusResponse
+	if err := json.Unmarshal(otherRec.Body.Bytes(), &otherStatus); err != nil {
+		t.Fatalf("decode other profile status: %v", err)
+	}
+	if otherStatus.Prequeued {
+		t.Fatal("manual prequeue leaked across profiles")
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, statusURL, nil)
+	deleteRec := httptest.NewRecorder()
+	h.RemoveManualPrequeue(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusNoContent {
+		t.Fatalf("delete status code = %d, want 204: %s", deleteRec.Code, deleteRec.Body.String())
+	}
+	if _, exists := h.GetStore().Get(entry.ID); exists {
+		t.Fatal("manual prequeue still exists after removal")
+	}
+}
+
 func TestPrequeueEpisodeMatches(t *testing.T) {
 	tests := []struct {
 		name      string

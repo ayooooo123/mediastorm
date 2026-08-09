@@ -1098,6 +1098,71 @@ func (h *PrequeueHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+type manualPrequeueStatusResponse struct {
+	Prequeued  bool   `json:"prequeued"`
+	PrequeueID string `json:"prequeueId,omitempty"`
+}
+
+func (h *PrequeueHandler) manualPrequeueEntry(r *http.Request) (*playback.PrequeueEntry, string, bool) {
+	query := r.URL.Query()
+	userID := strings.TrimSpace(query.Get("userId"))
+	titleID := strings.TrimSpace(query.Get("titleId"))
+	if userID == "" || titleID == "" || !h.canAccessUser(r, userID) {
+		return nil, userID, false
+	}
+	canonicalID := canonicalPrequeueTitleID(
+		query.Get("mediaType"),
+		titleID,
+		query.Get("imdbId"),
+		query.Get("tmdbId"),
+		query.Get("tvdbId"),
+	)
+	for _, entry := range h.store.ListAll() {
+		if entry != nil && entry.Persistent && entry.UserID == userID && entry.TitleID == canonicalID {
+			return entry, userID, true
+		}
+	}
+	return nil, userID, true
+}
+
+// ManualPrequeueStatus reports whether a title is pinned for the requested profile.
+func (h *PrequeueHandler) ManualPrequeueStatus(w http.ResponseWriter, r *http.Request) {
+	entry, userID, valid := h.manualPrequeueEntry(r)
+	if !valid {
+		if userID == "" || strings.TrimSpace(r.URL.Query().Get("titleId")) == "" {
+			http.Error(w, "userId and titleId are required", http.StatusBadRequest)
+			return
+		}
+		http.Error(w, "user not found", http.StatusNotFound)
+		return
+	}
+	response := manualPrequeueStatusResponse{Prequeued: entry != nil}
+	if entry != nil {
+		response.PrequeueID = entry.ID
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(response)
+}
+
+// RemoveManualPrequeue removes a persistent prequeue without exposing other profiles' entries.
+func (h *PrequeueHandler) RemoveManualPrequeue(w http.ResponseWriter, r *http.Request) {
+	entry, userID, valid := h.manualPrequeueEntry(r)
+	if !valid {
+		if userID == "" || strings.TrimSpace(r.URL.Query().Get("titleId")) == "" {
+			http.Error(w, "userId and titleId are required", http.StatusBadRequest)
+			return
+		}
+		http.Error(w, "user not found", http.StatusNotFound)
+		return
+	}
+	if entry == nil {
+		http.Error(w, "manual prequeue not found", http.StatusNotFound)
+		return
+	}
+	h.store.Delete(entry.ID)
+	w.WriteHeader(http.StatusNoContent)
+}
+
 type adoptMigrationRequest struct {
 	StreamPath          string             `json:"streamPath"`
 	Result              models.NZBResult   `json:"result"`

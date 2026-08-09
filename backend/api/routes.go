@@ -354,6 +354,9 @@ func Register(
 	if prequeueHandler != nil {
 		protected.HandleFunc("/playback/prequeue", prequeueHandler.Prequeue).Methods(http.MethodPost)
 		protected.HandleFunc("/playback/prequeue", prequeueHandler.Options).Methods(http.MethodOptions)
+		protected.HandleFunc("/playback/prequeue/manual", prequeueHandler.ManualPrequeueStatus).Methods(http.MethodGet)
+		protected.HandleFunc("/playback/prequeue/manual", prequeueHandler.RemoveManualPrequeue).Methods(http.MethodDelete)
+		protected.HandleFunc("/playback/prequeue/manual", prequeueHandler.Options).Methods(http.MethodOptions)
 		protected.HandleFunc("/playback/prequeue/{prequeueID}", prequeueHandler.GetStatus).Methods(http.MethodGet)
 		protected.HandleFunc("/playback/prequeue/{prequeueID}", prequeueHandler.Options).Methods(http.MethodOptions)
 		protected.HandleFunc("/playback/prequeue/{prequeueID}/adopt-migration", prequeueHandler.AdoptMigration).Methods(http.MethodPost)
