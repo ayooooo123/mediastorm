@@ -197,10 +197,11 @@ func formatHWAccelRetryTime(retryAfter time.Time) string {
 	return retryAfter.UTC().Format(time.RFC3339)
 }
 
-func shouldFallbackHardwareEncode(commandErr, contextErr error, idleTriggered bool, plan videoEncodePlan, actualSegments int, attempted bool) bool {
+func shouldFallbackHardwareEncode(commandErr, contextErr error, idleTriggered, inputErrored bool, plan videoEncodePlan, actualSegments int, attempted bool) bool {
 	return commandErr != nil &&
 		contextErr == nil &&
 		!idleTriggered &&
+		!inputErrored &&
 		plan.HardwareEncode &&
 		actualSegments == 0 &&
 		!attempted

@@ -4472,7 +4472,7 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 	// fully software encode/tone-map plan and temporarily quarantine the
 	// hardware choice for subsequent sessions.
 	if useWebEncodePlan && shouldFallbackHardwareEncode(
-		err, ctx.Err(), idleTriggered, webEncodePlan, actualSegments, hardwareFallbackAttempted,
+		err, ctx.Err(), idleTriggered, inputWasErrored, webEncodePlan, actualSegments, hardwareFallbackAttempted,
 	) {
 		log.Printf("[hls] session %s: hardware encoder %s failed before producing a segment; retrying with software encoding",
 			session.ID, webEncodePlan.Kind)

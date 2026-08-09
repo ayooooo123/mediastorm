@@ -1,6 +1,7 @@
 package jellyfin
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -211,6 +212,33 @@ func (c *Client) GetLibraryItems(serverURL, token, userID, libraryID, collection
 }
 
 func (c *Client) OpenStream(ctx context.Context, serverURL, token, itemID, mediaSourceID, method, rangeHeader string) (*http.Response, error) {
+	mediaSourceIDs := []string{mediaSourceID}
+	if mediaSourceID != "" {
+		// Jellyfin media-source IDs may change after a library rescan while the
+		// item ID remains valid. If the selected version is stale, retry the item
+		// without it and let Jellyfin resolve the current default source.
+		mediaSourceIDs = append(mediaSourceIDs, "")
+	}
+
+	var lastErr error
+	for index, sourceID := range mediaSourceIDs {
+		resp, err := c.openStream(ctx, serverURL, token, itemID, sourceID, method, rangeHeader)
+		if err != nil {
+			return nil, err
+		}
+		validated, err := validateStreamResponse(resp, method)
+		if err == nil {
+			return validated, nil
+		}
+		lastErr = err
+		if index == len(mediaSourceIDs)-1 || !retryableStaleMediaSourceResponse(resp) {
+			break
+		}
+	}
+	return nil, lastErr
+}
+
+func (c *Client) openStream(ctx context.Context, serverURL, token, itemID, mediaSourceID, method, rangeHeader string) (*http.Response, error) {
 	params := url.Values{"Static": {"true"}}
 	if mediaSourceID != "" {
 		params.Set("MediaSourceId", mediaSourceID)
@@ -225,6 +253,51 @@ func (c *Client) OpenStream(ctx context.Context, serverURL, token, itemID, media
 		req.Header.Set("Range", rangeHeader)
 	}
 	return c.streamClient.Do(req)
+}
+
+type bufferedReadCloser struct {
+	*bufio.Reader
+	io.Closer
+}
+
+func validateStreamResponse(resp *http.Response, method string) (*http.Response, error) {
+	if resp == nil {
+		return nil, fmt.Errorf("Jellyfin stream returned no response")
+	}
+	if resp.Body == nil {
+		return nil, fmt.Errorf("Jellyfin stream returned status %d with no body", resp.StatusCode)
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		detail := strings.TrimSpace(string(body))
+		if detail == "" {
+			detail = http.StatusText(resp.StatusCode)
+		}
+		return nil, fmt.Errorf("Jellyfin stream returned status %d: %s", resp.StatusCode, detail)
+	}
+	if method == http.MethodHead {
+		return resp, nil
+	}
+	reader := bufio.NewReader(resp.Body)
+	if _, err := reader.Peek(1); err != nil {
+		_ = resp.Body.Close()
+		if err == io.EOF {
+			return nil, fmt.Errorf("Jellyfin stream returned an empty response")
+		}
+		return nil, fmt.Errorf("read Jellyfin stream response: %w", err)
+	}
+	resp.Body = &bufferedReadCloser{Reader: reader, Closer: resp.Body}
+	return resp, nil
+}
+
+func retryableStaleMediaSourceResponse(resp *http.Response) bool {
+	if resp == nil {
+		return false
+	}
+	return resp.StatusCode == http.StatusBadRequest ||
+		resp.StatusCode == http.StatusNotFound ||
+		(resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices)
 }
 
 // ReportPlayback updates Jellyfin's active-session dashboard for a direct-play item.

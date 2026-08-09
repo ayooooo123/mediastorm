@@ -3,10 +3,80 @@ package jellyfin
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
+
+func TestOpenStreamRetriesStaleMediaSource(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Method != http.MethodGet || r.URL.Path != "/Videos/item-1/stream" {
+			t.Fatalf("request=%s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); !strings.Contains(got, `Token="token"`) {
+			t.Fatalf("authorization header=%q", got)
+		}
+		if got := r.Header.Get("Range"); got != "bytes=10-" {
+			t.Fatalf("range header=%q", got)
+		}
+		if requests == 1 {
+			if got := r.URL.Query().Get("MediaSourceId"); got != "stale-source" {
+				t.Fatalf("first MediaSourceId=%q", got)
+			}
+			http.Error(w, "media source not found", http.StatusNotFound)
+			return
+		}
+		if got := r.URL.Query().Get("MediaSourceId"); got != "" {
+			t.Fatalf("fallback MediaSourceId=%q, want empty", got)
+		}
+		_, _ = w.Write([]byte("media-bytes"))
+	}))
+	defer server.Close()
+
+	resp, err := NewClient().OpenStream(context.Background(), server.URL, "token", "item-1", "stale-source", http.MethodGet, "bytes=10-")
+	if err != nil {
+		t.Fatalf("OpenStream() error = %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read stream: %v", err)
+	}
+	if got := string(body); got != "media-bytes" {
+		t.Fatalf("stream body=%q", got)
+	}
+	if requests != 2 {
+		t.Fatalf("requests=%d, want 2", requests)
+	}
+}
+
+func TestOpenStreamRejectsEmptyResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	_, err := NewClient().OpenStream(context.Background(), server.URL, "token", "item-1", "", http.MethodGet, "")
+	if err == nil || !strings.Contains(err.Error(), "empty response") {
+		t.Fatalf("OpenStream() error = %v, want empty response error", err)
+	}
+}
+
+func TestOpenStreamReportsUpstreamStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "access denied", http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	_, err := NewClient().OpenStream(context.Background(), server.URL, "token", "item-1", "", http.MethodGet, "")
+	if err == nil || !strings.Contains(err.Error(), "status 403: access denied") {
+		t.Fatalf("OpenStream() error = %v, want upstream status", err)
+	}
+}
 
 func TestReportPlayback(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

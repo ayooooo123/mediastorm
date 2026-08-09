@@ -301,16 +301,17 @@ func TestMarkHWAccelFailedQuarantinesHardware(t *testing.T) {
 func TestShouldFallbackHardwareEncode(t *testing.T) {
 	hardwarePlan := videoEncodePlan{HardwareEncode: true, Kind: HWNVENC}
 	commandErr := errors.New("ffmpeg failed")
-	if !shouldFallbackHardwareEncode(commandErr, nil, false, hardwarePlan, 0, false) {
+	if !shouldFallbackHardwareEncode(commandErr, nil, false, false, hardwarePlan, 0, false) {
 		t.Fatal("expected early hardware failure to retry in software")
 	}
 	for name, got := range map[string]bool{
-		"no command error": shouldFallbackHardwareEncode(nil, nil, false, hardwarePlan, 0, false),
-		"context canceled": shouldFallbackHardwareEncode(commandErr, context.Canceled, false, hardwarePlan, 0, false),
-		"idle timeout":     shouldFallbackHardwareEncode(commandErr, nil, true, hardwarePlan, 0, false),
-		"segment produced": shouldFallbackHardwareEncode(commandErr, nil, false, hardwarePlan, 1, false),
-		"already retried":  shouldFallbackHardwareEncode(commandErr, nil, false, hardwarePlan, 0, true),
-		"software plan":    shouldFallbackHardwareEncode(commandErr, nil, false, videoEncodePlan{}, 0, false),
+		"no command error": shouldFallbackHardwareEncode(nil, nil, false, false, hardwarePlan, 0, false),
+		"context canceled": shouldFallbackHardwareEncode(commandErr, context.Canceled, false, false, hardwarePlan, 0, false),
+		"idle timeout":     shouldFallbackHardwareEncode(commandErr, nil, true, false, hardwarePlan, 0, false),
+		"input error":      shouldFallbackHardwareEncode(commandErr, nil, false, true, hardwarePlan, 0, false),
+		"segment produced": shouldFallbackHardwareEncode(commandErr, nil, false, false, hardwarePlan, 1, false),
+		"already retried":  shouldFallbackHardwareEncode(commandErr, nil, false, false, hardwarePlan, 0, true),
+		"software plan":    shouldFallbackHardwareEncode(commandErr, nil, false, false, videoEncodePlan{}, 0, false),
 	} {
 		if got {
 			t.Fatalf("%s unexpectedly requested a hardware fallback", name)
