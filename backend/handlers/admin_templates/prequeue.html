@@ -15,6 +15,23 @@
         white-space: nowrap;
     }
 
+    .prequeue-filter-bar {
+        display: flex;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+        align-items: center;
+        padding: 1rem;
+        border-bottom: 1px solid var(--border);
+    }
+
+    .prequeue-filter-input {
+        max-width: 360px;
+    }
+
+    .prequeue-badge-filter {
+        min-width: 190px;
+    }
+
     @media (max-width: 768px) {
         .prequeue-header-actions {
             display: grid;
@@ -29,6 +46,13 @@
 
         .prequeue-header-actions .btn {
             width: 100%;
+        }
+
+        .prequeue-filter-input,
+        .prequeue-badge-filter {
+            flex: 1 1 100%;
+            width: 100%;
+            max-width: none;
         }
     }
 </style>
@@ -73,8 +97,24 @@
         </h2>
     </div>
     <div class="card-body" style="padding: 0;">
-        <div style="display:flex; gap:0.75rem; flex-wrap:wrap; align-items:center; padding:1rem; border-bottom:1px solid var(--border);">
-            <input id="prequeueFilter" class="form-input" style="max-width:360px;" type="search" placeholder="Filter by title, path, profile, status, ID">
+        <div class="prequeue-filter-bar">
+            <input id="prequeueFilter" class="form-input prequeue-filter-input" type="search" placeholder="Filter by title, path, profile, status, ID">
+            <select id="prequeueBadgeFilter" class="form-select prequeue-badge-filter" onchange="applyPrequeueFilter()" aria-label="Filter by badge">
+                <option value="">All badges</option>
+                <optgroup label="Entry badges">
+                    <option value="warm">Warm</option>
+                    <option value="manual">Manual · Forever</option>
+                </optgroup>
+                <optgroup label="Status badges">
+                    <option value="status:queued">Queued</option>
+                    <option value="status:searching">Searching</option>
+                    <option value="status:resolving">Resolving</option>
+                    <option value="status:probing">Probing</option>
+                    <option value="status:ready">Ready</option>
+                    <option value="status:failed">Failed</option>
+                    <option value="status:expired">Expired</option>
+                </optgroup>
+            </select>
             <button class="btn btn-primary" onclick="applyPrequeueFilter()">Filter</button>
             <button class="btn btn-secondary" onclick="clearPrequeueFilter()">Clear</button>
         </div>
@@ -132,6 +172,19 @@
         return input ? input.value.trim().toLowerCase() : '';
     }
 
+    function getPrequeueBadgeFilter() {
+        const select = document.getElementById('prequeueBadgeFilter');
+        return select ? select.value : '';
+    }
+
+    function prequeueMatchesBadgeFilter(entry, badgeFilter) {
+        if (!badgeFilter) return true;
+        if (badgeFilter === 'warm') return entry.reason === 'prewarm';
+        if (badgeFilter === 'manual') return Boolean(entry.persistent || entry.reason === 'manual');
+        if (badgeFilter.startsWith('status:')) return entry.status === badgeFilter.slice(7);
+        return true;
+    }
+
     function prequeueMatchesFilter(entry, filter) {
         if (!filter) return true;
         const targetEpisode = entry.targetEpisode
@@ -164,7 +217,9 @@
 
     function clearPrequeueFilter() {
         const input = document.getElementById('prequeueFilter');
+        const badgeSelect = document.getElementById('prequeueBadgeFilter');
         if (input) input.value = '';
+        if (badgeSelect) badgeSelect.value = '';
         renderEntries(latestPrequeueEntries);
     }
 
@@ -172,8 +227,11 @@
         const container = document.getElementById('prequeueEntries');
         const countEl = document.getElementById('entryCount');
         const filter = getPrequeueFilter();
+        const badgeFilter = getPrequeueBadgeFilter();
         const totalCount = entries ? entries.length : 0;
-        const visibleEntries = (entries || []).filter(entry => prequeueMatchesFilter(entry, filter));
+        const visibleEntries = (entries || []).filter(entry =>
+            prequeueMatchesFilter(entry, filter) && prequeueMatchesBadgeFilter(entry, badgeFilter)
+        );
 
         if (totalCount === 0) {
             container.innerHTML = '<div style="text-align: center; padding: 2rem; color: var(--text-muted);">No active prequeue entries</div>';
@@ -183,7 +241,7 @@
 
         if (visibleEntries.length === 0) {
             container.innerHTML = '<div style="text-align: center; padding: 2rem; color: var(--text-muted);">No prequeue entries match this filter</div>';
-            countEl.textContent = filter ? '(0 of ' + totalCount + ')' : '';
+            countEl.textContent = filter || badgeFilter ? '(0 of ' + totalCount + ')' : '';
             return;
         }
 
@@ -195,7 +253,7 @@
             return new Date(b.createdAt) - new Date(a.createdAt);
         });
 
-        countEl.textContent = filter ? '(' + visibleEntries.length + ' of ' + totalCount + ')' : '(' + totalCount + ')';
+        countEl.textContent = filter || badgeFilter ? '(' + visibleEntries.length + ' of ' + totalCount + ')' : '(' + totalCount + ')';
 
         container.innerHTML = visibleEntries.map(entry => {
             const statusColor = {

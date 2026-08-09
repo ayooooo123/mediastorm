@@ -96,7 +96,7 @@ func TestAdminUsesAutomationTerminologyAndAlignedFilters(t *testing.T) {
 	}
 }
 
-func TestToolsPagePointsDeviceManagementToUsersHierarchy(t *testing.T) {
+func TestToolsPageOmitsObsoleteDeviceManagementNotice(t *testing.T) {
 	templateBytes, err := adminTemplates.ReadFile("admin_templates/tools.html")
 	if err != nil {
 		t.Fatalf("read tools template: %v", err)
@@ -106,10 +106,10 @@ func TestToolsPagePointsDeviceManagementToUsersHierarchy(t *testing.T) {
 	for _, marker := range []string{
 		`Device Management Has Moved`,
 		`Devices now appear with their person and household`,
-		`href="{{.BasePath}}/accounts"`,
+		`Open Households, People &amp; Devices`,
 	} {
-		if !strings.Contains(source, marker) {
-			t.Fatalf("tools template missing device relocation marker %q", marker)
+		if strings.Contains(source, marker) {
+			t.Fatalf("tools template still contains obsolete device relocation marker %q", marker)
 		}
 	}
 
