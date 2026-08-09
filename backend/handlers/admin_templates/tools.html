@@ -1444,7 +1444,7 @@
 
     {{if .IsAdmin}}
     <!-- Prequeue Management Section -->
-    <div class="section" id="prequeueManagementSection" style="display: none;">
+    <div class="section" id="prequeueManagementSection">
         <div class="section-header" onclick="toggleSection(this)">
             <div class="section-title">
                 <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
@@ -5115,11 +5115,9 @@
             scheduledTasks = data.tasks || [];
             renderScheduledTasksList();
             updateScheduledTasksCountBadge();
-            updatePrequeueManagementSection();
         } catch (err) {
             console.error('Failed to load automations:', err);
             listContainer.innerHTML = '<p class="text-muted">Failed to load automations.</p>';
-            updatePrequeueManagementSection();
         }
     }
 
@@ -5138,14 +5136,6 @@
             badge.textContent = '';
             badge.className = 'status-badge';
         }
-    }
-
-    function updatePrequeueManagementSection() {
-        const section = document.getElementById('prequeueManagementSection');
-        if (!section) return;
-
-        const hasEnabledPrewarmTask = scheduledTasks.some(task => task.type === 'prewarm' && task.enabled);
-        section.style.display = hasEnabledPrewarmTask ? '' : 'none';
     }
 
     function renderScheduledTasksList() {
@@ -6086,7 +6076,6 @@
             if (task) task.enabled = enabled;
 
             updateScheduledTasksCountBadge();
-            updatePrequeueManagementSection();
             showToast(enabled ? 'Automation enabled' : 'Automation disabled', 'success');
         } catch (err) {
             showToast(err.message, 'error');

@@ -219,6 +219,50 @@ func TestAdminToolsProvidesFocusedTasksAndIntegrationsViews(t *testing.T) {
 	}
 }
 
+func TestAdminMaintenanceLinksAllSubpages(t *testing.T) {
+	toolsBytes, err := adminTemplates.ReadFile("admin_templates/tools.html")
+	if err != nil {
+		t.Fatalf("read tools template: %v", err)
+	}
+	toolsSource := string(toolsBytes)
+
+	maintenancePages := map[string]string{
+		"hidden items":  "tools/hidden-items",
+		"bad streams":   "tools/bad-streams",
+		"resolved NZBs": "tools/resolved-nzbs",
+		"share links":   "tools/share-links",
+		"prequeues":     "prequeue",
+	}
+	for name, path := range maintenancePages {
+		link := `href="{{.BasePath}}/` + path + `"`
+		if !strings.Contains(toolsSource, link) {
+			t.Errorf("maintenance page missing link to %s (%s)", name, path)
+		}
+	}
+
+	for _, templateName := range []string{
+		"hidden_items.html",
+		"bad_streams.html",
+		"resolved_nzbs.html",
+		"share_links.html",
+		"prequeue.html",
+	} {
+		templateBytes, readErr := adminTemplates.ReadFile("admin_templates/" + templateName)
+		if readErr != nil {
+			t.Errorf("read %s: %v", templateName, readErr)
+			continue
+		}
+		if !strings.Contains(string(templateBytes), `href="{{.BasePath}}/tools"`) {
+			t.Errorf("%s missing link back to maintenance", templateName)
+		}
+	}
+
+	if strings.Contains(toolsSource, `id="prequeueManagementSection" style="display: none;"`) ||
+		strings.Contains(toolsSource, "function updatePrequeueManagementSection()") {
+		t.Fatal("prequeue management link remains conditional on an enabled prewarm automation")
+	}
+}
+
 func TestAdminDashboardBasicViewKeepsOnlyUserActivityCards(t *testing.T) {
 	templateBytes, err := adminTemplates.ReadFile("admin_templates/status.html")
 	if err != nil {
