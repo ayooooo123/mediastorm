@@ -1,12 +1,49 @@
 package epg
 
 import (
+	"context"
 	"encoding/base64"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"novastream/config"
 	"novastream/models"
 )
+
+func TestFetchXtreamStreamsUsesUserAgentFallback(t *testing.T) {
+	var userAgents []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		userAgent := r.Header.Get("User-Agent")
+		userAgents = append(userAgents, userAgent)
+		if userAgent != xtreamBrowserUserAgent {
+			http.Error(w, "unsupported client", http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"stream_id":42,"epg_channel_id":"channel.test","name":"Test Channel"}]`)
+	}))
+	defer server.Close()
+
+	service := &Service{client: server.Client()}
+	settings := config.DefaultSettings()
+	settings.Live.XtreamHost = server.URL
+	settings.Live.XtreamUsername = "user"
+	settings.Live.XtreamPassword = "pass"
+
+	streams, err := service.fetchXtreamStreams(context.Background(), &settings)
+	if err != nil {
+		t.Fatalf("fetch Xtream streams: %v", err)
+	}
+	if len(streams) != 1 || streams[0].EPGChannelID != "channel.test" {
+		t.Fatalf("streams = %+v, want one test channel", streams)
+	}
+	if len(userAgents) != 2 || userAgents[0] != xtreamStreamUserAgent || userAgents[1] != xtreamBrowserUserAgent {
+		t.Fatalf("User-Agent attempts = %q, want VLC then browser", userAgents)
+	}
+}
 
 func TestDecodeBase64Safe(t *testing.T) {
 	tests := []struct {

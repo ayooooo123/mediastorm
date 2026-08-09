@@ -24,7 +24,11 @@ import (
 const (
 	xtreamPerChannelConcurrency = 3
 	xtreamPerChannelTimeout     = 30 * time.Second
+	xtreamStreamUserAgent       = "VLC/3.0.20 LibVLC/3.0.20"
+	xtreamBrowserUserAgent      = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
+
+var xtreamUserAgents = []string{xtreamStreamUserAgent, xtreamBrowserUserAgent}
 
 // xtreamStream represents a live stream from the Xtream get_live_streams API.
 type xtreamStream struct {
@@ -177,7 +181,7 @@ func (s *Service) fetchXtreamStreams(ctx context.Context, settings *config.Setti
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 
-	resp, err := s.xtreamHTTPClient(settings).Do(req)
+	resp, _, err := doXtreamRequestWithUserAgents(req, s.xtreamHTTPClient(settings), xtreamUserAgents)
 	if err != nil {
 		return nil, fmt.Errorf("fetch streams: %w", err)
 	}
@@ -214,7 +218,7 @@ func (s *Service) fetchChannelEPG(ctx context.Context, settings *config.Settings
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 
-	resp, err := s.xtreamHTTPClient(settings).Do(req)
+	resp, _, err := doXtreamRequestWithUserAgents(req, s.xtreamHTTPClient(settings), xtreamUserAgents)
 	if err != nil {
 		return nil, fmt.Errorf("fetch channel EPG: %w", err)
 	}
@@ -289,6 +293,41 @@ func (s *Service) xtreamHTTPClient(settings *config.Settings) *http.Client {
 		return s.client
 	}
 	return apiusage.TrackClient(client, "Live TV", "Xtream API")
+}
+
+// doXtreamRequestWithUserAgents retries Xtream metadata requests with the
+// User-Agents accepted by the Live TV catalog path. Some providers stall or
+// reject requests that do not resemble a media player or browser.
+func doXtreamRequestWithUserAgents(request *http.Request, client *http.Client, userAgents []string) (*http.Response, string, error) {
+	var lastErr error
+	for _, userAgent := range userAgents {
+		if err := request.Context().Err(); err != nil {
+			if lastErr != nil {
+				return nil, "", lastErr
+			}
+			return nil, "", err
+		}
+
+		attempt := request.Clone(request.Context())
+		attempt.Header.Set("User-Agent", userAgent)
+		response, err := client.Do(attempt)
+		if err != nil {
+			lastErr = err
+			log.Printf("[epg] Xtream request failed with UA %q: %v", userAgent, err)
+			continue
+		}
+		if response.StatusCode >= http.StatusBadRequest {
+			response.Body.Close()
+			lastErr = fmt.Errorf("request returned status %d", response.StatusCode)
+			log.Printf("[epg] Xtream request returned status %d with UA %q", response.StatusCode, userAgent)
+			continue
+		}
+		return response, userAgent, nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no User-Agent candidates configured")
+	}
+	return nil, "", lastErr
 }
 
 // mergePrograms merges per-channel EPG data into existing programmes.

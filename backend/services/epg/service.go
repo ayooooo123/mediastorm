@@ -89,8 +89,15 @@ func NewService(storageDir string, cfgManager *config.Manager) *Service {
 
 // countPrograms returns total number of programs across all channels.
 func (s *Service) countPrograms() int {
+	return countSchedulePrograms(s.schedule)
+}
+
+func countSchedulePrograms(schedule *models.EPGSchedule) int {
+	if schedule == nil {
+		return 0
+	}
 	count := 0
-	for _, progs := range s.schedule.Programs {
+	for _, progs := range schedule.Programs {
 		count += len(progs)
 	}
 	return count
@@ -337,15 +344,14 @@ func (s *Service) Refresh(ctx context.Context) error {
 		Programs:    make(map[string][]models.EPGProgram),
 		LastUpdated: time.Now().UTC(),
 	}
+	var refreshErrors []string
 
 	for _, source := range xtreamSources {
 		sourceSettings := source.settings
 		log.Printf("[epg] fetching Xtream EPG source name=%q proxyConfigured=%v", source.name, strings.TrimSpace(sourceSettings.Live.ProxyURL) != "")
 		if err := s.fetchXtreamEPG(ctx, &sourceSettings, newSchedule); err != nil {
 			log.Printf("[epg] Xtream EPG fetch failed for source name=%q: %v", source.name, err)
-			s.mu.Lock()
-			s.lastError = fmt.Sprintf("%s Xtream EPG: %v", source.name, err)
-			s.mu.Unlock()
+			refreshErrors = append(refreshErrors, fmt.Sprintf("%s Xtream EPG: %v", source.name, err))
 		} else {
 			newSchedule.SourceType = "xtream"
 		}
@@ -361,9 +367,7 @@ func (s *Service) Refresh(ctx context.Context) error {
 		}
 		if err := s.fetchXMLTVWithProxy(ctx, source.url, source.proxyURL, newSchedule); err != nil {
 			log.Printf("[epg] failed to fetch XMLTV source name=%q: %v", source.name, err)
-			s.mu.Lock()
-			s.lastError = fmt.Sprintf("%s: %v", source.name, err)
-			s.mu.Unlock()
+			refreshErrors = append(refreshErrors, fmt.Sprintf("%s: %v", source.name, err))
 		} else if newSchedule.SourceType == "" {
 			newSchedule.SourceType = "xmltv"
 		}
@@ -388,6 +392,7 @@ func (s *Service) Refresh(ctx context.Context) error {
 		sourceSettings := source.settings
 		if err := s.supplementWithXtreamPerChannel(ctx, &sourceSettings, newSchedule); err != nil {
 			log.Printf("[epg] per-channel supplement failed for source name=%q (non-fatal): %v", source.name, err)
+			refreshErrors = append(refreshErrors, fmt.Sprintf("%s per-channel EPG: %v", source.name, err))
 		}
 	}
 
@@ -420,9 +425,28 @@ func (s *Service) Refresh(ctx context.Context) error {
 		newSchedule.Programs[channelID] = filtered
 	}
 
-	// Update the schedule
+	programCount := countSchedulePrograms(newSchedule)
+	if programCount == 0 {
+		detail := "no guide programs were returned by the configured EPG sources"
+		if len(refreshErrors) > 0 {
+			detail = strings.Join(refreshErrors, "; ")
+		}
+		refreshErr := fmt.Errorf("EPG refresh produced no usable guide data: %s", detail)
+		s.mu.Lock()
+		s.lastError = refreshErr.Error()
+		s.mu.Unlock()
+		log.Printf("[epg] refresh failed; retaining previous schedule: %v", refreshErr)
+		return refreshErr
+	}
+
+	// Only replace the schedule after the refresh produced usable guide data.
 	s.mu.Lock()
 	s.schedule = newSchedule
+	if len(refreshErrors) > 0 {
+		s.lastError = strings.Join(refreshErrors, "; ")
+	} else {
+		s.lastError = ""
+	}
 	s.mu.Unlock()
 
 	// Save to disk
@@ -431,7 +455,7 @@ func (s *Service) Refresh(ctx context.Context) error {
 	}
 
 	log.Printf("[epg] refresh complete: %d channels, %d programs",
-		len(newSchedule.Channels), s.countPrograms())
+		len(newSchedule.Channels), programCount)
 
 	return nil
 }
@@ -445,7 +469,7 @@ func (s *Service) fetchXtreamEPG(ctx context.Context, settings *config.Settings,
 	epgURL := fmt.Sprintf("%s/xmltv.php?username=%s&password=%s",
 		host, url.QueryEscape(username), url.QueryEscape(password))
 
-	return s.fetchXMLTV(ctx, epgURL, schedule)
+	return s.fetchXMLTVWithProxyAndUserAgents(ctx, epgURL, settings.Live.ProxyURL, schedule, xtreamUserAgents)
 }
 
 // fetchXMLTV fetches and parses XMLTV data from a URL.
@@ -460,6 +484,10 @@ func (s *Service) fetchXMLTV(ctx context.Context, xmltvURL string, schedule *mod
 }
 
 func (s *Service) fetchXMLTVWithProxy(ctx context.Context, xmltvURL, proxyURL string, schedule *models.EPGSchedule) error {
+	return s.fetchXMLTVWithProxyAndUserAgents(ctx, xmltvURL, proxyURL, schedule, nil)
+}
+
+func (s *Service) fetchXMLTVWithProxyAndUserAgents(ctx context.Context, xmltvURL, proxyURL string, schedule *models.EPGSchedule, userAgents []string) error {
 	started := time.Now()
 	hostLabel := xmltvHostLabel(xmltvURL)
 	proxyConfigured := strings.TrimSpace(proxyURL) != ""
@@ -473,7 +501,13 @@ func (s *Service) fetchXMLTVWithProxy(ctx context.Context, xmltvURL, proxyURL st
 	// Add Accept-Encoding for gzip
 	req.Header.Set("Accept-Encoding", "gzip")
 
-	resp, err := s.httpClient(proxyURL).Do(req)
+	client := s.httpClient(proxyURL)
+	var resp *http.Response
+	if len(userAgents) > 0 {
+		resp, _, err = doXtreamRequestWithUserAgents(req, client, userAgents)
+	} else {
+		resp, err = client.Do(req)
+	}
 	if err != nil {
 		log.Printf("[epg] XMLTV HTTP request failed host=%q elapsed=%s error=%v", hostLabel, time.Since(started).Round(time.Millisecond), err)
 		return fmt.Errorf("fetch EPG: %w", err)

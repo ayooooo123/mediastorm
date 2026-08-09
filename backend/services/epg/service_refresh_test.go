@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"novastream/config"
+	"novastream/models"
 )
 
 func TestRefreshInfersXtreamEPGURLWhenXMLTVURLIsEmpty(t *testing.T) {
@@ -19,14 +20,24 @@ func TestRefreshInfersXtreamEPGURLWhenXMLTVURLIsEmpty(t *testing.T) {
 	stop := now.Add(30 * time.Minute).Format("20060102150405 -0700")
 
 	var xmltvRequests atomic.Int32
+	var xmltvUserAgents []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/player_api.php" {
+			if r.Header.Get("User-Agent") != xtreamBrowserUserAgent {
+				http.Error(w, "unsupported client", http.StatusForbidden)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `[]`)
 			return
 		}
 		if r.URL.Path != "/xmltv.php" {
 			http.NotFound(w, r)
+			return
+		}
+		xmltvUserAgents = append(xmltvUserAgents, r.Header.Get("User-Agent"))
+		if r.Header.Get("User-Agent") != xtreamBrowserUserAgent {
+			http.Error(w, "unsupported client", http.StatusForbidden)
 			return
 		}
 		xmltvRequests.Add(1)
@@ -80,9 +91,71 @@ func TestRefreshInfersXtreamEPGURLWhenXMLTVURLIsEmpty(t *testing.T) {
 	if got := xmltvRequests.Load(); got != 1 {
 		t.Fatalf("xmltv requests = %d, want 1", got)
 	}
+	if len(xmltvUserAgents) != 2 || xmltvUserAgents[0] != xtreamStreamUserAgent || xmltvUserAgents[1] != xtreamBrowserUserAgent {
+		t.Fatalf("XMLTV User-Agent attempts = %q, want VLC then browser", xmltvUserAgents)
+	}
 	status := service.GetStatus()
 	if status.ChannelCount != 1 || status.ProgramCount != 1 {
 		t.Fatalf("status = %+v, want one channel and one program", status)
+	}
+}
+
+func TestRefreshRetainsExistingScheduleWhenXtreamSourcesFail(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "provider unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	enabled := true
+	settings := config.DefaultSettings()
+	settings.Cache.Directory = t.TempDir()
+	settings.Live.EPG.Enabled = false
+	settings.Live.Sources = []config.LivePlaylistSource{
+		{
+			ID:             "xtream-source",
+			Name:           "Xtream Source",
+			Mode:           "xtream",
+			Enabled:        &enabled,
+			XtreamHost:     server.URL,
+			XtreamUsername: "user",
+			XtreamPassword: "pass",
+			EPG:            config.EPGSettings{Enabled: true},
+		},
+	}
+
+	manager := config.NewManager(filepath.Join(t.TempDir(), "settings.json"))
+	if err := manager.Save(settings); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	now := time.Now().UTC()
+	service := NewService(settings.Cache.Directory, manager)
+	service.schedule = &models.EPGSchedule{
+		Channels: map[string]models.EPGChannel{
+			"existing.channel": {ID: "existing.channel", Name: "Existing Channel"},
+		},
+		Programs: map[string][]models.EPGProgram{
+			"existing.channel": {
+				{ChannelID: "existing.channel", Title: "Existing Program", Start: now.Add(-time.Hour), Stop: now.Add(time.Hour)},
+			},
+		},
+		LastUpdated: now.Add(-time.Hour),
+	}
+
+	err := service.Refresh(context.Background())
+	if err == nil {
+		t.Fatal("refresh succeeded, want provider failure")
+	}
+	status := service.GetStatus()
+	if status.ChannelCount != 1 || status.ProgramCount != 1 {
+		t.Fatalf("status after failed refresh = %+v, want existing schedule retained", status)
+	}
+	if status.LastError == "" {
+		t.Fatal("LastError is empty after failed refresh")
+	}
+	nowPlaying := service.GetNowPlaying([]string{"existing.channel"})
+	if len(nowPlaying) != 1 || nowPlaying[0].Current == nil || nowPlaying[0].Current.Title != "Existing Program" {
+		t.Fatalf("existing guide was not retained: %+v", nowPlaying)
 	}
 }
 
