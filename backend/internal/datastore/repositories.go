@@ -89,6 +89,20 @@ type ShareLinkRepository interface {
 	DeleteExpired(ctx context.Context, now time.Time) error
 }
 
+// WatchRoomRepository manages persistent native watch-together rooms.
+type WatchRoomRepository interface {
+	Create(ctx context.Context, room *models.WatchRoom, inviteeProfileIDs []string, clientID string) error
+	Get(ctx context.Context, roomID string) (*models.WatchRoom, error)
+	ListInvitations(ctx context.Context, profileID string, now time.Time) ([]models.WatchRoom, error)
+	IsInvited(ctx context.Context, roomID, profileID string) (bool, error)
+	Join(ctx context.Context, roomID, profileID, clientID string, now time.Time) error
+	SetReady(ctx context.Context, roomID, profileID string, ready bool, now time.Time) error
+	UpdateState(ctx context.Context, roomID, profileID, status string, position, duration float64, now time.Time) error
+	Heartbeat(ctx context.Context, roomID, profileID, clientID string, buffering bool, now time.Time) error
+	Leave(ctx context.Context, roomID, profileID string) error
+	End(ctx context.Context, roomID, profileID string, now time.Time) (bool, error)
+}
+
 type RemoteAccessInviteRepository interface {
 	Get(ctx context.Context, id string) (*models.RemoteAccessInvite, error)
 	GetByTokenHash(ctx context.Context, tokenHash string) (*models.RemoteAccessInvite, error)

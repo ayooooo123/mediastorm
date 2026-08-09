@@ -126,6 +126,7 @@ func Register(
 	sessionsSvc *sessions.Service,
 	usersSvc *users.Service,
 	shareHandler *handlers.ShareHandler,
+	watchRoomsHandler *handlers.WatchRoomsHandler,
 	homepageAPIKey string,
 ) {
 	api := r.PathPrefix("/api").Subrouter()
@@ -222,6 +223,18 @@ func Register(
 	// Profile ownership middleware for user routes
 	profileProtected := protected.PathPrefix("/users").Subrouter()
 	profileProtected.Use(ProfileOwnershipMiddleware(usersSvc))
+	if watchRoomsHandler != nil {
+		profileProtected.HandleFunc("/{userID}/watch-rooms", watchRoomsHandler.Create).Methods(http.MethodPost)
+		profileProtected.HandleFunc("/{userID}/watch-rooms/invitations", watchRoomsHandler.Invitations).Methods(http.MethodGet)
+		profileProtected.HandleFunc("/{userID}/watch-rooms/{roomID}", watchRoomsHandler.Get).Methods(http.MethodGet)
+		profileProtected.HandleFunc("/{userID}/watch-rooms/{roomID}/join", watchRoomsHandler.Join).Methods(http.MethodPost)
+		profileProtected.HandleFunc("/{userID}/watch-rooms/{roomID}/ready", watchRoomsHandler.Ready).Methods(http.MethodPost)
+		profileProtected.HandleFunc("/{userID}/watch-rooms/{roomID}/state", watchRoomsHandler.State).Methods(http.MethodPost)
+		profileProtected.HandleFunc("/{userID}/watch-rooms/{roomID}/heartbeat", watchRoomsHandler.Heartbeat).Methods(http.MethodPost)
+		profileProtected.HandleFunc("/{userID}/watch-rooms/{roomID}/leave", watchRoomsHandler.Leave).Methods(http.MethodPost)
+		profileProtected.HandleFunc("/{userID}/watch-rooms/{roomID}/end", watchRoomsHandler.End).Methods(http.MethodPost)
+		profileProtected.HandleFunc("/{userID}/watch-rooms/{roomID}", watchRoomsHandler.Options).Methods(http.MethodOptions)
+	}
 
 	// Settings routes - GET for all authenticated, PUT/POST for master only
 	protected.HandleFunc("/settings", settingsHandler.GetSettings).Methods(http.MethodGet)

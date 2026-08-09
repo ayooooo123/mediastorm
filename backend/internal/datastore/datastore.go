@@ -82,6 +82,7 @@ func (ds *DataStore) RemoteAccessInvites() RemoteAccessInviteRepository {
 	return &pgRemoteAccessInviteRepo{pool: ds.pool}
 }
 func (ds *DataStore) ShareLinks() ShareLinkRepository { return &pgShareLinkRepo{pool: ds.pool} }
+func (ds *DataStore) WatchRooms() WatchRoomRepository { return &pgWatchRoomRepo{pool: ds.pool} }
 func (ds *DataStore) Clients() ClientRepository       { return &pgClientRepo{pool: ds.pool} }
 func (ds *DataStore) ClientSettings() ClientSettingsRepository {
 	return &pgClientSettingsRepo{pool: ds.pool}
@@ -146,6 +147,7 @@ func (t *Tx) RemoteAccessInvites() RemoteAccessInviteRepository {
 	return &pgRemoteAccessInviteRepo{pool: t.tx}
 }
 func (t *Tx) ShareLinks() ShareLinkRepository          { return &pgShareLinkRepo{pool: t.tx} }
+func (t *Tx) WatchRooms() WatchRoomRepository          { return &pgWatchRoomRepo{pool: t.tx} }
 func (t *Tx) Clients() ClientRepository                { return &pgClientRepo{pool: t.tx} }
 func (t *Tx) ClientSettings() ClientSettingsRepository { return &pgClientSettingsRepo{pool: t.tx} }
 func (t *Tx) UserSettings() UserSettingsRepository     { return &pgUserSettingsRepo{pool: t.tx} }

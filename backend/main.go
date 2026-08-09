@@ -69,6 +69,7 @@ import (
 	user_settings "novastream/services/user_settings"
 	"novastream/services/users"
 	"novastream/services/watchlist"
+	"novastream/services/watchrooms"
 	"novastream/utils"
 
 	"github.com/gorilla/mux"
@@ -862,6 +863,10 @@ func main() {
 	}
 	shareHandler := handlers.NewShareHandler(handlers.NewShareStore(shareLinkRepo), sessionsService, userService, settings.Server.BasePath)
 	shareHandler.SetLibraryAccessService(libraryAccessService)
+	var watchRoomsHandler *handlers.WatchRoomsHandler
+	if store != nil {
+		watchRoomsHandler = handlers.NewWatchRoomsHandler(watchrooms.New(store.WatchRooms(), userService))
+	}
 
 	api.Register(
 		r,
@@ -899,6 +904,7 @@ func main() {
 		sessionsService,
 		userService,
 		shareHandler,
+		watchRoomsHandler,
 		settings.Server.HomepageAPIKey,
 	)
 
