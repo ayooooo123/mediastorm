@@ -1194,8 +1194,8 @@ var SettingsSchema = map[string]interface{}{
 		"description": "Controls server-side FFmpeg encoding for the browser player. Changes apply to the next web playback session.",
 		"fields": map[string]interface{}{
 			"enabled":          map[string]interface{}{"type": "boolean", "label": "Enabled", "description": "Enable video transmuxing for HLS streaming", "hidden": true},
-			"ffmpegPath":       map[string]interface{}{"type": "text", "label": "FFmpeg Path", "description": "Path to ffmpeg binary", "hidden": true},
-			"ffprobePath":      map[string]interface{}{"type": "text", "label": "FFprobe Path", "description": "Path to ffprobe binary", "hidden": true},
+			"ffmpegPath":       map[string]interface{}{"type": "text", "label": "FFmpeg Binary Path", "description": "FFmpeg executable used for web player probing and transcoding. Changes require a backend restart.", "order": 1, "globalOnly": true},
+			"ffprobePath":      map[string]interface{}{"type": "text", "label": "FFprobe Binary Path", "description": "FFprobe executable used to inspect media streams. Changes require a backend restart.", "order": 2, "globalOnly": true},
 			"hlsTempDirectory": map[string]interface{}{"type": "text", "label": "HLS Temp Directory", "description": "Directory for HLS segment storage (default: /tmp/novastream-hls)", "hidden": true},
 			"hardwareAcceleration": map[string]interface{}{
 				"type":  "select",

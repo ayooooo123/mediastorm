@@ -2624,7 +2624,7 @@ func TestAdminUIHandler_YTDLPCookies(t *testing.T) {
 	})
 }
 
-func TestHardwareAccelerationSchemaIsVisibleUnderServerSettings(t *testing.T) {
+func TestTransmuxSchemaIsVisibleUnderServerSettings(t *testing.T) {
 	section, ok := handlers.SettingsSchema["transmux"].(map[string]interface{})
 	if !ok {
 		t.Fatal("transmux settings schema is missing")
@@ -2645,6 +2645,19 @@ func TestHardwareAccelerationSchemaIsVisibleUnderServerSettings(t *testing.T) {
 	}
 	if field["type"] != "select" || field["globalOnly"] != true {
 		t.Fatalf("unexpected hardwareAcceleration schema: %+v", field)
+	}
+
+	for _, key := range []string{"ffmpegPath", "ffprobePath"} {
+		field, ok := fields[key].(map[string]interface{})
+		if !ok {
+			t.Fatalf("%s field is missing", key)
+		}
+		if field["type"] != "text" || field["globalOnly"] != true {
+			t.Fatalf("unexpected %s schema: %+v", key, field)
+		}
+		if hidden, _ := field["hidden"].(bool); hidden {
+			t.Fatalf("%s field must be visible", key)
+		}
 	}
 }
 
