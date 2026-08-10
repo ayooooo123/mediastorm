@@ -42,11 +42,31 @@ func TestLibraryTemplateDirectsRemoteAccountsToIntegrations(t *testing.T) {
 		t.Fatalf("read library template: %v", err)
 	}
 	source := string(templateBytes)
-	if !strings.Contains(source, "Accounts are managed on the Integrations page.") {
+	if !strings.Contains(source, `Accounts are managed on the <a href="{{.BasePath}}/integrations">Integrations page</a>.`) {
 		t.Fatal("library template does not direct remote account management to Integrations")
 	}
 	if strings.Contains(source, "Accounts are managed on the Tools page.") {
 		t.Fatal("library template still directs remote account management to Tools")
+	}
+}
+
+func TestJellyfinConnectionStatusMatchesPlexStyling(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/tools.html")
+	if err != nil {
+		t.Fatalf("read tools template: %v", err)
+	}
+	source := string(templateBytes)
+	for _, marker := range []string{
+		"badge.textContent = `${connectedCount} Connected`;",
+		"badge.className = 'status-badge connected';",
+		`account.connected ? '<span class="status-badge connected"`,
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("Jellyfin status missing Plex-style marker %q", marker)
+		}
+	}
+	if strings.Contains(source, `class="status-badge success"`) || strings.Contains(source, "badge.className = 'status-badge success'") {
+		t.Fatal("Jellyfin status still uses the undefined success badge variant")
 	}
 }
 
