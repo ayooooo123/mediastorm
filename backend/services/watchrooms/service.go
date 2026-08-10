@@ -19,6 +19,7 @@ var (
 	ErrNotCreator         = errors.New("only the room creator can end this watch room")
 	ErrInvalidMedia       = errors.New("title, mediaType, and itemId are required")
 	ErrInvalidState       = errors.New("invalid watch room state")
+	ErrRevisionConflict   = errors.New("watch room state changed before this update")
 	ErrRoomEnded          = errors.New("watch room has ended")
 	ErrIncompatibleClient = errors.New("client does not support Watch Together native playback protocol")
 	ErrForeignProfile     = errors.New("invitee profiles must belong to the creator account")
@@ -290,8 +291,12 @@ func (s *Service) UpdateState(ctx context.Context, roomID, profileID string, upd
 	if math.IsNaN(update.Duration) || math.IsInf(update.Duration, 0) || update.Duration < 0 {
 		return nil, ErrInvalidState
 	}
-	if err := s.repo.UpdateState(ctx, roomID, profileID, update.Status, update.Position, update.Duration, s.now().UTC()); err != nil {
+	updated, err := s.repo.UpdateState(ctx, roomID, profileID, update.Status, update.Position, update.Duration, update.ExpectedRevision, s.now().UTC())
+	if err != nil {
 		return nil, err
+	}
+	if !updated {
+		return nil, ErrRevisionConflict
 	}
 	return s.Get(ctx, roomID, profileID)
 }
@@ -355,7 +360,7 @@ func (s *Service) requireMember(ctx context.Context, roomID, profileID string) e
 
 func (s *Service) decorate(room *models.WatchRoom) {
 	now := s.now().UTC()
-	if room.Status == models.WatchRoomStatusPlaying {
+	if room.Status == models.WatchRoomStatusPlaying && !room.WaitingForReady {
 		room.Position += now.Sub(room.AnchorUpdatedAt).Seconds()
 		if room.Duration > 0 && room.Position > room.Duration {
 			room.Position = room.Duration

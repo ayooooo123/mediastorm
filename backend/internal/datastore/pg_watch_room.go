@@ -14,7 +14,7 @@ import (
 type pgWatchRoomRepo struct{ pool DB }
 
 const watchRoomCols = `r.id, r.creator_profile_id, creator.name, r.title, r.media_type, r.item_id,
-	r.poster_url, r.backdrop_url, r.params, r.status, r.position, r.duration, r.revision,
+	r.poster_url, r.backdrop_url, r.params, r.status, r.waiting_for_ready, r.position, r.duration, r.revision,
 	r.updated_by, r.anchor_updated_at, r.created_at, r.expires_at, r.ended_at, r.end_reason`
 
 func (r *pgWatchRoomRepo) Create(ctx context.Context, room *models.WatchRoom, invitees []string, clientID string, capabilities models.WatchRoomClientCapabilities) error {
@@ -87,8 +87,9 @@ func (r *pgWatchRoomRepo) Get(ctx context.Context, roomID string) (*models.Watch
 func (r *pgWatchRoomRepo) ListInvitations(ctx context.Context, profileID string, now time.Time) ([]models.WatchRoom, error) {
 	rows, err := r.pool.Query(ctx, `SELECT `+watchRoomCols+` FROM watch_rooms r
 		JOIN users creator ON creator.id=r.creator_profile_id
-		JOIN watch_room_invites i ON i.room_id=r.id AND i.profile_id=$1
-		WHERE r.expires_at>$2 AND r.status<>'ended' ORDER BY r.created_at DESC`, profileID, now)
+		WHERE (r.creator_profile_id=$1 OR EXISTS (
+			SELECT 1 FROM watch_room_invites i WHERE i.room_id=r.id AND i.profile_id=$1
+		)) AND r.expires_at>$2 AND r.status<>'ended' ORDER BY r.created_at DESC`, profileID, now)
 	if err != nil {
 		return nil, fmt.Errorf("list watch room invitations: %w", err)
 	}
@@ -129,14 +130,37 @@ func (r *pgWatchRoomRepo) Join(ctx context.Context, roomID, profileID, clientID 
 }
 
 func (r *pgWatchRoomRepo) SetReady(ctx context.Context, roomID, profileID string, ready bool, now time.Time) error {
-	_, err := r.pool.Exec(ctx, `UPDATE watch_room_members SET ready=$3,last_seen_at=$4 WHERE room_id=$1 AND profile_id=$2`, roomID, profileID, ready, now)
+	_, err := r.pool.Exec(ctx, `WITH member_update AS (
+		UPDATE watch_room_members SET ready=$3,last_seen_at=$4 WHERE room_id=$1 AND profile_id=$2
+	), release AS (
+		SELECT $3 AND NOT EXISTS (
+			SELECT 1 FROM watch_room_members WHERE room_id=$1 AND profile_id<>$2 AND NOT ready
+		) AS all_ready
+	)
+	UPDATE watch_rooms SET waiting_for_ready=false,status='playing',revision=revision+1,updated_by=$2,anchor_updated_at=$4
+	WHERE id=$1 AND waiting_for_ready AND (SELECT all_ready FROM release)`, roomID, profileID, ready, now)
 	return err
 }
 
-func (r *pgWatchRoomRepo) UpdateState(ctx context.Context, roomID, profileID, status string, position, duration float64, now time.Time) error {
-	_, err := r.pool.Exec(ctx, `UPDATE watch_rooms SET status=$3,position=$4,duration=GREATEST(duration,$5),
-		revision=revision+1,updated_by=$2,anchor_updated_at=$6 WHERE id=$1 AND status<>'ended'`, roomID, profileID, status, position, duration, now)
-	return err
+func (r *pgWatchRoomRepo) UpdateState(ctx context.Context, roomID, profileID, status string, position, duration float64, expectedRevision *int64, now time.Time) (bool, error) {
+	var updated bool
+	err := r.pool.QueryRow(ctx, `WITH candidate AS MATERIALIZED (
+		SELECT id, status='lobby' AND $3='playing' AS starting
+		FROM watch_rooms
+		WHERE id=$1 AND status<>'ended' AND ($7::bigint IS NULL OR revision=$7)
+		FOR UPDATE
+	), room_update AS (
+		UPDATE watch_rooms r SET status=$3,
+			waiting_for_ready=CASE WHEN candidate.starting THEN true ELSE r.waiting_for_ready END,position=$4,
+			duration=GREATEST(r.duration,$5),revision=r.revision+1,updated_by=$2,anchor_updated_at=$6
+		FROM candidate WHERE r.id=candidate.id
+		RETURNING r.id, candidate.starting
+	), reset_ready AS (
+		UPDATE watch_room_members m SET ready=false
+		FROM room_update WHERE room_update.starting AND m.room_id=room_update.id
+	)
+	SELECT EXISTS(SELECT 1 FROM room_update)`, roomID, profileID, status, position, duration, now, expectedRevision).Scan(&updated)
+	return updated, err
 }
 
 func (r *pgWatchRoomRepo) Heartbeat(ctx context.Context, roomID, profileID, clientID string, buffering bool, now time.Time) error {
@@ -338,7 +362,7 @@ func scanWatchRoomRow(row pgx.Row) (*models.WatchRoom, error) {
 	var room models.WatchRoom
 	var params []byte
 	if err := row.Scan(&room.ID, &room.CreatorProfileID, &room.CreatorName, &room.Title, &room.MediaType, &room.ItemID,
-		&room.PosterURL, &room.BackdropURL, &params, &room.Status, &room.Position, &room.Duration, &room.Revision,
+		&room.PosterURL, &room.BackdropURL, &params, &room.Status, &room.WaitingForReady, &room.Position, &room.Duration, &room.Revision,
 		&room.UpdatedBy, &room.AnchorUpdatedAt, &room.CreatedAt, &room.ExpiresAt, &room.EndedAt, &room.EndReason); err != nil {
 		return nil, err
 	}

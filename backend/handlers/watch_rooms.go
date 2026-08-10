@@ -204,6 +204,8 @@ func (h *WatchRoomsHandler) writeError(w http.ResponseWriter, err error) {
 		status = http.StatusGone
 	case errors.Is(err, watchrooms.ErrAlreadyInvited):
 		status = http.StatusConflict
+	case errors.Is(err, watchrooms.ErrRevisionConflict):
+		status = http.StatusConflict
 	case errors.Is(err, watchrooms.ErrRoomEnded):
 		status = http.StatusGone
 	}

@@ -23,6 +23,7 @@ type WatchRoom struct {
 	BackdropURL      string            `json:"backdropUrl,omitempty"`
 	Params           map[string]string `json:"params"`
 	Status           string            `json:"status"`
+	WaitingForReady  bool              `json:"waitingForReady"`
 	Position         float64           `json:"position"`
 	Duration         float64           `json:"duration"`
 	Revision         int64             `json:"revision"`
@@ -99,7 +100,8 @@ type WatchRoomCreate struct {
 }
 
 type WatchRoomStateUpdate struct {
-	Status   string  `json:"status"`
-	Position float64 `json:"position"`
-	Duration float64 `json:"duration,omitempty"`
+	Status           string  `json:"status"`
+	Position         float64 `json:"position"`
+	Duration         float64 `json:"duration,omitempty"`
+	ExpectedRevision *int64  `json:"expectedRevision,omitempty"`
 }

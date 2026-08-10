@@ -144,13 +144,16 @@ func (r *fakeRoomRepo) SetReady(_ context.Context, _, profileID string, ready bo
 	r.members[profileID] = m
 	return nil
 }
-func (r *fakeRoomRepo) UpdateState(_ context.Context, _, profileID, status string, position, duration float64, now time.Time) error {
+func (r *fakeRoomRepo) UpdateState(_ context.Context, _, profileID, status string, position, duration float64, expectedRevision *int64, now time.Time) (bool, error) {
+	if expectedRevision != nil && r.room.Revision != *expectedRevision {
+		return false, nil
+	}
 	r.room.Status, r.room.Position, r.room.Duration = status, position, duration
 	r.room.Revision++
 	r.room.UpdatedBy = profileID
 	r.room.AnchorUpdatedAt = now
 	r.stateSet = true
-	return nil
+	return true, nil
 }
 func (r *fakeRoomRepo) Heartbeat(_ context.Context, _, profileID, clientID string, buffering bool, now time.Time) error {
 	m := r.members[profileID]
@@ -254,6 +257,10 @@ func TestCreateJoinAndUpdateWatchRoom(t *testing.T) {
 	if len(otherInvitations) != 0 {
 		t.Fatalf("unselected profile received %d invitation(s), want 0", len(otherInvitations))
 	}
+	hostRooms, err := svc.Invitations(context.Background(), "host")
+	if err != nil || len(hostRooms) != 1 || hostRooms[0].ID != room.ID {
+		t.Fatalf("Invitations(host) = %#v, %v; want the host's active room", hostRooms, err)
+	}
 
 	joined, err := svc.Join(context.Background(), room.ID, "guest", "guest-tv", supportedCapabilities)
 	if err != nil {
@@ -300,6 +307,45 @@ func TestUpdateStateRejectsNonMemberAndInvalidValues(t *testing.T) {
 	}
 	if _, err := svc.UpdateState(context.Background(), room.ID, "host", models.WatchRoomStateUpdate{Status: "lobby"}); err != ErrInvalidState {
 		t.Fatalf("invalid state error = %v, want %v", err, ErrInvalidState)
+	}
+}
+
+func TestUpdateStateRejectsStaleRevision(t *testing.T) {
+	repo := &fakeRoomRepo{}
+	svc := New(repo, fakeProfiles{"host": {ID: "host", AccountID: "home"}}, fakeAccounts{})
+	svc.now = func() time.Time { return time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC) }
+	room, err := svc.Create(context.Background(), "home", "host", models.WatchRoomCreate{Title: "Movie", MediaType: "movie", ItemID: "one", Capabilities: supportedCapabilities})
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleRevision := room.Revision - 1
+	_, err = svc.UpdateState(context.Background(), room.ID, "host", models.WatchRoomStateUpdate{
+		Status:           "paused",
+		Position:         12,
+		ExpectedRevision: &staleRevision,
+	})
+	if err != ErrRevisionConflict {
+		t.Fatalf("stale update error = %v, want %v", err, ErrRevisionConflict)
+	}
+	if repo.room.Status == "paused" {
+		t.Fatal("stale update changed room state")
+	}
+}
+
+func TestDecorateDoesNotAdvanceRoomWhilePlayersAreGettingReady(t *testing.T) {
+	now := time.Date(2026, 8, 9, 12, 0, 10, 0, time.UTC)
+	svc := &Service{now: func() time.Time { return now }}
+	room := &models.WatchRoom{
+		Status:          models.WatchRoomStatusPlaying,
+		WaitingForReady: true,
+		Position:        42,
+		AnchorUpdatedAt: now.Add(-10 * time.Second),
+	}
+
+	svc.decorate(room)
+
+	if room.Position != 42 {
+		t.Fatalf("waiting room position = %v, want 42", room.Position)
 	}
 }
 

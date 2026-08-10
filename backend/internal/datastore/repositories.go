@@ -97,7 +97,7 @@ type WatchRoomRepository interface {
 	IsInvited(ctx context.Context, roomID, profileID string) (bool, error)
 	Join(ctx context.Context, roomID, profileID, clientID string, capabilities models.WatchRoomClientCapabilities, now time.Time) error
 	SetReady(ctx context.Context, roomID, profileID string, ready bool, now time.Time) error
-	UpdateState(ctx context.Context, roomID, profileID, status string, position, duration float64, now time.Time) error
+	UpdateState(ctx context.Context, roomID, profileID, status string, position, duration float64, expectedRevision *int64, now time.Time) (bool, error)
 	Heartbeat(ctx context.Context, roomID, profileID, clientID string, buffering bool, now time.Time) error
 	Leave(ctx context.Context, roomID, profileID string) error
 	End(ctx context.Context, roomID, profileID string, now time.Time) (bool, error)
