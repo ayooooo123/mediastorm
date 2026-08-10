@@ -1,10 +1,17 @@
 package models
 
+var releaseNumberedSpecialTVDBIDs = map[int64]struct{}{
+	// One Piece episode 590 is filed under season zero by TVDB, but it is part
+	// of the canonical release numbering. Excluding it shifts every later
+	// release down by one (for example S23E18 becomes 1172 instead of 1173).
+	4543896: {},
+}
+
 // ReleaseAbsoluteEpisodeNumber returns the episode number used by release
-// names: only episodes from positive-numbered seasons contribute to the
-// running total. Provider absolute numbering can group multipart episodes or
-// include season-zero specials, so it is not safe to expose directly as the
-// release absolute number.
+// names. Episodes from positive-numbered seasons contribute to the running
+// total, along with the small set of season-zero episodes that release groups
+// canonically number as regular episodes. Other provider specials remain
+// excluded because they would shift later release numbers incorrectly.
 func ReleaseAbsoluteEpisodeNumber(seasons []SeriesSeason, target SeriesEpisode) int {
 	if target.SeasonNumber <= 0 || target.EpisodeNumber <= 0 {
 		return 0
@@ -32,7 +39,28 @@ func ReleaseAbsoluteEpisodeNumber(seasons []SeriesSeason, target SeriesEpisode) 
 		}
 		absolute += count
 	}
+
+	for _, season := range seasons {
+		if season.Number != 0 {
+			continue
+		}
+		for _, special := range season.Episodes {
+			if releaseNumberedSpecialPrecedesTarget(special, target) {
+				absolute++
+			}
+		}
+	}
 	return absolute
+}
+
+func releaseNumberedSpecialPrecedesTarget(special, target SeriesEpisode) bool {
+	if _, ok := releaseNumberedSpecialTVDBIDs[special.TVDBID]; !ok {
+		return false
+	}
+	if special.AiredDate != "" && target.AiredDate != "" {
+		return special.AiredDate < target.AiredDate
+	}
+	return special.AbsoluteEpisodeNumber > 0 && target.AbsoluteEpisodeNumber > special.AbsoluteEpisodeNumber
 }
 
 // NormalizeReleaseAbsoluteEpisodeNumbers gives every regular episode the same

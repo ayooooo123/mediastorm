@@ -54,3 +54,41 @@ func TestNormalizeReleaseAbsoluteEpisodeNumbersExcludesSpecials(t *testing.T) {
 		t.Fatalf("special absolute changed to %d, want provider value 13 preserved", got)
 	}
 }
+
+func TestNormalizeReleaseAbsoluteEpisodeNumbersIncludesCanonicallyNumberedSpecial(t *testing.T) {
+	details := &SeriesDetails{
+		Seasons: []SeriesSeason{
+			{
+				Number: 0,
+				Episodes: []SeriesEpisode{
+					{
+						TVDBID:                4543896,
+						SeasonNumber:          0,
+						EpisodeNumber:         39,
+						AbsoluteEpisodeNumber: 590,
+						AiredDate:             "2013-04-07",
+					},
+				},
+			},
+			{Number: 1, EpisodeCount: 589},
+			{
+				Number:       2,
+				EpisodeCount: 2,
+				Episodes: []SeriesEpisode{
+					{SeasonNumber: 2, EpisodeNumber: 1, AbsoluteEpisodeNumber: 591, AiredDate: "2013-04-14"},
+					{SeasonNumber: 2, EpisodeNumber: 2, AbsoluteEpisodeNumber: 592, AiredDate: "2013-04-21"},
+				},
+			},
+		},
+	}
+
+	if NormalizeReleaseAbsoluteEpisodeNumbers(details) {
+		t.Fatal("canonically numbered special should preserve the provider release numbering")
+	}
+	if got := details.Seasons[2].Episodes[0].AbsoluteEpisodeNumber; got != 591 {
+		t.Fatalf("first regular episode after numbered special = %d, want 591", got)
+	}
+	if got := details.Seasons[2].Episodes[1].AbsoluteEpisodeNumber; got != 592 {
+		t.Fatalf("second regular episode after numbered special = %d, want 592", got)
+	}
+}

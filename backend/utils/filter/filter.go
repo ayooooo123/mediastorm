@@ -58,6 +58,11 @@ var (
 		"brrip":  {},
 		"dvdrip": {},
 	}
+	// Some Torznab indexers flatten bracketed anime release names such as
+	// "[SubsPlease] One Piece - 1172" into "SubsPlease-One Piece-1172".
+	// ptt-go then includes the release group in ParsedTitle, so retain a title
+	// variant without the known prefix for identity matching.
+	flattenedAnimeReleaseGroupPrefixes = []string{"subsplease"}
 )
 
 // HDRDVPolicy determines what HDR/DV content to exclude from search results.
@@ -935,6 +940,9 @@ func parsedTitleVariants(title string) []string {
 	}
 
 	add(title)
+	if stripped := stripFlattenedAnimeReleaseGroupPrefix(title); stripped != "" {
+		add(stripped)
+	}
 	normalized := normalizeFormulaOneTitle(title)
 	switch normalized {
 	case "formula 1":
@@ -945,6 +953,16 @@ func parsedTitleVariants(title string) []string {
 		add("F1")
 	}
 	return variants
+}
+
+func stripFlattenedAnimeReleaseGroupPrefix(title string) string {
+	normalized := normalizeForContainment(title)
+	for _, prefix := range flattenedAnimeReleaseGroupPrefixes {
+		if remainder, ok := strings.CutPrefix(normalized, prefix+" "); ok {
+			return strings.TrimSpace(remainder)
+		}
+	}
+	return ""
 }
 
 func formulaOneEventMatchesTarget(title string, targetSeason, targetEpisode int) bool {

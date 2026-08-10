@@ -210,6 +210,12 @@ func TestAnimeFilter_OnePiece_SeasonPackRejection(t *testing.T) {
 			description: "Fansub absolute episode format",
 		},
 		{
+			name:        "Torznab-flattened SubsPlease absolute format accepted",
+			title:       "SubsPlease-One Piece-1153-1080p-6E514EA9-",
+			shouldPass:  true,
+			description: "Indexer-flattened release group must not become part of the series title",
+		},
+		{
 			name:        "Erai-raws absolute format accepted",
 			title:       "[Erai-raws] One Piece - 1153 [1080p].mkv",
 			shouldPass:  true,
@@ -222,6 +228,12 @@ func TestAnimeFilter_OnePiece_SeasonPackRejection(t *testing.T) {
 			title:       "[SubsPlease] One Piece - 1063 (1080p).mkv",
 			shouldPass:  false,
 			description: "Episode 1063 is not 1153",
+		},
+		{
+			name:        "Wrong Torznab-flattened absolute episode rejected",
+			title:       "SubsPlease-One Piece-1152-1080p-DEADBEEF-",
+			shouldPass:  false,
+			description: "Release-group normalization must preserve absolute episode filtering",
 		},
 		{
 			name:        "Wrong S01E format rejected",
