@@ -2,6 +2,7 @@ package debrid
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -156,5 +157,34 @@ func TestTorrentioScraperFetchStreamsWithoutOptions(t *testing.T) {
 	expected := "/stream/movie/tt0133093.json"
 	if receivedPath != expected {
 		t.Errorf("expected path %q, got %q", expected, receivedPath)
+	}
+}
+
+func TestTorrentioScraperRetriesTransientTimeout(t *testing.T) {
+	calls := 0
+	client := &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			return nil, context.DeadlineExceeded
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(
+				`{"streams":[{"name":"Torrentio\\n1080p","title":"One.Piece.1173.1080p","infoHash":"abc123","fileIdx":0}]}`,
+			)),
+		}, nil
+	})}
+
+	scraper := NewTorrentioScraper(client, "", "", "https://torrentio.example.test")
+	streams, err := scraper.fetchStreams(t.Context(), MediaTypeSeries, "tt0388629:23:18")
+	if err != nil {
+		t.Fatalf("fetchStreams returned error after retry: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("request calls = %d, want 2", calls)
+	}
+	if len(streams) != 1 || streams[0].infoHash != "abc123" {
+		t.Fatalf("unexpected streams after retry: %+v", streams)
 	}
 }

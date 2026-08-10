@@ -473,6 +473,8 @@ var (
 	reLanguages = regexp.MustCompile(`[\p{So}]{1,2}`)
 )
 
+const torrentioRequestAttempts = 2
+
 // incompatibleAudioCodecs lists audio codecs that VLC and many mobile players cannot decode
 var incompatibleAudioCodecs = []string{
 	"truehd",
@@ -505,14 +507,21 @@ func (t *TorrentioScraper) fetchStreams(ctx context.Context, mediaType MediaType
 	} else {
 		endpoint = fmt.Sprintf("%s/stream/%s/%s.json", t.baseURL, mediaType, url.PathEscape(id))
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-	addBrowserHeaders(req)
-	resp, err := apiusage.Do(t.httpClient, "Torrentio", "Stream search", req)
-	if err != nil {
-		return nil, err
+	var resp *http.Response
+	for attempt := 1; attempt <= torrentioRequestAttempts; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
+		addBrowserHeaders(req)
+		resp, err = apiusage.Do(t.httpClient, "Torrentio", "Stream search", req)
+		if err == nil {
+			break
+		}
+		if attempt == torrentioRequestAttempts || ctx.Err() != nil || !isTorrentioTransientRequestError(err) {
+			return nil, err
+		}
+		log.Printf("[torrentio] Stream request for %s timed out; retrying once", id)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -584,6 +593,10 @@ func (t *TorrentioScraper) fetchStreams(ctx context.Context, mediaType MediaType
 	}
 
 	return streams, nil
+}
+
+func isTorrentioTransientRequestError(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded)
 }
 
 func deriveTitle(raw string) string {

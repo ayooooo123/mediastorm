@@ -590,6 +590,14 @@ func (s *SearchService) Search(ctx context.Context, opts SearchOptions) ([]model
 	if len(aggregate) == 0 && len(errs) > 0 {
 		return nil, errors.Join(errs...)
 	}
+	if len(errs) > 0 {
+		for i := range aggregate {
+			if aggregate[i].Attributes == nil {
+				aggregate[i].Attributes = make(map[string]string)
+			}
+			aggregate[i].Attributes["searchIncomplete"] = "true"
+		}
+	}
 
 	// Check if filtering should be bypassed for AIOStreams-only mode
 	bypassFiltering := bypassForAIO &&

@@ -1996,6 +1996,7 @@ func (s *Service) searchRawResults(ctx context.Context, opts SearchOptions) ([]m
 
 	var aggregated []models.NZBResult
 	var errCount, srcCount int
+	incompleteSearch := false
 
 	for sr := range resultsChan {
 		srcCount++
@@ -2005,6 +2006,9 @@ func (s *Service) searchRawResults(ctx context.Context, opts SearchOptions) ([]m
 			continue
 		}
 		if len(sr.results) > 0 {
+			if searchResultsIncomplete(sr.results) {
+				incompleteSearch = true
+			}
 			aggregated = append(aggregated, sr.results...)
 		}
 	}
@@ -2017,8 +2021,21 @@ func (s *Service) searchRawResults(ctx context.Context, opts SearchOptions) ([]m
 		return nil, fmt.Errorf("all search sources failed")
 	}
 
-	s.setCachedSearchResults(cacheKey, aggregated, time.Now())
+	if errCount == 0 && !incompleteSearch {
+		s.setCachedSearchResults(cacheKey, aggregated, time.Now())
+	} else {
+		log.Printf("[indexer] skipping raw search cache for query=%q because one or more providers failed", opts.Query)
+	}
 	return aggregated, nil
+}
+
+func searchResultsIncomplete(results []models.NZBResult) bool {
+	for _, result := range results {
+		if strings.EqualFold(strings.TrimSpace(result.Attributes["searchIncomplete"]), "true") {
+			return true
+		}
+	}
+	return false
 }
 
 // fetchUsenetResultsAllQueries fetches raw usenet results from all queries without filtering.

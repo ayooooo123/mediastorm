@@ -14,6 +14,7 @@ import (
 type stubScraper struct {
 	name    string
 	results []ScrapeResult
+	err     error
 }
 
 func (s stubScraper) Name() string {
@@ -21,7 +22,33 @@ func (s stubScraper) Name() string {
 }
 
 func (s stubScraper) Search(_ context.Context, _ SearchRequest) ([]ScrapeResult, error) {
-	return s.results, nil
+	return s.results, s.err
+}
+
+func TestSearchMarksResultsIncompleteWhenScraperFails(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "settings.json")
+	cfgManager := config.NewManager(cfgPath)
+	settings := config.DefaultSettings()
+	settings.Streaming.ServiceMode = config.StreamingServiceModeDebrid
+	settings.Streaming.DebridProviders = []config.DebridProviderSettings{{Name: "RealDebrid", Enabled: true, APIKey: "test-key"}}
+	if err := cfgManager.Save(settings); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	svc := NewSearchService(cfgManager,
+		stubScraper{name: "working", results: []ScrapeResult{{Title: "One.Piece.1173.1080p", InfoHash: "abc123"}}},
+		stubScraper{name: "timed-out", err: context.DeadlineExceeded},
+	)
+	results, err := svc.Search(t.Context(), SearchOptions{Query: "One Piece S23E18", MediaType: "series", SkipFilter: true})
+	if err != nil {
+		t.Fatalf("partial search returned error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("partial search results = %d, want 1", len(results))
+	}
+	if got := results[0].Attributes["searchIncomplete"]; got != "true" {
+		t.Fatalf("searchIncomplete = %q, want true", got)
+	}
 }
 
 type stubUserSettings struct {
