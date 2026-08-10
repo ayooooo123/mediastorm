@@ -188,10 +188,113 @@ func TestWebPlaybackTemplateSendsFinalHeartbeatOnTeardown(t *testing.T) {
 	for _, want := range []string{
 		"playbackEnded: Boolean(playbackEnded)",
 		"stopHlsSession({ keepalive: true });",
-		"ended: true,",
+		"ended: Boolean(options.ended),",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("web playback template missing final-heartbeat hook %q", want)
+		}
+	}
+}
+
+func TestWebPlaybackTemplateQualifiesMigrationCandidatesBeforeHandoff(t *testing.T) {
+	body, err := webTemplates.ReadFile("web_templates/playback.html")
+	if err != nil {
+		t.Fatalf("read web playback template: %v", err)
+	}
+
+	rendered := string(body)
+	for _, want := range []string{
+		"/playback/bad-streams?perPage=100&page=",
+		"webMigrationCandidateSessionKey(candidate)",
+		"String(candidate?.filterStatus || '').toLowerCase() !== 'filtered'",
+		"webMigrationPathIdentity(nextPath) === webMigrationPathIdentity(previous.path)",
+		"!Array.isArray(metadata?.videoStreams) || !metadata.videoStreams.length",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("web playback template missing migration qualification %q", want)
+		}
+	}
+	for _, forbidden := range []string{"allowMarkedBad:true", "allowMarkedBad: true"} {
+		if strings.Contains(rendered, forbidden) {
+			t.Fatalf("web playback template must not bypass bad-stream filtering with %q", forbidden)
+		}
+	}
+}
+
+func TestWebPlaybackTemplateProbatesMigrationBeforeAdoption(t *testing.T) {
+	body, err := webTemplates.ReadFile("web_templates/playback.html")
+	if err != nil {
+		t.Fatalf("read web playback template: %v", err)
+	}
+
+	rendered := string(body)
+	for _, want := range []string{
+		"const WEB_MIGRATION_PROBATION_MS = 20000;",
+		"const WEB_MIGRATION_PROBATION_ADVANCE_SECONDS = 10;",
+		"startWebMigrationProbation({",
+		"updateWebMigrationProbation();",
+		"replacement passed probation and was adopted",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("web playback template missing migration probation hook %q", want)
+		}
+	}
+}
+
+func TestWebPlaybackTemplateAdvancesMigrationAfterSustainedStall(t *testing.T) {
+	body, err := webTemplates.ReadFile("web_templates/playback.html")
+	if err != nil {
+		t.Fatalf("read web playback template: %v", err)
+	}
+
+	rendered := string(body)
+	for _, want := range []string{
+		"const WEB_MIGRATION_STALL_MS = 15000;",
+		"armWebMigrationStallTimer('sustained-buffering');",
+		"migration replacement failed probation",
+		"migrateWebStream(reason).then((migrated) =>",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("web playback template missing sustained-stall migration hook %q", want)
+		}
+	}
+}
+
+func TestWebPlaybackTemplateResetsSourceLocalStateDuringMigration(t *testing.T) {
+	body, err := webTemplates.ReadFile("web_templates/playback.html")
+	if err != nil {
+		t.Fatalf("read web playback template: %v", err)
+	}
+
+	rendered := string(body)
+	for _, want := range []string{
+		"webPlayerManualAudioSelection = false;",
+		"webPlayerManualSubtitleSelection = false;",
+		"webPlayerSelectedAudioTrack = null;",
+		"webPlayerSelectedSubtitleTrack = -1;",
+		"playbackMeta.dv = Boolean(primaryVideo?.hasDolbyVision);",
+		"skipStopProgress:true,",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("web playback template missing source-local migration reset %q", want)
+		}
+	}
+}
+
+func TestWebPlaybackTemplatePreservesRewindWhenRecoveringStaleSession(t *testing.T) {
+	body, err := webTemplates.ReadFile("web_templates/playback.html")
+	if err != nil {
+		t.Fatalf("read web playback template: %v", err)
+	}
+
+	rendered := string(body)
+	for _, want := range []string{
+		"const resumeTarget = clampSeekTarget(currentAbsoluteTime() - rewindSeconds);",
+		"target: resumeTarget,",
+		"const target = clampSeekTarget(options.target ?? currentAbsoluteTime());",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("web playback template missing stale-session rewind behavior %q", want)
 		}
 	}
 }

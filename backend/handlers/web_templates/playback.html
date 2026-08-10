@@ -1031,6 +1031,9 @@
     const WEB_WATCH_NEXT_COUNTDOWN_MS = 7000;
     const WEB_NEXT_EPISODE_READY_TIMEOUT_MS = 45000;
     const WEB_MIN_REWIND_PAUSE_MS = 10000;
+    const WEB_MIGRATION_STALL_MS = 15000;
+    const WEB_MIGRATION_PROBATION_MS = 20000;
+    const WEB_MIGRATION_PROBATION_ADVANCE_SECONDS = 10;
     const EXTERNAL_SUBTITLE_TRACK = -2;
 
     let activeProfileId = '';
@@ -1124,6 +1127,8 @@
     let webPlayerActivePrequeueId = routeParam('prequeueId');
     let webPlayerMigrationState = null;
     let webPlayerMigrationInProgress = false;
+    let webPlayerMigrationProbation = null;
+    let webPlayerMigrationStallTimer = null;
 
     document.addEventListener('DOMContentLoaded', safeInit);
     window.addEventListener('beforeunload', () => {
@@ -1588,11 +1593,11 @@
         document.getElementById('manualStart')?.classList.add('is-visible');
         return;
       }
-      stopHlsSession();
+      stopHlsSession({ skipProgress: Boolean(options.skipStopProgress) });
       renderLoading('Starting HLS session...');
 
       try {
-        await loadTrackMetadata();
+        await loadTrackMetadata(options.metadata);
         const session = await createHlsSession(options);
         hlsSessionId = session.sessionId || '';
         const requestedOffset = Number(session.startOffset ?? options.startOffset ?? 0);
@@ -1626,12 +1631,15 @@
       }
     }
 
-    async function loadTrackMetadata() {
+    async function loadTrackMetadata(prefetchedMetadata) {
       webPlayerAudioStreams = [];
       webPlayerSubtitleStreams = [];
       try {
-        const params = new URLSearchParams({ path: sourcePath, profileId: activeProfileId });
-        const metadata = await apiCall(`/video/metadata?${params.toString()}`);
+        let metadata = prefetchedMetadata;
+        if (!metadata) {
+          const params = new URLSearchParams({ path: sourcePath, profileId: activeProfileId });
+          metadata = await apiCall(`/video/metadata?${params.toString()}`);
+        }
         webPlayerAudioStreams = Array.isArray(metadata?.audioStreams) ? metadata.audioStreams : [];
         webPlayerSubtitleStreams = Array.isArray(metadata?.subtitleStreams)
           ? metadata.subtitleStreams.filter(isWebTextSubtitleStream)
@@ -1646,7 +1654,10 @@
           const preferredSubtitle = webPlayerSubtitleStreams.find((stream) => webLanguageMatches(stream, webPlayerPreferences.subtitleLanguage) && (webPlayerPreferences.subtitleMode !== 'forced-only' || isWebForcedSubtitle(stream)));
           webPlayerSelectedSubtitleTrack = webPlayerPreferences.subtitleMode === 'off' ? -1 : Number(preferredSubtitle?.index ?? -1);
         }
-        await loadWebPlayerSegments(metadata);
+        // Embedded chapters are applied synchronously before this function's
+        // first await. Let the remote IntroDB fallback finish off the playback
+        // startup path so an unavailable third party cannot delay HLS creation.
+        loadWebPlayerSegments(metadata).catch((error) => console.warn('[web-player] segment lookup failed', error));
         maybeSearchWebSubtitles();
       } catch (error) {
         webPlayerMetadataResolved = false;
@@ -1936,9 +1947,14 @@
           if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
             setStatus('Reconnecting…', true);
             recoverWebPlayerHlsSession('hls-network-error', { wasPlaying: !video.paused }).then((recovered) => {
-              if (!recovered && hlsInstance) hlsInstance.startLoad();
+              if (recovered) return;
+              migrateWebStream('hls-network-error').then((migrated) => {
+                if (!migrated && hlsInstance) hlsInstance.startLoad();
+              });
             }).catch(() => {
-              if (hlsInstance) hlsInstance.startLoad();
+              migrateWebStream('hls-network-error').then((migrated) => {
+                if (!migrated && hlsInstance) hlsInstance.startLoad();
+              });
             });
             return;
           }
@@ -2090,6 +2106,7 @@
           updateControls();
           renderSubtitles();
           updateUpNextVisibility();
+          updateWebMigrationProbation();
           sendWebPlayerProgress();
         }
       });
@@ -2103,13 +2120,18 @@
         sendWebPlayerHLSState({ paused: false });
       });
       video.addEventListener('pause', () => {
+        clearWebMigrationStallTimer();
+        const suppressProgress = video.dataset.suppressPauseProgress === '1';
+        delete video.dataset.suppressPauseProgress;
         if (!webPlayerPausedAt) webPlayerPausedAt = Date.now();
         stopSubtitleRenderLoop();
         updateControls();
         renderSubtitles();
         showControls();
-        sendWebPlayerProgress({ force: true, isPaused: true });
-        sendWebPlayerHLSState({ paused: true });
+        if (!suppressProgress) {
+          sendWebPlayerProgress({ force: true, isPaused: true });
+          sendWebPlayerHLSState({ paused: true });
+        }
       });
       video.addEventListener('ended', () => {
         stopSubtitleRenderLoop();
@@ -2130,12 +2152,14 @@
       const markBuffering = () => {
         if (video.paused || webPlayerBuffering) return;
         webPlayerBuffering = true;
+        armWebMigrationStallTimer('sustained-buffering');
         sendWebPlayerProgress({ force: true });
         sendWebPlayerHLSState();
       };
       const clearBuffering = () => {
         if (!webPlayerBuffering) return;
         webPlayerBuffering = false;
+        clearWebMigrationStallTimer();
         sendWebPlayerProgress({ force: true });
         sendWebPlayerHLSState();
       };
@@ -2385,6 +2409,10 @@
     async function resumeWebPlayerPlayback(video) {
       if (!video) return;
       const pausedForMs = webPlayerPausedAt ? Date.now() - webPlayerPausedAt : 0;
+      const rewindSeconds = pausedForMs >= WEB_MIN_REWIND_PAUSE_MS
+        ? Number(webPlayerPreferences.rewindOnResumeFromPause || 0)
+        : 0;
+      const resumeTarget = clampSeekTarget(currentAbsoluteTime() - rewindSeconds);
       const shouldRecoverSession =
         hlsSessionId &&
         sourcePath &&
@@ -2392,13 +2420,15 @@
         pausedForMs >= WEB_PLAYER_STALE_PAUSE_MS;
 
       if (shouldRecoverSession) {
-        const recovered = await recoverWebPlayerHlsSession('long-pause-resume', { wasPlaying: true });
+        const recovered = await recoverWebPlayerHlsSession('long-pause-resume', {
+          wasPlaying: true,
+          target: resumeTarget,
+        });
         if (recovered) return;
       }
 
-      if (pausedForMs >= WEB_MIN_REWIND_PAUSE_MS && webPlayerPreferences.rewindOnResumeFromPause > 0) {
-        const target = clampSeekTarget(currentAbsoluteTime() - webPlayerPreferences.rewindOnResumeFromPause);
-        await seekWebPlayer(target);
+      if (rewindSeconds > 0) {
+        await seekWebPlayer(resumeTarget);
       }
       const result = video.play();
       if (result && typeof result.catch === 'function') result.catch(() => {});
@@ -2410,7 +2440,7 @@
         return false;
       }
 
-      const target = clampSeekTarget(currentAbsoluteTime());
+      const target = clampSeekTarget(options.target ?? currentAbsoluteTime());
       if (!Number.isFinite(target)) return false;
 
       const oldSessionId = hlsSessionId;
@@ -3200,6 +3230,8 @@
     }
 
     function resetNextEpisodeState() {
+      clearWebMigrationStallTimer();
+      webPlayerMigrationProbation = null;
       clearWebSegmentTimers();
       webPlayerSegmentGeneration += 1;
       webPlayerSegments = { recap: null, intro: null, outro: null };
@@ -3400,36 +3432,276 @@
         candidates,
         selectedIndex: Math.max(0, Number(status?.selectedResultIndex || 0)),
         attempted: new Set([Math.max(0, Number(status?.selectedResultIndex || 0))]),
+        attemptedKeys: new Set([
+          webMigrationCandidateSessionKey(candidates[Math.max(0, Number(status?.selectedResultIndex || 0))]),
+        ].filter(Boolean)),
       };
+    }
+
+    function normalizeWebMigrationValue(value) {
+      return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    }
+
+    function normalizeWebMigrationProvider(value) {
+      return String(value || '').trim().toLowerCase().replace(/[-_\s]+/g, '');
+    }
+
+    function webMigrationCandidateProvider(candidate) {
+      return candidate?.attributes?.provider || candidate?.attributes?.debridProvider ||
+        candidate?.attributes?.resolver || candidate?.attributes?.resolverProvider || '';
+    }
+
+    function webMigrationCandidateSessionKey(candidate) {
+      if (!candidate) return '';
+      const release = normalizeWebMigrationValue(candidate.title);
+      const serviceType = String(candidate.serviceType || '').trim().toLowerCase();
+      const provider = normalizeWebMigrationProvider(webMigrationCandidateProvider(candidate));
+      if (release) return `${release}|${serviceType}|${provider}`;
+      return String(candidate.guid || candidate.downloadUrl || candidate.link || '').trim().toLowerCase();
+    }
+
+    function webMigrationCandidateMatchesBadStream(candidate, badStreams) {
+      const release = normalizeWebMigrationValue(candidate?.title);
+      const serviceType = String(candidate?.serviceType || '').trim().toLowerCase();
+      const provider = normalizeWebMigrationProvider(webMigrationCandidateProvider(candidate));
+      if (!release) return false;
+      return badStreams.some((entry) => {
+        if (normalizeWebMigrationValue(entry?.normalizedReleaseName || entry?.releaseName) !== release) return false;
+        const badReason = String(entry?.reason || '').trim().toLowerCase();
+        if (badReason.includes('metadata-probe-unplayable') || badReason.includes('unplayable-video')) return true;
+        const entryService = String(entry?.serviceType || '').trim().toLowerCase();
+        const entryProvider = normalizeWebMigrationValue(entry?.provider);
+        if (entryService && entryService !== serviceType) return false;
+        return !entryProvider || normalizeWebMigrationProvider(entryProvider) === provider;
+      });
+    }
+
+    async function loadWebMigrationBadStreams() {
+      const streams = [];
+      try {
+        let page = 1;
+        let totalPages = 1;
+        while (page <= totalPages && page <= 10) {
+          const response = await apiCall('/playback/bad-streams?perPage=100&page=' + page);
+          const items = Array.isArray(response?.streams) ? response.streams : Array.isArray(response?.items) ? response.items : [];
+          streams.push(...items);
+          totalPages = Math.max(1, Number(response?.totalPages || 1));
+          page += 1;
+        }
+      } catch (error) {
+        webPlayerDebugLog('warn', 'migration bad-stream lookup failed', { error:error?.message || String(error) });
+      }
+      return streams;
+    }
+
+    function webMigrationPathIdentity(value) {
+      const raw = String(value || '').trim();
+      if (!raw) return '';
+      try {
+        const parsed = new URL(raw, window.location.origin);
+        return (parsed.origin + parsed.pathname).replace(/\/+$/g, '').toLowerCase();
+      } catch {
+        return raw.split(/[?#]/, 1)[0].replace(/\/+$/g, '').toLowerCase();
+      }
+    }
+
+    function clearWebMigrationStallTimer() {
+      if (webPlayerMigrationStallTimer) clearTimeout(webPlayerMigrationStallTimer);
+      webPlayerMigrationStallTimer = null;
+    }
+
+    function armWebMigrationStallTimer(reason) {
+      clearWebMigrationStallTimer();
+      const state = webPlayerMigrationState;
+      if (!state || webPlayerMigrationInProgress || playbackMeta.isLive || SHARE_MODE || !webPlayerPreferences.streamMigrationEnabled) return;
+      if (webPlayerMigrationProbation) webPlayerMigrationProbation.firstProgressAt = null;
+      webPlayerMigrationStallTimer = window.setTimeout(() => {
+        webPlayerMigrationStallTimer = null;
+        const video = document.getElementById('webPlayer');
+        if (!webPlayerBuffering || video?.paused) return;
+        if (webPlayerMigrationProbation) {
+          webPlayerDebugLog('warn', 'migration replacement failed probation', {
+            reason,
+            selectedResultIndex:webPlayerMigrationProbation.selectedResultIndex,
+          });
+          webPlayerMigrationProbation = null;
+        }
+        migrateWebStream(reason).then((migrated) => {
+          if (!migrated) setStatus('Playback remains stalled and no qualified replacement is available.', true);
+        });
+      }, WEB_MIGRATION_STALL_MS);
+    }
+
+    function startWebMigrationProbation(probation) {
+      webPlayerMigrationProbation = {
+        ...probation,
+        firstProgressAt:null,
+        lastPosition:Number(probation.resumePosition || 0),
+      };
+      setStatus('Validating replacement stream…');
+      webPlayerDebugLog('info', 'migration replacement entered probation', {
+        selectedResultIndex:probation.selectedResultIndex,
+        resumePosition:probation.resumePosition,
+      });
+    }
+
+    function updateWebMigrationProbation() {
+      const probation = webPlayerMigrationProbation;
+      const video = document.getElementById('webPlayer');
+      if (!probation || !video || video.paused || webPlayerBuffering || webPlayerSeekInProgress) return;
+      if (webMigrationPathIdentity(probation.sourcePath) !== webMigrationPathIdentity(sourcePath)) {
+        webPlayerMigrationProbation = null;
+        return;
+      }
+      const position = currentAbsoluteTime();
+      if (position + 0.25 < probation.lastPosition) probation.firstProgressAt = null;
+      if (position > probation.lastPosition + 0.1 && probation.firstProgressAt === null) probation.firstProgressAt = Date.now();
+      probation.lastPosition = Math.max(probation.lastPosition, position);
+      if (probation.firstProgressAt === null || Date.now() - probation.firstProgressAt < WEB_MIGRATION_PROBATION_MS) return;
+      if (position < probation.resumePosition + WEB_MIGRATION_PROBATION_ADVANCE_SECONDS) return;
+
+      webPlayerMigrationProbation = null;
+      const body = {
+        streamPath:probation.sourcePath,
+        result:probation.result,
+        selectedResultIndex:probation.selectedResultIndex,
+        migrationCandidates:probation.migrationCandidates,
+        resultAttributes:probation.result?.attributes || {},
+      };
+      if (Number(probation.resolution?.fileSize) > 0) body.fileSize = Number(probation.resolution.fileSize);
+      if (probation.resolution?.healthStatus) body.healthStatus = probation.resolution.healthStatus;
+      apiCall('/playback/prequeue/' + encodeURIComponent(probation.prequeueId) + '/adopt-migration', {
+        method:'POST',
+        body:JSON.stringify(body),
+      }).then(() => {
+        setStatus('');
+        webPlayerDebugLog('info', 'migration replacement passed probation and was adopted', {
+          selectedResultIndex:probation.selectedResultIndex,
+          position,
+        });
+      }).catch((error) => {
+        setStatus('Replacement is playing, but its prequeue state could not be saved.', true);
+        webPlayerDebugLog('warn', 'migration adoption failed', { error:error?.message || String(error) });
+      });
+    }
+
+    function applyWebMigrationMetadata(metadata) {
+      const primaryVideo = Array.isArray(metadata?.videoStreams) ? metadata.videoStreams[0] : null;
+      const hdrFormat = String(primaryVideo?.hdrFormat || '').toUpperCase();
+      playbackMeta.dv = Boolean(primaryVideo?.hasDolbyVision);
+      playbackMeta.dvProfile = primaryVideo?.dolbyVisionProfile || '';
+      playbackMeta.hdr10 = hdrFormat === 'HDR10' || hdrFormat === 'HDR10+' ||
+        (primaryVideo?.colorTransfer === 'smpte2084' && primaryVideo?.colorPrimaries === 'bt2020');
+      webPlayerManualAudioSelection = false;
+      webPlayerManualSubtitleSelection = false;
+      webPlayerSelectedAudioTrack = null;
+      webPlayerSelectedSubtitleTrack = -1;
+      webPlayerExternalSubtitle = null;
+      webPlayerSubtitleSearchStarted = false;
+      webPlayerSubtitleSearchGeneration += 1;
     }
 
     async function migrateWebStream(reason) {
       const state = webPlayerMigrationState;
       if (!state || webPlayerMigrationInProgress || SHARE_MODE || playbackMeta.isLive || !webPlayerPreferences.streamMigrationEnabled || /^local:/i.test(sourcePath)) return false;
-      const nextIndex = state.candidates.findIndex((_candidate, index) => !state.attempted.has(index));
-      if (nextIndex < 0) return false;
-      state.attempted.add(nextIndex);
+      clearWebMigrationStallTimer();
+      webPlayerMigrationProbation = null;
       webPlayerMigrationInProgress = true;
-      const previous = { path:sourcePath, position:currentAbsoluteTime(), meta:{...playbackMeta} };
+      const previous = {
+        path:sourcePath,
+        position:currentAbsoluteTime(),
+        meta:{...playbackMeta},
+        selectedAudioTrack:webPlayerSelectedAudioTrack,
+        selectedSubtitleTrack:webPlayerSelectedSubtitleTrack,
+        manualAudioSelection:webPlayerManualAudioSelection,
+        manualSubtitleSelection:webPlayerManualSubtitleSelection,
+        externalSubtitle:webPlayerExternalSubtitle,
+        subtitleCues:webPlayerSubtitleCues,
+      };
       setStatus('Switching to another ranked stream…');
       try {
-        const result = state.candidates[nextIndex];
-        const resolved = await apiCall('/playback/resolve', { method:'POST', body:JSON.stringify({ result, startOffset:Math.max(0, previous.position - 2), profileId:activeProfileId, allowMarkedBad:true }) });
-        const nextPath = resolved?.webdavPath || resolved?.streamPath || resolved?.path;
-        if (!nextPath) throw new Error('Migration candidate did not resolve to a stream.');
-        sourcePath = nextPath;
-        playbackMeta.displayName = result?.title || playbackMeta.displayName;
-        await startWebPlayerFromSource({ startOffset:Math.max(0, previous.position - 2) });
-        await waitForWebPlayerUsable();
-        state.selectedIndex = nextIndex;
-        await apiCall('/playback/prequeue/' + encodeURIComponent(state.prequeueId) + '/adopt-migration', { method:'POST', body:JSON.stringify({ streamPath:nextPath, result, selectedResultIndex:nextIndex, migrationCandidates:state.candidates, resultAttributes:result?.attributes || {} }) });
-        setStatus('');
-        webPlayerDebugLog('info', 'stream migration adopted', { reason, selectedResultIndex:nextIndex });
-        return true;
+        const badStreams = await loadWebMigrationBadStreams();
+        const candidates = state.candidates
+          .map((candidate, index) => ({ candidate, index }))
+          .filter(({ candidate, index }) =>
+            !state.attempted.has(index) &&
+            !state.attemptedKeys.has(webMigrationCandidateSessionKey(candidate)) &&
+            String(candidate?.filterStatus || '').toLowerCase() !== 'filtered' &&
+            !webMigrationCandidateMatchesBadStream(candidate, badStreams));
+
+        for (const entry of candidates) {
+          const { candidate:result, index:nextIndex } = entry;
+          state.attempted.add(nextIndex);
+          const candidateKey = webMigrationCandidateSessionKey(result);
+          if (candidateKey) state.attemptedKeys.add(candidateKey);
+          try {
+            const resolvePosition = Math.max(previous.position, currentAbsoluteTime());
+            const resolved = await apiCall('/playback/resolve', {
+              method:'POST',
+              body:JSON.stringify({ result, startOffset:Math.max(0, resolvePosition - 2), profileId:activeProfileId }),
+            });
+            const nextPath = resolved?.webdavPath || resolved?.streamPath || resolved?.path;
+            if (!nextPath) throw new Error('Migration candidate did not resolve to a stream.');
+            if (webMigrationPathIdentity(nextPath) === webMigrationPathIdentity(previous.path)) {
+              throw new Error('Migration candidate resolved to the current stream.');
+            }
+
+            const metadataParams = new URLSearchParams({ path:nextPath, profileId:activeProfileId });
+            const metadata = await apiCall('/video/metadata?' + metadataParams.toString());
+            if (!Array.isArray(metadata?.videoStreams) || !metadata.videoStreams.length) {
+              throw new Error('Migration candidate has no playable video stream.');
+            }
+
+            const handoffPosition = Math.max(previous.position, currentAbsoluteTime());
+            previous.position = handoffPosition;
+            sendWebPlayerProgress({ force:true, isPaused:false, position:handoffPosition });
+            sourcePath = nextPath;
+            playbackMeta = { ...previous.meta, displayName:result?.title || previous.meta.displayName };
+            applyWebMigrationMetadata(metadata);
+            await startWebPlayerFromSource({
+              startOffset:Math.max(0, handoffPosition - 2),
+              metadata,
+              skipStopProgress:true,
+              throwOnError:true,
+            });
+            await waitForWebPlayerUsable();
+            state.selectedIndex = nextIndex;
+            startWebMigrationProbation({
+              prequeueId:state.prequeueId,
+              sourcePath:nextPath,
+              result,
+              resolution:resolved,
+              selectedResultIndex:nextIndex,
+              migrationCandidates:state.candidates,
+              resumePosition:Math.max(0, handoffPosition - 2),
+            });
+            return true;
+          } catch (candidateError) {
+            webPlayerDebugLog('warn', 'migration candidate rejected', {
+              reason,
+              selectedResultIndex:nextIndex,
+              error:candidateError?.message || String(candidateError),
+            });
+            playbackMeta = { ...previous.meta };
+          }
+        }
+        throw new Error('No qualified replacement streams are available.');
       } catch (error) {
         sourcePath = previous.path;
-        playbackMeta = previous.meta;
-        await startWebPlayerFromSource({ startOffset:previous.position }).catch(() => {});
+        playbackMeta = { ...previous.meta };
+        webPlayerSelectedAudioTrack = previous.selectedAudioTrack;
+        webPlayerSelectedSubtitleTrack = previous.selectedSubtitleTrack;
+        webPlayerManualAudioSelection = previous.manualAudioSelection;
+        webPlayerManualSubtitleSelection = previous.manualSubtitleSelection;
+        webPlayerExternalSubtitle = previous.externalSubtitle;
+        await startWebPlayerFromSource({ startOffset:previous.position, skipStopProgress:true }).catch(() => {});
+        webPlayerSubtitleSearchGeneration += 1;
+        webPlayerSelectedAudioTrack = previous.selectedAudioTrack;
+        webPlayerSelectedSubtitleTrack = previous.selectedSubtitleTrack;
+        webPlayerManualAudioSelection = previous.manualAudioSelection;
+        webPlayerManualSubtitleSelection = previous.manualSubtitleSelection;
+        webPlayerExternalSubtitle = previous.externalSubtitle;
+        webPlayerSubtitleCues = previous.subtitleCues;
         setStatus('Stream switch failed: ' + (error?.message || String(error)), true);
         return false;
       } finally { webPlayerMigrationInProgress = false; }
@@ -3874,6 +4146,7 @@
     }
 
     function stopHlsSession(options = {}) {
+      clearWebMigrationStallTimer();
       clearWebPlayerStartupRecovery();
       if (!options.skipProgress) {
         sendWebPlayerProgress({
@@ -3897,6 +4170,7 @@
       const video = document.getElementById('webPlayer');
       if (video) {
         try {
+          if (options.skipProgress && !video.paused) video.dataset.suppressPauseProgress = '1';
           video.pause();
           video.removeAttribute('src');
           video.load();
