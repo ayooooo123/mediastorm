@@ -274,6 +274,20 @@ func TestPrequeueEntryToResponseIncludesServiceType(t *testing.T) {
 	}
 }
 
+func TestPrequeueEntryToResponseIncludesDebridProvider(t *testing.T) {
+	entry := &PrequeueEntry{
+		ID:          "pq_test",
+		Status:      PrequeueStatusReady,
+		StreamPath:  "/debrid/torbox/torrent/file.mkv",
+		ServiceType: "debrid",
+	}
+
+	resp := entry.ToResponse()
+	if resp.DebridProvider != "torbox" {
+		t.Fatalf("DebridProvider = %q, want torbox", resp.DebridProvider)
+	}
+}
+
 func TestPrequeueEntryToResponseIncludesMigrationCandidates(t *testing.T) {
 	entry := &PrequeueEntry{
 		ID:                  "pq_test",

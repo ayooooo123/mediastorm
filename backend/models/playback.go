@@ -58,11 +58,12 @@ type BatchResolveResponse struct {
 
 // PlaybackResolution contains the derived streaming details for an NZB selection.
 type PlaybackResolution struct {
-	QueueID       int64  `json:"queueId"`
-	WebDAVPath    string `json:"webdavPath"`
-	HealthStatus  string `json:"healthStatus"`
-	FileSize      int64  `json:"fileSize,omitempty"`
-	SourceNZBPath string `json:"sourceNzbPath,omitempty"`
+	QueueID        int64  `json:"queueId"`
+	WebDAVPath     string `json:"webdavPath"`
+	HealthStatus   string `json:"healthStatus"`
+	DebridProvider string `json:"debridProvider,omitempty"`
+	FileSize       int64  `json:"fileSize,omitempty"`
+	SourceNZBPath  string `json:"sourceNzbPath,omitempty"`
 	// Pre-extracted subtitles (for manual selection path)
 	SubtitleSessions map[int]*SubtitleSessionInfo `json:"subtitleSessions,omitempty"`
 }

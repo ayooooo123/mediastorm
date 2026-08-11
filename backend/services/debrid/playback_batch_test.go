@@ -156,6 +156,9 @@ func TestResolveSingleTorboxQuickCachedContinuesToResolve(t *testing.T) {
 	if res == nil || res.WebDAVPath == "" {
 		t.Fatalf("expected resolution with WebDAV path, got %+v", res)
 	}
+	if res.DebridProvider != "torbox" {
+		t.Fatalf("DebridProvider = %q, want torbox", res.DebridProvider)
+	}
 	if got := atomic.LoadInt64(&mock.instantCalls); got != 1 {
 		t.Fatalf("instant calls = %d, want 1", got)
 	}

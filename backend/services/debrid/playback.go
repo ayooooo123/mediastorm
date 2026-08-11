@@ -94,11 +94,12 @@ func (s *PlaybackService) Resolve(ctx context.Context, candidate models.NZBResul
 		// For pre-resolved streams, the WebDAV path is the direct URL
 		// The video handler will detect this and stream directly
 		resolution := &models.PlaybackResolution{
-			QueueID:       0,
-			WebDAVPath:    streamURL, // Direct stream URL
-			HealthStatus:  "cached",  // Use "cached" for frontend compatibility
-			FileSize:      candidate.SizeBytes,
-			SourceNZBPath: streamURL,
+			QueueID:        0,
+			WebDAVPath:     streamURL, // Direct stream URL
+			HealthStatus:   "cached",  // Use "cached" for frontend compatibility
+			DebridProvider: firstNonEmpty(candidate.Attributes["debridProvider"], candidate.Attributes["provider"]),
+			FileSize:       candidate.SizeBytes,
+			SourceNZBPath:  streamURL,
 		}
 
 		log.Printf("[debrid-playback] TIMING: pre-resolved resolution complete (took: %v): url=%s filename=%s", time.Since(resolveStart), safeURLForLog(streamURL), filename)
@@ -399,11 +400,12 @@ func (s *PlaybackService) resolveWithProvider(ctx context.Context, client Provid
 	}
 
 	resolution := &models.PlaybackResolution{
-		QueueID:       0, // Debrid doesn't use queues
-		WebDAVPath:    webdavPath,
-		HealthStatus:  "cached",
-		FileSize:      resolvedFileSize,
-		SourceNZBPath: downloadURL, // Store the actual download URL here
+		QueueID:        0, // Debrid doesn't use queues
+		WebDAVPath:     webdavPath,
+		HealthStatus:   "cached",
+		DebridProvider: providerName,
+		FileSize:       resolvedFileSize,
+		SourceNZBPath:  downloadURL, // Store the actual download URL here
 	}
 
 	log.Printf("[debrid-playback] resolution successful: webdavPath=%s downloadURL=%s", safeURLForLog(webdavPath), safeURLForLog(downloadURL))
@@ -558,11 +560,12 @@ func (s *PlaybackService) completeResolution(
 	}
 
 	resolution := &models.PlaybackResolution{
-		QueueID:       0,
-		WebDAVPath:    webdavPath,
-		HealthStatus:  "cached",
-		FileSize:      resolvedFileSize,
-		SourceNZBPath: downloadURL,
+		QueueID:        0,
+		WebDAVPath:     webdavPath,
+		HealthStatus:   "cached",
+		DebridProvider: providerName,
+		FileSize:       resolvedFileSize,
+		SourceNZBPath:  downloadURL,
 	}
 
 	log.Printf("[debrid-playback] resolution successful: webdavPath=%s downloadURL=%s", safeURLForLog(webdavPath), safeURLForLog(downloadURL))
@@ -1019,11 +1022,12 @@ func (s *PlaybackService) ResolveBatch(ctx context.Context, candidate models.NZB
 		resolvedFileSize := preferredFileSize(info.Files, selection, candidate.SizeBytes)
 
 		res.Resolution = &models.PlaybackResolution{
-			QueueID:       0,
-			WebDAVPath:    webdavPath,
-			HealthStatus:  "cached",
-			FileSize:      resolvedFileSize,
-			SourceNZBPath: downloadURL,
+			QueueID:        0,
+			WebDAVPath:     webdavPath,
+			HealthStatus:   "cached",
+			DebridProvider: providerName,
+			FileSize:       resolvedFileSize,
+			SourceNZBPath:  downloadURL,
 		}
 		results[i] = res
 	}

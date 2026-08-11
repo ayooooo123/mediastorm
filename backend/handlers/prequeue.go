@@ -2012,6 +2012,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 		e.ProgressCurrent = 0
 		e.ProgressTotal = 0
 		e.StreamPath = resolution.WebDAVPath
+		e.DebridProvider = resolution.DebridProvider
 		if selectedResult != nil {
 			e.ServiceType = string(selectedResult.ServiceType)
 		}

@@ -108,11 +108,12 @@ type PrequeueStatusResponse struct {
 	ProgressTotal   int                      `json:"progressTotal,omitempty"`
 
 	// When ready:
-	StreamPath   string `json:"streamPath,omitempty"`
-	DisplayName  string `json:"displayName,omitempty"` // For display instead of extracting from path
-	ServiceType  string `json:"serviceType,omitempty"`
-	FileSize     int64  `json:"fileSize,omitempty"`
-	HealthStatus string `json:"healthStatus,omitempty"`
+	StreamPath     string `json:"streamPath,omitempty"`
+	DisplayName    string `json:"displayName,omitempty"` // For display instead of extracting from path
+	ServiceType    string `json:"serviceType,omitempty"`
+	DebridProvider string `json:"debridProvider,omitempty"`
+	FileSize       int64  `json:"fileSize,omitempty"`
+	HealthStatus   string `json:"healthStatus,omitempty"`
 
 	// HDR detection results
 	HasDolbyVision           bool                             `json:"hasDolbyVision,omitempty"`
@@ -175,6 +176,7 @@ type PrequeueEntry struct {
 	StreamPath      string         `json:"streamPath,omitempty"`
 	MagnetLink      string         `json:"magnetLink,omitempty"` // Original magnet link for re-adding expired torrents
 	ServiceType     string         `json:"serviceType,omitempty"`
+	DebridProvider  string         `json:"debridProvider,omitempty"`
 	FileSize        int64          `json:"fileSize,omitempty"`
 	HealthStatus    string         `json:"healthStatus,omitempty"`
 
@@ -1194,6 +1196,7 @@ func hasCanonicalEpisodeIdentity(episode *models.EpisodeReference) bool {
 // ToResponse converts an entry to a status response
 func (e *PrequeueEntry) ToResponse() *PrequeueStatusResponse {
 	serviceType := e.ServiceType
+	debridProvider := e.DebridProvider
 	if serviceType == "" {
 		streamPath := strings.ToLower(strings.TrimSpace(e.StreamPath))
 		if strings.HasPrefix(streamPath, "/debrid/") {
@@ -1201,6 +1204,9 @@ func (e *PrequeueEntry) ToResponse() *PrequeueStatusResponse {
 		} else if streamPath != "" {
 			serviceType = "usenet"
 		}
+	}
+	if serviceType == "debrid" && debridProvider == "" {
+		debridProvider, _ = parseDebridStreamPath(e.StreamPath)
 	}
 	return &PrequeueStatusResponse{
 		PrequeueID:               e.ID,
@@ -1213,6 +1219,7 @@ func (e *PrequeueEntry) ToResponse() *PrequeueStatusResponse {
 		ProgressTotal:            e.ProgressTotal,
 		StreamPath:               e.StreamPath,
 		ServiceType:              serviceType,
+		DebridProvider:           debridProvider,
 		FileSize:                 e.FileSize,
 		HealthStatus:             e.HealthStatus,
 		HasDolbyVision:           e.HasDolbyVision,
