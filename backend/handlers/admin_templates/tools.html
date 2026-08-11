@@ -1541,6 +1541,44 @@
             </button>
         </div>
     </div>
+
+    {{if .IsAdmin}}
+    <!-- Database Data Section (master admin only) -->
+    <div class="section" id="databaseDataSection">
+        <div class="section-header" onclick="toggleSection(this)">
+            <div class="section-title">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                    <ellipse cx="12" cy="5" rx="9" ry="3"/>
+                    <path d="M3 5v14c0 1.7 4 3 9 3s9-1.3 9-3V5"/>
+                    <path d="M3 12c0 1.7 4 3 9 3s9-1.3 9-3"/>
+                </svg>
+                Delete Database Data
+            </div>
+            <svg class="section-toggle" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="6 9 12 15 18 9"/>
+            </svg>
+        </div>
+        <div class="section-content">
+            <p class="text-muted" style="margin-bottom: 1rem;">
+                Permanently remove a category of data for every profile. These actions cannot be undone; create a backup first if you may need to restore the data.
+            </p>
+            <label for="database-data-type" style="display: block; margin-bottom: 0.5rem; font-weight: 600;">Data to delete</label>
+            <select id="database-data-type" class="form-select" style="width: min(420px, 100%);" onchange="updateDatabaseDeletionWarning()">
+                <option value="watch_history">Watch history</option>
+                <option value="playback_progress">Playback progress</option>
+                <option value="watchlists">Watchlists</option>
+            </select>
+            <div id="database-deletion-warning" role="alert" style="margin: 1rem 0; padding: 0.875rem 1rem; border: 1px solid var(--danger); border-radius: 8px; color: var(--danger);"></div>
+            <button class="btn btn-secondary" id="clear-database-data-btn" onclick="clearDatabaseData()" style="color: var(--danger); border-color: var(--danger);">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="3 6 5 6 21 6"/>
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                </svg>
+                Permanently Delete Selected Data
+            </button>
+        </div>
+    </div>
+    {{end}}
 </div>
 
 <!-- TROUBLESHOOTING CATEGORY -->
@@ -2274,6 +2312,71 @@
             btn.innerHTML = originalHtml;
         }
     }
+
+    const databaseDeletionOptions = {
+        watch_history: {
+            label: 'watch history',
+            confirmation: 'DELETE WATCH HISTORY',
+            warning: 'All watched titles and episode completion records for every profile will be permanently deleted. Connected services or a future sync automation may import them again.'
+        },
+        playback_progress: {
+            label: 'playback progress',
+            confirmation: 'DELETE PLAYBACK PROGRESS',
+            warning: 'All resume positions and Continue Watching progress for every profile will be permanently deleted. Active playback position data will also be cleared.'
+        },
+        watchlists: {
+            label: 'watchlists',
+            confirmation: 'DELETE WATCHLISTS',
+            warning: 'Every profile’s watchlist and its sync deletion markers will be permanently deleted. Connected services or a future sync automation may repopulate watchlists.'
+        }
+    };
+
+    function updateDatabaseDeletionWarning() {
+        const select = document.getElementById('database-data-type');
+        const warning = document.getElementById('database-deletion-warning');
+        if (!select || !warning) return;
+        warning.textContent = 'Warning: ' + databaseDeletionOptions[select.value].warning;
+    }
+
+    async function clearDatabaseData() {
+        const select = document.getElementById('database-data-type');
+        const btn = document.getElementById('clear-database-data-btn');
+        if (!select || !btn) return;
+
+        const dataset = select.value;
+        const option = databaseDeletionOptions[dataset];
+        if (!confirm(`Permanently delete ${option.label} for every profile?\n\n${option.warning}\n\nThis cannot be undone.`)) return;
+
+        const confirmation = prompt(`Type ${option.confirmation} to confirm:`);
+        if (confirmation === null) return;
+        if (confirmation !== option.confirmation) {
+            showToast('Confirmation text did not match. Nothing was deleted.', 'error');
+            return;
+        }
+
+        const originalHtml = btn.innerHTML;
+        btn.disabled = true;
+        select.disabled = true;
+        btn.innerHTML = '<span class="spinner-small"></span> Deleting...';
+        try {
+            const response = await fetch(basePath + '/api/database/clear', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({dataset, confirmation})
+            });
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.error || 'Deletion failed');
+            showToast(`Deleted ${result.deleted} ${option.label} entries`, 'success');
+        } catch (e) {
+            showToast('Error deleting database data: ' + e.message, 'error');
+        } finally {
+            btn.disabled = false;
+            select.disabled = false;
+            btn.innerHTML = originalHtml;
+        }
+    }
+
+    updateDatabaseDeletionWarning();
 
     async function uploadDatabaseSnapshot() {
         const btn = document.getElementById('upload-database-snapshot-btn');

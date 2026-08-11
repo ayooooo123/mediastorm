@@ -3287,6 +3287,27 @@ func (s *Service) DeleteWatchHistoryItem(userID, mediaType, itemID string) error
 	return nil
 }
 
+// ClearWatchHistory removes watch history for every profile and returns the
+// number of entries removed. The in-memory state is restored if persistence
+// fails so callers never observe a partially applied clear.
+func (s *Service) ClearWatchHistory() (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	count := 0
+	for _, perUser := range s.watchHistory {
+		count += len(perUser)
+	}
+	previous := s.watchHistory
+	s.watchHistory = make(map[string]map[string]models.WatchHistoryItem)
+	if err := s.saveWatchHistoryLocked(); err != nil {
+		s.watchHistory = previous
+		return 0, err
+	}
+	s.continueWatchingCache = make(map[string]*cachedContinueWatching)
+	return count, nil
+}
+
 // BulkUpdateWatchHistory marks multiple episodes as watched/unwatched in a single operation.
 func (s *Service) BulkUpdateWatchHistory(userID string, updates []models.WatchHistoryUpdate) ([]models.WatchHistoryItem, error) {
 	userID = strings.TrimSpace(userID)
@@ -5298,6 +5319,27 @@ func (s *Service) DeletePlaybackProgress(userID, mediaType, itemID string) error
 	s.clearActivePlaybackProgressIdentityLocked(userID, identity)
 
 	return nil
+}
+
+// ClearPlaybackProgress removes saved resume positions for every profile and
+// returns the number of entries removed.
+func (s *Service) ClearPlaybackProgress() (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	count := 0
+	for _, perUser := range s.playbackProgress {
+		count += len(perUser)
+	}
+	previous := s.playbackProgress
+	s.playbackProgress = make(map[string]map[string]models.PlaybackProgress)
+	if err := s.savePlaybackProgressLocked(); err != nil {
+		s.playbackProgress = previous
+		return 0, err
+	}
+	s.activePlaybackProgress = make(map[string]map[string]models.PlaybackProgress)
+	s.continueWatchingCache = make(map[string]*cachedContinueWatching)
+	return count, nil
 }
 
 func (s *Service) ensurePlaybackProgressUserLocked(userID string) map[string]models.PlaybackProgress {

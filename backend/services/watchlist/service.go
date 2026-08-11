@@ -105,6 +105,28 @@ func (s *Service) List(userID string) ([]models.WatchlistItem, error) {
 	return items, nil
 }
 
+// Clear removes every profile's watchlist and sync tombstones, returning the
+// number of visible watchlist entries removed.
+func (s *Service) Clear() (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	count := 0
+	for _, perUser := range s.items {
+		count += len(perUser)
+	}
+	previousItems := s.items
+	previousTombstones := s.tombstones
+	s.items = make(map[string]map[string]models.WatchlistItem)
+	s.tombstones = make(map[string]map[string]models.WatchlistTombstone)
+	if err := s.saveLocked(); err != nil {
+		s.items = previousItems
+		s.tombstones = previousTombstones
+		return 0, err
+	}
+	return count, nil
+}
+
 // ListBySyncSource returns all watchlist items that were synced from a specific source.
 func (s *Service) ListBySyncSource(userID, syncSource string) ([]models.WatchlistItem, error) {
 	userID = strings.TrimSpace(userID)

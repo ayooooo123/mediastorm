@@ -482,3 +482,39 @@ func TestServiceReconcileMergesRowsWithSharedExternalIDs(t *testing.T) {
 		t.Fatalf("expected plex external ID to survive reconcile, got %q", got)
 	}
 }
+
+func TestClearRemovesAllWatchlistsAndTombstones(t *testing.T) {
+	svc, err := watchlist.NewService(t.TempDir())
+	if err != nil {
+		t.Fatalf("failed to create service: %v", err)
+	}
+	for _, userID := range []string{"profile-1", "profile-2"} {
+		if _, err := svc.AddOrUpdate(userID, models.WatchlistUpsert{
+			ID: "tmdb:movie:1", MediaType: "movie", Name: "Example", SyncSource: "trakt:task",
+		}); err != nil {
+			t.Fatalf("AddOrUpdate(%s) error = %v", userID, err)
+		}
+	}
+	if _, err := svc.RemoveSynced("profile-1", "movie", "tmdb:movie:1"); err != nil {
+		t.Fatalf("RemoveSynced() error = %v", err)
+	}
+
+	deleted, err := svc.Clear()
+	if err != nil {
+		t.Fatalf("Clear() error = %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("Clear() deleted = %d, want 1", deleted)
+	}
+	for _, userID := range []string{"profile-1", "profile-2"} {
+		items, err := svc.List(userID)
+		if err != nil || len(items) != 0 {
+			t.Fatalf("List(%s) = %v, %v; want empty", userID, items, err)
+		}
+	}
+	if _, err := svc.AddOrUpdate("profile-1", models.WatchlistUpsert{
+		ID: "tmdb:movie:1", MediaType: "movie", Name: "Example", SyncSource: "trakt:task",
+	}); err != nil {
+		t.Fatalf("sync item remained tombstoned after Clear(): %v", err)
+	}
+}

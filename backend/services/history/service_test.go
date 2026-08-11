@@ -27,6 +27,39 @@ func TestNormalizeSeriesName(t *testing.T) {
 	}
 }
 
+func TestClearWatchHistoryAndPlaybackProgress(t *testing.T) {
+	svc, err := NewService(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	svc.watchHistory = map[string]map[string]models.WatchHistoryItem{
+		"profile-1": {"movie:1": {ID: "movie:1"}},
+		"profile-2": {"movie:2": {ID: "movie:2"}},
+	}
+	svc.playbackProgress = map[string]map[string]models.PlaybackProgress{
+		"profile-1": {"movie:1": {ID: "movie:1"}},
+	}
+	svc.activePlaybackProgress = map[string]map[string]models.PlaybackProgress{
+		"profile-1": {"movie:1": {ID: "movie:1"}},
+	}
+
+	deleted, err := svc.ClearWatchHistory()
+	if err != nil {
+		t.Fatalf("ClearWatchHistory() error = %v", err)
+	}
+	if deleted != 2 || len(svc.watchHistory) != 0 {
+		t.Fatalf("ClearWatchHistory() deleted %d, remaining users %d", deleted, len(svc.watchHistory))
+	}
+
+	deleted, err = svc.ClearPlaybackProgress()
+	if err != nil {
+		t.Fatalf("ClearPlaybackProgress() error = %v", err)
+	}
+	if deleted != 1 || len(svc.playbackProgress) != 0 || len(svc.activePlaybackProgress) != 0 {
+		t.Fatalf("ClearPlaybackProgress() deleted %d, progress users %d, active users %d", deleted, len(svc.playbackProgress), len(svc.activePlaybackProgress))
+	}
+}
+
 // Mock metadata service for testing
 type mockMetadataService struct {
 	seriesDetails *models.SeriesDetails

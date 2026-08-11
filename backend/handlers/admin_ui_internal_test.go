@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +12,27 @@ import (
 	"novastream/config"
 	"novastream/models"
 )
+
+type fakeDatabaseMaintenance struct {
+	watchHistoryCalls     int
+	playbackProgressCalls int
+	watchlistCalls        int
+}
+
+func (f *fakeDatabaseMaintenance) ClearWatchHistory() (int, error) {
+	f.watchHistoryCalls++
+	return 12, nil
+}
+
+func (f *fakeDatabaseMaintenance) ClearPlaybackProgress() (int, error) {
+	f.playbackProgressCalls++
+	return 7, nil
+}
+
+func (f *fakeDatabaseMaintenance) ClearWatchlists() (int, error) {
+	f.watchlistCalls++
+	return 3, nil
+}
 
 func TestNotificationsTemplateLoads(t *testing.T) {
 	handler := NewAdminUIHandler("", "", nil, nil, nil, nil)
@@ -294,6 +317,78 @@ func TestAdminMaintenanceLinksAllSubpages(t *testing.T) {
 	if strings.Contains(toolsSource, `id="prequeueManagementSection" style="display: none;"`) ||
 		strings.Contains(toolsSource, "function updatePrequeueManagementSection()") {
 		t.Fatal("prequeue management link remains conditional on an enabled prewarm automation")
+	}
+}
+
+func TestClearDatabaseDataRequiresExactConfirmation(t *testing.T) {
+	maintenance := &fakeDatabaseMaintenance{}
+	handler := &AdminUIHandler{databaseMaintenance: maintenance}
+	body, err := json.Marshal(clearDatabaseDataRequest{Dataset: "watch_history", Confirmation: "delete watch history"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/database/clear", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.ClearDatabaseData(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if maintenance.watchHistoryCalls != 0 {
+		t.Fatal("watch history was cleared despite mismatched confirmation")
+	}
+}
+
+func TestClearDatabaseDataDispatchesSupportedDatasets(t *testing.T) {
+	tests := []struct {
+		dataset      string
+		confirmation string
+		wantDeleted  int
+	}{
+		{dataset: "watch_history", confirmation: "DELETE WATCH HISTORY", wantDeleted: 12},
+		{dataset: "playback_progress", confirmation: "DELETE PLAYBACK PROGRESS", wantDeleted: 7},
+		{dataset: "watchlists", confirmation: "DELETE WATCHLISTS", wantDeleted: 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.dataset, func(t *testing.T) {
+			maintenance := &fakeDatabaseMaintenance{}
+			handler := &AdminUIHandler{databaseMaintenance: maintenance}
+			body, err := json.Marshal(clearDatabaseDataRequest{Dataset: tt.dataset, Confirmation: tt.confirmation})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/admin/api/database/clear", bytes.NewReader(body))
+			rec := httptest.NewRecorder()
+			handler.ClearDatabaseData(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+			var response struct {
+				Deleted int `json:"deleted"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			if response.Deleted != tt.wantDeleted {
+				t.Fatalf("deleted = %d, want %d", response.Deleted, tt.wantDeleted)
+			}
+		})
+	}
+}
+
+func TestDatabaseDeletionTemplateIncludesWarningsAndTypedConfirmations(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/tools.html")
+	if err != nil {
+		t.Fatalf("read tools template: %v", err)
+	}
+	source := string(templateBytes)
+	for _, marker := range []string{
+		`{{if .IsAdmin}}`, `id="databaseDataSection"`, `value="watch_history"`,
+		`value="playback_progress"`, `value="watchlists"`, `DELETE WATCH HISTORY`,
+		`DELETE PLAYBACK PROGRESS`, `DELETE WATCHLISTS`, `These actions cannot be undone`,
+	} {
+		if !strings.Contains(source, marker) {
+			t.Errorf("tools template missing database deletion safeguard %q", marker)
+		}
 	}
 }
 

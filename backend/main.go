@@ -968,6 +968,7 @@ func main() {
 	adminUIHandler.SetMetadataService(metadataService)
 	adminUIHandler.SetHistoryService(historyService)
 	adminUIHandler.SetWatchlistService(watchlistService)
+	adminUIHandler.SetDatabaseMaintenanceServices(historyService, watchlistService)
 	adminUIHandler.SetHiddenItemsService(hiddenItemsService)
 	adminUIHandler.SetLogsHandler(logsHandler)
 	adminUIHandler.SetResolvedNZBService(nzbSystem.ImporterService())
@@ -1195,6 +1196,7 @@ func main() {
 
 	// Cache management endpoints
 	r.HandleFunc("/admin/api/cache/clear", adminUIHandler.RequireAuth(adminUIHandler.ClearMetadataCache)).Methods(http.MethodPost)
+	r.HandleFunc("/admin/api/database/clear", adminUIHandler.RequireMasterAuth(adminUIHandler.ClearDatabaseData)).Methods(http.MethodPost)
 	r.HandleFunc("/admin/api/cache/manager/status", adminUIHandler.RequireAuth(adminUIHandler.GetCacheManagerStatus)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/cache/manager/refresh", adminUIHandler.RequireAuth(adminUIHandler.RefreshTrendingCache)).Methods(http.MethodPost)
 	r.HandleFunc("/admin/api/topten/worker/status", adminUIHandler.RequireAuth(adminUIHandler.GetTopTenWorkerStatus)).Methods(http.MethodGet)

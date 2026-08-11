@@ -1483,7 +1483,31 @@ type AdminUIHandler struct {
 	logsHandler           *LogsHandler
 	resolvedNZBService    resolvedNZBService
 	notificationService   *notifications.Service
+	databaseMaintenance   databaseMaintenanceService
 	serverBasePath        string // server-level base path from config (e.g. "/mediastorm")
+}
+
+type databaseMaintenanceService interface {
+	ClearWatchHistory() (int, error)
+	ClearPlaybackProgress() (int, error)
+	ClearWatchlists() (int, error)
+}
+
+type adminDatabaseMaintenance struct {
+	history   *history.Service
+	watchlist *watchlist.Service
+}
+
+func (m adminDatabaseMaintenance) ClearWatchHistory() (int, error) {
+	return m.history.ClearWatchHistory()
+}
+
+func (m adminDatabaseMaintenance) ClearPlaybackProgress() (int, error) {
+	return m.history.ClearPlaybackProgress()
+}
+
+func (m adminDatabaseMaintenance) ClearWatchlists() (int, error) {
+	return m.watchlist.Clear()
 }
 
 type resolvedNZBService interface {
@@ -1526,6 +1550,12 @@ func (h *AdminUIHandler) SetHistoryService(hs *history.Service) {
 // SetWatchlistService sets the watchlist service for importing items
 func (h *AdminUIHandler) SetWatchlistService(ws *watchlist.Service) {
 	h.watchlistService = ws
+}
+
+// SetDatabaseMaintenanceServices enables master-only destructive database
+// maintenance actions while keeping service caches consistent.
+func (h *AdminUIHandler) SetDatabaseMaintenanceServices(hs *history.Service, ws *watchlist.Service) {
+	h.databaseMaintenance = adminDatabaseMaintenance{history: hs, watchlist: ws}
 }
 
 func (h *AdminUIHandler) SetHiddenItemsService(svc hiddenItemsService) {
@@ -8396,6 +8426,70 @@ func (h *AdminUIHandler) ClearMetadataCache(w http.ResponseWriter, r *http.Reque
 	}
 	log.Printf("[admin] metadata cache cleared by user request")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "message": "Metadata cache cleared"})
+}
+
+type clearDatabaseDataRequest struct {
+	Dataset      string `json:"dataset"`
+	Confirmation string `json:"confirmation"`
+}
+
+var databaseDeletionConfirmations = map[string]string{
+	"watch_history":     "DELETE WATCH HISTORY",
+	"playback_progress": "DELETE PLAYBACK PROGRESS",
+	"watchlists":        "DELETE WATCHLISTS",
+}
+
+// ClearDatabaseData permanently removes one supported category of profile
+// data. Route-level master authentication and server-side typed confirmation
+// protect this destructive operation.
+func (h *AdminUIHandler) ClearDatabaseData(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if h.databaseMaintenance == nil {
+		jsonError(w, "database maintenance is not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	var req clearDatabaseDataRequest
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		jsonError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	requiredConfirmation, ok := databaseDeletionConfirmations[req.Dataset]
+	if !ok {
+		jsonError(w, "unsupported database dataset", http.StatusBadRequest)
+		return
+	}
+	if req.Confirmation != requiredConfirmation {
+		jsonError(w, "confirmation text does not match", http.StatusBadRequest)
+		return
+	}
+
+	var (
+		deleted int
+		err     error
+	)
+	switch req.Dataset {
+	case "watch_history":
+		deleted, err = h.databaseMaintenance.ClearWatchHistory()
+	case "playback_progress":
+		deleted, err = h.databaseMaintenance.ClearPlaybackProgress()
+	case "watchlists":
+		deleted, err = h.databaseMaintenance.ClearWatchlists()
+	}
+	if err != nil {
+		log.Printf("[admin] failed to clear database dataset %s: %v", req.Dataset, err)
+		jsonError(w, "failed to delete database data", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("[admin] permanently deleted database dataset %s (%d entries)", req.Dataset, deleted)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":  "ok",
+		"dataset": req.Dataset,
+		"deleted": deleted,
+	})
 }
 
 // GetCacheManagerStatus returns the current status of the background metadata cache manager.
