@@ -116,6 +116,18 @@ type torboxFile struct {
 	ShortName string `json:"short_name"`
 }
 
+// torboxTorrentInfo contains only the stable fields needed for playback. TorBox
+// has changed types on unrelated mylist fields over time, so decoding the full
+// torrent record makes playback unnecessarily sensitive to API drift.
+type torboxTorrentInfo struct {
+	ID            int          `json:"id"`
+	Hash          string       `json:"hash"`
+	Size          int64        `json:"size"`
+	DownloadState string       `json:"download_state"`
+	Name          string       `json:"name"`
+	Files         []torboxFile `json:"files"`
+}
+
 // torboxCachedItem represents a cached torrent check result.
 type torboxCachedItem struct {
 	Name  string `json:"name"`
@@ -195,7 +207,7 @@ func (c *TorboxClient) AddMagnet(ctx context.Context, magnetURL string) (*AddMag
 
 	var result torboxResponse[torboxCreateTorrentData]
 	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("decode add magnet response: %w (body: %s)", err, string(body))
+		return nil, fmt.Errorf("decode add magnet response: %w", err)
 	}
 
 	if !result.Success {
@@ -223,7 +235,7 @@ func (c *TorboxClient) AddMagnet(ctx context.Context, magnetURL string) (*AddMag
 
 	// Check for valid torrent ID - if 0, the torrent may already exist or response format is different
 	if result.Data.TorrentID == 0 {
-		log.Printf("[torbox] WARNING: add magnet returned torrent_id=0, response: %s", string(body))
+		log.Printf("[torbox] WARNING: add magnet returned torrent_id=0")
 
 		// Try to find existing torrent by hash if we can extract it from the magnet
 		// For now, return an error as ID 0 is not usable
@@ -304,7 +316,7 @@ func (c *TorboxClient) AddTorrentFile(ctx context.Context, torrentData []byte, f
 
 	var result torboxResponse[torboxCreateTorrentData]
 	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("decode add torrent response: %w (body: %s)", err, string(body))
+		return nil, fmt.Errorf("decode add torrent response: %w", err)
 	}
 
 	if !result.Success {
@@ -357,38 +369,9 @@ func (c *TorboxClient) GetTorrentInfo(ctx context.Context, torrentID string) (*T
 		return nil, fmt.Errorf("read response body: %w", err)
 	}
 
-	// Torbox API can return either a single torrent object or an array
-	// Try single object first, then fall back to array
-	var torrent torboxTorrent
-
-	var singleResult torboxResponse[torboxTorrent]
-	if err := json.Unmarshal(body, &singleResult); err == nil && singleResult.Success {
-		torrent = singleResult.Data
-	} else {
-		// Try parsing as array response
-		var arrayResult torboxResponse[[]torboxTorrent]
-		if err := json.Unmarshal(body, &arrayResult); err != nil {
-			return nil, fmt.Errorf("decode torrent info response: %w (body: %.500s)", err, string(body))
-		}
-
-		if !arrayResult.Success {
-			return nil, fmt.Errorf("get torrent info failed: %s (error: %s)", arrayResult.Detail, arrayResult.Error)
-		}
-
-		// Find our torrent in the array by ID
-		targetID, _ := strconv.Atoi(trimmedID)
-		found := false
-		for _, t := range arrayResult.Data {
-			if t.ID == targetID {
-				torrent = t
-				found = true
-				break
-			}
-		}
-
-		if !found {
-			return nil, fmt.Errorf("torrent ID %s not found in Torbox response", trimmedID)
-		}
+	torrent, err := parseTorboxTorrentInfoResponse(body, trimmedID)
+	if err != nil {
+		return nil, err
 	}
 
 	// Convert to provider-agnostic TorrentInfo
@@ -416,6 +399,51 @@ func (c *TorboxClient) GetTorrentInfo(ctx context.Context, torrentID string) (*T
 	}
 
 	return info, nil
+}
+
+func parseTorboxTorrentInfoResponse(body []byte, torrentID string) (torboxTorrentInfo, error) {
+	var envelope torboxResponse[json.RawMessage]
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return torboxTorrentInfo{}, fmt.Errorf("decode torrent info response: %w", err)
+	}
+	if !envelope.Success {
+		return torboxTorrentInfo{}, fmt.Errorf("get torrent info failed: %s (error: %s)", envelope.Detail, envelope.Error)
+	}
+
+	targetID, err := strconv.Atoi(strings.TrimSpace(torrentID))
+	if err != nil || targetID <= 0 {
+		return torboxTorrentInfo{}, fmt.Errorf("invalid torrent ID: %s", torrentID)
+	}
+
+	data := bytes.TrimSpace(envelope.Data)
+	if len(data) == 0 {
+		return torboxTorrentInfo{}, fmt.Errorf("decode torrent info response: missing data")
+	}
+
+	switch data[0] {
+	case '{':
+		var torrent torboxTorrentInfo
+		if err := json.Unmarshal(data, &torrent); err != nil {
+			return torboxTorrentInfo{}, fmt.Errorf("decode torrent info object: %w", err)
+		}
+		if torrent.ID != targetID {
+			return torboxTorrentInfo{}, fmt.Errorf("torrent ID %s not found in Torbox response", torrentID)
+		}
+		return torrent, nil
+	case '[':
+		var torrents []torboxTorrentInfo
+		if err := json.Unmarshal(data, &torrents); err != nil {
+			return torboxTorrentInfo{}, fmt.Errorf("decode torrent info array: %w", err)
+		}
+		for _, torrent := range torrents {
+			if torrent.ID == targetID {
+				return torrent, nil
+			}
+		}
+		return torboxTorrentInfo{}, fmt.Errorf("torrent ID %s not found in Torbox response", torrentID)
+	default:
+		return torboxTorrentInfo{}, fmt.Errorf("decode torrent info response: unsupported data shape")
+	}
 }
 
 // mapDownloadState converts Torbox download states to provider-agnostic status.
@@ -494,7 +522,7 @@ func (c *TorboxClient) DeleteTorrent(ctx context.Context, torrentID string) erro
 
 	var result torboxResponse[interface{}]
 	if err := json.Unmarshal(body, &result); err != nil {
-		return fmt.Errorf("decode delete response: %w (body: %s)", err, string(body))
+		return fmt.Errorf("decode delete response: %w", err)
 	}
 
 	if !result.Success {
@@ -553,7 +581,7 @@ func (c *TorboxClient) UnrestrictLink(ctx context.Context, link string) (*Unrest
 	// Try parsing as object response first
 	var result torboxResponse[interface{}]
 	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("decode requestdl response: %w (body: %s)", err, string(body))
+		return nil, fmt.Errorf("decode requestdl response: %w", err)
 	}
 
 	if !result.Success {
@@ -724,7 +752,7 @@ func (c *TorboxClient) CheckInstantAvailabilityBulk(ctx context.Context, infoHas
 func parseTorboxCheckCachedResponse(body []byte) (map[string]bool, string, error) {
 	var result torboxResponse[json.RawMessage]
 	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, "", fmt.Errorf("decode check cached response: %w (body: %s)", err, string(body))
+		return nil, "", fmt.Errorf("decode check cached response: %w", err)
 	}
 
 	if !result.Success {
@@ -772,5 +800,5 @@ func parseTorboxCheckCachedResponse(body []byte) (map[string]bool, string, error
 		return cachedHashes, "", nil
 	}
 
-	return nil, "", fmt.Errorf("decode check cached data: unsupported response shape (body: %s)", string(body))
+	return nil, "", fmt.Errorf("decode check cached data: unsupported response shape")
 }

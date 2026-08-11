@@ -1853,7 +1853,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 			continue
 		}
 
-		log.Printf("[prequeue] Resolved result [%d] (%s): %s -> %s", i, result.ServiceType, result.Title, resolution.WebDAVPath)
+		log.Printf("[prequeue] Resolved result [%d] (%s): %s -> %s", i, result.ServiceType, result.Title, requestsecurity.URLForLog(resolution.WebDAVPath))
 		if isM2TSStreamPath(resolution.WebDAVPath) {
 			lastErr = fmt.Errorf("prequeue excludes .m2ts streams: %s", resolution.WebDAVPath)
 			log.Printf("[prequeue] Skipping result [%d] (%s) %s: %v", i, result.ServiceType, result.Title, lastErr)
@@ -2446,7 +2446,7 @@ func (h *PrequeueHandler) waitForPlaybackQueue(ctx context.Context, prequeueID s
 				}
 			})
 			if strings.TrimSpace(status.WebDAVPath) != "" {
-				log.Printf("[prequeue] Queued playback result ready queueID=%d title=%q path=%q", queueID, title, status.WebDAVPath)
+				log.Printf("[prequeue] Queued playback result ready queueID=%d title=%q path=%q", queueID, title, requestsecurity.URLForLog(status.WebDAVPath))
 				return status, nil
 			}
 		}

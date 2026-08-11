@@ -1689,17 +1689,17 @@ func (m *HLSManager) getDirectURL(ctx context.Context, session *HLSSession) (str
 	url, err := directProvider.GetDirectURL(ctx, session.Path)
 	if err != nil {
 		if errors.Is(err, streaming.ErrStaleTorrent) {
-			log.Printf("[hls] stale torrent for %s — cannot recover", session.Path)
+			log.Printf("[hls] stale torrent for %s — cannot recover", requestsecurity.URLForLog(session.Path))
 			return "", false
 		}
-		log.Printf("[hls] failed to get direct URL for %s: %v", session.Path, err)
+		log.Printf("[hls] failed to get direct URL for %s: %v", requestsecurity.URLForLog(session.Path), err)
 		if directURL, ok := m.buildLocalWebDAVURL(session); ok {
 			return directURL, true
 		}
 		return "", false
 	}
 
-	log.Printf("[hls] successfully got direct URL for %s: %s", session.Path, requestsecurity.URLForLog(url))
+	log.Printf("[hls] successfully got direct URL for %s: %s", requestsecurity.URLForLog(session.Path), requestsecurity.URLForLog(url))
 	return url, true
 }
 

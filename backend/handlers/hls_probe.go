@@ -121,7 +121,7 @@ func (m *HLSManager) CacheProbe(path string, result *UnifiedProbeResult) {
 		result:    result,
 		expiresAt: time.Now().Add(probeCacheTTL),
 	}
-	log.Printf("[hls] probe cached for path: %s (expires in %v)", path, probeCacheTTL)
+	log.Printf("[hls] probe cached for path: %s (expires in %v)", requestsecurity.URLForLog(path), probeCacheTTL)
 }
 
 // cleanupProbeCache removes expired entries from the probe cache
