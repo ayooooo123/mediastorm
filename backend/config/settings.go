@@ -351,11 +351,10 @@ type StreamingSettings struct {
 	ServiceMode                StreamingServiceMode     `json:"serviceMode"`
 	SearchMode                 SearchMode               `json:"searchMode"` // Fast (early return) vs Accurate (wait for all results)
 	DebridProviders            []DebridProviderSettings `json:"debridProviders,omitempty"`
-	MultiProviderMode          MultiProviderMode        `json:"multiProviderMode,omitempty"` // How to select provider when multiple are enabled
-	UsenetResolutionTimeoutSec int                      `json:"usenetResolutionTimeoutSec"`  // Timeout for usenet content resolution in seconds (0 = no limit)
-	IndexerTimeoutSec          float64                  `json:"indexerTimeoutSec"`           // Timeout for indexer/scraper searches in seconds (default: 5)
-	HealthCheckTimeoutSec      int                      `json:"healthCheckTimeoutSec"`       // Timeout for manual debrid/usenet health checks in seconds (default: 15)
-	MaxAlternateTitleSearches  int                      `json:"maxAlternateTitleSearches"`   // Max alternate/international titles to search per item (0 = unlimited)
+	UsenetResolutionTimeoutSec int                      `json:"usenetResolutionTimeoutSec"` // Timeout for usenet content resolution in seconds (0 = no limit)
+	IndexerTimeoutSec          float64                  `json:"indexerTimeoutSec"`          // Timeout for indexer/scraper searches in seconds (default: 5)
+	HealthCheckTimeoutSec      int                      `json:"healthCheckTimeoutSec"`      // Timeout for manual debrid/usenet health checks in seconds (default: 15)
+	MaxAlternateTitleSearches  int                      `json:"maxAlternateTitleSearches"`  // Max alternate/international titles to search per item (0 = unlimited)
 }
 
 // SearchMode determines how scraper/indexer results are aggregated
@@ -392,16 +391,6 @@ type DebridProviderSettings struct {
 	Config          map[string]string `json:"config,omitempty"` // Provider-specific settings (e.g., "autoClearQueue": "true" for Torbox)
 	AllowedProfiles []string          `json:"allowedProfiles,omitempty"`
 }
-
-// MultiProviderMode determines how multiple debrid providers are used
-type MultiProviderMode string
-
-const (
-	// MultiProviderModeFastest uses whichever provider returns a cached result first (race)
-	MultiProviderModeFastest MultiProviderMode = "fastest"
-	// MultiProviderModePreferred waits for all providers and uses the highest-priority cached result
-	MultiProviderModePreferred MultiProviderMode = "preferred"
-)
 
 // ImportSettings defines import/queue processing configuration
 type ImportSettings struct {
@@ -2361,10 +2350,6 @@ func (m *Manager) Load() (Settings, error) {
 			{Name: "AllDebrid", Provider: "alldebrid"},
 			{Name: "Premiumize", Provider: "premiumize"},
 		}
-	}
-	// Backfill MultiProviderMode if not set (default to fastest for best UX)
-	if s.Streaming.MultiProviderMode == "" {
-		s.Streaming.MultiProviderMode = MultiProviderModeFastest
 	}
 	// Backfill IndexerTimeoutSec if not set (0 means use default of 5 seconds)
 	if s.Streaming.IndexerTimeoutSec <= 0 {

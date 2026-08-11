@@ -1224,7 +1224,6 @@ type searchRelevantSettings struct {
 type searchStreamingSettings struct {
 	ServiceMode               config.StreamingServiceMode
 	SearchMode                config.SearchMode
-	MultiProviderMode         config.MultiProviderMode
 	IndexerTimeoutSec         float64
 	MaxAlternateTitleSearches int
 }
@@ -1291,7 +1290,6 @@ func buildSearchRelevantSettings(settings config.Settings) searchRelevantSetting
 		Streaming: searchStreamingSettings{
 			ServiceMode:               settings.Streaming.ServiceMode,
 			SearchMode:                settings.Streaming.SearchMode,
-			MultiProviderMode:         settings.Streaming.MultiProviderMode,
 			IndexerTimeoutSec:         settings.Streaming.IndexerTimeoutSec,
 			MaxAlternateTitleSearches: settings.Streaming.MaxAlternateTitleSearches,
 		},

@@ -165,9 +165,9 @@ func (s *PlaybackService) Resolve(ctx context.Context, candidate models.NZBResul
 	}
 
 	// Multiple providers enabled - use multi-provider checking
-	log.Printf("[debrid-playback] TIMING: checking %d providers in %s mode (elapsed: %v)", enabledCount, settings.Streaming.MultiProviderMode, time.Since(resolveStart))
+	log.Printf("[debrid-playback] TIMING: checking %d providers concurrently (elapsed: %v)", enabledCount, time.Since(resolveStart))
 
-	result, err := s.multiProvider.CheckCacheAcrossProviders(ctx, candidate, settings.Streaming.MultiProviderMode)
+	result, err := s.multiProvider.CheckCacheAcrossProviders(ctx, candidate)
 	if err != nil {
 		return nil, err
 	}

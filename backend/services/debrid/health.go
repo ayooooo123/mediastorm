@@ -238,7 +238,7 @@ func (s *HealthService) CheckQuickCacheOnlyBulk(ctx context.Context, results []m
 	if err != nil {
 		return nil, fmt.Errorf("load settings: %w", err)
 	}
-	if out, ok := s.checkQuickTorboxCacheOnlyBulk(ctx, settings, results); ok {
+	if out, ok := s.checkQuickCacheAcrossProvidersBulk(ctx, settings, results); ok {
 		return out, nil
 	}
 
@@ -321,33 +321,11 @@ func (s *HealthService) CheckQuickCacheOnlyBulk(ctx context.Context, results []m
 	return out, nil
 }
 
-func (s *HealthService) checkQuickTorboxCacheOnlyBulk(ctx context.Context, settings config.Settings, results []models.NZBResult) ([]*DebridHealthCheck, bool) {
-	var providerConfig *config.DebridProviderSettings
-	for i := range settings.Streaming.DebridProviders {
-		p := &settings.Streaming.DebridProviders[i]
-		if p.Enabled && strings.TrimSpace(p.APIKey) != "" && strings.EqualFold(p.Provider, "torbox") {
-			providerConfig = p
-			break
-		}
-	}
-	if !shouldUseQuickTorboxCacheCheck(settings.Streaming.DebridProviders, providerConfig, "", "bulk") {
-		return nil, false
-	}
-
-	client, ok := GetProvider("torbox", providerConfig.APIKey)
-	if !ok {
-		return nil, false
-	}
-	bulkClient, ok := client.(InstantAvailabilityBulkProvider)
-	if !ok {
-		return nil, false
-	}
-
+func (s *HealthService) checkQuickCacheAcrossProvidersBulk(ctx context.Context, settings config.Settings, results []models.NZBResult) ([]*DebridHealthCheck, bool) {
 	out := make([]*DebridHealthCheck, len(results))
 	hashIndexes := make(map[string][]int)
 	hashes := make([]string, 0, len(results))
 	for i, result := range results {
-		provider := strings.TrimSpace(result.Attributes["provider"])
 		infoHash := quickCacheInfoHash(result)
 		if result.Attributes["preresolved"] == "true" {
 			out[i] = &DebridHealthCheck{
@@ -359,14 +337,12 @@ func (s *HealthService) checkQuickTorboxCacheOnlyBulk(ctx context.Context, setti
 			}
 			continue
 		}
-		if !shouldUseQuickTorboxCacheCheck(settings.Streaming.DebridProviders, providerConfig, provider, infoHash) {
+		if infoHash == "" {
 			out[i] = &DebridHealthCheck{
 				Healthy:      false,
 				Status:       "skipped",
 				Cached:       false,
-				Provider:     client.Name(),
-				InfoHash:     infoHash,
-				ErrorMessage: "quick cache check unavailable for current debrid provider settings",
+				ErrorMessage: "quick cache check requires an info hash",
 			}
 			continue
 		}
@@ -380,37 +356,101 @@ func (s *HealthService) checkQuickTorboxCacheOnlyBulk(ctx context.Context, setti
 		return out, true
 	}
 
-	cachedByHash, err := bulkClient.CheckInstantAvailabilityBulk(ctx, hashes)
-	if err != nil {
-		for _, indexes := range hashIndexes {
-			for _, index := range indexes {
-				out[index] = &DebridHealthCheck{
-					Healthy:      false,
-					Status:       "error",
-					Cached:       false,
-					Provider:     client.Name(),
-					InfoHash:     quickCacheInfoHash(results[index]),
-					ErrorMessage: fmt.Sprintf("quick cache check failed: %v", err),
+	type quickProvider struct {
+		name   string
+		client Provider
+	}
+	providers := make([]quickProvider, 0, len(settings.Streaming.DebridProviders))
+	for i := range settings.Streaming.DebridProviders {
+		providerConfig := &settings.Streaming.DebridProviders[i]
+		if !providerConfig.Enabled || strings.TrimSpace(providerConfig.APIKey) == "" {
+			continue
+		}
+		client, ok := GetProvider(strings.ToLower(providerConfig.Provider), providerConfig.APIKey)
+		if !ok {
+			continue
+		}
+		if configurable, ok := client.(Configurable); ok && providerConfig.Config != nil {
+			configurable.Configure(providerConfig.Config)
+		}
+		providers = append(providers, quickProvider{name: client.Name(), client: client})
+	}
+	if len(providers) == 0 {
+		return nil, false
+	}
+
+	type providerResult struct {
+		name   string
+		cached map[string]bool
+		errors map[string]error
+	}
+	resultCh := make(chan providerResult, len(providers))
+	for _, provider := range providers {
+		go func(provider quickProvider) {
+			result := providerResult{name: provider.name, cached: make(map[string]bool), errors: make(map[string]error)}
+			if bulkClient, ok := provider.client.(InstantAvailabilityBulkProvider); ok {
+				cached, err := bulkClient.CheckInstantAvailabilityBulk(ctx, hashes)
+				if err != nil {
+					for _, hash := range hashes {
+						result.errors[hash] = err
+					}
+				} else {
+					result.cached = cached
+				}
+			} else {
+				for _, hash := range hashes {
+					cached, err := provider.client.CheckInstantAvailability(ctx, hash)
+					if err != nil {
+						result.errors[hash] = err
+						continue
+					}
+					result.cached[hash] = cached
 				}
 			}
+			resultCh <- result
+		}(provider)
+	}
+
+	winner := make(map[string]string, len(hashes))
+	successes := make(map[string]int, len(hashes))
+	errorsByHash := make(map[string][]string, len(hashes))
+	for range providers {
+		providerResult := <-resultCh
+		for _, hash := range hashes {
+			if err := providerResult.errors[hash]; err != nil {
+				errorsByHash[hash] = append(errorsByHash[hash], fmt.Sprintf("%s: %v", providerResult.name, err))
+				continue
+			}
+			successes[hash]++
+			if providerResult.cached[strings.ToLower(hash)] && winner[hash] == "" {
+				winner[hash] = providerResult.name
+			}
 		}
-		return out, true
 	}
 
 	for _, hash := range hashes {
-		cached := cachedByHash[strings.ToLower(hash)]
-		status := "not_cached"
-		if cached {
-			status = "cached"
+		cachedProvider := winner[hash]
+		cached := cachedProvider != ""
+		status := "cached"
+		errorMessage := ""
+		providerName := cachedProvider
+		if !cached && successes[hash] == len(providers) {
+			status = "not_cached"
+			providerName = "all"
+		} else if !cached {
+			status = "skipped"
+			providerName = "multiple"
+			errorMessage = "cache status unknown on one or more providers: " + strings.Join(errorsByHash[hash], "; ")
 		}
-		log.Printf("[debrid-health] %s bulk quick cache check hash=%s cached=%t", client.Name(), hash, cached)
+		log.Printf("[debrid-health] multi-provider quick cache check hash=%s cached=%t provider=%s successes=%d/%d", hash, cached, providerName, successes[hash], len(providers))
 		for _, index := range hashIndexes[hash] {
 			out[index] = &DebridHealthCheck{
-				Healthy:  cached,
-				Status:   status,
-				Cached:   cached,
-				Provider: client.Name(),
-				InfoHash: hash,
+				Healthy:      cached,
+				Status:       status,
+				Cached:       cached,
+				Provider:     providerName,
+				InfoHash:     hash,
+				ErrorMessage: errorMessage,
 			}
 		}
 	}
@@ -685,75 +725,10 @@ func (s *HealthService) checkHealth(ctx context.Context, result models.NZBResult
 
 	settings = config.FilterSettingsForProfile(settings, strings.TrimSpace(result.Attributes["profileId"]))
 
-	// Determine provider - use attribute if specified, otherwise use first enabled provider
-	provider := strings.TrimSpace(result.Attributes["provider"])
-
-	// Find provider config
-	var providerConfig *config.DebridProviderSettings
-	for i := range settings.Streaming.DebridProviders {
-		p := &settings.Streaming.DebridProviders[i]
-		if !p.Enabled {
-			continue
+	if !verifyUncached && infoHash != "" {
+		if quickResults, ok := s.checkQuickCacheAcrossProvidersBulk(ctx, settings, []models.NZBResult{result}); ok && len(quickResults) == 1 {
+			return quickResults[0], nil
 		}
-		// If provider specified, match it; otherwise use first enabled
-		if provider == "" || strings.EqualFold(p.Provider, provider) {
-			providerConfig = p
-			break
-		}
-	}
-
-	if providerConfig == nil {
-		errMsg := "no debrid provider configured or enabled"
-		if provider != "" {
-			errMsg = fmt.Sprintf("provider %q not configured or not enabled", provider)
-		}
-		return &DebridHealthCheck{
-			Healthy:      false,
-			Status:       "error",
-			Cached:       false,
-			Provider:     provider,
-			ErrorMessage: errMsg,
-		}, nil
-	}
-
-	// Get provider from registry
-	client, ok := GetProvider(strings.ToLower(providerConfig.Provider), providerConfig.APIKey)
-	if !ok {
-		return &DebridHealthCheck{
-			Healthy:      false,
-			Status:       "error",
-			Cached:       false,
-			Provider:     provider,
-			InfoHash:     infoHash,
-			ErrorMessage: fmt.Sprintf("provider %q not registered", providerConfig.Provider),
-		}, nil
-	}
-
-	if !verifyUncached && shouldUseQuickTorboxCacheCheck(settings.Streaming.DebridProviders, providerConfig, provider, infoHash) {
-		cached, err := client.CheckInstantAvailability(ctx, infoHash)
-		if err != nil {
-			return &DebridHealthCheck{
-				Healthy:      false,
-				Status:       "error",
-				Cached:       false,
-				Provider:     client.Name(),
-				InfoHash:     infoHash,
-				ErrorMessage: fmt.Sprintf("quick cache check failed: %v", err),
-			}, nil
-		}
-
-		status := "not_cached"
-		if cached {
-			status = "cached"
-		}
-		log.Printf("[debrid-health] %s quick cache check hash=%s cached=%t", client.Name(), infoHash, cached)
-		return &DebridHealthCheck{
-			Healthy:  cached,
-			Status:   status,
-			Cached:   cached,
-			Provider: client.Name(),
-			InfoHash: infoHash,
-		}, nil
 	}
 
 	if quickOnly {
@@ -761,13 +736,92 @@ func (s *HealthService) checkHealth(ctx context.Context, result models.NZBResult
 			Healthy:      false,
 			Status:       "skipped",
 			Cached:       false,
-			Provider:     client.Name(),
 			InfoHash:     infoHash,
-			ErrorMessage: "quick cache check unavailable for current debrid provider settings",
+			ErrorMessage: "quick cache check unavailable for enabled debrid providers",
 		}, nil
 	}
 
-	return s.checkProviderHealth(ctx, client, result, infoHash, torrentURL, verifyUncached)
+	return s.checkHealthAcrossProviders(ctx, settings, result, infoHash, torrentURL, verifyUncached)
+}
+
+// checkHealthAcrossProviders performs the mutating add/check/remove health probe
+// on every enabled provider. A cached result from any provider makes the item
+// cached and playable, regardless of failures or misses elsewhere.
+func (s *HealthService) checkHealthAcrossProviders(ctx context.Context, settings config.Settings, result models.NZBResult, infoHash, torrentURL string, verifyUncached bool) (*DebridHealthCheck, error) {
+	type configuredProvider struct {
+		name   string
+		client Provider
+	}
+	providers := make([]configuredProvider, 0, len(settings.Streaming.DebridProviders))
+	for i := range settings.Streaming.DebridProviders {
+		providerConfig := &settings.Streaming.DebridProviders[i]
+		if !providerConfig.Enabled || strings.TrimSpace(providerConfig.APIKey) == "" {
+			continue
+		}
+		client, ok := GetProvider(strings.ToLower(providerConfig.Provider), providerConfig.APIKey)
+		if !ok {
+			continue
+		}
+		if configurable, ok := client.(Configurable); ok && providerConfig.Config != nil {
+			configurable.Configure(providerConfig.Config)
+		}
+		providers = append(providers, configuredProvider{name: client.Name(), client: client})
+	}
+	if len(providers) == 0 {
+		return &DebridHealthCheck{Status: "error", InfoHash: infoHash, ErrorMessage: "no debrid provider configured or enabled"}, nil
+	}
+
+	type providerHealthResult struct {
+		name   string
+		health *DebridHealthCheck
+		err    error
+	}
+	results := make(chan providerHealthResult, len(providers))
+	for _, provider := range providers {
+		go func(provider configuredProvider) {
+			health, err := s.checkProviderHealth(ctx, provider.client, result, infoHash, torrentURL, verifyUncached)
+			results <- providerHealthResult{name: provider.name, health: health, err: err}
+		}(provider)
+	}
+
+	var cached *DebridHealthCheck
+	allNotCached := true
+	errors := make([]string, 0, len(providers))
+	for range providers {
+		providerResult := <-results
+		if providerResult.err != nil {
+			allNotCached = false
+			errors = append(errors, fmt.Sprintf("%s: %v", providerResult.name, providerResult.err))
+			continue
+		}
+		if providerResult.health != nil && providerResult.health.Cached {
+			if cached == nil {
+				cached = providerResult.health
+			}
+			continue
+		}
+		if providerResult.health == nil || providerResult.health.Status != "not_cached" {
+			allNotCached = false
+			if providerResult.health != nil && providerResult.health.ErrorMessage != "" {
+				errors = append(errors, fmt.Sprintf("%s: %s", providerResult.name, providerResult.health.ErrorMessage))
+			}
+		}
+	}
+	if cached != nil {
+		log.Printf("[debrid-health] multi-provider health result cached=true provider=%s", cached.Provider)
+		return cached, nil
+	}
+	if allNotCached {
+		return &DebridHealthCheck{Healthy: false, Status: "not_cached", Cached: false, Provider: "all", InfoHash: infoHash}, nil
+	}
+	return &DebridHealthCheck{
+		Healthy:      false,
+		Status:       "error",
+		Cached:       false,
+		Provider:     "multiple",
+		InfoHash:     infoHash,
+		ErrorMessage: "no provider confirmed a cached copy: " + strings.Join(errors, "; "),
+	}, nil
 }
 
 func shouldUseQuickTorboxCacheCheck(providers []config.DebridProviderSettings, selected *config.DebridProviderSettings, requestedProvider, infoHash string) bool {
@@ -781,13 +835,7 @@ func shouldUseQuickTorboxCacheCheck(providers []config.DebridProviderSettings, s
 		return false
 	}
 
-	enabledWithKeys := 0
-	for _, p := range providers {
-		if p.Enabled && strings.TrimSpace(p.APIKey) != "" {
-			enabledWithKeys++
-		}
-	}
-	return enabledWithKeys == 1
+	return selected.Enabled && strings.TrimSpace(selected.APIKey) != ""
 }
 
 func quickCacheDedupKey(result models.NZBResult) string {
@@ -902,7 +950,11 @@ func (s *HealthService) checkProviderHealth(ctx context.Context, client Provider
 	if identifier == "" {
 		identifier = torrentURL
 	}
-	log.Printf("[debrid-health] %s checking torrent %s via add+check+remove", providerName, identifier)
+	identifierForLog := identifier
+	if identifier == torrentURL && torrentURL != "" {
+		identifierForLog = safeURLForLog(torrentURL)
+	}
+	log.Printf("[debrid-health] %s checking torrent %s via add+check+remove", providerName, identifierForLog)
 
 	var addResp *AddMagnetResult
 	var err error
@@ -913,7 +965,7 @@ func (s *HealthService) checkProviderHealth(ctx context.Context, client Provider
 		log.Printf("[debrid-health] adding magnet to %s", providerName)
 		addResp, err = client.AddMagnet(ctx, result.Link)
 		if err != nil {
-			log.Printf("[debrid-health] %s add magnet failed for %s: %v", providerName, identifier, err)
+			log.Printf("[debrid-health] %s add magnet failed for %s: %v", providerName, identifierForLog, err)
 			return &DebridHealthCheck{
 				Healthy:      false,
 				Status:       "error",
@@ -928,7 +980,7 @@ func (s *HealthService) checkProviderHealth(ctx context.Context, client Provider
 		log.Printf("[debrid-health] downloading torrent file from %s", safeURLForLog(torrentURL))
 		torrentData, filename, downloadErr := s.downloadTorrentFile(ctx, torrentURL)
 		if downloadErr != nil {
-			log.Printf("[debrid-health] %s download torrent failed for %s: %v", providerName, identifier, downloadErr)
+			log.Printf("[debrid-health] %s download torrent failed for %s: %v", providerName, identifierForLog, downloadErr)
 			return &DebridHealthCheck{
 				Healthy:      false,
 				Status:       "error",
@@ -941,7 +993,7 @@ func (s *HealthService) checkProviderHealth(ctx context.Context, client Provider
 		log.Printf("[debrid-health] uploading torrent file (%d bytes) to %s", len(torrentData), providerName)
 		addResp, err = client.AddTorrentFile(ctx, torrentData, filename)
 		if err != nil {
-			log.Printf("[debrid-health] %s add torrent file failed for %s: %v", providerName, identifier, err)
+			log.Printf("[debrid-health] %s add torrent file failed for %s: %v", providerName, identifierForLog, err)
 			return &DebridHealthCheck{
 				Healthy:      false,
 				Status:       "error",

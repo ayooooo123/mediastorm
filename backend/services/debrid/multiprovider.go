@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"novastream/config"
@@ -47,7 +46,6 @@ type providerEntry struct {
 func (s *MultiProviderService) CheckCacheAcrossProviders(
 	ctx context.Context,
 	candidate models.NZBResult,
-	mode config.MultiProviderMode,
 ) (*ProviderCacheResult, error) {
 	settings, err := s.cfg.Load()
 	if err != nil {
@@ -93,17 +91,10 @@ func (s *MultiProviderService) CheckCacheAcrossProviders(
 		return s.checkSingleProvider(ctx, candidate, enabledProviders[0])
 	}
 
-	// Multiple providers - run parallel checks based on mode
-	log.Printf("[multi-provider] checking %d providers in %s mode", len(enabledProviders), mode)
-
-	switch mode {
-	case config.MultiProviderModePreferred:
-		return s.checkPreferredMode(ctx, candidate, enabledProviders)
-	case config.MultiProviderModeFastest:
-		fallthrough
-	default:
-		return s.checkFastestMode(ctx, candidate, enabledProviders)
-	}
+	// Multiple providers always race. Cache availability is the union of every
+	// enabled provider, so the first cached response is immediately playable.
+	log.Printf("[multi-provider] checking %d providers concurrently", len(enabledProviders))
+	return s.checkFastestMode(ctx, candidate, enabledProviders)
 }
 
 // checkSingleProvider checks a single provider
@@ -155,7 +146,7 @@ func (s *MultiProviderService) checkFastestMode(
 			checkedCount++
 
 			if result.IsCached {
-				log.Printf("[multi-provider] fastest mode: %s returned CACHED first", result.Provider.Name)
+				log.Printf("[multi-provider] %s returned CACHED first", result.Provider.Name)
 				cancel() // Cancel remaining checks
 				return result, nil
 			}
@@ -175,74 +166,6 @@ func (s *MultiProviderService) checkFastestMode(
 	}
 
 	// No provider had cache
-	if firstError != nil {
-		return nil, fmt.Errorf("torrent not cached on any provider: %w", firstError)
-	}
-	return nil, fmt.Errorf("torrent not cached on any enabled provider")
-}
-
-// checkPreferredMode waits for all providers, returns highest priority cached result
-func (s *MultiProviderService) checkPreferredMode(
-	ctx context.Context,
-	candidate models.NZBResult,
-	providers []providerEntry,
-) (*ProviderCacheResult, error) {
-	var wg sync.WaitGroup
-	results := make([]*ProviderCacheResult, len(providers))
-
-	// Launch parallel checks
-	for i, p := range providers {
-		wg.Add(1)
-		go func(idx int, pe providerEntry) {
-			defer wg.Done()
-			results[idx] = s.checkProviderCache(ctx, candidate, pe)
-		}(i, p)
-	}
-
-	// Wait for all to complete
-	wg.Wait()
-
-	// Find highest priority (lowest index) cached result
-	var bestResult *ProviderCacheResult
-	var firstError error
-
-	for i, result := range results {
-		if result == nil {
-			continue
-		}
-
-		providerName := providers[i].config.Name
-		if result.IsCached {
-			log.Printf("[multi-provider] %s: CACHED (priority %d)", providerName, result.Priority)
-			if bestResult == nil || result.Priority < bestResult.Priority {
-				// Clean up previous best if we're replacing it
-				if bestResult != nil && bestResult.TorrentID != "" {
-					log.Printf("[multi-provider] cleaning up lower-priority cached torrent from %s", bestResult.Provider.Name)
-					_ = bestResult.Client.DeleteTorrent(ctx, bestResult.TorrentID)
-				}
-				bestResult = result
-			} else {
-				// This one is lower priority, clean it up
-				if result.TorrentID != "" {
-					log.Printf("[multi-provider] cleaning up lower-priority cached torrent from %s", providerName)
-					_ = result.Client.DeleteTorrent(ctx, result.TorrentID)
-				}
-			}
-		} else if result.Error != nil {
-			log.Printf("[multi-provider] %s: error - %v", providerName, result.Error)
-			if firstError == nil {
-				firstError = result.Error
-			}
-		} else {
-			log.Printf("[multi-provider] %s: not cached", providerName)
-		}
-	}
-
-	if bestResult != nil {
-		log.Printf("[multi-provider] preferred mode: using %s (priority %d)", bestResult.Provider.Name, bestResult.Priority)
-		return bestResult, nil
-	}
-
 	if firstError != nil {
 		return nil, fmt.Errorf("torrent not cached on any provider: %w", firstError)
 	}
@@ -272,7 +195,7 @@ func (s *MultiProviderService) checkProviderCache(
 		log.Printf("[multi-provider] %s: adding magnet", providerName)
 		addResp, err = pe.client.AddMagnet(ctx, candidate.Link)
 	} else if torrentURL != "" {
-		log.Printf("[multi-provider] %s: downloading and uploading torrent file", providerName)
+		log.Printf("[multi-provider] %s: downloading and uploading torrent file from %s", providerName, safeURLForLog(torrentURL))
 		torrentData, filename, downloadErr := s.downloadTorrentFile(ctx, torrentURL)
 		if downloadErr != nil {
 			result.Error = fmt.Errorf("download torrent file: %w", downloadErr)

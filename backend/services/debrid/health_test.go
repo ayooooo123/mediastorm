@@ -7,6 +7,7 @@ import (
 	"novastream/config"
 	"novastream/models"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -94,11 +95,11 @@ func TestShouldUseQuickTorboxCacheCheck(t *testing.T) {
 			want:      false,
 		},
 		{
-			name:      "multiple enabled providers use full verification",
+			name:      "torbox quick check remains available with multiple enabled providers",
 			providers: []config.DebridProviderSettings{torbox, realDebrid},
 			selected:  &torbox,
 			infoHash:  "abcdef1234567890",
-			want:      false,
+			want:      true,
 		},
 		{
 			name:              "explicit non torbox provider uses full verification",
@@ -132,9 +133,9 @@ func TestCheckQuickCacheOnlySkipsWhenNoSafeInstantPath(t *testing.T) {
 	settings := config.DefaultSettings()
 	settings.Streaming.DebridProviders = []config.DebridProviderSettings{
 		{
-			Name:     "Real-Debrid",
-			Provider: "realdebrid",
-			APIKey:   "rd-key",
+			Name:     "Unsupported",
+			Provider: "health_no_instant_path",
+			APIKey:   "test-key",
 			Enabled:  true,
 		},
 	}
@@ -156,6 +157,43 @@ func TestCheckQuickCacheOnlySkipsWhenNoSafeInstantPath(t *testing.T) {
 	}
 	if health.Status != "skipped" || health.Cached || health.Healthy {
 		t.Fatalf("expected skipped quick-only health, got %#v", health)
+	}
+}
+
+func TestCheckQuickCacheOnlyTreatsAnyProviderCacheAsPlayable(t *testing.T) {
+	uncachedProvider := &mockProvider{name: "health_union_uncached", instantCachedSet: true, instantCached: false}
+	cachedProvider := &mockProvider{name: "health_union_cached", instantCachedSet: true, instantCached: true}
+	RegisterProvider(uncachedProvider.name, func(string) Provider { return uncachedProvider })
+	RegisterProvider(cachedProvider.name, func(string) Provider { return cachedProvider })
+
+	cfg := config.NewManager(t.TempDir() + "/settings.json")
+	settings := config.DefaultSettings()
+	settings.Streaming.DebridProviders = []config.DebridProviderSettings{
+		{Name: "Uncached", Provider: uncachedProvider.name, APIKey: "one", Enabled: true},
+		{Name: "Cached", Provider: cachedProvider.name, APIKey: "two", Enabled: true},
+	}
+	if err := cfg.Save(settings); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	health, err := NewHealthService(cfg).CheckQuickCacheOnly(context.Background(), models.NZBResult{
+		Title: "Primal.S02E02",
+		Link:  "magnet:?xt=urn:btih:abcdef1234567890",
+		Attributes: map[string]string{
+			"infoHash": "abcdef1234567890",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CheckQuickCacheOnly returned error: %v", err)
+	}
+	if !health.Cached || !health.Healthy || health.Status != "cached" || health.Provider != cachedProvider.name {
+		t.Fatalf("expected cached union result from %s, got %#v", cachedProvider.name, health)
+	}
+	if got := atomic.LoadInt64(&uncachedProvider.instantCalls); got != 1 {
+		t.Fatalf("uncached provider calls = %d, want 1", got)
+	}
+	if got := atomic.LoadInt64(&cachedProvider.instantCalls); got != 1 {
+		t.Fatalf("cached provider calls = %d, want 1", got)
 	}
 }
 
