@@ -46,6 +46,22 @@ func parseStreamMediaMetadata(r *http.Request) StreamMediaMetadata {
 		LiveSourceID:         strings.TrimSpace(q.Get("liveSourceId")),
 		LiveChannelLogo:      strings.TrimSpace(q.Get("liveChannelLogo")),
 	}
+	if meta.MediaType == "channel" || meta.MediaType == "live" {
+		// Older clients created live sessions before the dashboard-specific
+		// parameter names existed. The live start endpoint already receives the
+		// canonical source URL and source ID under these names, so retain them as
+		// session metadata instead of producing a dashboard card that can only
+		// open the (invalid for Live TV) details route.
+		if meta.LiveSourceURL == "" {
+			meta.LiveSourceURL = strings.TrimSpace(q.Get("url"))
+		}
+		if meta.LiveSourceID == "" {
+			meta.LiveSourceID = strings.TrimSpace(q.Get("sourceId"))
+		}
+		if meta.LiveChannelLogo == "" {
+			meta.LiveChannelLogo = strings.TrimSpace(q.Get("channelLogo"))
+		}
+	}
 
 	if meta.Title == "" {
 		if meta.MediaType == "episode" {
