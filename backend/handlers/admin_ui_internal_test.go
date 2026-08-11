@@ -486,6 +486,8 @@ func TestAdminStatusActiveStreamRowsKeepMediaOnOneLineAndShowService(t *testing.
 		`class="stream-table-media-subtitle"`,
 		`renderStreamServiceBadge(stream, true)`,
 		`function getStreamServiceType(stream)`,
+		`function getStreamDebridProvider(stream)`,
+		`class="stream-debrid-provider"`,
 	} {
 		if !strings.Contains(source, marker) {
 			t.Fatalf("status template missing active-stream row marker %q", marker)
@@ -566,6 +568,29 @@ func TestDashboardStreamServiceType(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := dashboardStreamServiceType(tt.live, tt.serviceType, tt.paths...); got != tt.wanted {
 				t.Fatalf("dashboardStreamServiceType() = %q, want %q", got, tt.wanted)
+			}
+		})
+	}
+}
+
+func TestDashboardDebridProvider(t *testing.T) {
+	tests := []struct {
+		name        string
+		serviceType string
+		paths       []string
+		wanted      string
+	}{
+		{name: "torbox path", paths: []string{"/debrid/torbox/torrent/file/0/movie.mkv"}, wanted: "torbox"},
+		{name: "real debrid webdav path", paths: []string{"/webdav/debrid/real-debrid/torrent/file/0/movie.mkv"}, wanted: "realdebrid"},
+		{name: "provider in original path", serviceType: "debrid", paths: []string{"https://cdn.test/file", "/debrid/premiumize/torrent/file/0/movie.mkv"}, wanted: "premiumize"},
+		{name: "signed external URL without provider", serviceType: "debrid", paths: []string{"https://comet.example/playback/token"}, wanted: ""},
+		{name: "usenet path", serviceType: "usenet", paths: []string{"/nzbs/job/movie.mkv"}, wanted: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := dashboardDebridProvider(tt.serviceType, tt.paths...); got != tt.wanted {
+				t.Fatalf("dashboardDebridProvider() = %q, want %q", got, tt.wanted)
 			}
 		})
 	}

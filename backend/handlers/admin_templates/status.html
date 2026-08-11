@@ -1680,6 +1680,26 @@
         background: rgba(34, 197, 94, 0.14);
         color: #22c55e;
     }
+    .stream-service-stack {
+        display: inline-flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 0.2rem;
+    }
+    .stream-debrid-provider {
+        color: var(--text-muted);
+        font-size: 0.625rem;
+        font-weight: 600;
+        line-height: 1.1;
+        white-space: nowrap;
+    }
+    .stream-service-stack.card-service .stream-debrid-provider {
+        padding: 0.1rem 0.3rem;
+        border-radius: 3px;
+        background: rgba(17, 24, 39, 0.88);
+        color: white;
+        text-shadow: 0 1px 1px rgba(0, 0, 0, 0.35);
+    }
 </style>
 <script>
     let dashboardDetail = localStorage.getItem('mediastorm-dashboard-detail') === 'advanced' ? 'advanced' : 'basic';
@@ -2033,12 +2053,27 @@
         return path.includes('/debrid/') || path.startsWith('debrid/') ? 'debrid' : 'usenet';
     }
 
+    function getStreamDebridProvider(stream) {
+        if (getStreamServiceType(stream) !== 'debrid') return '';
+        const provider = String(stream?.debrid_provider || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+        const labels = {
+            realdebrid: 'Real-Debrid',
+            torbox: 'TorBox',
+            alldebrid: 'AllDebrid',
+            premiumize: 'Premiumize'
+        };
+        return labels[provider] || String(stream?.debrid_provider || '').trim();
+    }
+
     function renderStreamServiceBadge(stream, cardBadge = false) {
         const serviceType = getStreamServiceType(stream);
+        const provider = getStreamDebridProvider(stream);
         if (cardBadge) {
-            return `<span class="stream-card-badge service" title="Streaming service: ${escapeHtml(serviceType)}">${escapeHtml(serviceType)}</span>`;
+            const providerLine = provider ? `<span class="stream-debrid-provider">${escapeHtml(provider)}</span>` : '';
+            return `<span class="stream-service-stack card-service" title="Streaming service: ${escapeHtml(serviceType)}${provider ? ` · ${escapeHtml(provider)}` : ''}"><span class="stream-card-badge service">${escapeHtml(serviceType)}</span>${providerLine}</span>`;
         }
-        return `<span class="stream-service-badge ${serviceType}" title="Streaming service">${escapeHtml(serviceType)}</span>`;
+        const providerLine = provider ? `<span class="stream-debrid-provider">${escapeHtml(provider)}</span>` : '';
+        return `<span class="stream-service-stack" title="Streaming service${provider ? `: ${escapeHtml(provider)}` : ''}"><span class="stream-service-badge ${serviceType}">${escapeHtml(serviceType)}</span>${providerLine}</span>`;
     }
 
     // Fetch poster using external IDs (tvdbId/tmdbId) directly

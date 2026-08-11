@@ -2325,6 +2325,7 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 				"type":             "hls",
 				"is_live":          session.IsLive,
 				"service_type":     dashboardStreamServiceType(session.IsLive, session.MediaMetadata.SourceServiceType, session.Path, session.OriginalPath),
+				"debrid_provider":  dashboardDebridProvider(session.MediaMetadata.SourceServiceType, session.Path, session.OriginalPath),
 				"path":             session.Path,
 				"original_path":    session.OriginalPath,
 				"filename":         filename,
@@ -2462,6 +2463,7 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 			"type":             "direct",
 			"is_live":          streamMetadataIsLive(stream.MediaMetadata, stream.Path),
 			"service_type":     dashboardStreamServiceType(streamMetadataIsLive(stream.MediaMetadata, stream.Path), stream.MediaMetadata.SourceServiceType, stream.Path),
+			"debrid_provider":  dashboardDebridProvider(stream.MediaMetadata.SourceServiceType, stream.Path),
 			"path":             stream.Path,
 			"filename":         stream.Filename,
 			"item_id":          stream.MediaMetadata.ItemID,
@@ -2703,6 +2705,42 @@ func dashboardStreamServiceType(isLive bool, sourceServiceType string, paths ...
 		}
 	}
 	return "usenet"
+}
+
+// dashboardDebridProvider extracts the provider segment from canonical debrid
+// stream paths. External signed URLs intentionally remain unidentified unless
+// their path retains the /debrid/{provider}/ structure.
+func dashboardDebridProvider(sourceServiceType string, paths ...string) string {
+	if normalizeStreamSourceServiceType(sourceServiceType) != "debrid" && dashboardStreamServiceType(false, sourceServiceType, paths...) != "debrid" {
+		return ""
+	}
+
+	for _, sourcePath := range paths {
+		candidate := strings.TrimSpace(sourcePath)
+		if parsed, err := url.Parse(candidate); err == nil && parsed.Path != "" {
+			candidate = parsed.Path
+		}
+		normalized := "/" + strings.TrimLeft(strings.ToLower(candidate), "/")
+		marker := "/debrid/"
+		index := strings.Index(normalized, marker)
+		if index < 0 {
+			continue
+		}
+		provider := strings.SplitN(normalized[index+len(marker):], "/", 2)[0]
+		switch strings.NewReplacer("-", "", "_", "", " ", "").Replace(provider) {
+		case "realdebrid":
+			return "realdebrid"
+		case "torbox":
+			return "torbox"
+		case "alldebrid":
+			return "alldebrid"
+		case "premiumize":
+			return "premiumize"
+		default:
+			return provider
+		}
+	}
+	return ""
 }
 
 func streamExternalIDs(itemID string, ids map[string]string) map[string]string {
