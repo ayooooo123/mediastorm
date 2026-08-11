@@ -196,6 +196,45 @@ func TestWebPlaybackTemplateSendsFinalHeartbeatOnTeardown(t *testing.T) {
 	}
 }
 
+func TestWebPlaybackTemplateShowsStreamDetailsOnlyForLivePlayback(t *testing.T) {
+	body, err := webTemplates.ReadFile("web_templates/playback.html")
+	if err != nil {
+		t.Fatalf("read web playback template: %v", err)
+	}
+
+	rendered := string(body)
+	for _, want := range []string{
+		"${isLive ? `<div class=\"seek-spacer\"><span id=\"liveStreamInfo\" class=\"live-stream-info\"></span></div>",
+		"if (playbackMeta.isLive) startLiveStreamInfoTracking(video);",
+		"video.videoWidth",
+		"video.videoHeight",
+		"requestVideoFrameCallback",
+		"${frameRate} FPS",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("web playback template missing live stream details hook %q", want)
+		}
+	}
+}
+
+func TestWebPlaybackTemplateReturnsLivePlaybackToChannelSelector(t *testing.T) {
+	body, err := webTemplates.ReadFile("web_templates/playback.html")
+	if err != nil {
+		t.Fatalf("read web playback template: %v", err)
+	}
+
+	rendered := string(body)
+	for _, want := range []string{
+		"if (playbackMeta.isLive)",
+		"referrer.pathname.endsWith('/watch/live')",
+		"return `${basePath || ''}/watch/live`;",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("web playback template missing live channel-selector return hook %q", want)
+		}
+	}
+}
+
 func TestWebPlaybackTemplateQualifiesMigrationCandidatesBeforeHandoff(t *testing.T) {
 	body, err := webTemplates.ReadFile("web_templates/playback.html")
 	if err != nil {
