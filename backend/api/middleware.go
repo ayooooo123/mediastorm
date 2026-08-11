@@ -268,6 +268,9 @@ func queryTokenAllowed(path string) bool {
 	// Native image renderers cannot attach the API Authorization header. These
 	// endpoints return image bytes only, so allow the same query-token flow used
 	// by video and HLS media URLs without broadening general API access.
+	if strings.HasPrefix(path, "/api/video/thumbnails/image/") {
+		return true
+	}
 	if strings.HasPrefix(path, "/api/library/items/") && strings.Contains(path, "/artwork/") {
 		return true
 	}

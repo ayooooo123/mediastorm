@@ -87,6 +87,7 @@ func TestExtractTokenRestrictsQueryTokensToMediaRoutes(t *testing.T) {
 	}
 
 	for _, target := range []string{
+		"/api/video/thumbnails/image/0123456789abcdef01234567/thumb-0001.jpg?token=media-token",
 		"/api/metadata/trailers/proxy?token=media-token&url=https://example.test/trailer",
 		"/api/metadata/trailers/prequeue/serve?token=media-token&id=trailer-1",
 		"/api/subtitles/download?token=media-token&subtitleId=sub-1",

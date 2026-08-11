@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -21,12 +22,17 @@ type playbackService interface {
 	QueueStatus(ctx context.Context, queueID int64) (*models.PlaybackResolution, error)
 }
 
+type thumbnailPrewarmer interface {
+	PrewarmThumbnails(path string)
+}
+
 // PlaybackHandler resolves NZB candidates into playable streams via the local registry.
 type PlaybackHandler struct {
-	Service           playbackService
-	SubtitleExtractor SubtitlePreExtractor // For pre-extracting subtitles
-	VideoProber       VideoFullProber      // For probing subtitle streams
-	BadStreams        *badstreams.Service
+	Service            playbackService
+	SubtitleExtractor  SubtitlePreExtractor // For pre-extracting subtitles
+	VideoProber        VideoFullProber      // For probing subtitle streams
+	BadStreams         *badstreams.Service
+	ThumbnailPrewarmer thumbnailPrewarmer
 }
 
 var _ playbackService = (*playbacksvc.Service)(nil)
@@ -56,6 +62,17 @@ func (h *PlaybackHandler) SetVideoProber(prober VideoFullProber) {
 
 func (h *PlaybackHandler) SetBadStreamsService(service *badstreams.Service) {
 	h.BadStreams = service
+}
+
+func (h *PlaybackHandler) SetThumbnailPrewarmer(prewarmer thumbnailPrewarmer) {
+	h.ThumbnailPrewarmer = prewarmer
+}
+
+func (h *PlaybackHandler) prewarmThumbnails(resolution *models.PlaybackResolution) {
+	if h == nil || h.ThumbnailPrewarmer == nil || resolution == nil || strings.TrimSpace(resolution.WebDAVPath) == "" {
+		return
+	}
+	h.ThumbnailPrewarmer.PrewarmThumbnails(resolution.WebDAVPath)
 }
 
 // Resolve accepts an NZB indexer result and responds with a validated playback source.
@@ -105,6 +122,7 @@ func (h *PlaybackHandler) Resolve(w http.ResponseWriter, r *http.Request) {
 	if rejectM2TSPlaybackResolution(w, resolution) {
 		return
 	}
+	h.prewarmThumbnails(resolution)
 	log.Printf("[playback-handler] TIMING: resolve complete (took: %v)", time.Since(handlerStart))
 
 	// Subtitle pre-extraction disabled — the player handles subtitles natively.
@@ -179,6 +197,7 @@ func (h *PlaybackHandler) QueueStatus(w http.ResponseWriter, r *http.Request) {
 	if rejectM2TSPlaybackResolution(w, status) {
 		return
 	}
+	h.prewarmThumbnails(status)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(status)

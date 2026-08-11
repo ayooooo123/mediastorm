@@ -34,60 +34,51 @@ func TestThumbnailTimesShortVideo(t *testing.T) {
 	}
 }
 
-func TestThumbnailGenerationOrderUsesPreviewPyramid(t *testing.T) {
-	order := thumbnailGenerationOrder(120)
-	if len(order) != 120 {
-		t.Fatalf("expected all indexes, got %d", len(order))
+func TestThumbnailGenerationTargetsPrioritizeChaptersThenProceedSequentially(t *testing.T) {
+	interval, targets := thumbnailGenerationTargets(300, 60, []float64{180, 45, 120})
+	if interval != 60 {
+		t.Fatalf("interval = %d, want 60", interval)
 	}
-	seen := make(map[int]bool, len(order))
-	for _, idx := range order {
-		if seen[idx] {
-			t.Fatalf("duplicate index %d in generation order", idx)
+	wantTimes := []float64{50, 125, 185, 30, 90, 150, 210, 270}
+	if len(targets) != len(wantTimes) {
+		t.Fatalf("targets = %v, want %d items", targets, len(wantTimes))
+	}
+	for index, want := range wantTimes {
+		if targets[index].TimeSec != want {
+			t.Fatalf("target %d time = %.1f, want %.1f", index, targets[index].TimeSec, want)
 		}
-		seen[idx] = true
-	}
-	wantPrefix := []int{60, 30, 89, 15, 45, 74, 104}
-	for i, want := range wantPrefix {
-		if order[i] != want {
-			t.Fatalf("expected preview pyramid index %d to be %d, got %d", i, want, order[i])
+		if targets[index].Priority != (index < 3) {
+			t.Fatalf("target %d priority = %t", index, targets[index].Priority)
 		}
 	}
 }
 
-func TestThumbnailGenerationPassesProgressivelyRefineTimeline(t *testing.T) {
-	passes := thumbnailGenerationPasses(48)
-	if len(passes) != thumbnailPreviewLODPasses+1 {
-		t.Fatalf("expected LOD passes plus fill pass, got %d", len(passes))
+func TestThumbnailGenerationTargetsMoveInsideChapterAndRejectInvalidTimes(t *testing.T) {
+	_, targets := thumbnailGenerationTargets(180, 60, []float64{30, 30, -1, 179.5, 200})
+	wantTimes := []float64{35, 30, 90, 150}
+	if len(targets) != len(wantTimes) {
+		t.Fatalf("targets = %v, want %d items", targets, len(wantTimes))
 	}
-	expectedPasses := [][]int{
-		{24},
-		{12, 35},
-		{6, 18, 29, 41},
-	}
-	for i, want := range expectedPasses {
-		if len(passes[i]) != len(want) {
-			t.Fatalf("expected pass %d length %d, got %d (%v)", i, len(want), len(passes[i]), passes[i])
-		}
-		for j, wantIdx := range want {
-			if passes[i][j] != wantIdx {
-				t.Fatalf("expected pass %d index %d to be %d, got %d", i, j, wantIdx, passes[i][j])
-			}
+	for index, want := range wantTimes {
+		if targets[index].TimeSec != want {
+			t.Fatalf("target %d time = %.1f, want %.1f", index, targets[index].TimeSec, want)
 		}
 	}
+	if !targets[0].Priority {
+		t.Fatal("chapter capture timestamps should retain priority")
+	}
+}
 
-	total := 0
-	seen := make(map[int]bool)
-	for _, pass := range passes {
-		total += len(pass)
-		for _, idx := range pass {
-			if seen[idx] {
-				t.Fatalf("duplicate index %d in generation passes", idx)
-			}
-			seen[idx] = true
-		}
+func TestThumbnailChapterCaptureTimesStayInsideChapterBoundaries(t *testing.T) {
+	got := thumbnailChapterCaptureTimes(120, []float64{0, 0.4, 60})
+	want := []float64{0.2, 5.4, 65}
+	if len(got) != len(want) {
+		t.Fatalf("capture times = %v, want %v", got, want)
 	}
-	if total != 48 {
-		t.Fatalf("expected all indexes across passes, got %d", total)
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("capture %d = %.1f, want %.1f", index, got[index], want[index])
+		}
 	}
 }
 
@@ -310,6 +301,13 @@ func TestThumbnailToneMapModeSelection(t *testing.T) {
 				t.Fatalf("expected %s, got %s", tt.want, got)
 			}
 		})
+	}
+}
+
+func TestThumbnailFilterUsesDisplayResolution(t *testing.T) {
+	filter := thumbnailFilter(thumbnailToneMapNone)
+	if !strings.Contains(filter, "scale=640:-2") {
+		t.Fatalf("thumbnail filter = %q, want 640px output width", filter)
 	}
 }
 

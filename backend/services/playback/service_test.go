@@ -79,7 +79,7 @@ func setupPlaybackService(t *testing.T) (*playback.Service, *integration.NzbSyst
 	}
 
 	metadataSvc := newStubMetadataService()
-	service := playback.NewService(cfg, nil, nzbSystem, metadataSvc)
+	service := playback.NewService(cfg, nzbSystem, metadataSvc)
 
 	return service, nzbSystem, metadataSvc
 }

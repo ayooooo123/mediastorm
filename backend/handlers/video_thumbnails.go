@@ -28,28 +28,36 @@ const (
 	thumbnailDefaultIntervalSec = 60
 	thumbnailMinIntervalSec     = 30
 	thumbnailMaxCount           = 120
-	thumbnailPreviewLODPasses   = 6
 	thumbnailDefaultWorkers     = 1
 	thumbnailMaxWorkers         = 8
-	thumbnailWidth              = 240
+	thumbnailWidth              = 640
 	thumbnailFrameTimeout       = 45 * time.Second
-	thumbnailFilterVersion      = 14
+	thumbnailFilterVersion      = 17
 	thumbnailMinJPEGBytes       = 800
 	thumbnailLibplaceboRuntime  = "libplacebo_runtime"
 	thumbnailRateLimitRetries   = 2
 	thumbnailRateLimitInitial   = 5 * time.Second
 	thumbnailRateLimitMax       = 2 * time.Minute
+	thumbnailDeferredFillDelay  = 10 * time.Second
 )
 
 type ThumbnailManager struct {
-	baseDir    string
-	ffmpegPath string
+	baseDir      string
+	ffmpegPath   string
+	sourceBridge *thumbnailSourceBridge
 
-	mu            sync.Mutex
-	inFlight      map[string]struct{}
-	filterOnce    sync.Once
-	filterCaps    map[string]bool
-	filterCapsErr error
+	mu               sync.Mutex
+	inFlight         map[string]struct{}
+	filterOnce       sync.Once
+	filterCaps       map[string]bool
+	filterCapsErr    error
+	protocolOnce     sync.Once
+	sharedProtocol   bool
+	protocolErr      error
+	httpOptionsOnce  sync.Once
+	httpInputOptions []string
+	prewarmMu        sync.Mutex
+	prewarmed        map[string]time.Time
 }
 
 type thumbnailToneMapMode string
@@ -65,6 +73,7 @@ const (
 type thumbnailManifest struct {
 	Key         string             `json:"key"`
 	Status      string             `json:"status"`
+	Phase       string             `json:"phase,omitempty"`
 	PathHash    string             `json:"pathHash"`
 	DurationSec float64            `json:"durationSec"`
 	IntervalSec int                `json:"intervalSec"`
@@ -87,6 +96,7 @@ type thumbnailDetails struct {
 type thumbnailStatusResponse struct {
 	Key         string             `json:"key"`
 	Status      string             `json:"status"`
+	Phase       string             `json:"phase,omitempty"`
 	DurationSec float64            `json:"durationSec"`
 	IntervalSec int                `json:"intervalSec"`
 	Generated   int                `json:"generated"`
@@ -111,6 +121,12 @@ type thumbnailJob struct {
 	OutputPath string
 }
 
+type thumbnailTarget struct {
+	TimeSec  float64
+	Priority bool
+	Index    int
+}
+
 type thumbnailResult struct {
 	Details thumbnailDetails
 	OK      bool
@@ -124,9 +140,11 @@ type thumbnailRateLimitCooldown struct {
 
 func NewThumbnailManager(baseDir, ffmpegPath string) *ThumbnailManager {
 	return &ThumbnailManager{
-		baseDir:    baseDir,
-		ffmpegPath: ffmpegPath,
-		inFlight:   make(map[string]struct{}),
+		baseDir:      baseDir,
+		ffmpegPath:   ffmpegPath,
+		sourceBridge: newThumbnailSourceBridge(),
+		inFlight:     make(map[string]struct{}),
+		prewarmed:    make(map[string]time.Time),
 	}
 }
 
@@ -235,52 +253,74 @@ func thumbnailTimes(durationSec float64, requestedInterval int) (int, []float64)
 	return interval, times
 }
 
-func thumbnailGenerationOrder(count int) []int {
-	passes := thumbnailGenerationPasses(count)
-	order := make([]int, 0, count)
-	for _, pass := range passes {
-		order = append(order, pass...)
+func thumbnailGenerationTargets(durationSec float64, requestedInterval int, chapterTimes []float64) (int, []thumbnailTarget) {
+	interval, regularTimes := thumbnailTimes(durationSec, requestedInterval)
+	byTime := make(map[float64]bool, len(regularTimes)+len(chapterTimes))
+	for _, chapterTime := range thumbnailChapterCaptureTimes(durationSec, chapterTimes) {
+		byTime[chapterTime] = true
 	}
-	return order
+	for _, regularTime := range regularTimes {
+		if _, exists := byTime[regularTime]; !exists {
+			byTime[regularTime] = false
+		}
+	}
+
+	chronological := make([]thumbnailTarget, 0, len(byTime))
+	for timestamp, priority := range byTime {
+		chronological = append(chronological, thumbnailTarget{TimeSec: timestamp, Priority: priority})
+	}
+	sort.Slice(chronological, func(i, j int) bool { return chronological[i].TimeSec < chronological[j].TimeSec })
+	for index := range chronological {
+		chronological[index].Index = index
+	}
+
+	ordered := make([]thumbnailTarget, 0, min(len(chronological), thumbnailMaxCount))
+	for _, target := range chronological {
+		if target.Priority && len(ordered) < thumbnailMaxCount {
+			ordered = append(ordered, target)
+		}
+	}
+	for _, target := range chronological {
+		if !target.Priority && len(ordered) < thumbnailMaxCount {
+			ordered = append(ordered, target)
+		}
+	}
+	return interval, ordered
 }
 
-func thumbnailGenerationPasses(count int) [][]int {
-	if count <= 0 {
-		return nil
-	}
-	seen := make([]bool, count)
-	passes := make([][]int, 0, thumbnailPreviewLODPasses+1)
-	addPass := func(indices []int) {
-		pass := make([]int, 0, len(indices))
-		for _, idx := range indices {
-			if idx < 0 || idx >= count || seen[idx] {
-				continue
-			}
-			seen[idx] = true
-			pass = append(pass, idx)
-		}
-		if len(pass) > 0 {
-			passes = append(passes, pass)
+func thumbnailChapterCaptureTimes(durationSec float64, chapterTimes []float64) []float64 {
+	starts := make([]float64, 0, len(chapterTimes))
+	for _, chapterTime := range chapterTimes {
+		if isValidThumbnailTime(chapterTime, durationSec) {
+			starts = append(starts, chapterTime)
 		}
 	}
+	sort.Float64s(starts)
 
-	for lod := 1; lod <= thumbnailPreviewLODPasses; lod++ {
-		items := 1 << (lod - 1)
-		denominator := 1 << lod
-		indices := make([]int, 0, items)
-		for i := 0; i < items; i++ {
-			fraction := (1 / float64(denominator)) + (float64(i) / float64(items))
-			indices = append(indices, int(math.Round(fraction*float64(count-1))))
+	captures := make([]float64, 0, len(starts))
+	for index, start := range starts {
+		if index > 0 && math.Abs(start-starts[index-1]) < 0.05 {
+			continue
 		}
-		addPass(indices)
+		end := durationSec
+		if index+1 < len(starts) && starts[index+1] > start {
+			end = starts[index+1]
+		}
+		chapterDuration := end - start
+		offset := math.Min(5, math.Max(1, chapterDuration*0.1))
+		if offset >= chapterDuration {
+			offset = chapterDuration / 2
+		}
+		captureTime := math.Round((start+offset)*10) / 10
+		if isValidThumbnailTime(captureTime, durationSec) {
+			captures = append(captures, captureTime)
+		}
 	}
+	return captures
+}
 
-	remaining := make([]int, 0, count)
-	for idx := 0; idx < count; idx++ {
-		remaining = append(remaining, idx)
-	}
-	addPass(remaining)
-	return passes
+func isValidThumbnailTime(timestamp, durationSec float64) bool {
+	return timestamp >= 0 && timestamp < durationSec-1 && !math.IsNaN(timestamp) && !math.IsInf(timestamp, 0)
 }
 
 func thumbnailNeedsToneMap(metadata *videoMetadataResponse) bool {
@@ -503,7 +543,7 @@ func (m *ThumbnailManager) markUnsupported(cleanPath string, durationSec float64
 	return key, nil
 }
 
-func (m *ThumbnailManager) start(cleanPath, sourceURL, authHeader string, durationSec float64, intervalSec int, workerCount int, toneMapMode thumbnailToneMapMode, dvProfile string) (string, bool, error) {
+func (m *ThumbnailManager) start(cleanPath, sourceURL, authHeader string, durationSec float64, intervalSec int, workerCount int, toneMapMode thumbnailToneMapMode, dvProfile string, chapterTimes []float64) (string, bool, error) {
 	if m == nil {
 		return "", false, fmt.Errorf("thumbnail manager unavailable")
 	}
@@ -546,22 +586,23 @@ func (m *ThumbnailManager) start(cleanPath, sourceURL, authHeader string, durati
 			delete(m.inFlight, key)
 			m.mu.Unlock()
 		}()
-		m.generate(key, cleanPath, sourceURL, authHeader, durationSec, intervalSec, workerCount, toneMapMode, dvProfile)
+		m.generate(key, cleanPath, sourceURL, authHeader, durationSec, intervalSec, workerCount, toneMapMode, dvProfile, chapterTimes)
 	}()
 
 	return key, true, nil
 }
 
-func (m *ThumbnailManager) generate(key, cleanPath, sourceURL, authHeader string, durationSec float64, requestedInterval int, workerCount int, toneMapMode thumbnailToneMapMode, dvProfile string) {
-	interval, times := thumbnailTimes(durationSec, requestedInterval)
+func (m *ThumbnailManager) generate(key, cleanPath, sourceURL, authHeader string, durationSec float64, requestedInterval int, workerCount int, toneMapMode thumbnailToneMapMode, dvProfile string, chapterTimes []float64) {
+	interval, targets := thumbnailGenerationTargets(durationSec, requestedInterval, chapterTimes)
 	workerCount = thumbnailWorkerCountFromSetting(workerCount)
 	manifest := &thumbnailManifest{
 		Key:         key,
 		Status:      "generating",
+		Phase:       "chapters",
 		PathHash:    key,
 		DurationSec: durationSec,
 		IntervalSec: interval,
-		Total:       len(times),
+		Total:       len(targets),
 		ToneMapped:  toneMapMode != thumbnailToneMapNone,
 		ToneMapMode: string(toneMapMode),
 		DVProfile:   strings.TrimSpace(dvProfile),
@@ -572,7 +613,7 @@ func (m *ThumbnailManager) generate(key, cleanPath, sourceURL, authHeader string
 		log.Printf("[thumbnails] failed to write initial manifest key=%s: %v", key, err)
 		return
 	}
-	if len(times) == 0 {
+	if len(targets) == 0 {
 		manifest.Status = "failed"
 		manifest.Error = "duration too short or unavailable"
 		_ = m.writeManifest(manifest)
@@ -591,52 +632,31 @@ func (m *ThumbnailManager) generate(key, cleanPath, sourceURL, authHeader string
 
 	dir := filepath.Join(m.baseDir, key)
 	cooldown := &thumbnailRateLimitCooldown{}
-	for passIndex, pass := range thumbnailGenerationPasses(len(times)) {
-		if len(pass) == 0 {
-			continue
+	priorityCount := 0
+	for _, target := range targets {
+		if target.Priority {
+			priorityCount++
 		}
-		log.Printf("[thumbnails] pass start key=%s pass=%d jobs=%d generated=%d/%d", key, passIndex+1, len(pass), manifest.Generated, manifest.Total)
-		results := make(chan thumbnailResult, len(pass))
-		jobs := make(chan thumbnailJob)
-		passWorkerCount := workerCount
-		if len(pass) < passWorkerCount {
-			passWorkerCount = len(pass)
-		}
-
-		var wg sync.WaitGroup
-		wg.Add(passWorkerCount)
-		for worker := 0; worker < passWorkerCount; worker++ {
-			go func() {
-				defer wg.Done()
-				for job := range jobs {
-					results <- m.generateFrame(job, key, cleanPath, sourceURL, authHeader, toneMapMode, dvProfile, cooldown)
-				}
-			}()
-		}
-
-		for _, idx := range pass {
-			t := times[idx]
-			fileName := fmt.Sprintf("thumb-%04d.jpg", idx+1)
-			jobs <- thumbnailJob{
-				TimeSec:    t,
-				FileName:   fileName,
-				OutputPath: filepath.Join(dir, fileName),
-			}
-		}
-		close(jobs)
-		wg.Wait()
-		close(results)
-
-		for result := range results {
-			if !result.OK {
-				continue
-			}
-			manifest.Thumbnails = append(manifest.Thumbnails, result.Details)
-			manifest.Generated = len(manifest.Thumbnails)
-			_ = m.writeManifest(manifest)
-		}
-		log.Printf("[thumbnails] pass complete key=%s pass=%d generated=%d/%d", key, passIndex+1, manifest.Generated, manifest.Total)
 	}
+	log.Printf("[thumbnails] queue start key=%s chapterJobs=%d sequentialJobs=%d generated=%d/%d", key, priorityCount, len(targets)-priorityCount, manifest.Generated, manifest.Total)
+	priorityTargets := targets[:priorityCount]
+	deferredTargets := targets[priorityCount:]
+	if len(priorityTargets) == 0 {
+		manifest.Phase = "deferred"
+		_ = m.writeManifest(manifest)
+	}
+	// Chapter cards are deliberately generated through one reader in timeline
+	// order. This makes partial manifests deterministic even when the configured
+	// scrubber worker count is higher.
+	m.runThumbnailPhase(priorityTargets, 1, dir, key, cleanPath, sourceURL, authHeader, toneMapMode, dvProfile, cooldown, manifest)
+	if len(priorityTargets) > 0 && len(deferredTargets) > 0 {
+		manifest.Phase = "deferred"
+		_ = m.writeManifest(manifest)
+		log.Printf("[thumbnails] chapter phase complete key=%s generated=%d/%d; deferring scrubber fill by %s", key, manifest.Generated, manifest.Total, thumbnailDeferredFillDelay)
+		timer := time.NewTimer(thumbnailDeferredFillDelay)
+		<-timer.C
+	}
+	m.runThumbnailPhase(deferredTargets, workerCount, dir, key, cleanPath, sourceURL, authHeader, toneMapMode, dvProfile, cooldown, manifest)
 
 	if manifest.Generated == 0 {
 		manifest.Status = "failed"
@@ -644,8 +664,51 @@ func (m *ThumbnailManager) generate(key, cleanPath, sourceURL, authHeader string
 	} else {
 		manifest.Status = "ready"
 	}
+	manifest.Phase = "complete"
 	_ = m.writeManifest(manifest)
 	log.Printf("[thumbnails] complete key=%s path=%q generated=%d/%d", key, cleanPath, manifest.Generated, manifest.Total)
+}
+
+func (m *ThumbnailManager) runThumbnailPhase(targets []thumbnailTarget, workerCount int, dir, key, cleanPath, sourceURL, authHeader string, toneMapMode thumbnailToneMapMode, dvProfile string, cooldown *thumbnailRateLimitCooldown, manifest *thumbnailManifest) {
+	if len(targets) == 0 {
+		return
+	}
+	workerCount = thumbnailWorkerCountFromSetting(workerCount)
+	if len(targets) < workerCount {
+		workerCount = len(targets)
+	}
+	results := make(chan thumbnailResult, workerCount)
+	jobs := make(chan thumbnailJob)
+	var wg sync.WaitGroup
+	wg.Add(workerCount)
+	for worker := 0; worker < workerCount; worker++ {
+		go func() {
+			defer wg.Done()
+			for job := range jobs {
+				results <- m.generateFrame(job, key, cleanPath, sourceURL, authHeader, toneMapMode, dvProfile, cooldown)
+			}
+		}()
+	}
+	go func() {
+		for _, target := range targets {
+			fileName := fmt.Sprintf("thumb-%04d.jpg", target.Index+1)
+			jobs <- thumbnailJob{TimeSec: target.TimeSec, FileName: fileName, OutputPath: filepath.Join(dir, fileName)}
+		}
+		close(jobs)
+		wg.Wait()
+		close(results)
+	}()
+	for result := range results {
+		if !result.OK {
+			continue
+		}
+		manifest.Thumbnails = append(manifest.Thumbnails, result.Details)
+		sort.Slice(manifest.Thumbnails, func(i, j int) bool {
+			return manifest.Thumbnails[i].TimeSec < manifest.Thumbnails[j].TimeSec
+		})
+		manifest.Generated = len(manifest.Thumbnails)
+		_ = m.writeManifest(manifest)
+	}
 }
 
 func thumbnailWorkerCountFromSetting(workers int) int {
@@ -671,6 +734,26 @@ func (h *VideoHandler) thumbnailGenerationSettings() config.PlaybackThumbnailSet
 	settings = loaded.Playback.Thumbnails
 	settings.Workers = thumbnailWorkerCountFromSetting(settings.Workers)
 	return settings
+}
+
+// PrewarmThumbnails resolves the final seekable source and establishes its
+// reusable upstream connection while the client is still preparing playback.
+// Frame generation remains chapter-driven once metadata reaches StartThumbnails.
+func (h *VideoHandler) PrewarmThumbnails(path string) {
+	if h == nil || h.thumbnailManager == nil || strings.TrimSpace(path) == "" || !h.thumbnailGenerationSettings().Enabled {
+		return
+	}
+	cleanPath := cleanVideoPathParam(path)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), thumbnailSourcePrewarmTimeout)
+		defer cancel()
+		sourceURL, err := h.resolveSeekableURL(ctx, cleanPath)
+		if err != nil || strings.TrimSpace(sourceURL) == "" {
+			log.Printf("[thumbnails] unable to prewarm source key=%s path=%q: %v", thumbnailKey(cleanPath), cleanPath, err)
+			return
+		}
+		h.thumbnailManager.prewarm(cleanPath, sourceURL, h.externalUsenetWebDAVAuthHeader(sourceURL))
+	}()
 }
 
 func (m *ThumbnailManager) generateFrame(job thumbnailJob, key, cleanPath, sourceURL, authHeader string, toneMapMode thumbnailToneMapMode, dvProfile string, cooldown *thumbnailRateLimitCooldown) thumbnailResult {
@@ -725,6 +808,8 @@ func (m *ThumbnailManager) runFrameCommand(job thumbnailJob, sourceURL, authHead
 		"-y",
 		"-ss", fmt.Sprintf("%.2f", job.TimeSec),
 	}
+	sourceURL, authHeader, inputOptions := m.frameInput(thumbnailKeyForOutput(job.OutputPath), sourceURL, authHeader)
+	args = append(args, inputOptions...)
 	if authHeader != "" {
 		args = append(args, "-headers", authHeader)
 	}
@@ -737,6 +822,10 @@ func (m *ThumbnailManager) runFrameCommand(job thumbnailJob, sourceURL, authHead
 	)
 	cmd := exec.CommandContext(ctx, m.ffmpegPath, args...)
 	return cmd.CombinedOutput()
+}
+
+func thumbnailKeyForOutput(outputPath string) string {
+	return filepath.Base(filepath.Dir(outputPath))
 }
 
 func (m *ThumbnailManager) isInflight(key string) bool {
@@ -782,6 +871,14 @@ func (h *VideoHandler) StartThumbnails(w http.ResponseWriter, r *http.Request) {
 	}
 	durationSec, _ := strconv.ParseFloat(strings.TrimSpace(r.URL.Query().Get("duration")), 64)
 	intervalSec, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("interval")))
+	chapterTimes := parseThumbnailChapterTimes(r.URL.Query()["chapter"])
+	if len(chapterTimes) == 0 {
+		if metadata := h.getCachedMetadata(cleanPath); metadata != nil {
+			for _, chapter := range metadata.Chapters {
+				chapterTimes = append(chapterTimes, chapter.Start)
+			}
+		}
+	}
 	dvProfile := parseThumbnailDVProfile(r)
 	deferStart := parseBoolQuery(r.URL.Query().Get("defer"))
 	if deferStart {
@@ -813,7 +910,7 @@ func (h *VideoHandler) StartThumbnails(w http.ResponseWriter, r *http.Request) {
 	toneMap := parseThumbnailToneMapHint(r, dvProfile) || thumbnailNeedsToneMap(h.getCachedMetadata(cleanPath))
 	toneMapMode := h.thumbnailManager.thumbnailToneMapMode(toneMap, dvProfile)
 	authHeader := h.externalUsenetWebDAVAuthHeader(sourceURL)
-	key, started, err := h.thumbnailManager.start(cleanPath, sourceURL, authHeader, durationSec, intervalSec, thumbnailSettings.Workers, toneMapMode, dvProfile)
+	key, started, err := h.thumbnailManager.start(cleanPath, sourceURL, authHeader, durationSec, intervalSec, thumbnailSettings.Workers, toneMapMode, dvProfile, chapterTimes)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
@@ -826,6 +923,17 @@ func (h *VideoHandler) StartThumbnails(w http.ResponseWriter, r *http.Request) {
 		"status":  h.thumbnailStatusForKey(key),
 		"started": started,
 	})
+}
+
+func parseThumbnailChapterTimes(values []string) []float64 {
+	times := make([]float64, 0, len(values))
+	for _, value := range values {
+		timestamp, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+		if err == nil && timestamp >= 0 && !math.IsNaN(timestamp) && !math.IsInf(timestamp, 0) {
+			times = append(times, timestamp)
+		}
+	}
+	return times
 }
 
 func (h *VideoHandler) GetThumbnailsStatus(w http.ResponseWriter, r *http.Request) {
@@ -916,6 +1024,7 @@ func (h *VideoHandler) thumbnailStatusResponse(r *http.Request, key string) (*th
 	resp := &thumbnailStatusResponse{
 		Key:         key,
 		Status:      status,
+		Phase:       manifest.Phase,
 		DurationSec: manifest.DurationSec,
 		IntervalSec: manifest.IntervalSec,
 		Generated:   manifest.Generated,

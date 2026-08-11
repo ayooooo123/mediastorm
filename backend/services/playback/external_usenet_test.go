@@ -3,7 +3,6 @@ package playback
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,57 +14,6 @@ import (
 	"novastream/config"
 	"novastream/models"
 )
-
-type failingUsenetHealthService struct {
-	called bool
-}
-
-func (f *failingUsenetHealthService) CheckHealthWithNZB(ctx context.Context, candidate models.NZBResult, nzbBytes []byte, fileName string) (*models.NZBHealthCheck, error) {
-	f.called = true
-	return nil, errors.New("direct NNTP health should be skipped")
-}
-
-func TestParallelHealthCheckSkipsDirectHealthForExternalEngine(t *testing.T) {
-	indexerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Disposition", `attachment; filename="release.nzb"`)
-		_, _ = io.WriteString(w, `<?xml version="1.0"?><nzb><file subject="Movie.mkv"><segments><segment bytes="123456">abc</segment></segments></file></nzb>`)
-	}))
-	defer indexerServer.Close()
-
-	settings := config.DefaultSettings()
-	settings.UsenetEngines = []config.UsenetEngineSettings{{
-		Name:          "NZBDav",
-		Type:          "nzbdav",
-		Enabled:       true,
-		BaseURL:       "http://engine.example",
-		WebDAVBaseURL: "http://webdav.example/webdav",
-	}}
-	cfg := config.NewManager(filepath.Join(t.TempDir(), "settings.json"))
-	if err := cfg.Save(settings); err != nil {
-		t.Fatalf("save settings: %v", err)
-	}
-
-	health := &failingUsenetHealthService{}
-	svc := NewService(cfg, health, nil, nil)
-	results := svc.ParallelHealthCheck(context.Background(), []models.NZBResult{{
-		Title:       "Movie",
-		ServiceType: models.ServiceTypeUsenet,
-		DownloadURL: indexerServer.URL + "/release.nzb",
-	}}, 1)
-
-	if len(results) != 1 {
-		t.Fatalf("results len = %d, want 1", len(results))
-	}
-	if !results[0].Healthy {
-		t.Fatalf("Healthy = false, error=%v", results[0].Error)
-	}
-	if health.called {
-		t.Fatal("direct NNTP health check was called")
-	}
-	if len(results[0].NZBBytes) == 0 {
-		t.Fatal("NZBBytes was not fetched")
-	}
-}
 
 func TestResolveExternalUsenetEngineQueuesAndPollsCompletedWebDAVURL(t *testing.T) {
 	var addFileSeen bool
@@ -141,7 +89,7 @@ func TestResolveExternalUsenetEngineQueuesAndPollsCompletedWebDAVURL(t *testing.
 	if err := cfg.Save(settings); err != nil {
 		t.Fatalf("save settings: %v", err)
 	}
-	svc := NewService(cfg, nil, nil, nil)
+	svc := NewService(cfg, nil, nil)
 
 	res, err := svc.Resolve(context.Background(), models.NZBResult{
 		Title:       "Movie",
@@ -245,7 +193,7 @@ func TestResolveExternalUsenetAltMountRewritesSubmittedNZB(t *testing.T) {
 		t.Fatalf("save settings: %v", err)
 	}
 
-	svc := NewService(cfg, nil, nil, nil)
+	svc := NewService(cfg, nil, nil)
 	res, err := svc.Resolve(context.Background(), models.NZBResult{
 		Title:       release,
 		DownloadURL: indexerServer.URL + "/" + release + ".nzb",
@@ -262,7 +210,7 @@ func TestResolveExternalUsenetAltMountRewritesSubmittedNZB(t *testing.T) {
 }
 
 func TestExternalQueueStatusRejectsMismatchedCompletedPath(t *testing.T) {
-	svc := NewService(config.NewManager(filepath.Join(t.TempDir(), "settings.json")), nil, nil, nil)
+	svc := NewService(config.NewManager(filepath.Join(t.TempDir(), "settings.json")), nil, nil)
 	svc.externalJobs[42] = &externalUsenetJob{
 		ID:             42,
 		EngineJobID:    "altmount-job",
@@ -307,7 +255,7 @@ func TestExternalQueueStatusKeepsJobPendingOnTransientStatusError(t *testing.T) 
 	}))
 	defer server.Close()
 
-	svc := NewService(config.NewManager(filepath.Join(t.TempDir(), "settings.json")), nil, nil, nil)
+	svc := NewService(config.NewManager(filepath.Join(t.TempDir(), "settings.json")), nil, nil)
 	svc.externalJobs[42] = &externalUsenetJob{
 		ID:             42,
 		EngineJobID:    "altmount-job",
@@ -378,7 +326,7 @@ func TestExternalQueueStatusFallsBackToAltMountWebDAVOnMismatchedCompletedPath(t
 	}))
 	defer server.Close()
 
-	svc := NewService(config.NewManager(filepath.Join(t.TempDir(), "settings.json")), nil, nil, nil)
+	svc := NewService(config.NewManager(filepath.Join(t.TempDir(), "settings.json")), nil, nil)
 	svc.externalJobs[42] = &externalUsenetJob{
 		ID:             42,
 		EngineJobID:    "altmount-job",
@@ -452,7 +400,7 @@ func TestExternalQueueStatusAcceptsAltMountDuplicateSuffixedCompletedPath(t *tes
 	}))
 	defer server.Close()
 
-	svc := NewService(config.NewManager(filepath.Join(t.TempDir(), "settings.json")), nil, nil, nil)
+	svc := NewService(config.NewManager(filepath.Join(t.TempDir(), "settings.json")), nil, nil)
 	svc.externalJobs[42] = &externalUsenetJob{
 		ID:             42,
 		EngineJobID:    "altmount-job",
@@ -527,7 +475,7 @@ func TestExternalQueueStatusFallsBackToAltMountCategoryRoot(t *testing.T) {
 	}))
 	defer server.Close()
 
-	svc := NewService(config.NewManager(filepath.Join(t.TempDir(), "settings.json")), nil, nil, nil)
+	svc := NewService(config.NewManager(filepath.Join(t.TempDir(), "settings.json")), nil, nil)
 	svc.externalJobs[42] = &externalUsenetJob{
 		ID:             42,
 		EngineJobID:    "altmount-job",
@@ -605,7 +553,7 @@ func TestExternalQueueStatusFallsBackToGenericWebDAVRoot(t *testing.T) {
 			}))
 			defer server.Close()
 
-			svc := NewService(config.NewManager(filepath.Join(t.TempDir(), "settings.json")), nil, nil, nil)
+			svc := NewService(config.NewManager(filepath.Join(t.TempDir(), "settings.json")), nil, nil)
 			svc.externalJobs[42] = &externalUsenetJob{
 				ID:            42,
 				EngineJobID:   "generic-job",
@@ -665,7 +613,7 @@ func TestExternalQueueStatusRejectsStaleAltMountStatusFileName(t *testing.T) {
 	}))
 	defer server.Close()
 
-	svc := NewService(config.NewManager(filepath.Join(t.TempDir(), "settings.json")), nil, nil, nil)
+	svc := NewService(config.NewManager(filepath.Join(t.TempDir(), "settings.json")), nil, nil)
 	svc.externalJobs[42] = &externalUsenetJob{
 		ID:             42,
 		EngineJobID:    "altmount-job",
@@ -798,7 +746,7 @@ func TestResolveExternalUsenetEngineSelectsMediaFromCompletedWebDAVDirectory(t *
 	if err := cfg.Save(settings); err != nil {
 		t.Fatalf("save settings: %v", err)
 	}
-	svc := NewService(cfg, nil, nil, nil)
+	svc := NewService(cfg, nil, nil)
 
 	res, err := svc.Resolve(context.Background(), models.NZBResult{
 		Title:       "Movie",
@@ -903,7 +851,7 @@ func TestResolveExternalUsenetEngineSelectsNZBDavExRcloneLink(t *testing.T) {
 	if err := cfg.Save(settings); err != nil {
 		t.Fatalf("save settings: %v", err)
 	}
-	svc := NewService(cfg, nil, nil, nil)
+	svc := NewService(cfg, nil, nil)
 
 	res, err := svc.Resolve(context.Background(), models.NZBResult{
 		Title:       "Movie",
@@ -960,7 +908,7 @@ func TestExternalQueueStatusFallsBackToDecypharrWebDAVNZBFolder(t *testing.T) {
 	}))
 	defer server.Close()
 
-	svc := NewService(config.NewManager(filepath.Join(t.TempDir(), "settings.json")), nil, nil, nil)
+	svc := NewService(config.NewManager(filepath.Join(t.TempDir(), "settings.json")), nil, nil)
 	svc.externalJobs[42] = &externalUsenetJob{
 		ID:            42,
 		EngineJobID:   "decypharr-job",
@@ -1054,7 +1002,7 @@ func TestResolveExternalUsenetReusesExistingWebDAVResolutionBeforeSubmit(t *test
 				t.Fatalf("save settings: %v", err)
 			}
 
-			svc := NewService(cfg, nil, nil, nil)
+			svc := NewService(cfg, nil, nil)
 			res, err := svc.Resolve(context.Background(), models.NZBResult{
 				Title:       "Release.Name",
 				DownloadURL: indexerServer.URL + "/Release.Name.nzb",
@@ -1179,7 +1127,7 @@ func TestExternalQueueStatusNormalizesAltMountJobPrefixAndCachesResolution(t *te
 		t.Fatalf("save settings: %v", err)
 	}
 
-	svc := NewService(cfg, nil, nil, nil)
+	svc := NewService(cfg, nil, nil)
 	candidate := models.NZBResult{Title: release, DownloadURL: indexerServer.URL + "/Release.Name.nzb"}
 	queued, err := svc.Resolve(context.Background(), candidate)
 	if err != nil {
@@ -1249,7 +1197,7 @@ func TestResolveExternalUsenetReusesActiveJobByNZBHash(t *testing.T) {
 		t.Fatalf("save settings: %v", err)
 	}
 
-	svc := NewService(cfg, nil, nil, nil)
+	svc := NewService(cfg, nil, nil)
 	candidate := models.NZBResult{Title: "Release.Name", DownloadURL: indexerServer.URL + "/Release.Name.nzb"}
 	first, err := svc.Resolve(context.Background(), candidate)
 	if err != nil {

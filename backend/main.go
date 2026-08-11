@@ -359,7 +359,7 @@ func main() {
 	badStreamsHandler := handlers.NewBadStreamsHandler(badStreamsService)
 	indexerHandler.SetBadStreamsService(badStreamsService)
 
-	playbackService := playback.NewService(cfgManager, usenetService, nzbSystem, nzbSystem.MetadataReader())
+	playbackService := playback.NewService(cfgManager, nzbSystem, nzbSystem.MetadataReader())
 	playbackHandler := handlers.NewPlaybackHandler(playbackService)
 	playbackHandler.SetBadStreamsService(badStreamsService)
 	// Prequeue handler will be created later after historyService is available
@@ -753,6 +753,7 @@ func main() {
 		compositeProvider,
 	)
 	videoHandler.SetThumbnailCacheDir(settings.Cache.Directory)
+	playbackHandler.SetThumbnailPrewarmer(videoHandler)
 	videoHandler.SetPrequeueStore(prequeueHandler.GetStore())
 	localBaseURL := fmt.Sprintf("http://127.0.0.1:%d", settings.Server.Port)
 	videoHandler.SetLocalBaseURL(localBaseURL)

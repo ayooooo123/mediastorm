@@ -22,6 +22,14 @@ type mockPlaybackService struct {
 	queueStatusFunc  func(ctx context.Context, queueID int64) (*models.PlaybackResolution, error)
 }
 
+type recordingThumbnailPrewarmer struct {
+	paths []string
+}
+
+func (p *recordingThumbnailPrewarmer) PrewarmThumbnails(path string) {
+	p.paths = append(p.paths, path)
+}
+
 func (m *mockPlaybackService) Resolve(ctx context.Context, candidate models.NZBResult) (*models.PlaybackResolution, error) {
 	if m.resolveFunc != nil {
 		return m.resolveFunc(ctx, candidate)
@@ -125,6 +133,28 @@ func TestResolve_AllowsMarkedBadStreamWithManualOverride(t *testing.T) {
 	}
 	if !resolveCalled {
 		t.Fatal("expected marked bad stream override to continue to resolve")
+	}
+}
+
+func TestResolve_PrewarmsFinalPlaybackPath(t *testing.T) {
+	h := NewPlaybackHandler(&mockPlaybackService{
+		resolveFunc: func(ctx context.Context, candidate models.NZBResult) (*models.PlaybackResolution, error) {
+			return &models.PlaybackResolution{WebDAVPath: "/debrid/movie.mkv"}, nil
+		},
+	})
+	prewarmer := &recordingThumbnailPrewarmer{}
+	h.SetThumbnailPrewarmer(prewarmer)
+
+	body, _ := json.Marshal(map[string]interface{}{"result": models.NZBResult{Title: "Movie"}})
+	req := httptest.NewRequest(http.MethodPost, "/api/playback/resolve", bytes.NewBuffer(body))
+	rec := httptest.NewRecorder()
+	h.Resolve(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	if len(prewarmer.paths) != 1 || prewarmer.paths[0] != "/debrid/movie.mkv" {
+		t.Fatalf("prewarmed paths = %#v", prewarmer.paths)
 	}
 }
 
