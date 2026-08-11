@@ -561,10 +561,22 @@
       white-space: nowrap;
     }
 
-    /* Live playback: no seek bar, just a flexible spacer + LIVE badge. */
+    /* Live playback: no seek bar, just stream details in the flexible spacer + LIVE badge. */
     .seek-spacer {
       flex: 1;
       min-width: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .live-stream-info {
+      overflow: hidden;
+      color: rgba(255, 255, 255, 0.78);
+      font-size: 0.82rem;
+      font-variant-numeric: tabular-nums;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     .time.live-indicator {
@@ -1097,6 +1109,9 @@
     let webPlayerSessionRecovering = false;
     let progressCompleted = false;
     let liveWatchStartedAt = null;
+    let liveStreamInfo = { width: 0, height: 0, frameRate: 0 };
+    let liveFrameCallbackId = null;
+    let liveFrameSample = null;
     let webPlayerMetadataResolved = false;
     let webPlayerChapters = [];
     let webPlayerSegments = { recap: null, intro: null, outro: null };
@@ -1250,6 +1265,19 @@
     }
 
     function resolvePlaybackReturnUrl() {
+      if (playbackMeta.isLive) {
+        try {
+          const referrer = document.referrer ? new URL(document.referrer) : null;
+          if (referrer && referrer.origin === window.location.origin && referrer.pathname.endsWith('/watch/live')) {
+            return referrer.pathname + referrer.search + referrer.hash;
+          }
+        } catch {}
+
+        const watchIndex = window.location.pathname.indexOf('/watch');
+        const basePath = watchIndex >= 0 ? window.location.pathname.slice(0, watchIndex) : SERVER_BASE_PATH;
+        return `${basePath || ''}/watch/live`;
+      }
+
       const explicitReturn = normalizePlaybackReturnPath(routeParam('returnTo'));
       if (explicitReturn) {
         return explicitReturn;
@@ -1634,11 +1662,20 @@
     async function loadTrackMetadata(prefetchedMetadata) {
       webPlayerAudioStreams = [];
       webPlayerSubtitleStreams = [];
+      if (playbackMeta.isLive) liveStreamInfo = { width: 0, height: 0, frameRate: 0 };
       try {
         let metadata = prefetchedMetadata;
         if (!metadata) {
           const params = new URLSearchParams({ path: sourcePath, profileId: activeProfileId });
           metadata = await apiCall(`/video/metadata?${params.toString()}`);
+        }
+        if (playbackMeta.isLive) {
+          const stream = Array.isArray(metadata?.videoStreams) ? metadata.videoStreams[0] : null;
+          updateLiveStreamInfo({
+            width: Number(stream?.width || 0),
+            height: Number(stream?.height || 0),
+            frameRate: parseWebFrameRate(stream?.avgFrameRate),
+          });
         }
         webPlayerAudioStreams = Array.isArray(metadata?.audioStreams) ? metadata.audioStreams : [];
         webPlayerSubtitleStreams = Array.isArray(metadata?.subtitleStreams)
@@ -1788,7 +1825,7 @@
             <span class="icon fullscreen-enter"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg></span>
             <span class="icon fullscreen-exit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/></svg></span>
           </button>
-          ${isLive ? `<div class="seek-spacer"></div>
+          ${isLive ? `<div class="seek-spacer"><span id="liveStreamInfo" class="live-stream-info"></span></div>
           <div id="time" class="time live-indicator"><span class="live-dot"></span>LIVE</div>` : `<input id="seek" class="seek" type="range" min="0" max="${Math.max(1, Math.floor(hlsDuration || 1))}" step="1" value="${Math.floor(hlsPlaybackOffset)}" onpointerdown="beginSeekInput()" onmousedown="beginSeekInput()" ontouchstart="beginSeekInput()" onkeydown="beginSeekInput()" oninput="previewSeek(this.value)" onchange="commitSeek(this.value)" onblur="cancelSeekInput()">
           <div id="time" class="time">${formatTime(hlsPlaybackOffset)} / ${formatDurationLabel(hlsDuration)}</div>`}
         </div>
@@ -1811,6 +1848,7 @@
       if (!isLive) video.addEventListener('click', togglePlayback);
       installVideoEvents(video);
       installControlsAutoHide(host);
+      if (isLive) updateLiveStreamInfoFromVideo(video);
 
       // On mobile the immersive (fullscreen) view is the default and only layout.
       // Apply the CSS fill directly — the real Fullscreen API needs a user gesture,
@@ -1902,6 +1940,10 @@
             audioTracks: data?.audioTracks?.length,
             subtitleTracks: data?.subtitleTracks?.length,
           });
+          if (playbackMeta.isLive) updateLiveStreamInfoFromLevel(data?.levels?.[0]);
+        });
+        hlsInstance.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
+          if (playbackMeta.isLive) updateLiveStreamInfoFromLevel(hlsInstance?.levels?.[data?.level]);
         });
         hlsInstance.on(Hls.Events.LEVEL_LOADED, (_event, data) => {
           webPlayerDebugLog('info', 'hls level loaded', {
@@ -1998,7 +2040,105 @@
         attemptAutoplay(video);
         installSubtitleTrack(video);
       }, { once: true });
+      if (playbackMeta.isLive) startLiveStreamInfoTracking(video);
       armWebPlayerStartupRecovery(video);
+    }
+
+    function parseWebFrameRate(value) {
+      if (typeof value === 'number') return Number.isFinite(value) && value > 0 ? value : 0;
+      const raw = String(value || '').trim();
+      if (!raw) return 0;
+      const parts = raw.split('/');
+      const numerator = Number(parts[0]);
+      const denominator = parts.length > 1 ? Number(parts[1]) : 1;
+      const result = numerator / denominator;
+      return Number.isFinite(result) && result > 0 ? result : 0;
+    }
+
+    function normalizeLiveFrameRate(value) {
+      const frameRate = Number(value || 0);
+      if (!Number.isFinite(frameRate) || frameRate <= 0) return 0;
+      const commonRates = [23.976, 24, 25, 29.97, 30, 50, 59.94, 60];
+      const nearest = commonRates.reduce((best, candidate) =>
+        Math.abs(candidate - frameRate) < Math.abs(best - frameRate) ? candidate : best,
+      commonRates[0]);
+      return Math.abs(nearest - frameRate) <= 0.6 ? nearest : frameRate;
+    }
+
+    function formatLiveFrameRate(value) {
+      const frameRate = normalizeLiveFrameRate(value);
+      if (!frameRate) return '';
+      if (Math.abs(frameRate - Math.round(frameRate)) < 0.01) return String(Math.round(frameRate));
+      return frameRate.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+    }
+
+    function updateLiveStreamInfo(next = {}) {
+      if (!playbackMeta.isLive) return;
+      if (Number(next.width) > 0) liveStreamInfo.width = Math.round(Number(next.width));
+      if (Number(next.height) > 0) liveStreamInfo.height = Math.round(Number(next.height));
+      if (Number(next.frameRate) > 0) liveStreamInfo.frameRate = Number(next.frameRate);
+      const resolution = liveStreamInfo.width > 0 && liveStreamInfo.height > 0
+        ? `${liveStreamInfo.width} × ${liveStreamInfo.height}`
+        : '';
+      const frameRate = formatLiveFrameRate(liveStreamInfo.frameRate);
+      const label = [resolution, frameRate ? `${frameRate} FPS` : ''].filter(Boolean).join(' • ');
+      const element = document.getElementById('liveStreamInfo');
+      if (element) {
+        element.textContent = label;
+        element.title = label;
+      }
+    }
+
+    function updateLiveStreamInfoFromLevel(level) {
+      if (!level) return;
+      updateLiveStreamInfo({
+        width: Number(level.width || 0),
+        height: Number(level.height || 0),
+        frameRate: parseWebFrameRate(level.frameRate || level.attrs?.['FRAME-RATE']),
+      });
+    }
+
+    function updateLiveStreamInfoFromVideo(video) {
+      if (!video) return;
+      updateLiveStreamInfo({ width: video.videoWidth, height: video.videoHeight });
+    }
+
+    function stopLiveStreamInfoTracking() {
+      const video = document.getElementById('webPlayer');
+      if (liveFrameCallbackId !== null && video?.cancelVideoFrameCallback) {
+        video.cancelVideoFrameCallback(liveFrameCallbackId);
+      }
+      liveFrameCallbackId = null;
+      liveFrameSample = null;
+    }
+
+    function startLiveStreamInfoTracking(video) {
+      stopLiveStreamInfoTracking();
+      if (!video || !playbackMeta.isLive) return;
+      ['loadedmetadata', 'loadeddata', 'resize', 'playing'].forEach((eventName) => {
+        video.addEventListener(eventName, () => updateLiveStreamInfoFromVideo(video));
+      });
+      updateLiveStreamInfoFromVideo(video);
+      if (typeof video.requestVideoFrameCallback !== 'function') return;
+      const sampleFrame = (_now, metadata) => {
+        if (!video.isConnected || document.getElementById('webPlayer') !== video || !playbackMeta.isLive) return;
+        updateLiveStreamInfoFromVideo(video);
+        const mediaTime = Number(metadata?.mediaTime);
+        const presentedFrames = Number(metadata?.presentedFrames);
+        if (Number.isFinite(mediaTime) && Number.isFinite(presentedFrames)) {
+          if (liveFrameSample && mediaTime > liveFrameSample.mediaTime) {
+            const elapsed = mediaTime - liveFrameSample.mediaTime;
+            if (elapsed >= 1) {
+              updateLiveStreamInfo({ frameRate: (presentedFrames - liveFrameSample.presentedFrames) / elapsed });
+              liveFrameSample = { mediaTime, presentedFrames };
+            }
+          } else {
+            liveFrameSample = { mediaTime, presentedFrames };
+          }
+        }
+        liveFrameCallbackId = video.requestVideoFrameCallback(sampleFrame);
+      };
+      liveFrameCallbackId = video.requestVideoFrameCallback(sampleFrame);
     }
 
     function clearWebPlayerStartupRecovery() {
@@ -4148,6 +4288,7 @@
     function stopHlsSession(options = {}) {
       clearWebMigrationStallTimer();
       clearWebPlayerStartupRecovery();
+      stopLiveStreamInfoTracking();
       if (!options.skipProgress) {
         sendWebPlayerProgress({
           force: true,
