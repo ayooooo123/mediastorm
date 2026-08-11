@@ -72,6 +72,11 @@ const (
 	searchResultsCacheMaxEntries = 256
 )
 
+func hasActivePearTubeSearchSource(settings config.Settings) bool {
+	pearTube := settings.PearTubeConfig()
+	return pearTube.Enabled != nil && *pearTube.Enabled && strings.TrimSpace(pearTube.RelayURL) != ""
+}
+
 // sanitizeXMLAmpersands escapes unescaped ampersands in XML that aren't part of valid entity references.
 // This fixes malformed XML from indexers that don't properly escape titles like "Tom & Jerry".
 func sanitizeXMLAmpersands(data []byte) ([]byte, int) {
@@ -1181,6 +1186,7 @@ type SearchOptions struct {
 	Categories            []string
 	MaxResults            int
 	IMDBID                string
+	TMDBID                string
 	MediaType             string                      // "movie" or "series"
 	Year                  int                         // Release year (for movies)
 	UserID                string                      // Optional: user ID for per-user filtering settings
@@ -1466,13 +1472,16 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBR
 	searchQueries := buildSearchQueries(opts, parsedQuery, alternateTitles)
 	rankingBundle := s.getEffectiveRankingBundle(opts.UserID, opts.ClientID, settings)
 	rankingCriteria := rankingBundle.Default
-	cacheKey := s.searchCacheKey("ranked", opts, settings, alternateTitles, filterSettings, filterBundle, animeSettings, filterOverrides, rankingCriteria, rankingBundle)
-	if cached, ok := s.getCachedSearchResults(cacheKey, searchStart); ok {
-		log.Printf("[indexer] search cache hit for query=%q mediaType=%q user=%q client=%q results=%d", opts.Query, opts.MediaType, opts.UserID, opts.ClientID, len(cached))
-		log.Printf("[search-stats] Search #%d cache hit: %d results in %v (totals: search=%d, splitSearch=%d, usenetAPICalls=%d)",
-			callNum, len(cached), time.Since(searchStart),
-			s.searchCount.Load(), s.searchSplitCount.Load(), s.usenetAPICallCount.Load())
-		return cached, nil
+	cacheKey := ""
+	if !includeDebrid || !hasActivePearTubeSearchSource(settings) {
+		cacheKey = s.searchCacheKey("ranked", opts, settings, alternateTitles, filterSettings, filterBundle, animeSettings, filterOverrides, rankingCriteria, rankingBundle)
+		if cached, ok := s.getCachedSearchResults(cacheKey, searchStart); ok {
+			log.Printf("[indexer] search cache hit for query=%q mediaType=%q user=%q client=%q results=%d", opts.Query, opts.MediaType, opts.UserID, opts.ClientID, len(cached))
+			log.Printf("[search-stats] Search #%d cache hit: %d results in %v (totals: search=%d, splitSearch=%d, usenetAPICalls=%d)",
+				callNum, len(cached), time.Since(searchStart),
+				s.searchCount.Load(), s.searchSplitCount.Load(), s.usenetAPICallCount.Load())
+			return cached, nil
+		}
 	}
 	sourceOpts := opts
 	if rankingBundle.NewestReleaseFirst {
@@ -1529,6 +1538,7 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBR
 				Categories:            append([]string{}, opts.Categories...),
 				MaxResults:            sourceOpts.MaxResults,
 				IMDBID:                opts.IMDBID,
+				TMDBID:                opts.TMDBID,
 				MediaType:             opts.MediaType,
 				Year:                  opts.Year,
 				AlternateTitles:       append([]string{}, alternateTitles...),
@@ -1897,10 +1907,13 @@ func (s *Service) searchRawResults(ctx context.Context, opts SearchOptions) ([]m
 	filterSettings := filterBundle.Default
 	rankingBundle := s.getEffectiveRankingBundle(opts.UserID, opts.ClientID, settings)
 	rankingCriteria := rankingBundle.Default
-	cacheKey := s.searchCacheKey("raw", opts, settings, alternateTitles, filterSettings, filterBundle, animeSettings, filterOverrides, rankingCriteria, rankingBundle)
-	if cached, ok := s.getCachedSearchResults(cacheKey, searchStart); ok {
-		log.Printf("[indexer] raw search cache hit for query=%q mediaType=%q user=%q client=%q results=%d", opts.Query, opts.MediaType, opts.UserID, opts.ClientID, len(cached))
-		return cached, nil
+	cacheKey := ""
+	if !includeDebrid || !hasActivePearTubeSearchSource(settings) {
+		cacheKey = s.searchCacheKey("raw", opts, settings, alternateTitles, filterSettings, filterBundle, animeSettings, filterOverrides, rankingCriteria, rankingBundle)
+		if cached, ok := s.getCachedSearchResults(cacheKey, searchStart); ok {
+			log.Printf("[indexer] raw search cache hit for query=%q mediaType=%q user=%q client=%q results=%d", opts.Query, opts.MediaType, opts.UserID, opts.ClientID, len(cached))
+			return cached, nil
+		}
 	}
 
 	type searchResult struct {
@@ -1958,6 +1971,7 @@ func (s *Service) searchRawResults(ctx context.Context, opts SearchOptions) ([]m
 				Categories:            append([]string{}, opts.Categories...),
 				MaxResults:            opts.MaxResults,
 				IMDBID:                opts.IMDBID,
+				TMDBID:                opts.TMDBID,
 				MediaType:             opts.MediaType,
 				Year:                  opts.Year,
 				AlternateTitles:       append([]string{}, alternateTitles...),
@@ -2261,6 +2275,7 @@ func (s *Service) SearchSplit(ctx context.Context, opts SearchOptions) (debridCh
 			Categories:            append([]string{}, opts.Categories...),
 			MaxResults:            opts.MaxResults,
 			IMDBID:                opts.IMDBID,
+			TMDBID:                opts.TMDBID,
 			MediaType:             opts.MediaType,
 			Year:                  opts.Year,
 			AlternateTitles:       append([]string{}, alternateTitles...),
