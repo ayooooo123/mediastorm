@@ -169,9 +169,11 @@ RUN BLD_FLAGS="-std=gnu99 -Wno-write-strings -Wno-pointer-sign -D_FILE_OFFSET_BI
 	&& cp -a /usr/local/lib/libgpac.so* /out/ \
 	&& chmod 0755 /out/ccextractor
 
-# Download Jellyfin's media-server FFmpeg build in a separate stage so the
-# final image can install the matching Bookworm package and its runtime
-# dependencies without retaining download tooling or package artifacts.
+# Download the architecture-specific FFmpeg build in a separate stage so the
+# final image does not retain download tooling or package artifacts. Jellyfin's
+# amd64 package provides the required legacy NVIDIA driver compatibility, but
+# its arm64 package omits libplacebo. Keep using the checksum-pinned BtbN arm64
+# build so Dolby Vision tone mapping remains available in both images.
 #
 # Jellyfin FFmpeg 7 is built against NVENC API 12.0 (Linux driver 520.56.06+).
 # NVIDIA guarantees older NVENC client APIs remain binary-compatible with newer
@@ -182,26 +184,28 @@ FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bb
 ARG TARGETARCH
 ARG JELLYFIN_FFMPEG_VERSION=7.1.4-3
 ARG JELLYFIN_FFMPEG_AMD64_SHA256=0cf62bc2423822c9ec7a38dbc8f526d9a58671bd01843daa7817ece35619fc1c
-ARG JELLYFIN_FFMPEG_ARM64_SHA256=9de240f98cc49db7ebc649c72c37d3ef154170d37ec2fbc68483cc84744804bb
+# BtbN retains the final build of each month for two years; use that durable
+# release instead of a daily artifact that is pruned after 14 days.
+ARG BTBN_FFMPEG_RELEASE=autobuild-2026-07-31-14-10
+ARG BTBN_FFMPEG_ARM64_ARCHIVE=ffmpeg-N-125875-g5d4d3bdc61-linuxarm64-gpl.tar.xz
+ARG BTBN_FFMPEG_ARM64_SHA256=a38f9976ff6377ed0a1117ed726c580da968cc8a0e9dc1328297cc60673e6f92
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates wget \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /out
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
-		FFMPEG_DEB_ARCH="arm64"; \
-		FFMPEG_SHA256="${JELLYFIN_FFMPEG_ARM64_SHA256}"; \
+		wget -q "https://github.com/BtbN/FFmpeg-Builds/releases/download/${BTBN_FFMPEG_RELEASE}/${BTBN_FFMPEG_ARM64_ARCHIVE}" -O ffmpeg-package.tar.xz; \
+		echo "${BTBN_FFMPEG_ARM64_SHA256}  ffmpeg-package.tar.xz" | sha256sum -c -; \
 	else \
-		FFMPEG_DEB_ARCH="amd64"; \
-		FFMPEG_SHA256="${JELLYFIN_FFMPEG_AMD64_SHA256}"; \
-	fi \
-	&& FFMPEG_PACKAGE="jellyfin-ffmpeg7_${JELLYFIN_FFMPEG_VERSION}-bookworm_${FFMPEG_DEB_ARCH}.deb" \
-	&& wget -q "https://github.com/jellyfin/jellyfin-ffmpeg/releases/download/v${JELLYFIN_FFMPEG_VERSION}/${FFMPEG_PACKAGE}" -O jellyfin-ffmpeg.deb \
-	&& echo "${FFMPEG_SHA256}  jellyfin-ffmpeg.deb" | sha256sum -c -
+		FFMPEG_PACKAGE="jellyfin-ffmpeg7_${JELLYFIN_FFMPEG_VERSION}-bookworm_amd64.deb"; \
+		wget -q "https://github.com/jellyfin/jellyfin-ffmpeg/releases/download/v${JELLYFIN_FFMPEG_VERSION}/${FFMPEG_PACKAGE}" -O ffmpeg-package.deb; \
+		echo "${JELLYFIN_FFMPEG_AMD64_SHA256}  ffmpeg-package.deb" | sha256sum -c -; \
+	fi
 
 # Final stage
 FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
 ARG TARGETARCH
 
-COPY --from=ffmpeg-downloader /out/jellyfin-ffmpeg.deb /tmp/jellyfin-ffmpeg.deb
+COPY --from=ffmpeg-downloader /out/ffmpeg-package.* /tmp/
 
 # Install ca-certificates, download tools, Python for title parsing, and Vulkan
 # drivers. Mesa's Lavapipe remains available as a thumbnail-only software
@@ -210,10 +214,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates wget xz-utils python3 python3-venv python3-pip \
     libvulkan1 mesa-vulkan-drivers \
     libssl3 libpng16-16 libjpeg62-turbo libopenjp2-7 \
-    /tmp/jellyfin-ffmpeg.deb \
-    && rm -rf /var/lib/apt/lists/* /tmp/jellyfin-ffmpeg.deb \
-    && ln -sf /usr/lib/jellyfin-ffmpeg/ffmpeg /usr/local/bin/ffmpeg \
-    && ln -sf /usr/lib/jellyfin-ffmpeg/ffprobe /usr/local/bin/ffprobe
+    && if [ "$TARGETARCH" = "arm64" ]; then \
+        tar -xJf /tmp/ffmpeg-package.tar.xz -C /tmp; \
+        FFMPEG_DIR="$(find /tmp -maxdepth 1 -type d -name 'ffmpeg-*-linuxarm64-gpl' | head -n 1)"; \
+        test -n "$FFMPEG_DIR"; \
+        mv "$FFMPEG_DIR/bin/ffmpeg" "$FFMPEG_DIR/bin/ffprobe" /usr/local/bin/; \
+    else \
+        apt-get install -y --no-install-recommends /tmp/ffmpeg-package.deb; \
+        ln -sf /usr/lib/jellyfin-ffmpeg/ffmpeg /usr/local/bin/ffmpeg; \
+        ln -sf /usr/lib/jellyfin-ffmpeg/ffprobe /usr/local/bin/ffprobe; \
+    fi \
+    && rm -rf /var/lib/apt/lists/* /tmp/ffmpeg-package.* /tmp/ffmpeg-*-linuxarm64-gpl \
+    && chmod 0755 /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
 
 RUN ln -sf "$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' | head -n 1)" /usr/share/vulkan/icd.d/lavapipe_icd.json
 
@@ -224,15 +236,26 @@ RUN python3 -m venv /.venv && \
 # Guard the compatibility contract and Dolby Vision feature set at image build
 # time. The driver-floor string is compiled into libavcodec by FFmpeg's NVENC
 # integration; checking it prevents a package update from silently requiring a
-# newer driver. DoVi checks cover parsing, passthrough metadata editing, and
-# libplacebo RPU-aware tone mapping used by web playback and thumbnails.
-RUN grep -aFq '520.56.06' /usr/lib/jellyfin-ffmpeg/lib/libavcodec.so.61 \
-    && grep -aFq 'DOVI configuration record' /usr/lib/jellyfin-ffmpeg/lib/libavcodec.so.61 \
+# newer driver. DoVi checks cover parsing, metadata editing, and libplacebo
+# RPU-aware tone mapping used by web playback and thumbnails. Jellyfin's
+# fork-specific remove_dovi option is required only of the amd64 package; the
+# backend does not invoke it, and the BtbN arm64 build provides standard
+# hevc_metadata instead.
+RUN if [ "$TARGETARCH" = "amd64" ]; then \
+        grep -aFq '520.56.06' /usr/lib/jellyfin-ffmpeg/lib/libavcodec.so.61 \
+            && grep -aFq 'DOVI configuration record' /usr/lib/jellyfin-ffmpeg/lib/libavcodec.so.61; \
+    else \
+        grep -aFq 'DOVI configuration record' /usr/local/bin/ffmpeg; \
+    fi \
     && ffmpeg -hide_banner -encoders | grep -Eq '(^|[[:space:]])h264_nvenc([[:space:]]|$)' \
     && ffmpeg -hide_banner -filters | grep -Eq '(^|[[:space:]])libplacebo([[:space:]]|$)' \
     && ffmpeg -hide_banner -filters | grep -Eq '(^|[[:space:]])zscale([[:space:]]|$)' \
     && ffmpeg -hide_banner -h filter=libplacebo | grep -Eq '(^|[[:space:]])apply_dolbyvision([[:space:]]|$)' \
-    && ffmpeg -hide_banner -h bsf=hevc_metadata | grep -Eq '(^|[[:space:]])-remove_dovi([[:space:]]|$)'
+    && if [ "$TARGETARCH" = "amd64" ]; then \
+        ffmpeg -hide_banner -h bsf=hevc_metadata | grep -Eq '(^|[[:space:]])-remove_dovi([[:space:]]|$)'; \
+    else \
+        ffmpeg -hide_banner -bsfs | grep -Eq '(^|[[:space:]])hevc_metadata([[:space:]]|$)'; \
+    fi
 RUN LIBGL_ALWAYS_SOFTWARE=1 \
     VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lavapipe_icd.json \
     ffmpeg -hide_banner -loglevel error \
