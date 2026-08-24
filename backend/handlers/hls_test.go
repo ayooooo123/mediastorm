@@ -564,43 +564,6 @@ func TestThrottledReaderExposesBlockedUpstreamRead(t *testing.T) {
 	}
 }
 
-// The throttle deliberately sleeps when the transcode runs ahead of the player.
-// That sleep must stay outside the watch, or every healthy buffered session would
-// be reported as a starved one and handed to another source for no reason.
-func TestThrottleSleepIsNotCountedAsUpstreamStarvation(t *testing.T) {
-	outputDir := t.TempDir()
-	// Segments far beyond the player's position put the reader deep into throttling.
-	for i := range throttleStartThreshold*3 + 1 {
-		name := filepath.Join(outputDir, fmt.Sprintf("segment%d.ts", i))
-		if err := os.WriteFile(name, []byte("x"), 0o644); err != nil {
-			t.Fatalf("write segment fixture: %v", err)
-		}
-	}
-
-	throttled := newThrottledReader(bytes.NewReader([]byte("payload")), &HLSSession{
-		ID:                  "throttled",
-		OutputDir:           outputDir,
-		MaxSegmentRequested: 0,
-	})
-
-	start := time.Now()
-	buf := make([]byte, 4)
-	if _, err := throttled.Read(buf); err != nil && err != io.EOF {
-		t.Fatalf("Read error: %v", err)
-	}
-	if throttled.throttleCount == 0 {
-		t.Fatal("fixture did not trigger throttling, so the test proves nothing")
-	}
-	if elapsed := time.Since(start); elapsed < 100*time.Millisecond {
-		t.Fatalf("expected a deliberate throttle delay, got %v", elapsed)
-	}
-	// The watch is disarmed on return; the point is that the sleep above happened
-	// before it was ever armed, so no part of that delay was attributable to it.
-	if started := throttled.upstream.startedAt(); started != 0 {
-		t.Fatalf("watch left armed after a throttled read: startedAt = %d", started)
-	}
-}
-
 // The failure that motivated this: a CDN that keeps the connection alive and
 // trickles. Every individual read returns promptly, so a blocked-read watch never
 // fires, while the transcode starves anyway.

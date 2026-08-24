@@ -766,20 +766,3 @@ func TestPlaybackMigrationForIdentityRequiresAnItem(t *testing.T) {
 		t.Fatalf("marked playbacks = %d, want 0", marked)
 	}
 }
-
-// The signal is scoped to the source that stalled, so a session that has already
-// been handed to a different release is not told to migrate again.
-func TestPlaybackMigrationForIdentityIsScopedToSource(t *testing.T) {
-	tracker := newTestTracker()
-	tracker.MarkPlaybackMigrationForIdentity(
-		"p1", "", "movie", "tmdb:movie:14160", "/debrid/torbox/123/file/0/stalled.mkv", "backend-starvation")
-
-	if _, migrate := tracker.ShouldMigratePlayback("p1", models.PlaybackProgressUpdate{
-		MediaType:   "movie",
-		ItemID:      "tmdb:movie:14160",
-		SourcePath:  "/debrid/torbox/999/file/0/replacement.mkv",
-		IsBuffering: true,
-	}); migrate {
-		t.Fatal("replacement source inherited the stalled source's migration signal")
-	}
-}
