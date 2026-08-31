@@ -1776,24 +1776,22 @@ func (h *PearTubeHandler) planQualifiedAutoSeed(ctx context.Context, relay *pear
 		return nil, errAutoSeedSourceUnavailable
 	}
 	resolved, err := h.streams.GetDirectURL(ctx, streamPath)
-	if err != nil {
-		return nil, errAutoSeedSourceUnavailable
-	}
-	resolved = strings.TrimSpace(resolved)
-	if resolved == "" {
-		return nil, errAutoSeedSourceUnavailable
+	if err == nil {
+		resolved = strings.TrimSpace(resolved)
+		if resolved != "" && !strings.HasPrefix(resolved, "http://") && !strings.HasPrefix(resolved, "https://") {
+			req.FilePath = resolved
+			req.StreamPath = ""
+			req.SourceURL = ""
+			req.retentionClass = peartube.RetentionClassContributionCache
+			return h.planSeed(ctx, relay, req)
+		}
 	}
 
 	req.StreamPath = ""
-	req.retentionClass = peartube.RetentionClassContributionCache
-	if strings.HasPrefix(resolved, "http://") || strings.HasPrefix(resolved, "https://") {
-		req.FilePath = ""
-		req.SourceURL = ""
-		return h.planRemoteAutoSeed(relay, req, streamPath)
-	}
-	req.FilePath = resolved
+	req.FilePath = ""
 	req.SourceURL = ""
-	return h.planSeed(ctx, relay, req)
+	req.retentionClass = peartube.RetentionClassContributionCache
+	return h.planRemoteAutoSeed(relay, req, streamPath)
 }
 
 // planRemoteAutoSeed grants the relay range access to a remote title instead of
