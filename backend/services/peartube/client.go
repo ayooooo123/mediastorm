@@ -311,6 +311,7 @@ type CompanionCandidateV2 struct {
 	Rendition     *CompanionRenditionV2    `json:"rendition"`
 	Asset         *CompanionAssetV2        `json:"asset"`
 	Availability  *CompanionAvailabilityV2 `json:"availability"`
+	ExpectedBytes *uint64                  `json:"expectedBytes"`
 }
 
 type CompanionWorkV2 struct {
@@ -506,22 +507,24 @@ func validateCompanionCursor(raw json.RawMessage) error {
 }
 
 func (candidate CompanionCandidateV2) validate() error {
-	if candidate.SchemaVersion != 0 && candidate.SchemaVersion != 2 {
+	if candidate.SchemaVersion != 0 && candidate.SchemaVersion != 1 && candidate.SchemaVersion != 2 {
 		return errors.New("schemaVersion is invalid")
 	}
 	if !validCandidateRef(candidate.CandidateRef) {
 		return errors.New("candidateRef is invalid")
 	}
-	if candidate.Publication == nil || !validCompanionID(candidate.Publication.PublicationID) {
-		return errors.New("publicationId is invalid")
+	if candidate.Publication != nil {
+		if candidate.Publication.PublicationID != "" && !validCompanionID(candidate.Publication.PublicationID) {
+			return errors.New("publicationId is invalid")
+		}
+		if candidate.Publication.PublisherID != "" && !validCompanionID(candidate.Publication.PublisherID) {
+			return errors.New("publisherId is invalid")
+		}
 	}
-	if candidate.Publication.PublisherID != "" && !validCompanionID(candidate.Publication.PublisherID) {
-		return errors.New("publisherId is invalid")
-	}
-	if candidate.Rendition == nil || !validCompanionID(candidate.Rendition.RenditionID) {
+	if candidate.Rendition != nil && candidate.Rendition.RenditionID != "" && !validCompanionID(candidate.Rendition.RenditionID) {
 		return errors.New("renditionId is invalid")
 	}
-	if candidate.Asset == nil || !validCompanionID(candidate.Asset.AssetID) {
+	if candidate.Asset != nil && candidate.Asset.AssetID != "" && !validCompanionID(candidate.Asset.AssetID) {
 		return errors.New("assetId is invalid")
 	}
 	if candidate.Work != nil {
@@ -543,37 +546,43 @@ func (candidate CompanionCandidateV2) validate() error {
 			}
 		}
 	}
-	for _, field := range []struct {
-		name  string
-		value string
-	}{
-		{"rendition.container", candidate.Rendition.Container},
-		{"rendition.videoCodec", candidate.Rendition.VideoCodec},
-		{"rendition.resolutionLabel", candidate.Rendition.ResolutionLabel},
-		{"rendition.purpose", candidate.Rendition.Purpose},
-	} {
-		if err := validateCompanionText(field.value, field.name, 128, false); err != nil {
-			return err
+	if candidate.Rendition != nil {
+		for _, field := range []struct {
+			name  string
+			value string
+		}{
+			{"rendition.container", candidate.Rendition.Container},
+			{"rendition.videoCodec", candidate.Rendition.VideoCodec},
+			{"rendition.resolutionLabel", candidate.Rendition.ResolutionLabel},
+			{"rendition.purpose", candidate.Rendition.Purpose},
+		} {
+			if err := validateCompanionText(field.value, field.name, 128, false); err != nil {
+				return err
+			}
+		}
+		if len(candidate.Rendition.HDRFormats) > 16 {
+			return errors.New("rendition.hdrFormats exceeds its bound")
+		}
+		for _, format := range candidate.Rendition.HDRFormats {
+			if err := validateCompanionText(format, "rendition.hdrFormats", 128, true); err != nil {
+				return err
+			}
+		}
+		for _, number := range []struct {
+			name  string
+			value *uint64
+		}{
+			{"rendition.width", candidate.Rendition.Width},
+			{"rendition.height", candidate.Rendition.Height},
+			{"rendition.byteLength", candidate.Rendition.ByteLength},
+		} {
+			if err := validateCompanionUint(number.value, number.name); err != nil {
+				return err
+			}
 		}
 	}
-	if len(candidate.Rendition.HDRFormats) > 16 {
-		return errors.New("rendition.hdrFormats exceeds its bound")
-	}
-	for _, format := range candidate.Rendition.HDRFormats {
-		if err := validateCompanionText(format, "rendition.hdrFormats", 128, true); err != nil {
-			return err
-		}
-	}
-	for _, number := range []struct {
-		name  string
-		value *uint64
-	}{
-		{"rendition.width", candidate.Rendition.Width},
-		{"rendition.height", candidate.Rendition.Height},
-		{"rendition.byteLength", candidate.Rendition.ByteLength},
-		{"asset.byteLength", candidate.Asset.ByteLength},
-	} {
-		if err := validateCompanionUint(number.value, number.name); err != nil {
+	if candidate.Asset != nil {
+		if err := validateCompanionUint(candidate.Asset.ByteLength, "asset.byteLength"); err != nil {
 			return err
 		}
 	}
@@ -1800,7 +1809,8 @@ func (c *Client) submitGrantedIngest(ctx context.Context, registry *SourceGrantR
 		PolicyEpoch: ingest.PolicyEpoch,
 	})
 	if err != nil {
-		_ = c.CancelArchive(ctx, job.JobID)
+		// Do not cancel the relay acquisition: if this is a re-drive of an
+		// already-staged job, cancellation destroys the staged byte ranges.
 		return nil, err
 	}
 
@@ -1820,7 +1830,8 @@ func (c *Client) submitGrantedIngest(ctx context.Context, registry *SourceGrantR
 
 	if err := c.AttachSourceGrant(ctx, job.JobID, grantPayload); err != nil {
 		registry.RevokeJob(job.JobID)
-		_ = c.CancelArchive(ctx, job.JobID)
+		// Do not cancel the relay acquisition: keep staged byte ranges intact
+		// on the relay so subsequent re-drives or recoveries can re-attach.
 		return nil, fmt.Errorf("attach source grant to companion acquisition: %w", err)
 	}
 
