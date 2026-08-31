@@ -5143,6 +5143,7 @@ func (m *HLSManager) KeepAlive(w http.ResponseWriter, r *http.Request, sessionID
 				PlaybackEnded:     ended,
 				PlaybackSessionID: "hls:" + sessionID,
 				SourcePath:        sourcePath,
+				ReleaseTitle:      firstStreamValue(metadata.DisplayName, metadata.Title, session.OriginalPath),
 			}, metadata)
 			percent := 0.0
 			if duration > 0 {

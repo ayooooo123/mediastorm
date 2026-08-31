@@ -1228,6 +1228,7 @@ type ArchiveRequest struct {
 	FilePath               string
 	IdempotencyKey         string
 	RetentionClass         string
+	ReleaseTitle           string `json:"releaseTitle,omitempty"`
 	SourceGrantPolicyEpoch uint64 `json:"-"`
 	ArchiveCoordinates
 }
@@ -1325,14 +1326,58 @@ func sourceContainer(path string) string {
 	return container
 }
 
+// isObfuscatedFileName reports whether a file name is a raw machine hash
+// (e.g. 32-character MD5 hex strings common in Usenet / debrid releases)
+// that carries no human-readable title or metadata.
+func isObfuscatedFileName(name string) bool {
+	base := strings.TrimSpace(filepath.Base(strings.TrimSpace(name)))
+	stem := strings.TrimSuffix(base, filepath.Ext(base))
+	if len(stem) >= 16 {
+		isHexLike := true
+		for _, c := range stem {
+			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') || c == '_' || c == '-') {
+				isHexLike = false
+				break
+			}
+		}
+		if isHexLike {
+			return true
+		}
+	}
+	return false
+}
+
+func isKnownVideoExt(ext string) bool {
+	switch strings.ToLower(strings.TrimPrefix(strings.TrimSpace(ext), ".")) {
+	case "mkv", "mp4", "webm", "avi", "mov", "ts", "m4v", "flv", "wmv", "mpg", "mpeg":
+		return true
+	default:
+		return false
+	}
+}
+
 // sourceFileNameFor names the contributed file for the relay's release
-// console. The base name of the source path wins - it alone distinguishes two
-// episodes of one work. Without it the row would render the bare work title
-// ("Rick and Morty.mkv") for every episode, or worse the bare container
-// ("bin") when no title is known. The TMDB title with a season/episode tag is
-// the fallback, and the container extension rides along when known.
-func sourceFileNameFor(sourcePath, tmdbTitle string, coordinates ArchiveCoordinates, contentType string) string {
-	if base := strings.TrimSpace(filepath.Base(strings.TrimSpace(sourcePath))); base != "" && base != "." && base != "/" {
+// console. It prefers the raw release title (which preserves codecs, resolution,
+// and quality tags) or source path basename when meaningful. If both are
+// obfuscated machine hashes, the TMDB title with season/episode is used instead.
+func sourceFileNameFor(sourcePath, releaseTitle, tmdbTitle string, coordinates ArchiveCoordinates, contentType string) string {
+	if title := strings.TrimSpace(filepath.Base(strings.TrimSpace(releaseTitle))); title != "" && title != "." && title != "/" && !isObfuscatedFileName(title) {
+		if !isKnownVideoExt(filepath.Ext(title)) {
+			if ext := filepath.Ext(sourcePath); isKnownVideoExt(ext) {
+				title += ext
+			} else if mimeExt := extensionForContentType(contentType); mimeExt != "" {
+				title += "." + mimeExt
+			} else {
+				title += ".mkv"
+			}
+		}
+		if len(title) > 255 {
+			title = title[:255]
+		}
+		return title
+	}
+	base := strings.TrimSpace(filepath.Base(strings.TrimSpace(sourcePath)))
+	if base != "" && base != "." && base != "/" && !isObfuscatedFileName(base) {
 		if len(base) > 255 {
 			base = base[:255]
 		}
@@ -1345,13 +1390,14 @@ func sourceFileNameFor(sourcePath, tmdbTitle string, coordinates ArchiveCoordina
 	if coordinates.TMDBSeason > 0 || coordinates.TMDBEpisode > 0 {
 		name = fmt.Sprintf("%s S%02dE%02d", name, coordinates.TMDBSeason, coordinates.TMDBEpisode)
 	}
-	// The content type is a MIME type, not a path: sourceContainer cannot
-	// derive an extension from it. Map the common ones; an unknown MIME
-	// leaves the title bare rather than fabricating a wrong extension.
-	if strings.TrimSpace(filepath.Ext(name)) == "" {
-		if ext := extensionForContentType(contentType); ext != "" {
-			name = name + "." + ext
+	ext := filepath.Ext(sourcePath)
+	if ext == "" || ext == "." {
+		if mimeExt := extensionForContentType(contentType); mimeExt != "" {
+			ext = "." + mimeExt
 		}
+	}
+	if strings.TrimSpace(filepath.Ext(name)) == "" && ext != "" && ext != "." {
+		name = name + ext
 	}
 	if len(name) > 255 {
 		name = name[:255]
@@ -1519,6 +1565,7 @@ func (c *Client) ArchiveSource(ctx context.Context, req ArchiveRequest, registry
 		Request:        ingestRequest,
 		Coordinates:    req.ArchiveCoordinates,
 		SourcePath:     req.FilePath,
+		ReleaseTitle:   req.ReleaseTitle,
 	})
 }
 
@@ -1533,6 +1580,7 @@ type ArchiveRemoteRequest struct {
 	Source                 RemoteSource
 	IdempotencyKey         string
 	RetentionClass         string
+	ReleaseTitle           string `json:"releaseTitle,omitempty"`
 	SourceGrantPolicyEpoch uint64
 	ArchiveCoordinates
 }
@@ -1583,9 +1631,9 @@ func (c *Client) ArchiveRemoteSource(ctx context.Context, req ArchiveRemoteReque
 		Request:        ingestRequest,
 		Coordinates:    req.ArchiveCoordinates,
 		SourcePath:     req.Source.StreamPath,
+		ReleaseTitle:   req.ReleaseTitle,
 	})
 }
-
 func (c *Client) grantedIngestGuard(registry *SourceGrantRegistry) error {
 	if c == nil {
 		return errors.New("peartube relay is not configured")
@@ -1603,11 +1651,8 @@ type grantedIngestSubmission struct {
 	PolicyEpoch    uint64
 	Request        companionIngestRequest
 	Coordinates    ArchiveCoordinates
-	// SourcePath is the path that identifies the concrete file being
-	// contributed. Its base name is what an operator should read in the
-	// relay's release console, because it alone distinguishes two episodes
-	// of one work.
-	SourcePath string
+	SourcePath     string
+	ReleaseTitle   string
 }
 
 // submitGrantedIngest derives the job identity, issues the capability for the
@@ -1792,7 +1837,7 @@ func (c *Client) submitGrantedIngest(ctx context.Context, registry *SourceGrantR
 		// console; the bare container ("bin" for an unknown content type) made
 		// every watched episode render as an anonymous row nobody could
 		// recognize. The source path's base name distinguishes episodes.
-		SourceFileName: sourceFileNameFor(ingest.SourcePath, ingest.Coordinates.TMDBTitle, ingest.Coordinates, facts.ContentType),
+		SourceFileName: sourceFileNameFor(ingest.SourcePath, ingest.ReleaseTitle, ingest.Coordinates.TMDBTitle, ingest.Coordinates, facts.ContentType),
 		ExpectedBytes:  facts.Length,
 	}
 	if contributeReq.Title == "" {

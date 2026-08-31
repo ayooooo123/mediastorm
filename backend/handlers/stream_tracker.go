@@ -393,6 +393,9 @@ func enrichPlaybackUpdateFromStream(update models.PlaybackProgressUpdate, meta S
 	if update.SeriesName == "" {
 		update.SeriesName = firstStreamValue(meta.SeriesName, meta.Title)
 	}
+	if update.ReleaseTitle == "" {
+		update.ReleaseTitle = firstStreamValue(meta.DisplayName, meta.Title)
+	}
 	if update.EpisodeName == "" {
 		update.EpisodeName = meta.EpisodeName
 	}
@@ -501,6 +504,7 @@ func (t *StreamTracker) observePlaybackStartLocked(stream *TrackedStream) {
 	}
 	update := enrichPlaybackUpdateFromStream(models.PlaybackProgressUpdate{
 		SourcePath:        stream.Path,
+		ReleaseTitle:      firstStreamValue(stream.MediaMetadata.DisplayName, stream.MediaMetadata.Title, stream.Filename),
 		Timestamp:         stream.StartTime,
 		PlaybackSessionID: "direct:" + trackedStreamSlotKey(stream),
 	}, stream.MediaMetadata)
