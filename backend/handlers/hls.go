@@ -2923,18 +2923,17 @@ func isNativeLivePlaybackTarget(playbackTarget string) bool {
 	}
 }
 
-// Compatibility live is re-encoded on two-second boundaries; this is FFmpeg's on-disk window and
-// therefore also the largest stitched playlist that can safely advertise every URI.
-const liveCompatibilityHLSListSize = 10
-
-// liveNativeHLSListSize is the sliding playlist window for native transmux live.
-// Larger than web because stream-copy can emit segments faster than players fetch
-// them, and we intentionally do not use FFmpeg delete_segments for native.
+// liveNativeHLSListSize is the sliding playlist window for every live target: FFmpeg's
+// on-disk window and therefore also the largest stitched playlist that can safely
+// advertise every URI. No live path uses FFmpeg delete_segments — production is unpaced
+// and can advance the window faster than players fetch — so retention is consumption-paced
+// (deleteOldLiveTransmuxSegments) and the window must cover a lagging player's backlog.
+// Named for the native transmux path it was introduced for; compatibility live matches it.
 const liveNativeHLSListSize = 30
 
 // liveNativeSegmentKeepBehind is how many completed segment files to retain on disk
-// behind the highest served/requested index when cleaning up native live sessions.
-// ~2 minutes at 2s segments; covers playlist re-poll and ExoPlayer retry windows.
+// behind the highest served/requested index when cleaning up live sessions.
+// ~2 minutes at 2s segments; covers playlist re-poll and player retry windows.
 const liveNativeSegmentKeepBehind = 60
 
 // The watchdog must be derived from the media playlist, not -hls_time. Stream-copy can only cut
@@ -3012,9 +3011,9 @@ func liveHLSOutputArgs(playbackTarget, segmentPattern, playlistPath string, resu
 		resumeFrom = resume[0]
 	}
 	args := make([]string, 0, 44)
-	hlsFlags := "delete_segments+independent_segments+temp_file"
-	listSize := "10"
-
+	// Compatibility (cast/web) retention is the default; the native branch overrides.
+	hlsFlags := "independent_segments+temp_file"
+	listSize := strconv.Itoa(liveNativeHLSListSize)
 	if isNativeLivePlaybackTarget(playbackTarget) {
 		// Native apps (ExoPlayer / KSPlayer / MPV) demux/decode IPTV codecs themselves.
 		// Always transmux (copy) for those targets — never libx264/aac here. Web browser
@@ -3034,9 +3033,14 @@ func liveHLSOutputArgs(playbackTarget, segmentPattern, playlistPath string, resu
 		hlsFlags = "temp_file"
 		listSize = strconv.Itoa(liveNativeHLSListSize)
 	} else {
-		// Web and legacy callers retain the compatibility encode with a controlled
-		// keyframe cadence. delete_segments is safe here because re-encoding is slower
-		// than typical playlist/segment fetch cadence.
+		// Cast, web, and compatibility callers re-encode with controlled keyframes.
+		// No FFmpeg delete_segments: production is unpaced, so bursts advance the
+		// playlist window faster than the player fetches, and deleting scrolled-out
+		// segments 404s a lagging player (Chromecast starts ~14s behind the edge via
+		// EXT-X-START) whose pending fetches still need them. Retention is
+		// consumption-paced instead: ServeSegment prunes files behind the
+		// served/requested high-water mark with a keep-behind window — the same
+		// contract native live already runs on.
 		args = append(args,
 			"-c:v", "libx264",
 			"-preset", "veryfast",
@@ -6300,14 +6304,12 @@ func (m *HLSManager) ServeSegment(w http.ResponseWriter, r *http.Request, sessio
 	m.noteCastSegmentDelivery(session, r, servedSegmentNum, segmentSize, serveDuration)
 
 	// Clean up old segments to save disk space.
-	// Web live sessions use FFmpeg's delete_segments flag (transcode path).
-	// Native live transmux deliberately omits delete_segments (see liveHLSOutputArgs)
-	// so we prune served segment files ourselves with a fixed keep-behind window.
+	// No live session uses FFmpeg's delete_segments (see liveHLSOutputArgs), so every
+	// live target — native and compatibility alike — is pruned here, consumption-paced
+	// off the served/requested high-water mark with a fixed keep-behind window.
 	// VOD uses buffer-aware deleteOldSegments.
 	if session.IsLive {
-		if isNativeLivePlaybackTarget(session.PlaybackTarget) {
-			go m.deleteOldLiveTransmuxSegments(session, servedSegmentNum)
-		}
+		go m.deleteOldLiveTransmuxSegments(session, servedSegmentNum)
 	} else {
 		go m.deleteOldSegments(session, segmentName)
 	}
@@ -7158,10 +7160,8 @@ func (m *HLSManager) buildSeamlessLivePlaylist(session *HLSSession, onDiskConten
 			return session.livePlaylistWindow[i].MediaSequence < session.livePlaylistWindow[j].MediaSequence
 		})
 	}
-	maxEntries := liveCompatibilityHLSListSize
-	if isNativeLivePlaybackTarget(session.PlaybackTarget) {
-		maxEntries = liveNativeHLSListSize
-	}
+	// One window for every live target, matching what FFmpeg retains on disk.
+	maxEntries := liveNativeHLSListSize
 	if len(session.livePlaylistWindow) > maxEntries {
 		trimCount := len(session.livePlaylistWindow) - maxEntries
 		for _, removed := range session.livePlaylistWindow[:trimCount] {
@@ -7219,9 +7219,9 @@ func livePlaylistStartTag(content string) string {
 	return fmt.Sprintf("#EXT-X-START:TIME-OFFSET=-%d,PRECISE=YES", offset)
 }
 
-// deleteOldLiveTransmuxSegments removes native live .ts segment files that are far
-// behind the playback edge. Native live omits FFmpeg delete_segments so early
-// segments stay available for the player's first fetch; without this cleanup a long
+// deleteOldLiveTransmuxSegments removes live .ts segment files that are far behind
+// what the player has consumed. Live output omits FFmpeg delete_segments so segments
+// stay available for a lagging player's pending fetches; without this cleanup a long
 // session would accumulate every segment file ever written.
 func (m *HLSManager) deleteOldLiveTransmuxSegments(session *HLSSession, justServedSegment int) {
 	if session == nil || justServedSegment < 0 {

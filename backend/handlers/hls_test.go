@@ -856,8 +856,10 @@ func TestLiveHLSOutputArgsWebRetainsCompatibilityTranscode(t *testing.T) {
 		"-c:v libx264",
 		"-c:a aac",
 		"-force_key_frames expr:gte(t,n_forced*1)",
-		"delete_segments+independent_segments+temp_file",
-		"-hls_list_size 10",
+		// Same wide window and consumption-paced retention as native live:
+		// no delete_segments, pruned by ServeSegment behind the served high-water mark.
+		"independent_segments+temp_file",
+		fmt.Sprintf("-hls_list_size %d", liveNativeHLSListSize),
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("web live args %q missing %q", joined, expected)
@@ -865,6 +867,9 @@ func TestLiveHLSOutputArgsWebRetainsCompatibilityTranscode(t *testing.T) {
 	}
 	if strings.Contains(joined, "-c:v copy") {
 		t.Fatalf("web live args should re-encode, not copy: %q", joined)
+	}
+	if strings.Contains(joined, "delete_segments") {
+		t.Fatalf("web live args must not use delete_segments (unpaced production deletes unread segments): %q", joined)
 	}
 }
 
