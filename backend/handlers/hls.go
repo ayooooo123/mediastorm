@@ -3030,20 +3030,14 @@ func liveHLSOutputArgs(playbackTarget, segmentPattern, playlistPath string, resu
 	listSize := strconv.Itoa(liveNativeHLSListSize)
 	if isNativeLivePlaybackTarget(playbackTarget) {
 		// Native apps (ExoPlayer / KSPlayer / MPV) demux/decode IPTV codecs themselves.
-		// Always transmux (copy) for those targets — never libx264/aac here. Web browser
-		// playback is the only live path that should re-encode for broad codec support.
-		//
-		// Do not use FFmpeg delete_segments for native live: stream-copy produces segments
-		// faster than the player can pull the first URI, so delete_segments removes
-		// segment0.ts before ExoPlayer's first request finishes (SEGMENT_TIMEOUT → 404).
-		// Keep a wider playlist window and clean old files ourselves after serve.
+		// Always transmux (copy) for those targets — never libx264/aac here.
 		args = append(args,
 			"-c:v", "copy",
 			"-c:a", "copy",
 			"-max_muxing_queue_size", "1024",
 		)
 		// temp_file only: atomic segment publish, no independent_segments (copy cannot
-		// force keyframes at segment boundaries), no delete_segments (see above).
+		// force keyframes at segment boundaries).
 		hlsFlags = "temp_file"
 		listSize = strconv.Itoa(liveNativeHLSListSize)
 	} else {
