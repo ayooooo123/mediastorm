@@ -96,6 +96,49 @@ func TestPearTubeScraperReturnsDeferredCandidates(t *testing.T) {
 	}
 }
 
+func TestPearTubeScraperFallsBackToExactTitleWhenLegacyPublicationHasNoExternalID(t *testing.T) {
+	t.Setenv("PEARTUBE_COMPANION_CLIENT", "mediastorm-test")
+	t.Setenv("PEARTUBE_COMPANION_SHARED_SECRET", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	var calls atomic.Int32
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch calls.Add(1) {
+		case 1:
+			if got, want := r.URL.RequestURI(), "/api/v2/search?identifier=tt2494376&kind=movie&namespace=imdb"; got != want {
+				t.Errorf("identifier request = %q, want %q", got, want)
+			}
+			_, _ = w.Write([]byte(`{"candidates":[],"cursor":null}`))
+		case 2:
+			if got, want := r.URL.RequestURI(), "/api/v2/search?kind=movie&title=Justice+League+Dark&year=2017"; got != want {
+				t.Errorf("title fallback request = %q, want %q", got, want)
+			}
+			_, _ = w.Write([]byte(oneMovieCandidate))
+		default:
+			t.Errorf("unexpected companion request %s", r.URL.RequestURI())
+		}
+	}))
+	t.Cleanup(relay.Close)
+
+	scraper, err := NewPearTubeScraper(relay.URL, "PearTube")
+	if err != nil {
+		t.Fatalf("NewPearTubeScraper: %v", err)
+	}
+	results, err := scraper.Search(context.Background(), SearchRequest{
+		Query:  "Justice League Dark",
+		Parsed: ParsedQuery{Title: "Justice League Dark", Year: 2017, MediaType: MediaTypeMovie},
+		IMDBID: "tt2494376",
+	})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 1 || results[0].ServiceType != models.ServiceTypePearTube {
+		t.Fatalf("results = %+v, want one PearTube fallback candidate", results)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("companion calls = %d, want 2", got)
+	}
+}
+
 func TestPearTubeStructuredQualityFactsCannotBypassFilters(t *testing.T) {
 	base := models.NZBResult{
 		Title:       "The Matrix 1999 1080p WEB-DL",
