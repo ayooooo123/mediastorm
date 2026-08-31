@@ -942,16 +942,33 @@ func main() {
 	// (and its source stream) stayed alive.
 	pearTubeHandler.SetQueuedAcquisitionMatcher(func(job peartube.QueuedAcquisition) string {
 		jobName := strings.TrimSpace(job.SourceFileName)
-		if jobName == "" {
-			return ""
+		// 1. Exact base-name match from active stream pool
+		if jobName != "" {
+			for _, path := range videoHandler.GetActiveStreamPaths() {
+				if filepath.Base(path) == jobName || filepath.Clean(path) == filepath.Clean(jobName) {
+					return path
+				}
+			}
 		}
-		// Exact base-name match only: a fuzzy contains-match can pair a queued
-		// job with the wrong stream ("Movie.2020.mkv" matches
-		// "Movie.2020.REPACK.mkv"), and a wrong grant archives the wrong bytes
-		// under the right claim. No match simply leaves the job queued.
-		for _, path := range videoHandler.GetActiveStreamPaths() {
-			if filepath.Base(path) == jobName {
-				return path
+		// 2. Match from prequeue store ready entries
+		if prequeueStore := prequeueHandler.GetStore(); prequeueStore != nil {
+			for _, entry := range prequeueStore.ListAll() {
+				if entry == nil || entry.Status != playback.PrequeueStatusReady || strings.TrimSpace(entry.StreamPath) == "" {
+					continue
+				}
+				if jobName != "" && (filepath.Base(entry.StreamPath) == jobName || filepath.Clean(entry.StreamPath) == filepath.Clean(jobName)) {
+					return entry.StreamPath
+				}
+				if job.MediaContext.Kind == "movie" && job.MediaContext.Identifier != "" {
+					if entry.TitleID == "tmdb:movie:"+job.MediaContext.Identifier || entry.TitleID == "movie:"+job.MediaContext.Identifier || entry.TitleID == job.MediaContext.Identifier {
+						return entry.StreamPath
+					}
+				} else if job.MediaContext.Kind == "episode" && job.MediaContext.SeriesIdentifier != "" {
+					if (entry.TitleID == "tmdb:series:"+job.MediaContext.SeriesIdentifier || entry.TitleID == "series:"+job.MediaContext.SeriesIdentifier || entry.TitleID == job.MediaContext.SeriesIdentifier) &&
+						entry.TargetEpisode != nil && entry.TargetEpisode.SeasonNumber == job.MediaContext.SeasonNumber && entry.TargetEpisode.EpisodeNumber == job.MediaContext.EpisodeNumber {
+						return entry.StreamPath
+					}
+				}
 			}
 		}
 		return ""

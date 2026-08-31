@@ -1093,7 +1093,7 @@ func (h *PearTubeHandler) forgetAllAutoSeedJobs() {
 func (h *PearTubeHandler) maybeSweepAutoSeedJobs() {
 	now := time.Now()
 	h.autoSeedWatchMu.Lock()
-	if len(h.autoSeedWatches) == 0 || h.autoSeedSweeping ||
+	if (len(h.autoSeedWatches) == 0 && h.queuedAcquisitionMatcher == nil) || h.autoSeedSweeping ||
 		now.Sub(h.autoSeedSweptAt) < autoSeedSweepInterval {
 		h.autoSeedWatchMu.Unlock()
 		return
@@ -1110,6 +1110,7 @@ func (h *PearTubeHandler) maybeSweepAutoSeedJobs() {
 		ctx, cancel := context.WithTimeout(context.Background(), autoSeedTimeout)
 		defer cancel()
 		h.sweepAutoSeedJobs(ctx)
+		h.RecoverQueuedAcquisitions(ctx)
 	}()
 }
 
@@ -2152,8 +2153,12 @@ func (h *PearTubeHandler) recoverQueuedAcquisition(ctx context.Context, relay *p
 		return false
 	}
 	req := SeedRequest{
-		StreamPath: streamPath,
-		ContentKind: job.MediaContext.Kind,
+		StreamPath:   streamPath,
+		ContentKind:  job.MediaContext.Kind,
+		ReleaseTitle: job.SourceFileName,
+	}
+	if req.ReleaseTitle == "" {
+		req.ReleaseTitle = job.Title
 	}
 	if job.MediaContext.Kind == "movie" {
 		req.TMDBID = job.MediaContext.Identifier
@@ -2161,6 +2166,15 @@ func (h *PearTubeHandler) recoverQueuedAcquisition(ctx context.Context, relay *p
 		req.TMDBID = job.MediaContext.SeriesIdentifier
 		req.TMDBSeason = job.MediaContext.SeasonNumber
 		req.TMDBEpisode = job.MediaContext.EpisodeNumber
+	}
+	if strings.TrimSpace(req.TMDBTitle) == "" {
+		if job.Title != "" {
+			req.TMDBTitle = job.Title
+		} else if job.SourceFileName != "" {
+			req.TMDBTitle = job.SourceFileName
+		} else {
+			req.TMDBTitle = filepath.Base(streamPath)
+		}
 	}
 	// The same idempotency key the original watch used, so the relay lands on
 	// the job it already holds rather than creating a second one.
@@ -2176,9 +2190,18 @@ func (h *PearTubeHandler) recoverQueuedAcquisition(ctx context.Context, relay *p
 		log.Printf("[peartube] queued job %s: recovery refused (%v), leaving it queued", job.AcquisitionID, err)
 		return false
 	}
-	if _, err := submit(ctx); err != nil {
+	res, err := submit(ctx)
+	if err != nil {
 		log.Printf("[peartube] queued job %s: recovery submission failed (%v), leaving it queued", job.AcquisitionID, err)
 		return false
+	}
+	if res != nil && res.JobID != "" {
+		h.watchAutoSeedJob(res.JobID, autoSeedPlan{
+			handler: h,
+			key:     job.AcquisitionID,
+			relay:   relay,
+			request: req,
+		})
 	}
 	log.Printf("[peartube] queued job %s: re-granted from %q", job.AcquisitionID, streamPath)
 	return true
@@ -2222,12 +2245,20 @@ func (h *PearTubeHandler) findStreamPathForQueuedAcquisition(job peartube.Queued
 	// handler's stream index is the process-wide source of stream paths, and
 	// it is injected as the stream resolver's owner. Matching by source file
 	// name and TMDB coordinates is what the media library offers here.
-	if h.queuedAcquisitionMatcher == nil {
-		return ""
+	if h.queuedAcquisitionMatcher != nil {
+		if path := h.queuedAcquisitionMatcher(job); path != "" {
+			return path
+		}
 	}
-	return h.queuedAcquisitionMatcher(job)
+	if jobPath := strings.TrimSpace(job.SourceFileName); jobPath != "" {
+		if strings.HasPrefix(jobPath, "/") || strings.HasPrefix(jobPath, "http://") || strings.HasPrefix(jobPath, "https://") {
+			if _, err := h.streams.GetDirectURL(context.Background(), jobPath); err == nil {
+				return jobPath
+			}
+		}
+	}
+	return ""
 }
-
 // SetQueuedAcquisitionMatcher supplies the stream-path lookup used by startup
 // recovery: given a queued relay job, the stream path of a source this process
 // can still grant, or "".

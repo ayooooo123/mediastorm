@@ -2207,10 +2207,11 @@ func decodeResponse(resp *http.Response, out any) error {
 // QueuedAcquisition is one row of the relay's queued acquisitions: what it is
 // waiting for and the metadata that identifies the title.
 type QueuedAcquisition struct {
-	AcquisitionID string `json:"acquisitionId"`
-	State         string `json:"state"`
+	AcquisitionID  string `json:"acquisitionId"`
+	State          string `json:"state"`
+	Title          string `json:"title,omitempty"`
 	SourceFileName string `json:"sourceFileName"`
-	MediaContext  struct {
+	MediaContext   struct {
 		Kind             string `json:"kind"`
 		Namespace        string `json:"namespace,omitempty"`
 		Identifier       string `json:"identifier,omitempty"`
