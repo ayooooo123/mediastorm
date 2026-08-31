@@ -928,13 +928,22 @@ func TestSourceFileNameForUsesSourcePathBaseName(t *testing.T) {
 			want:         "Justice League Dark: Apokolips War.mkv",
 		},
 		{
-			name:         "obfuscated episode hex hash includes season and episode",
-			sourcePath:   "/webdav/1787969632207288000_c08e883e1a374de083c795bc03bf23d2.mkv",
+			name:         "usenet unpacked directory name with timestamp prefix recovers full release tags",
+			sourcePath:   "/1788205709466910000_Wrath.of.Man.2021.1080p.BluRay.H264.AAC/5295c8d8d367424f94feec38e0c1fbc8.mp4",
+			releaseTitle: "",
+			tmdbTitle:    "Wrath of Man",
+			coordinates:  ArchiveCoordinates{ContentKind: "movie", TMDBID: "637649"},
+			contentType:  "video/mp4",
+			want:         "Wrath.of.Man.2021.1080p.BluRay.H264.AAC.mp4",
+		},
+		{
+			name:         "usenet episode directory recovers full release tags",
+			sourcePath:   "/webdav/1787969632207288000_Kim.Possible.S01E01.1080p.DSNP.WEB-DL.AAC2.0.H.264-PHOENiX/c08e883e1a374de083c795bc03bf23d2.mkv",
 			releaseTitle: "",
 			tmdbTitle:    "Kim Possible",
 			coordinates:  ArchiveCoordinates{ContentKind: "episode", TMDBID: "123", TMDBSeason: 1, TMDBEpisode: 1},
 			contentType:  "video/x-matroska",
-			want:         "Kim Possible S01E01.mkv",
+			want:         "Kim.Possible.S01E01.1080p.DSNP.WEB-DL.AAC2.0.H.264-PHOENiX.mkv",
 		},
 	}
 	for _, tc := range cases {
