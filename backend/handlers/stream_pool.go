@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1305,4 +1306,21 @@ func parseContentRangeStart(value string) (int64, bool) {
 		return 0, false
 	}
 	return start, true
+}
+
+// ActiveStreamPaths lists the file paths the pool is currently serving. This
+// is the live source of grantable stream paths: a queued relay job whose
+// grant was lost to a relay restart can be re-granted exactly when its title
+// is still being streamed here.
+func (s *streamPool) ActiveStreamPaths() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	paths := make([]string, 0, len(s.files))
+	for path := range s.files {
+		if len(s.files[path]) > 0 {
+			paths = append(paths, path)
+		}
+	}
+	sort.Strings(paths)
+	return paths
 }

@@ -933,6 +933,34 @@ func main() {
 	handlers.GetStreamTracker().AddPlaybackActivityObserver(pearTubeHandler)
 	handlers.GetStreamTracker().SetPlaybackAutoSeeder(pearTubeHandler)
 	localMediaHandler.SetLibraryAccessService(libraryAccessService)
+
+	// Re-grant the relay's orphaned queued acquisitions. A relay restart wipes
+	// its in-memory source grants; a queued job with confirmed bytes waits
+	// forever unless the grant issuer - this process - re-attaches one. The
+	// matcher pairs a queued job with a stream this process is still serving,
+	// so recovery covers the common case: the relay restarted while playback
+	// (and its source stream) stayed alive.
+	pearTubeHandler.SetQueuedAcquisitionMatcher(func(job peartube.QueuedAcquisition) string {
+		jobName := strings.TrimSpace(job.SourceFileName)
+		if jobName == "" {
+			return ""
+		}
+		// Exact base-name match only: a fuzzy contains-match can pair a queued
+		// job with the wrong stream ("Movie.2020.mkv" matches
+		// "Movie.2020.REPACK.mkv"), and a wrong grant archives the wrong bytes
+		// under the right claim. No match simply leaves the job queued.
+		for _, path := range videoHandler.GetActiveStreamPaths() {
+			if filepath.Base(path) == jobName {
+				return path
+			}
+		}
+		return ""
+	})
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		pearTubeHandler.RecoverQueuedAcquisitions(ctx)
+	}()
 	userSettingsHandler.LocalMedia = localMediaService
 	userSettingsHandler.SetPrequeueStore(prequeueHandler.GetStore())
 	userSettingsHandler.SetSearchCacheClearer(indexerService)

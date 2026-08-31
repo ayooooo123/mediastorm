@@ -2099,3 +2099,56 @@ func decodeResponse(resp *http.Response, out any) error {
 	}
 	return nil
 }
+
+// QueuedAcquisition is one row of the relay's queued acquisitions: what it is
+// waiting for and the metadata that identifies the title.
+type QueuedAcquisition struct {
+	AcquisitionID string `json:"acquisitionId"`
+	State         string `json:"state"`
+	SourceFileName string `json:"sourceFileName"`
+	MediaContext  struct {
+		Kind             string `json:"kind"`
+		Namespace        string `json:"namespace,omitempty"`
+		Identifier       string `json:"identifier,omitempty"`
+		SeriesNamespace  string `json:"seriesNamespace,omitempty"`
+		SeriesIdentifier string `json:"seriesIdentifier,omitempty"`
+		SeasonNumber     int    `json:"seasonNumber,omitempty"`
+		EpisodeNumber    int    `json:"episodeNumber,omitempty"`
+	} `json:"mediaContext"`
+	ExpectedBytes int64 `json:"expectedBytes"`
+}
+
+// ListQueuedAcquisitions asks the relay which acquisitions are still queued.
+//
+// A relay restart wipes the in-memory source grants, so a queued job with all
+// its bytes confirmed sits forever unless the grant issuer re-attaches one.
+// This list is how the issuer finds those orphans after its own restart.
+func (c *Client) ListQueuedAcquisitions(ctx context.Context) ([]QueuedAcquisition, error) {
+	if c == nil {
+		return nil, errors.New("peartube relay is not configured")
+	}
+	target := companionAPIPrefix + "/acquisitions?limit=64&states=queued"
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+target, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build companion acquisitions request: %w", err)
+	}
+	request.Header.Set("Accept", "application/json")
+	if err := c.authenticateCompanionRequest(request, nil); err != nil {
+		return nil, fmt.Errorf("authenticate companion acquisitions request: %w", err)
+	}
+	response, err := c.companionHTTP.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("companion acquisitions request failed: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, decodeResponse(response, nil)
+	}
+	var envelope struct {
+		Items []QueuedAcquisition `json:"items"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
+		return nil, fmt.Errorf("decode companion acquisitions response: %w", err)
+	}
+	return envelope.Items, nil
+}
