@@ -1317,19 +1317,28 @@ func sourceContainer(path string) string {
 }
 
 // sourceFileNameFor names the contributed file for the relay's release
-// console. The measured source title (the name the source itself gave) wins;
-// the TMDB title is the fallback. The container extension rides along when it
-// is known, so the row reads "Some Episode.mkv" rather than a bare "bin".
-func sourceFileNameFor(measuredTitle, tmdbTitle, contentType string) string {
-	name := strings.TrimSpace(measuredTitle)
-	if name == "" {
-		name = strings.TrimSpace(tmdbTitle)
+// console. The base name of the source path wins - it alone distinguishes two
+// episodes of one work. Without it the row would render the bare work title
+// ("Rick and Morty.mkv") for every episode, or worse the bare container
+// ("bin") when no title is known. The TMDB title with a season/episode tag is
+// the fallback, and the container extension rides along when known.
+func sourceFileNameFor(sourcePath, tmdbTitle string, coordinates ArchiveCoordinates, contentType string) string {
+	if base := strings.TrimSpace(filepath.Base(strings.TrimSpace(sourcePath))); base != "" && base != "." && base != "/" {
+		if len(base) > 255 {
+			base = base[:255]
+		}
+		return base
 	}
+	name := strings.TrimSpace(tmdbTitle)
 	if name == "" {
 		return sourceContainer(contentType)
 	}
-	ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(name)), ".")
-	if ext == "" {
+	if coordinates.ContentKind == "episode" || coordinates.TMDBSeason > 0 || coordinates.TMDBEpisode > 0 {
+		if coordinates.TMDBSeason > 0 || coordinates.TMDBEpisode > 0 {
+			name = fmt.Sprintf("%s S%02dE%02d", name, coordinates.TMDBSeason, coordinates.TMDBEpisode)
+		}
+	}
+	if ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(name)), "."); ext == "" {
 		ext = sourceContainer(contentType)
 		if ext != "" && ext != "bin" {
 			name = name + "." + ext
@@ -1480,6 +1489,7 @@ func (c *Client) ArchiveSource(ctx context.Context, req ArchiveRequest, registry
 		PolicyEpoch:    req.SourceGrantPolicyEpoch,
 		Request:        ingestRequest,
 		Coordinates:    req.ArchiveCoordinates,
+		SourcePath:     req.FilePath,
 	})
 }
 
@@ -1543,6 +1553,7 @@ func (c *Client) ArchiveRemoteSource(ctx context.Context, req ArchiveRemoteReque
 		PolicyEpoch:    req.SourceGrantPolicyEpoch,
 		Request:        ingestRequest,
 		Coordinates:    req.ArchiveCoordinates,
+		SourcePath:     req.Source.StreamPath,
 	})
 }
 
@@ -1563,6 +1574,11 @@ type grantedIngestSubmission struct {
 	PolicyEpoch    uint64
 	Request        companionIngestRequest
 	Coordinates    ArchiveCoordinates
+	// SourcePath is the path that identifies the concrete file being
+	// contributed. Its base name is what an operator should read in the
+	// relay's release console, because it alone distinguishes two episodes
+	// of one work.
+	SourcePath string
 }
 
 // submitGrantedIngest derives the job identity, issues the capability for the
@@ -1746,8 +1762,8 @@ func (c *Client) submitGrantedIngest(ctx context.Context, registry *SourceGrantR
 		// The file name is what an operator reads first in the relay's release
 		// console; the bare container ("bin" for an unknown content type) made
 		// every watched episode render as an anonymous row nobody could
-		// recognize. Prefer the measured source title, then the TMDB title.
-		SourceFileName: sourceFileNameFor(ingest.Request.MeasuredFacts.Title, ingest.Coordinates.TMDBTitle, facts.ContentType),
+		// recognize. The source path's base name distinguishes episodes.
+		SourceFileName: sourceFileNameFor(ingest.SourcePath, ingest.Coordinates.TMDBTitle, ingest.Coordinates, facts.ContentType),
 		ExpectedBytes:  facts.Length,
 	}
 	if contributeReq.Title == "" {
