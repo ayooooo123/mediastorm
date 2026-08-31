@@ -7797,3 +7797,13 @@ func (h *VideoHandler) SetCastCapabilities(store *castcaps.Store) {
 		h.hlsManager.SetCastCapabilities(store)
 	}
 }
+
+// GetActiveStreamPaths lists the file paths the stream pool is currently
+// serving. Used by PearTube queued-acquisition recovery to re-grant a relay
+// job whose source is still being streamed.
+func (h *VideoHandler) GetActiveStreamPaths() []string {
+	if h == nil || h.streamPool == nil {
+		return nil
+	}
+	return h.streamPool.ActiveStreamPaths()
+}
