@@ -65,6 +65,15 @@ func (p *PearTubeScraper) Search(ctx context.Context, req SearchRequest) ([]Scra
 	if err != nil {
 		return nil, err
 	}
+	if len(candidates) == 0 && title != "" && (strings.TrimSpace(search.TMDBID) != "" || strings.TrimSpace(search.IMDBID) != "") {
+		fallback := search
+		fallback.TMDBID = ""
+		fallback.IMDBID = ""
+		candidates, err = p.client.Search(ctx, fallback)
+		if err != nil {
+			return nil, err
+		}
+	}
 	found := peartube.MapCandidates(search, candidates)
 
 	results := make([]ScrapeResult, 0, len(found))
