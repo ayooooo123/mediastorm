@@ -1403,6 +1403,12 @@ func extractReleaseNameFromPath(sourcePath, contentType string) string {
 // source path basename when meaningful. If all are obfuscated machine hashes,
 // the TMDB title with season/episode is used instead.
 func sourceFileNameFor(sourcePath, releaseTitle, tmdbTitle string, coordinates ArchiveCoordinates, contentType string) string {
+	if fromPath := extractReleaseNameFromPath(sourcePath, contentType); fromPath != "" {
+		if len(fromPath) > 255 {
+			fromPath = fromPath[:255]
+		}
+		return fromPath
+	}
 	if title := strings.TrimSpace(filepath.Base(strings.TrimSpace(releaseTitle))); title != "" && title != "." && title != "/" && !isObfuscatedFileName(title) {
 		if !isKnownVideoExt(filepath.Ext(title)) {
 			if ext := filepath.Ext(sourcePath); isKnownVideoExt(ext) {
@@ -1417,12 +1423,6 @@ func sourceFileNameFor(sourcePath, releaseTitle, tmdbTitle string, coordinates A
 			title = title[:255]
 		}
 		return title
-	}
-	if fromPath := extractReleaseNameFromPath(sourcePath, contentType); fromPath != "" {
-		if len(fromPath) > 255 {
-			fromPath = fromPath[:255]
-		}
-		return fromPath
 	}
 	base := strings.TrimSpace(filepath.Base(strings.TrimSpace(sourcePath)))
 	if base != "" && base != "." && base != "/" && !isObfuscatedFileName(base) {
