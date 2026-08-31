@@ -447,10 +447,18 @@ func TestArchiveSourceFailureRevokesGrantAndNeverSendsLocalPath(t *testing.T) {
 	if err := os.WriteFile(sourcePath, sourceBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	var submissionBody []byte
+	var contributeBody []byte
+	var grantBody []byte
 	companion := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		submissionBody, _ = io.ReadAll(request.Body)
-		response.WriteHeader(http.StatusServiceUnavailable)
+		if strings.HasSuffix(request.URL.Path, "/source-grants") {
+			grantBody, _ = io.ReadAll(request.Body)
+			response.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		contributeBody, _ = io.ReadAll(request.Body)
+		response.Header().Set("Content-Type", "application/json")
+		response.WriteHeader(http.StatusAccepted)
+		_, _ = io.WriteString(response, `{"acquisition":{"acquisitionId":"acq_test_123","state":"queued"}}`)
 	}))
 	defer companion.Close()
 	client, err := New(companion.URL)
@@ -477,16 +485,17 @@ func TestArchiveSourceFailureRevokesGrantAndNeverSendsLocalPath(t *testing.T) {
 	if remaining != 0 {
 		t.Fatal("failed handoff retained a live source grant")
 	}
-	if bytes.Contains(submissionBody, []byte(sourcePath)) {
+	if bytes.Contains(contributeBody, []byte(sourcePath)) || bytes.Contains(grantBody, []byte(sourcePath)) {
 		t.Fatal("companion submission exposed the local source path")
 	}
-	var submission map[string]any
-	if err := json.Unmarshal(submissionBody, &submission); err != nil {
-		t.Fatalf("decode submission: %v", err)
+	var grantSubmission struct {
+		Grant SourceGrantPayload `json:"grant"`
 	}
-	capability, ok := submission["sourceCapability"].(string)
-	if !ok || !validSourceCapability(capability) {
-		t.Fatal("companion submission omitted the opaque source capability")
+	if err := json.Unmarshal(grantBody, &grantSubmission); err != nil {
+		t.Fatalf("decode grant submission: %v", err)
+	}
+	if !validSourceCapability(grantSubmission.Grant.Token) {
+		t.Fatal("companion grant submission omitted the opaque source capability")
 	}
 }
 

@@ -127,8 +127,12 @@ func (relay *autoSeedRelay) client(t *testing.T) *peartube.Client {
 			_, _ = w.Write([]byte(`{"jobId":"arch_1","status":"queued","entityHint":"movie:603"}`))
 
 		// Remote sources now arrive as granted ingest jobs, so a refusal has to
-		// be simulatable on this transport too.
-		case r.URL.Path == "/api/v2/acquisitions" || r.URL.Path == "/api/v2/ingest/jobs":
+		case strings.HasSuffix(r.URL.Path, "/source-grants"):
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"acquisition":{"acquisitionId":"` + r.Header.Get("X-PearTube-Job-ID") + `","state":"queued"}}`))
+
+		case r.URL.Path == "/api/v2/acquisitions" || r.URL.Path == "/api/v2/acquisitions/contribute" || r.URL.Path == "/api/v2/ingest/jobs":
 			if relay.archiveDelay > 0 {
 				time.Sleep(relay.archiveDelay)
 			}
@@ -149,7 +153,7 @@ func (relay *autoSeedRelay) client(t *testing.T) *peartube.Client {
 		case r.Method == http.MethodDelete && (strings.HasPrefix(r.URL.Path, "/api/v2/acquisitions/") || strings.HasPrefix(r.URL.Path, "/api/v2/ingest/jobs/")):
 			relay.mu.Lock()
 			relay.cancelledJobs = append(relay.cancelledJobs,
-				strings.TrimPrefix(r.URL.Path, "/api/v2/ingest/jobs/"))
+				strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/api/v2/acquisitions/"), "/api/v2/ingest/jobs/"))
 			relay.mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"job":{"jobId":"cancelled","state":"cancelled"}}`))
@@ -314,28 +318,18 @@ func TestAutoSeedSubmitsOncePerTitleAcrossManyHeartbeats(t *testing.T) {
 		t.Fatalf("granted ingest submissions = %d, want 1", got)
 	}
 	submission := relay.lastIngest()
-	descriptor, _ := submission["sourceDescriptor"].(map[string]any)
-	if descriptor["provider"] != "torbox" || descriptor["torrentId"] != float64(12345) {
-		t.Fatalf("submission direct descriptor = %v, want torbox 12345", descriptor)
+	if submission["title"] != "The Matrix" {
+		t.Fatalf("submission title = %v, want The Matrix", submission["title"])
 	}
-	request, _ := submission["request"].(map[string]any)
-	expected, _ := request["expected"].(map[string]any)
-	if expected["byteLength"] != float64(len(resolver.body())) {
-		t.Fatalf("declared byte length = %v, want the probed total %d", expected["byteLength"], len(resolver.body()))
+	selector, _ := submission["selector"].(map[string]any)
+	if selector["identifier"] != "603" || selector["kind"] != "movie" {
+		t.Fatalf("submission selector = %v, want tmdb 603", selector)
 	}
-	// The relay's canonical form always carries sha256, null when the source
-	// could not state one, and the job id is hashed over that form - so omitting
-	// the key made every granted archive come back as a mismatched job. What must
-	// never happen is a remote source CLAIMING a digest it cannot have computed.
-	digest, present := expected["sha256"]
-	if !present {
-		t.Fatal("sha256 was omitted; the relay hashes it as null and the job ids will diverge")
+	if submission["expectedBytes"] != float64(len(resolver.body())) {
+		t.Fatalf("declared byte length = %v, want the probed total %d", submission["expectedBytes"], len(resolver.body()))
 	}
-	if digest != nil {
-		t.Fatalf("a remote source claimed a whole-file digest it cannot have computed: %v", digest)
-	}
-	if request["retentionClass"] != "contribution-cache" {
-		t.Fatalf("retention class = %v, want the consented contribution budget", request["retentionClass"])
+	if submission["retentionClass"] != "contribution-cache" {
+		t.Fatalf("retention class = %v, want the consented contribution budget", submission["retentionClass"])
 	}
 	// The address the player would have used must not appear anywhere in the
 	// submission, in any field.
@@ -364,7 +358,8 @@ func TestAutoSeedSubmitsOncePerTitleAcrossManyHeartbeats(t *testing.T) {
 func TestAutoSeedOfALocalStreamPathStillPublishesFromTheFile(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "The.Matrix.1999.mkv")
-	if err := os.WriteFile(path, []byte(strings.Repeat("on-disk", 128)), 0o600); err != nil {
+	sourceBytes := []byte(strings.Repeat("on-disk", 128))
+	if err := os.WriteFile(path, sourceBytes, 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
 	relay := &autoSeedRelay{}
@@ -387,15 +382,15 @@ func TestAutoSeedOfALocalStreamPathStillPublishesFromTheFile(t *testing.T) {
 		t.Fatalf("local granted ingest submissions = %d, want 1", got)
 	}
 	submission := relay.lastIngest()
-	request, _ := submission["request"].(map[string]any)
-	expected, _ := request["expected"].(map[string]any)
-	digest, _ := expected["sha256"].(string)
-	if len(digest) != 64 {
-		t.Fatalf("local source digest = %q, want a whole-file SHA-256", digest)
+	if submission["title"] != "The Matrix" {
+		t.Fatalf("local submission title = %v, want The Matrix", submission["title"])
 	}
-	etag, _ := expected["etag"].(string)
-	if etag != `"sha256-`+digest+`"` {
-		t.Fatalf("local source etag = %q, want the file's content hash", etag)
+	selector, _ := submission["selector"].(map[string]any)
+	if selector["identifier"] != "603" || selector["kind"] != "movie" {
+		t.Fatalf("local submission selector = %v, want tmdb 603", selector)
+	}
+	if submission["expectedBytes"] != float64(len(sourceBytes)) {
+		t.Fatalf("local declared byte length = %v, want %d", submission["expectedBytes"], len(sourceBytes))
 	}
 	// The local file was never read through the streaming provider.
 	if len(resolver.ranges) != 0 {
@@ -918,7 +913,7 @@ func TestAutoSeedUsenetStreamSubmitsDirectLocalFileDescriptor(t *testing.T) {
 	relay := &autoSeedRelay{}
 	resolver := &fakeStreamResolver{url: filePath}
 	handler := newAutoSeedHandler(t, relay, resolver)
-
+	handler.localMedia = fakeLibrary{libraries: []models.LocalMediaLibrary{{RootPath: root}}}
 	update := moviePlayback()
 	update.SourcePath = "/webdav/1787508427603176000_The.Wild.Robot.2024.mkv"
 	update.MovieName = "The Wild Robot"
@@ -934,14 +929,15 @@ func TestAutoSeedUsenetStreamSubmitsDirectLocalFileDescriptor(t *testing.T) {
 		t.Fatalf("ingest submissions = %d, want 1", got)
 	}
 	submission := relay.lastIngest()
-	descriptor, _ := submission["sourceDescriptor"].(map[string]any)
-	if descriptor["provider"] != "local-file" || descriptor["filePath"] != filePath {
-		t.Fatalf("submission direct descriptor = %v, want local-file %s", descriptor, filePath)
+	if submission["title"] != "The Wild Robot" {
+		t.Fatalf("submission title = %v, want The Wild Robot", submission["title"])
 	}
-	request, _ := submission["request"].(map[string]any)
-	expected, _ := request["expected"].(map[string]any)
-	if expected["byteLength"] != float64(len(strings.Repeat("usenet-media-bytes", 64))) {
-		t.Fatalf("expected byteLength = %v, want %d", expected["byteLength"], len(strings.Repeat("usenet-media-bytes", 64)))
+	selector, _ := submission["selector"].(map[string]any)
+	if selector["identifier"] != "1184918" || selector["kind"] != "movie" {
+		t.Fatalf("submission selector = %v, want tmdb 1184918", selector)
+	}
+	if submission["expectedBytes"] != float64(len(strings.Repeat("usenet-media-bytes", 64))) {
+		t.Fatalf("expected byteLength = %v, want %d", submission["expectedBytes"], len(strings.Repeat("usenet-media-bytes", 64)))
 	}
 }
 
@@ -1016,7 +1012,11 @@ func (relay *redriveRelay) client(t *testing.T) *peartube.Client {
 		case strings.HasPrefix(r.URL.Path, "/api/v1/catalog"):
 			_, _ = w.Write([]byte(`{"entities":[],"nextCursor":null}`))
 
-		case r.URL.Path == "/api/v2/acquisitions" || r.URL.Path == "/api/v2/ingest/jobs":
+		case strings.HasSuffix(r.URL.Path, "/source-grants"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"acquisition":{"acquisitionId":"` + r.Header.Get("X-PearTube-Job-ID") + `","state":"queued"}}`))
+
+		case r.URL.Path == "/api/v2/acquisitions" || r.URL.Path == "/api/v2/acquisitions/contribute" || r.URL.Path == "/api/v2/ingest/jobs":
 			body := map[string]any{}
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			jobID := r.Header.Get("X-PearTube-Job-ID")
@@ -1032,7 +1032,6 @@ func (relay *redriveRelay) client(t *testing.T) *peartube.Client {
 			}
 			w.WriteHeader(http.StatusAccepted)
 			_, _ = w.Write([]byte(`{"job":{"jobId":"` + jobID + `","state":"queued"}}`))
-
 		case r.Method == http.MethodGet && (strings.HasPrefix(r.URL.Path, "/api/v2/acquisitions/") || strings.HasPrefix(r.URL.Path, "/api/v2/ingest/jobs/")):
 			relay.mu.Lock()
 			relay.queries++
@@ -1101,7 +1100,14 @@ func acceptedRedriveJob(t *testing.T, handler *PearTubeHandler, relay *redriveRe
 
 func requestFingerprint(t *testing.T, submission map[string]any) string {
 	t.Helper()
-	encoded, err := json.Marshal(submission["request"])
+	var payload any = submission["request"]
+	if payload == nil {
+		payload = map[string]any{
+			"title":    submission["title"],
+			"selector": submission["selector"],
+		}
+	}
+	encoded, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1150,10 +1156,6 @@ func TestAutoSeedRedrivesARecoverableFailureFromItsConfirmedBytes(t *testing.T) 
 	}
 	if got, want := requestFingerprint(t, second), requestFingerprint(t, first); got != want {
 		t.Fatalf("re-drive request changed, so the relay hashes a different job:\n got %s\nwant %s", got, want)
-	}
-	descriptor, _ := second["sourceDescriptor"].(map[string]any)
-	if descriptor["provider"] != "torbox" || descriptor["torrentId"] != float64(12345) {
-		t.Fatalf("re-drive direct descriptor = %v, want torbox 12345", descriptor)
 	}
 }
 
