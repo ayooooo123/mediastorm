@@ -1721,7 +1721,7 @@ func seedCoordinates(req SeedRequest) peartube.ArchiveCoordinates {
 // and relay metadata.
 func seedIdempotencyKey(coordinates peartube.ArchiveCoordinates, sourceIdentity string) string {
 	parts := []string{
-		"mediastorm.seed.v1",
+		"mediastorm.seed.v2",
 		strings.TrimSpace(coordinates.ContentKind),
 		strings.TrimSpace(coordinates.TMDBID),
 		strconv.Itoa(coordinates.TMDBSeason),
@@ -1729,7 +1729,7 @@ func seedIdempotencyKey(coordinates peartube.ArchiveCoordinates, sourceIdentity 
 		strings.TrimSpace(sourceIdentity),
 	}
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
-	return "mediastorm-v1_" + hex.EncodeToString(sum[:])
+	return "mediastorm-v2_" + hex.EncodeToString(sum[:])
 }
 
 // planQualifiedAutoSeed resolves the playback's stream path server-side and
