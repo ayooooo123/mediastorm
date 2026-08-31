@@ -1316,6 +1316,31 @@ func sourceContainer(path string) string {
 	return container
 }
 
+// sourceFileNameFor names the contributed file for the relay's release
+// console. The measured source title (the name the source itself gave) wins;
+// the TMDB title is the fallback. The container extension rides along when it
+// is known, so the row reads "Some Episode.mkv" rather than a bare "bin".
+func sourceFileNameFor(measuredTitle, tmdbTitle, contentType string) string {
+	name := strings.TrimSpace(measuredTitle)
+	if name == "" {
+		name = strings.TrimSpace(tmdbTitle)
+	}
+	if name == "" {
+		return sourceContainer(contentType)
+	}
+	ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(name)), ".")
+	if ext == "" {
+		ext = sourceContainer(contentType)
+		if ext != "" && ext != "bin" {
+			name = name + "." + ext
+		}
+	}
+	if len(name) > 255 {
+		name = name[:255]
+	}
+	return name
+}
+
 // optionalDigest keeps an absent digest distinguishable from an empty one on the
 // wire: the relay's canonical form carries sha256 as null when a source could
 // not state it, and the job id is hashed over that form.
@@ -1718,7 +1743,11 @@ func (c *Client) submitGrantedIngest(ctx context.Context, registry *SourceGrantR
 		Selector:       selector,
 		PublisherID:    c.companionPublisherID,
 		RetentionClass: retentionClass,
-		SourceFileName: sourceContainer(facts.ContentType),
+		// The file name is what an operator reads first in the relay's release
+		// console; the bare container ("bin" for an unknown content type) made
+		// every watched episode render as an anonymous row nobody could
+		// recognize. Prefer the measured source title, then the TMDB title.
+		SourceFileName: sourceFileNameFor(ingest.Request.MeasuredFacts.Title, ingest.Coordinates.TMDBTitle, facts.ContentType),
 		ExpectedBytes:  facts.Length,
 	}
 	if contributeReq.Title == "" {

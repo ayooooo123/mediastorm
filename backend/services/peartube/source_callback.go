@@ -25,7 +25,14 @@ const (
 	sourceCallbackPrefix         = "/internal/peartube/v2/sources/"
 	SourceCallbackRoute          = sourceCallbackPrefix + "{sourceCapability:[A-Za-z0-9_-]{43}}"
 	sourceCapabilityDigestDomain = "peartube.mediastorm.source-capability.v1"
-	defaultSourceGrantTTL        = 30 * time.Minute
+	defaultSourceGrantTTL        = 4 * time.Hour
+	// MEDIASTORM_SOURCE_GRANT_TTL_MS overrides the default. A grant has to
+	// outlive its download: the relay streams the whole title through it, and a
+	// grant that expires mid-write cancels the asset write with every byte
+	// already accepted (ASSET_WRITE_CANCELLED). 4h covers a multi-GB title on a
+	// slow CDN with retries; the relay's own sourceGrantTtlMs policy ceiling
+	// (24h) still bounds it.
+	sourceGrantTTLEnv            = "MEDIASTORM_SOURCE_GRANT_TTL_MS"
 	defaultSourceGrantCapacity   = 128
 	// The largest range the callback will serve, and the ceiling a companion's
 	// own request size has to stay under: an over-large Range is refused with
@@ -251,6 +258,13 @@ func NewSourceGrantRegistry(options SourceGrantOptions) (*SourceGrantRegistry, e
 	ttl := options.TTL
 	if ttl == 0 {
 		ttl = defaultSourceGrantTTL
+		if raw := strings.TrimSpace(os.Getenv(sourceGrantTTLEnv)); raw != "" {
+			parsed, parseErr := strconv.ParseInt(raw, 10, 64)
+			if parseErr != nil || parsed < time.Minute.Milliseconds() || parsed > 24*time.Hour.Milliseconds() {
+				return nil, fmt.Errorf("%s must be between 1 minute and 24 hours in milliseconds", sourceGrantTTLEnv)
+			}
+			ttl = time.Duration(parsed) * time.Millisecond
+		}
 	}
 	capacity := options.MaxEntries
 	if capacity == 0 {
