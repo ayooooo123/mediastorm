@@ -16,7 +16,7 @@
         moduleElements: new Map(),
         canonicalModules: [],
         editSnapshot: [],
-        availability: new Map(),
+        availability: new Map([['vod-stream-limits', false]]),
     };
 
     function cloneModules(modules) {
@@ -110,7 +110,9 @@
             const source = sources.get(module.id);
             const definition = state.definitions.get(module.id);
             if (!source || !definition) continue;
-            state.availability.set(module.id, module.id !== 'vod-stream-limits');
+            if (!state.availability.has(module.id)) {
+                state.availability.set(module.id, module.id !== 'vod-stream-limits');
+            }
             createModuleItem(source, module);
         }
         document.querySelectorAll('[data-dashboard-module-source]').forEach(source => {
@@ -329,9 +331,7 @@
     function setDetailLevel(level) {
         state.detailLevel = level === 'advanced' ? 'advanced' : 'basic';
         if (state.fallback) {
-            document.querySelectorAll('.dashboard-module.dashboard-advanced-detail').forEach(element => {
-                element.style.display = state.detailLevel === 'advanced' ? '' : 'none';
-            });
+            applyFallbackVisibility();
             return;
         }
         if (!state.editing) applyVisibility(false);
@@ -339,7 +339,20 @@
 
     function setModuleAvailable(id, available) {
         state.availability.set(id, Boolean(available));
+        if (state.fallback) {
+            applyFallbackVisibility();
+            return;
+        }
         if (!state.editing) applyVisibility(false);
+    }
+
+    function applyFallbackVisibility() {
+        document.querySelectorAll('.dashboard-module').forEach(element => {
+            const id = element.dataset.dashboardModule;
+            const unavailable = state.availability.get(id) === false;
+            const hiddenByDetail = element.classList.contains('dashboard-advanced-detail') && state.detailLevel !== 'advanced';
+            element.style.display = unavailable || hiddenByDetail ? 'none' : '';
+        });
     }
 
     function initializeFallback(error) {
@@ -349,13 +362,12 @@
         state.gridElement.classList.add('dashboard-grid-fallback');
         document.querySelectorAll('[data-dashboard-module]').forEach(source => {
             source.classList.add('dashboard-module');
-            const hiddenByDetail = source.classList.contains('dashboard-advanced-detail') && state.detailLevel !== 'advanced';
-            source.style.display = hiddenByDetail ? 'none' : '';
             state.gridElement.append(source);
         });
         document.querySelectorAll('[data-dashboard-module-source]').forEach(source => {
             source.hidden = true;
         });
+        applyFallbackVisibility();
         showMessage('The saved dashboard layout could not be loaded. Showing the safe default flow.', 'error');
     }
 

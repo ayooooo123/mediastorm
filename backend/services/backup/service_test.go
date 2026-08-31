@@ -392,6 +392,40 @@ func TestRestoreBackup_RestoresFiles(t *testing.T) {
 	}
 }
 
+func TestBackupPreservesDashboardLayoutBesideConfiguredSettings(t *testing.T) {
+	cacheDir := t.TempDir()
+	configDir := t.TempDir()
+	settingsPath := filepath.Join(configDir, "settings.json")
+	layoutPath := filepath.Join(configDir, adminDashboardLayoutFile)
+	original := `{"version":1,"modules":[]}`
+	if err := os.WriteFile(layoutPath, []byte(original), 0o600); err != nil {
+		t.Fatalf("write dashboard layout: %v", err)
+	}
+
+	svc, err := NewService(cacheDir, config.NewManager(settingsPath))
+	if err != nil {
+		t.Fatalf("NewService failed: %v", err)
+	}
+	info, err := svc.CreateBackup(BackupTypeManual)
+	if err != nil {
+		t.Fatalf("CreateBackup failed: %v", err)
+	}
+	if err := os.WriteFile(layoutPath, []byte(`{"modified":true}`), 0o600); err != nil {
+		t.Fatalf("modify dashboard layout: %v", err)
+	}
+	if err := svc.RestoreBackup(info.Filename); err != nil {
+		t.Fatalf("RestoreBackup failed: %v", err)
+	}
+
+	restored, err := os.ReadFile(layoutPath)
+	if err != nil {
+		t.Fatalf("read restored dashboard layout: %v", err)
+	}
+	if string(restored) != original {
+		t.Fatalf("dashboard layout restored to %q, want %q", restored, original)
+	}
+}
+
 func TestRestoreBackupUpload_RestoresFilesWithoutKeepingUpload(t *testing.T) {
 	svc, cacheDir := setupTestService(t)
 

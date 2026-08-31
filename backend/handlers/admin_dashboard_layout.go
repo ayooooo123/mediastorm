@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -265,14 +266,22 @@ func loadAdminDashboardLayout(path string) (adminDashboardLayout, error) {
 	}
 	defer f.Close()
 
-	decoder := json.NewDecoder(f)
+	data, err := io.ReadAll(io.LimitReader(f, adminDashboardMaxBodyBytes+1))
+	if err != nil {
+		return adminDashboardLayout{}, err
+	}
+	if len(data) > adminDashboardMaxBodyBytes {
+		return defaultAdminDashboardLayout(), nil
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	var stored adminDashboardLayout
 	if err := decoder.Decode(&stored); err != nil {
-		return adminDashboardLayout{}, err
+		return defaultAdminDashboardLayout(), nil
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return adminDashboardLayout{}, errors.New("dashboard layout contains multiple JSON values")
+		return defaultAdminDashboardLayout(), nil
 	}
 	return normalizedStoredAdminDashboardLayout(&stored), nil
 }

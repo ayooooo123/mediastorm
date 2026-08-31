@@ -1,7 +1,7 @@
 Vendored dependency: GridStack 13.2.0
 Package source: https://www.npmjs.com/package/gridstack/v/13.2.0
 Artifacts:
-- dist/gridstack-all.js (SHA-256: ae20036b5959c1a2f7c00151a08cd1516ec68dcbdae3003fade9232cf2d469f6)
+- dist/gridstack-all.js without its source-map directive (SHA-256: f49742d94720876048d6b9c9f7f2ad7578c69e1e607a5fd77021a31bae84494d)
 - dist/gridstack.min.css (SHA-256: 3f0a9e63dfe05fa232cc10d79032f13e1cae168b67539b9801a30799c6c1658d)
 
 MIT License
