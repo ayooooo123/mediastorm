@@ -853,3 +853,63 @@ func TestProbeSeparatesGatedFromReadyAndUnreachable(t *testing.T) {
 		t.Fatalf("unreachable state = %+v", down)
 	}
 }
+
+func TestSourceFileNameForUsesSourcePathBaseName(t *testing.T) {
+	cases := []struct {
+		name        string
+		sourcePath  string
+		tmdbTitle   string
+		coordinates ArchiveCoordinates
+		contentType string
+		want        string
+	}{
+		{
+			name:        "remote stream path base name wins over the work title",
+			sourcePath:  "/torbox/cache/Rick.and.Morty.S01E11.1080p.WEB.h264.mkv",
+			tmdbTitle:   "Rick and Morty",
+			coordinates: ArchiveCoordinates{ContentKind: "episode", TMDBID: "60625", TMDBSeason: 1, TMDBEpisode: 11},
+			contentType: "video/x-matroska",
+			want:        "Rick.and.Morty.S01E11.1080p.WEB.h264.mkv",
+		},
+		{
+			name:        "season episode fallback when no path exists",
+			sourcePath:  "",
+			tmdbTitle:   "Avatar: The Last Airbender",
+			coordinates: ArchiveCoordinates{ContentKind: "episode", TMDBID: "246", TMDBSeason: 2, TMDBEpisode: 2},
+			contentType: "video/x-matroska",
+			want:        "Avatar: The Last Airbender S02E02.mkv",
+		},
+		{
+			name:        "movie title with container when no path exists",
+			sourcePath:  "",
+			tmdbTitle:   "Spider-Man: Into the Spider-Verse",
+			coordinates: ArchiveCoordinates{ContentKind: "movie", TMDBID: "324857"},
+			contentType: "video/mp4",
+			want:        "Spider-Man: Into the Spider-Verse.mp4",
+		},
+		{
+			name:        "bare container only when nothing is known",
+			sourcePath:  "",
+			tmdbTitle:   "",
+			coordinates: ArchiveCoordinates{ContentKind: "movie"},
+			contentType: "",
+			want:        "bin",
+		},
+		{
+			name:        "path basename with directory components",
+			sourcePath:  "/Users/jd/mediastorm-local/cache/streams/Show.Name.S03E08.720p.mkv",
+			tmdbTitle:   "Show Name",
+			coordinates: ArchiveCoordinates{ContentKind: "episode", TMDBSeason: 3, TMDBEpisode: 8},
+			contentType: "video/x-matroska",
+			want:        "Show.Name.S03E08.720p.mkv",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sourceFileNameFor(tc.sourcePath, tc.tmdbTitle, tc.coordinates, tc.contentType)
+			if got != tc.want {
+				t.Fatalf("sourceFileNameFor(%q, %q, %+v, %q) = %q, want %q", tc.sourcePath, tc.tmdbTitle, tc.coordinates, tc.contentType, got, tc.want)
+			}
+		})
+	}
+}
