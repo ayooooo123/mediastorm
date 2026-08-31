@@ -72,6 +72,9 @@ type tmdbCoordinateResolver interface {
 type PearTubeHandler struct {
 	localMedia localMediaLibrary
 	streams    streamURLResolver
+	// queuedAcquisitionMatcher finds a grantable stream path for a queued relay
+	// job whose grant was lost to a restart. See RecoverQueuedAcquisitions.
+	queuedAcquisitionMatcher func(peartube.QueuedAcquisition) string
 	// tmdb recovers a TMDB id for a playback that carries none. Nil leaves
 	// automatic seeding dependent on clients that send one, which in practice
 	// means the browser player only.
@@ -2089,4 +2092,147 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(body)
+}
+
+// RecoverQueuedAcquisitions re-grants the relay's orphaned queued jobs.
+//
+// Both halves of a granted ingest are memory-only: the relay's grant vault and
+// this process's watch registry. A restart on either side - an update, a crash,
+// a redeploy - leaves a queued job with every byte it confirmed still on the
+// relay's disk, waiting for a grant nobody will ever attach, because the only
+// trigger that re-issued one was a NEW playback of the same title. This sweep
+// runs once at startup: list the relay's queued acquisitions, match each to a
+// stream this process can still source, and re-grant through the same
+// submission path a watch uses. Jobs that cannot be matched are left queued -
+// an operator sees them in the relay console and can forget them there.
+func (h *PearTubeHandler) RecoverQueuedAcquisitions(ctx context.Context) {
+	if h == nil {
+		return
+	}
+	h.configMu.RLock()
+	relay, contribute := h.relay, h.contributeWatchedMedia
+	h.configMu.RUnlock()
+	if relay == nil || !contribute || h.streams == nil {
+		return
+	}
+	queued, err := relay.ListQueuedAcquisitions(ctx)
+	if err != nil {
+		// A relay that cannot be asked at startup is one the periodic sweep
+		// will reach once playback resumes; recovery is opportunistic, never
+		// load-bearing for startup.
+		log.Printf("[peartube] queued-acquisition recovery skipped: %v", err)
+		return
+	}
+	if len(queued) == 0 {
+		return
+	}
+	recovered, skipped := 0, 0
+	for _, job := range queued {
+		if ctx.Err() != nil {
+			break
+		}
+		if h.recoverQueuedAcquisition(ctx, relay, job) {
+			recovered++
+		} else {
+			skipped++
+		}
+	}
+	log.Printf("[peartube] queued-acquisition recovery: %d re-granted, %d left queued", recovered, skipped)
+}
+
+// recoverQueuedAcquisition matches one queued relay job to a source this
+// process can grant, and re-grants it. The match is by TMDB coordinates first
+// and source file name second, because that is all the durable job carries.
+func (h *PearTubeHandler) recoverQueuedAcquisition(ctx context.Context, relay *peartube.Client, job peartube.QueuedAcquisition) bool {
+	streamPath := h.findStreamPathForQueuedAcquisition(job)
+	if streamPath == "" {
+		log.Printf("[peartube] queued job %s (%s): no matching source, leaving it queued", job.AcquisitionID, job.SourceFileName)
+		return false
+	}
+	req := SeedRequest{
+		StreamPath: streamPath,
+		ContentKind: job.MediaContext.Kind,
+	}
+	if job.MediaContext.Kind == "movie" {
+		req.TMDBID = job.MediaContext.Identifier
+	} else {
+		req.TMDBID = job.MediaContext.SeriesIdentifier
+		req.TMDBSeason = job.MediaContext.SeasonNumber
+		req.TMDBEpisode = job.MediaContext.EpisodeNumber
+	}
+	// The same idempotency key the original watch used, so the relay lands on
+	// the job it already holds rather than creating a second one.
+	streamPath = normalizeAutoSeedStreamPath(req.StreamPath)
+	req.StreamPath = streamPath
+	coordinates := seedCoordinates(req)
+	if err := coordinates.Validate(); err != nil {
+		log.Printf("[peartube] queued job %s: coordinates invalid (%v), leaving it queued", job.AcquisitionID, err)
+		return false
+	}
+	submit, err := h.planRemoteAutoSeedForRecovery(ctx, relay, req)
+	if err != nil {
+		log.Printf("[peartube] queued job %s: recovery refused (%v), leaving it queued", job.AcquisitionID, err)
+		return false
+	}
+	if _, err := submit(ctx); err != nil {
+		log.Printf("[peartube] queued job %s: recovery submission failed (%v), leaving it queued", job.AcquisitionID, err)
+		return false
+	}
+	log.Printf("[peartube] queued job %s: re-granted from %q", job.AcquisitionID, streamPath)
+	return true
+}
+
+// planRemoteAutoSeedForRecovery is planQualifiedAutoSeed without the playback
+// gating: recovery is not a new watch, so watch-qualification rules do not
+// apply, but everything that makes the grant legitimate still does.
+func (h *PearTubeHandler) planRemoteAutoSeedForRecovery(ctx context.Context, relay *peartube.Client, req SeedRequest) (func(context.Context) (*peartube.ArchiveJob, error), error) {
+	streamPath := normalizeAutoSeedStreamPath(req.StreamPath)
+	if h.streams == nil || streamPath == "" {
+		return nil, errAutoSeedSourceUnavailable
+	}
+	resolved, err := h.streams.GetDirectURL(ctx, streamPath)
+	if err == nil {
+		resolved = strings.TrimSpace(resolved)
+		if resolved != "" && !strings.HasPrefix(resolved, "http://") && !strings.HasPrefix(resolved, "https://") {
+			req.FilePath = resolved
+			req.StreamPath = ""
+			req.SourceURL = ""
+			req.retentionClass = peartube.RetentionClassContributionCache
+			return h.planSeed(ctx, relay, req)
+		}
+	}
+	req.StreamPath = ""
+	req.FilePath = ""
+	req.SourceURL = ""
+	req.retentionClass = peartube.RetentionClassContributionCache
+	return h.planRemoteAutoSeed(relay, req, streamPath)
+}
+
+// findStreamPathForQueuedAcquisition looks for a stream this process can still
+// source that matches the queued job. It resolves through the stream pool the
+// same way playback does; a title whose source is gone simply does not match.
+func (h *PearTubeHandler) findStreamPathForQueuedAcquisition(job peartube.QueuedAcquisition) string {
+	if h.streams == nil {
+		return ""
+	}
+	// The debrid stream path that named this title is not carried on the
+	// durable job, so match through the library the handler knows: the video
+	// handler's stream index is the process-wide source of stream paths, and
+	// it is injected as the stream resolver's owner. Matching by source file
+	// name and TMDB coordinates is what the media library offers here.
+	if h.queuedAcquisitionMatcher == nil {
+		return ""
+	}
+	return h.queuedAcquisitionMatcher(job)
+}
+
+// SetQueuedAcquisitionMatcher supplies the stream-path lookup used by startup
+// recovery: given a queued relay job, the stream path of a source this process
+// can still grant, or "".
+func (h *PearTubeHandler) SetQueuedAcquisitionMatcher(matcher func(peartube.QueuedAcquisition) string) {
+	h.configMu.Lock()
+	defer h.configMu.Unlock()
+	if matcher != nil {
+		h.queuedAcquisitionMatcher = matcher
+	}
 }
