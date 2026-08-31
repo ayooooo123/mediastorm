@@ -273,6 +273,9 @@ func mapCandidate(request SearchRequest, candidate CompanionCandidateV2) models.
 	if sizeBytes == 0 && candidate.Asset != nil && candidate.Asset.ByteLength != nil {
 		sizeBytes = int64(*candidate.Asset.ByteLength)
 	}
+	if sizeBytes == 0 && candidate.ExpectedBytes != nil {
+		sizeBytes = int64(*candidate.ExpectedBytes)
+	}
 	if candidate.Availability != nil {
 		setCandidateUintAttribute(attributes, "peers", candidate.Availability.Peers)
 		setCandidateUintAttribute(attributes, "seeders", candidate.Availability.CompleteSeeders)

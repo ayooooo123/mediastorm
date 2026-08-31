@@ -447,9 +447,15 @@ func TestArchiveSourceFailureRevokesGrantAndNeverSendsLocalPath(t *testing.T) {
 	if err := os.WriteFile(sourcePath, sourceBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	var cancelledJobID string
 	var contributeBody []byte
 	var grantBody []byte
 	companion := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodDelete && strings.Contains(request.URL.Path, "/acquisitions/") {
+			cancelledJobID = filepath.Base(request.URL.Path)
+			response.WriteHeader(http.StatusOK)
+			return
+		}
 		if strings.HasSuffix(request.URL.Path, "/source-grants") {
 			grantBody, _ = io.ReadAll(request.Body)
 			response.WriteHeader(http.StatusServiceUnavailable)
@@ -496,6 +502,9 @@ func TestArchiveSourceFailureRevokesGrantAndNeverSendsLocalPath(t *testing.T) {
 	}
 	if !validSourceCapability(grantSubmission.Grant.Token) {
 		t.Fatal("companion grant submission omitted the opaque source capability")
+	}
+	if cancelledJobID != "" {
+		t.Fatalf("failed grant attach cancelled the relay acquisition (job %q): staged data must be preserved", cancelledJobID)
 	}
 }
 
