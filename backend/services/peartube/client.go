@@ -1353,8 +1353,10 @@ func sourceFileNameFor(sourcePath, tmdbTitle string, coordinates ArchiveCoordina
 func extensionForContentType(contentType string) string {
 	mime := strings.ToLower(strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0]))
 	switch mime {
-	case "video/x-matroska", "video/webm":
+	case "video/x-matroska":
 		return "mkv"
+	case "video/webm":
+		return "webm"
 	case "video/mp4":
 		return "mp4"
 	case "video/quicktime":
