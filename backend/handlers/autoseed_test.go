@@ -132,7 +132,11 @@ func (relay *autoSeedRelay) client(t *testing.T) *peartube.Client {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"acquisition":{"acquisitionId":"` + r.Header.Get("X-PearTube-Job-ID") + `","state":"queued"}}`))
 
-		case r.URL.Path == "/api/v2/acquisitions" || r.URL.Path == "/api/v2/acquisitions/contribute" || r.URL.Path == "/api/v2/ingest/jobs":
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v2/acquisitions":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"items":[]}`))
+
+		case (r.Method == http.MethodPost || r.Method == "") && (r.URL.Path == "/api/v2/acquisitions" || r.URL.Path == "/api/v2/acquisitions/contribute" || r.URL.Path == "/api/v2/ingest/jobs"):
 			if relay.archiveDelay > 0 {
 				time.Sleep(relay.archiveDelay)
 			}
@@ -1405,5 +1409,107 @@ func TestAutoSeedJobSweepIsBoundedAndOffTheRequestPath(t *testing.T) {
 	}
 	if got := relay.queryCount(); got != 1 {
 		t.Fatalf("job queries across 100 heartbeats = %d, want one sweep per interval", got)
+	}
+}
+
+func TestRecoverQueuedAcquisitionsReGrantsMatchedJobs(t *testing.T) {
+	t.Setenv(peartube.CompanionSharedSecretEnv, strings.Repeat("4d", 32))
+	var sourceGrantsReceived []string
+	var submissionsReceived []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/api/v2/policy":
+			_, _ = w.Write([]byte(`{"policy":{"policyVersion":2}}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v2/acquisitions":
+			_, _ = w.Write([]byte(`{
+				"items": [
+					{
+						"acquisitionId": "acq-jld",
+						"state": "queued",
+						"sourceFileName": "Justice.League.Dark.2017.1080p.mkv",
+						"mediaContext": {
+							"kind": "movie",
+							"identifier": "402431"
+						},
+						"expectedBytes": 104857600
+					},
+					{
+						"acquisitionId": "acq-constantine",
+						"state": "queued",
+						"sourceFileName": "Constantine.2005.1080p.mkv",
+						"mediaContext": {
+							"kind": "movie",
+							"identifier": "561"
+						},
+						"expectedBytes": 209715200
+					}
+				]
+			}`))
+		case strings.HasSuffix(r.URL.Path, "/source-grants"):
+			jobID := r.Header.Get("X-PearTube-Job-ID")
+			sourceGrantsReceived = append(sourceGrantsReceived, jobID)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"acquisition":{"acquisitionId":"` + jobID + `","state":"queued"}}`))
+		case (r.Method == http.MethodPost || r.Method == "") && (r.URL.Path == "/api/v2/acquisitions" || r.URL.Path == "/api/v2/acquisitions/contribute" || r.URL.Path == "/api/v2/ingest/jobs"):
+			body := map[string]any{}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			submissionsReceived = append(submissionsReceived, body)
+			jobID := r.Header.Get("X-PearTube-Job-ID")
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"job":{"jobId":"` + jobID + `","state":"queued"}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := peartube.New(server.URL)
+	if err != nil {
+		t.Fatalf("peartube.New: %v", err)
+	}
+	sourceGrants := peartube.NewSourceGrantRegistryFromEnv()
+	defer sourceGrants.Close()
+
+	resolver := &fakeStreamResolver{
+		url: "https://cdn.example.net/d/TOKEN/stream.mkv",
+	}
+
+	handler := &PearTubeHandler{
+		relay:                  client,
+		streams:                resolver,
+		sourceGrants:           sourceGrants,
+		contributeWatchedMedia: true,
+		resolved: peartube.Resolved{
+			ConsentVersion:         config.PearTubeConsentVersion,
+			ContributeWatchedMedia: true,
+			ContributionBudget:     1,
+		},
+	}
+
+	handler.SetQueuedAcquisitionMatcher(func(job peartube.QueuedAcquisition) string {
+		if job.SourceFileName == "Justice.League.Dark.2017.1080p.mkv" || job.MediaContext.Identifier == "402431" {
+			return "/debrid/torbox/123/file/0/Justice.League.Dark.2017.1080p.mkv"
+		}
+		if job.SourceFileName == "Constantine.2005.1080p.mkv" || job.MediaContext.Identifier == "561" {
+			return "/debrid/torbox/456/file/0/Constantine.2005.1080p.mkv"
+		}
+		return ""
+	})
+
+	handler.RecoverQueuedAcquisitions(context.Background())
+
+	if len(submissionsReceived) != 2 {
+		t.Fatalf("expected 2 recovery submissions, got %d", len(submissionsReceived))
+	}
+	if len(sourceGrantsReceived) != 2 {
+		t.Fatalf("expected 2 source grants attached, got %d", len(sourceGrantsReceived))
+	}
+
+	handler.autoSeedWatchMu.Lock()
+	watchCount := len(handler.autoSeedWatches)
+	handler.autoSeedWatchMu.Unlock()
+	if watchCount != 2 {
+		t.Fatalf("expected 2 watched jobs, got %d", watchCount)
 	}
 }
