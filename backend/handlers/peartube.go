@@ -430,6 +430,7 @@ type SeedRequest struct {
 	FilePath         string `json:"filePath,omitempty"`
 	SourceURL        string `json:"url,omitempty"`
 	StreamPath       string `json:"streamPath,omitempty"`
+	ReleaseTitle     string `json:"releaseTitle,omitempty"`
 
 	ContentKind    string `json:"contentKind,omitempty"` // "movie" or "episode"
 	TMDBID         string `json:"tmdbId,omitempty"`
@@ -1325,7 +1326,10 @@ func (h *PearTubeHandler) planAutoSeed(update models.PlaybackProgressUpdate) (au
 // silently discarded every app playback ever made; it is recovered later, off
 // this path. Everything else the relay insists on is settled here.
 func autoSeedRequest(update models.PlaybackProgressUpdate) (SeedRequest, bool) {
-	request := SeedRequest{StreamPath: strings.TrimSpace(update.SourcePath)}
+	request := SeedRequest{
+		StreamPath:   strings.TrimSpace(update.SourcePath),
+		ReleaseTitle: strings.TrimSpace(update.ReleaseTitle),
+	}
 	if request.StreamPath == "" {
 		// Nothing to re-resolve, and the player's own URL must never be
 		// forwarded in its place.
@@ -1825,10 +1829,8 @@ func (h *PearTubeHandler) planRemoteAutoSeed(relay *peartube.Client, req SeedReq
 		return nil, errAutoSeedSourceUnavailable
 	}
 	archive := peartube.ArchiveRemoteRequest{
-		Source: peartube.RemoteSource{Reader: reader, StreamPath: streamPath},
-		// Watched media is a contribution, not a deliberate archive pin: it is
-		// charged against the contribution budget the viewer consented to and
-		// evicted by that budget's rules.
+		Source:             peartube.RemoteSource{Reader: reader, StreamPath: streamPath},
+		ReleaseTitle:       strings.TrimSpace(req.ReleaseTitle),
 		RetentionClass:     peartube.RetentionClassContributionCache,
 		ArchiveCoordinates: coordinates,
 	}
@@ -1958,10 +1960,10 @@ func (h *PearTubeHandler) SeedStatus(w http.ResponseWriter, r *http.Request) {
 // file this process may publish.
 func (h *PearTubeHandler) buildArchiveRequest(ctx context.Context, req SeedRequest, coordinates peartube.ArchiveCoordinates) (peartube.ArchiveRequest, error) {
 	archive := peartube.ArchiveRequest{
-		ArchiveCoordinates: coordinates,
+		ReleaseTitle:       strings.TrimSpace(req.ReleaseTitle),
 		RetentionClass:     req.retentionClass,
+		ArchiveCoordinates: coordinates,
 	}
-
 	itemID := strings.TrimSpace(req.LocalMediaItemID)
 	if itemID != "" {
 		if h.localMedia == nil {
