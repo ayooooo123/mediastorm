@@ -1355,11 +1355,53 @@ func isKnownVideoExt(ext string) bool {
 		return false
 	}
 }
+func extractReleaseNameFromPath(sourcePath, contentType string) string {
+	clean := strings.TrimSpace(sourcePath)
+	if clean == "" || clean == "/" || clean == "." {
+		return ""
+	}
+	parts := strings.Split(strings.Trim(clean, "/"), "/")
+	ext := filepath.Ext(clean)
+	if !isKnownVideoExt(ext) {
+		if mimeExt := extensionForContentType(contentType); mimeExt != "" {
+			ext = "." + mimeExt
+		} else {
+			ext = ".mkv"
+		}
+	}
+	for i := len(parts) - 1; i >= 0; i-- {
+		part := strings.TrimSpace(parts[i])
+		if part == "" || strings.EqualFold(part, "webdav") || strings.EqualFold(part, "cache") || strings.EqualFold(part, "streams") || strings.EqualFold(part, "torbox") {
+			continue
+		}
+		if idx := strings.IndexByte(part, '_'); idx > 0 && idx <= 24 {
+			prefix := part[:idx]
+			isDigits := true
+			for _, c := range prefix {
+				if c < '0' || c > '9' {
+					isDigits = false
+					break
+				}
+			}
+			if isDigits {
+				part = part[idx+1:]
+			}
+		}
+		if !isObfuscatedFileName(part) {
+			if !isKnownVideoExt(filepath.Ext(part)) {
+				part += ext
+			}
+			return part
+		}
+	}
+	return ""
+}
 
 // sourceFileNameFor names the contributed file for the relay's release
 // console. It prefers the raw release title (which preserves codecs, resolution,
-// and quality tags) or source path basename when meaningful. If both are
-// obfuscated machine hashes, the TMDB title with season/episode is used instead.
+// and quality tags), the stream path directory (for Usenet unpacked paths), or
+// source path basename when meaningful. If all are obfuscated machine hashes,
+// the TMDB title with season/episode is used instead.
 func sourceFileNameFor(sourcePath, releaseTitle, tmdbTitle string, coordinates ArchiveCoordinates, contentType string) string {
 	if title := strings.TrimSpace(filepath.Base(strings.TrimSpace(releaseTitle))); title != "" && title != "." && title != "/" && !isObfuscatedFileName(title) {
 		if !isKnownVideoExt(filepath.Ext(title)) {
@@ -1375,6 +1417,12 @@ func sourceFileNameFor(sourcePath, releaseTitle, tmdbTitle string, coordinates A
 			title = title[:255]
 		}
 		return title
+	}
+	if fromPath := extractReleaseNameFromPath(sourcePath, contentType); fromPath != "" {
+		if len(fromPath) > 255 {
+			fromPath = fromPath[:255]
+		}
+		return fromPath
 	}
 	base := strings.TrimSpace(filepath.Base(strings.TrimSpace(sourcePath)))
 	if base != "" && base != "." && base != "/" && !isObfuscatedFileName(base) {
