@@ -708,13 +708,15 @@ func TestArchiveOnPlaybackStartArchivesTheWholeTitleFromOneStart(t *testing.T) {
 	// submission declares the file's full length and the only upstream read
 	// this process made was the one-byte probe that learned it.
 	submission := relay.lastIngest()
-	descriptor, _ := submission["sourceDescriptor"].(map[string]any)
-	if descriptor["provider"] != "torbox" || descriptor["torrentId"] != float64(55944852) {
-		t.Fatalf("direct descriptor = %v, want torbox 55944852", descriptor)
+	if submission["title"] != "The Matrix" {
+		t.Fatalf("submission title = %v, want The Matrix", submission["title"])
 	}
-	request, _ := submission["request"].(map[string]any)
-	if request["retentionClass"] != "contribution-cache" {
-		t.Fatalf("retention class = %v, want the consented contribution budget", request["retentionClass"])
+	selector, _ := submission["selector"].(map[string]any)
+	if selector["identifier"] != "603" || selector["kind"] != "movie" {
+		t.Fatalf("submission selector = %v, want tmdb 603", selector)
+	}
+	if submission["retentionClass"] != "contribution-cache" {
+		t.Fatalf("retention class = %v, want the consented contribution budget", submission["retentionClass"])
 	}
 
 	// Idempotency, both carriers. Restarting the same session and a second

@@ -900,7 +900,12 @@ func (r *SourceGrantRegistry) ServeHTTP(response http.ResponseWriter, request *h
 		response.WriteHeader(http.StatusNoContent)
 		return
 	}
-	if ifMatch, ok := singleSourceHeader(request.Header, "If-Match"); !ok || ifMatch != grant.etag {
+	if ifMatch, ok := singleSourceHeader(request.Header, "If-Match"); ok {
+		if ifMatch != "*" && ifMatch != grant.etag {
+			sourceError(response, http.StatusPreconditionFailed)
+			return
+		}
+	} else if request.Method == http.MethodGet {
 		sourceError(response, http.StatusPreconditionFailed)
 		return
 	}

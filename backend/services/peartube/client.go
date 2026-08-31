@@ -21,6 +21,7 @@ import (
 	"log"
 	"mime"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -157,31 +158,66 @@ func applyLocked(resolved Resolved) {
 // parameters, and fragments are rejected so configuration secrets cannot be
 // carried into requests or logs.
 func New(rawBaseURL string) (*Client, error) {
-	parsed, err := url.Parse(strings.TrimSpace(rawBaseURL))
-	if err != nil {
-		return nil, errors.New("relay URL is invalid")
-	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return nil, errors.New("relay URL must use http or https")
-	}
-	if parsed.Host == "" {
-		return nil, errors.New("relay URL is missing a host")
-	}
-	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return nil, errors.New("relay URL must not include credentials, query parameters, or a fragment")
-	}
-	base := strings.TrimSuffix(parsed.Scheme+"://"+parsed.Host+parsed.Path, "/")
-	clientID, publisherID, secret, authErr := companionCredentials(os.Getenv)
-	return &Client{
-		baseURL: base,
-		http:    &http.Client{Timeout: requestTimeout},
-		companionHTTP: &http.Client{
-			Timeout: requestTimeout,
-			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-				return http.ErrUseLastResponse
+	trimmed := strings.TrimSpace(rawBaseURL)
+	var base string
+	var transport *http.Transport
+
+	if strings.HasPrefix(trimmed, "unix://") || strings.HasPrefix(trimmed, "http+unix://") {
+		var socketPath string
+		if strings.HasPrefix(trimmed, "unix://") {
+			socketPath = strings.TrimPrefix(trimmed, "unix://")
+		} else {
+			socketPath = strings.TrimPrefix(trimmed, "http+unix://")
+			if unescaped, err := url.PathUnescape(socketPath); err == nil && unescaped != "" {
+				socketPath = unescaped
+			}
+		}
+		if socketPath == "" {
+			return nil, errors.New("unix relay socket path is required")
+		}
+		transport = &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				var d net.Dialer
+				return d.DialContext(ctx, "unix", socketPath)
 			},
+		}
+		base = "http://unix"
+	} else {
+		parsed, err := url.Parse(trimmed)
+		if err != nil {
+			return nil, errors.New("relay URL is invalid")
+		}
+		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+			return nil, errors.New("relay URL must use http, https, or unix")
+		}
+		if parsed.Host == "" {
+			return nil, errors.New("relay URL is missing a host")
+		}
+		if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+			return nil, errors.New("relay URL must not include credentials, query parameters, or a fragment")
+		}
+		base = strings.TrimSuffix(parsed.Scheme+"://"+parsed.Host+parsed.Path, "/")
+	}
+
+	clientID, publisherID, secret, authErr := companionCredentials(os.Getenv)
+	httpClient := &http.Client{Timeout: requestTimeout}
+	companionClient := &http.Client{
+		Timeout: requestTimeout,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
 		},
-		uploads:              &http.Client{},
+	}
+	uploadClient := &http.Client{}
+	if transport != nil {
+		httpClient.Transport = transport
+		companionClient.Transport = transport
+		uploadClient.Transport = transport
+	}
+	return &Client{
+		baseURL:              base,
+		http:                 httpClient,
+		companionHTTP:        companionClient,
+		uploads:              uploadClient,
 		companionClient:      clientID,
 		companionPublisherID: publisherID,
 		companionSecret:      secret,
@@ -896,7 +932,7 @@ func (c *Client) ArchiveStatus(ctx context.Context, jobID string) (*ArchiveStatu
 	if !validSourceJobID(jobID) {
 		return nil, errors.New("job id is required")
 	}
-	if strings.HasPrefix(jobID, "ing_") || strings.HasPrefix(jobID, "acq_") {
+	if strings.HasPrefix(jobID, "ing_") || strings.HasPrefix(jobID, "acq_") || strings.HasPrefix(jobID, "mediastorm") {
 		return c.companionArchiveStatus(ctx, jobID)
 	}
 	var status ArchiveStatus
@@ -954,7 +990,7 @@ func (c *Client) IngestJob(ctx context.Context, jobID string) (*IngestJob, error
 		return nil, errors.New("peartube relay is not configured")
 	}
 	jobID = strings.TrimSpace(jobID)
-	if (!strings.HasPrefix(jobID, "ing_") && !strings.HasPrefix(jobID, "acq_")) || !validSourceJobID(jobID) {
+	if !validSourceJobID(jobID) {
 		return nil, errors.New("companion ingest job id is required")
 	}
 	job, err := c.fetchIngestJob(ctx, jobID)
@@ -975,7 +1011,7 @@ func (c *Client) IngestJob(ctx context.Context, jobID string) (*IngestJob, error
 // route. Both the status proxy and the revival query decode the same answer, so
 // neither can drift from what the relay actually reports.
 func (c *Client) fetchIngestJob(ctx context.Context, jobID string) (*companionIngestPublicJob, error) {
-	target := companionAPIPrefix + "/ingest/jobs/" + url.PathEscape(jobID)
+	target := companionAPIPrefix + "/acquisitions/" + url.PathEscape(jobID)
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+target, nil)
 	if err != nil {
 		return nil, err
@@ -996,15 +1032,29 @@ func (c *Client) fetchIngestJob(ctx context.Context, jobID string) (*companionIn
 		return nil, decodeResponse(response, nil)
 	}
 	var envelope struct {
-		Job companionIngestPublicJob `json:"job"`
+		Job         companionIngestPublicJob `json:"job"`
+		Acquisition companionIngestPublicJob `json:"acquisition"`
 	}
 	if err := decodeResponse(response, &envelope); err != nil {
 		return nil, err
 	}
-	if envelope.Job.JobID != jobID || envelope.Job.State == "" {
+	job := envelope.Job
+	if job.JobID == "" && envelope.Acquisition.JobID != "" {
+		job = envelope.Acquisition
+	} else if job.JobID == "" && envelope.Acquisition.AcquisitionID != "" {
+		job = envelope.Acquisition
+		job.JobID = envelope.Acquisition.AcquisitionID
+	}
+	if job.State == "" && job.Status != "" {
+		job.State = job.Status
+	}
+	if job.BytesReceived == 0 && job.BytesAcquired != 0 {
+		job.BytesReceived = job.BytesAcquired
+	}
+	if (job.JobID != jobID && job.AcquisitionID != jobID) || job.State == "" {
 		return nil, errors.New("companion returned a mismatched ingest job")
 	}
-	return &envelope.Job, nil
+	return &job, nil
 }
 
 // CompanionNetworkPolicy is the complete explicit policy snapshot accepted by
@@ -1089,10 +1139,10 @@ func (c *Client) CancelArchive(ctx context.Context, jobID string) error {
 		return errors.New("peartube relay is not configured")
 	}
 	jobID = strings.TrimSpace(jobID)
-	if !strings.HasPrefix(jobID, "ing_") || !validSourceJobID(jobID) {
+	if !validSourceJobID(jobID) {
 		return errors.New("companion ingest job id is required")
 	}
-	target := companionAPIPrefix + "/ingest/jobs/" + url.PathEscape(jobID)
+	target := companionAPIPrefix + "/acquisitions/" + url.PathEscape(jobID)
 	request, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+target, nil)
 	if err != nil {
 		return err
@@ -1109,7 +1159,7 @@ func (c *Client) CancelArchive(ctx context.Context, jobID string) error {
 	if response.StatusCode >= http.StatusMultipleChoices && response.StatusCode < http.StatusBadRequest {
 		return errors.New("companion ingest cancellation refused redirect")
 	}
-	if response.StatusCode != http.StatusOK {
+	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusNoContent && response.StatusCode != http.StatusAccepted {
 		return decodeResponse(response, nil)
 	}
 	return nil
@@ -1241,19 +1291,19 @@ type companionIngestSubmission struct {
 
 type companionIngestPublicJob struct {
 	JobID         string `json:"jobId"`
+	AcquisitionID string `json:"acquisitionId"`
 	State         string `json:"state"`
+	Status        string `json:"status"`
 	PublicationID string `json:"publicationId"`
 	ManifestID    string `json:"manifestId"`
 	RenditionID   string `json:"renditionId"`
 	AssetID       string `json:"assetId"`
 	CoreKey       string `json:"coreKey"`
 	ErrorCode     string `json:"errorCode"`
-	// BytesReceived, ExpectedBytes and Recoverable are what a resubmission needs
-	// from a job that ended badly: how far it got, how far it had to go, and
-	// whether the relay will let a fresh capability carry on from there.
-	BytesReceived int64 `json:"bytesReceived"`
-	ExpectedBytes int64 `json:"expectedBytes"`
-	Recoverable   bool  `json:"recoverable"`
+	BytesReceived int64  `json:"bytesReceived"`
+	BytesAcquired int64  `json:"bytesAcquired"`
+	ExpectedBytes int64  `json:"expectedBytes"`
+	Recoverable   bool   `json:"recoverable"`
 }
 
 // sourceContainer names the container from whatever path identifies the source.
@@ -1493,155 +1543,257 @@ type grantedIngestSubmission struct {
 // prepared source, and hands the companion the job. It takes ownership of
 // prepared: a submission the companion did not accept revokes the grant, so a
 // refusal never leaves a live capability behind.
-func (c *Client) submitGrantedIngest(ctx context.Context, registry *SourceGrantRegistry, prepared *PreparedSource, ingest grantedIngestSubmission) (*ArchiveJob, error) {
-	jobID, err := companionIngestJobID(ingest.IdempotencyKey, ingest.Request)
-	if err != nil {
-		return nil, errors.New("encode companion ingest identity")
-	}
-	issued, err := registry.Issue(prepared, SourceGrantScope{
-		CompanionID: registry.companionID,
-		JobID:       jobID,
-		PolicyEpoch: ingest.PolicyEpoch,
-	})
-	if err != nil {
-		return nil, err
-	}
-	accepted := false
-	defer func() {
-		if !accepted {
-			registry.RevokeJob(jobID)
-		}
-	}()
-	submission := companionIngestSubmission{
-		IdempotencyKey:   ingest.IdempotencyKey,
-		Request:          ingest.Request,
-		SourceCapability: issued.Capability,
-	}
-	encoded, err := json.Marshal(submission)
-	if err != nil {
-		return nil, errors.New("encode companion ingest request")
-	}
-	defer func() {
-		for index := range encoded {
-			encoded[index] = 0
-		}
-		issued.Capability = ""
-		submission.SourceCapability = ""
-	}()
-	target := companionAPIPrefix + "/ingest/jobs"
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+target, bytes.NewReader(encoded))
-	if err != nil {
-		return nil, err
-	}
-	request.Header.Set("Accept", "application/json")
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-PearTube-Job-ID", jobID)
-	if err := c.authenticateCompanionRequest(request, encoded); err != nil {
-		return nil, err
-	}
-	response, err := c.companionHTTP.Do(request)
-	if err != nil {
-		return nil, errors.New("submit companion ingest job")
-	}
-	defer response.Body.Close()
-	if response.StatusCode >= http.StatusMultipleChoices && response.StatusCode < http.StatusBadRequest {
-		return nil, errors.New("companion ingest refused redirect")
-	}
-	if response.StatusCode != http.StatusAccepted {
-		return nil, decodeResponse(response, nil)
-	}
-	var envelope struct {
-		Job companionIngestPublicJob `json:"job"`
-	}
-	if err := decodeResponse(response, &envelope); err != nil {
-		return nil, err
-	}
-	if envelope.Job.JobID != jobID || envelope.Job.State == "" {
-		return nil, errors.New("companion returned a mismatched ingest job")
-	}
-	accepted = true
-	return &ArchiveJob{
-		JobID:      jobID,
-		Status:     envelope.Job.State,
-		EntityHint: companionEntityHint(ingest.Coordinates),
-	}, nil
+type ContributeAcquisitionSelector struct {
+	Kind       string `json:"kind"`
+	Namespace  string `json:"namespace"`
+	Identifier string `json:"identifier"`
+	Season     int    `json:"season,omitempty"`
+	Episode    int    `json:"episode,omitempty"`
 }
 
+type ContributeAcquisitionRequest struct {
+	IdempotencyKey string                        `json:"idempotencyKey"`
+	Title          string                        `json:"title"`
+	Selector       ContributeAcquisitionSelector `json:"selector"`
+	PublisherID    string                        `json:"publisherId,omitempty"`
+	RetentionClass string                        `json:"retentionClass,omitempty"`
+	SourceFileName string                        `json:"sourceFileName,omitempty"`
+	ExpectedBytes  int64                         `json:"expectedBytes,omitempty"`
+}
 
-// ArchiveDirectSource submits a direct provider-managed ingest job (e.g. TorBox, local file)
-// to PearTube Relay without requiring MediaStorm to maintain source grants or proxy bytes.
-func (c *Client) ArchiveDirectSource(ctx context.Context, idempotencyKey string, coords ArchiveCoordinates, retentionClass string, title string, size int64, descriptor map[string]any) (*ArchiveJob, error) {
+type SourceGrantAudience struct {
+	PrincipalID   string `json:"principalId"`
+	AcquisitionID string `json:"acquisitionId"`
+}
+
+type SourceGrantPayload struct {
+	Token       string              `json:"token"`
+	AdapterID   string              `json:"adapterId"`
+	Audience    SourceGrantAudience `json:"audience"`
+	ExpiresAt   int64               `json:"expiresAt"`
+	ETag        string              `json:"etag,omitempty"`
+	Length      int64               `json:"length,omitempty"`
+	SHA256      string              `json:"sha256,omitempty"`
+	ContentType string              `json:"contentType,omitempty"`
+}
+
+func (c *Client) ContributeAcquisition(ctx context.Context, req ContributeAcquisitionRequest) (*ArchiveJob, error) {
 	if c == nil {
 		return nil, errors.New("peartube relay is not configured")
 	}
 	if err := c.companionAuthError; err != nil {
 		return nil, err
 	}
-	idempotencyKey = strings.TrimSpace(idempotencyKey)
-	if !validSourceJobID(idempotencyKey) {
+	req.IdempotencyKey = strings.TrimSpace(req.IdempotencyKey)
+	if !validSourceJobID(req.IdempotencyKey) {
 		return nil, errors.New("idempotency key is required")
 	}
-	if descriptor == nil || len(descriptor) == 0 {
-		return nil, errors.New("source descriptor is required")
+	if req.PublisherID == "" {
+		req.PublisherID = c.companionPublisherID
 	}
-	if retentionClass == "" {
-		retentionClass = RetentionClassArchivePin
+	if req.RetentionClass == "" {
+		req.RetentionClass = RetentionClassContributionCache
 	}
-	if size <= 0 {
-		size = 1000
-	}
-	issued := IssuedSourceGrant{
-		Length: size,
-		ETag:   fmt.Sprintf("\"%s\"", coords.TMDBID),
-	}
-	ingestRequest := companionSourceRequest(coords, retentionClass, "mkv", issued)
-
-	jobID, err := companionIngestJobID(idempotencyKey, ingestRequest)
+	encoded, err := json.Marshal(req)
 	if err != nil {
-		return nil, errors.New("encode companion direct ingest identity")
+		return nil, fmt.Errorf("encode contribute acquisition request: %w", err)
 	}
-
-	submission := companionIngestSubmission{
-		IdempotencyKey:   idempotencyKey,
-		Request:          ingestRequest,
-		SourceDescriptor: descriptor,
-	}
-	encoded, err := json.Marshal(submission)
-	if err != nil {
-		return nil, errors.New("encode companion direct ingest request")
-	}
-	target := companionAPIPrefix + "/ingest/jobs"
+	target := companionAPIPrefix + "/acquisitions/contribute"
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+target, bytes.NewReader(encoded))
 	if err != nil {
-		return nil, fmt.Errorf("build companion direct ingest request: %w", err)
+		return nil, fmt.Errorf("build contribute acquisition request: %w", err)
 	}
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-PearTube-Job-ID", jobID)
+	request.Header.Set("X-PearTube-Job-ID", req.IdempotencyKey)
 	if err := c.authenticateCompanionRequest(request, encoded); err != nil {
-		return nil, fmt.Errorf("authenticate companion direct ingest request: %w", err)
+		return nil, fmt.Errorf("authenticate contribute acquisition request: %w", err)
 	}
 	response, err := c.companionHTTP.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("companion direct ingest request failed: %w", err)
+		return nil, fmt.Errorf("contribute acquisition request failed: %w", err)
 	}
 	defer response.Body.Close()
-
 	if response.StatusCode >= http.StatusMultipleChoices && response.StatusCode < http.StatusBadRequest {
-		return nil, errors.New("companion ingest refused redirect")
+		return nil, errors.New("companion contribute acquisition refused redirect")
 	}
-	if response.StatusCode != http.StatusAccepted {
+	if response.StatusCode != http.StatusAccepted && response.StatusCode != http.StatusOK {
 		return nil, decodeResponse(response, nil)
 	}
 	var envelope struct {
-		Job companionIngestPublicJob `json:"job"`
+		Acquisition companionIngestPublicJob `json:"acquisition"`
+		Job         companionIngestPublicJob `json:"job"`
 	}
 	if err := decodeResponse(response, &envelope); err != nil {
 		return nil, err
 	}
+	job := envelope.Acquisition
+	if job.JobID == "" && envelope.Job.JobID != "" {
+		job = envelope.Job
+	} else if job.JobID == "" && job.AcquisitionID != "" {
+		job.JobID = job.AcquisitionID
+	}
+	if job.State == "" && job.Status != "" {
+		job.State = job.Status
+	}
+	if job.JobID == "" || job.State == "" {
+		return nil, errors.New("companion returned a mismatched acquisition")
+	}
 	return &ArchiveJob{
-		JobID:      envelope.Job.JobID,
-		Status:     envelope.Job.State,
+		JobID:  job.JobID,
+		Status: job.State,
+	}, nil
+}
+
+func (c *Client) AttachSourceGrant(ctx context.Context, acquisitionID string, grant SourceGrantPayload) error {
+	if c == nil {
+		return errors.New("peartube relay is not configured")
+	}
+	if err := c.companionAuthError; err != nil {
+		return err
+	}
+	acquisitionID = strings.TrimSpace(acquisitionID)
+	if !validSourceJobID(acquisitionID) {
+		return errors.New("acquisition id is required")
+	}
+	body := struct {
+		Grant SourceGrantPayload `json:"grant"`
+	}{
+		Grant: grant,
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("encode source grant request: %w", err)
+	}
+	target := companionAPIPrefix + "/acquisitions/" + url.PathEscape(acquisitionID) + "/source-grants"
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+target, bytes.NewReader(encoded))
+	if err != nil {
+		return fmt.Errorf("build attach source grant request: %w", err)
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-PearTube-Job-ID", acquisitionID)
+	if err := c.authenticateCompanionRequest(request, encoded); err != nil {
+		return fmt.Errorf("authenticate attach source grant request: %w", err)
+	}
+	response, err := c.companionHTTP.Do(request)
+	if err != nil {
+		return fmt.Errorf("attach source grant request failed: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode >= http.StatusMultipleChoices && response.StatusCode < http.StatusBadRequest {
+		return errors.New("attach source grant refused redirect")
+	}
+	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusAccepted {
+		return decodeResponse(response, nil)
+	}
+	return nil
+}
+
+func (c *Client) submitGrantedIngest(ctx context.Context, registry *SourceGrantRegistry, prepared *PreparedSource, ingest grantedIngestSubmission) (*ArchiveJob, error) {
+	facts := prepared.facts()
+	selectorKind := ingest.Coordinates.ContentKind
+	if selectorKind == "" {
+		selectorKind = "movie"
+	}
+	selector := ContributeAcquisitionSelector{
+		Kind:       selectorKind,
+		Namespace:  "tmdb",
+		Identifier: ingest.Coordinates.TMDBID,
+		Season:     ingest.Coordinates.TMDBSeason,
+		Episode:    ingest.Coordinates.TMDBEpisode,
+	}
+	retentionClass := ingest.Request.RetentionClass
+	if retentionClass == "" {
+		retentionClass = RetentionClassContributionCache
+	}
+	contributeReq := ContributeAcquisitionRequest{
+		IdempotencyKey: ingest.IdempotencyKey,
+		Title:          ingest.Coordinates.TMDBTitle,
+		Selector:       selector,
+		PublisherID:    c.companionPublisherID,
+		RetentionClass: retentionClass,
+		SourceFileName: sourceContainer(facts.ContentType),
+		ExpectedBytes:  facts.Length,
+	}
+	if contributeReq.Title == "" {
+		contributeReq.Title = "Contributed media"
+	}
+	job, err := c.ContributeAcquisition(ctx, contributeReq)
+	if err != nil {
+		return nil, fmt.Errorf("request companion contribution acquisition: %w", err)
+	}
+
+	issued, err := registry.Issue(prepared, SourceGrantScope{
+		CompanionID: registry.companionID,
+		JobID:       job.JobID,
+		PolicyEpoch: ingest.PolicyEpoch,
+	})
+	if err != nil {
+		_ = c.CancelArchive(ctx, job.JobID)
+		return nil, err
+	}
+
+	grantPayload := SourceGrantPayload{
+		Token:       issued.Capability,
+		AdapterID:   "companion-callback",
+		ETag:        issued.ETag,
+		Length:      issued.Length,
+		SHA256:      issued.SHA256,
+		ContentType: issued.ContentType,
+		Audience: SourceGrantAudience{
+			PrincipalID:   c.companionClient,
+			AcquisitionID: job.JobID,
+		},
+		ExpiresAt: issued.ExpiresAt.UnixMilli(),
+	}
+
+	if err := c.AttachSourceGrant(ctx, job.JobID, grantPayload); err != nil {
+		registry.RevokeJob(job.JobID)
+		_ = c.CancelArchive(ctx, job.JobID)
+		return nil, fmt.Errorf("attach source grant to companion acquisition: %w", err)
+	}
+
+	return &ArchiveJob{
+		JobID:      job.JobID,
+		Status:     job.Status,
+		EntityHint: companionEntityHint(ingest.Coordinates),
+	}, nil
+}
+
+func (c *Client) ArchiveDirectSource(ctx context.Context, idempotencyKey string, coords ArchiveCoordinates, retentionClass string, title string, size int64, descriptor map[string]any) (*ArchiveJob, error) {
+	selectorKind := coords.ContentKind
+	if selectorKind == "" {
+		selectorKind = "movie"
+	}
+	selector := ContributeAcquisitionSelector{
+		Kind:       selectorKind,
+		Namespace:  "tmdb",
+		Identifier: coords.TMDBID,
+		Season:     coords.TMDBSeason,
+		Episode:    coords.TMDBEpisode,
+	}
+	if retentionClass == "" {
+		retentionClass = RetentionClassContributionCache
+	}
+	contributeReq := ContributeAcquisitionRequest{
+		IdempotencyKey: idempotencyKey,
+		Title:          title,
+		Selector:       selector,
+		PublisherID:    c.companionPublisherID,
+		RetentionClass: retentionClass,
+		ExpectedBytes:  size,
+	}
+	if contributeReq.Title == "" {
+		contributeReq.Title = coords.TMDBTitle
+	}
+	job, err := c.ContributeAcquisition(ctx, contributeReq)
+	if err != nil {
+		return nil, err
+	}
+	return &ArchiveJob{
+		JobID:      job.JobID,
+		Status:     job.Status,
 		EntityHint: companionEntityHint(coords),
 	}, nil
 }
