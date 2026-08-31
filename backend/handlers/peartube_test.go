@@ -103,14 +103,17 @@ func newSeedRelay(t *testing.T, capture *seedCapture) *peartube.Client {
 			capture.idempotencyKeys = append(capture.idempotencyKeys, r.Header.Get("Idempotency-Key"))
 		}
 		if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
-			capture.json = map[string]any{}
+			decoded := map[string]any{}
 			body, _ := io.ReadAll(r.Body)
-			if err := json.Unmarshal(body, &capture.json); err != nil {
+			if err := json.Unmarshal(body, &decoded); err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
+			if r.URL.Path != "/api/v2/policy" && !strings.HasSuffix(r.URL.Path, "/source-grants") {
+				capture.json = decoded
+			}
 			if r.URL.Path == "/api/v2/policy" {
-				capture.policies = append(capture.policies, capture.json)
+				capture.policies = append(capture.policies, decoded)
 				w.Header().Set("Content-Type", "application/json")
 				capture.events = append(capture.events, "policy")
 				w.WriteHeader(http.StatusOK)
@@ -262,7 +265,7 @@ func TestSeedPublishesLocalMediaItem(t *testing.T) {
 		t.Fatal("local media bytes crossed the companion control request")
 	}
 	idempotencyKey, _ := capture.json["idempotencyKey"].(string)
-	if !regexp.MustCompile(`^mediastorm-v1_[0-9a-f]{64}$`).MatchString(idempotencyKey) {
+	if !regexp.MustCompile(`^mediastorm-v2_[0-9a-f]{64}$`).MatchString(idempotencyKey) {
 		t.Fatalf("local companion idempotency key = %q", idempotencyKey)
 	}
 	encodedSubmission, err := json.Marshal(capture.json)
@@ -451,8 +454,8 @@ func TestSeedIdempotencyKeyUsesCompanionSafeToken(t *testing.T) {
 		ContentKind: "movie",
 		TMDBID:      "603",
 	}
-	const digest = "41e3f4eca5fe977d4cf54af8b70e45ddb536fa6c463777947d0598c72157b025"
-	if got := seedIdempotencyKey(coordinates, "local:item-1"); got != "mediastorm-v1_"+digest {
+	const digest = "d517058c6241564287a85a98b086da535e365831ecbfbf176c63fe9e46ad4230"
+	if got := seedIdempotencyKey(coordinates, "local:item-1"); got != "mediastorm-v2_"+digest {
 		t.Fatalf("companion idempotency key = %q", got)
 	}
 }
