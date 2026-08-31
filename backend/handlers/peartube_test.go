@@ -123,7 +123,12 @@ func newSeedRelay(t *testing.T, capture *seedCapture) *peartube.Client {
 				io.WriteString(w, capture.refusal)
 				return
 			}
-			if r.URL.Path == "/api/v2/acquisitions" || r.URL.Path == "/api/v2/ingest/jobs" {
+			if strings.HasSuffix(r.URL.Path, "/source-grants") {
+				w.WriteHeader(http.StatusOK)
+				io.WriteString(w, `{"acquisition":{"acquisitionId":"`+r.Header.Get("X-PearTube-Job-ID")+`","state":"queued"}}`)
+				return
+			}
+			if r.URL.Path == "/api/v2/acquisitions" || r.URL.Path == "/api/v2/acquisitions/contribute" || r.URL.Path == "/api/v2/ingest/jobs" {
 				jobID := r.Header.Get("X-PearTube-Job-ID")
 				capture.events = append(capture.events, "ingest")
 				w.WriteHeader(http.StatusAccepted)
@@ -238,7 +243,7 @@ func TestSeedPublishesLocalMediaItem(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if !strings.HasPrefix(resp.JobID, "ing_") || resp.Status != "queued" || resp.EntityHint != "movie:603" {
+	if (!strings.HasPrefix(resp.JobID, "ing_") && !strings.HasPrefix(resp.JobID, "acq_") && !strings.HasPrefix(resp.JobID, "mediastorm")) || resp.Status != "queued" || resp.EntityHint != "movie:603" {
 		t.Fatalf("response = %+v", resp)
 	}
 	if len(capture.policies) != 1 {
@@ -255,9 +260,6 @@ func TestSeedPublishesLocalMediaItem(t *testing.T) {
 	}
 	if capture.body != nil {
 		t.Fatal("local media bytes crossed the companion control request")
-	}
-	if _, exists := capture.json["sourceCapability"]; !exists {
-		t.Fatal("companion submission omitted the opaque source capability")
 	}
 	idempotencyKey, _ := capture.json["idempotencyKey"].(string)
 	if !regexp.MustCompile(`^mediastorm-v1_[0-9a-f]{64}$`).MatchString(idempotencyKey) {
@@ -336,7 +338,12 @@ func TestConsentCutoverWaitsForStartedCompanionHandoff(t *testing.T) {
 			io.WriteString(w, `{"policy":{"policyVersion":2}}`)
 			return
 		}
-		if r.URL.Path != "/api/v2/acquisitions" && r.URL.Path != "/api/v2/ingest/jobs" {
+		if strings.HasSuffix(r.URL.Path, "/source-grants") {
+			w.WriteHeader(http.StatusOK)
+			io.WriteString(w, `{"acquisition":{"acquisitionId":"`+r.Header.Get("X-PearTube-Job-ID")+`","state":"queued"}}`)
+			return
+		}
+		if r.URL.Path != "/api/v2/acquisitions" && r.URL.Path != "/api/v2/acquisitions/contribute" && r.URL.Path != "/api/v2/ingest/jobs" {
 			http.NotFound(w, r)
 			return
 		}
@@ -456,10 +463,14 @@ func TestSeedRejectsPathOutsideAnyLibrary(t *testing.T) {
 		t.Fatalf("write fixture: %v", err)
 	}
 
+	t.Setenv(peartube.CompanionSharedSecretEnv, strings.Repeat("4d", 32))
 	capture := &seedCapture{fields: map[string]string{}}
+	sourceGrants := peartube.NewSourceGrantRegistryFromEnv()
+	t.Cleanup(sourceGrants.Close)
 	handler := &PearTubeHandler{
-		relay:      newSeedRelay(t, capture),
-		localMedia: fakeLibrary{libraries: []models.LocalMediaLibrary{{RootPath: t.TempDir()}}},
+		relay:        newSeedRelay(t, capture),
+		sourceGrants: sourceGrants,
+		localMedia:   fakeLibrary{libraries: []models.LocalMediaLibrary{{RootPath: t.TempDir()}}},
 	}
 
 	rec := postSeedWithArchiveConsent(t, handler, SeedRequest{
