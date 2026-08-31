@@ -1333,14 +1333,14 @@ func sourceFileNameFor(sourcePath, tmdbTitle string, coordinates ArchiveCoordina
 	if name == "" {
 		return sourceContainer(contentType)
 	}
-	if coordinates.ContentKind == "episode" || coordinates.TMDBSeason > 0 || coordinates.TMDBEpisode > 0 {
-		if coordinates.TMDBSeason > 0 || coordinates.TMDBEpisode > 0 {
-			name = fmt.Sprintf("%s S%02dE%02d", name, coordinates.TMDBSeason, coordinates.TMDBEpisode)
-		}
+	if coordinates.TMDBSeason > 0 || coordinates.TMDBEpisode > 0 {
+		name = fmt.Sprintf("%s S%02dE%02d", name, coordinates.TMDBSeason, coordinates.TMDBEpisode)
 	}
-	if ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(name)), "."); ext == "" {
-		ext = sourceContainer(contentType)
-		if ext != "" && ext != "bin" {
+	// The content type is a MIME type, not a path: sourceContainer cannot
+	// derive an extension from it. Map the common ones; an unknown MIME
+	// leaves the title bare rather than fabricating a wrong extension.
+	if strings.TrimSpace(filepath.Ext(name)) == "" {
+		if ext := extensionForContentType(contentType); ext != "" {
 			name = name + "." + ext
 		}
 	}
@@ -1348,6 +1348,24 @@ func sourceFileNameFor(sourcePath, tmdbTitle string, coordinates ArchiveCoordina
 		name = name[:255]
 	}
 	return name
+}
+
+func extensionForContentType(contentType string) string {
+	mime := strings.ToLower(strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0]))
+	switch mime {
+	case "video/x-matroska", "video/webm":
+		return "mkv"
+	case "video/mp4":
+		return "mp4"
+	case "video/quicktime":
+		return "mov"
+	case "video/x-msvideo":
+		return "avi"
+	case "video/mpeg":
+		return "mpeg"
+	default:
+		return ""
+	}
 }
 
 // optionalDigest keeps an absent digest distinguishable from an empty one on the
