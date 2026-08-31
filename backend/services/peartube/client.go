@@ -235,12 +235,13 @@ func companionCredentials(getenv func(string) string) (string, string, [32]byte,
 		return "", "", key, fmt.Errorf("%s must be a non-empty header-safe value of at most 128 bytes", CompanionClientEnv)
 	}
 
-	publisherID := getenv(CompanionPublisherIDEnv)
-	if publisherID == "" {
-		publisherID = clientID
-	}
-	if publisherID != strings.TrimSpace(publisherID) || len(publisherID) > 128 || !validHeaderText(publisherID) {
-		return clientID, "", key, fmt.Errorf("%s must be a non-empty header-safe value of at most 128 bytes", CompanionPublisherIDEnv)
+	publisherID := strings.TrimSpace(getenv(CompanionPublisherIDEnv))
+	if len(publisherID) == 64 && publisherID == strings.ToLower(publisherID) {
+		if _, err := hex.DecodeString(publisherID); err != nil {
+			publisherID = ""
+		}
+	} else {
+		publisherID = ""
 	}
 
 	secret := getenv(CompanionSharedSecretEnv)
@@ -1588,8 +1589,12 @@ func (c *Client) ContributeAcquisition(ctx context.Context, req ContributeAcquis
 	if !validSourceJobID(req.IdempotencyKey) {
 		return nil, errors.New("idempotency key is required")
 	}
-	if req.PublisherID == "" {
-		req.PublisherID = c.companionPublisherID
+	if len(req.PublisherID) != 64 {
+		if len(c.companionPublisherID) == 64 {
+			req.PublisherID = c.companionPublisherID
+		} else {
+			req.PublisherID = ""
+		}
 	}
 	if req.RetentionClass == "" {
 		req.RetentionClass = RetentionClassContributionCache
