@@ -5,6 +5,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/gorilla/mux"
 )
 
 // StreamMediaMetadata carries canonical media identity alongside an active stream/session.
@@ -15,6 +17,7 @@ type StreamMediaMetadata struct {
 	MediaType            string
 	ItemID               string
 	Title                string
+	DisplayName          string
 	Year                 int
 	SeasonNumber         int
 	EpisodeNumber        int
@@ -32,12 +35,17 @@ type StreamMediaMetadata struct {
 
 func parseStreamMediaMetadata(r *http.Request) StreamMediaMetadata {
 	q := r.URL.Query()
+	displayName := sanitizeExternalDisplayName(q.Get("displayName"))
+	if displayName == "" {
+		displayName = sanitizeExternalDisplayName(mux.Vars(r)["displayName"])
+	}
 	meta := StreamMediaMetadata{
 		SourceServiceType:    normalizeStreamSourceServiceType(q.Get("sourceServiceType")),
 		DebridProvider:       normalizeStreamDebridProvider(q.Get("debridProvider")),
 		MediaType:            strings.ToLower(strings.TrimSpace(q.Get("mediaType"))),
 		ItemID:               strings.ToLower(strings.TrimSpace(q.Get("itemId"))),
 		Title:                strings.TrimSpace(q.Get("title")),
+		DisplayName:          displayName,
 		EpisodeName:          strings.TrimSpace(q.Get("episodeName")),
 		SeriesID:             strings.TrimSpace(q.Get("seriesId")),
 		SeriesName:           strings.TrimSpace(q.Get("seriesName")),
@@ -105,6 +113,9 @@ func addStreamMediaMetadataParams(values url.Values, meta StreamMediaMetadata) {
 	}
 	if meta.Title != "" {
 		values.Set("title", meta.Title)
+	}
+	if meta.DisplayName != "" {
+		values.Set("displayName", meta.DisplayName)
 	}
 	if meta.EpisodeName != "" {
 		values.Set("episodeName", meta.EpisodeName)
