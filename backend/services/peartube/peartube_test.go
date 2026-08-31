@@ -928,9 +928,9 @@ func TestSourceFileNameForUsesSourcePathBaseName(t *testing.T) {
 			want:         "Justice League Dark: Apokolips War.mkv",
 		},
 		{
-			name:         "usenet unpacked directory name with timestamp prefix recovers full release tags",
+			name:         "usenet unpacked directory wins over canonical release title and preserves tags",
 			sourcePath:   "/1788205709466910000_Wrath.of.Man.2021.1080p.BluRay.H264.AAC/5295c8d8d367424f94feec38e0c1fbc8.mp4",
-			releaseTitle: "",
+			releaseTitle: "Wrath of Man",
 			tmdbTitle:    "Wrath of Man",
 			coordinates:  ArchiveCoordinates{ContentKind: "movie", TMDBID: "637649"},
 			contentType:  "video/mp4",
