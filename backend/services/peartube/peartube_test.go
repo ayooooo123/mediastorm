@@ -913,3 +913,15 @@ func TestSourceFileNameForUsesSourcePathBaseName(t *testing.T) {
 		})
 	}
 }
+
+func TestExtensionForContentTypeMapsWebmSeparately(t *testing.T) {
+	if got := extensionForContentType("video/webm"); got != "webm" {
+		t.Fatalf("video/webm = %q, want webm", got)
+	}
+	if got := extensionForContentType("video/x-matroska"); got != "mkv" {
+		t.Fatalf("video/x-matroska = %q, want mkv", got)
+	}
+	if got := extensionForContentType("video/mp4; charset=binary"); got != "mp4" {
+		t.Fatalf("parameterized video/mp4 = %q, want mp4", got)
+	}
+}
