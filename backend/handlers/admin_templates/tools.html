@@ -2841,7 +2841,7 @@
         btn.innerHTML = '<span class="spinner-small"></span> Restarting...';
 
         try {
-            const response = await fetch(basePath + '/api/admin/restart', {
+            const response = await fetch(basePath + '/api/restart', {
                 method: 'POST',
                 credentials: 'same-origin'
             });

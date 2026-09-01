@@ -958,6 +958,24 @@ func TestAdminMaintenanceLinksAllSubpages(t *testing.T) {
 	}
 }
 
+func TestAdminMaintenanceRestartUsesServerAPIPath(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/tools.html")
+	if err != nil {
+		t.Fatalf("read tools template: %v", err)
+	}
+	source := string(templateBytes)
+
+	if !strings.Contains(source, `fetch(basePath + '/api/restart'`) {
+		t.Fatal("maintenance restart action does not use the cookie-authenticated admin API path")
+	}
+	if strings.Contains(source, `fetch(basePath + '/api/admin/restart'`) {
+		t.Fatal("maintenance restart action incorrectly prefixes the API path with the admin UI path")
+	}
+	if strings.Contains(source, `fetch(serverBasePath + '/api/admin/restart'`) {
+		t.Fatal("maintenance restart action incorrectly uses the bearer-authenticated API path")
+	}
+}
+
 func TestAdminSearchSwitchesBetweenExclusiveWorkspaces(t *testing.T) {
 	templateBytes, err := adminTemplates.ReadFile("admin_templates/search.html")
 	if err != nil {

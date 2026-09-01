@@ -1126,6 +1126,7 @@ func main() {
 	r.HandleFunc("/admin/api/streams", adminUIHandler.RequireAuth(adminUIHandler.GetStreams)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/streams/sse", adminUIHandler.RequireAuth(adminUIHandler.GetStreamsSSE)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/streams/{streamID}/terminate", adminUIHandler.RequireAuth(adminUIHandler.TerminateStream)).Methods(http.MethodPost)
+	r.HandleFunc("/admin/api/restart", adminUIHandler.RequireMasterAuth(cleanupDashboard.RestartServer)).Methods(http.MethodPost)
 	r.HandleFunc("/admin/api/dashboard/stats", adminUIHandler.RequireAuth(adminUIHandler.GetDashboardStats)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/dashboard/layout", adminUIHandler.RequireAuth(adminUIHandler.GetDashboardLayout)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/dashboard/layout", adminUIHandler.RequireMasterAuth(adminUIHandler.SaveDashboardLayout)).Methods(http.MethodPut)
