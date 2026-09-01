@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"novastream/models"
@@ -237,14 +238,14 @@ func TestIndexerHandler_SearchPassesHydratedMovieTitles(t *testing.T) {
 	handler := NewIndexerHandler(fake, false)
 	handler.SetMovieMetadataService(movieSvc)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/indexers/search?q=DC+Showcase+Batman%3A+Death+in+the+Family&mediaType=movie&year=2020", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/indexers/search?q=Batman%3A+Death+in+the+Family&mediaType=movie&year=2020", nil)
 	rec := httptest.NewRecorder()
 	handler.Search(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected %d, got %d", http.StatusOK, rec.Code)
 	}
-	want := []string{"Batman: Death in the Family"}
+	want := []string{"DC Showcase - Batman: Death in the Family", "Batman: Death in the Family"}
 	if len(fake.lastOpts.AlternateTitles) != len(want) {
 		t.Fatalf("alternate titles = %v, want %v", fake.lastOpts.AlternateTitles, want)
 	}
@@ -564,6 +565,30 @@ func TestIndexerHandler_SearchTest(t *testing.T) {
 	}
 	if payload[0].Title != "The Expanse S01E01" {
 		t.Fatalf("expected title 'The Expanse S01E01', got %q", payload[0].Title)
+	}
+}
+
+func TestIndexerHandler_SearchTestPassesHydratedMovieTitles(t *testing.T) {
+	fake := &fakeIndexerService{results: []models.NZBResult{}}
+	movieSvc := &fakeMovieMetadataService{
+		title: &models.Title{
+			Name:            "DC Showcase - Batman: Death in the Family",
+			AlternateTitles: []string{"Batman: Death in the Family"},
+		},
+	}
+	handler := NewIndexerHandler(fake, false)
+	handler.SetMovieMetadataService(movieSvc)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/indexers/search-test?q=Batman%3A+Death+in+the+Family&mediaType=movie&year=2020", nil)
+	rec := httptest.NewRecorder()
+	handler.SearchTest(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d", http.StatusOK, rec.Code)
+	}
+	want := []string{"DC Showcase - Batman: Death in the Family", "Batman: Death in the Family"}
+	if !reflect.DeepEqual(fake.lastOpts.AlternateTitles, want) {
+		t.Fatalf("alternate titles = %v, want %v", fake.lastOpts.AlternateTitles, want)
 	}
 }
 

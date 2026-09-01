@@ -243,7 +243,7 @@ func TestGetMovieDetailsFromTMDBHydratesLogoOnServiceCacheHit(t *testing.T) {
 		cache:  cache,
 	}
 	const tmdbID int64 = 4512
-	detailsCacheID := cacheKey("tmdb", "movie", "details", "v3", "en", strconv.FormatInt(tmdbID, 10))
+	detailsCacheID := cacheKey("tmdb", "movie", "details", "v4", "en", strconv.FormatInt(tmdbID, 10))
 	if err := cache.set(detailsCacheID, models.Title{
 		ID:        "tmdb:movie:4512",
 		Name:      "Cached Movie",

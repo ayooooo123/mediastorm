@@ -40,6 +40,20 @@ func TestNormalizePrequeueSeriesTitle(t *testing.T) {
 	}
 }
 
+func TestCombinedPrequeueSearchOptionsPreservesAlternateTitles(t *testing.T) {
+	opts := combinedPrequeueSearchOptions(indexer.SearchOptions{
+		Query:           "Batman: Death in the Family",
+		AlternateTitles: []string{"DC Showcase - Batman: Death in the Family"},
+	})
+
+	if !opts.IncludeFiltered {
+		t.Fatal("combined prequeue search must include filtered results")
+	}
+	if len(opts.AlternateTitles) != 1 || opts.AlternateTitles[0] != "DC Showcase - Batman: Death in the Family" {
+		t.Fatalf("alternate titles = %v, want canonical DC Showcase title", opts.AlternateTitles)
+	}
+}
+
 func TestHasReusablePreparationRequiresCompleteDolbyVisionConfiguration(t *testing.T) {
 	legacy := &playback.PrequeueEntry{
 		HasDolbyVision:     true,

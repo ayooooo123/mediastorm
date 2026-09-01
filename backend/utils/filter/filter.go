@@ -807,6 +807,9 @@ func normalizeCandidateTitles(primary string, alternates []string) []string {
 	}
 	addWithRomanization := func(value string) {
 		add(value)
+		if unbranded := stripReleaseBrandPrefix(value); unbranded != "" {
+			add(unbranded)
+		}
 		if romanized := romanizeJapanese(value); romanized != "" {
 			add(romanized)
 		}
@@ -996,6 +999,9 @@ func parsedTitleVariants(title string) []string {
 	}
 
 	add(title)
+	if unbranded := stripReleaseBrandPrefix(title); unbranded != "" {
+		add(unbranded)
+	}
 	if stripped := stripFlattenedAnimeReleaseGroupPrefix(title); stripped != "" {
 		add(stripped)
 	}
@@ -1009,6 +1015,16 @@ func parsedTitleVariants(title string) []string {
 		add("F1")
 	}
 	return variants
+}
+
+func stripReleaseBrandPrefix(title string) string {
+	normalized := normalizeForContainment(title)
+	for _, prefix := range []string{"dc showcase shorts ", "dc showcase "} {
+		if remainder, ok := strings.CutPrefix(normalized, prefix); ok {
+			return strings.TrimSpace(remainder)
+		}
+	}
+	return ""
 }
 
 func stripFlattenedAnimeReleaseGroupPrefix(title string) string {

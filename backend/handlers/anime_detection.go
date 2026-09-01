@@ -51,6 +51,21 @@ func isAnimeTitle(title *models.Title) bool {
 	}
 }
 
+func hydratedMovieSearchTitles(title *models.Title) []string {
+	if title == nil {
+		return nil
+	}
+	titles := make([]string, 0, len(title.AlternateTitles)+2)
+	if canonical := strings.TrimSpace(title.Name); canonical != "" {
+		titles = append(titles, canonical)
+	}
+	if original := strings.TrimSpace(title.OriginalName); original != "" {
+		titles = append(titles, original)
+	}
+	titles = append(titles, title.AlternateTitles...)
+	return titles
+}
+
 func isEastAsianLanguageCode(code string) bool {
 	switch strings.ToLower(strings.TrimSpace(code)) {
 	case "ja", "jpn", "jp", "zh", "zho", "chi", "cn", "ko", "kor", "kr":

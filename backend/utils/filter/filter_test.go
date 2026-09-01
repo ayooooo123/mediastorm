@@ -1120,6 +1120,40 @@ func TestResults_MovieAlternateTitleProvidesStrongIdentity(t *testing.T) {
 	}
 }
 
+func TestResults_MovieCanonicalTitleProvidesStrongIdentityForAlternateQuery(t *testing.T) {
+	detailed := ResultsWithDetails([]models.NZBResult{
+		{Title: "DC Showcase - Batman: Death in the Family 2020 2160p WEB-DL"},
+	}, Options{
+		ExpectedTitle: "Batman: Death in the Family",
+		ExpectedYear:  2020,
+		IsMovie:       true,
+	})
+
+	if len(detailed) != 1 || !detailed[0].Passed {
+		t.Fatalf("expected canonical-title release to pass alternate query, got %+v", detailed)
+	}
+	if detailed[0].Result.Attributes["titleMatch"] != "strong" {
+		t.Fatalf("titleMatch = %q, want strong", detailed[0].Result.Attributes["titleMatch"])
+	}
+}
+
+func TestResults_MovieDCShowcaseBrandPrefixIsSymmetric(t *testing.T) {
+	detailed := ResultsWithDetails([]models.NZBResult{
+		{Title: "Batman: Death in the Family 2020 1080p BluRay"},
+	}, Options{
+		ExpectedTitle: "DC Showcase Batman: Death in the Family",
+		ExpectedYear:  2020,
+		IsMovie:       true,
+	})
+
+	if len(detailed) != 1 || !detailed[0].Passed {
+		t.Fatalf("expected unbranded release to pass branded metadata title, got %+v", detailed)
+	}
+	if detailed[0].Result.Attributes["titleMatch"] != "strong" {
+		t.Fatalf("titleMatch = %q, want strong", detailed[0].Result.Attributes["titleMatch"])
+	}
+}
+
 func TestResults_EpisodeAirYear(t *testing.T) {
 	// Test that results tagged with the episode's air year are accepted even when
 	// the series premiere year is far off. E.g., One Piece (2023) S02E01 aired in 2026.

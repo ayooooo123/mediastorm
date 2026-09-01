@@ -1740,6 +1740,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 	var episodeReleased bool
 	var countryCode string
 	var tvdbID int64
+	var alternateTitles []string
 	if mediaType == "series" && h.metadataSvc != nil {
 		seriesMeta := h.createEpisodeResolverAndLookupAbsoluteEp(ctx, titleID, titleName, year, imdbID, targetEpisode)
 		episodeResolver = seriesMeta.EpisodeResolver
@@ -1793,6 +1794,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 		}
 		if movieTitle, err := h.movieMetadataSvc.MovieInfo(ctx, movieQuery); err == nil && movieTitle != nil {
 			countryCode = strings.TrimSpace(movieTitle.CountryCode)
+			alternateTitles = hydratedMovieSearchTitles(movieTitle)
 			if isAnimeTitle(movieTitle) {
 				isAnime = true
 				log.Printf("[prequeue] Movie %q is anime (genres=%v originalName=%q language=%q) - applying anime language preferences",
@@ -1809,6 +1811,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 		MediaType:       mediaType,
 		IMDBID:          imdbID,
 		TVDBID:          tvdbID,
+		AlternateTitles: alternateTitles,
 		Year:            year,
 		CountryCode:     countryCode,
 		UserID:          userID,
@@ -3369,12 +3372,13 @@ func logPrequeueCandidateList(scoredResults []models.ScoredNZBResult, source str
 // semantics: all enabled sources complete, their results are ranked together,
 // and the final cap is applied only after filtering and global ranking. The
 // returned slice is also the complete ordered migration candidate list.
-func (h *PrequeueHandler) searchCombinedPrequeueCandidates(ctx context.Context, opts indexer.SearchOptions, targetEpisode *models.EpisodeReference) ([]models.NZBResult, int, int, error) {
-	scoredResults, err := h.indexerSvc.SearchWithScoring(ctx, indexer.SearchOptions{
+func combinedPrequeueSearchOptions(opts indexer.SearchOptions) indexer.SearchOptions {
+	return indexer.SearchOptions{
 		Query:                 opts.Query,
 		Categories:            opts.Categories,
 		IMDBID:                opts.IMDBID,
 		TVDBID:                opts.TVDBID,
+		AlternateTitles:       append([]string(nil), opts.AlternateTitles...),
 		MediaType:             opts.MediaType,
 		Year:                  opts.Year,
 		CountryCode:           opts.CountryCode,
@@ -3389,7 +3393,11 @@ func (h *PrequeueHandler) searchCombinedPrequeueCandidates(ctx context.Context, 
 		EpisodeAirYear:        opts.EpisodeAirYear,
 		EpisodeReleased:       opts.EpisodeReleased,
 		IncludeFiltered:       true,
-	})
+	}
+}
+
+func (h *PrequeueHandler) searchCombinedPrequeueCandidates(ctx context.Context, opts indexer.SearchOptions, targetEpisode *models.EpisodeReference) ([]models.NZBResult, int, int, error) {
+	scoredResults, err := h.indexerSvc.SearchWithScoring(ctx, combinedPrequeueSearchOptions(opts))
 	if err != nil {
 		return nil, 0, 0, err
 	}

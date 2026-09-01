@@ -124,12 +124,10 @@ func (h *IndexerHandler) Search(w http.ResponseWriter, r *http.Request) {
 		}
 		if movieTitle, err := h.MovieMetadataSvc.MovieInfo(r.Context(), movieQuery); err == nil && movieTitle != nil {
 			countryCode = strings.TrimSpace(movieTitle.CountryCode)
-			// The query already represents the canonical display title. Only pass
-			// genuine alternates so it cannot consume the configured alias budget.
-			if originalName := strings.TrimSpace(movieTitle.OriginalName); originalName != "" {
-				alternateTitles = append(alternateTitles, originalName)
-			}
-			alternateTitles = append(alternateTitles, movieTitle.AlternateTitles...)
+			// Keep the hydrated canonical title in the filter identity set because
+			// the incoming query may itself be an alternate title. Outbound alias
+			// queries are capped separately from the complete filter-title set.
+			alternateTitles = hydratedMovieSearchTitles(movieTitle)
 			if isAnimeTitle(movieTitle) {
 				isAnime = true
 				log.Printf("[indexer] Movie %q is anime (genres=%v originalName=%q language=%q) - applying anime language preferences",
@@ -291,6 +289,7 @@ func (h *IndexerHandler) SearchTest(w http.ResponseWriter, r *http.Request) {
 	var absoluteEpisodeNumber int
 	var countryCode string
 	var tvdbID int64
+	var alternateTitles []string
 	if mediaType == "series" && h.MetadataSvc != nil {
 		seriesMeta := h.getSeriesSearchMetadata(r.Context(), query, year, imdbID)
 		if seriesMeta != nil {
@@ -318,6 +317,7 @@ func (h *IndexerHandler) SearchTest(w http.ResponseWriter, r *http.Request) {
 		}
 		if movieTitle, err := h.MovieMetadataSvc.MovieInfo(r.Context(), movieQuery); err == nil && movieTitle != nil {
 			countryCode = strings.TrimSpace(movieTitle.CountryCode)
+			alternateTitles = hydratedMovieSearchTitles(movieTitle)
 			if isAnimeTitle(movieTitle) {
 				isAnime = true
 				log.Printf("[indexer] Movie %q is anime (genres=%v originalName=%q language=%q) - applying anime language preferences",
@@ -332,6 +332,7 @@ func (h *IndexerHandler) SearchTest(w http.ResponseWriter, r *http.Request) {
 		MaxResults:            max,
 		IMDBID:                imdbID,
 		TVDBID:                tvdbID,
+		AlternateTitles:       alternateTitles,
 		MediaType:             mediaType,
 		Year:                  year,
 		CountryCode:           countryCode,
