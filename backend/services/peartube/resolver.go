@@ -43,14 +43,25 @@ func (*Resolver) Open(ctx context.Context, candidateRef string) (*models.Playbac
 
 // OpenPublication opens one deterministic public rendition without depending
 // on a short-lived search reference.
-func (*Resolver) OpenPublication(ctx context.Context, publicationID, renditionID string) (*models.PlaybackResolution, error) {
+func (*Resolver) OpenPublication(
+	ctx context.Context,
+	publicationID, renditionID string,
+	startOffsetSeconds, durationSeconds float64,
+) (*models.PlaybackResolution, error) {
 	if !validCompanionID(publicationID) || !validCompanionID(renditionID) {
 		return nil, errors.New("invalid peartube publication rendition")
 	}
 	return openCompanionStream(ctx, struct {
-		PublicationID string `json:"publicationId"`
-		RenditionID   string `json:"renditionId"`
-	}{PublicationID: publicationID, RenditionID: renditionID})
+		PublicationID      string  `json:"publicationId"`
+		RenditionID        string  `json:"renditionId"`
+		StartOffsetSeconds float64 `json:"startOffsetSeconds,omitempty"`
+		DurationSeconds    float64 `json:"durationSeconds,omitempty"`
+	}{
+		PublicationID:      publicationID,
+		RenditionID:        renditionID,
+		StartOffsetSeconds: startOffsetSeconds,
+		DurationSeconds:    durationSeconds,
+	})
 }
 
 func openCompanionStream(ctx context.Context, openRequest any) (*models.PlaybackResolution, error) {
