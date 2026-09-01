@@ -1175,7 +1175,7 @@ body.numbers-station-open {
     <div class="dashboard-grid-loading"><span>Loading dashboard layout…</span></div>
 </div>
 
-<div class="dashboard-summary-grid" aria-label="Dashboard summary" data-dashboard-module-source>
+<div class="dashboard-summary-grid" aria-label="Dashboard summary" data-dashboard-module-source hidden>
     <section class="dashboard-summary-card" data-dashboard-module="system-status" data-dashboard-module-label="System Status">
         <div class="dashboard-summary-label">System Status</div>
         <div class="dashboard-summary-value dashboard-status-value">
@@ -1221,7 +1221,7 @@ body.numbers-station-open {
     </div>
 </dialog>
 
-<div class="dashboard-primary-grid {{if not .IsAdmin}}dashboard-primary-grid-single{{end}}" data-dashboard-module-source>
+<div class="dashboard-primary-grid {{if not .IsAdmin}}dashboard-primary-grid-single{{end}}" data-dashboard-module-source hidden>
 <!-- Active Streams -->
 <div class="card" data-dashboard-module="active-streams" data-dashboard-module-label="Active Streams">
     <div class="card-header">
@@ -1323,7 +1323,7 @@ body.numbers-station-open {
 </div>
 
 <!-- User Stats -->
-<div class="dashboard-insights" data-dashboard-module-source>
+<div class="dashboard-insights" data-dashboard-module-source hidden>
     <div class="card" data-dashboard-module="watch-time" data-dashboard-module-label="Watch Time">
         <div class="card-header" style="gap: 0.75rem; flex-wrap: wrap;">
             <h2>
@@ -1480,7 +1480,7 @@ body.numbers-station-open {
 </div>
 
 <!-- VOD Stream Usage by Account -->
-<div class="dashboard-advanced-detail" data-dashboard-module-source>
+<div class="dashboard-advanced-detail" data-dashboard-module-source hidden>
 <div class="card dashboard-advanced-detail" id="vodUsageCard" data-dashboard-module="vod-stream-limits" data-dashboard-module-label="VOD Stream Limits" style="margin-bottom: 1.5rem; display: none;">
     <div class="card-header">
         <h2>
@@ -1513,7 +1513,7 @@ body.numbers-station-open {
 
 {{if .IsAdmin}}
 <!-- Service Health -->
-<div class="grid grid-2 dashboard-advanced-detail" data-dashboard-module-source style="margin-bottom: 1.5rem;">
+<div class="grid grid-2 dashboard-advanced-detail" data-dashboard-module-source hidden style="margin-bottom: 1.5rem;">
     <div class="card dashboard-advanced-detail" data-dashboard-module="usenet-providers" data-dashboard-module-label="Usenet Providers">
         <div class="card-header">
             <h2>
@@ -1787,7 +1787,7 @@ body.numbers-station-open {
 </div>
 
 <!-- Indexers and Scrapers -->
-<div class="grid grid-2 dashboard-advanced-detail" data-dashboard-module-source style="margin-bottom: 1.5rem;">
+<div class="grid grid-2 dashboard-advanced-detail" data-dashboard-module-source hidden style="margin-bottom: 1.5rem;">
     <div class="card dashboard-advanced-detail" data-dashboard-module="indexers" data-dashboard-module-label="Indexers">
         <div class="card-header">
             <h2>
@@ -1928,7 +1928,7 @@ body.numbers-station-open {
 
 {{define "scripts"}}
 <script src="{{.ServerBasePath}}/api/static/gridstack-13.2.0-all.js?v={{.BuildID}}-layout2"></script>
-<script src="{{.ServerBasePath}}/api/static/admin-dashboard-layout-v1.js?v={{.BuildID}}-layout2"></script>
+<script src="{{.ServerBasePath}}/api/static/admin-dashboard-layout-v1.js?v={{.BuildID}}-layout4"></script>
 <style>
     /* View toggle buttons */
     .view-toggle-btn {

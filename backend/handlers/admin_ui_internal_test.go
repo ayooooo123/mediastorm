@@ -1094,6 +1094,18 @@ func TestAdminDashboardBasicViewKeepsOnlyUserActivityCards(t *testing.T) {
 	}
 }
 
+func TestAdminDashboardKeepsModuleSourcesHiddenUntilLayoutIsReady(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/status.html")
+	if err != nil {
+		t.Fatalf("read status template: %v", err)
+	}
+	source := string(templateBytes)
+
+	if count := strings.Count(source, "data-dashboard-module-source hidden"); count != 6 {
+		t.Fatalf("initially hidden dashboard module sources = %d, want 6", count)
+	}
+}
+
 func TestAdminDashboardUpdateNoticeUsesCompactVersionFields(t *testing.T) {
 	templateBytes, err := adminTemplates.ReadFile("admin_templates/status.html")
 	if err != nil {

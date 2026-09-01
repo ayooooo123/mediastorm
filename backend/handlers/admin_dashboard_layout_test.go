@@ -171,6 +171,40 @@ func TestDashboardLayoutControllerFallbackHonorsModuleAvailability(t *testing.T)
 	}
 }
 
+func TestDashboardLayoutControllerIgnoresUnchangedModuleAvailability(t *testing.T) {
+	source, err := staticAssets.ReadFile("static/admin-dashboard-layout-v1.js")
+	if err != nil {
+		t.Fatalf("read dashboard layout controller: %v", err)
+	}
+	for _, marker := range []string{
+		"const nextAvailable = Boolean(available);",
+		"if (state.availability.get(id) === nextAvailable) return;",
+		"state.availability.set(id, nextAvailable);",
+	} {
+		if !bytes.Contains(source, []byte(marker)) {
+			t.Fatalf("dashboard layout controller is missing unchanged-availability guard %q", marker)
+		}
+	}
+}
+
+func TestDashboardLayoutControllerUsesStableMobileDetailOrdering(t *testing.T) {
+	source, err := staticAssets.ReadFile("static/admin-dashboard-layout-v1.js")
+	if err != nil {
+		t.Fatalf("read dashboard layout controller: %v", err)
+	}
+	for _, marker := range []string{
+		"function visibleModuleLayout(visible)",
+		"if (desktopMedia.matches) return modules.map(moduleOptions);",
+		"left.y - right.y || left.x - right.x || canonicalIndex.get(left.id) - canonicalIndex.get(right.id)",
+		"const options = { ...moduleOptions(module), x: 0, y: nextY, w: 1 };",
+		"const visibleLayout = visibleModuleLayout(visible);",
+	} {
+		if !bytes.Contains(source, []byte(marker)) {
+			t.Fatalf("dashboard layout controller is missing stable mobile ordering behavior %q", marker)
+		}
+	}
+}
+
 func TestGridStackVendoredChecksumsMatchLicense(t *testing.T) {
 	license, err := staticAssets.ReadFile("static/gridstack-13.2.0.LICENSE.txt")
 	if err != nil {

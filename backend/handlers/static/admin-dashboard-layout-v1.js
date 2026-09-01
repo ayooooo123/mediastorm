@@ -177,6 +177,23 @@
         return ids;
     }
 
+    function visibleModuleLayout(visible) {
+        const modules = state.canonicalModules.filter(module => visible.has(module.id));
+        if (desktopMedia.matches) return modules.map(moduleOptions);
+
+        const canonicalIndex = new Map(state.canonicalModules.map((module, index) => [module.id, index]));
+        modules.sort((left, right) =>
+            left.y - right.y || left.x - right.x || canonicalIndex.get(left.id) - canonicalIndex.get(right.id)
+        );
+
+        let nextY = 0;
+        return modules.map(module => {
+            const options = { ...moduleOptions(module), x: 0, y: nextY, w: 1 };
+            nextY += module.h;
+            return options;
+        });
+    }
+
     function applyVisibility(forceAll) {
         if (!state.ready || !state.grid) return;
         const visible = new Set(visibleModuleIDs(Boolean(forceAll)));
@@ -185,9 +202,7 @@
         for (const module of state.canonicalModules) {
             if (visible.has(module.id)) ensureModulePresent(module.id);
         }
-        const visibleLayout = state.canonicalModules
-            .filter(module => visible.has(module.id))
-            .map(moduleOptions);
+        const visibleLayout = visibleModuleLayout(visible);
         state.grid.load(visibleLayout, false);
 
         for (const module of state.canonicalModules) {
@@ -329,7 +344,9 @@
     }
 
     function setDetailLevel(level) {
-        state.detailLevel = level === 'advanced' ? 'advanced' : 'basic';
+        const nextLevel = level === 'advanced' ? 'advanced' : 'basic';
+        if (state.detailLevel === nextLevel) return;
+        state.detailLevel = nextLevel;
         if (state.fallback) {
             applyFallbackVisibility();
             return;
@@ -338,7 +355,9 @@
     }
 
     function setModuleAvailable(id, available) {
-        state.availability.set(id, Boolean(available));
+        const nextAvailable = Boolean(available);
+        if (state.availability.get(id) === nextAvailable) return;
+        state.availability.set(id, nextAvailable);
         if (state.fallback) {
             applyFallbackVisibility();
             return;
