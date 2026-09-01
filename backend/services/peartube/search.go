@@ -262,12 +262,16 @@ func mapCandidate(request SearchRequest, candidate CompanionCandidateV2) models.
 		"provider":               ProviderName,
 		"peartube_candidate_ref": candidate.CandidateRef,
 	}
-	if candidate.Publication != nil {
-		setCandidateAttribute(attributes, "peartube_publication_id", candidate.Publication.PublicationID)
+	publicationID := candidate.PublicationID
+	if candidate.Publication != nil && candidate.Publication.PublicationID != "" {
+		publicationID = candidate.Publication.PublicationID
 	}
-	if candidate.Rendition != nil {
-		setCandidateAttribute(attributes, "peartube_rendition_id", candidate.Rendition.RenditionID)
+	renditionID := candidate.RenditionID
+	if candidate.Rendition != nil && candidate.Rendition.RenditionID != "" {
+		renditionID = candidate.Rendition.RenditionID
 	}
+	setCandidateAttribute(attributes, "peartube_publication_id", publicationID)
+	setCandidateAttribute(attributes, "peartube_rendition_id", renditionID)
 	setCandidateAttribute(attributes, "sourceFileName", candidate.SourceFileName)
 	var sizeBytes int64
 	if candidate.Rendition != nil {

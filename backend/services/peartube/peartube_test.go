@@ -410,8 +410,8 @@ func TestMapCandidateUsesExactSourceFilenameAndDeterministicPublicationIdentity(
 	candidate := CompanionCandidateV2{
 		CandidateRef:   candidateRefA,
 		SourceFileName: "Justice.League.Dark.2017.1080p.BluRay.x265-RARBG.mp4",
-		Publication:    &CompanionPublicationV2{PublicationID: "publication-1"},
-		Rendition:      &CompanionRenditionV2{RenditionID: "rendition-1"},
+		PublicationID:  "publication-1",
+		RenditionID:    "rendition-1",
 	}
 	result := MapCandidates(SearchRequest{Title: "Justice League Dark", Year: 2017, MediaType: "movie"}, []CompanionCandidateV2{candidate})[0]
 
