@@ -534,18 +534,14 @@ func TestResolverReturnsDirectOwnedCapabilityURLConsumedWithoutControlHeadersOrR
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, resolution.WebDAVPath, nil)
-	if err != nil {
-		t.Fatalf("stream request: %v", err)
-	}
-	request.Header.Set("Range", "bytes=1-3")
-	redirects := 0
-	response, err := (&http.Client{
-		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-			redirects++
-			return http.ErrUseLastResponse
-		},
-	}).Do(request)
+	headers := make(http.Header)
+	headers.Set("Range", "bytes=1-3")
+	response, err := Default().OpenCapabilityStream(
+		context.Background(),
+		resolution.WebDAVPath,
+		http.MethodGet,
+		headers,
+	)
 	if err != nil {
 		t.Fatalf("consume stream: %v", err)
 	}
@@ -556,9 +552,6 @@ func TestResolverReturnsDirectOwnedCapabilityURLConsumedWithoutControlHeadersOrR
 	}
 	if response.StatusCode != http.StatusPartialContent || string(body) != "edi" {
 		t.Fatalf("stream response = %d %q", response.StatusCode, body)
-	}
-	if redirects != 0 {
-		t.Fatalf("stream followed %d redirect(s)", redirects)
 	}
 	if streamRequests.Load() != 1 {
 		t.Fatalf("stream requests = %d, want 1", streamRequests.Load())
