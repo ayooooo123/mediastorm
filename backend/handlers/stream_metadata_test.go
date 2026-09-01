@@ -26,6 +26,20 @@ func TestStreamMediaMetadataSourceServiceTypeRoundTrip(t *testing.T) {
 	}
 }
 
+func TestStreamMediaMetadataPearTubeSourceRoundTrip(t *testing.T) {
+	req := httptest.NewRequest("GET", "/video/stream?sourceServiceType=PearTube", nil)
+	meta := parseStreamMediaMetadata(req)
+	if meta.SourceServiceType != "peartube" {
+		t.Fatalf("SourceServiceType = %q, want peartube", meta.SourceServiceType)
+	}
+
+	values := url.Values{}
+	addStreamMediaMetadataParams(values, meta)
+	if got := values.Get("sourceServiceType"); got != "peartube" {
+		t.Fatalf("sourceServiceType param = %q, want peartube", got)
+	}
+}
+
 func TestStreamMediaMetadataRejectsUnknownSourceServiceType(t *testing.T) {
 	req := httptest.NewRequest("GET", "/video/stream?sourceServiceType=unknown", nil)
 	if got := parseStreamMediaMetadata(req).SourceServiceType; got != "" {
