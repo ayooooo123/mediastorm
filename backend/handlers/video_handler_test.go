@@ -127,6 +127,17 @@ func TestStreamViaProviderReadsPearTubeBlobServerOverLoopback(t *testing.T) {
 	if recorder.Header().Get("Content-Range") != "bytes 1-3/5" {
 		t.Fatalf("Content-Range = %q", recorder.Header().Get("Content-Range"))
 	}
+
+	rawRequest := httptest.NewRequest(http.MethodGet, "/api/video/stream", nil)
+	rawRequest.Header.Set("Range", "bytes=1-3")
+	rawRecorder := httptest.NewRecorder()
+	rawHandled, rawErr := handler.streamViaProvider(rawRecorder, rawRequest, streamURL)
+	if !rawHandled || rawErr == nil {
+		t.Fatalf("raw loopback URL bypassed opaque handle: handled=%t err=%v", rawHandled, rawErr)
+	}
+	if rawRecorder.Code != http.StatusBadRequest {
+		t.Fatalf("raw loopback status = %d, want 400", rawRecorder.Code)
+	}
 }
 
 func TestProxyExternalURLUsesConfiguredUsenetWebDAVAuth(t *testing.T) {
