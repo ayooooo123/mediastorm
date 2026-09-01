@@ -41,6 +41,7 @@ import (
 	"novastream/services/credits"
 	"novastream/services/debrid"
 	"novastream/services/libraryaccess"
+	"novastream/services/peartube"
 	"novastream/services/playback"
 	"novastream/services/streaming"
 
@@ -1191,6 +1192,11 @@ func (h *VideoHandler) StreamVideo(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *VideoHandler) streamViaProvider(w http.ResponseWriter, r *http.Request, cleanPath string) (bool, error) {
+	if strings.HasPrefix(cleanPath, "http://unix/") {
+		if client := peartube.Default(); client != nil {
+			return h.proxyPearTubeCapability(w, r, client, cleanPath)
+		}
+	}
 	// Check if this is a pre-resolved external URL (e.g., from AIOStreams)
 	// These URLs should be proxied directly rather than going through the provider
 	if strings.HasPrefix(cleanPath, "http://") || strings.HasPrefix(cleanPath, "https://") {
@@ -6516,6 +6522,31 @@ func (h *VideoHandler) videoFullToUnifiedProbe(result *VideoFullResult) *Unified
 	}
 
 	return cached
+}
+
+func (h *VideoHandler) proxyPearTubeCapability(w http.ResponseWriter, r *http.Request, client *peartube.Client, streamURL string) (bool, error) {
+	response, err := client.OpenCapabilityStream(r.Context(), streamURL, r.Method, r.Header)
+	if err != nil {
+		http.Error(w, "PearTube stream is unavailable", http.StatusBadGateway)
+		return true, err
+	}
+	defer response.Body.Close()
+
+	h.writeCommonHeaders(w)
+	for _, name := range []string{"Accept-Ranges", "Cache-Control", "Content-Length", "Content-Range", "Content-Type", "ETag", "Last-Modified"} {
+		if value := response.Header.Get(name); value != "" {
+			w.Header().Set(name, value)
+		}
+	}
+	w.WriteHeader(response.StatusCode)
+	if r.Method == http.MethodHead {
+		return true, nil
+	}
+	_, err = io.Copy(w, response.Body)
+	if err != nil && !isClientGone(err) {
+		return true, err
+	}
+	return true, nil
 }
 
 // proxyExternalURL proxies a pre-resolved external URL (e.g., from AIOStreams) to the client.
