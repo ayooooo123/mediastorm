@@ -256,6 +256,22 @@ func TestResults_MediaTypeFiltering(t *testing.T) {
 		}
 	})
 
+	t.Run("movie search accepts nikt0 release group", func(t *testing.T) {
+		results := []models.NZBResult{
+			{Title: "Batman Death in the Family 2020 1080p BluRay x264-nikt0"},
+		}
+
+		filtered := Results(results, Options{
+			ExpectedTitle: "Batman: Death in the Family",
+			ExpectedYear:  2020,
+			IsMovie:       true,
+		})
+
+		if len(filtered) != 1 {
+			t.Fatalf("expected nikt0 movie release to pass, got %d results", len(filtered))
+		}
+	})
+
 	// Test that movie results are filtered out when searching for TV shows
 	t.Run("TV search rejects movie patterns", func(t *testing.T) {
 		results := []models.NZBResult{

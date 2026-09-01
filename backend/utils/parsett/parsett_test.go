@@ -61,3 +61,28 @@ func TestParseTitlePreservesCountry(t *testing.T) {
 		t.Fatalf("Country = %q, want UK", result.Country)
 	}
 }
+
+func TestParseTitleIgnoresNikt0ReleaseGroupAsSeasonZero(t *testing.T) {
+	for _, title := range []string{
+		"Batman Death in the Family 2020 1080p BluRay x264-nikt0",
+		"Batman.Death.in.the.Family.2020.1080p.BluRay.x264-nikt0",
+	} {
+		parsed, err := ParseTitle(title)
+		if err != nil {
+			t.Fatalf("ParseTitle(%q): %v", title, err)
+		}
+		if len(parsed.Seasons) != 0 {
+			t.Fatalf("ParseTitle(%q) seasons = %v, want none", title, parsed.Seasons)
+		}
+	}
+}
+
+func TestParseTitlePreservesExplicitSpecialWithNikt0Group(t *testing.T) {
+	parsed, err := ParseTitle("Example.Show.S00E01.1080p.WEB-DL.x264-nikt0")
+	if err != nil {
+		t.Fatalf("ParseTitle: %v", err)
+	}
+	if len(parsed.Seasons) != 1 || parsed.Seasons[0] != 0 || len(parsed.Episodes) != 1 || parsed.Episodes[0] != 1 {
+		t.Fatalf("season/episode = %v/%v, want [0]/[1]", parsed.Seasons, parsed.Episodes)
+	}
+}

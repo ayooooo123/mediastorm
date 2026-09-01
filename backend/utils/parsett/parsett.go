@@ -1,8 +1,13 @@
 package parsett
 
 import (
+	"regexp"
+	"strings"
+
 	ptt "github.com/itsrenoria/ptt-go"
 )
+
+var nikt0ReleaseGroupPattern = regexp.MustCompile(`(?i)(?:^|[.\s_-])nikt0(?:$|[.\s_-])`)
 
 // ParsedTitle represents parsed metadata from a media/torrent title
 type ParsedTitle struct {
@@ -34,11 +39,11 @@ type ParsedTitle struct {
 }
 
 // fromTorrentInfo converts ptt-go's TorrentInfo to our ParsedTitle
-func fromTorrentInfo(info *ptt.TorrentInfo) *ParsedTitle {
+func fromTorrentInfo(rawTitle string, info *ptt.TorrentInfo) *ParsedTitle {
 	if info == nil {
 		return nil
 	}
-	return &ParsedTitle{
+	parsed := &ParsedTitle{
 		Title:      info.Title,
 		Year:       info.Year,
 		Resolution: info.Resolution,
@@ -61,18 +66,27 @@ func fromTorrentInfo(info *ptt.TorrentInfo) *ParsedTitle {
 		BitDepth:   info.BitDepth,
 		HDR:        info.HDR,
 	}
+	// ptt-go's Portuguese season pattern treats the trailing "t0" in the
+	// nikt0 release-group name as season zero. Discard only that isolated false
+	// positive; explicit season/episode metadata and every non-nikt0 result are
+	// left untouched.
+	if len(parsed.Seasons) == 1 && parsed.Seasons[0] == 0 && len(parsed.Episodes) == 0 && len(parsed.Volumes) == 0 &&
+		nikt0ReleaseGroupPattern.MatchString(strings.TrimSpace(rawTitle)) {
+		parsed.Seasons = nil
+	}
+	return parsed
 }
 
 // ParseTitle parses a single media title using ptt-go (native Go, no subprocess)
 func ParseTitle(title string) (*ParsedTitle, error) {
-	return fromTorrentInfo(ptt.Parse(title)), nil
+	return fromTorrentInfo(title, ptt.Parse(title)), nil
 }
 
 // ParseTitleBatch parses multiple titles and returns a map of title -> parsed result
 func ParseTitleBatch(titles []string) (map[string]*ParsedTitle, error) {
 	resultMap := make(map[string]*ParsedTitle, len(titles))
 	for _, title := range titles {
-		resultMap[title] = fromTorrentInfo(ptt.Parse(title))
+		resultMap[title] = fromTorrentInfo(title, ptt.Parse(title))
 	}
 	return resultMap, nil
 }
