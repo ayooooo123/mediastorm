@@ -439,7 +439,7 @@ func main() {
 	var remoteAccessService *remoteaccess.Service
 	if store != nil {
 		remoteAccessHost = remoteaccess.NewIrohHostManager("", settings.Cache.Directory, settings.Server.Port)
-		remoteAccessService = remoteaccess.NewService(store.RemoteAccessInvites(), remoteAccessHost)
+		remoteAccessService = remoteaccess.NewService(store.RemoteAccessInvites(), remoteAccessHost, store.RemoteAccessPairings())
 		remoteAccessHandler = handlers.NewRemoteAccessHandler(remoteAccessService)
 		r.Use(handlers.RemoteAccessRevocationMiddleware(remoteAccessService))
 		defer func() {

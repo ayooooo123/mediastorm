@@ -71,7 +71,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, X-PIN, X-Client-ID, Cache-Control, Pragma")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, X-PIN, X-Client-ID, X-Remote-Access-Credential, Cache-Control, Pragma")
 		}
 
 		// Handle preflight requests
@@ -195,6 +195,8 @@ func Register(
 		api.HandleFunc("/remote-access/invites/resolve", remoteAccessHandler.Options).Methods(http.MethodOptions)
 		api.HandleFunc("/remote-access/invites/claim", remoteAccessHandler.ClaimInvite).Methods(http.MethodPost)
 		api.HandleFunc("/remote-access/invites/claim", remoteAccessHandler.Options).Methods(http.MethodOptions)
+		api.HandleFunc("/remote-access/pairings/credential", remoteAccessHandler.UpgradePairingCredential).Methods(http.MethodPost)
+		api.HandleFunc("/remote-access/pairings/credential", remoteAccessHandler.Options).Methods(http.MethodOptions)
 
 		protected.HandleFunc("/remote-access/status", remoteAccessHandler.Status).Methods(http.MethodGet)
 		protected.HandleFunc("/remote-access/status", remoteAccessHandler.Options).Methods(http.MethodOptions)

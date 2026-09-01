@@ -27,6 +27,25 @@ type RemoteAccessInvite struct {
 	CreatedAt      time.Time  `json:"createdAt"`
 }
 
+// RemoteAccessPairing is the durable device authorization created by consuming an
+// invitation. CredentialHash is a SHA-256 digest of the device-held pairing secret;
+// the plaintext secret never enters persistent backend storage.
+type RemoteAccessPairing struct {
+	ID                  string     `json:"id"`
+	InviteID            *string    `json:"inviteId,omitempty"`
+	PeerID              string     `json:"peerId"`
+	CredentialHash      string     `json:"-"`
+	PeerName            string     `json:"peerName,omitempty"`
+	CreatedBy           string     `json:"createdBy"`
+	CreatedAt           time.Time  `json:"createdAt"`
+	LastAuthenticatedAt *time.Time `json:"lastAuthenticatedAt,omitempty"`
+	RevokedAt           *time.Time `json:"revokedAt,omitempty"`
+}
+
+func (p *RemoteAccessPairing) IsActive() bool {
+	return p != nil && p.RevokedAt == nil
+}
+
 func (i *RemoteAccessInvite) IsActive(now time.Time) bool {
 	if i.RevokedAt != nil {
 		return false

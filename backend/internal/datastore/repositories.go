@@ -141,6 +141,23 @@ type RemoteAccessInviteRepository interface {
 	Count(ctx context.Context) (int64, error)
 }
 
+type RemoteAccessPairingRepository interface {
+	Get(ctx context.Context, id string) (*models.RemoteAccessPairing, error)
+	GetByPeerID(ctx context.Context, peerID string) (*models.RemoteAccessPairing, error)
+	List(ctx context.Context) ([]models.RemoteAccessPairing, error)
+	Create(ctx context.Context, pairing *models.RemoteAccessPairing) error
+	Update(ctx context.Context, pairing *models.RemoteAccessPairing) error
+	Delete(ctx context.Context, id string) error
+	Count(ctx context.Context) (int64, error)
+}
+
+// RemoteAccessPairingClaimer is implemented by repositories that can consume an
+// invitation, create its durable pairing, and retire the invitation secret in one
+// database statement.
+type RemoteAccessPairingClaimer interface {
+	ClaimInvite(ctx context.Context, tokenHash, peerID, credentialHash, pairingID string, now time.Time) (*models.RemoteAccessInvite, error)
+}
+
 // ClientRepository manages client/device persistence.
 type ClientRepository interface {
 	Get(ctx context.Context, id string) (*models.Client, error)

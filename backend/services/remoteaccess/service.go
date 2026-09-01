@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -20,12 +21,13 @@ import (
 )
 
 var (
-	ErrInviteNotFound = errors.New("remote access invite not found")
-	ErrInviteExpired  = errors.New("remote access invite has expired")
-	ErrInviteUsed     = errors.New("remote access invite has already been used")
-	ErrInviteRevoked  = errors.New("remote access invite has been revoked")
-	ErrInvalidToken   = errors.New("invalid remote access invite token")
-	ErrInvalidPeerID  = errors.New("invalid remote access peer id")
+	ErrInviteNotFound           = errors.New("remote access invite not found")
+	ErrInviteExpired            = errors.New("remote access invite has expired")
+	ErrInviteUsed               = errors.New("remote access invite has already been used")
+	ErrInviteRevoked            = errors.New("remote access invite has been revoked")
+	ErrInvalidToken             = errors.New("invalid remote access invite token")
+	ErrInvalidPeerID            = errors.New("invalid remote access peer id")
+	ErrInvalidPairingCredential = errors.New("invalid remote access pairing credential")
 )
 
 const (
@@ -69,17 +71,22 @@ type SyncSummary struct {
 }
 
 type Service struct {
-	invites datastore.RemoteAccessInviteRepository
-	host    HostManager
-	now     func() time.Time
+	invites  datastore.RemoteAccessInviteRepository
+	pairings datastore.RemoteAccessPairingRepository
+	host     HostManager
+	now      func() time.Time
 }
 
-func NewService(invites datastore.RemoteAccessInviteRepository, host HostManager) *Service {
-	return &Service{
+func NewService(invites datastore.RemoteAccessInviteRepository, host HostManager, pairings ...datastore.RemoteAccessPairingRepository) *Service {
+	service := &Service{
 		invites: invites,
 		host:    host,
 		now:     func() time.Time { return time.Now().UTC() },
 	}
+	if len(pairings) > 0 {
+		service.pairings = pairings[0]
+	}
+	return service
 }
 
 func (s *Service) Status(ctx context.Context) models.RemoteAccessStatus {
@@ -165,6 +172,18 @@ func (s *Service) RevokeInvite(ctx context.Context, id string) error {
 		return ErrInviteNotFound
 	}
 	now := s.now()
+	if s.pairings != nil && inv.UsedByPeerID != "" {
+		pairing, err := s.pairings.GetByPeerID(ctx, inv.UsedByPeerID)
+		if err != nil {
+			return err
+		}
+		if pairing != nil && pairing.InviteID != nil && *pairing.InviteID == inv.ID && pairing.RevokedAt == nil {
+			pairing.RevokedAt = &now
+			if err := s.pairings.Update(ctx, pairing); err != nil {
+				return err
+			}
+		}
+	}
 	inv.RevokedAt = &now
 	if err := s.invites.Update(ctx, inv); err != nil {
 		return err
@@ -187,6 +206,18 @@ func (s *Service) RevokePeer(ctx context.Context, peerID string) (int, error) {
 	}
 	now := s.now()
 	count := 0
+	if s.pairings != nil {
+		pairing, err := s.pairings.GetByPeerID(ctx, peerID)
+		if err != nil {
+			return 0, err
+		}
+		if pairing != nil && pairing.RevokedAt == nil {
+			pairing.RevokedAt = &now
+			if err := s.pairings.Update(ctx, pairing); err != nil {
+				return 0, err
+			}
+		}
+	}
 	for i := range invites {
 		inv := &invites[i]
 		if inv.UsedAt == nil || inv.UsedByPeerID != peerID || inv.RevokedAt != nil {
@@ -213,6 +244,13 @@ func (s *Service) IsPeerRevoked(ctx context.Context, peerID string) (bool, error
 	if peerID == "" {
 		return false, nil
 	}
+	if s.pairings != nil {
+		pairing, err := s.pairings.GetByPeerID(ctx, peerID)
+		if err != nil {
+			return false, err
+		}
+		return pairing != nil && pairing.RevokedAt != nil, nil
+	}
 	invites, err := s.invites.List(ctx)
 	if err != nil {
 		return false, err
@@ -234,9 +272,33 @@ func (s *Service) IsPeerRevoked(ctx context.Context, peerID string) (bool, error
 // non-revoked pairing. Expiry only limits the initial claim; a consumed pairing
 // remains valid until an administrator explicitly revokes it.
 func (s *Service) IsPeerAuthorized(ctx context.Context, peerID string) (bool, error) {
+	return s.AuthorizePeer(ctx, peerID, "")
+}
+
+// AuthorizePeer verifies the durable device pairing. Legacy rows created by the schema
+// migration have no credential hash and temporarily retain peer-ID authorization until the
+// updated client rotates them through UpgradePairingCredential.
+func (s *Service) AuthorizePeer(ctx context.Context, peerID, credential string) (bool, error) {
 	peerID = strings.TrimSpace(peerID)
 	if peerID == "" {
 		return false, nil
+	}
+	if s.pairings != nil {
+		pairing, err := s.pairings.GetByPeerID(ctx, peerID)
+		if err != nil {
+			return false, err
+		}
+		if pairing == nil || pairing.RevokedAt != nil {
+			return false, nil
+		}
+		if pairing.CredentialHash == "" {
+			return true, nil
+		}
+		actual, err := hashPairingCredential(credential)
+		if err != nil {
+			return false, nil
+		}
+		return subtle.ConstantTimeCompare([]byte(pairing.CredentialHash), []byte(actual)) == 1, nil
 	}
 	invites, err := s.invites.List(ctx)
 	if err != nil {
@@ -252,7 +314,7 @@ func (s *Service) IsPeerAuthorized(ctx context.Context, peerID string) (bool, er
 
 // (Supervise rewrites the rendezvous file, so RevokeInvite relies on it via the call above.)
 
-func (s *Service) ClaimInvite(ctx context.Context, token, peerID string) (models.RemoteAccessInvite, error) {
+func (s *Service) ClaimInvite(ctx context.Context, token, peerID string, credentials ...string) (models.RemoteAccessInvite, error) {
 	token = strings.TrimSpace(token)
 	if token == "" {
 		return models.RemoteAccessInvite{}, ErrInvalidToken
@@ -261,9 +323,44 @@ func (s *Service) ClaimInvite(ctx context.Context, token, peerID string) (models
 	if peerID == "" || len(peerID) > 256 {
 		return models.RemoteAccessInvite{}, ErrInvalidPeerID
 	}
+	credential := ""
+	if len(credentials) > 0 {
+		credential = strings.TrimSpace(credentials[0])
+	}
+	credentialHash := ""
+	if credential != "" {
+		var err error
+		credentialHash, err = hashPairingCredential(credential)
+		if err != nil {
+			return models.RemoteAccessInvite{}, err
+		}
+		// A staged client can safely retry after the first claim response was lost and
+		// the invitation secret was already retired.
+		if s.pairings != nil {
+			pairing, err := s.pairings.GetByPeerID(ctx, peerID)
+			if err != nil {
+				return models.RemoteAccessInvite{}, err
+			}
+			if pairing != nil && pairing.RevokedAt == nil && pairing.CredentialHash != "" &&
+				subtle.ConstantTimeCompare([]byte(pairing.CredentialHash), []byte(credentialHash)) == 1 {
+				return s.latestClaimedInviteForPeer(ctx, peerID)
+			}
+		}
+	}
+	if s.pairings != nil && credentialHash == "" {
+		return models.RemoteAccessInvite{}, ErrInvalidPairingCredential
+	}
 	tokenHash := HashInviteToken(token)
 	now := s.now()
-	inv, err := s.invites.ClaimByTokenHash(ctx, tokenHash, peerID, now)
+	var inv *models.RemoteAccessInvite
+	var err error
+	claimedAtomically := false
+	if claimer, ok := s.pairings.(datastore.RemoteAccessPairingClaimer); ok {
+		inv, err = claimer.ClaimInvite(ctx, tokenHash, peerID, credentialHash, uuid.NewString(), now)
+		claimedAtomically = true
+	} else {
+		inv, err = s.invites.ClaimByTokenHash(ctx, tokenHash, peerID, now)
+	}
 	if err != nil {
 		return models.RemoteAccessInvite{}, err
 	}
@@ -283,12 +380,99 @@ func (s *Service) ClaimInvite(ctx context.Context, token, peerID string) (models
 		}
 		return models.RemoteAccessInvite{}, ErrInviteUsed
 	}
+	if s.pairings != nil && !claimedAtomically {
+		pairing, err := s.pairings.GetByPeerID(ctx, peerID)
+		if err != nil {
+			return models.RemoteAccessInvite{}, err
+		}
+		if pairing == nil {
+			pairing = &models.RemoteAccessPairing{
+				ID: uuid.NewString(), PeerID: peerID, CreatedAt: now,
+			}
+		}
+		inviteID := inv.ID
+		pairing.InviteID = &inviteID
+		pairing.CredentialHash = credentialHash
+		pairing.PeerName = inv.PeerName
+		pairing.CreatedBy = inv.CreatedBy
+		pairing.RevokedAt = nil
+		if pairing.CreatedAt.IsZero() {
+			pairing.CreatedAt = now
+		}
+		if existing, err := s.pairings.Get(ctx, pairing.ID); err != nil {
+			return models.RemoteAccessInvite{}, err
+		} else if existing == nil {
+			if err := s.pairings.Create(ctx, pairing); err != nil {
+				return models.RemoteAccessInvite{}, err
+			}
+		} else if err := s.pairings.Update(ctx, pairing); err != nil {
+			return models.RemoteAccessInvite{}, err
+		}
+
+		// The pairing is now the durable authorization. Retire both copies of the
+		// invitation secret so backups and administrative APIs cannot disclose it.
+		inv.ConnectionCode = ""
+		inv.TokenHash = "claimed:" + inv.ID
+		if err := s.invites.Update(ctx, inv); err != nil {
+			return models.RemoteAccessInvite{}, err
+		}
+	}
 	// The invite is now claimed, so its code no longer needs to be resolvable on the DHT;
 	// drop it immediately rather than waiting for the next Supervise tick. Best-effort:
 	// Supervise re-syncs on its timer, so a transient failure here self-heals.
 	s.trySyncRendezvousCodes(ctx)
 	inv.Token = ""
 	return *inv, nil
+}
+
+func (s *Service) latestClaimedInviteForPeer(ctx context.Context, peerID string) (models.RemoteAccessInvite, error) {
+	invites, err := s.invites.List(ctx)
+	if err != nil {
+		return models.RemoteAccessInvite{}, err
+	}
+	var matched *models.RemoteAccessInvite
+	for i := range invites {
+		inv := &invites[i]
+		if inv.UsedAt == nil || inv.UsedByPeerID != peerID {
+			continue
+		}
+		if matched == nil || inv.UsedAt.After(*matched.UsedAt) {
+			matched = inv
+		}
+	}
+	if matched == nil {
+		return models.RemoteAccessInvite{}, ErrInviteNotFound
+	}
+	return *matched, nil
+}
+
+func (s *Service) UpgradePairingCredential(ctx context.Context, peerID, credential string) error {
+	if s.pairings == nil {
+		return errors.New("remote access pairings are not configured")
+	}
+	peerID = strings.TrimSpace(peerID)
+	if peerID == "" {
+		return ErrInvalidPeerID
+	}
+	hash, err := hashPairingCredential(credential)
+	if err != nil {
+		return err
+	}
+	pairing, err := s.pairings.GetByPeerID(ctx, peerID)
+	if err != nil {
+		return err
+	}
+	if pairing == nil {
+		return ErrInviteNotFound
+	}
+	if pairing.RevokedAt != nil {
+		return ErrInviteRevoked
+	}
+	if pairing.CredentialHash != "" && subtle.ConstantTimeCompare([]byte(pairing.CredentialHash), []byte(hash)) != 1 {
+		return ErrInvalidPairingCredential
+	}
+	pairing.CredentialHash = hash
+	return s.pairings.Update(ctx, pairing)
 }
 
 func (s *Service) ResolveInvite(ctx context.Context, token string) (models.RemoteAccessInvite, error) {
@@ -380,7 +564,19 @@ func (s *Service) Supervise(ctx context.Context) (SyncSummary, error) {
 	// pass (startup + the 1-minute ticker + after revoke), covering both newly added
 	// codes and emptying the file once the last invite lapses.
 	s.trySyncRendezvousCodes(ctx)
-	if len(active) == 0 {
+	activePairings := 0
+	if s.pairings != nil {
+		pairings, err := s.pairings.List(ctx)
+		if err != nil {
+			return summary, err
+		}
+		for i := range pairings {
+			if pairings[i].IsActive() {
+				activePairings++
+			}
+		}
+	}
+	if len(active) == 0 && activePairings == 0 {
 		if s.host != nil {
 			if status := s.host.Status(ctx); status.Running {
 				if err := s.host.Stop(ctx); err != nil {
@@ -498,6 +694,20 @@ func (s *Service) RendezvousFilePath() string {
 func HashInviteToken(token string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(token)))
 	return hex.EncodeToString(sum[:])
+}
+
+func hashPairingCredential(credential string) (string, error) {
+	credential = strings.TrimSpace(credential)
+	if len(credential) < 32 || len(credential) > 256 {
+		return "", ErrInvalidPairingCredential
+	}
+	for _, char := range credential {
+		if char < 0x21 || char > 0x7e {
+			return "", ErrInvalidPairingCredential
+		}
+	}
+	sum := sha256.Sum256([]byte(credential))
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // codeAlphabet is Crockford base32 (no I, L, O, U) so codes are unambiguous to read

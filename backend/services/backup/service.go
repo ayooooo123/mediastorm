@@ -774,6 +774,18 @@ type rawRemoteAccessInvite struct {
 	CreatedAt      time.Time  `json:"createdAt"`
 }
 
+type rawRemoteAccessPairing struct {
+	ID                  string     `json:"id"`
+	InviteID            *string    `json:"inviteId,omitempty"`
+	PeerID              string     `json:"peerId"`
+	CredentialHash      string     `json:"credentialHash"`
+	PeerName            string     `json:"peerName,omitempty"`
+	CreatedBy           string     `json:"createdBy"`
+	CreatedAt           time.Time  `json:"createdAt"`
+	LastAuthenticatedAt *time.Time `json:"lastAuthenticatedAt,omitempty"`
+	RevokedAt           *time.Time `json:"revokedAt,omitempty"`
+}
+
 // localMediaItemExport includes file path fields that API models hide with json:"-".
 type localMediaItemExport struct {
 	ID               string                       `json:"id"`
@@ -822,6 +834,7 @@ type databaseExport struct {
 	Sessions                 []models.Session                       `json:"sessions"`
 	Invitations              []models.Invitation                    `json:"invitations"`
 	RemoteAccessInvites      []rawRemoteAccessInvite                `json:"remoteAccessInvites,omitempty"`
+	RemoteAccessPairings     []rawRemoteAccessPairing               `json:"remoteAccessPairings,omitempty"`
 	ShareLinks               []rawShareLink                         `json:"shareLinks,omitempty"`
 	Clients                  []models.Client                        `json:"clients"`
 	ClientSettings           map[string]models.ClientFilterSettings `json:"clientSettings"`
@@ -858,6 +871,7 @@ var databaseExportSections = []string{
 	"sessions",
 	"invitations",
 	"remoteAccessInvites",
+	"remoteAccessPairings",
 	"shareLinks",
 	"clients",
 	"clientSettings",
@@ -936,6 +950,18 @@ func (s *Service) exportDatabaseBytes() ([]byte, error) {
 			IrohInvite: inv.IrohInvite, CreatedBy: inv.CreatedBy, PeerName: inv.PeerName,
 			ExpiresAt: inv.ExpiresAt, UsedAt: inv.UsedAt, UsedByPeerID: inv.UsedByPeerID,
 			RevokedAt: inv.RevokedAt, CreatedAt: inv.CreatedAt,
+		})
+	}
+	remotePairings, err := s.store.RemoteAccessPairings().List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("export remote access pairings: %w", err)
+	}
+	export.RemoteAccessPairings = make([]rawRemoteAccessPairing, 0, len(remotePairings))
+	for _, pairing := range remotePairings {
+		export.RemoteAccessPairings = append(export.RemoteAccessPairings, rawRemoteAccessPairing{
+			ID: pairing.ID, InviteID: pairing.InviteID, PeerID: pairing.PeerID,
+			CredentialHash: pairing.CredentialHash, PeerName: pairing.PeerName, CreatedBy: pairing.CreatedBy,
+			CreatedAt: pairing.CreatedAt, LastAuthenticatedAt: pairing.LastAuthenticatedAt, RevokedAt: pairing.RevokedAt,
 		})
 	}
 
@@ -1184,6 +1210,19 @@ func (s *Service) importDatabaseBytes(data []byte) error {
 			}
 			if err := tx.RemoteAccessInvites().Create(ctx, &inv); err != nil {
 				return fmt.Errorf("restore remote access invite %s: %w", inv.ID, err)
+			}
+		}
+		for i := range export.RemoteAccessPairings {
+			pairing := models.RemoteAccessPairing{
+				ID: export.RemoteAccessPairings[i].ID, InviteID: export.RemoteAccessPairings[i].InviteID,
+				PeerID: export.RemoteAccessPairings[i].PeerID, CredentialHash: export.RemoteAccessPairings[i].CredentialHash,
+				PeerName: export.RemoteAccessPairings[i].PeerName, CreatedBy: export.RemoteAccessPairings[i].CreatedBy,
+				CreatedAt:           export.RemoteAccessPairings[i].CreatedAt,
+				LastAuthenticatedAt: export.RemoteAccessPairings[i].LastAuthenticatedAt,
+				RevokedAt:           export.RemoteAccessPairings[i].RevokedAt,
+			}
+			if err := tx.RemoteAccessPairings().Create(ctx, &pairing); err != nil {
+				return fmt.Errorf("restore remote access pairing %s: %w", pairing.ID, err)
 			}
 		}
 		for i := range export.ShareLinks {

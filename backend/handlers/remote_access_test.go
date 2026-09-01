@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +18,46 @@ import (
 type middlewareInviteRepo struct {
 	invites []models.RemoteAccessInvite
 	listErr error
+}
+
+type middlewarePairingRepo struct {
+	pairing *models.RemoteAccessPairing
+}
+
+func (r *middlewarePairingRepo) Get(_ context.Context, id string) (*models.RemoteAccessPairing, error) {
+	if r.pairing == nil || r.pairing.ID != id {
+		return nil, nil
+	}
+	copy := *r.pairing
+	return &copy, nil
+}
+func (r *middlewarePairingRepo) GetByPeerID(_ context.Context, peerID string) (*models.RemoteAccessPairing, error) {
+	if r.pairing == nil || r.pairing.PeerID != peerID {
+		return nil, nil
+	}
+	copy := *r.pairing
+	return &copy, nil
+}
+func (r *middlewarePairingRepo) List(context.Context) ([]models.RemoteAccessPairing, error) {
+	if r.pairing == nil {
+		return nil, nil
+	}
+	return []models.RemoteAccessPairing{*r.pairing}, nil
+}
+func (r *middlewarePairingRepo) Create(_ context.Context, pairing *models.RemoteAccessPairing) error {
+	copy := *pairing
+	r.pairing = &copy
+	return nil
+}
+func (r *middlewarePairingRepo) Update(ctx context.Context, pairing *models.RemoteAccessPairing) error {
+	return r.Create(ctx, pairing)
+}
+func (r *middlewarePairingRepo) Delete(context.Context, string) error { r.pairing = nil; return nil }
+func (r *middlewarePairingRepo) Count(context.Context) (int64, error) {
+	if r.pairing == nil {
+		return 0, nil
+	}
+	return 1, nil
 }
 
 func TestClaimInviteRequiresBodyAndHeaderDeviceIdentityToMatch(t *testing.T) {
@@ -132,5 +174,70 @@ func TestRemoteAccessRevocationMiddlewareFailsClosedWhenPairingLookupFails(t *te
 
 	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestRemoteAccessMiddlewareRequiresCredentialForUpgradedPairing(t *testing.T) {
+	credential := strings.Repeat("a", 43)
+	digest := sha256.Sum256([]byte(credential))
+	hash := hex.EncodeToString(digest[:])
+	pairings := &middlewarePairingRepo{pairing: &models.RemoteAccessPairing{
+		ID: "pairing-1", PeerID: "device-1", CredentialHash: hash,
+	}}
+	handler := RemoteAccessRevocationMiddleware(remoteaccess.NewService(&middlewareInviteRepo{}, nil, pairings))(
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }),
+	)
+	for _, tc := range []struct {
+		name       string
+		credential string
+		want       int
+	}{
+		{name: "missing", want: http.StatusForbidden},
+		{name: "wrong", credential: strings.Repeat("b", 43), want: http.StatusForbidden},
+		{name: "matching", credential: credential, want: http.StatusNoContent},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+			req.Header.Set("X-Mediastorm-Iroh-Proxy", "1")
+			req.Header.Set("X-Client-ID", "device-1")
+			if tc.credential != "" {
+				req.Header.Set("X-Remote-Access-Credential", tc.credential)
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, req)
+			if response.Code != tc.want {
+				t.Fatalf("status=%d want=%d body=%s", response.Code, tc.want, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestUpgradePairingCredentialRequiresTrustedIrohTransport(t *testing.T) {
+	pairings := &middlewarePairingRepo{pairing: &models.RemoteAccessPairing{
+		ID: "legacy-1", PeerID: "device-1", CreatedBy: "account-1",
+	}}
+	handler := NewRemoteAccessHandler(remoteaccess.NewService(&middlewareInviteRepo{}, nil, pairings))
+	credential := strings.Repeat("c", 43)
+	body := `{"peerId":"device-1","credential":"` + credential + `"}`
+
+	direct := httptest.NewRequest(http.MethodPost, "/api/remote-access/pairings/credential", strings.NewReader(body))
+	direct.Header.Set("X-Client-ID", "device-1")
+	directResponse := httptest.NewRecorder()
+	handler.UpgradePairingCredential(directResponse, direct)
+	if directResponse.Code != http.StatusForbidden {
+		t.Fatalf("direct status=%d want=%d", directResponse.Code, http.StatusForbidden)
+	}
+
+	proxied := httptest.NewRequest(http.MethodPost, "/api/remote-access/pairings/credential", strings.NewReader(body))
+	proxied.Header.Set("X-Mediastorm-Iroh-Proxy", "1")
+	proxied.Header.Set("X-Client-ID", "device-1")
+	proxied.Header.Set("X-Remote-Access-Credential", credential)
+	proxiedResponse := httptest.NewRecorder()
+	handler.UpgradePairingCredential(proxiedResponse, proxied)
+	if proxiedResponse.Code != http.StatusOK {
+		t.Fatalf("proxied status=%d want=%d body=%s", proxiedResponse.Code, http.StatusOK, proxiedResponse.Body.String())
+	}
+	if pairings.pairing == nil || pairings.pairing.CredentialHash == "" {
+		t.Fatal("legacy pairing credential was not upgraded")
 	}
 }

@@ -14,6 +14,8 @@ import (
 	"novastream/models"
 )
 
+func ptr[T any](value T) *T { return &value }
+
 // mockConfigManager creates a minimal config manager for testing
 func mockConfigManager(t *testing.T) *config.Manager {
 	t.Helper()
@@ -682,6 +684,7 @@ func TestDatabaseExportSectionsCoverDurableTables(t *testing.T) {
 		"seriesOrdering",
 		"shareLinks",
 		"remoteAccessInvites",
+		"remoteAccessPairings",
 		"localMediaLibraries",
 		"localMediaItems",
 		"remoteMediaLibraries",
@@ -707,6 +710,10 @@ func TestDatabaseExportSectionsCoverDurableTables(t *testing.T) {
 		RemoteAccessInvites: []rawRemoteAccessInvite{{
 			ID: "inv1", TokenHash: "hash", CreatedBy: "master", PeerName: "peer",
 			ExpiresAt: now.Add(time.Hour), CreatedAt: now,
+		}},
+		RemoteAccessPairings: []rawRemoteAccessPairing{{
+			ID: "pair1", InviteID: ptr("inv1"), PeerID: "device-1", CredentialHash: "hash",
+			CreatedBy: "master", CreatedAt: now,
 		}},
 		ShareLinks: []rawShareLink{{
 			Token: "tok", AccountID: "master", Params: map[string]string{"url": "x"},
