@@ -1197,6 +1197,10 @@ func (h *VideoHandler) streamViaProvider(w http.ResponseWriter, r *http.Request,
 			return h.proxyPearTubeBlob(w, r, client, cleanPath)
 		}
 	}
+	if peartube.IsRawBlobStreamURL(cleanPath) {
+		http.Error(w, "raw PearTube blob URLs are not accepted", http.StatusBadRequest)
+		return true, errors.New("raw PearTube blob URL bypassed its opaque handle")
+	}
 	// Check if this is a pre-resolved external URL (e.g., from AIOStreams)
 	// These URLs should be proxied directly rather than going through the provider
 	if strings.HasPrefix(cleanPath, "http://") || strings.HasPrefix(cleanPath, "https://") {

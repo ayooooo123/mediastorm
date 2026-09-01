@@ -132,6 +132,14 @@ func decodeCompanionOpenResponse(response *http.Response) (companionOpenResponse
 	return opened, nil
 }
 
+// IsRawBlobStreamURL identifies a tokenized loopback blob URL. Such URLs are
+// accepted only during the authenticated companion exchange and must never be
+// accepted from a video API request.
+func IsRawBlobStreamURL(value string) bool {
+	_, err := validateLoopbackBlobURL(value)
+	return err == nil
+}
+
 func validateLoopbackBlobURL(rawURL string) (string, error) {
 	if rawURL == "" || len(rawURL) > 4096 {
 		return "", errors.New("companion blob URL is invalid")
