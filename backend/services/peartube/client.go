@@ -319,8 +319,7 @@ func IsBlobStreamReference(value string) bool {
 }
 
 // RegisterBlobStream binds one authenticated companion response to a bounded,
-// unguessable local handle.
-func (c *Client) RegisterBlobStream(rawURL string, expiresAtMS int64) (string, error) {
+func (c *Client) RegisterBlobStream(rawURL string, expiresAtMS int64, deterministicIdentity ...string) (string, error) {
 	if c == nil {
 		return "", ErrUnavailable
 	}
@@ -339,6 +338,17 @@ func (c *Client) RegisterBlobStream(rawURL string, expiresAtMS int64) (string, e
 		if !lease.expiresAt.After(now) {
 			delete(c.blobStreams, token)
 		}
+	}
+	identity := ""
+	if len(deterministicIdentity) > 0 {
+		identity = strings.TrimSpace(deterministicIdentity[0])
+	}
+	if identity != "" {
+		mac := hmac.New(sha512.New, c.companionSecret[:])
+		_, _ = mac.Write([]byte("mediastorm.peartube.blob-handle.v1\x00" + identity))
+		token := base64.RawURLEncoding.EncodeToString(mac.Sum(nil)[:32])
+		c.blobStreams[token] = blobStreamLease{url: owned, expiresAt: expiresAt}
+		return blobStreamReferencePrefix + token, nil
 	}
 	if len(c.blobStreams) >= maxBlobStreamLeases {
 		return "", errors.New("companion blob stream capacity is exhausted")
@@ -403,14 +413,15 @@ func (c *Client) PublisherID() string {
 // CompanionCandidateV2 is the bounded, URL-free part of one companion v2
 // search candidate. Unknown response fields are deliberately ignored.
 type CompanionCandidateV2 struct {
-	SchemaVersion int                      `json:"schemaVersion"`
-	CandidateRef  string                   `json:"candidateRef"`
-	Work          *CompanionWorkV2         `json:"work"`
-	Publication   *CompanionPublicationV2  `json:"publication"`
-	Rendition     *CompanionRenditionV2    `json:"rendition"`
-	Asset         *CompanionAssetV2        `json:"asset"`
-	Availability  *CompanionAvailabilityV2 `json:"availability"`
-	ExpectedBytes *uint64                  `json:"expectedBytes"`
+	SchemaVersion  int                      `json:"schemaVersion"`
+	CandidateRef   string                   `json:"candidateRef"`
+	SourceFileName string                   `json:"sourceFileName"`
+	Work           *CompanionWorkV2         `json:"work"`
+	Publication    *CompanionPublicationV2  `json:"publication"`
+	Rendition      *CompanionRenditionV2    `json:"rendition"`
+	Asset          *CompanionAssetV2        `json:"asset"`
+	Availability   *CompanionAvailabilityV2 `json:"availability"`
+	ExpectedBytes  *uint64                  `json:"expectedBytes"`
 }
 
 type CompanionWorkV2 struct {
@@ -611,6 +622,11 @@ func (candidate CompanionCandidateV2) validate() error {
 	}
 	if !validCandidateRef(candidate.CandidateRef) {
 		return errors.New("candidateRef is invalid")
+	}
+	if candidate.SourceFileName != "" {
+		if err := validateCompanionText(candidate.SourceFileName, "sourceFileName", maxCompanionTextBytes, false); err != nil {
+			return err
+		}
 	}
 	if candidate.Publication != nil {
 		if candidate.Publication.PublicationID != "" && !validCompanionID(candidate.Publication.PublicationID) {

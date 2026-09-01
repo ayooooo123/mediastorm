@@ -406,6 +406,23 @@ func TestMapCandidatesReturnsDeterministicURLLessPearTubeResults(t *testing.T) {
 		t.Fatalf("result leaked a playback locator: %s", serialized)
 	}
 }
+func TestMapCandidateUsesExactSourceFilenameAndDeterministicPublicationIdentity(t *testing.T) {
+	candidate := CompanionCandidateV2{
+		CandidateRef:   candidateRefA,
+		SourceFileName: "Justice.League.Dark.2017.1080p.BluRay.x265-RARBG.mp4",
+		Publication:    &CompanionPublicationV2{PublicationID: "publication-1"},
+		Rendition:      &CompanionRenditionV2{RenditionID: "rendition-1"},
+	}
+	result := MapCandidates(SearchRequest{Title: "Justice League Dark", Year: 2017, MediaType: "movie"}, []CompanionCandidateV2{candidate})[0]
+
+	if result.Title != candidate.SourceFileName {
+		t.Fatalf("title = %q, want exact source filename %q", result.Title, candidate.SourceFileName)
+	}
+	if result.Attributes["peartube_publication_id"] != "publication-1" ||
+		result.Attributes["peartube_rendition_id"] != "rendition-1" {
+		t.Fatalf("deterministic publication attributes = %+v", result.Attributes)
+	}
+}
 
 func TestSearchReturnsEmptyCandidates(t *testing.T) {
 	client := newCompanionSearchClient(t, func(w http.ResponseWriter, r *http.Request) {
