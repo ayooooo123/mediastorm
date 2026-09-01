@@ -52,7 +52,7 @@ const (
 	CompanionPublisherIDEnv  = "PEARTUBE_COMPANION_PUBLISHER_ID"
 	CompanionSharedSecretEnv = "PEARTUBE_COMPANION_SHARED_SECRET"
 	DefaultCompanionClient   = "mediastorm"
-	DefaultRelayURL = "http://127.0.0.1:8174"
+	DefaultRelayURL          = "http://127.0.0.1:8174"
 
 	apiPrefix          = "/api/v1"
 	companionAPIPrefix = "/api/v2"
@@ -208,16 +208,23 @@ func New(rawBaseURL string) (*Client, error) {
 		},
 	}
 	uploadClient := &http.Client{}
+	streamClient := &http.Client{
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 	if transport != nil {
 		httpClient.Transport = transport
 		companionClient.Transport = transport
 		uploadClient.Transport = transport
+		streamClient.Transport = transport
 	}
 	return &Client{
 		baseURL:              base,
 		http:                 httpClient,
 		companionHTTP:        companionClient,
 		uploads:              uploadClient,
+		streamHTTP:           streamClient,
 		companionClient:      clientID,
 		companionPublisherID: publisherID,
 		companionSecret:      secret,
@@ -272,6 +279,7 @@ type Client struct {
 	http          *http.Client
 	companionHTTP *http.Client
 	uploads       *http.Client
+	streamHTTP    *http.Client
 
 	companionClient      string
 	companionPublisherID string
@@ -291,6 +299,52 @@ func (c *Client) BaseURL() string {
 		return ""
 	}
 	return c.baseURL
+}
+
+// OpenCapabilityStream consumes one relay-issued stream capability through the
+// same transport that opened it. This is required for Unix-socket relays: the
+// synthetic http://unix origin is an ownership marker, not a DNS host.
+func (c *Client) OpenCapabilityStream(ctx context.Context, rawURL, method string, sourceHeaders http.Header) (*http.Response, error) {
+	if c == nil || c.streamHTTP == nil {
+		return nil, ErrUnavailable
+	}
+	method = strings.ToUpper(strings.TrimSpace(method))
+	if method != http.MethodGet && method != http.MethodHead {
+		return nil, errors.New("companion stream method is unsupported")
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, errors.New("companion stream URL is invalid")
+	}
+	base, err := url.Parse(c.baseURL)
+	if err != nil || parsed.Scheme != base.Scheme || !strings.EqualFold(parsed.Host, base.Host) {
+		return nil, errors.New("companion stream URL is not owned by the configured relay")
+	}
+	streamRoutePrefix := strings.TrimSuffix(base.EscapedPath(), "/") + companionAPIPrefix + "/stream/"
+	segments := strings.Split(strings.TrimPrefix(parsed.EscapedPath(), streamRoutePrefix), "/")
+	if !strings.HasPrefix(parsed.EscapedPath(), streamRoutePrefix) || len(segments) != 2 {
+		return nil, errors.New("companion stream URL is outside the stream route")
+	}
+	publicationID, publicationErr := url.PathUnescape(segments[0])
+	renditionID, renditionErr := url.PathUnescape(segments[1])
+	if publicationErr != nil || renditionErr != nil || !validCompanionID(publicationID) || !validCompanionID(renditionID) {
+		return nil, errors.New("companion stream URL has invalid stream identity")
+	}
+	opened := companionOpenResponse{URL: rawURL, PublicationID: publicationID, RenditionID: renditionID}
+	owned, err := ownedCompanionStreamURL(c.baseURL, opened)
+	if err != nil || owned != rawURL {
+		return nil, errors.New("companion stream URL is not canonical")
+	}
+	request, err := http.NewRequestWithContext(ctx, method, owned, nil)
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range []string{"Range", "If-Range"} {
+		if value := sourceHeaders.Get(name); value != "" {
+			request.Header.Set(name, value)
+		}
+	}
+	return c.streamHTTP.Do(request)
 }
 
 // PublisherID returns the companion publisher identifier configured for this client.
@@ -2062,6 +2116,7 @@ func (c *Client) RequestAcquisition(ctx context.Context, idempotencyKey string, 
 		Status: state,
 	}, nil
 }
+
 // Archive uploads a file to the relay for publication. The body is streamed
 // from disk, never buffered: these are whole movies.
 func (c *Client) Archive(ctx context.Context, req ArchiveRequest) (*ArchiveJob, error) {
