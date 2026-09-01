@@ -416,6 +416,8 @@ type CompanionCandidateV2 struct {
 	SchemaVersion  int                      `json:"schemaVersion"`
 	CandidateRef   string                   `json:"candidateRef"`
 	SourceFileName string                   `json:"sourceFileName"`
+	PublicationID  string                   `json:"publicationId"`
+	RenditionID    string                   `json:"renditionId"`
 	Work           *CompanionWorkV2         `json:"work"`
 	Publication    *CompanionPublicationV2  `json:"publication"`
 	Rendition      *CompanionRenditionV2    `json:"rendition"`
@@ -619,6 +621,12 @@ func validateCompanionCursor(raw json.RawMessage) error {
 func (candidate CompanionCandidateV2) validate() error {
 	if candidate.SchemaVersion != 0 && candidate.SchemaVersion != 1 && candidate.SchemaVersion != 2 {
 		return errors.New("schemaVersion is invalid")
+	}
+	if candidate.PublicationID != "" && !validCompanionID(candidate.PublicationID) {
+		return errors.New("publicationId is invalid")
+	}
+	if candidate.RenditionID != "" && !validCompanionID(candidate.RenditionID) {
+		return errors.New("renditionId is invalid")
 	}
 	if !validCandidateRef(candidate.CandidateRef) {
 		return errors.New("candidateRef is invalid")
