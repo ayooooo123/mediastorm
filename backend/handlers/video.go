@@ -1192,9 +1192,9 @@ func (h *VideoHandler) StreamVideo(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *VideoHandler) streamViaProvider(w http.ResponseWriter, r *http.Request, cleanPath string) (bool, error) {
-	if strings.HasPrefix(cleanPath, "http://unix/") {
+	if peartube.IsBlobStreamReference(cleanPath) {
 		if client := peartube.Default(); client != nil {
-			return h.proxyPearTubeCapability(w, r, client, cleanPath)
+			return h.proxyPearTubeBlob(w, r, client, cleanPath)
 		}
 	}
 	// Check if this is a pre-resolved external URL (e.g., from AIOStreams)
@@ -6524,8 +6524,8 @@ func (h *VideoHandler) videoFullToUnifiedProbe(result *VideoFullResult) *Unified
 	return cached
 }
 
-func (h *VideoHandler) proxyPearTubeCapability(w http.ResponseWriter, r *http.Request, client *peartube.Client, streamURL string) (bool, error) {
-	response, err := client.OpenCapabilityStream(r.Context(), streamURL, r.Method, r.Header)
+func (h *VideoHandler) proxyPearTubeBlob(w http.ResponseWriter, r *http.Request, client *peartube.Client, streamReference string) (bool, error) {
+	response, err := client.OpenBlobStream(r.Context(), streamReference, r.Method, r.Header)
 	if err != nil {
 		http.Error(w, "PearTube stream is unavailable", http.StatusBadGateway)
 		return true, err

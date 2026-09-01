@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"novastream/models"
@@ -78,7 +79,13 @@ func (*Resolver) Open(ctx context.Context, candidateRef string) (*models.Playbac
 	}
 	streamURL, err := ownedCompanionStreamURL(client.baseURL, opened)
 	if err != nil {
-		return nil, err
+		if client.baseURL != "http://unix" {
+			return nil, err
+		}
+		streamURL, err = client.RegisterBlobStream(opened.URL, opened.ExpiresAt)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return &models.PlaybackResolution{
 		WebDAVPath:   streamURL,
@@ -123,6 +130,36 @@ func decodeCompanionOpenResponse(response *http.Response) (companionOpenResponse
 		return opened, errors.New("companion stream-open response has invalid stream identity")
 	}
 	return opened, nil
+}
+
+func validateLoopbackBlobURL(rawURL string) (string, error) {
+	if rawURL == "" || len(rawURL) > 4096 {
+		return "", errors.New("companion blob URL is invalid")
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Scheme != "http" || parsed.Hostname() != "127.0.0.1" ||
+		parsed.User != nil || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return "", errors.New("companion blob URL is not a loopback Hypercore endpoint")
+	}
+	port, err := strconv.Atoi(parsed.Port())
+	if err != nil || port < 1 || port > 65535 {
+		return "", errors.New("companion blob URL has an invalid loopback port")
+	}
+	query := parsed.Query()
+	for key, values := range query {
+		if key != "key" && key != "blob" && key != "type" && key != "token" {
+			return "", errors.New("companion blob URL has an unknown query field")
+		}
+		if len(values) != 1 || values[0] == "" || len(values[0]) > 2048 {
+			return "", errors.New("companion blob URL has an invalid query field")
+		}
+	}
+	for _, required := range []string{"key", "blob", "token"} {
+		if len(query[required]) != 1 {
+			return "", errors.New("companion blob URL is missing a required query field")
+		}
+	}
+	return parsed.String(), nil
 }
 
 func ownedCompanionStreamURL(rawBaseURL string, opened companionOpenResponse) (string, error) {

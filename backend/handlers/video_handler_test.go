@@ -92,23 +92,8 @@ func TestDetectContainerExt(t *testing.T) {
 	}
 }
 
-func TestStreamViaProviderUsesUnixCompanionTransportForPearTubeCapability(t *testing.T) {
-	const capability = "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
-	socketDir, err := os.MkdirTemp("/tmp", "pt-companion-")
-	if err != nil {
-		t.Fatalf("create socket directory: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
-	socketPath := filepath.Join(socketDir, "c.sock")
-	listener, err := net.Listen("unix", socketPath)
-	if err != nil {
-		t.Fatalf("listen unix: %v", err)
-	}
-	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.EscapedPath() != "/api/v2/stream/pub%3A1/rend%3A1" {
-			http.NotFound(w, r)
-			return
-		}
+func TestStreamViaProviderReadsPearTubeBlobServerOverLoopback(t *testing.T) {
+	blobServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Range") != "bytes=1-3" {
 			t.Errorf("Range = %q", r.Header.Get("Range"))
 		}
@@ -117,20 +102,22 @@ func TestStreamViaProviderUsesUnixCompanionTransportForPearTubeCapability(t *tes
 		w.Header().Set("Content-Length", "3")
 		w.WriteHeader(http.StatusPartialContent)
 		_, _ = io.WriteString(w, "edi")
-	})}
-	go func() { _ = server.Serve(listener) }()
-	t.Cleanup(func() {
-		_ = server.Close()
-		peartube.Configure(peartube.Resolved{})
-	})
-	peartube.Configure(peartube.Resolved{RelayURL: "unix://" + socketPath, Enabled: true})
+	}))
+	defer blobServer.Close()
+	peartube.Configure(peartube.Resolved{RelayURL: "unix:///tmp/peartube-test-control.sock", Enabled: true})
+	t.Cleanup(func() { peartube.Configure(peartube.Resolved{}) })
 
+	streamURL := blobServer.URL + "/?key=" + strings.Repeat("a", 64) +
+		"&blob=0%3A1%3A0%3A5&type=video%2Fmp4&token=" + strings.Repeat("b", 64)
+	streamReference, err := peartube.Default().RegisterBlobStream(streamURL, time.Now().Add(5*time.Minute).UnixMilli())
+	if err != nil {
+		t.Fatalf("register blob stream: %v", err)
+	}
 	handler := NewVideoHandler(false, "", "")
 	request := httptest.NewRequest(http.MethodGet, "/api/video/stream", nil)
 	request.Header.Set("Range", "bytes=1-3")
 	recorder := httptest.NewRecorder()
-	streamURL := "http://unix/api/v2/stream/pub%3A1/rend%3A1?cap=" + capability
-	handled, err := handler.streamViaProvider(recorder, request, streamURL)
+	handled, err := handler.streamViaProvider(recorder, request, streamReference)
 	if err != nil || !handled {
 		t.Fatalf("streamViaProvider: handled=%t err=%v", handled, err)
 	}

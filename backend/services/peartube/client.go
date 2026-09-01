@@ -208,7 +208,7 @@ func New(rawBaseURL string) (*Client, error) {
 		},
 	}
 	uploadClient := &http.Client{}
-	streamClient := &http.Client{
+	blobClient := &http.Client{
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
@@ -217,18 +217,18 @@ func New(rawBaseURL string) (*Client, error) {
 		httpClient.Transport = transport
 		companionClient.Transport = transport
 		uploadClient.Transport = transport
-		streamClient.Transport = transport
 	}
 	return &Client{
 		baseURL:              base,
 		http:                 httpClient,
 		companionHTTP:        companionClient,
 		uploads:              uploadClient,
-		streamHTTP:           streamClient,
+		blobHTTP:             blobClient,
 		companionClient:      clientID,
 		companionPublisherID: publisherID,
 		companionSecret:      secret,
 		companionAuthError:   authErr,
+		blobStreams:          make(map[string]blobStreamLease),
 	}, nil
 }
 
@@ -273,13 +273,23 @@ func validHeaderText(value string) bool {
 	return true
 }
 
+const blobStreamReferencePrefix = "peartube-blob:"
+const maxBlobStreamLeases = 256
+
+type blobStreamLease struct {
+	url       string
+	expiresAt time.Time
+}
+
 // Client talks to one PearTube relay.
 type Client struct {
 	baseURL       string
 	http          *http.Client
 	companionHTTP *http.Client
 	uploads       *http.Client
-	streamHTTP    *http.Client
+	blobHTTP      *http.Client
+	blobMu        sync.Mutex
+	blobStreams   map[string]blobStreamLease
 
 	companionClient      string
 	companionPublisherID string
@@ -301,41 +311,76 @@ func (c *Client) BaseURL() string {
 	return c.baseURL
 }
 
-// OpenCapabilityStream consumes one relay-issued stream capability through the
-// same transport that opened it. This is required for Unix-socket relays: the
-// synthetic http://unix origin is an ownership marker, not a DNS host.
-func (c *Client) OpenCapabilityStream(ctx context.Context, rawURL, method string, sourceHeaders http.Header) (*http.Response, error) {
-	if c == nil || c.streamHTTP == nil {
+// IsBlobStreamReference identifies an opaque local playback handle. The
+// underlying loopback URL never crosses the video API request boundary.
+func IsBlobStreamReference(value string) bool {
+	token := strings.TrimPrefix(value, blobStreamReferencePrefix)
+	return strings.HasPrefix(value, blobStreamReferencePrefix) && validCandidateRef(token)
+}
+
+// RegisterBlobStream binds one authenticated companion response to a bounded,
+// unguessable local handle.
+func (c *Client) RegisterBlobStream(rawURL string, expiresAtMS int64) (string, error) {
+	if c == nil {
+		return "", ErrUnavailable
+	}
+	owned, err := validateLoopbackBlobURL(rawURL)
+	if err != nil {
+		return "", err
+	}
+	now := time.Now()
+	expiresAt := time.UnixMilli(expiresAtMS)
+	if !expiresAt.After(now) || expiresAt.After(now.Add(time.Hour)) {
+		return "", errors.New("companion blob URL has an invalid expiry")
+	}
+	c.blobMu.Lock()
+	defer c.blobMu.Unlock()
+	for token, lease := range c.blobStreams {
+		if !lease.expiresAt.After(now) {
+			delete(c.blobStreams, token)
+		}
+	}
+	if len(c.blobStreams) >= maxBlobStreamLeases {
+		return "", errors.New("companion blob stream capacity is exhausted")
+	}
+	for range 8 {
+		bytes := make([]byte, 32)
+		if _, err := rand.Read(bytes); err != nil {
+			return "", err
+		}
+		token := base64.RawURLEncoding.EncodeToString(bytes)
+		if _, exists := c.blobStreams[token]; exists {
+			continue
+		}
+		c.blobStreams[token] = blobStreamLease{url: owned, expiresAt: expiresAt}
+		return blobStreamReferencePrefix + token, nil
+	}
+	return "", errors.New("companion blob stream handle allocation failed")
+}
+
+// OpenBlobStream resolves an opaque local handle and reads its tokenized
+// Hypercore blob URL over loopback TCP.
+func (c *Client) OpenBlobStream(ctx context.Context, reference, method string, sourceHeaders http.Header) (*http.Response, error) {
+	if c == nil || c.blobHTTP == nil || !IsBlobStreamReference(reference) {
 		return nil, ErrUnavailable
+	}
+	token := strings.TrimPrefix(reference, blobStreamReferencePrefix)
+	now := time.Now()
+	c.blobMu.Lock()
+	lease, exists := c.blobStreams[token]
+	if exists && !lease.expiresAt.After(now) {
+		delete(c.blobStreams, token)
+		exists = false
+	}
+	c.blobMu.Unlock()
+	if !exists {
+		return nil, errors.New("companion blob stream handle is unavailable")
 	}
 	method = strings.ToUpper(strings.TrimSpace(method))
 	if method != http.MethodGet && method != http.MethodHead {
-		return nil, errors.New("companion stream method is unsupported")
+		return nil, errors.New("blob stream method is unsupported")
 	}
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		return nil, errors.New("companion stream URL is invalid")
-	}
-	base, err := url.Parse(c.baseURL)
-	if err != nil || parsed.Scheme != base.Scheme || !strings.EqualFold(parsed.Host, base.Host) {
-		return nil, errors.New("companion stream URL is not owned by the configured relay")
-	}
-	streamRoutePrefix := strings.TrimSuffix(base.EscapedPath(), "/") + companionAPIPrefix + "/stream/"
-	segments := strings.Split(strings.TrimPrefix(parsed.EscapedPath(), streamRoutePrefix), "/")
-	if !strings.HasPrefix(parsed.EscapedPath(), streamRoutePrefix) || len(segments) != 2 {
-		return nil, errors.New("companion stream URL is outside the stream route")
-	}
-	publicationID, publicationErr := url.PathUnescape(segments[0])
-	renditionID, renditionErr := url.PathUnescape(segments[1])
-	if publicationErr != nil || renditionErr != nil || !validCompanionID(publicationID) || !validCompanionID(renditionID) {
-		return nil, errors.New("companion stream URL has invalid stream identity")
-	}
-	opened := companionOpenResponse{URL: rawURL, PublicationID: publicationID, RenditionID: renditionID}
-	owned, err := ownedCompanionStreamURL(c.baseURL, opened)
-	if err != nil || owned != rawURL {
-		return nil, errors.New("companion stream URL is not canonical")
-	}
-	request, err := http.NewRequestWithContext(ctx, method, owned, nil)
+	request, err := http.NewRequestWithContext(ctx, method, lease.url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -344,7 +389,7 @@ func (c *Client) OpenCapabilityStream(ctx context.Context, rawURL, method string
 			request.Header.Set(name, value)
 		}
 	}
-	return c.streamHTTP.Do(request)
+	return c.blobHTTP.Do(request)
 }
 
 // PublisherID returns the companion publisher identifier configured for this client.
