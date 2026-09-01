@@ -534,14 +534,16 @@ func TestResolverReturnsDirectOwnedCapabilityURLConsumedWithoutControlHeadersOrR
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	headers := make(http.Header)
-	headers.Set("Range", "bytes=1-3")
-	response, err := Default().OpenCapabilityStream(
-		context.Background(),
-		resolution.WebDAVPath,
-		http.MethodGet,
-		headers,
-	)
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, resolution.WebDAVPath, nil)
+	if err != nil {
+		t.Fatalf("stream request: %v", err)
+	}
+	request.Header.Set("Range", "bytes=1-3")
+	response, err := (&http.Client{
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}).Do(request)
 	if err != nil {
 		t.Fatalf("consume stream: %v", err)
 	}
