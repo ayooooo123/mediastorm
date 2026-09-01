@@ -1,10 +1,20 @@
 package scrob
 
 import (
+	"errors"
 	"testing"
 
 	"novastream/models"
 )
+
+func TestIsNotFound(t *testing.T) {
+	if !isNotFound(errors.New(`HTTP 404: {"detail":"Session not found"}`)) {
+		t.Fatal("expected HTTP 404 to be recognized as a missing remote session")
+	}
+	if isNotFound(errors.New("HTTP 500")) {
+		t.Fatal("unexpected non-404 match")
+	}
+}
 
 func TestBuildManualSessionStartMovie(t *testing.T) {
 	request, ok := buildManualSessionStart(models.PlaybackProgressUpdate{

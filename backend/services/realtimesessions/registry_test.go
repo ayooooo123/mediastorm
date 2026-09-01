@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"novastream/models"
 )
@@ -37,6 +38,19 @@ func (s *cleanerStub) CleanupRealtimeSession(_ context.Context, session models.R
 	return s.err
 }
 
+func ageMemorySession(t *testing.T, store *MemoryStore, provider, userID, mediaType, itemID string, age time.Duration) {
+	t.Helper()
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	key := sessionRecordKey(provider, userID, mediaType, itemID)
+	session, ok := store.sessions[key]
+	if !ok {
+		t.Fatalf("session %q not found", key)
+	}
+	session.UpdatedAt = time.Now().Add(-age)
+	store.sessions[key] = session
+}
+
 func TestSweepCleansOnlySessionsMissingFromDashboard(t *testing.T) {
 	store := NewMemoryStore()
 	registry := New(store, 0)
@@ -45,6 +59,8 @@ func TestSweepCleansOnlySessionsMissingFromDashboard(t *testing.T) {
 	registry.SetActivePlaybackProvider(activeStub{activeItems: map[string]bool{"active": true}})
 	registry.Record("trakt", "user", "playing", "", models.PlaybackProgressUpdate{MediaType: "movie", ItemID: "active"}, 25)
 	registry.Record("trakt", "user", "paused", "", models.PlaybackProgressUpdate{MediaType: "movie", ItemID: "lingering"}, 40)
+	ageMemorySession(t, store, "trakt", "user", "movie", "active", DefaultHeartbeatLease+time.Minute)
+	ageMemorySession(t, store, "trakt", "user", "movie", "lingering", DefaultHeartbeatLease+time.Minute)
 
 	registry.Sweep(context.Background())
 	if len(cleaner.cleaned) != 1 || cleaner.cleaned[0] != "lingering" {
@@ -65,6 +81,7 @@ func TestSweepRetainsRecordWhenProviderCleanupFails(t *testing.T) {
 	registry.RegisterCleaner("scrob", &cleanerStub{err: errors.New("temporary failure")})
 	registry.SetActivePlaybackProvider(activeStub{activeItems: map[string]bool{}})
 	registry.Record("scrob", "user", "paused", "remote-1", models.PlaybackProgressUpdate{MediaType: "episode", ItemID: "episode"}, 14)
+	ageMemorySession(t, store, "scrob", "user", "episode", "episode", DefaultHeartbeatLease+time.Minute)
 
 	registry.Sweep(context.Background())
 	sessions, err := store.List(context.Background())
@@ -73,6 +90,49 @@ func TestSweepRetainsRecordWhenProviderCleanupFails(t *testing.T) {
 	}
 	if len(sessions) != 1 || sessions[0].RemoteKey != "remote-1" {
 		t.Fatalf("failed cleanup record was removed: %+v", sessions)
+	}
+}
+
+func TestSweepRetainsFreshSessionMissingFromDashboard(t *testing.T) {
+	store := NewMemoryStore()
+	registry := New(store, 0)
+	cleaner := &cleanerStub{}
+	registry.RegisterCleaner("scrob", cleaner)
+	registry.SetActivePlaybackProvider(activeStub{activeItems: map[string]bool{}})
+	registry.Record("scrob", "user", "playing", "remote-1", models.PlaybackProgressUpdate{
+		MediaType: "episode", ItemID: "episode",
+	}, 34)
+
+	registry.Sweep(context.Background())
+
+	if len(cleaner.cleaned) != 0 {
+		t.Fatalf("fresh session was cleaned: %v", cleaner.cleaned)
+	}
+}
+
+func TestTouchRefreshesDurableHeartbeatLease(t *testing.T) {
+	store := NewMemoryStore()
+	registry := New(store, 0)
+	update := models.PlaybackProgressUpdate{MediaType: "episode", ItemID: "episode", Position: 420}
+	registry.Record("scrob", "user", "playing", "remote-1", update, 34)
+	ageMemorySession(t, store, "scrob", "user", "episode", "episode", DefaultHeartbeatLease+time.Minute)
+
+	key := sessionRecordKey("scrob", "user", "episode", "episode")
+	registry.mu.Lock()
+	registry.lastPersisted[key] = time.Now().Add(-DefaultHeartbeatPersistPeriod - time.Second)
+	registry.mu.Unlock()
+	update.Position = 450
+	registry.Touch("scrob", "user", "playing", "remote-1", update, 36)
+
+	sessions, err := store.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 || sessions[0].PercentWatched != 36 || sessions[0].Update.Position != 450 {
+		t.Fatalf("heartbeat lease was not refreshed: %+v", sessions)
+	}
+	if time.Since(sessions[0].UpdatedAt) > time.Second {
+		t.Fatalf("heartbeat lease timestamp was not refreshed: %s", sessions[0].UpdatedAt)
 	}
 }
 
