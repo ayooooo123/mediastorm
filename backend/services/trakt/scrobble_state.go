@@ -131,6 +131,9 @@ func (t *ScrobbleStateTracker) HandleProgressUpdate(userID string, update models
 	switch sess.state {
 	case stateIdle, statePaused:
 		// Start or resume
+		if !t.registry.CanStart("trakt", userID, update) {
+			return
+		}
 		if _, err := scrobbleWithAbsoluteEpisodeFallback("start", req, func(scrobbleReq ScrobbleRequest) (*ScrobbleResponse, error) {
 			return t.client.ScrobbleStart(accessToken, scrobbleReq)
 		}); err != nil {

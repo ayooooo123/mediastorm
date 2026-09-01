@@ -28,3 +28,14 @@ func TestBuildManualSessionStartEpisodePreservesSpecialSeason(t *testing.T) {
 		t.Fatalf("episode coordinates were not preserved: %+v", request)
 	}
 }
+
+func TestBuildManualSessionStartEpisodeRequiresEpisodeTMDBID(t *testing.T) {
+	request, ok := buildManualSessionStart(models.PlaybackProgressUpdate{
+		MediaType: "episode", ItemID: "tmdb:tv:95557:s02e08", SeriesID: "tmdb:tv:95557",
+		SeasonNumber: 2, EpisodeNumber: 8, EpisodeName: "The Colossaeus (2)", Duration: 1260,
+		ExternalIDs: map[string]string{"tmdb": "95557"},
+	})
+	if ok {
+		t.Fatalf("request=%+v ok=%v, want unidentified episode session rejected", request, ok)
+	}
+}

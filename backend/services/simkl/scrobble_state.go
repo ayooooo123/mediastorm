@@ -102,6 +102,9 @@ func (t *ScrobbleStateTracker) HandleProgressUpdate(userID string, update models
 
 	switch sess.state {
 	case stateIdle, statePaused:
+		if !t.registry.CanStart("simkl", userID, update) {
+			return
+		}
 		if resp, err := t.client.ScrobbleStart(account.ClientID, account.AccessToken, req); err != nil {
 			log.Printf("[simkl] start failed for %s: %v", key, err)
 		} else {

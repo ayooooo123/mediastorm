@@ -627,7 +627,7 @@ func main() {
 	if store != nil {
 		realtimeSessionStore = store.RealtimeScrobbleSessions()
 	}
-	realtimeSessionRegistry := realtimesessions.New(realtimeSessionStore, time.Hour)
+	realtimeSessionRegistry := realtimesessions.New(realtimeSessionStore, realtimesessions.DefaultCleanupInterval)
 	scrobbleTracker.SetSessionRegistry(realtimeSessionRegistry)
 	mdblistRTScrobbler.SetSessionRegistry(realtimeSessionRegistry)
 	simklRTScrobbler.SetSessionRegistry(realtimeSessionRegistry)
@@ -827,6 +827,9 @@ func main() {
 	cleanupDashboard.SetProgressService(historyService)
 	cleanupDashboard.SetUserService(userService)
 	realtimeSessionRegistry.SetActivePlaybackProvider(cleanupDashboard)
+	realtimeRecoveryCtx, realtimeRecoveryCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	realtimeSessionRegistry.Recover(realtimeRecoveryCtx)
+	realtimeRecoveryCancel()
 	go realtimeSessionRegistry.Start(context.Background())
 
 	if videoHandler != nil && settings.WebDAV.Enabled {

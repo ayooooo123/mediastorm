@@ -119,6 +119,9 @@ func (t *ScrobbleStateTracker) HandleProgressUpdate(userID string, update models
 
 	switch sess.state {
 	case stateIdle, statePaused:
+		if !t.registry.CanStart("mdblist", userID, update) {
+			return
+		}
 		if err := t.scrobbleWithHybridFallback("start", update, percentWatched, req); err != nil {
 			log.Printf("[mdblist-scrobble] start failed for %s: %v", key, err)
 			if is400(err) || isEpisodeNotFound(err) {

@@ -74,6 +74,9 @@ func (t *ScrobbleStateTracker) HandleProgressUpdate(userID string, update models
 
 	session := t.sessions[key]
 	if session == nil {
+		if !t.registry.CanStart("scrob", userID, update) {
+			return
+		}
 		account := t.scrobbler.getAccountForUser(userID)
 		if !scrobAccountCanPush(account) {
 			return
@@ -243,7 +246,11 @@ func buildManualSessionStart(update models.PlaybackProgressUpdate) (ManualSessio
 		if showTMDBID == 0 {
 			showTMDBID = idFromPrefixes(update.SeriesID, "tmdb:tv:", "tmdb:")
 		}
-		if tmdbID == 0 && showTMDBID == 0 {
+		// Scrob can only resolve an episode session deterministically from the
+		// episode's own TMDB ID. Starting with only the show ID makes Scrob create
+		// a new temporary media row on every backend restart; those orphaned
+		// sessions can later be auto-completed as watched.
+		if tmdbID == 0 {
 			return ManualSessionStart{}, false
 		}
 		season, episode := update.SeasonNumber, update.EpisodeNumber
