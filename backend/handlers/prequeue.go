@@ -31,6 +31,7 @@ import (
 	"novastream/services/debrid"
 	"novastream/services/history"
 	"novastream/services/indexer"
+	"novastream/services/peartube"
 	"novastream/services/playback"
 	user_settings "novastream/services/user_settings"
 	"novastream/utils/filter"
@@ -1447,6 +1448,9 @@ func (h *PrequeueHandler) refreshAdoptedMigrationMetadata(prequeueID, streamPath
 	}
 	streamPath = strings.TrimSpace(streamPath)
 	if streamPath == "" {
+		return
+	}
+	if peartube.IsBlobStreamReference(streamPath) {
 		return
 	}
 	if h.fullProber == nil && h.metadataProber == nil && h.videoProber == nil {
