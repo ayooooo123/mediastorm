@@ -18,6 +18,7 @@ import (
 // mockPlaybackService implements the playbackService interface for testing.
 type mockPlaybackService struct {
 	resolveFunc      func(ctx context.Context, candidate models.NZBResult) (*models.PlaybackResolution, error)
+	resolveAtFunc    func(ctx context.Context, candidate models.NZBResult, startOffsetSeconds, durationSeconds float64) (*models.PlaybackResolution, error)
 	resolveBatchFunc func(ctx context.Context, candidate models.NZBResult, episodes []models.BatchEpisodeTarget) (*models.BatchResolveResponse, error)
 	queueStatusFunc  func(ctx context.Context, queueID int64) (*models.PlaybackResolution, error)
 }
@@ -35,6 +36,13 @@ func (m *mockPlaybackService) Resolve(ctx context.Context, candidate models.NZBR
 		return m.resolveFunc(ctx, candidate)
 	}
 	return &models.PlaybackResolution{WebDAVPath: "/test"}, nil
+}
+
+func (m *mockPlaybackService) ResolveAt(ctx context.Context, candidate models.NZBResult, startOffsetSeconds, durationSeconds float64) (*models.PlaybackResolution, error) {
+	if m.resolveAtFunc != nil {
+		return m.resolveAtFunc(ctx, candidate, startOffsetSeconds, durationSeconds)
+	}
+	return m.Resolve(ctx, candidate)
 }
 
 func (m *mockPlaybackService) ResolveBatch(ctx context.Context, candidate models.NZBResult, episodes []models.BatchEpisodeTarget) (*models.BatchResolveResponse, error) {
@@ -133,6 +141,33 @@ func TestResolve_AllowsMarkedBadStreamWithManualOverride(t *testing.T) {
 	}
 	if !resolveCalled {
 		t.Fatal("expected marked bad stream override to continue to resolve")
+	}
+}
+
+func TestResolve_PropagatesResumePositionToProvider(t *testing.T) {
+	var gotStart, gotDuration float64
+	h := NewPlaybackHandler(&mockPlaybackService{
+		resolveAtFunc: func(_ context.Context, _ models.NZBResult, startOffsetSeconds, durationSeconds float64) (*models.PlaybackResolution, error) {
+			gotStart = startOffsetSeconds
+			gotDuration = durationSeconds
+			return &models.PlaybackResolution{WebDAVPath: "/peartube/resume"}, nil
+		},
+	})
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"result":       models.NZBResult{Title: "Archived episode", ServiceType: models.ServiceTypePearTube},
+		"startOffset":  968.4,
+		"durationHint": 1320.0,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/playback/resolve", bytes.NewBuffer(body))
+	rec := httptest.NewRecorder()
+	h.Resolve(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	if gotStart != 968.4 || gotDuration != 1320.0 {
+		t.Fatalf("resume hint = %.2f/%.2f, want 968.40/1320.00", gotStart, gotDuration)
 	}
 }
 
