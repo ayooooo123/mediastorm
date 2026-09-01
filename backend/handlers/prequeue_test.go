@@ -269,6 +269,13 @@ func (*raceProbeResult) ProbeVideoFull(ctx context.Context, path string) (*Video
 	return &VideoFullResult{VideoCodec: "h264", Duration: 100}, nil
 }
 
+type countingRejectProbe struct{ calls int }
+
+func (p *countingRejectProbe) ProbeVideoFull(context.Context, string) (*VideoFullResult, error) {
+	p.calls++
+	return nil, errors.New("opaque blob handle must not be treated as a WebDAV path")
+}
+
 // slowFailingResolve fails slowly at a generous 3s cadence but aborts instantly
 // once its context is cancelled — the shape of a dead/slow top-ranked release
 // whose articles stall resolution.
@@ -1137,6 +1144,42 @@ func TestResolveCandidatesSequentialUsesRankedOrder(t *testing.T) {
 	wantAttempts := []string{"rank-0-fails", "rank-1-wins"}
 	if !reflect.DeepEqual(attempted, wantAttempts) {
 		t.Fatalf("attempted candidates = %v, want %v", attempted, wantAttempts)
+	}
+}
+
+func TestResolveCandidatesAcceptsVerifiedPearTubeBlobBeforeWebDAVProbe(t *testing.T) {
+	probe := &countingRejectProbe{}
+	playbackSvc := &stubPlaybackService{
+		resolve: func(context.Context, models.NZBResult) (*models.PlaybackResolution, error) {
+			return &models.PlaybackResolution{
+				WebDAVPath:   "peartube-blob:" + strings.Repeat("A", 43),
+				HealthStatus: "cached",
+			}, nil
+		},
+	}
+	handler := &PrequeueHandler{
+		store:       playback.NewPrequeueStore(time.Minute),
+		playbackSvc: playbackSvc,
+		fullProber:  probe,
+	}
+
+	choice, err := handler.resolveCandidates(context.Background(), "prequeue-peartube", newSliceCandidateSource([]models.NZBResult{{
+		Title:       "Archived movie",
+		ServiceType: models.ServiceTypePearTube,
+	}}), prequeueResolutionOptions{
+		mediaType:          "movie",
+		hdrDVPolicy:        models.HDRDVPolicyIncludeHDRDV,
+		unknownTrackPolicy: "none",
+	})
+
+	if err != nil {
+		t.Fatalf("resolveCandidates returned error: %v", err)
+	}
+	if choice.selectedResultIndex != 0 {
+		t.Fatalf("selectedResultIndex = %d, want 0", choice.selectedResultIndex)
+	}
+	if probe.calls != 0 {
+		t.Fatalf("WebDAV probe calls = %d, want 0", probe.calls)
 	}
 }
 
