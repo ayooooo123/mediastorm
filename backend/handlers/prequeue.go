@@ -305,32 +305,6 @@ func findAllowedAudioTrack(streams []AudioStreamInfo, allowedLanguages []string,
 	return -1
 }
 
-func allowedAudioTracksReject(allowedLanguages []string, streams []AudioStreamInfo) (bool, string) {
-	allowedLanguages = normalizeAllowedTrackLanguages(allowedLanguages)
-	if len(allowedLanguages) == 0 {
-		return false, ""
-	}
-	if len(streams) == 0 {
-		return true, fmt.Sprintf("no audio tracks were found for allowed languages %v", allowedLanguages)
-	}
-	if findAllowedAudioTrack(streams, allowedLanguages, "") >= 0 {
-		return false, ""
-	}
-
-	available := make([]string, 0, len(streams))
-	for _, stream := range streams {
-		language := strings.TrimSpace(stream.Language)
-		if language == "" {
-			language = strings.TrimSpace(stream.Title)
-		}
-		if language == "" {
-			language = "unknown"
-		}
-		available = append(available, language)
-	}
-	return true, fmt.Sprintf("audio languages %v do not match allowed languages %v", available, allowedLanguages)
-}
-
 // DefaultExternalURLValidator probes a pre-resolved external stream URL (e.g.
 // AIOStreams/Comet proxy links) and returns an error when the link has expired,
 // so callers can drop the stale ready entry and force a fresh re-search. It is
@@ -1888,8 +1862,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 	unknownTrackPolicy = normalizeUnknownTrackPolicy(unknownTrackPolicy)
 	needsDVCheck := hdrDVPolicy == models.HDRDVPolicyIncludeHDR
 	needsUnknownTrackCheck := unknownTrackPolicyNeedsProbe(unknownTrackPolicy)
-	needsAllowedLanguageCheck := len(allowedTrackLanguages) > 0
-	log.Printf("[prequeue] HDR/DV policy: %s, needsDVCheck: %v, unknownTrackPolicy: %s, needsUnknownTrackCheck: %v, allowedTrackLanguages: %v, needsAllowedLanguageCheck: %v", hdrDVPolicy, needsDVCheck, unknownTrackPolicy, needsUnknownTrackCheck, allowedTrackLanguages, needsAllowedLanguageCheck)
+	log.Printf("[prequeue] HDR/DV policy: %s, needsDVCheck: %v, unknownTrackPolicy: %s, needsUnknownTrackCheck: %v, allowedTrackLanguages: %v", hdrDVPolicy, needsDVCheck, unknownTrackPolicy, needsUnknownTrackCheck, allowedTrackLanguages)
 
 	if h.indexerSvc == nil {
 		h.failPrequeue(prequeueID, "search service not configured")
@@ -1969,17 +1942,15 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 		resolveFirstReadySource, candidates.Total(), prequeueResolutionWidth(resolveFirstReadySource), time.Since(workerStart))
 
 	choice, resolveErr := h.resolveCandidates(ctx, prequeueID, candidates, prequeueResolutionOptions{
-		mediaType:                 mediaType,
-		targetEpisode:             targetEpisode,
-		userID:                    userID,
-		hdrDVPolicy:               hdrDVPolicy,
-		unknownTrackPolicy:        unknownTrackPolicy,
-		allowedTrackLanguages:     allowedTrackLanguages,
-		needsDVCheck:              needsDVCheck,
-		needsUnknownTrackCheck:    needsUnknownTrackCheck,
-		needsAllowedLanguageCheck: needsAllowedLanguageCheck,
-		concurrent:                resolveFirstReadySource,
-		workerStart:               workerStart,
+		mediaType:              mediaType,
+		targetEpisode:          targetEpisode,
+		userID:                 userID,
+		hdrDVPolicy:            hdrDVPolicy,
+		unknownTrackPolicy:     unknownTrackPolicy,
+		needsDVCheck:           needsDVCheck,
+		needsUnknownTrackCheck: needsUnknownTrackCheck,
+		concurrent:             resolveFirstReadySource,
+		workerStart:            workerStart,
 	})
 
 	// In first-ready mode this aborts any remaining split search and joins its
@@ -2476,17 +2447,15 @@ type prequeueResolutionChoice struct {
 
 // prequeueResolutionOptions configures the resolution phase.
 type prequeueResolutionOptions struct {
-	mediaType                 string
-	targetEpisode             *models.EpisodeReference
-	userID                    string
-	hdrDVPolicy               models.HDRDVPolicy
-	unknownTrackPolicy        string
-	allowedTrackLanguages     []string
-	needsDVCheck              bool
-	needsUnknownTrackCheck    bool
-	needsAllowedLanguageCheck bool
-	concurrent                bool
-	workerStart               time.Time
+	mediaType              string
+	targetEpisode          *models.EpisodeReference
+	userID                 string
+	hdrDVPolicy            models.HDRDVPolicy
+	unknownTrackPolicy     string
+	needsDVCheck           bool
+	needsUnknownTrackCheck bool
+	concurrent             bool
+	workerStart            time.Time
 }
 
 // prequeueCandidateSource yields candidates to the resolution race in feed
@@ -3163,7 +3132,7 @@ func (h *PrequeueHandler) resolveCandidates(ctx context.Context, prequeueID stri
 			}
 		}
 
-		if (opts.needsUnknownTrackCheck || opts.needsAllowedLanguageCheck) && probeResult == nil && h.metadataProber != nil {
+		if opts.needsUnknownTrackCheck && probeResult == nil && h.metadataProber != nil {
 			metadata, probeErr := h.metadataProber.ProbeVideoMetadata(raceCtx, resolution.WebDAVPath)
 			if err := raceCtx.Err(); err != nil {
 				return nil, nil, err
@@ -3180,26 +3149,6 @@ func (h *PrequeueHandler) resolveCandidates(ctx context.Context, prequeueID stri
 		}
 		if err := raceCtx.Err(); err != nil {
 			return nil, nil, err
-		}
-
-		if opts.needsAllowedLanguageCheck {
-			var audioStreams []AudioStreamInfo
-			switch {
-			case probeResult != nil:
-				audioStreams = probeResult.AudioStreams
-			case metadataResult != nil:
-				audioStreams = metadataResult.AudioStreams
-			default:
-				langErr := fmt.Errorf("allowed audio languages %v require track metadata, but no track prober is available", opts.allowedTrackLanguages)
-				log.Printf("[prequeue] Rejecting result [%d] because allowed track languages cannot be verified: %s", i, result.Title)
-				return nil, nil, langErr
-			}
-
-			if rejected, reason := allowedAudioTracksReject(opts.allowedTrackLanguages, audioStreams); rejected {
-				langErr := fmt.Errorf("%s", reason)
-				log.Printf("[prequeue] Result [%d] rejected by allowed track languages: %s; trying next result: %s", i, reason, result.Title)
-				return nil, nil, langErr
-			}
 		}
 
 		if opts.needsUnknownTrackCheck {
