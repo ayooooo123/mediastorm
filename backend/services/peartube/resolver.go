@@ -36,14 +36,29 @@ func (*Resolver) Open(ctx context.Context, candidateRef string) (*models.Playbac
 	if !validCandidateRef(candidateRef) {
 		return nil, errors.New("invalid peartube candidate reference")
 	}
+	return openCompanionStream(ctx, struct {
+		CandidateRef string `json:"candidateRef"`
+	}{CandidateRef: candidateRef})
+}
+
+// OpenPublication opens one deterministic public rendition without depending
+// on a short-lived search reference.
+func (*Resolver) OpenPublication(ctx context.Context, publicationID, renditionID string) (*models.PlaybackResolution, error) {
+	if !validCompanionID(publicationID) || !validCompanionID(renditionID) {
+		return nil, errors.New("invalid peartube publication rendition")
+	}
+	return openCompanionStream(ctx, struct {
+		PublicationID string `json:"publicationId"`
+		RenditionID   string `json:"renditionId"`
+	}{PublicationID: publicationID, RenditionID: renditionID})
+}
+
+func openCompanionStream(ctx context.Context, openRequest any) (*models.PlaybackResolution, error) {
 	client := Default()
 	if client == nil {
 		return nil, ErrUnavailable
 	}
-
-	body, err := json.Marshal(struct {
-		CandidateRef string `json:"candidateRef"`
-	}{CandidateRef: candidateRef})
+	body, err := json.Marshal(openRequest)
 	if err != nil {
 		return nil, fmt.Errorf("encode companion stream-open request: %w", err)
 	}
@@ -82,7 +97,7 @@ func (*Resolver) Open(ctx context.Context, candidateRef string) (*models.Playbac
 		if client.baseURL != "http://unix" {
 			return nil, err
 		}
-		streamURL, err = client.RegisterBlobStream(opened.URL, opened.ExpiresAt)
+		streamURL, err = client.RegisterBlobStream(opened.URL, opened.ExpiresAt, opened.PublicationID+":"+opened.RenditionID)
 		if err != nil {
 			return nil, err
 		}

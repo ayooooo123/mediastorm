@@ -49,6 +49,10 @@ type pearTubeResolver interface {
 	Open(ctx context.Context, candidateRef string) (*models.PlaybackResolution, error)
 }
 
+type pearTubePublicationResolver interface {
+	OpenPublication(ctx context.Context, publicationID, renditionID string) (*models.PlaybackResolution, error)
+}
+
 type debridPlaybackService interface {
 	Resolve(ctx context.Context, candidate models.NZBResult) (*models.PlaybackResolution, error)
 	ResolveBatch(ctx context.Context, candidate models.NZBResult, episodes []models.BatchEpisodeTarget) (*models.BatchResolveResponse, error)
@@ -250,6 +254,13 @@ func (s *Service) Resolve(ctx context.Context, candidate models.NZBResult) (*mod
 	if candidate.ServiceType == models.ServiceTypePearTube {
 		if s.pearTubeResolver == nil {
 			return nil, fmt.Errorf("peartube resolver not configured")
+		}
+		publicationID := strings.TrimSpace(candidate.Attributes["peartube_publication_id"])
+		renditionID := strings.TrimSpace(candidate.Attributes["peartube_rendition_id"])
+		if publicationID != "" && renditionID != "" {
+			if resolver, ok := s.pearTubeResolver.(pearTubePublicationResolver); ok {
+				return resolver.OpenPublication(ctx, publicationID, renditionID)
+			}
 		}
 		candidateRef := strings.TrimSpace(candidate.Attributes["peartube_candidate_ref"])
 		if candidateRef == "" {

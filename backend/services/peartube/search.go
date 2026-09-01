@@ -220,15 +220,21 @@ func MapCandidates(request SearchRequest, candidates []CompanionCandidateV2) []m
 }
 
 func mapCandidate(request SearchRequest, candidate CompanionCandidateV2) models.NZBResult {
-	title := strings.TrimSpace(request.Title)
+	title := strings.TrimSpace(candidate.SourceFileName)
+	hasSourceFileName := title != ""
 	releaseYear := uint64(0)
 	if candidate.Work != nil {
-		if candidateTitle := strings.TrimSpace(candidate.Work.Title); candidateTitle != "" {
-			title = candidateTitle
+		if !hasSourceFileName {
+			if candidateTitle := strings.TrimSpace(candidate.Work.Title); candidateTitle != "" {
+				title = candidateTitle
+			}
 		}
 		if candidate.Work.ReleaseYear != nil {
 			releaseYear = *candidate.Work.ReleaseYear
 		}
+	}
+	if title == "" {
+		title = strings.TrimSpace(request.Title)
 	}
 	if title == "" {
 		title = "PearTube candidate"
@@ -243,17 +249,26 @@ func mapCandidate(request SearchRequest, candidate CompanionCandidateV2) models.
 			episode = int(*candidate.Work.Episode.EpisodeNumber)
 		}
 	}
-	if season > 0 && episode > 0 {
-		title = fmt.Sprintf("%s S%02dE%02d", title, season, episode)
-	} else if releaseYear > 0 {
-		title = fmt.Sprintf("%s %d", title, releaseYear)
+	if !hasSourceFileName {
+		if season > 0 && episode > 0 {
+			title = fmt.Sprintf("%s S%02dE%02d", title, season, episode)
+		} else if releaseYear > 0 {
+			title = fmt.Sprintf("%s %d", title, releaseYear)
+		}
+		title += " [PearTube]"
 	}
-	title += " [PearTube]"
 
 	attributes := map[string]string{
 		"provider":               ProviderName,
 		"peartube_candidate_ref": candidate.CandidateRef,
 	}
+	if candidate.Publication != nil {
+		setCandidateAttribute(attributes, "peartube_publication_id", candidate.Publication.PublicationID)
+	}
+	if candidate.Rendition != nil {
+		setCandidateAttribute(attributes, "peartube_rendition_id", candidate.Rendition.RenditionID)
+	}
+	setCandidateAttribute(attributes, "sourceFileName", candidate.SourceFileName)
 	var sizeBytes int64
 	if candidate.Rendition != nil {
 		setCandidateAttribute(attributes, "container", candidate.Rendition.Container)
