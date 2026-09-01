@@ -23,6 +23,7 @@ import (
 
 	"novastream/config"
 	"novastream/services/credits"
+	"novastream/services/peartube"
 	"novastream/services/playback"
 	"novastream/services/streaming"
 )
@@ -88,6 +89,56 @@ func TestDetectContainerExt(t *testing.T) {
 				t.Errorf("detectContainerExt(%q) = %q, want %q", tc.input, result, tc.expected)
 			}
 		})
+	}
+}
+
+func TestStreamViaProviderUsesUnixCompanionTransportForPearTubeCapability(t *testing.T) {
+	const capability = "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+	socketDir, err := os.MkdirTemp("/tmp", "pt-companion-")
+	if err != nil {
+		t.Fatalf("create socket directory: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+	socketPath := filepath.Join(socketDir, "c.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.EscapedPath() != "/api/v2/stream/pub%3A1/rend%3A1" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("Range") != "bytes=1-3" {
+			t.Errorf("Range = %q", r.Header.Get("Range"))
+		}
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.Header().Set("Content-Range", "bytes 1-3/5")
+		w.Header().Set("Content-Length", "3")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = io.WriteString(w, "edi")
+	})}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() {
+		_ = server.Close()
+		peartube.Configure(peartube.Resolved{})
+	})
+	peartube.Configure(peartube.Resolved{RelayURL: "unix://" + socketPath, Enabled: true})
+
+	handler := NewVideoHandler(false, "", "")
+	request := httptest.NewRequest(http.MethodGet, "/api/video/stream", nil)
+	request.Header.Set("Range", "bytes=1-3")
+	recorder := httptest.NewRecorder()
+	streamURL := "http://unix/api/v2/stream/pub%3A1/rend%3A1?cap=" + capability
+	handled, err := handler.streamViaProvider(recorder, request, streamURL)
+	if err != nil || !handled {
+		t.Fatalf("streamViaProvider: handled=%t err=%v", handled, err)
+	}
+	if recorder.Code != http.StatusPartialContent || recorder.Body.String() != "edi" {
+		t.Fatalf("stream response = %d %q", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Header().Get("Content-Range") != "bytes 1-3/5" {
+		t.Fatalf("Content-Range = %q", recorder.Header().Get("Content-Range"))
 	}
 }
 
