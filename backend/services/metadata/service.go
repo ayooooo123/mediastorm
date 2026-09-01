@@ -2155,7 +2155,7 @@ func (s *Service) getMovieDetailsFromTMDB(ctx context.Context, req models.MovieD
 	log.Printf("[metadata] fetching movie details from TMDB tmdbId=%d name=%q", req.TMDBID, req.Name)
 
 	// Check cache with TMDB key
-	cacheID := cacheKey("tmdb", "movie", "details", "v3", s.client.language, strconv.FormatInt(req.TMDBID, 10))
+	cacheID := cacheKey("tmdb", "movie", "details", "v4", s.client.language, strconv.FormatInt(req.TMDBID, 10))
 	var cached models.Title
 	if ok, _ := s.cache.get(cacheID, &cached); ok && cached.ID != "" {
 		metadataTracef("[metadata] movie details cache hit (TMDB) tmdbId=%d lang=%s", req.TMDBID, s.client.language)

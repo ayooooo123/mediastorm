@@ -1102,6 +1102,24 @@ func TestResults_MissingYearIsNeutral(t *testing.T) {
 	}
 }
 
+func TestResults_MovieAlternateTitleProvidesStrongIdentity(t *testing.T) {
+	detailed := ResultsWithDetails([]models.NZBResult{
+		{Title: "Batman: Death in the Family 2020 1080p BluRay"},
+	}, Options{
+		ExpectedTitle:   "DC Showcase Batman: Death in the Family",
+		ExpectedYear:    2020,
+		IsMovie:         true,
+		AlternateTitles: []string{"Batman: Death in the Family"},
+	})
+
+	if len(detailed) != 1 || !detailed[0].Passed {
+		t.Fatalf("expected alternate-title release to pass, got %+v", detailed)
+	}
+	if detailed[0].Result.Attributes["titleMatch"] != "strong" {
+		t.Fatalf("titleMatch = %q, want strong", detailed[0].Result.Attributes["titleMatch"])
+	}
+}
+
 func TestResults_EpisodeAirYear(t *testing.T) {
 	// Test that results tagged with the episode's air year are accepted even when
 	// the series premiere year is far off. E.g., One Piece (2023) S02E01 aired in 2026.

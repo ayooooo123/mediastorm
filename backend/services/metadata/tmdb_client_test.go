@@ -149,6 +149,41 @@ func TestMovieDetails_FileCacheAndSingleflightCleanup(t *testing.T) {
 	}
 }
 
+func TestMovieDetails_AppendsAlternativeTitles(t *testing.T) {
+	var requested *http.Request
+	c := newTMDBClient("test-key", "en", &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requested = req.Clone(req.Context())
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body: io.NopCloser(strings.NewReader(`{
+				"id": 618353,
+				"title": "DC Showcase - Batman: Death in the Family",
+				"original_title": "DC Showcase - Batman: Death in the Family",
+				"release_date": "2020-10-13",
+				"alternative_titles": {"titles": [
+					{"iso_3166_1": "US", "title": "Batman: Death in the Family", "type": ""},
+					{"iso_3166_1": "US", "title": "Batman: Death in the Family", "type": "duplicate"}
+				]}
+			}`)),
+			Header: make(http.Header),
+		}, nil
+	})}, nil)
+
+	title, err := c.movieDetailsFetch(context.Background(), 618353)
+	if err != nil {
+		t.Fatalf("movieDetailsFetch: %v", err)
+	}
+	if requested == nil {
+		t.Fatal("movie details request was not captured")
+	}
+	if requested.URL.Query().Get("append_to_response") != "alternative_titles" {
+		t.Fatalf("append_to_response = %q, want alternative_titles", requested.URL.Query().Get("append_to_response"))
+	}
+	if len(title.AlternateTitles) != 1 || title.AlternateTitles[0] != "Batman: Death in the Family" {
+		t.Fatalf("alternate titles = %v, want deduplicated Batman title", title.AlternateTitles)
+	}
+}
+
 func TestNormalizeLanguage(t *testing.T) {
 	tests := map[string]string{
 		"":      "en-US",

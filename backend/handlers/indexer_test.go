@@ -226,6 +226,35 @@ func TestIndexerHandler_SearchMovieAnimeDetection(t *testing.T) {
 	}
 }
 
+func TestIndexerHandler_SearchPassesHydratedMovieTitles(t *testing.T) {
+	fake := &fakeIndexerService{results: []models.NZBResult{}}
+	movieSvc := &fakeMovieMetadataService{
+		title: &models.Title{
+			Name:            "DC Showcase - Batman: Death in the Family",
+			AlternateTitles: []string{"Batman: Death in the Family"},
+		},
+	}
+	handler := NewIndexerHandler(fake, false)
+	handler.SetMovieMetadataService(movieSvc)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/indexers/search?q=DC+Showcase+Batman%3A+Death+in+the+Family&mediaType=movie&year=2020", nil)
+	rec := httptest.NewRecorder()
+	handler.Search(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d", http.StatusOK, rec.Code)
+	}
+	want := []string{"Batman: Death in the Family"}
+	if len(fake.lastOpts.AlternateTitles) != len(want) {
+		t.Fatalf("alternate titles = %v, want %v", fake.lastOpts.AlternateTitles, want)
+	}
+	for i := range want {
+		if fake.lastOpts.AlternateTitles[i] != want[i] {
+			t.Fatalf("alternate titles = %v, want %v", fake.lastOpts.AlternateTitles, want)
+		}
+	}
+}
+
 func TestIndexerHandler_SearchMovieNonAnime(t *testing.T) {
 	fake := &fakeIndexerService{results: []models.NZBResult{}}
 	movieSvc := &fakeMovieMetadataService{

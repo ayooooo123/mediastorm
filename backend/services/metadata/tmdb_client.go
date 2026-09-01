@@ -1985,7 +1985,7 @@ func (c *tmdbClient) movieDetails(ctx context.Context, tmdbID int64) (*models.Ti
 	// unlike the in-memory singleflight map below.
 	var cacheID string
 	if c.cache != nil {
-		cacheID = cacheKey("tmdb", "movie", "details", "v1", c.language, fmt.Sprintf("%d", tmdbID))
+		cacheID = cacheKey("tmdb", "movie", "details", "v2", c.language, fmt.Sprintf("%d", tmdbID))
 		var cached models.Title
 		if ok, _ := c.cache.get(cacheID, &cached); ok && cached.TMDBID > 0 {
 			return &cached, nil
@@ -2032,6 +2032,9 @@ func (c *tmdbClient) movieDetailsFetch(ctx context.Context, tmdbID int64) (*mode
 	} else {
 		q.Set("language", "en-US")
 	}
+	// Alternative titles are needed by release-name filtering. Appending them
+	// to the existing details request avoids a second TMDB request per movie.
+	q.Set("append_to_response", "alternative_titles")
 	req.URL.RawQuery = q.Encode()
 
 	resp, err := c.httpc.Do(req)
@@ -2068,6 +2071,11 @@ func (c *tmdbClient) movieDetailsFetch(ctx context.Context, tmdbID int64) (*mode
 			PosterPath   string `json:"poster_path"`
 			BackdropPath string `json:"backdrop_path"`
 		} `json:"belongs_to_collection"`
+		AlternativeTitles struct {
+			Titles []struct {
+				Title string `json:"title"`
+			} `json:"titles"`
+		} `json:"alternative_titles"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&movie); err != nil {
 		return nil, err
@@ -2084,6 +2092,24 @@ func (c *tmdbClient) movieDetailsFetch(ctx context.Context, tmdbID int64) (*mode
 	}
 	if originalTitle := strings.TrimSpace(movie.OriginalTitle); originalTitle != "" && !strings.EqualFold(originalTitle, movie.Title) {
 		title.OriginalName = originalTitle
+	}
+	seenTitles := map[string]struct{}{
+		strings.ToLower(strings.TrimSpace(title.Name)): {},
+	}
+	if original := strings.TrimSpace(title.OriginalName); original != "" {
+		seenTitles[strings.ToLower(original)] = struct{}{}
+	}
+	for _, alternate := range movie.AlternativeTitles.Titles {
+		value := strings.TrimSpace(alternate.Title)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if _, exists := seenTitles[key]; exists {
+			continue
+		}
+		seenTitles[key] = struct{}{}
+		title.AlternateTitles = append(title.AlternateTitles, value)
 	}
 	if originalLanguage := strings.TrimSpace(movie.OriginalLanguage); originalLanguage != "" {
 		title.Language = originalLanguage

@@ -1246,6 +1246,7 @@ type SearchOptions struct {
 	MaxResults            int
 	IMDBID                string
 	TVDBID                int64
+	AlternateTitles       []string                    // Titles already obtained while hydrating the selected item
 	MediaType             string                      // "movie" or "series"
 	Year                  int                         // Release year (for movies)
 	CountryCode           string                      // Original production country from metadata
@@ -1564,7 +1565,7 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBR
 	alternateTitles := s.resolveAlternateTitles(ctx, opts, metadataLanguage, settings.Streaming.MaxAlternateTitleSearches)
 	englishFallbackTitles := s.resolveEnglishFallbackTitles(ctx, opts, metadataLanguage)
 	alternateTitles = excludeFallbackTitles(alternateTitles, englishFallbackTitles)
-	filterTitles := combineFilterTitles(alternateTitles, englishFallbackTitles)
+	filterTitles := combineFilterTitles(opts.AlternateTitles, alternateTitles, englishFallbackTitles)
 	if len(alternateTitles) > 0 {
 		log.Printf("[indexer] resolved %d alternate title(s) for %q: %v", len(alternateTitles), opts.Query, alternateTitles)
 	}
@@ -1573,7 +1574,7 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBR
 	searchQueries := buildSearchQueries(opts, parsedQuery, alternateTitles)
 	rankingBundle := s.getEffectiveRankingBundle(opts.UserID, opts.ClientID, settings)
 	rankingCriteria := rankingBundle.Default
-	cacheTitles := append(append([]string{}, alternateTitles...), englishFallbackTitles...)
+	cacheTitles := combineFilterTitles(filterTitles)
 	cacheKey := s.searchCacheKey("ranked", opts, settings, cacheTitles, filterSettings, filterBundle, animeSettings, filterOverrides, rankingCriteria, rankingBundle)
 	if cached, ok := s.getCachedSearchResults(cacheKey, searchStart); ok {
 		log.Printf("[indexer] search cache hit for query=%q mediaType=%q user=%q client=%q results=%d", opts.Query, opts.MediaType, opts.UserID, opts.ClientID, len(cached))
@@ -1824,7 +1825,7 @@ func (s *Service) SearchWithScoring(ctx context.Context, opts SearchOptions) ([]
 	metadataLanguage := s.getEffectiveMetadataLanguage(opts.UserID, settings)
 	alternateTitles := s.resolveAlternateTitles(ctx, opts, metadataLanguage, settings.Streaming.MaxAlternateTitleSearches)
 	englishFallbackTitles := s.resolveEnglishFallbackTitles(ctx, opts, metadataLanguage)
-	filterTitles := combineFilterTitles(alternateTitles, englishFallbackTitles)
+	filterTitles := combineFilterTitles(opts.AlternateTitles, alternateTitles, englishFallbackTitles)
 	if shouldBypassAIOStreamsRanking(settings, filterOverrides, shouldUseUsenet(settings.Streaming.ServiceMode)) {
 		log.Printf("[indexer] Bypassing mediastorm filtering/ranking - AIOStreams is the only enabled scraper and bypass setting is enabled")
 		scored := make([]models.ScoredNZBResult, len(rawResults))
@@ -2060,7 +2061,7 @@ func (s *Service) SearchWithScoringSplit(ctx context.Context, opts SearchOptions
 	alternateTitles := s.resolveAlternateTitles(ctx, opts, metadataLanguage, settings.Streaming.MaxAlternateTitleSearches)
 	englishFallbackTitles := s.resolveEnglishFallbackTitles(ctx, opts, metadataLanguage)
 	alternateTitles = excludeFallbackTitles(alternateTitles, englishFallbackTitles)
-	filterTitles := combineFilterTitles(alternateTitles, englishFallbackTitles)
+	filterTitles := combineFilterTitles(opts.AlternateTitles, alternateTitles, englishFallbackTitles)
 	if len(alternateTitles) > 0 {
 		log.Printf("[indexer] resolved %d alternate title(s) for %q: %v", len(alternateTitles), opts.Query, alternateTitles)
 	}
@@ -2073,7 +2074,7 @@ func (s *Service) SearchWithScoringSplit(ctx context.Context, opts SearchOptions
 	// Check the shared raw cache once so a warm search never re-fetches or waits
 	// on a slow scraper (same key searchRawResults would use). The key includes
 	// the English fallback titles so both pipelines compute the identical key.
-	cacheTitles := append(append([]string{}, alternateTitles...), englishFallbackTitles...)
+	cacheTitles := combineFilterTitles(filterTitles)
 	cacheKey := s.searchCacheKey("raw", opts, settings, cacheTitles, filterSettings, filterBundle, animeSettings, filterOverrides, rankingCriteria, rankingBundle)
 	if cached, ok := s.getCachedSearchResults(cacheKey, searchStart); ok {
 		log.Printf("[indexer] raw search cache hit for query=%q mediaType=%q user=%q client=%q results=%d", opts.Query, opts.MediaType, opts.UserID, opts.ClientID, len(cached))
@@ -2290,7 +2291,7 @@ func (s *Service) splitSearchUsenet(ctx context.Context, settings config.Setting
 	}
 	out.raw = raw
 	out.incomplete = incomplete
-	filterTitles := combineFilterTitles(alternateTitles, englishFallbackTitles)
+	filterTitles := combineFilterTitles(opts.AlternateTitles, alternateTitles, englishFallbackTitles)
 	out.scored, out.filtered = s.scoreSourceCandidates(opts, settings, raw, s.buildFilterOptions(opts, filterBundle.Usenet, filterTitles), filterBundle, animeSettings, filterOverrides, rankingBundle)
 	log.Printf("[indexer] TIMING: split usenet search complete (took: %v, raw=%d, passed=%d)", time.Since(usenetStart), len(raw), len(out.scored))
 	return out
@@ -2361,7 +2362,7 @@ func (s *Service) splitSearchDebrid(ctx context.Context, settings config.Setting
 		out.scored = bypassScoredResults(raw, rankingBundle.NewestReleaseFirst)
 		out.filtered = 0
 	} else {
-		filterTitles := combineFilterTitles(alternateTitles, englishFallbackTitles)
+		filterTitles := combineFilterTitles(opts.AlternateTitles, alternateTitles, englishFallbackTitles)
 		out.scored, out.filtered = s.scoreSourceCandidates(opts, settings, raw, s.buildFilterOptions(opts, filterBundle.Debrid, filterTitles), filterBundle, animeSettings, filterOverrides, rankingBundle)
 	}
 	log.Printf("[indexer] TIMING: split debrid search complete (took: %v, raw=%d, passed=%d)", time.Since(debridStart), len(raw), len(out.scored))
@@ -2529,14 +2530,14 @@ func (s *Service) searchRawResults(ctx context.Context, opts SearchOptions) ([]m
 	alternateTitles := s.resolveAlternateTitles(ctx, opts, metadataLanguage, settings.Streaming.MaxAlternateTitleSearches)
 	englishFallbackTitles := s.resolveEnglishFallbackTitles(ctx, opts, metadataLanguage)
 	alternateTitles = excludeFallbackTitles(alternateTitles, englishFallbackTitles)
-	filterTitles := combineFilterTitles(alternateTitles, englishFallbackTitles)
+	filterTitles := combineFilterTitles(opts.AlternateTitles, alternateTitles, englishFallbackTitles)
 	parsedQuery := debrid.ParseQuery(opts.Query)
 	searchQueries := buildSearchQueries(opts, parsedQuery, alternateTitles)
 	filterBundle, animeSettings, filterOverrides := s.getEffectiveFilterBundle(opts.UserID, opts.ClientID, settings)
 	filterSettings := filterBundle.Default
 	rankingBundle := s.getEffectiveRankingBundle(opts.UserID, opts.ClientID, settings)
 	rankingCriteria := rankingBundle.Default
-	cacheTitles := append(append([]string{}, alternateTitles...), englishFallbackTitles...)
+	cacheTitles := combineFilterTitles(filterTitles)
 	cacheKey := s.searchCacheKey("raw", opts, settings, cacheTitles, filterSettings, filterBundle, animeSettings, filterOverrides, rankingCriteria, rankingBundle)
 	if cached, ok := s.getCachedSearchResults(cacheKey, searchStart); ok {
 		log.Printf("[indexer] raw search cache hit for query=%q mediaType=%q user=%q client=%q results=%d", opts.Query, opts.MediaType, opts.UserID, opts.ClientID, len(cached))
@@ -2882,7 +2883,7 @@ func (s *Service) SearchSplit(ctx context.Context, opts SearchOptions) (debridCh
 	alternateTitles := s.resolveAlternateTitles(ctx, opts, metadataLanguage, settings.Streaming.MaxAlternateTitleSearches)
 	englishFallbackTitles := s.resolveEnglishFallbackTitles(ctx, opts, metadataLanguage)
 	alternateTitles = excludeFallbackTitles(alternateTitles, englishFallbackTitles)
-	filterTitles := combineFilterTitles(alternateTitles, englishFallbackTitles)
+	filterTitles := combineFilterTitles(opts.AlternateTitles, alternateTitles, englishFallbackTitles)
 	parsedQuery := debrid.ParseQuery(opts.Query)
 	searchQueries := buildSearchQueries(opts, parsedQuery, alternateTitles)
 
@@ -3028,6 +3029,37 @@ func (s *Service) SearchSplit(ctx context.Context, opts SearchOptions) (debridCh
 }
 
 func (s *Service) resolveAlternateTitles(ctx context.Context, opts SearchOptions, metadataLang string, maxAlternates int) []string {
+	// The details handler may already have hydrated provider aliases. Prefer
+	// those so source lookup does not repeat metadata search or create an N+1
+	// alias-fetch path.
+	if len(opts.AlternateTitles) > 0 {
+		parsed := debrid.ParseQuery(opts.Query)
+		query := strings.TrimSpace(parsed.Title)
+		if query == "" {
+			query = strings.TrimSpace(opts.Query)
+		}
+		seen := map[string]struct{}{strings.ToLower(query): {}}
+		aliases := make([]string, 0, len(opts.AlternateTitles))
+		for _, alternate := range opts.AlternateTitles {
+			value := strings.TrimSpace(alternate)
+			if value == "" {
+				continue
+			}
+			key := strings.ToLower(value)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			aliases = append(aliases, value)
+		}
+		if maxAlternates > 0 && len(aliases) > maxAlternates {
+			aliases = aliases[:maxAlternates]
+		}
+		if len(aliases) > 0 {
+			return aliases
+		}
+	}
+
 	if s.metadata == nil {
 		return nil
 	}

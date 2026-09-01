@@ -1999,6 +1999,26 @@ func TestResolveAlternateTitles_WithoutAliases(t *testing.T) {
 	}
 }
 
+func TestResolveAlternateTitles_PrefersHydratedTitles(t *testing.T) {
+	svc := &Service{}
+	aliases := svc.resolveAlternateTitles(context.Background(), SearchOptions{
+		Query:           "DC Showcase Batman: Death in the Family",
+		MediaType:       "movie",
+		Year:            2020,
+		AlternateTitles: []string{"Batman: Death in the Family", "Batman: Death in the Family"},
+	}, "eng", 1)
+
+	want := []string{"Batman: Death in the Family"}
+	if len(aliases) != len(want) {
+		t.Fatalf("aliases = %v, want %v", aliases, want)
+	}
+	for i := range want {
+		if aliases[i] != want[i] {
+			t.Fatalf("aliases = %v, want %v", aliases, want)
+		}
+	}
+}
+
 func TestResolveAlternateTitles_WithAliases(t *testing.T) {
 	// When metadata service implements FetchAliases, we should get aliases
 	// from both search translations AND the TVDB aliases endpoint.
