@@ -3181,6 +3181,18 @@ func (h *PrequeueHandler) resolveCandidates(ctx context.Context, prequeueID stri
 		}
 
 		log.Printf("[prequeue] Resolved result [%d] (%s): %s -> %s", i, result.ServiceType, result.Title, requestsecurity.URLForLog(resolution.WebDAVPath))
+		if peartube.IsBlobStreamReference(resolution.WebDAVPath) {
+			// The authenticated PearTube open already verified the signed static
+			// rendition and minted a bounded local blob handle. Native clients
+			// probe tracks themselves; treating this opaque handle as a WebDAV
+			// path rejects a valid source before the player can request one byte.
+			return &candidateResolution{
+				result:            result,
+				index:             i,
+				resolution:        resolution,
+				migrationSnapshot: src.Snapshot(),
+			}, nil, nil
+		}
 		if isM2TSStreamPath(resolution.WebDAVPath) {
 			m2tsErr := fmt.Errorf("prequeue excludes .m2ts streams: %s", resolution.WebDAVPath)
 			log.Printf("[prequeue] Skipping result [%d] (%s) %s: %v", i, result.ServiceType, result.Title, m2tsErr)
