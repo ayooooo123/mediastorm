@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -20,6 +21,10 @@ type playbackService interface {
 	Resolve(ctx context.Context, candidate models.NZBResult) (*models.PlaybackResolution, error)
 	ResolveBatch(ctx context.Context, candidate models.NZBResult, episodes []models.BatchEpisodeTarget) (*models.BatchResolveResponse, error)
 	QueueStatus(ctx context.Context, queueID int64) (*models.PlaybackResolution, error)
+}
+
+type resumeAwarePlaybackService interface {
+	ResolveAt(ctx context.Context, candidate models.NZBResult, startOffsetSeconds, durationSeconds float64) (*models.PlaybackResolution, error)
 }
 
 type thumbnailPrewarmer interface {
@@ -79,7 +84,8 @@ func (h *PlaybackHandler) prewarmThumbnails(resolution *models.PlaybackResolutio
 func (h *PlaybackHandler) Resolve(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Result         models.NZBResult `json:"result"`
-		StartOffset    float64          `json:"startOffset,omitempty"` // Seek position in seconds for subtitle extraction
+		StartOffset    float64          `json:"startOffset,omitempty"`
+		DurationHint   float64          `json:"durationHint,omitempty"`
 		ProfileID      string           `json:"profileId,omitempty"`
 		AllowMarkedBad bool             `json:"allowMarkedBad,omitempty"`
 	}
@@ -113,7 +119,16 @@ func (h *PlaybackHandler) Resolve(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	resolution, err := h.Service.Resolve(r.Context(), request.Result)
+	resolve := h.Service.Resolve
+	if resumeAware, ok := h.Service.(resumeAwarePlaybackService); ok &&
+		request.StartOffset > 0 && request.DurationHint > 0 &&
+		!math.IsNaN(request.StartOffset) && !math.IsInf(request.StartOffset, 0) &&
+		!math.IsNaN(request.DurationHint) && !math.IsInf(request.DurationHint, 0) {
+		resolve = func(ctx context.Context, candidate models.NZBResult) (*models.PlaybackResolution, error) {
+			return resumeAware.ResolveAt(ctx, candidate, request.StartOffset, request.DurationHint)
+		}
+	}
+	resolution, err := resolve(r.Context(), request.Result)
 	if err != nil {
 		log.Printf("[playback-handler] TIMING: resolve failed after %v: %v", time.Since(handlerStart), err)
 		http.Error(w, err.Error(), http.StatusBadGateway)

@@ -50,7 +50,7 @@ type pearTubeResolver interface {
 }
 
 type pearTubePublicationResolver interface {
-	OpenPublication(ctx context.Context, publicationID, renditionID string) (*models.PlaybackResolution, error)
+	OpenPublication(ctx context.Context, publicationID, renditionID string, startOffsetSeconds, durationSeconds float64) (*models.PlaybackResolution, error)
 }
 
 type debridPlaybackService interface {
@@ -249,6 +249,16 @@ func (s *Service) ResolveBatch(ctx context.Context, candidate models.NZBResult, 
 
 // Resolve ingests the supplied NZB search result and returns a streaming path.
 func (s *Service) Resolve(ctx context.Context, candidate models.NZBResult) (*models.PlaybackResolution, error) {
+	return s.ResolveAt(ctx, candidate, 0, 0)
+}
+
+// ResolveAt resolves a candidate and gives providers the requested resume
+// position so they can prepare the first byte range before the player opens it.
+func (s *Service) ResolveAt(
+	ctx context.Context,
+	candidate models.NZBResult,
+	startOffsetSeconds, durationSeconds float64,
+) (*models.PlaybackResolution, error) {
 	log.Printf("[playback] resolve start title=%q downloadURL=%q link=%q serviceType=%q", strings.TrimSpace(candidate.Title), safeURLForLog(candidate.DownloadURL), safeURLForLog(candidate.Link), candidate.ServiceType)
 
 	if candidate.ServiceType == models.ServiceTypePearTube {
@@ -259,7 +269,7 @@ func (s *Service) Resolve(ctx context.Context, candidate models.NZBResult) (*mod
 		renditionID := strings.TrimSpace(candidate.Attributes["peartube_rendition_id"])
 		if publicationID != "" && renditionID != "" {
 			if resolver, ok := s.pearTubeResolver.(pearTubePublicationResolver); ok {
-				return resolver.OpenPublication(ctx, publicationID, renditionID)
+				return resolver.OpenPublication(ctx, publicationID, renditionID, startOffsetSeconds, durationSeconds)
 			}
 		}
 		candidateRef := strings.TrimSpace(candidate.Attributes["peartube_candidate_ref"])
