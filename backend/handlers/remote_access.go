@@ -58,10 +58,11 @@ func RemoteAccessRevocationMiddleware(service *remoteaccess.Service) mux.Middlew
 }
 
 func remoteAccessPrePairingPathAllowed(r *http.Request) bool {
-	if r.Method == http.MethodOptions || r.URL.Path == "/health" {
+	path := strings.TrimSuffix(r.URL.Path, "/")
+	if r.Method == http.MethodOptions || path == "/health" || path == "/api/health" {
 		return true
 	}
-	return r.Method == http.MethodPost && r.URL.Path == "/api/remote-access/invites/claim"
+	return r.Method == http.MethodPost && path == "/api/remote-access/invites/claim"
 }
 
 type createRemoteAccessInviteRequest struct {

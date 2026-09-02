@@ -135,6 +135,8 @@ func TestRemoteAccessRevocationMiddlewareGatesIrohRequestsToPairedDevices(t *tes
 	}{
 		{name: "direct request bypasses pairing gate", method: http.MethodGet, path: "/api/settings", want: http.StatusNoContent},
 		{name: "health is available before pairing", method: http.MethodGet, path: "/health", proxied: true, want: http.StatusNoContent},
+		{name: "api-prefixed health is available before pairing", method: http.MethodGet, path: "/api/health", proxied: true, want: http.StatusNoContent},
+		{name: "health with trailing slash is available before pairing", method: http.MethodGet, path: "/health/", proxied: true, want: http.StatusNoContent},
 		{name: "claim is available before pairing", method: http.MethodPost, path: "/api/remote-access/invites/claim", proxied: true, want: http.StatusNoContent},
 		{name: "similar path is not a pre-pairing bypass", method: http.MethodPost, path: "/other/remote-access/invites/claim", proxied: true, want: http.StatusForbidden},
 		{name: "active pairing passes", method: http.MethodGet, path: "/api/settings", proxied: true, clientID: "active-device", want: http.StatusNoContent},
