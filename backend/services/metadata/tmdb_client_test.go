@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"novastream/models"
+
 	xdraw "golang.org/x/image/draw"
 )
 
@@ -62,6 +64,29 @@ func TestDoGETReturnsTypedNotFound(t *testing.T) {
 	err := c.doGET(context.Background(), "https://api.themoviedb.org/test", &struct{}{})
 	if !isTMDBNotFound(err) {
 		t.Fatalf("doGET error = %v, want typed TMDB 404", err)
+	}
+}
+
+func TestFindByTVDBIDResolvesSeriesAndMovie(t *testing.T) {
+	c := newTMDBClient("test-key", "en", &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/3/find/79335" || req.URL.Query().Get("external_source") != "tvdb_id" {
+			t.Fatalf("unexpected request: %s", req.URL)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(`{"tv_results":[{"id":1396}],"movie_results":[{"id":603}]}`)),
+			Header:     make(http.Header),
+		}, nil
+	})}, nil)
+
+	seriesID, err := c.findByTVDBID(t.Context(), 79335, "series")
+	if err != nil || seriesID != 1396 {
+		t.Fatalf("series result=%d err=%v", seriesID, err)
+	}
+	movieID, err := c.findByTVDBID(t.Context(), 79335, "movie")
+	if err != nil || movieID != 603 {
+		t.Fatalf("movie result=%d err=%v", movieID, err)
 	}
 }
 
@@ -181,6 +206,34 @@ func TestMovieDetails_AppendsAlternativeTitles(t *testing.T) {
 	}
 	if len(title.AlternateTitles) != 1 || title.AlternateTitles[0] != "Batman: Death in the Family" {
 		t.Fatalf("alternate titles = %v, want deduplicated Batman title", title.AlternateTitles)
+	}
+}
+
+func TestNormalizeTMDBGlobalSeasonEpisodeNumbersSeparatesSeasonalAndAbsoluteCoordinates(t *testing.T) {
+	season := models.SeriesSeason{Number: 23}
+	for number := 1156; number <= 1181; number++ {
+		season.Episodes = append(season.Episodes, models.SeriesEpisode{
+			Name:              fmt.Sprintf("Episode %d", number),
+			SeasonNumber:      23,
+			EpisodeNumber:     number,
+			TMDBEpisodeNumber: number,
+		})
+	}
+
+	if !normalizeTMDBGlobalSeasonEpisodeNumbers(&season) {
+		t.Fatal("expected global episode numbers to be normalized")
+	}
+	if got := season.Episodes[0].EpisodeNumber; got != 1 {
+		t.Fatalf("first local episode = %d, want 1", got)
+	}
+	if got := season.Episodes[17].EpisodeNumber; got != 18 {
+		t.Fatalf("episode 1173 local number = %d, want 18", got)
+	}
+	if got := season.Episodes[17].TMDBEpisodeNumber; got != 1173 {
+		t.Fatalf("episode 1173 TMDB number = %d, want 1173", got)
+	}
+	if got := season.Episodes[25].Name; got != "Episode 26" {
+		t.Fatalf("generic episode name = %q, want Episode 26", got)
 	}
 }
 

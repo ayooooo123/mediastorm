@@ -51,6 +51,229 @@ func TestApplyTVDBMovieExtendedMetadataCopiesGenresWithoutExternalIDs(t *testing
 	}
 }
 
+func TestSearchUsesTMDBWithoutCallingUnconfiguredTVDB(t *testing.T) {
+	var tvdbCalls atomic.Int32
+	tvdbHTTP := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		tvdbCalls.Add(1)
+		t.Fatalf("unexpected TVDB request: %s", req.URL)
+		return nil, nil
+	})}
+	tmdbHTTP := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/3/search/tv" {
+			t.Fatalf("unexpected TMDB request: %s", req.URL)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(`{"results":[{"id":82728,"name":"Bluey","first_air_date":"2018-10-01"}]}`)),
+			Header:     make(http.Header),
+		}, nil
+	})}
+	cache := newFileCache(t.TempDir(), 24)
+	svc := &Service{
+		client:           newTVDBClient("", "eng", tvdbHTTP, 24),
+		tmdb:             newTMDBClient("tmdb-key", "eng", tmdbHTTP, cache),
+		cache:            cache,
+		inflightRequests: make(map[string]*inflightRequest),
+	}
+
+	results, err := svc.Search(t.Context(), "Bluey", "series")
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 1 || results[0].Title.ID != "tmdb:tv:82728" {
+		t.Fatalf("results = %#v, want one TMDB result", results)
+	}
+	if got := tvdbCalls.Load(); got != 0 {
+		t.Fatalf("TVDB calls = %d, want 0", got)
+	}
+}
+
+func TestSeriesDetailsLiteUsesTMDBWhenTVDBIsUnconfigured(t *testing.T) {
+	var tvdbCalls atomic.Int32
+	tvdbHTTP := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		tvdbCalls.Add(1)
+		t.Fatalf("unexpected TVDB request: %s", req.URL)
+		return nil, nil
+	})}
+	tmdbHTTP := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var body string
+		switch req.URL.Path {
+		case "/3/tv/82728":
+			body = `{"id":82728,"name":"Bluey","original_name":"Bluey","first_air_date":"2018-10-01","external_ids":{"imdb_id":"tt7678620","tvdb_id":353546},"alternative_titles":{"results":[{"title":"Bluey (2018)"}]},"seasons":[{"id":123,"name":"Season 1","season_number":1,"episode_count":1}]}`
+		case "/3/tv/82728/season/1":
+			body = `{"id":123,"name":"Season 1","season_number":1,"episodes":[{"id":456,"name":"Magic Xylophone","season_number":1,"episode_number":1,"air_date":"2018-10-01","runtime":7}]}`
+		case "/3/tv/82728/aggregate_credits":
+			body = `{"cast":[{"id":100,"name":"David McCormack","roles":[{"character":"Bandit Heeler","episode_count":1}],"order":0,"profile_path":"/bandit.jpg"}]}`
+		case "/3/tv/82728/content_ratings":
+			body = `{"results":[{"iso_3166_1":"US","rating":"TV-Y"}]}`
+		default:
+			t.Fatalf("unexpected TMDB request: %s", req.URL)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})}
+	cache := newFileCache(t.TempDir(), 24)
+	if err := cache.set(cacheKey("tmdb", "images", "v10", "eng", "series", "82728"), tmdbImagesResult{}); err != nil {
+		t.Fatalf("seed images cache: %v", err)
+	}
+	svc := &Service{
+		client:           newTVDBClient("", "eng", tvdbHTTP, 24),
+		tmdb:             newTMDBClient("tmdb-key", "eng", tmdbHTTP, cache),
+		cache:            cache,
+		idCache:          newFileCache(t.TempDir(), 168),
+		inflightRequests: make(map[string]*inflightRequest),
+	}
+
+	details, err := svc.SeriesDetailsLite(t.Context(), models.SeriesDetailsQuery{TitleID: "tmdb:tv:82728", TMDBID: 82728})
+	if err != nil {
+		t.Fatalf("SeriesDetailsLite: %v", err)
+	}
+	if details.Title.ID != "tmdb:tv:82728" || details.Title.TVDBID != 353546 || details.ActiveOrdering != "official" {
+		t.Fatalf("unexpected TMDB title: %+v ordering=%q", details.Title, details.ActiveOrdering)
+	}
+	if len(details.Seasons) != 1 || len(details.Seasons[0].Episodes) != 1 || details.Seasons[0].Episodes[0].TMDBID != 456 {
+		t.Fatalf("unexpected TMDB episodes: %#v", details.Seasons)
+	}
+	if details.Seasons[0].Episodes[0].AbsoluteEpisodeNumber != 1 {
+		t.Fatalf("absolute episode = %d, want 1", details.Seasons[0].Episodes[0].AbsoluteEpisodeNumber)
+	}
+	if len(details.Title.AlternateTitles) != 1 || details.Title.AlternateTitles[0] != "Bluey (2018)" {
+		t.Fatalf("alternate titles = %#v", details.Title.AlternateTitles)
+	}
+	if details.Title.Credits == nil || len(details.Title.Credits.Cast) != 1 || details.Title.Credits.Cast[0].Name != "David McCormack" {
+		t.Fatalf("credits = %#v, want TMDB cast", details.Title.Credits)
+	}
+	if details.Title.Certification != "TV-Y" {
+		t.Fatalf("certification = %q, want TV-Y", details.Title.Certification)
+	}
+	if got := tvdbCalls.Load(); got != 0 {
+		t.Fatalf("TVDB calls = %d, want 0", got)
+	}
+}
+
+func TestBatchSeriesEndpointsAcceptTMDBOnlySeriesWithoutTVDBMapping(t *testing.T) {
+	var tvdbCalls atomic.Int32
+	tvdbHTTP := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		tvdbCalls.Add(1)
+		t.Fatalf("unexpected TVDB request: %s", req.URL)
+		return nil, nil
+	})}
+	tmdbHTTP := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/3/tv/230" {
+			t.Fatalf("unexpected TMDB request: %s", req.URL)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(`{"id":230,"name":"The New Scooby and Scrappy-Doo Show","first_air_date":"1983-09-10","external_ids":{"imdb_id":"tt0086767","tvdb_id":null}}`)),
+			Header:     make(http.Header),
+		}, nil
+	})}
+	cache := newFileCache(t.TempDir(), 24)
+	if err := cache.set(cacheKey("tmdb", "series", "details-fallback", "v4", "eng", "230"), models.SeriesDetails{
+		Title:   models.Title{ID: "tmdb:tv:230", Name: "The New Scooby and Scrappy-Doo Show", MediaType: "series", TMDBID: 230, IMDBID: "tt0086767", Year: 1983},
+		Seasons: []models.SeriesSeason{{Number: 1, Episodes: []models.SeriesEpisode{{TMDBID: 1, SeasonNumber: 1, EpisodeNumber: 1}}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.set(cacheKey("tmdb", "series", "info", "v1", "eng", "230"), models.Title{
+		ID: "tmdb:tv:230", Name: "The New Scooby and Scrappy-Doo Show", MediaType: "series", TMDBID: 230, IMDBID: "tt0086767", Year: 1983,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.set(cacheKey("tmdb", "credits", "v1", "series", "230"), models.Credits{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.set(cacheKey("tmdb", "tv", "content_rating", "v1", "230"), ""); err != nil {
+		t.Fatal(err)
+	}
+	svc := &Service{
+		client:           newTVDBClient("", "eng", tvdbHTTP, 24),
+		tmdb:             newTMDBClient("tmdb-key", "eng", tmdbHTTP, cache),
+		cache:            cache,
+		inflightRequests: make(map[string]*inflightRequest),
+	}
+	query := models.SeriesDetailsQuery{TitleID: "tmdb:tv:230", TMDBID: 230}
+
+	full := svc.BatchSeriesDetails(t.Context(), []models.SeriesDetailsQuery{query})
+	if len(full) != 1 || full[0].Error != "" || full[0].Details == nil || full[0].Details.Title.TMDBID != 230 {
+		t.Fatalf("full batch result: %#v", full)
+	}
+	fields := svc.BatchSeriesTitleFields(t.Context(), []models.SeriesDetailsQuery{query}, []string{"name", "year"})
+	if len(fields) != 1 || fields[0].Error != "" || fields[0].Details == nil || fields[0].Details.Title.Name == "" {
+		t.Fatalf("fields batch result: %#v", fields)
+	}
+	if got := tvdbCalls.Load(); got != 0 {
+		t.Fatalf("TVDB calls = %d, want 0", got)
+	}
+}
+
+func TestSeriesDetailsLiteReverseResolvesLegacyTVDBIdentityThroughTMDB(t *testing.T) {
+	var tvdbCalls atomic.Int32
+	cache := newFileCache(t.TempDir(), 24)
+	tmdbHTTP := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/3/find/79335" || req.URL.Query().Get("external_source") != "tvdb_id" {
+			t.Fatalf("unexpected TMDB request: %s", req.URL)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(`{"tv_results":[{"id":1396}]}`)),
+			Header:     make(http.Header),
+		}, nil
+	})}
+	if err := cache.set(cacheKey("tmdb", "series", "details-fallback", "v4", "eng", "1396"), models.SeriesDetails{
+		Title:          models.Title{ID: "tmdb:tv:1396", Name: "Breaking Bad", MediaType: "series", TMDBID: 1396, TVDBID: 79335, IMDBID: "tt0903747"},
+		Seasons:        []models.SeriesSeason{{Number: 1, Episodes: []models.SeriesEpisode{{TMDBID: 62085, SeasonNumber: 1, EpisodeNumber: 1}}}},
+		ActiveOrdering: "official",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.set(cacheKey("tmdb", "credits", "v1", "series", "1396"), models.Credits{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.set(cacheKey("tmdb", "tv", "content_rating", "v1", "1396"), "TV-MA"); err != nil {
+		t.Fatal(err)
+	}
+	svc := &Service{
+		client: newTVDBClient("", "eng", &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			tvdbCalls.Add(1)
+			t.Fatalf("unexpected TVDB request: %s", req.URL)
+			return nil, nil
+		})}, 24),
+		tmdb:             newTMDBClient("tmdb-key", "eng", tmdbHTTP, cache),
+		cache:            cache,
+		inflightRequests: make(map[string]*inflightRequest),
+	}
+	details, err := svc.SeriesDetailsLite(t.Context(), models.SeriesDetailsQuery{TitleID: "tvdb:series:79335", TVDBID: 79335})
+	if err != nil {
+		t.Fatalf("SeriesDetailsLite: %v", err)
+	}
+	if details.Title.TMDBID != 1396 || details.Title.TVDBID != 79335 || len(details.Seasons) != 1 {
+		t.Fatalf("unexpected reverse-resolved details: %#v", details)
+	}
+	if got := tvdbCalls.Load(); got != 0 {
+		t.Fatalf("TVDB calls = %d, want 0", got)
+	}
+}
+
+func TestGetCachedOverviewReadsCurrentTMDBCaches(t *testing.T) {
+	cache := newFileCache(t.TempDir(), 24)
+	svc := &Service{client: &tvdbClient{language: "eng"}, cache: cache}
+	if err := cache.set(cacheKey("tmdb", "movie", "details", "v4", "eng", "603"), models.Title{Overview: "Movie overview"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.set(cacheKey("tmdb", "series", "details-fallback", "v4", "eng", "1396"), models.SeriesDetails{Title: models.Title{Overview: "Series overview"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := svc.GetCachedOverview("movie", 603, 0); got != "Movie overview" {
+		t.Fatalf("movie overview = %q", got)
+	}
+	if got := svc.GetCachedOverview("series", 1396, 0); got != "Series overview" {
+		t.Fatalf("series overview = %q", got)
+	}
+}
+
 func TestEnrichTMDBEpisodeMetadataCachesMissingSeason(t *testing.T) {
 	var calls atomic.Int32
 	httpc := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
@@ -267,6 +490,45 @@ func TestGetMovieDetailsFromTMDBHydratesLogoOnServiceCacheHit(t *testing.T) {
 	}
 	if calls := rt.callCount(); calls != 0 {
 		t.Fatalf("network calls = %d, want 0", calls)
+	}
+}
+
+func TestMovieDetailsUsesTMDBWhenTVDBIsUnconfiguredDespiteStoredTVDBID(t *testing.T) {
+	var tvdbCalls atomic.Int32
+	cache := newFileCache(t.TempDir(), 24)
+	const tmdbID int64 = 550
+	if err := cache.set(
+		cacheKey("tmdb", "movie", "details", "v4", "eng", strconv.FormatInt(tmdbID, 10)),
+		models.Title{ID: "tmdb:movie:550", Name: "Fight Club", MediaType: "movie", TMDBID: tmdbID},
+	); err != nil {
+		t.Fatalf("seed details cache: %v", err)
+	}
+	if err := cache.set(
+		cacheKey("tmdb", "images", "v10", "eng", "movie", strconv.FormatInt(tmdbID, 10)),
+		tmdbImagesResult{},
+	); err != nil {
+		t.Fatalf("seed images cache: %v", err)
+	}
+
+	svc := &Service{
+		client: newTVDBClient("", "en", &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			tvdbCalls.Add(1)
+			t.Fatalf("unexpected TVDB request: %s", req.URL)
+			return nil, nil
+		})}, 24),
+		tmdb:  newTMDBClient("tmdb-key", "en", &http.Client{}, cache),
+		cache: cache,
+	}
+
+	got, err := svc.MovieDetails(t.Context(), models.MovieDetailsQuery{TMDBID: tmdbID, TVDBID: 81189})
+	if err != nil {
+		t.Fatalf("MovieDetails: %v", err)
+	}
+	if got.TMDBID != tmdbID || got.Name != "Fight Club" {
+		t.Fatalf("MovieDetails = %#v, want cached TMDB movie", got)
+	}
+	if calls := tvdbCalls.Load(); calls != 0 {
+		t.Fatalf("TVDB calls = %d, want 0", calls)
 	}
 }
 
@@ -635,7 +897,7 @@ func TestSelectIMDBResolutionTVDBSearchResultRejectsWrongFirstResult(t *testing.
 func TestResolveIMDBIDUsesValidatedMovieResult(t *testing.T) {
 	cache := newFileCache(t.TempDir(), 24)
 	svc := &Service{
-		client: &tvdbClient{language: "eng"},
+		client: &tvdbClient{apiKey: "test-key", language: "eng"},
 		cache:  cache,
 	}
 	results := []tvdbSearchResult{
@@ -654,7 +916,7 @@ func TestResolveIMDBIDUsesValidatedMovieResult(t *testing.T) {
 func TestResolveIMDBIDRetriesWithoutStrictTVDBYear(t *testing.T) {
 	cache := newFileCache(t.TempDir(), 24)
 	svc := &Service{
-		client: &tvdbClient{language: "eng"},
+		client: &tvdbClient{apiKey: "test-key", language: "eng"},
 		cache:  cache,
 	}
 	if err := cache.set(cacheKey("tvdb", "search", "movie", "Idhayam Murali", "2026", ""), []tvdbSearchResult{}); err != nil {
@@ -1366,19 +1628,26 @@ func TestSeriesDetailsLiteFallsBackToTMDBAndKeepsLogoOnCachedProviderMismatch(t 
 
 	httpc := &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			if req.URL.Path != "/3/tv/107124" {
+			var body string
+			switch req.URL.Path {
+			case "/3/tv/107124":
+				body = `{
+					"id":107124,
+					"name":"Animaniacs",
+					"original_name":"Animaniacs",
+					"first_air_date":"2020-11-20",
+					"poster_path":"/poster.jpg",
+					"backdrop_path":"/backdrop.jpg",
+					"external_ids":{"imdb_id":"tt6951546","tvdb_id":0},
+					"seasons":[]
+				}`
+			case "/3/tv/107124/aggregate_credits":
+				body = `{"cast":[]}`
+			case "/3/tv/107124/content_ratings":
+				body = `{"results":[]}`
+			default:
 				t.Fatalf("unexpected request: %s", req.URL.String())
 			}
-			body := `{
-				"id":107124,
-				"name":"Animaniacs",
-				"original_name":"Animaniacs",
-				"first_air_date":"2020-11-20",
-				"poster_path":"/poster.jpg",
-				"backdrop_path":"/backdrop.jpg",
-				"external_ids":{"imdb_id":"tt6951546","tvdb_id":0},
-				"seasons":[]
-			}`
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Status:     "200 OK",

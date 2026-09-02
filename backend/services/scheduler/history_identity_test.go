@@ -34,13 +34,17 @@ func TestMatchHistoryEpisodePrioritizesEpisodeIDOverExactCoordinates(t *testing.
 }
 
 func TestCanonicalizeProviderEpisodePrioritizesEpisodeIDOverCoordinates(t *testing.T) {
-	svc := &Service{metadataService: &fakeSchedulerMetadataService{details: onePieceIdentityDetails()}}
+	metadata := &fakeSchedulerMetadataService{details: onePieceIdentityDetails()}
+	svc := &Service{metadataService: metadata}
 	episodeIDs := map[string]string{"tmdb": "7550164"}
 	season, episode, absolute, title := svc.canonicalizeProviderEpisode(
 		"test", map[string]string{"tmdb": "37854", "tvdb": "81797"}, episodeIDs, 23, 18, 0, "Provider title",
 	)
 	if season != 23 || episode != 17 || absolute != 1173 || title != "A Nightmarish Game" {
 		t.Fatalf("canonical=%d:%d absolute=%d title=%q", season, episode, absolute, title)
+	}
+	if metadata.lastQuery.TVDBID != 81797 || metadata.lastQuery.TMDBID != 37854 {
+		t.Fatalf("canonicalization discarded provider IDs: %+v", metadata.lastQuery)
 	}
 }
 

@@ -165,7 +165,7 @@
                         <input type="password" id="tmdbApiKey" class="form-input">
                     </div>
                     <div class="form-group">
-                        <label class="form-label">TVDB API Key</label>
+                        <label class="form-label">TVDB API Key <span class="muted">(optional)</span></label>
                         <input type="password" id="tvdbApiKey" class="form-input">
                     </div>
                 </div>
@@ -769,8 +769,8 @@ async function saveMetadata() {
   next.metadata = next.metadata || {};
   const tmdb = document.getElementById('tmdbApiKey').value.trim();
   const tvdb = document.getElementById('tvdbApiKey').value.trim();
-  if (!tmdb || tmdb === redacted || !tvdb || tvdb === redacted) {
-    setInlineResult('metadataTestResult', 'TMDB and TVDB API keys are both required for onboarding.', 'error');
+  if (!tmdb || tmdb === redacted) {
+    setInlineResult('metadataTestResult', 'A TMDB API key is required for onboarding.', 'error');
     return;
   }
   if (tmdb && tmdb !== redacted) next.metadata.tmdbApiKey = tmdb;
@@ -785,8 +785,8 @@ async function saveMetadata() {
 async function testMetadata() {
   const tmdb = document.getElementById('tmdbApiKey').value.trim();
   const tvdb = document.getElementById('tvdbApiKey').value.trim();
-  if (!tmdb || tmdb === redacted || !tvdb || tvdb === redacted) {
-    setInlineResult('metadataTestResult', 'Enter both TMDB and TVDB API keys before testing.', 'error');
+  if (!tmdb || tmdb === redacted) {
+    setInlineResult('metadataTestResult', 'Enter a TMDB API key before testing.', 'error');
     return;
   }
   setInlineResult('metadataTestResult', 'Testing...');

@@ -148,6 +148,10 @@ type (
 		FetchAliases(mediaType string, tvdbID int64) []string
 		FetchAliasesWithLanguage(mediaType string, tvdbID int64) []models.LanguageAlias
 	}
+
+	metadataTitleAliasService interface {
+		FetchAliasesForTitle(context.Context, string, int64, int64) []models.LanguageAlias
+	}
 )
 
 type Service struct {
@@ -3177,8 +3181,13 @@ func (s *Service) resolveAlternateTitles(ctx context.Context, opts SearchOptions
 	// supports it. The search API translations are often incomplete — the
 	// aliases endpoint has all known alternate titles across languages.
 	// Aliases matching the user's metadata language are added first.
-	if aliasSvc, ok := s.metadata.(metadataAliasService); ok && chosen.TVDBID > 0 {
-		langAliases := aliasSvc.FetchAliasesWithLanguage(chosen.MediaType, chosen.TVDBID)
+	var langAliases []models.LanguageAlias
+	if aliasSvc, ok := s.metadata.(metadataTitleAliasService); ok {
+		langAliases = aliasSvc.FetchAliasesForTitle(ctx, chosen.MediaType, chosen.TMDBID, chosen.TVDBID)
+	} else if aliasSvc, ok := s.metadata.(metadataAliasService); ok && chosen.TVDBID > 0 {
+		langAliases = aliasSvc.FetchAliasesWithLanguage(chosen.MediaType, chosen.TVDBID)
+	}
+	if len(langAliases) > 0 {
 		lang := strings.ToLower(strings.TrimSpace(metadataLang))
 		originalLang := strings.ToLower(strings.TrimSpace(chosen.Language))
 		var langMatched, others []string

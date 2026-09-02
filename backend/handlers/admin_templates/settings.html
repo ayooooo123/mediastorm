@@ -2628,8 +2628,8 @@
         ['homeShelves', 'excludeUpcomingFromContinue', 'Keep Unreleased Episodes Out of Continue Watching', 'Show unreleased next episodes in My Upcoming instead.'],
         ['display', 'badgeVisibility', 'Information Shown on Posters', 'Choose the labels and progress information shown on media cards.'],
         ['display', 'navigationTabVisibility', 'App Navigation', 'Choose which navigation tabs are visible in the apps.'],
-        ['metadata', 'tvdbApiKey', 'TVDB Key', 'Used to look up TV show and episode information.'],
-        ['metadata', 'tmdbApiKey', 'TMDB Key', 'Used to look up movie, show, and artwork information.'],
+        ['metadata', 'tvdbApiKey', 'TVDB Key (Optional)', 'Adds alternate episode orderings and extra aliases when configured.'],
+        ['metadata', 'tmdbApiKey', 'TMDB Key', 'Required for movie, show, episode, and artwork information.'],
         ['subtitles', 'enableTranslatedSubs', 'Translate Subtitles When Needed', 'Allow English subtitles to be translated into the profile\'s preferred subtitle language.']
     ];
     friendlySettingsCopy.forEach(([sectionKey, fieldKey, label, description]) => {
@@ -3924,9 +3924,8 @@
             }
         }
 
-        // Metadata - all required
+        // TMDB provides the baseline metadata service. TVDB is optional enrichment.
         const metadataErrors = { fields: {}, messages: [] };
-        if (isEmpty(currentSettings.metadata?.tvdbApiKey)) metadataErrors.fields.tvdbApiKey = 'TVDB API Key is required';
         if (isEmpty(currentSettings.metadata?.tmdbApiKey)) metadataErrors.fields.tmdbApiKey = 'TMDB API Key is required';
         if (Object.keys(metadataErrors.fields).length > 0) errors.metadata = metadataErrors;
 

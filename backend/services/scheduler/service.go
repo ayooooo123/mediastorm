@@ -4115,13 +4115,17 @@ func (s *Service) canonicalizeProviderEpisode(provider string, showIDs map[strin
 	var query models.SeriesDetailsQuery
 	if tvdbID, ok := positiveIntFromMap(showIDs, "tvdb"); ok {
 		query.TVDBID = int64(tvdbID)
+	}
+	if tmdbID, ok := positiveIntFromMap(showIDs, "tmdb"); ok {
+		query.TMDBID = int64(tmdbID)
+	}
+	query.IMDBID = strings.TrimSpace(showIDs["imdb"])
+	if tvdbID, ok := positiveIntFromMap(showIDs, "tvdb"); ok {
 		query.TitleID = fmt.Sprintf("tvdb:series:%d", tvdbID)
 	} else if tmdbID, ok := positiveIntFromMap(showIDs, "tmdb"); ok {
-		query.TMDBID = int64(tmdbID)
 		query.TitleID = fmt.Sprintf("tmdb:tv:%d", tmdbID)
-	} else if imdbID := strings.TrimSpace(showIDs["imdb"]); imdbID != "" {
-		query.IMDBID = imdbID
-		query.TitleID = fmt.Sprintf("imdb:%s", imdbID)
+	} else if query.IMDBID != "" {
+		query.TitleID = fmt.Sprintf("imdb:%s", query.IMDBID)
 	}
 	if query.TVDBID == 0 && query.TMDBID == 0 && query.IMDBID == "" && query.TitleID == "" {
 		return seasonNumber, episodeNumber, absoluteEpisode, episodeTitle

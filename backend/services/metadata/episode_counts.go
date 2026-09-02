@@ -12,7 +12,7 @@ import (
 	"novastream/models"
 )
 
-const releasedEpisodeCountCacheVersion = "v1"
+const releasedEpisodeCountCacheVersion = "v2"
 
 var (
 	releasedEpisodeCountWarmInFlight sync.Map
@@ -88,6 +88,30 @@ func (s *Service) WarmReleasedEpisodeCount(req models.SeriesDetailsQuery) {
 
 func (s *Service) warmReleasedEpisodeCount(ctx context.Context, req models.SeriesDetailsQuery) error {
 	req = normalizeSeriesDetailsQueryIDs(req)
+	if !s.client.isConfigured() {
+		req.TMDBID = s.resolveTMDBSeriesID(ctx, req)
+		if req.TMDBID <= 0 {
+			return fmt.Errorf("unable to resolve tmdb id")
+		}
+		details, err := s.tmdbSeriesDetailsFallback(ctx, req, fmt.Errorf("tvdb api key not configured"))
+		if err != nil {
+			return err
+		}
+		if details == nil {
+			return fmt.Errorf("tmdb returned no series details")
+		}
+		if details.Title.TMDBID > 0 {
+			req.TMDBID = details.Title.TMDBID
+		}
+		if details.Title.TVDBID > 0 {
+			req.TVDBID = details.Title.TVDBID
+		}
+		if strings.TrimSpace(details.Title.IMDBID) != "" {
+			req.IMDBID = details.Title.IMDBID
+		}
+		return s.cacheReleasedEpisodeCount(req, countReleasedSeriesDetails(details, time.Now()))
+	}
+
 	tvdbID, err := s.resolveSeriesTVDBID(ctx, req)
 	if err != nil {
 		return err
@@ -109,7 +133,20 @@ func (s *Service) warmReleasedEpisodeCount(ctx context.Context, req models.Serie
 
 func (s *Service) releasedEpisodeCountFromCachedDetails(req models.SeriesDetailsQuery) (int, bool) {
 	req = normalizeSeriesDetailsQueryIDs(req)
-	if s.client == nil || req.TVDBID <= 0 {
+	if s.client == nil {
+		return 0, false
+	}
+	if req.TMDBID > 0 {
+		var details models.SeriesDetails
+		tmdbCacheID := cacheKey(
+			"tmdb", "series", "details-fallback", "v4", s.client.language,
+			strconv.FormatInt(req.TMDBID, 10),
+		)
+		if ok, _ := s.cache.get(tmdbCacheID, &details); ok && len(details.Seasons) > 0 {
+			return countReleasedSeriesDetails(&details, time.Now()), true
+		}
+	}
+	if req.TVDBID <= 0 {
 		return 0, false
 	}
 

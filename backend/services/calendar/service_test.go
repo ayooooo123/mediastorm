@@ -1262,3 +1262,14 @@ func TestBuildUserCalendar_UTCAwareSorting(t *testing.T) {
 		t.Errorf("expected NYC Show second (later in UTC), got %q", items[1].Title)
 	}
 }
+
+func TestCalendarEpisodeIdentityDoesNotCollapseTMDBOnlySeries(t *testing.T) {
+	first := calendarEpisodeIdentity(models.Title{Name: "First", TMDBID: 101}, 1, 1)
+	second := calendarEpisodeIdentity(models.Title{Name: "Second", TMDBID: 202}, 1, 1)
+	if first == second {
+		t.Fatalf("TMDB-only episode identities collided: %q", first)
+	}
+	if got := calendarEpisodeIdentity(models.Title{Name: "Legacy", TVDBID: 303}, 2, 4); got != "tvdb:series:303:s02e04" {
+		t.Fatalf("TVDB fallback identity = %q", got)
+	}
+}

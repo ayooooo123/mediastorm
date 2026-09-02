@@ -92,3 +92,30 @@ func TestNormalizeReleaseAbsoluteEpisodeNumbersIncludesCanonicallyNumberedSpecia
 		t.Fatalf("second regular episode after numbered special = %d, want 592", got)
 	}
 }
+
+func TestNormalizeReleaseAbsoluteEpisodeNumbersPreservesAnimeGlobalEpisodeNumbers(t *testing.T) {
+	details := &SeriesDetails{Seasons: []SeriesSeason{
+		{Number: 1, EpisodeCount: 61, Episodes: []SeriesEpisode{
+			{SeasonNumber: 1, EpisodeNumber: 1},
+			{SeasonNumber: 1, EpisodeNumber: 61},
+		}},
+		{Number: 2, EpisodeCount: 16, Episodes: []SeriesEpisode{
+			{SeasonNumber: 2, EpisodeNumber: 62},
+			{SeasonNumber: 2, EpisodeNumber: 77},
+		}},
+		{Number: 3, EpisodeCount: 14, Episodes: []SeriesEpisode{
+			{SeasonNumber: 3, EpisodeNumber: 78, AbsoluteEpisodeNumber: 155},
+			{SeasonNumber: 3, EpisodeNumber: 91, AbsoluteEpisodeNumber: 168},
+		}},
+	}}
+
+	if !NormalizeReleaseAbsoluteEpisodeNumbers(details) {
+		t.Fatal("expected double-counted provider values to be corrected")
+	}
+	if got := details.Seasons[1].Episodes[0].AbsoluteEpisodeNumber; got != 62 {
+		t.Fatalf("S02E62 absolute = %d, want 62", got)
+	}
+	if got := details.Seasons[2].Episodes[1].AbsoluteEpisodeNumber; got != 91 {
+		t.Fatalf("S03E91 absolute = %d, want 91", got)
+	}
+}

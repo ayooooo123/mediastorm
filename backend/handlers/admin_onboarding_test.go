@@ -78,6 +78,24 @@ func TestAdminOnboardingStatus_DefaultNeedsOnboarding(t *testing.T) {
 	}
 }
 
+func TestAdminOnboardingStatusAcceptsTMDBWithoutTVDB(t *testing.T) {
+	h, sessionsSvc, _ := newAdminOnboardingTestHandler(t, func(settings *config.Settings) {
+		settings.Metadata.TMDBAPIKey = "tmdb-key"
+		settings.Metadata.TVDBAPIKey = ""
+	})
+	req := newAdminRequestWithSession(t, sessionsSvc, http.MethodGet, "/admin/api/onboarding/status", true)
+	rr := httptest.NewRecorder()
+
+	h.RequireMasterAuth(h.GetOnboardingStatus).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"hasMetadataProvider":true`) {
+		t.Fatalf("TMDB-only configuration was not accepted: %s", rr.Body.String())
+	}
+}
+
 func TestAdminOnboardingPageClarifiesFirstLoginPasswordIsAlreadySet(t *testing.T) {
 	t.Setenv("STRMR_INITIAL_ADMIN_PASSWORD", "first-login-password")
 	h, sessionsSvc, _ := newAdminOnboardingTestHandler(t, nil)

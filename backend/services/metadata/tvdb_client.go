@@ -61,6 +61,10 @@ func newTVDBClient(apiKey, language string, httpc *http.Client, cacheTTLHours in
 	}
 }
 
+func (c *tvdbClient) isConfigured() bool {
+	return c != nil && strings.TrimSpace(c.apiKey) != ""
+}
+
 // normalizeTVDBLanguage converts 2-letter ISO 639-1 codes to 3-letter ISO 639-2 codes for TVDB
 func normalizeTVDBLanguage(lang string) string {
 	lang = strings.TrimSpace(strings.ToLower(lang))
@@ -126,6 +130,9 @@ func normalizeTVDBLanguage(lang string) string {
 }
 
 func (c *tvdbClient) ensureToken() (string, error) {
+	if !c.isConfigured() {
+		return "", fmt.Errorf("tvdb api key not configured")
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.token != "" && time.Now().Before(c.tokenExpiry.Add(-1*time.Minute)) {

@@ -31,13 +31,40 @@ func ReleaseAbsoluteEpisodeNumber(seasons []SeriesSeason, target SeriesEpisode) 
 		}
 	}
 
-	absolute := target.EpisodeNumber
+	previousEpisodeCount := 0
 	for seasonNumber := 1; seasonNumber < target.SeasonNumber; seasonNumber++ {
 		count, ok := seasonCounts[seasonNumber]
 		if !ok || count <= 0 {
 			return 0
 		}
-		absolute += count
+		previousEpisodeCount += count
+	}
+
+	// Some anime catalogues split a show into arc/season containers while
+	// keeping globally increasing episode numbers inside every container. In
+	// that representation (One Piece is the common example), adding preceding
+	// season counts a second time produces impossible values such as 2336 for
+	// episode 1181. Detect it from the first numbered episode in the season.
+	providerUsesAbsoluteNumbers := false
+	if target.SeasonNumber > 1 && previousEpisodeCount > 0 {
+		for _, season := range seasons {
+			if season.Number != target.SeasonNumber {
+				continue
+			}
+			firstEpisodeNumber := 0
+			for _, episode := range season.Episodes {
+				if episode.EpisodeNumber > 0 && (firstEpisodeNumber == 0 || episode.EpisodeNumber < firstEpisodeNumber) {
+					firstEpisodeNumber = episode.EpisodeNumber
+				}
+			}
+			providerUsesAbsoluteNumbers = firstEpisodeNumber > previousEpisodeCount
+			break
+		}
+	}
+
+	absolute := target.EpisodeNumber
+	if !providerUsesAbsoluteNumbers {
+		absolute += previousEpisodeCount
 	}
 
 	for _, season := range seasons {

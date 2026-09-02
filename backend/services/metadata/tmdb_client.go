@@ -1267,7 +1267,7 @@ func (c *tmdbClient) seriesDetails(ctx context.Context, tmdbID int64) (*models.T
 	if err != nil {
 		return nil, err
 	}
-	endpoint = endpoint + "?api_key=" + c.apiKey + "&append_to_response=external_ids"
+	endpoint = endpoint + "?api_key=" + c.apiKey + "&append_to_response=external_ids,alternative_titles"
 	if lang := strings.TrimSpace(c.language); lang != "" {
 		endpoint += "&language=" + normalizeLanguage(lang)
 	}
@@ -1292,7 +1292,12 @@ func (c *tmdbClient) seriesDetails(ctx context.Context, tmdbID int64) (*models.T
 		Networks []struct {
 			Name string `json:"name"`
 		} `json:"networks"`
-		ExternalIDs tmdbExternalIDsResponse `json:"external_ids"`
+		ExternalIDs       tmdbExternalIDsResponse `json:"external_ids"`
+		AlternativeTitles struct {
+			Results []struct {
+				Title string `json:"title"`
+			} `json:"results"`
+		} `json:"alternative_titles"`
 	}
 
 	if err := c.doGET(ctx, endpoint, &payload); err != nil {
@@ -1335,6 +1340,19 @@ func (c *tmdbClient) seriesDetails(ctx context.Context, tmdbID int64) (*models.T
 	}
 	if len(payload.OriginCountry) > 0 {
 		title.CountryCode = strings.TrimSpace(payload.OriginCountry[0])
+	}
+	seenAliases := make(map[string]struct{})
+	for _, alternate := range payload.AlternativeTitles.Results {
+		name := strings.TrimSpace(alternate.Title)
+		key := strings.ToLower(name)
+		if name == "" || strings.EqualFold(name, title.Name) || strings.EqualFold(name, title.OriginalName) {
+			continue
+		}
+		if _, exists := seenAliases[key]; exists {
+			continue
+		}
+		seenAliases[key] = struct{}{}
+		title.AlternateTitles = append(title.AlternateTitles, name)
 	}
 	return title, nil
 }
@@ -1527,10 +1545,57 @@ func (c *tmdbClient) seriesSeasonDetails(ctx context.Context, tmdbID int64, summ
 		return episodes[i].EpisodeNumber < episodes[j].EpisodeNumber
 	})
 	season.Episodes = episodes
+	normalizeTMDBGlobalSeasonEpisodeNumbers(&season)
 	if len(episodes) > season.EpisodeCount {
 		season.EpisodeCount = len(episodes)
 	}
 	return season, nil
+}
+
+// normalizeTMDBGlobalSeasonEpisodeNumbers handles anime where TMDB groups
+// episodes into seasons/arcs but keeps episode_number globally increasing. The
+// raw TMDB number is retained while the app-facing coordinate is rebased.
+func normalizeTMDBGlobalSeasonEpisodeNumbers(season *models.SeriesSeason) bool {
+	if season == nil || season.Number <= 1 || len(season.Episodes) < 2 {
+		return false
+	}
+	first, last, numbered := 0, 0, 0
+	for _, episode := range season.Episodes {
+		if episode.EpisodeNumber <= 0 {
+			continue
+		}
+		numbered++
+		if first == 0 || episode.EpisodeNumber < first {
+			first = episode.EpisodeNumber
+		}
+		if episode.EpisodeNumber > last {
+			last = episode.EpisodeNumber
+		}
+	}
+	if first <= 1 || numbered < 2 || last-first+1 != numbered {
+		return false
+	}
+
+	changed := false
+	for index := range season.Episodes {
+		episode := &season.Episodes[index]
+		if episode.EpisodeNumber <= 0 {
+			continue
+		}
+		rawNumber := episode.EpisodeNumber
+		localNumber := rawNumber - first + 1
+		if episode.TMDBEpisodeNumber <= 0 {
+			episode.TMDBEpisodeNumber = rawNumber
+		}
+		if strings.EqualFold(strings.TrimSpace(episode.Name), fmt.Sprintf("Episode %d", rawNumber)) {
+			episode.Name = fmt.Sprintf("Episode %d", localNumber)
+		}
+		if localNumber != rawNumber {
+			episode.EpisodeNumber = localNumber
+			changed = true
+		}
+	}
+	return changed
 }
 
 func (c *tmdbClient) searchTitles(ctx context.Context, query, mediaType string, limit int, includeAdult bool) ([]models.SearchResult, error) {
@@ -2766,6 +2831,57 @@ func (c *tmdbClient) findTVByIMDBID(ctx context.Context, imdbID string) (int64, 
 	}
 
 	return 0, lastErr
+}
+
+// findByTVDBID resolves a stored legacy TVDB title ID through TMDB. This keeps
+// old identities useful even when TVDB itself is disabled.
+func (c *tmdbClient) findByTVDBID(ctx context.Context, tvdbID int64, mediaType string) (int64, error) {
+	if !c.isConfigured() {
+		return 0, errors.New("tmdb api key not configured")
+	}
+	if tvdbID <= 0 {
+		return 0, errors.New("tvdb id required")
+	}
+	kind := "series"
+	if strings.EqualFold(strings.TrimSpace(mediaType), "movie") {
+		kind = "movie"
+	}
+	cacheID := cacheKey("tmdb", "find", "tvdb", kind, strconv.FormatInt(tvdbID, 10))
+	if c.cache != nil {
+		var cached int64
+		if ok, _ := c.cache.get(cacheID, &cached); ok && cached > 0 {
+			return cached, nil
+		}
+	}
+
+	endpoint := fmt.Sprintf("%s/find/%d?api_key=%s&external_source=tvdb_id", tmdbBaseURL, tvdbID, c.apiKey)
+	var result struct {
+		MovieResults []struct {
+			ID int64 `json:"id"`
+		} `json:"movie_results"`
+		TVResults []struct {
+			ID int64 `json:"id"`
+		} `json:"tv_results"`
+	}
+	if err := c.doGET(ctx, endpoint, &result); err != nil {
+		return 0, err
+	}
+	if kind == "movie" {
+		if len(result.MovieResults) > 0 {
+			id := result.MovieResults[0].ID
+			if c.cache != nil {
+				_ = c.cache.set(cacheID, id)
+			}
+			return id, nil
+		}
+	} else if len(result.TVResults) > 0 {
+		id := result.TVResults[0].ID
+		if c.cache != nil {
+			_ = c.cache.set(cacheID, id)
+		}
+		return id, nil
+	}
+	return 0, fmt.Errorf("no %s found for TVDB ID %d", mediaType, tvdbID)
 }
 
 func mapTMDBReleaseType(releaseType int) string {

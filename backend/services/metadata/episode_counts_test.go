@@ -1,6 +1,8 @@
 package metadata
 
 import (
+	"context"
+	"net/http"
 	"testing"
 	"time"
 
@@ -65,6 +67,66 @@ func TestReleasedEpisodeCountUsesCachedSeriesDetails(t *testing.T) {
 	count, ok := svc.GetCachedReleasedEpisodeCount(models.SeriesDetailsQuery{TVDBID: 20})
 	if !ok || count != 2 {
 		t.Fatalf("cached details count = %d, %v; want 2, true", count, ok)
+	}
+}
+
+func TestReleasedEpisodeCountUsesCachedTMDBSeriesDetails(t *testing.T) {
+	cache := newFileCache(t.TempDir(), 24)
+	svc := &Service{
+		cache:  cache,
+		client: &tvdbClient{language: "eng"},
+	}
+	details := models.SeriesDetails{Seasons: []models.SeriesSeason{
+		{Number: 1, Episodes: []models.SeriesEpisode{
+			{SeasonNumber: 1, EpisodeNumber: 1, AiredDate: "2020-01-01"},
+			{SeasonNumber: 1, EpisodeNumber: 2, AiredDate: "2020-01-08"},
+		}},
+	}}
+	if err := cache.set(cacheKey("tmdb", "series", "details-fallback", "v4", "eng", "10"), details); err != nil {
+		t.Fatalf("seed TMDB details: %v", err)
+	}
+
+	count, ok := svc.GetCachedReleasedEpisodeCount(models.SeriesDetailsQuery{TMDBID: 10})
+	if !ok || count != 2 {
+		t.Fatalf("cached TMDB details count = %d, %v; want 2, true", count, ok)
+	}
+}
+
+func TestWarmReleasedEpisodeCountUsesTMDBWhenTVDBIsUnconfigured(t *testing.T) {
+	cache := newFileCache(t.TempDir(), 24)
+	svc := &Service{
+		cache:  cache,
+		client: newTVDBClient("", "eng", &http.Client{}, 24),
+		tmdb:   newTMDBClient("tmdb-key", "eng", &http.Client{}, cache),
+	}
+	details := models.SeriesDetails{
+		Title: models.Title{
+			ID:            "tmdb:tv:10",
+			Name:          "Test Series",
+			MediaType:     "series",
+			TMDBID:        10,
+			IMDBID:        "tt1234567",
+			Certification: "TV-PG",
+			Credits:       &models.Credits{},
+		},
+		Seasons: []models.SeriesSeason{
+			{Number: 1, Episodes: []models.SeriesEpisode{
+				{SeasonNumber: 1, EpisodeNumber: 1, AiredDate: "2020-01-01"},
+				{SeasonNumber: 1, EpisodeNumber: 2, AiredDate: "2020-01-08"},
+			}},
+		},
+	}
+	if err := cache.set(cacheKey("tmdb", "series", "details-fallback", "v4", "eng", "10"), details); err != nil {
+		t.Fatalf("seed TMDB details: %v", err)
+	}
+
+	query := models.SeriesDetailsQuery{TitleID: "tmdb:tv:10", TMDBID: 10}
+	if err := svc.warmReleasedEpisodeCount(context.Background(), query); err != nil {
+		t.Fatalf("warmReleasedEpisodeCount: %v", err)
+	}
+	count, ok := svc.GetCachedReleasedEpisodeCount(query)
+	if !ok || count != 2 {
+		t.Fatalf("warmed count = %d, %v; want 2, true", count, ok)
 	}
 }
 

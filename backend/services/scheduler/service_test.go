@@ -69,10 +69,12 @@ func (f *fakeSchedulerUsersProvider) ListAll() []models.User {
 }
 
 type fakeSchedulerMetadataService struct {
-	details *models.SeriesDetails
+	details   *models.SeriesDetails
+	lastQuery models.SeriesDetailsQuery
 }
 
 func (f *fakeSchedulerMetadataService) SeriesDetailsLite(ctx context.Context, req models.SeriesDetailsQuery) (*models.SeriesDetails, error) {
+	f.lastQuery = req
 	return f.details, nil
 }
 

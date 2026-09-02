@@ -1441,7 +1441,7 @@ func (s *Service) fetchUpcomingEpisodes(
 				continue
 			}
 
-			key := fmt.Sprintf("series:%d:s%02de%02d", details.Title.TVDBID, ep.SeasonNumber, ep.EpisodeNumber)
+			key := calendarEpisodeIdentity(details.Title, ep.SeasonNumber, ep.EpisodeNumber)
 			if !state.claimItem(key) {
 				continue
 			}
@@ -1471,6 +1471,19 @@ func (s *Service) fetchUpcomingEpisodes(
 		}
 	}
 	return items
+}
+
+func calendarEpisodeIdentity(title models.Title, seasonNumber, episodeNumber int) string {
+	switch {
+	case title.TVDBID > 0:
+		return fmt.Sprintf("tvdb:series:%d:s%02de%02d", title.TVDBID, seasonNumber, episodeNumber)
+	case title.TMDBID > 0:
+		return fmt.Sprintf("tmdb:tv:%d:s%02de%02d", title.TMDBID, seasonNumber, episodeNumber)
+	case strings.TrimSpace(title.IMDBID) != "":
+		return fmt.Sprintf("imdb:%s:s%02de%02d", strings.TrimSpace(title.IMDBID), seasonNumber, episodeNumber)
+	default:
+		return fmt.Sprintf("series:%s:%d:s%02de%02d", strings.ToLower(strings.TrimSpace(title.Name)), title.Year, seasonNumber, episodeNumber)
+	}
 }
 
 func enrichCalendarItemFromTitle(item *models.CalendarItem, title *models.Title) {

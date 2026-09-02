@@ -1963,6 +1963,10 @@ func (m *mockMetadataWithAliases) FetchAliasesWithLanguage(_ string, tvdbID int6
 	return result
 }
 
+func (m *mockMetadataWithAliases) FetchAliasesForTitle(_ context.Context, _ string, _ int64, tvdbID int64) []models.LanguageAlias {
+	return m.FetchAliasesWithLanguage("", tvdbID)
+}
+
 func TestResolveAlternateTitles_WithoutAliases(t *testing.T) {
 	// When metadata service doesn't implement FetchAliases, we should still
 	// get alternates from the search API translations.

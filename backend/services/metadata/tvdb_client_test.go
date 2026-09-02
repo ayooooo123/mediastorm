@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"net/url"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -12,6 +14,25 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+func TestTVDBClientWithoutAPIKeyDoesNotMakeRequests(t *testing.T) {
+	var calls atomic.Int32
+	httpc := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		t.Fatalf("unexpected TVDB request: %s", req.URL)
+		return nil, nil
+	})}
+	client := newTVDBClient("", "en", httpc, 24)
+	if client.isConfigured() {
+		t.Fatal("empty TVDB key must be treated as unconfigured")
+	}
+	if err := client.doGET("https://api4.thetvdb.com/v4/search", url.Values{"query": {"Bluey"}}, &map[string]any{}); err == nil {
+		t.Fatal("expected an unconfigured error")
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("HTTP calls = %d, want 0", got)
+	}
 }
 
 func TestTVDBClientSetsAcceptLanguageHeader(t *testing.T) {

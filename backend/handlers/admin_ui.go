@@ -1179,8 +1179,8 @@ var SettingsSchema = map[string]interface{}{
 		"order":    0,
 		"testable": true,
 		"fields": map[string]interface{}{
-			"tvdbApiKey": map[string]interface{}{"type": "password", "label": "TVDB API Key", "description": "TheTVDB API key", "globalOnly": true},
-			"tmdbApiKey": map[string]interface{}{"type": "password", "label": "TMDB API Key", "description": "TheMovieDB API key", "globalOnly": true},
+			"tvdbApiKey": map[string]interface{}{"type": "password", "label": "TVDB API Key (Optional)", "description": "Adds alternate episode orderings and extra aliases", "globalOnly": true},
+			"tmdbApiKey": map[string]interface{}{"type": "password", "label": "TMDB API Key", "description": "Required baseline movie and show metadata provider", "globalOnly": true},
 			"aiProvider": map[string]interface{}{
 				"type":        "select",
 				"label":       "AI Provider",
@@ -2162,7 +2162,7 @@ func (h *AdminUIHandler) buildOnboardingStatus() (onboardingStatus, error) {
 		status.HasStreamingProvider = status.EnabledDebridProviders > 0 && status.EnabledUsenetProviders > 0
 		status.HasSearchSource = status.EnabledTorrentScrapers > 0 && status.EnabledUsenetIndexers > 0
 	}
-	status.HasMetadataProvider = strings.TrimSpace(settings.Metadata.TMDBAPIKey) != "" && strings.TrimSpace(settings.Metadata.TVDBAPIKey) != ""
+	status.HasMetadataProvider = strings.TrimSpace(settings.Metadata.TMDBAPIKey) != ""
 	status.HasUsableProfile = status.ProfileCount > 0
 	status.SetupComplete = !status.DefaultPassword && status.HasStreamingProvider && status.HasSearchSource && status.HasMetadataProvider && status.HasUsableProfile
 	status.NeedsOnboarding = !status.Completed && !status.Skipped && !status.SetupComplete
