@@ -82,7 +82,10 @@ func (r *pgRemoteAccessPairingRepo) ClaimInvite(
 	row := r.pool.QueryRow(ctx, `
 		WITH claimed AS (
 			UPDATE remote_access_invites
-			SET used_at=$5, used_by_peer_id=$2
+			SET used_at=$5,
+				used_by_peer_id=$2,
+				token_hash='claimed:' || id,
+				connection_code=''
 			WHERE token_hash=$1 AND revoked_at IS NULL AND expires_at>$5 AND used_at IS NULL
 			RETURNING `+remoteAccessInviteCols+`
 		), paired AS (
@@ -105,14 +108,10 @@ func (r *pgRemoteAccessPairingRepo) ClaimInvite(
 			SET connection_code=''
 			FROM claimed
 			WHERE invitations.remote_access_invite_id=claimed.id
-		), retired AS (
-			UPDATE remote_access_invites AS invites
-			SET token_hash='claimed:' || invites.id, connection_code=''
-			FROM claimed, paired
-			WHERE invites.id=claimed.id
-			RETURNING invites.`+strings.ReplaceAll(remoteAccessInviteCols, ", ", ", invites.")+`
 		)
-		SELECT `+remoteAccessInviteCols+` FROM retired`, tokenHash, peerID, credentialHash, pairingID, now)
+		SELECT claimed.`+strings.ReplaceAll(remoteAccessInviteCols, ", ", ", claimed.")+`
+		FROM claimed
+		JOIN paired ON paired.peer_id=$2`, tokenHash, peerID, credentialHash, pairingID, now)
 	return scanRemoteAccessInvite(row)
 }
 
