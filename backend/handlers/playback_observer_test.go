@@ -826,3 +826,51 @@ func TestWithoutArchiveOnPlaybackStartTheEvidencePathIsUnchanged(t *testing.T) {
 	handler.observePlayback("", update)
 	waitForRelayCancellations(t, relay, 1)
 }
+
+func TestPlaybackObservationDoesNotLockSourceWhenClaimFails(t *testing.T) {
+	t.Setenv(peartube.CompanionClientEnv, "mediastorm-test")
+	relay := &autoSeedRelay{}
+	resolver := &fakeStreamResolver{url: "https://cdn.example.net/d/FRESH/The.Matrix.1999.mkv"}
+	handler := newStartArchiveHandler(t, relay, resolver)
+
+	// Pre-claim the title so planAutoSeed fails.
+	handler.claimAutoSeed("movie:603")
+
+	update := startArchivePlayback()
+	handler.observePlayback("", update)
+	waitForSeeds(t, relay, 0)
+
+	// Now release the claim. The exact same playback session should re-qualify
+	// and submit on the next heartbeat.
+	handler.releaseAutoSeed("movie:603")
+	handler.observePlayback("", update)
+	waitForSeeds(t, relay, 1)
+}
+
+func TestPlaybackObservationDoesNotResetQualificationOnPermanentSkip(t *testing.T) {
+	t.Setenv(peartube.CompanionClientEnv, "mediastorm-test")
+	relay := &autoSeedRelay{}
+	resolver := &fakeStreamResolver{url: "https://cdn.example.net/d/FRESH/The.Matrix.1999.mkv"}
+	handler := newStartArchiveHandler(t, relay, resolver)
+
+	// Unseedable media (e.g. live TV)
+	update := startArchivePlayback()
+	update.MediaType = "live"
+
+	handler.observePlayback("", update)
+	waitForSeeds(t, relay, 0)
+
+	// In the same playback session, subsequent heartbeats must not re-trigger planAutoSeed
+	second := handler.observePlayback("", update)
+	if second != peartube.PlaybackQualified {
+		t.Fatalf("state = %q, want PlaybackQualified", second)
+	}
+
+	// Across a new playback session for the same source within the TTL,
+	// the source qualification is preserved (not forgotten), so no seed is submitted.
+	secondSession := startArchivePlayback()
+	secondSession.MediaType = "live"
+	secondSession.PlaybackSessionID = "other-session"
+	handler.observePlayback("", secondSession)
+	waitForSeeds(t, relay, 0)
+}
