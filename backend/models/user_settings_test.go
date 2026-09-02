@@ -82,7 +82,6 @@ func TestDefaultUserSettingsKeepsTVDisplayOptionsDisabled(t *testing.T) {
 		"hideDetailsPoster":                settings.Display.HideDetailsPoster,
 		"hideTvDrawerRail":                 settings.Display.HideTVDrawerRail,
 		"simpleMode":                       settings.Display.SimpleMode,
-		"disableTvHomeCardDimming":         settings.Display.DisableTVHomeCardDimming,
 	}
 	for name, option := range options {
 		if option == nil || *option {
@@ -104,11 +103,38 @@ func TestDefaultUserSettingsKeepsTVDisplayOptionsDisabled(t *testing.T) {
 	}
 }
 
-func TestDefaultUserSettingsDisablesSeriesBackdropForMissingEpisodeArt(t *testing.T) {
+func TestDefaultUserSettingsUsesReviewedDisplayDefaults(t *testing.T) {
 	settings := DefaultUserSettings()
-	option := settings.Display.ShowSeriesBackdropForMissingEpisodeArt
-	if option == nil || *option {
-		t.Fatal("series backdrop fallback should be explicitly disabled by default")
+	for name, option := range map[string]*bool{
+		"disable TV home card dimming":      settings.Display.DisableTVHomeCardDimming,
+		"series backdrop fallback":          settings.Display.ShowSeriesBackdropForMissingEpisodeArt,
+		"blur unwatched episode thumbnails": settings.Display.BlurUnwatchedEpisodeThumbnails,
+		"blur unwatched episode overviews":  settings.Display.BlurUnwatchedEpisodeOverviews,
+	} {
+		if option == nil || !*option {
+			t.Fatalf("%s should be explicitly enabled by default", name)
+		}
+	}
+	for name, option := range map[string]*bool{
+		"blur current episode thumbnail": settings.Display.BlurUnwatchedEpisodeThumbnailsIncludeCurrent,
+		"blur current episode overview":  settings.Display.BlurUnwatchedEpisodeOverviewsIncludeCurrent,
+	} {
+		if option == nil || *option {
+			t.Fatalf("%s should be explicitly disabled by default", name)
+		}
+	}
+}
+
+func TestDefaultUserSettingsUsesReviewedPlaybackAndFilteringDefaults(t *testing.T) {
+	settings := DefaultUserSettings()
+	if settings.Playback.PrerollMode != "artwork" {
+		t.Fatalf("PrerollMode = %q, want artwork", settings.Playback.PrerollMode)
+	}
+	if settings.Filtering.AdaptivePlaybackEnabled == nil || !*settings.Filtering.AdaptivePlaybackEnabled {
+		t.Fatal("adaptive playback should be explicitly enabled by default")
+	}
+	if settings.Filtering.AdaptiveTargetBufferFactor == nil || *settings.Filtering.AdaptiveTargetBufferFactor != 0.7 {
+		t.Fatal("adaptive playback buffer factor should default to 0.7")
 	}
 }
 

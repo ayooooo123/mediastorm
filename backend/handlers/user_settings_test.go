@@ -95,6 +95,40 @@ func TestUserSettingsHandler_GetSettings_Success(t *testing.T) {
 	}
 }
 
+func TestUserSettingsHandler_GetSettings_ProjectsGlobalSpoilerDefaults(t *testing.T) {
+	settingsSvc := &fakeUserSettingsService{}
+	cfgMgr := config.NewManager(t.TempDir() + "/settings.json")
+	cfg := config.DefaultSettings()
+	if err := cfgMgr.Save(cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	h := handlers.NewUserSettingsHandler(settingsSvc, &fakeUserExistsService{exists: true}, cfgMgr)
+	r := userSettingsRequest(http.MethodGet, "/", nil, map[string]string{"userID": "u1"})
+	w := httptest.NewRecorder()
+	h.GetSettings(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s, want 200", w.Code, w.Body.String())
+	}
+
+	display := settingsSvc.lastDefaults.Display
+	for name, option := range map[string]*bool{
+		"disable TV home card dimming":      display.DisableTVHomeCardDimming,
+		"series backdrop fallback":          display.ShowSeriesBackdropForMissingEpisodeArt,
+		"blur unwatched episode thumbnails": display.BlurUnwatchedEpisodeThumbnails,
+		"blur unwatched episode overviews":  display.BlurUnwatchedEpisodeOverviews,
+	} {
+		if option == nil || !*option {
+			t.Fatalf("global %s default was not projected", name)
+		}
+	}
+	if display.BlurUnwatchedEpisodeThumbnailsIncludeCurrent == nil || *display.BlurUnwatchedEpisodeThumbnailsIncludeCurrent {
+		t.Fatal("current episode thumbnail must remain unblurred")
+	}
+	if display.BlurUnwatchedEpisodeOverviewsIncludeCurrent == nil || *display.BlurUnwatchedEpisodeOverviewsIncludeCurrent {
+		t.Fatal("current episode overview must remain unblurred")
+	}
+}
+
 func TestUserSettingsHandler_GetSettings_MissingUserID(t *testing.T) {
 	settingsSvc := &fakeUserSettingsService{}
 	tmpDir := t.TempDir()

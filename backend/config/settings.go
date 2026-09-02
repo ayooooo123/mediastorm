@@ -384,7 +384,7 @@ type StreamingSettings struct {
 	MaxCacheSizeMB             int                      `json:"maxCacheSizeMB"`
 	ServiceMode                StreamingServiceMode     `json:"serviceMode"`
 	ResolveFirstReadySource    bool                     `json:"resolveFirstReadySource"` // Resolve candidates from the first completed search source before all sources finish
-	SearchMode                 SearchMode               `json:"searchMode"`              // Fast (early return) vs Accurate (wait for all results)
+	SearchMode                 SearchMode               `json:"searchMode"`              // Reserved search aggregation policy; currently not consumed by search execution
 	DebridProviders            []DebridProviderSettings `json:"debridProviders,omitempty"`
 	UsenetResolutionTimeoutSec int                      `json:"usenetResolutionTimeoutSec"` // Timeout for usenet content resolution in seconds (0 = no limit)
 	UsenetPreflightProbeSec    int                      `json:"usenetPreflightProbeSec"`    // Per-candidate pre-download availability probe budget in seconds (default: 5, 0 = default)
@@ -413,9 +413,10 @@ type StreamingSettings struct {
 type SearchMode string
 
 const (
-	// SearchModeFast returns results as soon as enough are available (early return)
+	// SearchModeFast is the legacy label for early-return aggregation.
 	SearchModeFast SearchMode = "fast"
-	// SearchModeAccurate waits for all scrapers/indexers to complete before returning
+	// SearchModeAccurate is the legacy label for complete aggregation.
+	// Search execution does not currently branch on SearchMode.
 	SearchModeAccurate SearchMode = "accurate"
 )
 
@@ -1908,15 +1909,16 @@ func DefaultSettings() Settings {
 		Cache:     CacheSettings{Directory: "cache", MetadataTTLHours: 24},
 		WebDAV:    WebDAVSettings{Enabled: true, Prefix: "/webdav", Username: "novastream", Password: ""},
 		Database:  DatabaseSettings{Path: "cache/queue.db"},
-		Streaming: StreamingSettings{MaxDownloadWorkers: 15, MaxCacheSizeMB: 100, ServiceMode: StreamingServiceModeHybrid, ResolveFirstReadySource: false, SearchMode: SearchModeFast, DebridProviders: []DebridProviderSettings{}, UsenetResolutionTimeoutSec: 0, UsenetPreflightProbeSec: 5, IndexerTimeoutSec: 5, HealthCheckTimeoutSec: 15, MaxAlternateTitleSearches: 5, MaxDailyUsenetQueries: 5, ResolutionSettleWindowMs: 250, ResolutionEndRaceEarly: true},
+		Streaming: StreamingSettings{MaxDownloadWorkers: 15, MaxCacheSizeMB: 100, ServiceMode: StreamingServiceModeHybrid, ResolveFirstReadySource: true, SearchMode: SearchModeAccurate, DebridProviders: []DebridProviderSettings{}, UsenetResolutionTimeoutSec: 0, UsenetPreflightProbeSec: 5, IndexerTimeoutSec: 5, HealthCheckTimeoutSec: 15, MaxAlternateTitleSearches: 1, MaxDailyUsenetQueries: 5, ResolutionSettleWindowMs: 250, ResolutionEndRaceEarly: true},
 		Import:    ImportSettings{QueueProcessingIntervalSeconds: 1, RarMaxWorkers: 40, RarMaxCacheSizeMB: 128, RarEnableMemoryPreload: false, RarMaxMemoryGB: 8, UsenetMaxConcurrentFileParsers: 16, UsenetParserShareDivisor: 4},
 		SABnzbd:   SABnzbdSettings{Enabled: &sabnzbdEnabled, FallbackHost: "", FallbackAPIKey: ""},
 		AltMount:  nil,
 		Transmux:  TransmuxSettings{Enabled: true, FFmpegPath: "ffmpeg", FFprobePath: "ffprobe", HLSTempDirectory: "/tmp/novastream-hls", HardwareAcceleration: "auto"},
-		Playback:  PlaybackSettings{PreferredPlayer: "native", PreferredAudioLanguage: "eng", PauseWhenAppInactive: false, UseLoadingScreen: false, SubtitleSize: 1.0, SubtitleUseCropDetectPosition: false, SubtitleColor: "#FFFFFF", SubtitleOpacity: 1.0, SubtitleBold: false, SubtitleOutlineEnabled: false, SubtitleOutlineColor: "#000000", SubtitleOutlineWeight: 0.35, SubtitleBackgroundEnabled: true, SubtitleBackgroundColor: "#000000", SubtitleBackgroundOpacity: 0.6, SeekForwardSeconds: 30, SeekBackwardSeconds: 10, PrerollMode: "disabled", PrerollMediaScope: "all", StreamMigrationEnabled: true, CreditsDetectionEnabled: false, MatchFrameRate: false, LiveClosedCaptionExtraction: true, Thumbnails: PlaybackThumbnailSettings{Enabled: false, Workers: 1}},
-		Live:      LiveSettings{Mode: "m3u", PlaylistURL: "", MaxStreams: 0, PlaylistCacheTTLHours: 24},
+		Playback:  PlaybackSettings{PreferredPlayer: "native", PreferredAudioLanguage: "eng", PauseWhenAppInactive: false, UseLoadingScreen: false, SubtitleSize: 1.0, SubtitleUseCropDetectPosition: false, SubtitleColor: "#FFFFFF", SubtitleOpacity: 1.0, SubtitleBold: false, SubtitleOutlineEnabled: false, SubtitleOutlineColor: "#000000", SubtitleOutlineWeight: 0.35, SubtitleBackgroundEnabled: true, SubtitleBackgroundColor: "#000000", SubtitleBackgroundOpacity: 0.6, SeekForwardSeconds: 30, SeekBackwardSeconds: 10, PrerollMode: "artwork", PrerollMediaScope: "all", StreamMigrationEnabled: true, CreditsDetectionEnabled: false, MatchFrameRate: false, LiveClosedCaptionExtraction: true, Thumbnails: PlaybackThumbnailSettings{Enabled: false, Workers: 1}},
+		Live:      LiveSettings{Mode: "m3u", PlaylistURL: "", MaxStreams: 0, PlaylistCacheTTLHours: 24, EPG: EPGSettings{RefreshIntervalHours: 12, RetentionDays: 7}},
 		HomeShelves: HomeShelvesSettings{
 			Shelves:                      DefaultHomeShelfConfigs(),
+			ExploreCardPosition:          ExploreCardPositionFront,
 			ItemCap:                      20,
 			PopularOnServerWindowDays:    90,
 			RecentlyWatchedCapPerProfile: 3,
@@ -1929,7 +1931,7 @@ func DefaultSettings() Settings {
 			HDRDVPolicy:                            HDRDVPolicyIncludeHDRDV, // "hdr_dv" = allow all content (no HDR/DV filtering)
 			ServicePriority:                        StreamingServicePriorityNone,
 			UnknownTrackPolicy:                     UnknownTrackPolicyNone,
-			AdaptivePlaybackEnabled:                false, // opt-in
+			AdaptivePlaybackEnabled:                true,
 			AdaptiveTargetBufferFactor:             0.7,
 			RealDebridRestrictedTermsFilterEnabled: true,
 		},
@@ -1953,9 +1955,11 @@ func DefaultSettings() Settings {
 			EnableAnimations:                       true,
 			EnableHeroArtPanning:                   true,
 			EnableHeroArtRotation:                  true,
-			DisableTVHomeCardDimming:               false,
+			DisableTVHomeCardDimming:               true,
 			SimpleModeHomeShelves:                  DefaultSimpleModeHomeShelfIDs(),
-			ShowSeriesBackdropForMissingEpisodeArt: false,
+			ShowSeriesBackdropForMissingEpisodeArt: true,
+			BlurUnwatchedEpisodeThumbnails:         true,
+			BlurUnwatchedEpisodeOverviews:          true,
 			Appearance: AppearanceSettings{
 				FontScale:    floatPtr(1.0),
 				ButtonStyle:  "soft",
@@ -2246,15 +2250,28 @@ func (m *Manager) Load() (Settings, error) {
 		}
 	}
 
-	// Backfill the resolution race policy defaults for installs that predate
-	// these fields. These child settings are inert while ResolveFirstReadySource
-	// is off, which remains the default. Preserve any explicitly stored values.
+	// Backfill the search and resolution race policy defaults for installs that
+	// predate these fields. Preserve any explicitly stored values.
 	if streamingRaw, ok := raw["streaming"].(map[string]interface{}); ok {
+		if _, has := streamingRaw["resolveFirstReadySource"]; !has {
+			streamingRaw["resolveFirstReadySource"] = true
+		}
+		if _, has := streamingRaw["maxAlternateTitleSearches"]; !has {
+			streamingRaw["maxAlternateTitleSearches"] = 1
+		}
 		if _, has := streamingRaw["resolutionSettleWindowMs"]; !has {
 			streamingRaw["resolutionSettleWindowMs"] = 250
 		}
 		if _, has := streamingRaw["resolutionEndRaceEarly"]; !has {
 			streamingRaw["resolutionEndRaceEarly"] = true
+		}
+	} else {
+		raw["streaming"] = map[string]interface{}{
+			"resolveFirstReadySource":   true,
+			"searchMode":                string(SearchModeAccurate),
+			"maxAlternateTitleSearches": 1,
+			"resolutionSettleWindowMs":  250,
+			"resolutionEndRaceEarly":    true,
 		}
 	}
 
@@ -2282,6 +2299,8 @@ func (m *Manager) Load() (Settings, error) {
 		}
 	} else {
 		raw["filtering"] = map[string]interface{}{
+			"adaptivePlaybackEnabled":                true,
+			"adaptiveTargetBufferFactor":             0.7,
 			"realDebridRestrictedTermsFilterEnabled": true,
 		}
 	}
@@ -2335,15 +2354,21 @@ func (m *Manager) Load() (Settings, error) {
 		}
 	} else {
 		raw["display"] = map[string]interface{}{
-			"alwaysShowProfileSelector":       true,
-			"includeUnreleasedMoviesInLists":  true,
-			"includeUnreleasedShowsInLists":   true,
-			"includeUnreleasedMoviesInSearch": true,
-			"includeUnreleasedShowsInSearch":  true,
-			"enableAnimations":                true,
-			"enableHeroArtPanning":            true,
-			"enableHeroArtRotation":           true,
-			"showStreamSourceInfo":            true,
+			"alwaysShowProfileSelector":                    true,
+			"includeUnreleasedMoviesInLists":               true,
+			"includeUnreleasedShowsInLists":                true,
+			"includeUnreleasedMoviesInSearch":              true,
+			"includeUnreleasedShowsInSearch":               true,
+			"enableAnimations":                             true,
+			"enableHeroArtPanning":                         true,
+			"enableHeroArtRotation":                        true,
+			"showStreamSourceInfo":                         true,
+			"disableTvHomeCardDimming":                     true,
+			"showSeriesBackdropForMissingEpisodeArt":       true,
+			"blurUnwatchedEpisodeThumbnails":               true,
+			"blurUnwatchedEpisodeThumbnailsIncludeCurrent": false,
+			"blurUnwatchedEpisodeOverviews":                true,
+			"blurUnwatchedEpisodeOverviewsIncludeCurrent":  false,
 		}
 	}
 
@@ -2366,6 +2391,9 @@ func (m *Manager) Load() (Settings, error) {
 		raw["playback"] = map[string]interface{}{}
 	}
 	if playbackRaw, ok := raw["playback"].(map[string]interface{}); ok {
+		if _, exists := playbackRaw["prerollMode"]; !exists {
+			playbackRaw["prerollMode"] = "artwork"
+		}
 		if metadataRaw, ok := raw["metadata"].(map[string]interface{}); ok {
 			if _, alreadySet := playbackRaw["youtubeProxyUrl"]; !alreadySet {
 				if proxyURL, hasLegacy := metadataRaw["youtubeProxyUrl"]; hasLegacy {
@@ -2519,9 +2547,10 @@ func (m *Manager) Load() (Settings, error) {
 	if s.Filtering.ServicePriority == "" {
 		s.Filtering.ServicePriority = StreamingServicePriorityNone
 	}
-	// Backfill SearchMode if not set (default to fast for best UX)
+	// Backfill SearchMode if not set. The field is currently persisted for
+	// compatibility but is not consumed by the search implementation.
 	if s.Streaming.SearchMode == "" {
-		s.Streaming.SearchMode = SearchModeFast
+		s.Streaming.SearchMode = SearchModeAccurate
 	}
 	if len(s.Streaming.DebridProviders) == 0 {
 		s.Streaming.DebridProviders = []DebridProviderSettings{

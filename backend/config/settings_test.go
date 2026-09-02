@@ -183,16 +183,72 @@ func TestDefaultSettingsDisablesMatchFrameRate(t *testing.T) {
 	}
 }
 
-func TestDefaultSettingsWaitsForCombinedSearchRanking(t *testing.T) {
+func TestDefaultSettingsUsesReviewedSearchAndResolutionPolicy(t *testing.T) {
 	settings := DefaultSettings()
-	if settings.Streaming.ResolveFirstReadySource {
-		t.Fatal("ResolveFirstReadySource must default off so prequeue preserves combined cross-source ranking")
+	if !settings.Streaming.ResolveFirstReadySource {
+		t.Fatal("ResolveFirstReadySource must default on")
+	}
+	if settings.Streaming.SearchMode != SearchModeAccurate {
+		t.Fatalf("SearchMode = %q, want %q", settings.Streaming.SearchMode, SearchModeAccurate)
 	}
 	if !settings.Streaming.ResolutionEndRaceEarly {
 		t.Fatal("ResolutionEndRaceEarly must default on for concurrent early resolution")
 	}
 	if settings.Streaming.ResolutionSettleWindowMs != 250 {
 		t.Fatalf("ResolutionSettleWindowMs = %d, want default 250", settings.Streaming.ResolutionSettleWindowMs)
+	}
+	if settings.Streaming.MaxAlternateTitleSearches != 1 {
+		t.Fatalf("MaxAlternateTitleSearches = %d, want 1", settings.Streaming.MaxAlternateTitleSearches)
+	}
+}
+
+func TestDefaultSettingsUsesReviewedPlaybackAndDisplayPolicy(t *testing.T) {
+	settings := DefaultSettings()
+	if !settings.Filtering.AdaptivePlaybackEnabled || settings.Filtering.AdaptiveTargetBufferFactor != 0.7 {
+		t.Fatalf("adaptive playback defaults = enabled:%v factor:%v, want true/0.7", settings.Filtering.AdaptivePlaybackEnabled, settings.Filtering.AdaptiveTargetBufferFactor)
+	}
+	if settings.Playback.PrerollMode != "artwork" {
+		t.Fatalf("PrerollMode = %q, want artwork", settings.Playback.PrerollMode)
+	}
+	if !settings.Display.DisableTVHomeCardDimming || !settings.Display.ShowSeriesBackdropForMissingEpisodeArt {
+		t.Fatal("reviewed TV display defaults must be enabled")
+	}
+	if !settings.Display.BlurUnwatchedEpisodeThumbnails || settings.Display.BlurUnwatchedEpisodeThumbnailsIncludeCurrent {
+		t.Fatal("unwatched non-current episode thumbnails must default to blurred")
+	}
+	if !settings.Display.BlurUnwatchedEpisodeOverviews || settings.Display.BlurUnwatchedEpisodeOverviewsIncludeCurrent {
+		t.Fatal("unwatched non-current episode overviews must default to blurred")
+	}
+}
+
+func TestDefaultSettingsMatchesLoaderBackfills(t *testing.T) {
+	settings := DefaultSettings()
+	if settings.HomeShelves.ExploreCardPosition != ExploreCardPositionFront {
+		t.Fatalf("ExploreCardPosition = %q, want %q", settings.HomeShelves.ExploreCardPosition, ExploreCardPositionFront)
+	}
+	if settings.Live.EPG.RefreshIntervalHours != 12 || settings.Live.EPG.RetentionDays != 7 {
+		t.Fatalf("EPG defaults = refresh:%d retention:%d, want 12/7", settings.Live.EPG.RefreshIntervalHours, settings.Live.EPG.RetentionDays)
+	}
+}
+
+func TestReviewedDefaultsSurviveSaveLoadRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	manager := NewManager(path)
+	if err := manager.Save(DefaultSettings()); err != nil {
+		t.Fatalf("save defaults: %v", err)
+	}
+	settings, err := manager.Load()
+	if err != nil {
+		t.Fatalf("load defaults: %v", err)
+	}
+	if !settings.Streaming.ResolveFirstReadySource || settings.Streaming.SearchMode != SearchModeAccurate || settings.Streaming.MaxAlternateTitleSearches != 1 {
+		t.Fatalf("reviewed search defaults did not survive round trip: %+v", settings.Streaming)
+	}
+	if !settings.Filtering.AdaptivePlaybackEnabled || settings.Playback.PrerollMode != "artwork" {
+		t.Fatal("reviewed filtering/playback defaults did not survive round trip")
+	}
+	if !settings.Display.DisableTVHomeCardDimming || !settings.Display.ShowSeriesBackdropForMissingEpisodeArt || !settings.Display.BlurUnwatchedEpisodeThumbnails || !settings.Display.BlurUnwatchedEpisodeOverviews {
+		t.Fatal("reviewed display defaults did not survive round trip")
 	}
 }
 
@@ -203,9 +259,9 @@ func TestDefaultSettingsCapsDailyUsenetQueries(t *testing.T) {
 	}
 }
 
-func TestLoadBackfillsEarlyResolutionChildDefaultsWithoutEnablingParent(t *testing.T) {
+func TestLoadBackfillsReviewedSearchAndResolutionDefaults(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
-	raw := []byte(`{"streaming":{"resolveFirstReadySource":false}}`)
+	raw := []byte(`{"streaming":{}}`)
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatalf("write settings: %v", err)
 	}
@@ -214,11 +270,14 @@ func TestLoadBackfillsEarlyResolutionChildDefaultsWithoutEnablingParent(t *testi
 	if err != nil {
 		t.Fatalf("load settings: %v", err)
 	}
-	if settings.Streaming.ResolveFirstReadySource {
-		t.Fatal("backfilling child defaults must not enable ResolveFirstReadySource")
+	if !settings.Streaming.ResolveFirstReadySource {
+		t.Fatal("ResolveFirstReadySource must backfill as enabled")
 	}
 	if !settings.Streaming.ResolutionEndRaceEarly || settings.Streaming.ResolutionSettleWindowMs != 250 {
 		t.Fatalf("child defaults = endEarly:%v settle:%d, want true/250", settings.Streaming.ResolutionEndRaceEarly, settings.Streaming.ResolutionSettleWindowMs)
+	}
+	if settings.Streaming.SearchMode != SearchModeAccurate || settings.Streaming.MaxAlternateTitleSearches != 1 {
+		t.Fatalf("search defaults = mode:%q alternate titles:%d, want accurate/1", settings.Streaming.SearchMode, settings.Streaming.MaxAlternateTitleSearches)
 	}
 }
 
