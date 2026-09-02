@@ -51,6 +51,7 @@ import (
 	"novastream/services/localmedia"
 	"novastream/services/metadata"
 	"novastream/services/notifications"
+	"novastream/services/peartube"
 	"novastream/services/plex"
 	"novastream/services/remoteaccess"
 	"novastream/services/remotemedia"
@@ -5025,6 +5026,8 @@ func (h *AdminUIHandler) TestScraper(w http.ResponseWriter, r *http.Request) {
 		h.testMediaFusionScraper(w, req)
 	case "internetarchive":
 		h.testInternetArchiveScraper(w, req)
+	case "peartube":
+		h.testPearTubeScraper(w, req)
 	case "torrentio":
 		fallthrough
 	default:
@@ -5065,6 +5068,59 @@ func (h *AdminUIHandler) testInternetArchiveScraper(w http.ResponseWriter, req T
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
 		"message": fmt.Sprintf("Internet Archive is working (%d playable test videos found)", len(results)),
+	})
+}
+
+func (h *AdminUIHandler) testPearTubeScraper(w http.ResponseWriter, req TestScraperRequest) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	relayURL := strings.TrimSpace(req.URL)
+	if relayURL == "" {
+		if peartube.Default() != nil && (strings.HasPrefix(peartube.Default().BaseURL(), "http://") || strings.HasPrefix(peartube.Default().BaseURL(), "https://")) {
+			relayURL = peartube.Default().BaseURL()
+		} else if envURL := strings.TrimSpace(os.Getenv(peartube.RelayURLEnv)); strings.HasPrefix(envURL, "http://") || strings.HasPrefix(envURL, "https://") {
+			relayURL = envURL
+		} else {
+			relayURL = "http://127.0.0.1:8175"
+		}
+	}
+
+	client, err := peartube.New(relayURL)
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("Invalid PearTube relay URL: %v", err),
+		})
+		return
+	}
+
+	status, err := client.Status(ctx)
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("PearTube relay error: %v", err),
+		})
+		return
+	}
+
+	diag := status.Diagnostics
+	if diag.Ready || diag.SearchAvailable || status.Status == "available" || status.Status == "ready" {
+		searchStatus := "ready"
+		if !diag.SearchAvailable {
+			searchStatus = "indexing"
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"message": fmt.Sprintf("PearTube relay is working (search %s, active acquisitions %d, queued %d)",
+				searchStatus, diag.ActiveAcquisitions, diag.QueuedAcquisitions),
+		})
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": fmt.Sprintf("PearTube relay is reachable (status: %s)", status.Status),
 	})
 }
 
