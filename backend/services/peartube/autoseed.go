@@ -317,17 +317,6 @@ func catalogEntityKey(entityID string) string {
 	})
 }
 
-func catalogSourceKey(entity CatalogEntity, source CatalogSource) string {
-	if coords, ok := coordinatesForSource(entity, source); ok {
-		return EntityKey(ArchiveCoordinates{
-			ContentKind: coords.Kind,
-			TMDBID:      coords.TMDBID,
-			TMDBSeason:  coords.Season,
-			TMDBEpisode: coords.Episode,
-		})
-	}
-	return ""
-}
 
 // CatalogHasEntity reports whether the swarm can already serve these
 // coordinates. It reads the same briefly-cached catalog a search reads, so a
@@ -356,26 +345,12 @@ func (c *Client) CatalogHasEntity(ctx context.Context, coords ArchiveCoordinates
 		Year:      coords.TMDBYear,
 	}
 	candidates, err := c.Search(ctx, searchReq)
-	if err == nil {
-		for _, cand := range candidates {
-			if cand.Publication != nil && cand.Publication.PublicationID != "" {
-				return true, nil
-			}
-		}
-		return false, nil
-	}
-	entities, err := c.Catalog(ctx)
 	if err != nil {
 		return false, err
 	}
-	for _, entity := range entities {
-		for _, source := range entity.Sources {
-			if source.PublicationID == "" || source.RenditionID == "" {
-				continue
-			}
-			if catalogSourceKey(entity, source) == key {
-				return true, nil
-			}
+	for _, cand := range candidates {
+		if cand.Publication != nil && cand.Publication.PublicationID != "" {
+			return true, nil
 		}
 	}
 	return false, nil

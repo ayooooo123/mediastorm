@@ -1,9 +1,5 @@
-// Package peartube integrates a PearTube relay as a peer-to-peer media source.
-//
-// Search uses the authenticated companion v2 API and returns opaque candidates;
-// it never exposes a stream URL. The v1 archive and catalog APIs remain for the
-// existing contribution, status, and already-published checks until their
-// callers migrate in later plans.
+// Package peartube integrates a PearTube relay as a peer-to-peer media source
+// using the authenticated companion v2 API.
 package peartube
 
 import (
@@ -20,8 +16,6 @@ import (
 	"io"
 	"log"
 	"mime"
-	"mime/multipart"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -54,14 +48,7 @@ const (
 	DefaultCompanionClient   = "mediastorm"
 	DefaultRelayURL          = "http://127.0.0.1:8174"
 
-	apiPrefix          = "/api/v1"
 	companionAPIPrefix = "/api/v2"
-
-	// The v1 catalog is retained only for archive/probe callers.
-	catalogPageLimit = 50
-	catalogMaxPages  = 20
-	catalogTTL       = 30 * time.Second
-
 	requestTimeout = 20 * time.Second
 
 	companionDefaultSearchLimit = 20
@@ -159,45 +146,20 @@ func applyLocked(resolved Resolved) {
 // carried into requests or logs.
 func New(rawBaseURL string) (*Client, error) {
 	trimmed := strings.TrimSpace(rawBaseURL)
-	var base string
-	var transport *http.Transport
-
-	if strings.HasPrefix(trimmed, "unix://") || strings.HasPrefix(trimmed, "http+unix://") {
-		var socketPath string
-		if strings.HasPrefix(trimmed, "unix://") {
-			socketPath = strings.TrimPrefix(trimmed, "unix://")
-		} else {
-			socketPath = strings.TrimPrefix(trimmed, "http+unix://")
-			if unescaped, err := url.PathUnescape(socketPath); err == nil && unescaped != "" {
-				socketPath = unescaped
-			}
-		}
-		if socketPath == "" {
-			return nil, errors.New("unix relay socket path is required")
-		}
-		transport = &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				var d net.Dialer
-				return d.DialContext(ctx, "unix", socketPath)
-			},
-		}
-		base = "http://unix"
-	} else {
-		parsed, err := url.Parse(trimmed)
-		if err != nil {
-			return nil, errors.New("relay URL is invalid")
-		}
-		if parsed.Scheme != "http" && parsed.Scheme != "https" {
-			return nil, errors.New("relay URL must use http, https, or unix")
-		}
-		if parsed.Host == "" {
-			return nil, errors.New("relay URL is missing a host")
-		}
-		if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-			return nil, errors.New("relay URL must not include credentials, query parameters, or a fragment")
-		}
-		base = strings.TrimSuffix(parsed.Scheme+"://"+parsed.Host+parsed.Path, "/")
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return nil, errors.New("relay URL is invalid")
 	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return nil, errors.New("relay URL must use http or https")
+	}
+	if parsed.Host == "" {
+		return nil, errors.New("relay URL is missing a host")
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return nil, errors.New("relay URL must not include credentials, query parameters, or a fragment")
+	}
+	base := strings.TrimSuffix(parsed.Scheme+"://"+parsed.Host+parsed.Path, "/")
 
 	clientID, publisherID, secret, authErr := companionCredentials(os.Getenv)
 	httpClient := &http.Client{Timeout: requestTimeout}
@@ -212,11 +174,6 @@ func New(rawBaseURL string) (*Client, error) {
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
-	}
-	if transport != nil {
-		httpClient.Transport = transport
-		companionClient.Transport = transport
-		uploadClient.Transport = transport
 	}
 	return &Client{
 		baseURL:              base,
@@ -295,12 +252,7 @@ type Client struct {
 	companionPublisherID string
 	companionSecret      [32]byte
 	companionAuthError   error
-	// The v1 catalog state remains for archive/probe callers only.
-	mu          sync.Mutex
-	cached      []CatalogEntity
-	cachedAt    time.Time
-	cachedError error
-	gateNoted   bool
+	mu sync.Mutex
 }
 
 // BaseURL returns the relay origin, normalized without a trailing slash.
@@ -782,34 +734,6 @@ func validateCompanionUint(value *uint64, name string) error {
 	return nil
 }
 
-// CatalogSource is one publisher's copy of a rendition.
-type CatalogSource struct {
-	PublicationID string `json:"publicationId"`
-	PublisherID   string `json:"publisherId"`
-	RenditionID   string `json:"renditionId"`
-	CoreKey       string `json:"coreKey"`
-	CoreLength    int64  `json:"coreLength"`
-	ByteLength    int64  `json:"byteLength"`
-	ContentKind   string `json:"contentKind"`
-	MediaProvider string `json:"mediaProvider"`
-	MediaID       string `json:"mediaId"`
-	SeasonNumber  int    `json:"seasonNumber"`
-	EpisodeNumber int    `json:"episodeNumber"`
-}
-
-// CatalogEntity is one title (a movie, or a single episode) the swarm can serve.
-type CatalogEntity struct {
-	EntityID   string          `json:"entityId"`
-	EntityKind string          `json:"entityKind"`
-	Title      string          `json:"title"`
-	Year       int             `json:"year"`
-	Sources    []CatalogSource `json:"sources"`
-}
-
-type catalogPage struct {
-	Entities   []CatalogEntity `json:"entities"`
-	NextCursor string          `json:"nextCursor"`
-}
 
 // ArchiveJob is the relay's 202 answer to a seed submission.
 type ArchiveJob struct {
@@ -864,46 +788,10 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("relay returned HTTP %d: %s", e.Status, strings.Join(parts, ": "))
 }
 
-// The relay gates enumeration and byte serving on how it is bound. Bound to
-// loopback it answers freely; bound to 0.0.0.0 or any other interface it
-// refuses GET /api/v1/catalog and GET /api/v1/stream until the operator opts
-// in. Seeding (POST /api/v1/archive) is never gated.
-//
-// This backend usually runs in a container and therefore reaches the relay over
-// a non-loopback address, so the gate is the expected first-run state rather
-// than a malfunction. It has to be named as such, or an unconfigured relay
-// looks like a broken integration.
-const (
-	// openAccessNotEnabledCode is the relay's error code for that refusal. Only
-	// the code is stable: the message embeds the actual bind address.
-	openAccessNotEnabledCode = "OPEN_ACCESS_NOT_ENABLED"
-
-	// NotOpenRemedy is the operator action that clears the gate, worded so it
-	// can be shown to a person verbatim.
-	NotOpenRemedy = "restart the relay with --api-open (or PEARTUBE_ARCHIVE_API_OPEN=1)"
-)
-
-// ErrRelayNotOpen marks a relay that is up and answering but refusing to
-// enumerate or serve media because open access was never enabled.
-//
-// It is deliberately distinct from "the relay is unreachable" and from "the
-// relay has nothing matching": this one is cleared by an operator, not by
-// retrying or by searching for something else.
-var ErrRelayNotOpen = errors.New("peartube relay will not enumerate or serve media until open access is enabled: " + NotOpenRemedy)
-
-// sourceRefusedPrefix is the shared prefix of every relay error code that means
-// "the URL you gave me is not one I will fetch": a bad scheme, embedded
-// credentials, a host that is not publicly routable, a name that will not
-// resolve, or a missing/ambiguous source. They are all the caller's problem, so
-// they must be distinguishable from a relay that is merely broken or down.
 const sourceRefusedPrefix = "SOURCE_"
 
 // ErrSourceRefused marks a URL seed the relay declined to fetch because of the
 // URL itself.
-//
-// Nothing about the relay needs fixing when this happens, and retrying the same
-// URL fails identically: the caller has to supply a different one. The specific
-// reason stays on the APIError's Code.
 var ErrSourceRefused = errors.New("peartube relay refused the source URL")
 
 // IsSourceRefused reports whether the relay rejected the seed's source URL.
@@ -911,152 +799,108 @@ func IsSourceRefused(err error) bool {
 	return errors.Is(err, ErrSourceRefused)
 }
 
-// Unwrap lets errors.Is see the relay's actionable refusals — the open-access
-// gate, and a source URL the relay will not fetch — through the structured
-// error, so callers match on a sentinel instead of re-deriving an error code.
 func (e *APIError) Unwrap() error {
-	switch {
-	case e.Code == openAccessNotEnabledCode:
-		return ErrRelayNotOpen
-	case strings.HasPrefix(e.Code, sourceRefusedPrefix):
+	if strings.HasPrefix(e.Code, sourceRefusedPrefix) {
 		return ErrSourceRefused
 	}
 	return nil
 }
-
-// IsRelayNotOpen reports whether err is the relay's open-access gate.
-func IsRelayNotOpen(err error) bool {
-	return errors.Is(err, ErrRelayNotOpen)
-}
-
-// noteGate reports a change in the v1 catalog's open-access state, and says
-// nothing while it holds steady. Must be called with c.mu held. Repeated
-// archive/probe checks therefore announce an operator-actionable gate once.
-func (c *Client) noteGate(err error) {
-	gated := IsRelayNotOpen(err)
-	if gated == c.gateNoted {
-		return
-	}
-	c.gateNoted = gated
-	if !gated {
-		log.Printf("[peartube] relay %s is serving media again", c.baseURL)
-		return
-	}
-	detail := gateDetail(err)
-	// The relay's own message usually ends in the same remedy; only append it
-	// when the relay did not already say it.
-	if !strings.Contains(detail, NotOpenRemedy) {
-		detail += " -- " + NotOpenRemedy
-	}
-	log.Printf("[peartube] WARN: relay %s is reachable but refuses to enumerate or serve media: %s",
-		c.baseURL, detail)
-}
-
-// gateDetail is the relay's own explanation, which names the address it is
-// bound to. It falls back to the remedy when the relay sent no message.
-func gateDetail(err error) string {
-	var apiErr *APIError
-	if errors.As(err, &apiErr) {
-		if message := strings.TrimSpace(apiErr.Message); message != "" {
-			return message
-		}
-	}
-	return NotOpenRemedy
-}
-
 // RelayState is a plain verdict on what the relay can currently do, for the
-// p2p status endpoint. "Reachable but not open" is its own answer: the relay is
-// up and still accepts seeds, it just will not enumerate or serve media yet.
+// p2p status endpoint.
 type RelayState struct {
-	RelayURL  string `json:"relayUrl"`
-	Reachable bool   `json:"reachable"`
-	// NotOpen is the operator-fixable state: the relay answered with its
-	// open-access refusal. Remedy says what to do about it.
-	NotOpen bool `json:"notOpen"`
-	// SeedingAvailable records that POST /api/v1/archive is not gated, so a
-	// relay that refuses to enumerate can still be seeded to.
+	RelayURL         string `json:"relayUrl"`
+	Reachable        bool   `json:"reachable"`
+	NotOpen          bool   `json:"notOpen"`
 	SeedingAvailable bool   `json:"seedingAvailable"`
 	CatalogEntities  int    `json:"catalogEntities"`
 	Remedy           string `json:"remedy,omitempty"`
 	Detail           string `json:"detail,omitempty"`
 }
 
-// Probe asks the relay what its retained v1 archive/catalog surface can do.
+// CompanionStatusResponse represents the structured answer from /api/v2/status.
+type CompanionStatusResponse struct {
+	APIVersion  int    `json:"apiVersion"`
+	Status      string `json:"status"`
+	Diagnostics struct {
+		Ready                bool  `json:"ready"`
+		SearchAvailable      bool  `json:"searchAvailable"`
+		AcquisitionAvailable bool  `json:"acquisitionAvailable"`
+		StreamingAvailable   bool  `json:"streamingAvailable"`
+		ActiveAcquisitions   int   `json:"activeAcquisitions"`
+		QueuedAcquisitions   int   `json:"queuedAcquisitions"`
+		UpdatedAt            int64 `json:"updatedAt"`
+	} `json:"diagnostics"`
+}
+
+// Status reads the companion status from the relay.
+func (c *Client) Status(ctx context.Context) (*CompanionStatusResponse, error) {
+	if c == nil {
+		return nil, errors.New("peartube relay is not configured")
+	}
+	target := companionAPIPrefix + "/status"
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+target, nil)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Accept", "application/json")
+	if err := c.authenticateCompanionRequest(request, nil); err != nil {
+		return nil, err
+	}
+	response, err := c.companionHTTP.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("companion status request failed: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, decodeResponse(response, nil)
+	}
+	var res struct {
+		Status      string                  `json:"status"`
+		Data        CompanionStatusResponse `json:"data"`
+		APIVersion  int                     `json:"apiVersion"`
+		Diagnostics struct {
+			Ready                bool  `json:"ready"`
+			SearchAvailable      bool  `json:"searchAvailable"`
+			AcquisitionAvailable bool  `json:"acquisitionAvailable"`
+			StreamingAvailable   bool  `json:"streamingAvailable"`
+			ActiveAcquisitions   int   `json:"activeAcquisitions"`
+			QueuedAcquisitions   int   `json:"queuedAcquisitions"`
+			UpdatedAt            int64 `json:"updatedAt"`
+		} `json:"diagnostics"`
+	}
+	if err := decodeResponse(response, &res); err != nil {
+		return nil, err
+	}
+	out := res.Data
+	if out.Status == "" && res.Status != "" {
+		out.Status = res.Status
+	}
+	if out.APIVersion == 0 && res.APIVersion != 0 {
+		out.APIVersion = res.APIVersion
+	}
+	if !out.Diagnostics.Ready && res.Diagnostics.Ready {
+		out.Diagnostics = res.Diagnostics
+	}
+	return &out, nil
+}
+
+// Probe asks the relay what its v2 companion API can do.
 func (c *Client) Probe(ctx context.Context) RelayState {
 	if c == nil {
 		return RelayState{}
 	}
 	state := RelayState{RelayURL: c.baseURL}
-	entities, err := c.Catalog(ctx)
-	switch {
-	case err == nil:
+	status, err := c.Status(ctx)
+	if err == nil && status != nil {
 		state.Reachable = true
-		state.CatalogEntities = len(entities)
-	case IsRelayNotOpen(err):
-		state.Reachable = true
-		state.NotOpen = true
-		state.Remedy = NotOpenRemedy
-		state.Detail = gateDetail(err)
-	default:
-		// An APIError means the relay answered, just not with a catalog; a
-		// transport error means nothing answered at all.
-		var apiErr *APIError
-		state.Reachable = errors.As(err, &apiErr)
+		state.SeedingAvailable = status.Diagnostics.AcquisitionAvailable || status.Diagnostics.Ready || status.Status == "available"
+	} else if err != nil {
 		state.Detail = err.Error()
 	}
-	// Seeding is only gated by whether the relay is there to accept it.
-	state.SeedingAvailable = state.Reachable
 	return state
 }
 
-// Catalog returns every v1 entity the relay can serve, cached briefly for
-// archive/probe and already-published checks.
-func (c *Client) Catalog(ctx context.Context) ([]CatalogEntity, error) {
-	if c == nil {
-		return nil, nil
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if time.Since(c.cachedAt) < catalogTTL {
-		return c.cached, c.cachedError
-	}
-	entities, err := c.fetchCatalog(ctx)
-	// A cancelled request says nothing about the relay, so it must not poison
-	// the cache for the next caller.
-	if errors.Is(err, context.Canceled) {
-		return nil, err
-	}
-	c.cached, c.cachedError, c.cachedAt = entities, err, time.Now()
-	c.noteGate(err)
-	return entities, err
-}
-
-func (c *Client) fetchCatalog(ctx context.Context) ([]CatalogEntity, error) {
-	var (
-		entities []CatalogEntity
-		cursor   string
-	)
-	for range catalogMaxPages {
-		query := url.Values{"limit": {strconv.Itoa(catalogPageLimit)}}
-		if cursor != "" {
-			query.Set("cursor", cursor)
-		}
-		var decoded catalogPage
-		if err := c.getJSON(ctx, apiPrefix+"/catalog?"+query.Encode(), &decoded); err != nil {
-			return nil, err
-		}
-		entities = append(entities, decoded.Entities...)
-		if decoded.NextCursor == "" {
-			return entities, nil
-		}
-		cursor = decoded.NextCursor
-	}
-	log.Printf("[peartube] catalog walk stopped at %d pages (%d entities)", catalogMaxPages, len(entities))
-	return entities, nil
-}
-
-// ArchiveStatus polls one seed job. Companion source jobs use the authenticated
-// v2 control route; retained URL jobs continue on the v1 archive route.
+// ArchiveStatus polls one acquisition job via the authenticated v2 control route.
 func (c *Client) ArchiveStatus(ctx context.Context, jobID string) (*ArchiveStatus, error) {
 	if c == nil {
 		return nil, errors.New("peartube relay is not configured")
@@ -1065,14 +909,7 @@ func (c *Client) ArchiveStatus(ctx context.Context, jobID string) (*ArchiveStatu
 	if !validSourceJobID(jobID) {
 		return nil, errors.New("job id is required")
 	}
-	if strings.HasPrefix(jobID, "ing_") || strings.HasPrefix(jobID, "acq_") || strings.HasPrefix(jobID, "mediastorm") {
-		return c.companionArchiveStatus(ctx, jobID)
-	}
-	var status ArchiveStatus
-	if err := c.getJSON(ctx, apiPrefix+"/archive/"+url.PathEscape(jobID), &status); err != nil {
-		return nil, err
-	}
-	return &status, nil
+	return c.companionArchiveStatus(ctx, jobID)
 }
 
 func (c *Client) companionArchiveStatus(ctx context.Context, jobID string) (*ArchiveStatus, error) {
@@ -2186,109 +2023,6 @@ func (c *Client) RequestAcquisition(ctx context.Context, idempotencyKey string, 
 	}, nil
 }
 
-// Archive uploads a file to the relay for publication. The body is streamed
-// from disk, never buffered: these are whole movies.
-func (c *Client) Archive(ctx context.Context, req ArchiveRequest) (*ArchiveJob, error) {
-	if c == nil {
-		return nil, errors.New("peartube relay is not configured")
-	}
-	if err := req.Validate(); err != nil {
-		return nil, err
-	}
-	file, err := os.Open(req.FilePath)
-	if err != nil {
-		return nil, fmt.Errorf("open media file: %w", err)
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return nil, fmt.Errorf("stat media file: %w", err)
-	}
-	if info.IsDir() {
-		return nil, fmt.Errorf("%s is a directory", req.FilePath)
-	}
-
-	reader, writer := io.Pipe()
-	form := multipart.NewWriter(writer)
-	go func() {
-		writer.CloseWithError(writeArchiveForm(form, file, filepath.Base(req.FilePath), req.ArchiveCoordinates))
-	}()
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+apiPrefix+"/archive", reader)
-	if err != nil {
-		reader.CloseWithError(err)
-		return nil, err
-	}
-	httpReq.Header.Set("Content-Type", form.FormDataContentType())
-	httpReq.Header.Set("Accept", "application/json")
-	if key := strings.TrimSpace(req.IdempotencyKey); key != "" {
-		httpReq.Header.Set("Idempotency-Key", key)
-	}
-
-	resp, err := c.uploads.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("archive upload: %w", err)
-	}
-	defer resp.Body.Close()
-	var job ArchiveJob
-	if err := decodeResponse(resp, &job); err != nil {
-		return nil, err
-	}
-	return &job, nil
-}
-
-func writeArchiveForm(form *multipart.Writer, file io.Reader, fileName string, req ArchiveCoordinates) error {
-	fields := [][2]string{
-		{"contentKind", req.ContentKind},
-		{"tmdbId", req.TMDBID},
-		{"tmdbTitle", req.TMDBTitle},
-		{"tmdbPosterPath", req.PosterPath},
-		{"tmdbOverview", req.Overview},
-		{"tmdbGenres", req.Genres},
-	}
-	if req.TMDBYear > 0 {
-		fields = append(fields, [2]string{"tmdbYear", strconv.Itoa(req.TMDBYear)})
-	}
-	if req.Runtime > 0 {
-		fields = append(fields, [2]string{"tmdbRuntime", strconv.Itoa(req.Runtime)})
-	}
-	if req.ContentKind == "episode" {
-		fields = append(fields,
-			[2]string{"tmdbSeason", strconv.Itoa(req.TMDBSeason)},
-			[2]string{"tmdbEpisode", strconv.Itoa(req.TMDBEpisode)},
-		)
-	}
-	for _, field := range fields {
-		if field[1] == "" {
-			continue
-		}
-		if err := form.WriteField(field[0], field[1]); err != nil {
-			return err
-		}
-	}
-	part, err := form.CreateFormFile("file", fileName)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(part, file); err != nil {
-		return err
-	}
-	return form.Close()
-}
-
-func (c *Client) getJSON(ctx context.Context, path string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Accept", "application/json")
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	return decodeResponse(resp, out)
-}
 
 // maxErrorBody bounds what we read from a failing relay before giving up on
 // finding a structured error in it.
