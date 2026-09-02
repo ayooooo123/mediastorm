@@ -96,7 +96,7 @@ func (relay *autoSeedRelay) client(t *testing.T) *peartube.Client {
 			_, _ = w.Write([]byte(`{"policy":{"policyVersion":2}}`))
 			return
 
-		case strings.HasPrefix(r.URL.Path, "/api/v1/catalog"):
+		case strings.HasPrefix(r.URL.Path, "/api/v2/search"):
 			relay.mu.Lock()
 			relay.catalogReads++
 			relay.mu.Unlock()
@@ -106,26 +106,11 @@ func (relay *autoSeedRelay) client(t *testing.T) *peartube.Client {
 				_, _ = w.Write([]byte(relay.catalogBody))
 				return
 			}
-			_, _ = w.Write([]byte(`{"entities":[` + relay.catalog + `],"nextCursor":null}`))
-
-		case strings.HasPrefix(r.URL.Path, "/api/v1/archive"):
-			if relay.archiveDelay > 0 {
-				time.Sleep(relay.archiveDelay)
+			if relay.catalog != "" {
+				_, _ = w.Write([]byte(`{"candidates":[{"candidateRef":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","kind":"published","publication":{"publicationId":"pub-matrix","renditionId":"rend-1"}}],"cursor":null}`))
+			} else {
+				_, _ = w.Write([]byte(`{"candidates":[],"cursor":null}`))
 			}
-			body := map[string]any{}
-			_ = json.NewDecoder(r.Body).Decode(&body)
-			relay.mu.Lock()
-			relay.archives = append(relay.archives, body)
-			relay.mu.Unlock()
-			w.Header().Set("Content-Type", "application/json")
-			if relay.archiveStatus != 0 {
-				w.WriteHeader(relay.archiveStatus)
-				_, _ = w.Write([]byte(`{"error":{"code":"INTERNAL","message":"relay exploded","field":null}}`))
-				return
-			}
-			w.WriteHeader(http.StatusAccepted)
-			_, _ = w.Write([]byte(`{"jobId":"arch_1","status":"queued","entityHint":"movie:603"}`))
-
 		// Remote sources now arrive as granted ingest jobs, so a refusal has to
 		case strings.HasSuffix(r.URL.Path, "/source-grants"):
 			w.Header().Set("Content-Type", "application/json")
@@ -1013,9 +998,8 @@ func (relay *redriveRelay) client(t *testing.T) *peartube.Client {
 		case r.URL.Path == "/api/v2/policy":
 			_, _ = w.Write([]byte(`{"policy":{"policyVersion":2}}`))
 
-		case strings.HasPrefix(r.URL.Path, "/api/v1/catalog"):
-			_, _ = w.Write([]byte(`{"entities":[],"nextCursor":null}`))
-
+		case strings.HasPrefix(r.URL.Path, "/api/v2/search"):
+			_, _ = w.Write([]byte(`{"candidates":[],"cursor":null}`))
 		case strings.HasSuffix(r.URL.Path, "/source-grants"):
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"acquisition":{"acquisitionId":"` + r.Header.Get("X-PearTube-Job-ID") + `","state":"queued"}}`))

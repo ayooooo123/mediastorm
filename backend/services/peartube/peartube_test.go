@@ -8,11 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -25,103 +22,29 @@ import (
 	"novastream/models"
 )
 
-const catalogBody = `{
-  "schema": "peartube.catalog",
-  "version": 1,
-  "entities": [
-    {"entityId": "tmdb:movie:603", "entityKind": "movie", "title": "The Matrix", "year": 1999,
-     "sources": [{"publicationId": "pub-matrix", "publisherId": "abcdef0123456789", "renditionId": "rend-1", "coreKey": "cafe", "coreLength": 12, "byteLength": 4096}]},
-    {"entityId": "tmdb:episode:show:1399:s1:e2", "entityKind": "series", "title": "Game of Thrones", "year": 2011,
-     "sources": [{"publicationId": "pub-got", "publisherId": "0123", "renditionId": "rend-2", "byteLength": 2048}]},
-    {"entityId": "tmdb:movie:604", "entityKind": "movie", "title": "The Matrix Reloaded", "year": 2003,
-     "sources": [{"publicationId": "pub-reloaded", "publisherId": "fedcba9876543210", "renditionId": "rend-3", "byteLength": 8192}]},
-    {"entityId": "tmdb:movie:605", "entityKind": "movie", "title": "No Rendition", "year": 2020,
-     "sources": [{"publicationId": "pub-broken", "publisherId": "aaaa", "renditionId": "", "byteLength": 10}]}
-  ],
-  "nextCursor": null
-}`
 
-type stubRelay struct {
-	server                *httptest.Server
-	catalogCalls          int
-	archiveCalls          int
-	archiveFields         map[string]string
-	archiveBytes          []byte
-	archiveName           string
-	archiveIdempotencyKey string
-}
-
-// gateBody is verbatim what a relay bound to a non-loopback address answers
-// when the operator never passed --api-open.
-const gateBody = `{"error":{"code":"OPEN_ACCESS_NOT_ENABLED","message":"the relay is bound to 0.0.0.0 rather than loopback, so /api/v1/catalog and /api/v1/stream refuse to enumerate or serve media; restart the relay with --api-open (or PEARTUBE_ARCHIVE_API_OPEN=1)","field":null}}`
-
-func (stub *stubRelay) handleArchive(w http.ResponseWriter, r *http.Request) {
-	stub.archiveCalls++
-	stub.archiveIdempotencyKey = r.Header.Get("Idempotency-Key")
-	reader, err := r.MultipartReader()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	for {
-		part, err := reader.NextPart()
-		if err != nil {
-			break
-		}
-		body, _ := io.ReadAll(part)
-		if part.FileName() != "" {
-			stub.archiveName = part.FileName()
-			stub.archiveBytes = body
-			continue
-		}
-		stub.archiveFields[part.FormName()] = string(body)
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(ArchiveJob{JobID: "job-1", Status: "queued", EntityHint: "movie:603"})
-}
-
-func newRelay(t *testing.T, catalog http.HandlerFunc) (*stubRelay, *Client) {
+func newStubRelay(t *testing.T) (*httptest.Server, *Client) {
 	t.Helper()
-	stub := &stubRelay{archiveFields: map[string]string{}}
+	t.Setenv(CompanionClientEnv, "mediastorm-test")
+	t.Setenv(CompanionSharedSecretEnv, companionTestSecret)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/catalog", func(w http.ResponseWriter, r *http.Request) {
-		stub.catalogCalls++
-		catalog(w, r)
+	mux.HandleFunc("/api/v2/status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"status":"available","apiVersion":2,"diagnostics":{"ready":true,"searchAvailable":true,"acquisitionAvailable":true,"streamingAvailable":true}}`)
 	})
-	mux.HandleFunc("/api/v1/archive", stub.handleArchive)
-	mux.HandleFunc("/api/v1/archive/missing", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v2/acquisitions/missing", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
 		io.WriteString(w, `{"error":{"code":"JOB_NOT_FOUND","message":"no such job","field":"jobId"}}`)
 	})
-	stub.server = httptest.NewServer(mux)
-	t.Cleanup(stub.server.Close)
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
 
-	client, err := New(stub.server.URL)
+	client, err := New(server.URL)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	return stub, client
-}
-
-func newStubRelay(t *testing.T) (*stubRelay, *Client) {
-	t.Helper()
-	return newRelay(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, catalogBody)
-	})
-}
-
-// newGatedRelay is a relay the operator has not opted into open access on: it
-// refuses to enumerate or serve media, but still accepts seeds.
-func newGatedRelay(t *testing.T) (*stubRelay, *Client) {
-	t.Helper()
-	return newRelay(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		io.WriteString(w, gateBody)
-	})
+	return server, client
 }
 
 const (
@@ -618,68 +541,6 @@ func TestOwnedCompanionStreamURLBindsConfiguredBasePath(t *testing.T) {
 	}
 }
 
-func TestArchiveStreamsFileAndCoordinates(t *testing.T) {
-	stub, client := newStubRelay(t)
-
-	path := filepath.Join(t.TempDir(), "The.Matrix.mkv")
-	if err := os.WriteFile(path, []byte("media-bytes"), 0o600); err != nil {
-		t.Fatalf("write fixture: %v", err)
-	}
-
-	job, err := client.Archive(context.Background(), ArchiveRequest{
-		FilePath: path,
-		ArchiveCoordinates: ArchiveCoordinates{
-			ContentKind: "movie",
-			TMDBID:      "603",
-			TMDBTitle:   "The Matrix",
-			TMDBYear:    1999,
-			Runtime:     136,
-			Genres:      "Action,Science Fiction",
-		},
-	})
-	if err != nil {
-		t.Fatalf("Archive: %v", err)
-	}
-	if job.JobID != "job-1" || job.Status != "queued" || job.EntityHint != "movie:603" {
-		t.Fatalf("job = %+v", job)
-	}
-	if string(stub.archiveBytes) != "media-bytes" || stub.archiveName != "The.Matrix.mkv" {
-		t.Fatalf("uploaded %q as %q", stub.archiveBytes, stub.archiveName)
-	}
-	for field, want := range map[string]string{
-		"contentKind": "movie",
-		"tmdbId":      "603",
-		"tmdbTitle":   "The Matrix",
-		"tmdbYear":    "1999",
-		"tmdbRuntime": "136",
-		"tmdbGenres":  "Action,Science Fiction",
-	} {
-		if stub.archiveFields[field] != want {
-			t.Fatalf("field %s = %q, want %q", field, stub.archiveFields[field], want)
-		}
-	}
-	if _, ok := stub.archiveFields["tmdbSeason"]; ok {
-		t.Fatal("a movie upload carried season coordinates")
-	}
-}
-
-func TestArchiveRejectsIncompleteEpisodeCoordinates(t *testing.T) {
-	_, client := newStubRelay(t)
-
-	_, err := client.Archive(context.Background(), ArchiveRequest{
-		FilePath: filepath.Join(t.TempDir(), "missing.mkv"),
-		ArchiveCoordinates: ArchiveCoordinates{
-			ContentKind: "episode",
-			TMDBID:      "1399",
-			TMDBTitle:   "Game of Thrones",
-			TMDBSeason:  1,
-		},
-	})
-	if err == nil {
-		t.Fatal("an episode without an episode number was accepted")
-	}
-}
-
 func TestArchiveStatusSurfacesRelayError(t *testing.T) {
 	_, client := newStubRelay(t)
 
@@ -726,133 +587,10 @@ func TestEnvGatingKeepsIntegrationInert(t *testing.T) {
 	}
 }
 
-// The v1 catalog remains available to archive/probe callers. A relay that has
-// not opted into open access must still be identifiable there, but v2 search
-// no longer routes through this sentinel.
-func TestCatalogOnGatedRelayYieldsSentinelAndNoEntities(t *testing.T) {
-	_, client := newGatedRelay(t)
-
-	entities, err := client.Catalog(context.Background())
-	if len(entities) != 0 {
-		t.Fatalf("gated relay produced %d entities: %+v", len(entities), entities)
-	}
-	if !IsRelayNotOpen(err) {
-		t.Fatalf("error = %v, want it to match ErrRelayNotOpen", err)
-	}
-	if !errors.Is(err, ErrRelayNotOpen) {
-		t.Fatalf("errors.Is(%v, ErrRelayNotOpen) = false", err)
-	}
-	var apiErr *APIError
-	if !errors.As(err, &apiErr) {
-		t.Fatalf("error = %T, want it to carry an *APIError", err)
-	}
-	if apiErr.Status != http.StatusForbidden || apiErr.Code != "OPEN_ACCESS_NOT_ENABLED" {
-		t.Fatalf("apiErr = %+v", apiErr)
-	}
-	if !strings.Contains(ErrRelayNotOpen.Error(), "--api-open") ||
-		!strings.Contains(ErrRelayNotOpen.Error(), "PEARTUBE_ARCHIVE_API_OPEN=1") {
-		t.Fatalf("sentinel does not carry the remedy: %v", ErrRelayNotOpen)
-	}
-}
-
-// A different v1 catalog refusal is not the archive/probe open-access gate.
-func TestUnrelatedCatalogErrorIsNotTheGate(t *testing.T) {
-	_, client := newRelay(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		io.WriteString(w, `{"error":{"code":"FORBIDDEN","message":"nope","field":null}}`)
-	})
-
-	_, err := client.Catalog(context.Background())
-	if err == nil {
-		t.Fatal("a 403 FORBIDDEN was swallowed")
-	}
-	if IsRelayNotOpen(err) {
-		t.Fatalf("error %v was misread as the open-access gate", err)
-	}
-}
-
-// Repeated v1 catalog probes announce the archive/probe gate only once.
-func TestCatalogGateIsLoggedOncePerOccurrence(t *testing.T) {
-	_, client := newGatedRelay(t)
-
-	var logged strings.Builder
-	restore := log.Writer()
-	log.SetOutput(&logged)
-	log.SetFlags(0)
-	t.Cleanup(func() { log.SetOutput(restore) })
-
-	for range 5 {
-		client.mu.Lock()
-		client.cachedAt = time.Time{}
-		client.mu.Unlock()
-		if _, err := client.Catalog(context.Background()); !IsRelayNotOpen(err) {
-			t.Fatalf("Catalog error = %v", err)
-		}
-	}
-
-	warnings := strings.Count(logged.String(), "WARN: relay "+client.BaseURL())
-	if warnings != 1 {
-		t.Fatalf("gate logged %d times across 5 catalog probes:\n%s", warnings, logged.String())
-	}
-	if !strings.Contains(logged.String(), NotOpenRemedy) {
-		t.Fatalf("gate warning omitted the remedy:\n%s", logged.String())
-	}
-}
-
-// Seeding is not gated on the relay side. That asymmetry is deliberate: a
-// container-hosted backend can publish into the swarm before the operator
-// decides to let this network read from it.
-func TestSeedingSucceedsAgainstAGatedRelay(t *testing.T) {
-	stub, client := newGatedRelay(t)
-
-	if _, err := client.Catalog(context.Background()); !IsRelayNotOpen(err) {
-		t.Fatalf("expected the catalog to be gated, got %v", err)
-	}
-
-	path := filepath.Join(t.TempDir(), "The.Matrix.mkv")
-	if err := os.WriteFile(path, []byte("media-bytes"), 0o600); err != nil {
-		t.Fatalf("write fixture: %v", err)
-	}
-	job, err := client.Archive(context.Background(), ArchiveRequest{
-		FilePath: path,
-		ArchiveCoordinates: ArchiveCoordinates{
-			ContentKind: "movie",
-			TMDBID:      "603",
-			TMDBTitle:   "The Matrix",
-			TMDBYear:    1999,
-		},
-	})
-	if err != nil {
-		t.Fatalf("Archive against a gated relay: %v", err)
-	}
-	if job.JobID != "job-1" || job.Status != "queued" {
-		t.Fatalf("job = %+v", job)
-	}
-	if string(stub.archiveBytes) != "media-bytes" {
-		t.Fatalf("uploaded %q", stub.archiveBytes)
-	}
-}
-
-func TestProbeSeparatesGatedFromReadyAndUnreachable(t *testing.T) {
-	_, gated := newGatedRelay(t)
-	state := gated.Probe(context.Background())
-	if !state.Reachable || !state.NotOpen || !state.SeedingAvailable {
-		t.Fatalf("gated state = %+v, want reachable+notOpen+seedingAvailable", state)
-	}
-	if state.Remedy != NotOpenRemedy {
-		t.Fatalf("remedy = %q, want %q", state.Remedy, NotOpenRemedy)
-	}
-	if !strings.Contains(state.Detail, "0.0.0.0") {
-		t.Fatalf("detail lost the relay's own explanation: %q", state.Detail)
-	}
-	if state.CatalogEntities != 0 {
-		t.Fatalf("gated relay reported %d entities", state.CatalogEntities)
-	}
-
+func TestProbeSeparatesReadyAndUnreachable(t *testing.T) {
 	_, healthy := newStubRelay(t)
 	ready := healthy.Probe(context.Background())
-	if !ready.Reachable || ready.NotOpen || ready.CatalogEntities != 4 {
+	if !ready.Reachable || !ready.SeedingAvailable {
 		t.Fatalf("ready state = %+v", ready)
 	}
 
@@ -861,7 +599,7 @@ func TestProbeSeparatesGatedFromReadyAndUnreachable(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	down := dead.Probe(context.Background())
-	if down.Reachable || down.NotOpen || down.SeedingAvailable {
+	if down.Reachable || down.SeedingAvailable {
 		t.Fatalf("unreachable state = %+v", down)
 	}
 }

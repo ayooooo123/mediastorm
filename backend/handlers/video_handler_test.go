@@ -104,7 +104,7 @@ func TestStreamViaProviderReadsPearTubeBlobServerOverLoopback(t *testing.T) {
 		_, _ = io.WriteString(w, "edi")
 	}))
 	defer blobServer.Close()
-	peartube.Configure(peartube.Resolved{RelayURL: "unix:///tmp/peartube-test-control.sock", Enabled: true})
+	peartube.Configure(peartube.Resolved{RelayURL: "http://127.0.0.1:8175", Enabled: true})
 	t.Cleanup(func() { peartube.Configure(peartube.Resolved{}) })
 
 	streamURL := blobServer.URL + "/?key=" + strings.Repeat("a", 64) +
