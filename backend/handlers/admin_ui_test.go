@@ -2876,6 +2876,36 @@ func TestSettingsSchemaOffersTorrinProvider(t *testing.T) {
 	t.Fatal("torrin is missing from the backend settings page provider options")
 }
 
+func TestSettingsSchemaIdentifiesInfiniDyskAsNZBDavCompatible(t *testing.T) {
+	section, ok := handlers.SettingsSchema["usenetEngines"].(map[string]interface{})
+	if !ok {
+		t.Fatal("usenet engine settings schema is missing")
+	}
+	fields, ok := section["fields"].(map[string]interface{})
+	if !ok {
+		t.Fatal("usenet engine fields schema is missing")
+	}
+	engineType, ok := fields["type"].(map[string]interface{})
+	if !ok {
+		t.Fatal("usenet engine type schema is missing")
+	}
+	options, ok := engineType["options"].([]map[string]string)
+	if !ok {
+		t.Fatalf("unexpected usenet engine type options: %#v", engineType["options"])
+	}
+
+	for _, option := range options {
+		if option["value"] == "nzbdav" {
+			if option["label"] != "NZBDav (InfiniDysk)" {
+				t.Fatalf("nzbdav option label = %q, want %q", option["label"], "NZBDav (InfiniDysk)")
+			}
+			return
+		}
+	}
+
+	t.Fatal("usenet engine type options are missing nzbdav")
+}
+
 // multipartWriter creates a multipart form with a file field
 func multipartWriter(t *testing.T, body *bytes.Buffer, fieldName, fileName, content string) *multipart.Writer {
 	t.Helper()

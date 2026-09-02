@@ -403,7 +403,7 @@ var SettingsSchema = map[string]interface{}{
 		"is_array":    true,
 		"fields": map[string]interface{}{
 			"name":    map[string]interface{}{"type": "text", "label": "Name", "description": "Display name", "order": 0},
-			"type":    map[string]interface{}{"type": "select", "label": "Engine", "options": []map[string]string{{"value": "altmount", "label": "AltMount"}, {"value": "nzbdav", "label": "NZBDav"}, {"value": "nzbdavex", "label": "NZBDavEx"}, {"value": "decypharr", "label": "Decypharr"}}, "description": "External engine type", "required": true, "order": 1},
+			"type":    map[string]interface{}{"type": "select", "label": "Engine", "options": []map[string]string{{"value": "altmount", "label": "AltMount"}, {"value": "nzbdav", "label": "NZBDav (InfiniDysk)"}, {"value": "nzbdavex", "label": "NZBDavEx"}, {"value": "decypharr", "label": "Decypharr"}}, "description": "External engine type", "required": true, "order": 1},
 			"baseUrl": map[string]interface{}{"type": "text", "label": "API URL", "description": "URL used to reach the engine API. You can paste the root URL or the full SAB-compatible API URL.", "placeholder": "http://engine:8080/sabnzbd/api", "required": true, "order": 2},
 			"apiPath": map[string]interface{}{
 				"type":        "text",
