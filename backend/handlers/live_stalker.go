@@ -47,7 +47,15 @@ type stalkerPortalSession struct {
 	token           string
 	channels        []LiveChannel
 	channelCommands map[string]string
+	categoryPages   map[string]stalkerCachedChannelPage
 	cacheExpiry     time.Time
+}
+
+type stalkerCachedChannelPage struct {
+	data      []stalkerChannel
+	total     int
+	pageSize  int
+	expiresAt time.Time
 }
 
 var stalkerSessionStore = struct {
@@ -161,7 +169,7 @@ func newStalkerSession(config stalkerSourceConfig) (*stalkerPortalSession, error
 	if err != nil {
 		return nil, fmt.Errorf("create stalker HTTP client: %w", err)
 	}
-	return &stalkerPortalSession{config: config, client: client}, nil
+	return &stalkerPortalSession{config: config, client: client, categoryPages: make(map[string]stalkerCachedChannelPage)}, nil
 }
 
 func stalkerEndpointCandidates(raw string) []string {
@@ -400,6 +408,150 @@ func (s *stalkerPortalSession) fetchPortalChannelsLocked(ctx context.Context) ([
 	return channels, nil
 }
 
+func (s *stalkerPortalSession) fetchOrderedChannelPageLocked(ctx context.Context, genreID string, pageNumber int) (stalkerCachedChannelPage, error) {
+	if pageNumber < 1 {
+		pageNumber = 1
+	}
+	cacheKey := genreID + ":" + strconv.Itoa(pageNumber)
+	if cached, ok := s.categoryPages[cacheKey]; ok && time.Now().Before(cached.expiresAt) {
+		cached.data = append([]stalkerChannel(nil), cached.data...)
+		return cached, nil
+	}
+	pageRaw, err := s.authorizedRequestLocked(ctx, url.Values{
+		"type": {"itv"}, "action": {"get_ordered_list"}, "genre": {genreID},
+		"p": {strconv.Itoa(pageNumber)}, "sortby": {"number"}, "fav": {"0"}, "hd": {"0"},
+	})
+	if err != nil {
+		return stalkerCachedChannelPage{}, err
+	}
+	var response struct {
+		Data         []stalkerChannel `json:"data"`
+		TotalItems   flexString       `json:"total_items"`
+		MaxPageItems flexString       `json:"max_page_items"`
+	}
+	if err := json.Unmarshal(pageRaw, &response); err != nil {
+		return stalkerCachedChannelPage{}, err
+	}
+	total, _ := strconv.Atoi(string(response.TotalItems))
+	pageSize, _ := strconv.Atoi(string(response.MaxPageItems))
+	if pageSize <= 0 {
+		pageSize = len(response.Data)
+	}
+	page := stalkerCachedChannelPage{
+		data: append([]stalkerChannel(nil), response.Data...), total: total, pageSize: pageSize,
+		expiresAt: time.Now().Add(stalkerCatalogCacheTTL),
+	}
+	s.categoryPages[cacheKey] = page
+	return page, nil
+}
+
+// channelsForCategories returns the first maxItems channels across the named
+// portal genres plus the provider-reported total. GetChannels uses the total
+// for frontend paging, so a category can reach beyond get_all_channels without
+// downloading the portal's entire live catalogue.
+func (s *stalkerPortalSession) channelsForCategories(ctx context.Context, categories []string, maxItems int) ([]LiveChannel, int, []string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if maxItems <= 0 {
+		return nil, 0, nil, nil
+	}
+	genresRaw, err := s.authorizedRequestLocked(ctx, url.Values{"type": {"itv"}, "action": {"get_genres"}})
+	if err != nil {
+		return nil, 0, nil, fmt.Errorf("fetch stalker genres: %w", err)
+	}
+	var genres []stalkerGenre
+	if err := decodeStalkerList(genresRaw, &genres); err != nil {
+		return nil, 0, nil, fmt.Errorf("decode stalker genres: %w", err)
+	}
+	genreIDs := make(map[string]string, len(genres))
+	genreNames := make(map[string]string, len(genres))
+	availableCategories := make([]string, 0, len(genres))
+	for _, genre := range genres {
+		name := strings.TrimSpace(genre.Title)
+		id := strings.TrimSpace(string(genre.ID))
+		if name != "" && id != "" {
+			genreIDs[strings.ToLower(name)] = id
+			genreNames[id] = name
+			availableCategories = append(availableCategories, name)
+		}
+	}
+	requestedCategories := categories
+	if len(requestedCategories) == 0 {
+		requestedCategories = []string{"*"}
+		genreIDs["*"] = "*"
+	}
+
+	var rawChannels []stalkerChannel
+	total := 0
+	for _, category := range requestedCategories {
+		genreID := genreIDs[strings.ToLower(strings.TrimSpace(category))]
+		if genreID == "" {
+			continue
+		}
+		firstPage, err := s.fetchOrderedChannelPageLocked(ctx, genreID, 1)
+		if err != nil {
+			return nil, 0, nil, fmt.Errorf("fetch stalker category %q: %w", category, err)
+		}
+		categoryTotal := firstPage.total
+		if categoryTotal <= 0 {
+			categoryTotal = len(firstPage.data)
+		}
+		total += categoryTotal
+		remaining := maxItems - len(rawChannels)
+		if remaining <= 0 {
+			continue
+		}
+		rawChannels = append(rawChannels, firstPage.data[:min(len(firstPage.data), remaining)]...)
+		pageSize := firstPage.pageSize
+		if pageSize <= 0 {
+			continue
+		}
+		for pageNumber := 2; len(rawChannels) < maxItems && (pageNumber-1)*pageSize < categoryTotal; pageNumber++ {
+			page, err := s.fetchOrderedChannelPageLocked(ctx, genreID, pageNumber)
+			if err != nil {
+				return nil, 0, nil, fmt.Errorf("fetch stalker category %q page %d: %w", category, pageNumber, err)
+			}
+			if len(page.data) == 0 {
+				break
+			}
+			remaining = maxItems - len(rawChannels)
+			rawChannels = append(rawChannels, page.data[:min(len(page.data), remaining)]...)
+		}
+	}
+	return s.convertPortalChannelsLocked(rawChannels, genreNames), total, availableCategories, nil
+}
+
+func (s *stalkerPortalSession) convertPortalChannelsLocked(portalChannels []stalkerChannel, genreNames map[string]string) []LiveChannel {
+	channels := make([]LiveChannel, 0, len(portalChannels))
+	if s.channelCommands == nil {
+		s.channelCommands = make(map[string]string, len(portalChannels))
+	}
+	for _, channel := range portalChannels {
+		id := strings.TrimSpace(string(channel.ID))
+		if id == "" || strings.TrimSpace(channel.Name) == "" {
+			continue
+		}
+		logo := strings.TrimSpace(channel.Logo)
+		if logo != "" {
+			if parsed, parseErr := url.Parse(logo); parseErr == nil && !parsed.IsAbs() {
+				if base, baseErr := url.Parse(s.endpoint); baseErr == nil {
+					logo = base.ResolveReference(parsed).String()
+				}
+			}
+		}
+		tvgID := strings.TrimSpace(channel.XMLTVID)
+		if tvgID == "" {
+			tvgID = id
+		}
+		channels = append(channels, LiveChannel{
+			ID: id, PlaybackID: id, Name: strings.TrimSpace(channel.Name), URL: s.config.PortalURL,
+			Logo: logo, Group: genreNames[string(channel.GenreID)], TvgID: tvgID, TvgName: strings.TrimSpace(channel.Name),
+		})
+		s.channelCommands[id] = strings.TrimSpace(channel.Cmd)
+	}
+	return channels
+}
+
 func (s *stalkerPortalSession) channelsForPortal(ctx context.Context) ([]LiveChannel, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -568,6 +720,14 @@ func fetchStalkerChannels(ctx context.Context, config stalkerSourceConfig) ([]Li
 		return nil, err
 	}
 	return session.channelsForPortal(ctx)
+}
+
+func fetchStalkerCategoryChannels(ctx context.Context, config stalkerSourceConfig, categories []string, maxItems int) ([]LiveChannel, int, []string, error) {
+	session, err := getStalkerSession(config)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	return session.channelsForCategories(ctx, categories, maxItems)
 }
 
 func resolveStalkerChannel(ctx context.Context, config stalkerSourceConfig, channelID string) (string, map[string]string, error) {

@@ -1320,15 +1320,22 @@ func categoryInfosFromCounts(categoryMap map[string]int) []CategoryInfo {
 
 // filterChannels applies the filtering settings to a list of channels.
 func filterChannels(channels []LiveChannel, filter config.LiveTVFilterSettings) []LiveChannel {
+	filtered := filterChannelsByEnabledCategories(channels, filter.EnabledCategories)
+	if filter.MaxChannels > 0 && len(filtered) > filter.MaxChannels {
+		filtered = filtered[:filter.MaxChannels]
+	}
+	return filtered
+}
+
+func filterChannelsByEnabledCategories(channels []LiveChannel, enabledCategories []string) []LiveChannel {
 	if len(channels) == 0 {
 		return channels
 	}
 
-	// Step 1: Filter by enabled categories (if configured)
 	var filtered []LiveChannel
-	if len(filter.EnabledCategories) > 0 {
+	if len(enabledCategories) > 0 {
 		enabledSet := make(map[string]bool)
-		for _, cat := range filter.EnabledCategories {
+		for _, cat := range enabledCategories {
 			enabledSet[cat] = true
 		}
 		for _, ch := range channels {
@@ -1339,12 +1346,45 @@ func filterChannels(channels []LiveChannel, filter config.LiveTVFilterSettings) 
 	} else {
 		filtered = channels
 	}
+	return filtered
+}
 
-	// Step 2: Apply overall limit (if configured)
-	if filter.MaxChannels > 0 && len(filtered) > filter.MaxChannels {
-		filtered = filtered[:filter.MaxChannels]
+func filterChannelsByRequestedCategories(channels []LiveChannel, categories, favoriteIDs []string, sourceID string, includeSourceInID bool) []LiveChannel {
+	if len(channels) == 0 || len(categories) == 0 {
+		return channels
 	}
-
+	selected := make(map[string]struct{}, len(categories))
+	for _, category := range categories {
+		selected[strings.TrimSpace(category)] = struct{}{}
+	}
+	hasValidSelection := false
+	for _, channel := range channels {
+		if _, ok := selected[channel.Group]; ok {
+			hasValidSelection = true
+			break
+		}
+	}
+	if !hasValidSelection {
+		return channels
+	}
+	filtered := make([]LiveChannel, 0, len(channels))
+	for _, channel := range channels {
+		_, categorySelected := selected[channel.Group]
+		favoriteID := channel.ID
+		if includeSourceInID && sourceID != "" {
+			favoriteID = sourceID + ":" + favoriteID
+		}
+		favorite := false
+		for _, requestedFavoriteID := range favoriteIDs {
+			if requestedFavoriteID == favoriteID {
+				favorite = true
+				break
+			}
+		}
+		if categorySelected || favorite {
+			filtered = append(filtered, channel)
+		}
+	}
 	return filtered
 }
 
@@ -1940,6 +1980,9 @@ func (h *LiveHandler) resolveProfileLiveSourceForID(profileID string, globalSett
 func (h *LiveHandler) GetChannels(w http.ResponseWriter, r *http.Request) {
 	requestStartedAt := time.Now()
 	var allChannels []LiveChannel
+	var categorySourceChannels []LiveChannel
+	stalkerCategoryTotal := -1
+	var stalkerAvailableCategories []string
 	request, paginated, err := parseLiveChannelsRequest(w, r)
 	if err != nil {
 		status := http.StatusBadRequest
@@ -2028,6 +2071,7 @@ func (h *LiveHandler) GetChannels(w http.ResponseWriter, r *http.Request) {
 			sourceFilter = liveSource.Filter
 		}
 		var sourceChannels []LiveChannel
+		var availabilityChannels []LiveChannel
 		if liveSource.Mode == "xtream" {
 			channels, err := h.fetchXtreamChannels(r.Context(), liveSource.XtreamHost, liveSource.XtreamUsername, liveSource.XtreamPassword, liveSource.ProxyURL)
 			if err != nil {
@@ -2045,13 +2089,27 @@ func (h *LiveHandler) GetChannels(w http.ResponseWriter, r *http.Request) {
 			}
 			sourceChannels = channels
 		} else if liveSource.Mode == "stalker" {
-			channels, err := fetchStalkerChannels(r.Context(), stalkerConfigFromResolvedSource(liveSource))
+			var channels []LiveChannel
+			var err error
+			if paginated && request.Filter == "" && !request.FavoritesOnly && len(selectedSources) == 1 {
+				channels, stalkerCategoryTotal, stalkerAvailableCategories, err = fetchStalkerCategoryChannels(
+					r.Context(), stalkerConfigFromResolvedSource(liveSource), request.Categories, offset+limit,
+				)
+			} else {
+				channels, err = fetchStalkerChannels(r.Context(), stalkerConfigFromResolvedSource(liveSource))
+			}
 			if err != nil {
 				log.Printf("[live] GetChannels Stalker error for source %q: %v", liveSource.ID, err)
 				http.Error(w, `{"error":"failed to fetch channels"}`, http.StatusBadGateway)
 				return
 			}
 			sourceChannels = channels
+			if stalkerCategoryTotal >= 0 {
+				availabilityChannels = make([]LiveChannel, 0, len(stalkerAvailableCategories))
+				for _, category := range stalkerAvailableCategories {
+					availabilityChannels = append(availabilityChannels, LiveChannel{Group: category})
+				}
+			}
 		} else {
 			contents, err := h.fetchPlaylistContents(r.Context(), liveSource.PlaylistURL, liveSource.ProxyURL)
 			if err != nil {
@@ -2061,14 +2119,29 @@ func (h *LiveHandler) GetChannels(w http.ResponseWriter, r *http.Request) {
 			}
 			sourceChannels = parseM3UPlaylist(contents)
 		}
+		if availabilityChannels == nil {
+			availabilityChannels = sourceChannels
+		}
 		totalBeforeFilter += len(sourceChannels)
-		allChannels = append(allChannels, tagChannelsWithSource(filterChannels(sourceChannels, sourceFilter), liveSource, includeSourceInID)...)
+		enabledAvailabilityChannels := filterChannelsByEnabledCategories(availabilityChannels, sourceFilter.EnabledCategories)
+		categorySourceChannels = append(categorySourceChannels, enabledAvailabilityChannels...)
+		enabledChannels := filterChannelsByEnabledCategories(sourceChannels, sourceFilter.EnabledCategories)
+		selectedChannels := filterChannelsByRequestedCategories(
+			enabledChannels, request.Categories, request.FavoriteIDs, liveSource.ID, includeSourceInID,
+		)
+		if sourceFilter.MaxChannels > 0 && len(selectedChannels) > sourceFilter.MaxChannels {
+			selectedChannels = selectedChannels[:sourceFilter.MaxChannels]
+			if stalkerCategoryTotal > sourceFilter.MaxChannels {
+				stalkerCategoryTotal = sourceFilter.MaxChannels
+			}
+		}
+		allChannels = append(allChannels, tagChannelsWithSource(selectedChannels, liveSource, includeSourceInID)...)
 	}
 
 	filteredChannels := allChannels
 
 	// Extract available categories from filtered channels (only categories with actual channels)
-	categoryInfos := extractCategories(filteredChannels)
+	categoryInfos := extractCategories(categorySourceChannels)
 	availableCategories := make([]string, len(categoryInfos))
 	for i, cat := range categoryInfos {
 		availableCategories[i] = cat.Name
@@ -2115,6 +2188,10 @@ func (h *LiveHandler) GetChannels(w http.ResponseWriter, r *http.Request) {
 	filteredChannels = orderFavoriteChannelsFirst(filteredChannels, requestedFavoriteIDs)
 
 	total := len(filteredChannels)
+	responseTotal := total
+	if stalkerCategoryTotal >= 0 {
+		responseTotal = stalkerCategoryTotal
+	}
 	pageChannels := filteredChannels
 	responseOffset := 0
 	responseLimit := total
@@ -2132,10 +2209,10 @@ func (h *LiveHandler) GetChannels(w http.ResponseWriter, r *http.Request) {
 	response := LiveChannelsResponse{
 		Channels:            pageChannels,
 		TotalBeforeFilter:   totalBeforeFilter,
-		Total:               total,
+		Total:               responseTotal,
 		Offset:              responseOffset,
 		Limit:               responseLimit,
-		HasMore:             responseOffset+len(pageChannels) < total,
+		HasMore:             responseOffset+len(pageChannels) < responseTotal,
 		AvailableCategories: availableCategories,
 		Sources:             liveSourceOptions(resolvedLiveSources(src)),
 	}

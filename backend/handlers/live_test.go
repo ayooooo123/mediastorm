@@ -413,6 +413,49 @@ http://stream.example/movie-1`))
 	}
 }
 
+func TestGetChannelsAppliesCategoryBeforeConfiguredChannelLimit(t *testing.T) {
+	playlistServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`#EXTM3U
+#EXTINF:-1 tvg-id="news-1" group-title="News",News One
+http://stream.example/news-1
+#EXTINF:-1 tvg-id="news-2" group-title="News",News Two
+http://stream.example/news-2
+#EXTINF:-1 tvg-id="sports-1" group-title="Sports",Sports One
+http://stream.example/sports-1
+#EXTINF:-1 tvg-id="sports-2" group-title="Sports",Sports Two
+http://stream.example/sports-2
+#EXTINF:-1 tvg-id="sports-3" group-title="Sports",Sports Three
+http://stream.example/sports-3`))
+	}))
+	defer playlistServer.Close()
+
+	mgr := config.NewManager(filepath.Join(t.TempDir(), "settings.json"))
+	if err := mgr.Save(config.Settings{Live: config.LiveSettings{
+		PlaylistURL: playlistServer.URL,
+		Filtering:   config.LiveTVFilterSettings{MaxChannels: 2},
+	}}); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+	h := NewLiveHandler(playlistServer.Client(), false, "", 24, 0, 0, false, mgr, nil)
+	req := httptest.NewRequest(http.MethodGet, "/live/channels?category=Sports&offset=0&limit=2", nil)
+	rec := httptest.NewRecorder()
+	h.GetChannels(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var response LiveChannelsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Total != 2 || len(response.Channels) != 2 || response.Channels[0].Name != "Sports One" || response.Channels[1].Name != "Sports Two" {
+		t.Fatalf("response = total:%d channels:%+v", response.Total, response.Channels)
+	}
+	if len(response.AvailableCategories) != 2 {
+		t.Fatalf("available categories = %+v, want News and Sports", response.AvailableCategories)
+	}
+}
+
 func intPointer(value int) *int {
 	return &value
 }

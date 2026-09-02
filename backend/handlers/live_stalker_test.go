@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -191,6 +192,63 @@ func TestStalkerDirectCatalogLinkSkipsCreateLink(t *testing.T) {
 	}
 	if createLinkCalled {
 		t.Fatal("direct catalogue link was unnecessarily sent through create_link")
+	}
+}
+
+func TestStalkerCategoryPagingUsesGenreAndProviderTotal(t *testing.T) {
+	var orderedRequests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("action") {
+		case "handshake":
+			fmt.Fprint(w, `{"js":{"token":"category-token"}}`)
+		case "get_profile":
+			fmt.Fprint(w, `{"js":{"id":"1"}}`)
+		case "get_genres":
+			fmt.Fprint(w, `{"js":[{"id":"9","title":"Deep Sports"}]}`)
+		case "get_ordered_list":
+			if genre := r.URL.Query().Get("genre"); genre != "9" && genre != "*" {
+				t.Errorf("genre = %q, want 9 or *", genre)
+			}
+			orderedRequests++
+			page, _ := strconv.Atoi(r.URL.Query().Get("p"))
+			start := (page-1)*2 + 1
+			fmt.Fprintf(w, `{"js":{"data":[{"id":"%d","name":"Sports %d","tv_genre_id":"9","cmd":"ffmpeg http://stream.test/live.php?stream=%d"},{"id":"%d","name":"Sports %d","tv_genre_id":"9","cmd":"ffmpeg http://stream.test/live.php?stream=%d"}],"total_items":"10","max_page_items":"2"}}`, start, start, start, start+1, start+1, start+1)
+		default:
+			http.Error(w, "unexpected action", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+
+	channels, total, availableCategories, err := fetchStalkerCategoryChannels(context.Background(), stalkerSourceConfig{
+		PortalURL: server.URL + "/stalker_portal/c/",
+		MAC:       "00:1A:79:00:00:09",
+	}, []string{"Deep Sports"}, 5)
+	if err != nil {
+		t.Fatalf("fetch category: %v", err)
+	}
+	if total != 10 || len(channels) != 5 {
+		t.Fatalf("total=%d channels=%d, want 10/5", total, len(channels))
+	}
+	if len(availableCategories) != 1 || availableCategories[0] != "Deep Sports" {
+		t.Fatalf("available categories = %+v", availableCategories)
+	}
+	if channels[4].ID != "5" || channels[4].Group != "Deep Sports" {
+		t.Fatalf("last channel = %+v", channels[4])
+	}
+	if orderedRequests != 3 {
+		t.Fatalf("ordered-list requests = %d, want 3", orderedRequests)
+	}
+
+	allChannels, allTotal, _, err := fetchStalkerCategoryChannels(context.Background(), stalkerSourceConfig{
+		PortalURL: server.URL + "/stalker_portal/c/",
+		MAC:       "00:1A:79:00:00:09",
+	}, nil, 3)
+	if err != nil || allTotal != 10 || len(allChannels) != 3 {
+		t.Fatalf("all-channel page = total:%d channels:%d err:%v", allTotal, len(allChannels), err)
+	}
+	if orderedRequests != 5 {
+		t.Fatalf("ordered-list requests after all-channel page = %d, want 5", orderedRequests)
 	}
 }
 
