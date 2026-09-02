@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -105,7 +106,7 @@ func openCompanionStream(ctx context.Context, openRequest any) (*models.Playback
 	}
 	streamURL, err := ownedCompanionStreamURL(client.baseURL, opened)
 	if err != nil {
-		if client.baseURL != "http://unix" {
+		if !isLoopbackBaseURL(client.baseURL) && client.baseURL != "http://unix" {
 			return nil, err
 		}
 		streamURL, err = client.RegisterBlobStream(opened.URL, opened.ExpiresAt, opened.PublicationID+":"+opened.RenditionID)
@@ -194,6 +195,20 @@ func validateLoopbackBlobURL(rawURL string) (string, error) {
 		}
 	}
 	return parsed.String(), nil
+}
+
+func isLoopbackBaseURL(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	hostname := parsed.Hostname()
+	lower := strings.ToLower(hostname)
+	if lower == "127.0.0.1" || lower == "localhost" || lower == "::1" {
+		return true
+	}
+	ip := net.ParseIP(hostname)
+	return ip != nil && ip.IsLoopback()
 }
 
 func ownedCompanionStreamURL(rawBaseURL string, opened companionOpenResponse) (string, error) {
