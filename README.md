@@ -4,183 +4,215 @@
 
 # mediastorm
 
-A streaming media server with native mobile and TV apps. mediastorm supports:
+mediastorm is a self-hosted streaming platform for movies, television, and live TV. It combines Usenet, debrid services, personal media libraries, and IPTV sources behind native iOS, tvOS, Android, and Android TV apps, plus a browser-based web app.
 
-- Usenet
-- Real Debrid/Torbox/AllDebrid
+Features include multi-profile watch history and recommendations, kids profiles, offline downloads, Live TV and DVR, subtitles, casting, Watch Together rooms, and encrypted Iroh connection invites for remote access.
 
-Scraping supports:
+[Releases](https://github.com/godver3/mediastorm/releases) · [Discord](https://discord.gg/kT74mwf4bu) · [iOS TestFlight](https://testflight.apple.com/join/8vCQ5gmH) · [tvOS TestFlight](https://testflight.apple.com/join/X9bE3dq6)
 
-- Torrentio
-- Jackett
-- AIOStreams
-- Zilean
-- Newznab indexers
+## Features
 
-Discord: https://discord.gg/kT74mwf4bu
+- **On-demand streaming:** Search multiple Usenet and torrent sources, rank releases, and stream through built-in Usenet or supported debrid providers.
+- **Personal media libraries:** Browse and play local, Plex, and Jellyfin libraries alongside discovered content.
+- **Live TV and DVR:** Use M3U playlists, Xtream Codes, Stalker Portal, or Stremio sources with EPG data and scheduled recordings.
+- **Profiles and activity:** Maintain per-profile watchlists, playback progress, history, calendars, custom lists, content preferences, and recommendations. Profiles can use PINs, kids restrictions, and source-level access controls.
+- **Playback:** Native playback on mobile and TV, browser playback at `/watch`, offline downloads in the mobile apps, external subtitle search, and Google Cast or DLNA playback on supported clients.
+- **Connected services:** Import lists and synchronize activity with services including Trakt, Simkl, MDBList, and Letterboxd.
+- **Shared viewing:** Create Watch Together rooms for other profiles or invite external browser guests.
+- **Remote access:** Connect apps through encrypted Iroh invitations without opening an inbound port. VPN access remains supported and is recommended when practical.
 
-## Setup
+## Supported Integrations
 
-mediastorm requires both a backend server and a frontend app. The frontend app on its own does nothing - it needs a running backend to connect to.
+| Area | Supported services and protocols |
+| --- | --- |
+| Debrid | Real-Debrid, TorBox, AllDebrid, Premiumize, Torrin |
+| Usenet streaming | Built-in NNTP, SABnzbd-compatible engines, AltMount, NZBDav/NZBDavEx, Decypharr, InfiniDysk-compatible setups |
+| Usenet indexers | Newznab, Prowlarr |
+| Torrent and direct-stream sources | Torrentio, Prowlarr, Jackett, Zilean, AIOStreams, Nyaa, Comet, MediaFusion, Internet Archive |
+| Media libraries | Local media, Plex, Jellyfin |
+| Live TV | M3U, Xtream Codes, Stalker Portal, Stremio add-ons, XMLTV EPG |
+| Lists and scrobbling | Trakt, Simkl, MDBList, Letterboxd |
+| Subtitles | Embedded tracks, OpenSubtitles, SubDL |
+| Metadata | TMDB, optional TVDB and MDBList enrichment |
+| AI recommendations | Gemini, OpenAI, Anthropic, OpenRouter, NanoGPT, LinkAPI |
 
-### Backend Deployment
+Not every integration is required. A typical installation needs TMDB plus at least one content path, such as Usenet, debrid, a media library, or Live TV.
 
-Deploy the backend using Docker Compose (or use the example in the repo):
+## Requirements
 
-1. Create a `docker-compose.yml`:
+- A host that can run Docker Compose
+- Persistent storage for PostgreSQL and the mediastorm cache directory
+- A free TMDB API key for baseline movie and TV metadata
+- At least one configured content source
+- A mediastorm client or a modern browser for the web app
+
+All clients require a running mediastorm backend.
+
+## Quick Start
+
+The repository's [`docker-compose.yml`](docker-compose.yml) is the canonical deployment example.
+
+1. Download that file and create a `.env` file beside it:
+
+```dotenv
+POSTGRES_PASSWORD=replace-with-a-long-random-password
+TZ=America/Edmonton
+
+# Optional on Linux: run the container as the owner of the cache directory.
+PUID=1000
+PGID=1000
+```
+
+2. Edit the cache volume in `docker-compose.yml`:
 
 ```yaml
-services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: mediastorm-postgres
-    environment:
-      POSTGRES_DB: mediastorm
-      POSTGRES_USER: mediastorm
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mediastorm}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U mediastorm"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  mediastorm:
-    image: godver3/mediastorm:latest
-    container_name: mediastorm
-    # Defaults to root for backward compatibility. Set PUID and PGID in your
-    # shell or .env file to opt into running as a specific host user.
-    user: "${PUID:-0}:${PGID:-0}"
-    depends_on:
-      postgres:
-        condition: service_healthy
-    ports:
-      - "7777:7777"
-    volumes:
-      # User data folder containing settings.json, streams, and cache
-      - /path/to/your/cache:/root/cache
-    environment:
-      - TZ=${TZ:-UTC}
-      - DATABASE_URL=postgres://mediastorm:${POSTGRES_PASSWORD:-mediastorm}@postgres:5432/mediastorm?sslmode=disable
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "http://localhost:7777/health"]
-      interval: 30s
-      timeout: 3s
-      start_period: 15s
-      retries: 3
-
 volumes:
-  postgres_data:
+  - /path/to/your/cache:/root/cache
 ```
 
-The cache folder will contain settings.json and stream metadata. All user data (accounts, watch history, playback progress, etc.) is stored in PostgreSQL.
-
-The container runs as root by default for backward compatibility. On Linux, you can opt into running it as the user that owns the cache folder without building a custom image:
+If `PUID` and `PGID` are set, the selected user must already have read and write access to the cache folder. The image does not change ownership automatically. On Linux, you can prepare it with:
 
 ```bash
-export PUID="$(id -u)"
-export PGID="$(id -g)"
-sudo chown -R "$PUID:$PGID" /path/to/your/cache
-docker compose up -d
+sudo chown -R "$(id -u):$(id -g)" /path/to/your/cache
 ```
 
-You can also put `PUID` and `PGID` in a `.env` file beside `docker-compose.yml`. These values are read by Docker Compose to populate the service's `user:` field; passing them only through the container's `environment:` section does not change its user. The image does not change ownership automatically, so the selected identity must have read and write access to the cache folder and any other writable host paths mounted into the container.
-
-2. Start the containers:
+3. Start the backend and PostgreSQL:
 
 ```bash
 docker compose up -d
 ```
 
-The backend will be available at `http://localhost:7777`. The first-login
-credentials are `admin` / `admin` for both the frontend app and the admin web
-UI. Complete the initial login in the admin web UI, where you must choose a
-replacement password before an authenticated session is created; then use that
-password in the frontend app. This setup flow also works through Docker Compose
-port forwarding, where the container may see the host as a bridge IP instead of
-a loopback address.
+4. Open `http://localhost:7777/admin` and sign in with the initial credentials `admin` / `admin`. You must choose a replacement password before the first authenticated session is created.
 
-**Upgrading from a previous version:** On first startup with the new compose file, mediastorm will automatically migrate your existing JSON data into PostgreSQL. Your original JSON files are preserved with a `.migrated` suffix in the cache directory.
+5. Complete the first-run configuration:
 
-**Custom Postgres password:** Set the `POSTGRES_PASSWORD` environment variable before starting:
+   1. Add your TMDB API key under **Settings → Metadata**.
+   2. Configure at least one content path: Usenet, debrid, a media library, or Live TV.
+   3. Use the admin connection tests to verify the configured services.
+   4. Sign into a native app or open `http://localhost:7777/watch`.
 
-```bash
-POSTGRES_PASSWORD=your_secure_password docker compose up -d
-```
+The backend health endpoint is available at `http://localhost:7777/health`.
 
-> **⚠️ Notice:** mediastorm is developed with the assistance of large language models (LLMs). While best efforts have been made to ensure security and code integrity, use this software at your own risk. mediastorm is not designed to be directly exposed to the internet — for safe remote access, use a VPN or overlay network like [Tailscale](https://tailscale.com/) to keep your server private while still accessible from your devices.
+> [!WARNING]
+> Change both default passwords before relying on the server: the mediastorm `admin` password during first login and the PostgreSQL password in `.env`. Do not expose mediastorm directly to the public internet. Prefer a VPN or overlay network such as [Tailscale](https://tailscale.com/), or use mediastorm's Iroh connection invites.
 
-### Connection Invites / Iroh Remote Access
+> [!NOTE]
+> mediastorm is developed with assistance from large language models. Best efforts are made to review security and code integrity, but the software is provided without warranty and should be used at your own risk.
 
-mediastorm includes an Iroh-based connection invite system for remote app access without opening ports or setting up a reverse proxy. In the admin panel, create a connection invite, share the generated code with the person you want to connect, and have them enter it from the app Login screen. They still need a valid mediastorm username and password, either for your account or a sub-account you created for them.
+### Data Storage and Upgrades
 
-At a high level, the backend creates both a full Iroh invite and a shorter connection code. The backend publishes a temporary DHT rendezvous record that lets the frontend use the short code to find the full invite. That record is signed with a key derived from the short code, so the public DHT record does not directly identify your backend. Once the frontend receives the full invite, it dials the backend over Iroh, using direct connectivity or hole punching where possible. Initial reachability can use Iroh relays when needed, but direct connections are preferred.
+Application settings, cached metadata, stream metadata, recordings, and backup files are stored under the mounted cache directory. Accounts, profiles, watch history, playback progress, and other relational user data are stored in PostgreSQL.
 
-Traffic remains encrypted between the frontend and your backend even when a relay is used. A relay can forward packets, but it cannot read the HTTP requests, API responses, or media bytes inside the Iroh connection. After the app connects successfully, the short code is claimed and is no longer reusable.
+When upgrading an older installation to PostgreSQL, mediastorm migrates supported JSON data on first startup. Original JSON files are preserved with a `.migrated` suffix in the cache directory.
 
-Remote access through this path depends on network conditions and may not work everywhere. It may also be slower than LAN or local-network playback, especially for high-bitrate video. When connected through an Iroh bridge, only the built-in player is supported; external players such as VLC or Infuse will not work.
+Use **Admin → Backups** to create, download, restore, or schedule application backups. Also protect the PostgreSQL volume and cache directory as part of the host's normal backup strategy.
 
-### Frontend Apps
+## Web and Native Clients
 
-The frontend is built with React Native and supports iOS, tvOS, Android, and Android TV.
+The server provides three browser entry points:
 
-#### iOS / tvOS
+- `http://localhost:7777/admin` — server setup, connections, users, tasks, backups, and diagnostics
+- `http://localhost:7777/account` — account management
+- `http://localhost:7777/watch` — consumer web app and browser playback
+
+### iOS and tvOS
 
 Available on TestFlight:
 
 - iOS: [Join TestFlight](https://testflight.apple.com/join/8vCQ5gmH)
 - tvOS: [Join TestFlight](https://testflight.apple.com/join/X9bE3dq6)
 
-**Updates:** Incremental updates are delivered automatically via OTA. Larger updates require updating through TestFlight.
+Incremental updates are delivered automatically through OTA updates. Native changes require updating through TestFlight.
 
-#### Android / Android TV
+### Android and Android TV
 
-Download the latest APK:
-
-- Android Mobile: [APK](https://github.com/godver3/mediastorm/releases/download/android-latest/mediastorm-mobile.apk) — Downloader code [`3364803`](https://aftv.news/3364803)
-- Android TV: [APK](https://github.com/godver3/mediastorm/releases/download/android-latest/mediastorm-tv.apk) — Downloader code [`7856845`](https://aftv.news/7856845)
+- Android Mobile: [Download APK](https://github.com/godver3/mediastorm/releases/download/android-latest/mediastorm-mobile.apk) — Downloader code [`3364803`](https://aftv.news/3364803)
+- Android TV: [Download APK](https://github.com/godver3/mediastorm/releases/download/android-latest/mediastorm-tv.apk) — Downloader code [`7856845`](https://aftv.news/7856845)
 - [Versioned release history](https://github.com/godver3/mediastorm/releases)
 
-**Updates:** Incremental updates are delivered automatically via OTA. Larger updates require manually downloading the latest APK or entering the permanent code for your device in Downloader.
+Incremental updates are delivered automatically through OTA updates. Native changes require downloading the latest APK or entering the permanent Downloader code for the device.
+
+## Connection Invites and Iroh Remote Access
+
+mediastorm includes an Iroh-based connection invite system for remote app access without opening ports or configuring a reverse proxy. Create an invite in the admin panel, share its short code, and enter that code from the app's login screen. The person connecting still needs a valid mediastorm username and password, either for the primary account or a sub-account created for them.
+
+The backend creates a full Iroh invite and a shorter, single-use connection code. It publishes a temporary DHT rendezvous record that lets the app use the short code to locate the full invite. The record is signed with a key derived from the short code, so the public DHT record does not directly identify the backend. The app then attempts a direct or hole-punched connection and can use an Iroh relay for initial reachability when necessary.
+
+Traffic remains encrypted between the app and the backend even when a relay forwards it. After a successful connection, the short code is claimed and cannot be reused.
+
+Remote performance depends on network conditions and may be slower than LAN playback, particularly for high-bitrate video. When connected through an Iroh bridge, use the built-in player; external players such as VLC or Infuse are not supported on that path.
 
 ## Configuration
 
-Access the admin panel at `http://localhost:7777/admin` to configure all settings.
+Most configuration is available through the admin panel at `http://localhost:7777/admin`. Configure services there instead of editing `settings.json` directly.
 
 ### Metadata and Optional API Keys
 
-mediastorm requires TMDB for its baseline metadata. The other integrations are optional:
+| Service | Required | Purpose | Get a key |
+| --- | --- | --- | --- |
+| **TMDB** | Yes | Baseline movie and TV metadata, episodes, artwork, cast, and trailers | [TMDB API settings](https://www.themoviedb.org/settings/api) |
+| **TVDB** | No | Alternate episode orders, precise broadcast times, and additional aliases, artwork, and trailers | [TVDB API information](https://thetvdb.com/api-information) |
+| **MDBList** | No | Ratings from multiple sources and list/scrobbling integration | [MDBList preferences](https://mdblist.com/preferences/) |
+| **AI provider** | No | Personalized recommendations based on watch history and watchlist | Configure a supported provider in the admin panel |
 
-| Service | Required | Purpose | Get Your Key |
-|---------|----------|---------|--------------|
-| **TMDB** | ✅ Yes | Movie/TV metadata, episodes, artwork, cast, and trailers | [themoviedb.org/settings/api](https://www.themoviedb.org/settings/api) (free account) |
-| **TVDB** | ❌ Optional | Alternate episode orders, precise broadcast times, and extra aliases, artwork, and trailers | [thetvdb.com/api-information](https://thetvdb.com/api-information) (free account) |
-| **MDBList** | ❌ Optional | Ratings from multiple sources (IMDb, RT, etc.) | [mdblist.com/preferences](https://mdblist.com/preferences/) (free account) |
-| **Gemini** | ❌ Optional | AI-powered personalized recommendations | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) (free tier) |
+Without TVDB, TMDB continues to provide normal movie and TV metadata. Alternate episode ordering and exact broadcast times are unavailable, and titles or assets catalogued only by TVDB may be absent.
 
-<sub>Without TVDB, TMDB continues to provide normal movie and TV metadata. Alternate episode ordering and exact broadcast times are unavailable, and titles or assets catalogued only by TVDB may be absent.</sub>
+### AI Recommendations
 
-Enter these keys in the admin panel under **Settings → Metadata**.
+AI-powered **Recommended For You** shelves are optional. Supported providers are Gemini, OpenAI, Anthropic, OpenRouter, NanoGPT, and LinkAPI; the provider, model, API key, and compatible base URL are configurable under **Settings → Metadata**.
 
-### AI Recommendations (Gemini)
+Without an AI provider, mediastorm still provides TMDB-based recommendations such as **Because You Watched**. AI recommendation results are cached per user. Availability, pricing, model names, and quotas are determined by the selected provider, so consult that provider's current documentation.
 
-mediastorm can use Google's Gemini AI to generate personalized "Recommended For You" lists based on your watch history and watchlist. This is entirely optional — without a key, mediastorm still provides TMDB-based "Because you watched..." recommendations.
+## Troubleshooting
 
-**Setup:**
+- **Backend does not become healthy:** Run `docker compose ps`, then inspect `docker compose logs mediastorm` and `docker compose logs postgres`.
+- **Permission errors:** Confirm the container user selected by `PUID`/`PGID` can write to the mounted cache directory.
+- **Database errors:** Verify `POSTGRES_PASSWORD` is consistent between PostgreSQL and `DATABASE_URL`, then check that the PostgreSQL health check passes.
+- **Search returns no playable results:** Add TMDB and configure a complete content path, then run the connection tests in the admin panel.
+- **Web app is unavailable in a source build:** Run `npm run web:export` in `frontend/`, or set `STRMR_WEB_APP_DIR` to an exported web bundle. Published Docker images include the web app.
+- **Forgotten account password:** Run `docker compose exec mediastorm ./mediastorm recover-account -master -generate` for the primary account, or replace `-master` with `-username <name>` for a sub-account.
 
-1. Go to [Google AI Studio](https://aistudio.google.com/apikey) and sign in with a Google account
-2. Click **Create API Key** and copy it
-3. In the mediastorm admin panel, go to **Settings → Metadata** and paste the key into the **Gemini API Key** field
-4. Save — recommendations will appear in the **Lists** tab under "Recommended For You"
+For source development, runtime logs are written to `.logs/backend.log` and `.logs/frontend.log`. Backend runtime diagnostics are available from localhost under `/api/debug/runtime` and `/api/debug/pprof/`.
 
-**Cost:** Gemini 2.0 Flash is used, which has a generous free tier (1,500 requests/day). A typical user generates ~1 request per day (results are cached for 24 hours per user), so this should remain free for personal use.
+## Development
+
+The root repository contains the Go backend, documentation, and deployment tooling. `frontend/` is a separate Git repository containing the Expo React Native application, so run and commit frontend work from that directory.
+
+```bash
+# Backend
+cd backend
+make run
+make test
+make check
+make build
+
+# Frontend
+cd frontend
+npm ci
+npm run start
+npm run start:tv
+npm run test
+npm run lint
+
+# Full local stack, from the repository root
+./dev.sh start
+./dev.sh restart backend
+./dev.sh stop
+```
+
+The main source layout is:
+
+- `backend/handlers/` — HTTP and web handlers
+- `backend/services/` — business logic and integrations
+- `backend/internal/` — core infrastructure and datastore packages
+- `frontend/app/` — Expo routes
+- `frontend/components/` — shared React Native UI
+- `frontend/services/` and `frontend/hooks/` — reusable client logic
+- `frontend/modules/` — native platform modules
 
 ## Acknowledgments
 
-Thanks to [nzbdav](https://github.com/nzbdav-dev/nzbdav) and [altmount](https://github.com/javi11/altmount) for paving the way with usenet streaming.
+Thanks to [nzbdav](https://github.com/nzbdav-dev/nzbdav) and [altmount](https://github.com/javi11/altmount) for paving the way with Usenet streaming.
 
 Inspired by [plex_debrid](https://github.com/itsToggle/plex_debrid) and [Riven](https://github.com/rivenmedia/riven).
 
@@ -188,7 +220,7 @@ Special thanks to [Parsett (PTT)](https://github.com/dreulavelle/PTT) for media 
 
 Powered by [FFmpeg](https://ffmpeg.org/) for media processing and [yt-dlp](https://github.com/yt-dlp/yt-dlp) for trailer fetching.
 
-Native playback powered by [KSPlayer](https://github.com/kingslay/KSPlayer) on iOS/tvOS, [ExoPlayer](https://github.com/google/ExoPlayer) and [MPV](https://mpv.io/) on Android/Android TV.
+Native playback is powered by [KSPlayer](https://github.com/kingslay/KSPlayer) on iOS/tvOS, and [ExoPlayer](https://github.com/google/ExoPlayer) and [MPV](https://mpv.io/) on Android/Android TV.
 
 ## License
 
