@@ -435,7 +435,7 @@ func ResultsWithDetails(results []models.NZBResult, opts Options) []FilteredResu
 			reject(result, reason)
 			continue
 		}
-		if !opts.IsMovie && !inferredAbsoluteEpisode && isSeriesPrefixExtensionMismatch(parsed.Title, matchedTitle) {
+		if !opts.IsMovie && !inferredAbsoluteEpisode && isSeriesPrefixExtensionMismatch(parsed.Title, matchedTitle, opts.IsAnime) {
 			reason := fmt.Sprintf("parsed title %q extends expected title %q", parsed.Title, matchedTitle)
 			log.Printf("[filter] Rejecting %q: %s", result.Title, reason)
 			reject(result, reason)
@@ -1251,7 +1251,7 @@ func titleContainmentScore(parsedTitle, candidate string) float64 {
 	return 0
 }
 
-func isSeriesPrefixExtensionMismatch(parsedTitle, matchedTitle string) bool {
+func isSeriesPrefixExtensionMismatch(parsedTitle, matchedTitle string, allowAnimeSeasonSubtitle bool) bool {
 	parsed := normalizeForContainment(parsedTitle)
 	expected := normalizeForContainment(matchedTitle)
 	if parsed == "" || expected == "" || parsed == expected {
@@ -1268,7 +1268,17 @@ func isSeriesPrefixExtensionMismatch(parsedTitle, matchedTitle string) bool {
 		return false
 	}
 	extraWords := strings.Fields(strings.TrimSpace(parsed[endIdx:]))
-	return len(extraWords) == 1
+	if allowAnimeSeasonSubtitle {
+		// Anime releases commonly append a multi-word season title while keeping
+		// the base series title (for example, "Dr Stone New World"). Preserve
+		// that established matching behavior, but continue rejecting ambiguous
+		// one-word extensions such as a distinct sequel or spinoff name.
+		return len(extraWords) == 1
+	}
+	// For ordinary series, an unmatched suffix of any length can identify a
+	// separate show. The release year is frequently omitted, so title identity
+	// must reject these before a same-numbered episode can be selected.
+	return len(extraWords) > 0
 }
 
 // trailingAbsoluteEpisode recovers anime release names that ptt-go leaves in
