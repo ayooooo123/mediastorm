@@ -197,8 +197,11 @@
     align-items: center;
     justify-content: space-between;
     gap: 1rem;
-    min-height: 72px;
-    padding: 0.8rem 0.9rem;
+    min-height: 58px;
+    padding: 0.65rem 0.8rem;
+}
+
+.live-source-card.editing .live-source-card-header {
     border-bottom: 1px solid var(--border);
 }
 
@@ -319,6 +322,11 @@
 .live-source-action-menu-panel button {
     width: 100%;
     justify-content: flex-start;
+}
+
+.live-source-edit-button[aria-expanded="true"] {
+    border-color: var(--accent);
+    color: var(--accent-hover);
 }
 
 .live-source-groups {
@@ -449,6 +457,11 @@
     .live-source-card-actions {
         justify-content: flex-start;
         flex-wrap: wrap;
+    }
+    .live-source-action-menu-panel {
+        right: auto;
+        left: 0;
+        max-width: calc(100vw - 2rem);
     }
     .live-source-card-name {
         min-width: 100%;
@@ -2690,10 +2703,14 @@
         torrentScrapers: -1,
         usenet: -1,
         usenetEngines: -1,
+        'live.sources': -1,
+        'liveTV.sources': -1,
     };
     const providerTableSectionKeys = new Set(['indexers', 'debridProviders', 'torrentScrapers']);
     providerTableSectionKeys.add('usenet');
     providerTableSectionKeys.add('usenetEngines');
+    providerTableSectionKeys.add('live.sources');
+    providerTableSectionKeys.add('liveTV.sources');
     const settingsSectionDescriptions = {
         indexers: 'Configure indexers and search providers',
         debridProviders: 'Real-Debrid, TorBox, AllDebrid, Premiumize, Torrin',
@@ -6466,6 +6483,10 @@
     }
 
     function handleFieldChange(basePath, fieldKey, value) {
+        const activeElementId = document.activeElement?.id || '';
+        const activeElementTop = document.activeElement?.getBoundingClientRect?.().top;
+        const shouldRestoreActiveElement = document.activeElement?.matches?.('select, input[type="checkbox"], input[type="color"]') === true;
+        const scrollTopBeforeRender = window.scrollY;
         // For nested config fields (e.g., config.autoClearQueue), convert booleans to strings
         // because Config is map[string]string in Go
         if (fieldKey.startsWith('config.') && typeof value === 'boolean') {
@@ -6493,6 +6514,16 @@
 
         // Re-render to update validation indicators (renderSettings runs validation)
         renderSettings();
+        requestAnimationFrame(() => {
+            const replacement = activeElementId ? document.getElementById(activeElementId) : null;
+            if (replacement && Number.isFinite(activeElementTop)) {
+                const topDelta = replacement.getBoundingClientRect().top - activeElementTop;
+                if (Math.abs(topDelta) > 0.5) window.scrollBy(0, topDelta);
+                if (shouldRestoreActiveElement) replacement.focus({ preventScroll: true });
+                return;
+            }
+            window.scrollTo({ top: scrollTopBeforeRender, behavior: 'auto' });
+        });
     }
 
     function usenetEngineDefaultsForType(type) {
@@ -9110,6 +9141,7 @@
     }
 
     function renderLiveSourceCard(sectionKey, sectionDef, item, index, fieldEntries, isTestable) {
+        const isEditing = expandedProviderEditIndexes[sectionKey] === index;
         const groupedEntries = [];
         const groupsByKey = new Map();
         for (const entry of fieldEntries) {
@@ -9155,8 +9187,10 @@
             '<summary class="btn btn-sm btn-secondary" aria-label="More actions for ' + escapeHtml(name).replace(/"/g, '&quot;') + '">' + getIcon('more-horizontal') + '</summary>' +
             '<div class="live-source-action-menu-panel"><button type="button" class="btn btn-sm btn-danger" onclick="event.preventDefault(); removeArrayItem(\'' + sectionKey + '\', ' + index + ')">' + getIcon('trash') + ' Delete</button></div>' +
         '</details>';
+        const editButton = '<button type="button" class="btn btn-sm btn-secondary live-source-edit-button" aria-expanded="' + isEditing + '" onclick="toggleProviderEditor(\'' + sectionKey + '\', ' + index + ', event)">' +
+            getIcon('edit') + ' ' + (isEditing ? 'Close' : 'Edit') + '</button>';
 
-        return '<div class="array-item live-source-card">' +
+        return '<div class="array-item live-source-card' + (isEditing ? ' editing' : '') + '">' +
             '<div class="live-source-card-header">' +
                 '<div class="live-source-card-identity">' +
                     '<div class="live-source-card-name" title="' + escapeHtml(name).replace(/"/g, '&quot;') + '">' + escapeHtml(name) + '</div>' +
@@ -9166,10 +9200,58 @@
                         '<span class="live-source-endpoint" title="' + escapeHtml(endpoint).replace(/"/g, '&quot;') + '">Server: ' + escapeHtml(endpoint) + '</span>' +
                     '</div>' +
                 '</div>' +
-                '<div class="live-source-card-actions">' + hiddenChannelsButton + testButton + deleteMenu + '</div>' +
+                '<div class="live-source-card-actions">' + hiddenChannelsButton + testButton + editButton + deleteMenu + '</div>' +
             '</div>' +
-            '<div class="live-source-groups">' + groupsHtml + '</div>' +
+            (isEditing ? '<div class="live-source-groups">' + groupsHtml + '</div>' : '') +
         '</div>';
+    }
+
+    function renderLiveSourceSection(sectionKey, sectionDef, items, basePath, profileInheritanceControls) {
+        const isTestable = testableSections.includes(sectionKey);
+        const cards = items.map((item, index) => {
+            const fieldEntries = Object.entries(sectionDef.fields)
+                .sort((a, b) => (a[1].order || 0) - (b[1].order || 0))
+                .map(([fieldKey, fieldDef]) => {
+                    if ((settingsLevel === 'basic' || settingsLevel === 'essentials') && !searchTerm && advancedArrayFields.has(sectionKey + '.' + fieldKey)) return null;
+                    if (!providerTableFieldVisible(item, fieldDef)) return null;
+                    const fieldValue = fieldKey.includes('.')
+                        ? fieldKey.split('.').reduce((obj, key) => obj?.[key], item)
+                        : item[fieldKey];
+                    const fieldInputId = (basePath + '.' + index + '_' + fieldKey).replace(/\./g, '_');
+                    const isRequired = fieldDef.required === true;
+                    const isMissingRequired = isRequired && (fieldValue === undefined || fieldValue === null || String(fieldValue).trim() === '');
+                    const requiredBadge = isMissingRequired ? '<span class="settings-section-badge" style="margin-left:0.4rem;">Required</span>' : '';
+                    const requiredHint = isMissingRequired ? '<p class="form-hint" style="color:var(--warning);">Required before testing or saving this provider.</p>' : '';
+                    return {
+                        group: fieldDef.group || 'source',
+                        groupLabel: fieldDef.groupLabel || fieldDef.group || 'Source',
+                        groupDescription: fieldDef.groupDescription || '',
+                        html: '<div class="form-group' + (fieldDef.type === 'boolean' ? ' form-group-toggle' : '') + (isMissingRequired ? ' required-missing' : '') + '">' +
+                            '<label class="form-label" for="' + fieldInputId + '">' + fieldDef.label + requiredBadge + '</label>' +
+                            renderInput(fieldKey, fieldDef, fieldValue, basePath + '.' + index, sectionKey) +
+                            (fieldDef.description ? '<p class="form-hint">' + fieldDef.description + '</p>' : '') +
+                            requiredHint + renderAdditionalFieldHint(sectionKey, fieldKey, item) + renderApiKeyFormatWarning(fieldKey, fieldValue) +
+                        '</div>',
+                    };
+                }).filter(Boolean);
+            return renderLiveSourceCard(sectionKey, sectionDef, item, index, fieldEntries, isTestable);
+        }).join('');
+        const cardsHtml = items.length
+            ? '<div class="array-items">' + cards + '</div>'
+            : '<div class="indexer-empty-state"><strong>No Live TV sources configured</strong><p class="form-hint">Add a source to make Live TV channels available.</p></div>';
+        const hasChanges = sectionHasChanges(sectionKey);
+        const saveLabel = !selectedUserId && !selectedClientId ? 'Save All Changes' : 'Save Changes';
+        return profileInheritanceControls +
+            '<p class="form-hint" style="margin:0 0 0.45rem;">Manage Live TV sources in a compact list. Open a source only when you need to edit it.</p>' +
+            cardsHtml +
+            '<div class="indexer-section-actions"><button type="button" class="btn btn-primary" onclick="addLiveSourceItem(\'' + sectionKey + '\', ' + items.length + ', event)">+ Add Live TV Source</button>' +
+            '<button type="button" class="section-save-btn" onclick="saveSection(\'' + sectionKey + '\', event)" ' + (hasChanges ? '' : 'disabled') + '>' + saveLabel + '</button></div>';
+    }
+
+    function addLiveSourceItem(sectionKey, nextIndex, event) {
+        event?.stopPropagation();
+        expandedProviderEditIndexes[sectionKey] = nextIndex;
+        addArrayItem(sectionKey);
     }
 
     function renderArraySection(sectionKey, sectionDef) {
@@ -9259,6 +9341,9 @@
                         ? '<button type="button" class="btn btn-sm btn-secondary" onclick="resetLiveSourcesToGlobal(event)"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg> Re-inherit from Global</button>'
                         : '') +
                 '</div>';
+        }
+        if (isLiveSourceSection(sectionKey)) {
+            return renderLiveSourceSection(sectionKey, sectionDef, items, basePath, profileInheritanceControls);
         }
         const itemsHtml = items.map((item, index) => {
             let typeBadgesHtml = '';
@@ -14526,7 +14611,9 @@
             }
         }
 
-        if (window.location.hash && !isEssentials) {
+        // Honor a deep link on the initial/category render. Routine field edits already
+        // restore the open section above and must not repeatedly scroll it to the top.
+        if (window.location.hash && !isEssentials && !openSection) {
             const section = document.getElementById('section-'+window.location.hash.substring(1));
             if (section) {
                 requestAnimationFrame(() => openSettingsSection(section.id.replace('section-', ''), { focus: false, scroll: true, historyMode: 'none' }));

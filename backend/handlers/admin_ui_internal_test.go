@@ -619,6 +619,54 @@ func TestAdminSettingsRendersDebridAndTorrentProviderTablesWithoutChangingContra
 	}
 }
 
+func TestAdminSettingsRendersLiveTVSourcesAsExpandableCompactCards(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/settings.html")
+	if err != nil {
+		t.Fatalf("read settings template: %v", err)
+	}
+	source := string(templateBytes)
+
+	for _, marker := range []string{
+		`function renderLiveSourceSection(sectionKey, sectionDef, items, basePath, profileInheritanceControls)`,
+		`Manage Live TV sources in a compact list. Open a source only when you need to edit it.`,
+		`const isEditing = expandedProviderEditIndexes[sectionKey] === index;`,
+		`live-source-edit-button`,
+		`(isEditing ? '<div class="live-source-groups">' + groupsHtml + '</div>' : '')`,
+		`addLiveSourceItem(\'' + sectionKey + '\', ' + items.length + ', event)`,
+		`providerTableSectionKeys.add('live.sources');`,
+		`providerTableSectionKeys.add('liveTV.sources');`,
+		`.live-source-card.editing .live-source-card-header`,
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("settings template missing compact Live TV source marker %q", marker)
+		}
+	}
+}
+
+func TestAdminSettingsConditionalRerendersPreserveViewportAndMenusStayOnScreen(t *testing.T) {
+	templateBytes, err := adminTemplates.ReadFile("admin_templates/settings.html")
+	if err != nil {
+		t.Fatalf("read settings template: %v", err)
+	}
+	source := string(templateBytes)
+
+	for _, marker := range []string{
+		`const activeElementTop = document.activeElement?.getBoundingClientRect?.().top;`,
+		`window.scrollBy(0, topDelta);`,
+		`replacement.focus({ preventScroll: true });`,
+		`window.scrollTo({ top: scrollTopBeforeRender, behavior: 'auto' });`,
+		`if (window.location.hash && !isEssentials && !openSection)`,
+		`.live-source-action-menu-panel {`,
+		`right: auto;`,
+		`left: 0;`,
+		`max-width: calc(100vw - 2rem);`,
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("settings template missing stable conditional-render marker %q", marker)
+		}
+	}
+}
+
 func TestAdminSettingsAccordionUsesVisibleKeyboardFocus(t *testing.T) {
 	templateBytes, err := adminTemplates.ReadFile("admin_templates/settings.html")
 	if err != nil {
