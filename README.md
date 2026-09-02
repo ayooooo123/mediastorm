@@ -150,16 +150,18 @@ Download the latest APK:
 
 Access the admin panel at `http://localhost:7777/admin` to configure all settings.
 
-### Required API Keys
+### Metadata and Optional API Keys
 
-mediastorm requires API keys from TMDB and TVDB for metadata (posters, descriptions, cast info, etc.):
+mediastorm requires TMDB for its baseline metadata. The other integrations are optional:
 
 | Service | Required | Purpose | Get Your Key |
 |---------|----------|---------|--------------|
-| **TMDB** | ✅ Yes | Movie/TV metadata, posters, cast | [themoviedb.org/settings/api](https://www.themoviedb.org/settings/api) (free account) |
-| **TVDB** | ✅ Yes | TV show metadata, episode info | [thetvdb.com/api-information](https://thetvdb.com/api-information) (free account) |
+| **TMDB** | ✅ Yes | Movie/TV metadata, episodes, artwork, cast, and trailers | [themoviedb.org/settings/api](https://www.themoviedb.org/settings/api) (free account) |
+| **TVDB** | ❌ Optional | Alternate episode orders, precise broadcast times, and extra aliases, artwork, and trailers | [thetvdb.com/api-information](https://thetvdb.com/api-information) (free account) |
 | **MDBList** | ❌ Optional | Ratings from multiple sources (IMDb, RT, etc.) | [mdblist.com/preferences](https://mdblist.com/preferences/) (free account) |
 | **Gemini** | ❌ Optional | AI-powered personalized recommendations | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) (free tier) |
+
+<sub>Without TVDB, TMDB continues to provide normal movie and TV metadata. Alternate episode ordering and exact broadcast times are unavailable, and titles or assets catalogued only by TVDB may be absent.</sub>
 
 Enter these keys in the admin panel under **Settings → Metadata**.
 

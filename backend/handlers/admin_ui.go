@@ -1179,7 +1179,7 @@ var SettingsSchema = map[string]interface{}{
 		"order":    0,
 		"testable": true,
 		"fields": map[string]interface{}{
-			"tvdbApiKey": map[string]interface{}{"type": "password", "label": "TVDB API Key (Optional)", "description": "Adds alternate episode orderings and extra aliases", "globalOnly": true},
+			"tvdbApiKey": map[string]interface{}{"type": "password", "label": "TVDB API Key (Optional)", "description": "Adds alternate episode orders, precise broadcast times, and extra aliases, artwork, and trailers", "globalOnly": true},
 			"tmdbApiKey": map[string]interface{}{"type": "password", "label": "TMDB API Key", "description": "Required baseline movie and show metadata provider", "globalOnly": true},
 			"aiProvider": map[string]interface{}{
 				"type":        "select",
