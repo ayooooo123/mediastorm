@@ -3,7 +3,6 @@ package peartube
 import (
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -52,12 +51,18 @@ func TestEntityKeyMirrorsCatalogEntityIDs(t *testing.T) {
 	}
 }
 
-func newCatalogRelay(t *testing.T, body string, status int) *Client {
+func newSearchRelay(t *testing.T, candidates []byte, status int) *Client {
 	t.Helper()
+	t.Setenv(CompanionClientEnv, "mediastorm-test")
+	t.Setenv(CompanionSharedSecretEnv, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
-		_, _ = w.Write([]byte(body))
+		if status == http.StatusOK {
+			w.Write([]byte(`{"candidates":` + string(candidates) + `,"cursor":null}`))
+		} else {
+			w.Write([]byte(`{"error":{"code":"SEARCH_FAILED","message":"fail"}}`))
+		}
 	}))
 	t.Cleanup(server.Close)
 	client, err := New(server.URL)
@@ -68,103 +73,35 @@ func newCatalogRelay(t *testing.T, body string, status int) *Client {
 }
 
 func TestCatalogHasEntityMatchesPublishedCoordinates(t *testing.T) {
-	relay := newCatalogRelay(t, catalogBody, http.StatusOK)
+	candidates := []byte(`[{"candidateRef":"` + "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" + `","kind":"published","publication":{"publicationId":"` + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" + `","renditionId":"` + "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" + `"}}]`)
+	relay := newSearchRelay(t, candidates, http.StatusOK)
 
 	published, err := relay.CatalogHasEntity(t.Context(), ArchiveCoordinates{ContentKind: "movie", TMDBID: "603"})
 	if err != nil {
 		t.Fatalf("CatalogHasEntity: %v", err)
 	}
 	if !published {
-		t.Fatal("The Matrix is in the catalog but reported as absent")
+		t.Fatal("The Matrix is published but reported as absent")
 	}
-
-	absent, err := relay.CatalogHasEntity(t.Context(), ArchiveCoordinates{ContentKind: "movie", TMDBID: "424"})
+	emptyRelay := newSearchRelay(t, []byte(`[]`), http.StatusOK)
+	absent, err := emptyRelay.CatalogHasEntity(t.Context(), ArchiveCoordinates{ContentKind: "movie", TMDBID: "424"})
 	if err != nil {
 		t.Fatalf("CatalogHasEntity: %v", err)
 	}
 	if absent {
-		t.Fatal("a title the catalog does not list reported as published")
-	}
-
-	// Listed, but with no rendition to address: the stream endpoint could not
-	// serve it, which is exactly the gap a seed fills.
-	unservable, err := relay.CatalogHasEntity(t.Context(), ArchiveCoordinates{ContentKind: "movie", TMDBID: "605"})
-	if err != nil {
-		t.Fatalf("CatalogHasEntity: %v", err)
-	}
-	if unservable {
-		t.Fatal("an entity with no addressable source reported as published")
+		t.Fatal("a title without candidates reported as published")
 	}
 }
 
-func TestCatalogHasEntityUsesSourceCoordinatesForOpaqueEntities(t *testing.T) {
-	body := `{"entities":[{
-	  "entityId":"3f66949c3f1d9fead2b43da629a0c5d43ae74b4eb46f03a70f625bfecdb7fb33",
-	  "title":"Game of Thrones",
-	  "sources":[{
-	    "publicationId":"pub-opaque",
-	    "renditionId":"rend-opaque",
-	    "contentKind":"episode",
-	    "mediaProvider":"tmdb",
-	    "mediaId":"1399",
-	    "seasonNumber":1,
-	    "episodeNumber":2
-	  }]
-	}]}`
-	relay := newCatalogRelay(t, body, http.StatusOK)
-	published, err := relay.CatalogHasEntity(t.Context(), ArchiveCoordinates{
-		ContentKind: "episode", TMDBID: "1399", TMDBSeason: 1, TMDBEpisode: 2,
-	})
-	if err != nil {
-		t.Fatalf("CatalogHasEntity: %v", err)
-	}
-	if !published {
-		t.Fatal("opaque entity source coordinates were reported as absent")
-	}
-}
-
-// A relay that cannot answer must not be read as "the swarm does not have this".
-// Turning a catalog failure into an absence is what would make every playback
-// re-seed the same file.
 func TestCatalogHasEntityReportsAnUnavailableRelayAsAnError(t *testing.T) {
-	relay := newCatalogRelay(t, gateBody, http.StatusForbidden)
+	relay := newSearchRelay(t, nil, http.StatusBadGateway)
 
 	published, err := relay.CatalogHasEntity(t.Context(), ArchiveCoordinates{ContentKind: "movie", TMDBID: "603"})
 	if err == nil {
-		t.Fatal("a gated relay answered without an error")
-	}
-	if !IsRelayNotOpen(err) {
-		t.Fatalf("error = %v, want the open-access gate", err)
+		t.Fatal("a failing relay answered without an error")
 	}
 	if published {
-		t.Fatal("a gated relay reported the title as published")
-	}
-}
-
-// The same catalog read a search does, so a watch straight after a search costs
-// no round trip — and a failed read is not retried on every heartbeat either.
-func TestCatalogHasEntityReusesTheCachedCatalog(t *testing.T) {
-	var reads int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, apiPrefix+"/catalog") {
-			reads++
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(catalogBody))
-	}))
-	defer server.Close()
-	relay, err := New(server.URL)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-
-	for range 5 {
-		if _, err := relay.CatalogHasEntity(t.Context(), ArchiveCoordinates{ContentKind: "movie", TMDBID: "603"}); err != nil {
-			t.Fatalf("CatalogHasEntity: %v", err)
-		}
-	}
-	if reads != 1 {
-		t.Fatalf("catalog reads = %d, want 1", reads)
+		t.Fatal("a failing relay reported the title as published")
 	}
 }
 

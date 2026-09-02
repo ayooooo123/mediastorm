@@ -561,9 +561,6 @@ func TestGrantedSourceRefusalStaysDistinctFromARelayFailure(t *testing.T) {
 			if IsSourceRefused(err) != testCase.refused {
 				t.Fatalf("IsSourceRefused = %v, want %v for %v", IsSourceRefused(err), testCase.refused, err)
 			}
-			if IsRelayNotOpen(err) {
-				t.Fatalf("a seed refusal was mistaken for the open-access gate: %v", err)
-			}
 			var apiErr *APIError
 			if !errors.As(err, &apiErr) {
 				t.Fatalf("error = %T (%v), want *APIError", err, err)
