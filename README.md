@@ -8,7 +8,7 @@ mediastorm is a self-hosted streaming platform for movies, television, and live 
 
 Features include multi-profile watch history and recommendations, kids profiles, offline downloads, Live TV and DVR, subtitles, casting, Watch Together rooms, and encrypted Iroh connection invites for remote access.
 
-[Releases](https://github.com/godver3/mediastorm/releases) · [Discord](https://discord.gg/kT74mwf4bu) · [iOS TestFlight](https://testflight.apple.com/join/8vCQ5gmH) · [tvOS TestFlight](https://testflight.apple.com/join/X9bE3dq6)
+[Releases](https://github.com/godver3/mediastorm/releases) · [Android Mobile](https://github.com/godver3/mediastorm/releases/download/android-latest/mediastorm-mobile.apk) · [Android TV](https://github.com/godver3/mediastorm/releases/download/android-latest/mediastorm-tv.apk) · [iOS TestFlight](https://testflight.apple.com/join/8vCQ5gmH) · [tvOS TestFlight](https://testflight.apple.com/join/X9bE3dq6) · [Discord](https://discord.gg/kT74mwf4bu)
 
 ## Features
 
@@ -169,7 +169,6 @@ Without an AI provider, mediastorm still provides TMDB-based recommendations suc
 - **Permission errors:** Confirm the container user selected by `PUID`/`PGID` can write to the mounted cache directory.
 - **Database errors:** Verify `POSTGRES_PASSWORD` is consistent between PostgreSQL and `DATABASE_URL`, then check that the PostgreSQL health check passes.
 - **Search returns no playable results:** Add TMDB and configure a complete content path, then run the connection tests in the admin panel.
-- **Web app is unavailable in a source build:** Run `npm run web:export` in `frontend/`, or set `STRMR_WEB_APP_DIR` to an exported web bundle. Published Docker images include the web app.
 - **Forgotten account password:** Run `docker compose exec mediastorm ./mediastorm recover-account -master -generate` for the primary account, or replace `-master` with `-username <name>` for a sub-account.
 
 For source development, runtime logs are written to `.logs/backend.log` and `.logs/frontend.log`. Backend runtime diagnostics are available from localhost under `/api/debug/runtime` and `/api/debug/pprof/`.
