@@ -226,6 +226,27 @@ func (t *PlaybackObserver) ForgetQualifiedSource(sourceID string) {
 	delete(t.qualifiedSources, sourceID)
 }
 
+// ForgetPlaybackQualification demotes a playback's in-memory qualification state
+// and clears its source qualification so that subsequent heartbeats can re-qualify
+// and retry when an external constraint (such as a temporary title claim) clears.
+func (t *PlaybackObserver) ForgetPlaybackQualification(playbackID, sourceID string) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	playbackID = strings.TrimSpace(playbackID)
+	sourceID = strings.TrimSpace(sourceID)
+	if playbackID != "" {
+		if entry := t.playbacks[playbackID]; entry != nil {
+			entry.state = PlaybackUnqualified
+		}
+	}
+	if sourceID != "" {
+		delete(t.qualifiedSources, sourceID)
+	}
+}
+
 func (t *PlaybackObserver) meaningfulThreshold(duration time.Duration) time.Duration {
 	threshold := t.config.MeaningfulWatchDuration
 	if duration > 0 {
