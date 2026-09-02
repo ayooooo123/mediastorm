@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -21,7 +22,6 @@ import (
 	"novastream/config"
 	"novastream/models"
 )
-
 
 func newStubRelay(t *testing.T) (*httptest.Server, *Client) {
 	t.Helper()
@@ -715,5 +715,110 @@ func TestExtensionForContentTypeMapsWebmSeparately(t *testing.T) {
 	}
 	if got := extensionForContentType("video/mp4; charset=binary"); got != "mp4" {
 		t.Fatalf("parameterized video/mp4 = %q, want mp4", got)
+	}
+}
+
+func TestIsLoopbackBaseURL(t *testing.T) {
+	cases := []struct {
+		url  string
+		want bool
+	}{
+		{"http://127.0.0.1:8174", true},
+		{"http://127.0.0.1:8175", true},
+		{"http://localhost:8175", true},
+		{"http://localhost", true},
+		{"http://[::1]:8174", true},
+		{"http://10.0.40.100:8174", false},
+		{"http://192.168.1.50:8174", false},
+		{"http://peartube-relay:8174", false},
+		{"invalid-url", false},
+	}
+	for _, tc := range cases {
+		if got := isLoopbackBaseURL(tc.url); got != tc.want {
+			t.Errorf("isLoopbackBaseURL(%q) = %t, want %t", tc.url, got, tc.want)
+		}
+	}
+}
+
+func TestResolverRegistersLoopbackBlobStreamWhenConfiguredAtLoopbackBaseURL(t *testing.T) {
+	t.Setenv(CompanionClientEnv, "mediastorm-test")
+	t.Setenv(CompanionSharedSecretEnv, companionTestSecret)
+	blobURL := "http://127.0.0.1:58291/?key=" + strings.Repeat("a", 64) +
+		"&blob=0%3A1%3A0%3A5&type=video%2Fmp4&token=" + strings.Repeat("b", 64)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.EscapedPath() != "/api/v2/streams/open" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"url":           blobURL,
+			"expiresAt":     time.Now().Add(10 * time.Minute).UnixMilli(),
+			"publicationId": "pub1",
+			"renditionId":   "rend1",
+		})
+	}))
+	defer server.Close()
+
+	Configure(Resolved{RelayURL: server.URL, Enabled: true})
+	t.Cleanup(func() { Configure(Resolved{}) })
+
+	resolution, err := (&Resolver{}).Open(context.Background(), candidateRefA)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	if !IsBlobStreamReference(resolution.WebDAVPath) {
+		t.Fatalf("WebDAVPath = %q, want peartube-blob reference", resolution.WebDAVPath)
+	}
+
+	pubResolution, err := (&Resolver{}).OpenPublication(context.Background(), "pub1", "rend1", 10.5, 100)
+	if err != nil {
+		t.Fatalf("OpenPublication failed: %v", err)
+	}
+	if !IsBlobStreamReference(pubResolution.WebDAVPath) {
+		t.Fatalf("WebDAVPath = %q, want peartube-blob reference", pubResolution.WebDAVPath)
+	}
+}
+
+func TestResolverRejectsLoopbackBlobStreamWhenConfiguredAtRemoteBaseURL(t *testing.T) {
+	t.Setenv(CompanionClientEnv, "mediastorm-test")
+	t.Setenv(CompanionSharedSecretEnv, companionTestSecret)
+	blobURL := "http://127.0.0.1:58291/?key=" + strings.Repeat("a", 64) +
+		"&blob=0%3A1%3A0%3A5&type=video%2Fmp4&token=" + strings.Repeat("b", 64)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.EscapedPath() != "/api/v2/streams/open" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"url":           blobURL,
+			"expiresAt":     time.Now().Add(10 * time.Minute).UnixMilli(),
+			"publicationId": "pub1",
+			"renditionId":   "rend1",
+		})
+	}))
+	defer server.Close()
+
+	// Configure with a remote base URL hostname
+	Configure(Resolved{RelayURL: "http://10.0.40.100:8174", Enabled: true})
+	t.Cleanup(func() { Configure(Resolved{}) })
+	Default().companionHTTP = server.Client()
+	Default().baseURL = "http://10.0.40.100:8174"
+	// Route requests to the test server while preserving the remote baseURL
+	Default().companionHTTP.Transport = &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
+		},
+	}
+
+	_, err := (&Resolver{}).Open(context.Background(), candidateRefA)
+	if err == nil {
+		t.Fatal("Open succeeded, want rejection of loopback blob URL for remote companion")
+	}
+	if !strings.Contains(err.Error(), "not owned by the configured companion") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
