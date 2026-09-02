@@ -749,8 +749,11 @@ func (h *PearTubeHandler) observePlayback(userID string, update models.PlaybackP
 	if !observation.FirstQualified {
 		return observation.State
 	}
-	plan, ok := h.planAutoSeed(update)
-	if !ok {
+	plan, decision := h.planAutoSeedDecision(update)
+	if decision != autoSeedAccepted {
+		if decision == autoSeedClaimHeld {
+			h.forgetPlaybackQualification(playbackID, sourceID)
+		}
 		return observation.State
 	}
 	h.startAutoSeedAcquisition(playbackID, plan)
@@ -1268,35 +1271,35 @@ type autoSeedPlan struct {
 // planAutoSeed decides, without touching the network, whether this heartbeat
 // should become a seed — and claims the title if so, so that the decision is
 // made once even when heartbeats overlap.
-func (h *PearTubeHandler) planAutoSeed(update models.PlaybackProgressUpdate) (autoSeedPlan, bool) {
+type autoSeedDecision int
+
+const (
+	autoSeedAccepted autoSeedDecision = iota
+	autoSeedClaimHeld
+	autoSeedUnseedable
+)
+
+func (h *PearTubeHandler) planAutoSeedDecision(update models.PlaybackProgressUpdate) (autoSeedPlan, autoSeedDecision) {
 	if h == nil {
-		return autoSeedPlan{}, false
+		return autoSeedPlan{}, autoSeedUnseedable
 	}
-	// Every refusal below used to be silent, and this runs at most once per source
-	// per observation TTL - it is only reached once a playback has qualified - so
-	// naming the reason costs one line per title rather than one per heartbeat.
 	h.configMu.RLock()
 	relay, contribute := h.relay, h.contributeWatchedMedia
 	h.configMu.RUnlock()
 	if relay == nil {
 		log.Printf("[peartube] autoseed skipped: no relay configured")
-		return autoSeedPlan{}, false
+		return autoSeedPlan{}, autoSeedUnseedable
 	}
 	if !contribute {
 		log.Printf("[peartube] autoseed skipped: contributeWatchedMedia is off")
-		return autoSeedPlan{}, false
+		return autoSeedPlan{}, autoSeedUnseedable
 	}
 	request, ok := autoSeedRequest(update)
 	if !ok {
 		log.Printf("[peartube] autoseed skipped: playback carries nothing to publish under (sourcePath=%q mediaType=%q itemId=%q)",
 			update.SourcePath, update.MediaType, update.ItemID)
-		return autoSeedPlan{}, false
+		return autoSeedPlan{}, autoSeedUnseedable
 	}
-	// A playback that already names a TMDB id is claimed by the swarm's own key,
-	// exactly as before. An app client names the title by TVDB or IMDb instead,
-	// and recovering the TMDB number is a lookup that must not happen on the
-	// player's request path — so the claim is taken on the identity the playback
-	// does have, and identified promotes it once the number lands.
 	plan := autoSeedPlan{handler: h, relay: relay, request: request, update: update}
 	plan.key = peartube.EntityKey(seedCoordinates(request))
 	if plan.key == "" {
@@ -1305,13 +1308,18 @@ func (h *PearTubeHandler) planAutoSeed(update models.PlaybackProgressUpdate) (au
 	}
 	if plan.key == "" {
 		log.Printf("[peartube] autoseed skipped: no swarm key for %q", request.TMDBTitle)
-		return autoSeedPlan{}, false
+		return autoSeedPlan{}, autoSeedUnseedable
 	}
 	if !h.claimAutoSeed(plan.key) {
 		log.Printf("[peartube] autoseed skipped: %s is already claimed by an attempt in this guard window", plan.key)
-		return autoSeedPlan{}, false
+		return autoSeedPlan{}, autoSeedClaimHeld
 	}
-	return plan, true
+	return plan, autoSeedAccepted
+}
+
+func (h *PearTubeHandler) planAutoSeed(update models.PlaybackProgressUpdate) (autoSeedPlan, bool) {
+	plan, decision := h.planAutoSeedDecision(update)
+	return plan, decision == autoSeedAccepted
 }
 
 // autoSeedRequest turns a playback heartbeat into the seed request the manual
@@ -1527,6 +1535,18 @@ func (h *PearTubeHandler) forgetQualifiedSource(sourceID string) {
 	observer := h.playbackObserver
 	h.playbackMu.Unlock()
 	observer.ForgetQualifiedSource(sourceID)
+}
+
+func (h *PearTubeHandler) forgetPlaybackQualification(playbackID, sourceID string) {
+	if h == nil {
+		return
+	}
+	h.playbackMu.Lock()
+	observer := h.playbackObserver
+	h.playbackMu.Unlock()
+	if observer != nil {
+		observer.ForgetPlaybackQualification(playbackID, sourceID)
+	}
 }
 
 // identified supplies the TMDB id the swarm keys on when the player named the
