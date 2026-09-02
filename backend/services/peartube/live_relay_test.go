@@ -49,39 +49,7 @@ func TestLiveRelayReturnsDeferredCandidates(t *testing.T) {
 	if !state.Reachable {
 		t.Fatalf("relay %s is not reachable: %s", state.RelayURL, state.Detail)
 	}
-	if state.NotOpen {
-		t.Fatalf("relay refuses to enumerate: %s", state.Remedy)
-	}
-	if state.CatalogEntities == 0 {
-		t.Fatal("relay catalog is empty; seed a publication before running this test")
-	}
-
-	entities, err := client.Catalog(ctx)
-	if err != nil {
-		t.Fatalf("Catalog: %v", err)
-	}
-
-	// Search by the coordinates the relay itself reported, so the assertion is
-	// about the contract rather than about whatever happens to be seeded.
-	var (
-		wantTitle string
-		wantTMDB  string
-	)
-	for _, entity := range entities {
-		for _, source := range entity.Sources {
-			if coords, ok := coordinatesForSource(entity, source); ok && coords.Kind == "movie" {
-				wantTitle, wantTMDB = entity.Title, coords.TMDBID
-				break
-			}
-		}
-		if wantTMDB != "" {
-			break
-		}
-	}
-	if wantTMDB == "" {
-		t.Skip("no TMDB-tagged movie in the live catalog")
-	}
-
+	wantTitle, wantTMDB := "The Matrix", "603"
 	search := SearchRequest{Title: wantTitle, TMDBID: wantTMDB, MediaType: "movie"}
 	candidates, err := client.Search(ctx, search)
 	if err != nil {

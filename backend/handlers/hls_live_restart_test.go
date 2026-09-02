@@ -200,18 +200,28 @@ func TestLivePlaylistStartTagUsesThreeTargetDurations(t *testing.T) {
 		t.Fatalf("compat start tag = %q", got)
 	}
 
+	compatCastShort := liveTestPlaylist(0, 10, 2, false)
+	if got := livePlaylistStartTag(compatCastShort, "cast"); got != "" {
+		t.Fatalf("short cast playlist must omit an out-of-window start tag, got %q", got)
+	}
+
+	compatCastFull := liveTestPlaylist(0, 14, 2, false)
+	if got := livePlaylistStartTag(compatCastFull, "cast"); got != "#EXT-X-START:TIME-OFFSET=-28,PRECISE=YES" {
+		t.Fatalf("cast start tag = %q", got)
+	}
+
 	shortNative := strings.Join([]string{
 		"#EXTM3U", "#EXT-X-TARGETDURATION:14", "#EXT-X-MEDIA-SEQUENCE:0",
 		"#EXTINF:11.633,", "segment0.ts",
 		"#EXTINF:8.750,", "segment1.ts",
 		"#EXTINF:8.967,", "segment2.ts",
 	}, "\n")
-	if got := livePlaylistStartTag(shortNative); got != "" {
+	if got := livePlaylistStartTag(shortNative, "native"); got != "" {
 		t.Fatalf("short native playlist must omit an out-of-window start tag, got %q", got)
 	}
 
 	fullNative := shortNative + "\n#EXTINF:14.000,\nsegment3.ts"
-	if got := livePlaylistStartTag(fullNative); got != "#EXT-X-START:TIME-OFFSET=-42,PRECISE=YES" {
+	if got := livePlaylistStartTag(fullNative, "native"); got != "#EXT-X-START:TIME-OFFSET=-42,PRECISE=YES" {
 		t.Fatalf("native start tag = %q", got)
 	}
 }

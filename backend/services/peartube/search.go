@@ -52,35 +52,6 @@ func parseEntityCoordinates(entityID string) (entityCoordinates, bool) {
 	return entityCoordinates{}, false
 }
 
-func sourceCoordinates(source CatalogSource) (entityCoordinates, bool) {
-	if !strings.EqualFold(strings.TrimSpace(source.MediaProvider), "tmdb") {
-		return entityCoordinates{}, false
-	}
-	id := strings.TrimSpace(source.MediaID)
-	if id == "" {
-		return entityCoordinates{}, false
-	}
-	switch source.ContentKind {
-	case "movie":
-		return entityCoordinates{TMDBID: id, Kind: "movie"}, true
-	case "episode":
-		if source.SeasonNumber > 0 && source.EpisodeNumber > 0 {
-			return entityCoordinates{
-				TMDBID: id, Season: source.SeasonNumber, Episode: source.EpisodeNumber, Kind: "episode",
-			}, true
-		}
-	}
-	return entityCoordinates{}, false
-}
-
-func coordinatesForSource(entity CatalogEntity, source CatalogSource) (entityCoordinates, bool) {
-	if coordinates, ok := sourceCoordinates(source); ok {
-		return coordinates, true
-	}
-	// Backward compatibility for relay catalogs produced before source
-	// coordinates were explicit.
-	return parseEntityCoordinates(entity.EntityID)
-}
 
 // SearchRequest is the exact selector or title fallback sent to companion v2.
 type SearchRequest struct {
