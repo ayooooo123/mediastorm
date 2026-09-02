@@ -668,6 +668,12 @@ func redactSettings(s *config.Settings) {
 	mask(&s.Live.XtreamHost)
 	mask(&s.Live.XtreamUsername)
 	mask(&s.Live.XtreamPassword)
+	mask(&s.Live.StalkerPortalURL)
+	mask(&s.Live.StalkerMAC)
+	mask(&s.Live.StalkerSerialNumber)
+	mask(&s.Live.StalkerDeviceID)
+	mask(&s.Live.StalkerDeviceID2)
+	mask(&s.Live.StalkerSignature)
 	mask(&s.Live.EPG.XmltvUrl)
 	for i := range s.Live.EPG.Sources {
 		mask(&s.Live.EPG.Sources[i].URL)
@@ -679,6 +685,12 @@ func redactSettings(s *config.Settings) {
 		mask(&s.Live.Sources[i].XtreamHost)
 		mask(&s.Live.Sources[i].XtreamUsername)
 		mask(&s.Live.Sources[i].XtreamPassword)
+		mask(&s.Live.Sources[i].StalkerPortalURL)
+		mask(&s.Live.Sources[i].StalkerMAC)
+		mask(&s.Live.Sources[i].StalkerSerialNumber)
+		mask(&s.Live.Sources[i].StalkerDeviceID)
+		mask(&s.Live.Sources[i].StalkerDeviceID2)
+		mask(&s.Live.Sources[i].StalkerSignature)
 		mask(&s.Live.Sources[i].EPG.XmltvUrl)
 		for j := range s.Live.Sources[i].EPG.Sources {
 			mask(&s.Live.Sources[i].EPG.Sources[j].URL)
@@ -691,6 +703,12 @@ func redactSettings(s *config.Settings) {
 		mask(&s.Live.PlaylistSources[i].XtreamHost)
 		mask(&s.Live.PlaylistSources[i].XtreamUsername)
 		mask(&s.Live.PlaylistSources[i].XtreamPassword)
+		mask(&s.Live.PlaylistSources[i].StalkerPortalURL)
+		mask(&s.Live.PlaylistSources[i].StalkerMAC)
+		mask(&s.Live.PlaylistSources[i].StalkerSerialNumber)
+		mask(&s.Live.PlaylistSources[i].StalkerDeviceID)
+		mask(&s.Live.PlaylistSources[i].StalkerDeviceID2)
+		mask(&s.Live.PlaylistSources[i].StalkerSignature)
 		mask(&s.Live.PlaylistSources[i].EPG.XmltvUrl)
 		for j := range s.Live.PlaylistSources[i].EPG.Sources {
 			mask(&s.Live.PlaylistSources[i].EPG.Sources[j].URL)
@@ -828,6 +846,12 @@ func preserveRedactedFields(incoming *config.Settings, existing *config.Settings
 	restore(&incoming.Live.XtreamHost, existing.Live.XtreamHost)
 	restore(&incoming.Live.XtreamUsername, existing.Live.XtreamUsername)
 	restore(&incoming.Live.XtreamPassword, existing.Live.XtreamPassword)
+	restore(&incoming.Live.StalkerPortalURL, existing.Live.StalkerPortalURL)
+	restore(&incoming.Live.StalkerMAC, existing.Live.StalkerMAC)
+	restore(&incoming.Live.StalkerSerialNumber, existing.Live.StalkerSerialNumber)
+	restore(&incoming.Live.StalkerDeviceID, existing.Live.StalkerDeviceID)
+	restore(&incoming.Live.StalkerDeviceID2, existing.Live.StalkerDeviceID2)
+	restore(&incoming.Live.StalkerSignature, existing.Live.StalkerSignature)
 	restore(&incoming.Live.EPG.XmltvUrl, existing.Live.EPG.XmltvUrl)
 	for i := range incoming.Live.EPG.Sources {
 		if i < len(existing.Live.EPG.Sources) {
@@ -842,6 +866,12 @@ func preserveRedactedFields(incoming *config.Settings, existing *config.Settings
 			restore(&incoming.Live.Sources[i].XtreamHost, existing.Live.Sources[i].XtreamHost)
 			restore(&incoming.Live.Sources[i].XtreamUsername, existing.Live.Sources[i].XtreamUsername)
 			restore(&incoming.Live.Sources[i].XtreamPassword, existing.Live.Sources[i].XtreamPassword)
+			restore(&incoming.Live.Sources[i].StalkerPortalURL, existing.Live.Sources[i].StalkerPortalURL)
+			restore(&incoming.Live.Sources[i].StalkerMAC, existing.Live.Sources[i].StalkerMAC)
+			restore(&incoming.Live.Sources[i].StalkerSerialNumber, existing.Live.Sources[i].StalkerSerialNumber)
+			restore(&incoming.Live.Sources[i].StalkerDeviceID, existing.Live.Sources[i].StalkerDeviceID)
+			restore(&incoming.Live.Sources[i].StalkerDeviceID2, existing.Live.Sources[i].StalkerDeviceID2)
+			restore(&incoming.Live.Sources[i].StalkerSignature, existing.Live.Sources[i].StalkerSignature)
 			restore(&incoming.Live.Sources[i].EPG.XmltvUrl, existing.Live.Sources[i].EPG.XmltvUrl)
 			for j := range incoming.Live.Sources[i].EPG.Sources {
 				if j < len(existing.Live.Sources[i].EPG.Sources) {
@@ -858,6 +888,12 @@ func preserveRedactedFields(incoming *config.Settings, existing *config.Settings
 			restore(&incoming.Live.PlaylistSources[i].XtreamHost, existing.Live.PlaylistSources[i].XtreamHost)
 			restore(&incoming.Live.PlaylistSources[i].XtreamUsername, existing.Live.PlaylistSources[i].XtreamUsername)
 			restore(&incoming.Live.PlaylistSources[i].XtreamPassword, existing.Live.PlaylistSources[i].XtreamPassword)
+			restore(&incoming.Live.PlaylistSources[i].StalkerPortalURL, existing.Live.PlaylistSources[i].StalkerPortalURL)
+			restore(&incoming.Live.PlaylistSources[i].StalkerMAC, existing.Live.PlaylistSources[i].StalkerMAC)
+			restore(&incoming.Live.PlaylistSources[i].StalkerSerialNumber, existing.Live.PlaylistSources[i].StalkerSerialNumber)
+			restore(&incoming.Live.PlaylistSources[i].StalkerDeviceID, existing.Live.PlaylistSources[i].StalkerDeviceID)
+			restore(&incoming.Live.PlaylistSources[i].StalkerDeviceID2, existing.Live.PlaylistSources[i].StalkerDeviceID2)
+			restore(&incoming.Live.PlaylistSources[i].StalkerSignature, existing.Live.PlaylistSources[i].StalkerSignature)
 			restore(&incoming.Live.PlaylistSources[i].EPG.XmltvUrl, existing.Live.PlaylistSources[i].EPG.XmltvUrl)
 			for j := range incoming.Live.PlaylistSources[i].EPG.Sources {
 				if j < len(existing.Live.PlaylistSources[i].EPG.Sources) {
@@ -1410,32 +1446,40 @@ func (h *SettingsHandler) EnsureEPGTaskForGuide(s *config.Settings, reason strin
 // ensurePlaylistTaskIfConfigured auto-creates a playlist refresh task when Live TV is configured
 // and no playlist refresh task already exists. Removes auto-created playlist tasks when unconfigured.
 func (h *SettingsHandler) ensurePlaylistTaskIfConfigured(s *config.Settings) {
-	// Check if Live TV is configured based on the currently selected mode only
 	var liveTVConfigured bool
-	switch s.Live.Mode {
-	case "m3u":
-		liveTVConfigured = strings.TrimSpace(s.Live.PlaylistURL) != ""
-		if !liveTVConfigured {
-			for _, src := range append(s.Live.Sources, s.Live.PlaylistSources...) {
-				if src.Enabled != nil && !*src.Enabled {
-					continue
-				}
-				mode := strings.TrimSpace(strings.ToLower(src.Mode))
-				if mode != "" && mode != "m3u" {
-					continue
-				}
-				if strings.TrimSpace(src.PlaylistURL) != "" {
-					liveTVConfigured = true
-					break
-				}
-			}
+	for _, src := range configuredLivePlaylistSources(s) {
+		if !livePlaylistSourceEnabled(src) {
+			continue
 		}
-	case "xtream":
-		liveTVConfigured = strings.TrimSpace(s.Live.XtreamHost) != "" &&
-			strings.TrimSpace(s.Live.XtreamUsername) != "" &&
-			strings.TrimSpace(s.Live.XtreamPassword) != ""
-	default:
-		liveTVConfigured = false
+		switch strings.ToLower(strings.TrimSpace(src.Mode)) {
+		case "xtream":
+			liveTVConfigured = strings.TrimSpace(src.XtreamHost) != "" && strings.TrimSpace(src.XtreamUsername) != "" && strings.TrimSpace(src.XtreamPassword) != ""
+		case "stremio":
+			liveTVConfigured = strings.TrimSpace(src.ManifestURL) != ""
+		case "stalker":
+			liveTVConfigured = strings.TrimSpace(src.StalkerPortalURL) != "" && strings.TrimSpace(src.StalkerMAC) != ""
+		default:
+			liveTVConfigured = strings.TrimSpace(src.PlaylistURL) != ""
+		}
+		if liveTVConfigured {
+			break
+		}
+	}
+	if !liveTVConfigured {
+		switch s.Live.Mode {
+		case "m3u":
+			liveTVConfigured = strings.TrimSpace(s.Live.PlaylistURL) != ""
+		case "xtream":
+			liveTVConfigured = strings.TrimSpace(s.Live.XtreamHost) != "" &&
+				strings.TrimSpace(s.Live.XtreamUsername) != "" &&
+				strings.TrimSpace(s.Live.XtreamPassword) != ""
+		case "stalker":
+			liveTVConfigured = strings.TrimSpace(s.Live.StalkerPortalURL) != "" && strings.TrimSpace(s.Live.StalkerMAC) != ""
+		case "stremio":
+			liveTVConfigured = strings.TrimSpace(s.Live.ManifestURL) != ""
+		default:
+			liveTVConfigured = false
+		}
 	}
 
 	if !liveTVConfigured {

@@ -262,6 +262,7 @@ func extractToken(r *http.Request) string {
 
 func queryTokenAllowed(path string) bool {
 	if path == "/api/video/stream" || strings.HasPrefix(path, "/api/video/stream/") ||
+		strings.HasPrefix(path, "/api/video/live-direct/") ||
 		path == "/api/video/share-progress" || isStreamScopedSessionPath(path) {
 		return true
 	}

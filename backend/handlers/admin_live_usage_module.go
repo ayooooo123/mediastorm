@@ -179,9 +179,14 @@ func (h *AdminUIHandler) buildDashboardLiveUsage(isAdmin bool, scopedUsers []mod
 		provider := bucketProvider[bucketID]
 		label := bucketLabel[bucketID]
 		if label == "" {
-			if provider == "xtream" {
+			switch provider {
+			case "xtream":
 				label = "XTREAM shared"
-			} else {
+			case "stremio":
+				label = "Stremio shared"
+			case "stalker":
+				label = "Stalker shared"
+			default:
 				label = "M3U shared"
 			}
 		}

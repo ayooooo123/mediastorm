@@ -22,6 +22,7 @@ type liveStreamTarget struct {
 	AnalyzeDurationSec int
 	LowLatency         bool
 	ProxyURL           string
+	Stalker            stalkerSourceConfig
 }
 
 func buildGlobalLiveSource(settings config.Settings) models.ResolvedLiveSource {
@@ -39,6 +40,13 @@ func buildGlobalLiveSource(settings config.Settings) models.ResolvedLiveSource {
 		XtreamHost:              settings.Live.XtreamHost,
 		XtreamUsername:          settings.Live.XtreamUsername,
 		XtreamPassword:          settings.Live.XtreamPassword,
+		StalkerPortalURL:        settings.Live.StalkerPortalURL,
+		StalkerMAC:              settings.Live.StalkerMAC,
+		StalkerSerialNumber:     settings.Live.StalkerSerialNumber,
+		StalkerDeviceID:         settings.Live.StalkerDeviceID,
+		StalkerDeviceID2:        settings.Live.StalkerDeviceID2,
+		StalkerSignature:        settings.Live.StalkerSignature,
+		StalkerModel:            settings.Live.StalkerModel,
 		MaxStreams:              maxStreams,
 		PlaylistCacheTTLHours:   settings.Live.PlaylistCacheTTLHours,
 		ProbeSizeMB:             settings.Live.ProbeSizeMB,
@@ -70,6 +78,13 @@ func configPlaylistSourcesToModel(sources []config.LivePlaylistSource) []models.
 			XtreamHost:            src.XtreamHost,
 			XtreamUsername:        src.XtreamUsername,
 			XtreamPassword:        src.XtreamPassword,
+			StalkerPortalURL:      src.StalkerPortalURL,
+			StalkerMAC:            src.StalkerMAC,
+			StalkerSerialNumber:   src.StalkerSerialNumber,
+			StalkerDeviceID:       src.StalkerDeviceID,
+			StalkerDeviceID2:      src.StalkerDeviceID2,
+			StalkerSignature:      src.StalkerSignature,
+			StalkerModel:          src.StalkerModel,
 			MaxStreams:            src.MaxStreams,
 			PlaylistCacheTTLHours: src.PlaylistCacheTTLHours,
 			ProbeSizeMB:           src.ProbeSizeMB,
@@ -123,6 +138,10 @@ func resolveLiveStreamTargets(global models.ResolvedLiveSource, profile *models.
 		targets := make([]liveStreamTarget, 0, len(sources))
 		for _, source := range sources {
 			provider := normalizeLiveProvider(source.Mode)
+			streamFormat := strings.TrimSpace(source.StreamFormat)
+			if streamFormat == "" {
+				streamFormat = resolved.StreamFormat
+			}
 			maxStreams := source.MaxStreams
 			if maxStreams < 0 {
 				maxStreams = 0
@@ -134,11 +153,12 @@ func resolveLiveStreamTargets(global models.ResolvedLiveSource, profile *models.
 				MaxStreams:         maxStreams,
 				BucketKey:          bucketKey,
 				BucketName:         bucketName,
-				StreamFormat:       resolved.StreamFormat,
+				StreamFormat:       streamFormat,
 				ProbeSizeMB:        resolved.ProbeSizeMB,
 				AnalyzeDurationSec: resolved.AnalyzeDurationSec,
 				LowLatency:         resolved.LowLatency,
 				ProxyURL:           strings.TrimSpace(source.ProxyURL),
+				Stalker:            stalkerConfigFromResolvedSource(source),
 			})
 		}
 		return targets
@@ -160,17 +180,34 @@ func resolveLiveStreamTargets(global models.ResolvedLiveSource, profile *models.
 		AnalyzeDurationSec: resolved.AnalyzeDurationSec,
 		LowLatency:         resolved.LowLatency,
 		ProxyURL:           strings.TrimSpace(resolved.ProxyURL),
+		Stalker: stalkerSourceConfig{
+			PortalURL: resolved.StalkerPortalURL, MAC: resolved.StalkerMAC,
+			SerialNumber: resolved.StalkerSerialNumber, DeviceID: resolved.StalkerDeviceID,
+			DeviceID2: resolved.StalkerDeviceID2, Signature: resolved.StalkerSignature,
+			Model: resolved.StalkerModel, ProxyURL: resolved.ProxyURL,
+		},
 	}}
+}
+
+func stalkerConfigFromResolvedSource(source resolvedM3USource) stalkerSourceConfig {
+	return stalkerSourceConfig{
+		PortalURL: source.StalkerPortalURL, MAC: source.StalkerMAC,
+		SerialNumber: source.StalkerSerialNumber, DeviceID: source.StalkerDeviceID,
+		DeviceID2: source.StalkerDeviceID2, Signature: source.StalkerSignature,
+		Model: source.StalkerModel, ProxyURL: source.ProxyURL,
+	}
 }
 
 func deriveLiveSourceBucket(provider string, source resolvedM3USource) (string, string) {
 	resolved := models.ResolvedLiveSource{
-		Mode:           source.Mode,
-		PlaylistURL:    source.PlaylistURL,
-		ManifestURL:    source.ManifestURL,
-		XtreamHost:     source.XtreamHost,
-		XtreamUsername: source.XtreamUsername,
-		XtreamPassword: source.XtreamPassword,
+		Mode:             source.Mode,
+		PlaylistURL:      source.PlaylistURL,
+		ManifestURL:      source.ManifestURL,
+		XtreamHost:       source.XtreamHost,
+		XtreamUsername:   source.XtreamUsername,
+		XtreamPassword:   source.XtreamPassword,
+		StalkerPortalURL: source.StalkerPortalURL,
+		StalkerMAC:       source.StalkerMAC,
 	}
 	// Stremio sources have no PlaylistURL; carry the manifest URL in the
 	// PlaylistURL slot so deriveLiveBucket can derive a stable per-addon bucket.
@@ -213,6 +250,15 @@ func deriveLiveBucket(provider string, src models.ResolvedLiveSource) (string, s
 			label = "Stremio shared"
 		} else {
 			label = fmt.Sprintf("Stremio %s", host)
+		}
+	} else if normalizedProvider == "stalker" {
+		portal := strings.TrimSpace(src.StalkerPortalURL)
+		host := normalizeHost(portal)
+		identity = "stalker|" + strings.ToLower(portal) + "|" + strings.ToLower(strings.TrimSpace(src.StalkerMAC))
+		if host == "" {
+			label = "Stalker shared"
+		} else {
+			label = fmt.Sprintf("Stalker %s", host)
 		}
 	} else {
 		playlist := strings.TrimSpace(src.PlaylistURL)

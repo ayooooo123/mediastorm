@@ -7569,7 +7569,14 @@
                     proxyUrl: liveRowValue('proxyUrl'),
                     xtreamHost: liveRowValue('xtreamHost'),
                     xtreamUsername: liveRowValue('xtreamUsername'),
-                    xtreamPassword: liveRowValue('xtreamPassword')
+					xtreamPassword: liveRowValue('xtreamPassword'),
+					stalkerPortalUrl: liveRowValue('stalkerPortalUrl'),
+					stalkerMac: liveRowValue('stalkerMac'),
+					stalkerSerialNumber: liveRowValue('stalkerSerialNumber'),
+					stalkerDeviceId: liveRowValue('stalkerDeviceId'),
+					stalkerDeviceId2: liveRowValue('stalkerDeviceId2'),
+					stalkerSignature: liveRowValue('stalkerSignature'),
+					stalkerModel: liveRowValue('stalkerModel')
                 };
                 break;
             }
@@ -9058,11 +9065,13 @@
     }
 
     function liveSourceEndpointSummary(item) {
-        const rawEndpoint = item.mode === 'xtream'
+		const rawEndpoint = item.mode === 'xtream'
             ? item.xtreamHost
             : item.mode === 'stremio'
                 ? item.manifestUrl
-                : item.playlistUrl;
+				: item.mode === 'stalker'
+					? item.stalkerPortalUrl
+					: item.playlistUrl;
         if (!rawEndpoint) return 'Server not set';
         try {
             return new URL(rawEndpoint).host || 'Server configured';
@@ -13528,7 +13537,14 @@
                     proxyUrl: getValue(sectionKey + '.proxyUrl') || '',
                     xtreamHost: getValue(sectionKey + '.xtreamHost') || '',
                     xtreamUsername: getValue(sectionKey + '.xtreamUsername') || '',
-                    xtreamPassword: getValue(sectionKey + '.xtreamPassword') || ''
+					xtreamPassword: getValue(sectionKey + '.xtreamPassword') || '',
+					stalkerPortalUrl: getValue(sectionKey + '.stalkerPortalUrl') || '',
+					stalkerMac: getValue(sectionKey + '.stalkerMac') || '',
+					stalkerSerialNumber: getValue(sectionKey + '.stalkerSerialNumber') || '',
+					stalkerDeviceId: getValue(sectionKey + '.stalkerDeviceId') || '',
+					stalkerDeviceId2: getValue(sectionKey + '.stalkerDeviceId2') || '',
+					stalkerSignature: getValue(sectionKey + '.stalkerSignature') || '',
+					stalkerModel: getValue(sectionKey + '.stalkerModel') || ''
                 };
                 break;
             default:

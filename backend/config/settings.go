@@ -621,6 +621,13 @@ type LivePlaylistSource struct {
 	XtreamHost            string               `json:"xtreamHost,omitempty"`
 	XtreamUsername        string               `json:"xtreamUsername,omitempty"`
 	XtreamPassword        string               `json:"xtreamPassword,omitempty"`
+	StalkerPortalURL      string               `json:"stalkerPortalUrl,omitempty"`
+	StalkerMAC            string               `json:"stalkerMac,omitempty"`
+	StalkerSerialNumber   string               `json:"stalkerSerialNumber,omitempty"`
+	StalkerDeviceID       string               `json:"stalkerDeviceId,omitempty"`
+	StalkerDeviceID2      string               `json:"stalkerDeviceId2,omitempty"`
+	StalkerSignature      string               `json:"stalkerSignature,omitempty"`
+	StalkerModel          string               `json:"stalkerModel,omitempty"`
 	MaxStreams            int                  `json:"maxStreams,omitempty"`
 	PlaylistCacheTTLHours int                  `json:"playlistCacheTtlHours,omitempty"`
 	ProbeSizeMB           int                  `json:"probeSizeMb,omitempty"`
@@ -655,7 +662,7 @@ type EPGSettings struct {
 
 // LiveSettings controls Live TV playlist caching behavior.
 type LiveSettings struct {
-	Mode                  string               `json:"mode"`        // "m3u" or "xtream" - how to source the playlist
+	Mode                  string               `json:"mode"`        // "m3u", "xtream", "stremio", or "stalker"
 	PlaylistURL           string               `json:"playlistUrl"` // M3U playlist URL (used when mode is "m3u")
 	ManifestURL           string               `json:"manifestUrl,omitempty"`
 	ProxyURL              string               `json:"proxyUrl,omitempty"`
@@ -664,7 +671,14 @@ type LiveSettings struct {
 	XtreamHost            string               `json:"xtreamHost"`     // Xtream Codes server URL (e.g., "http://example.com:8080")
 	XtreamUsername        string               `json:"xtreamUsername"` // Xtream Codes username
 	XtreamPassword        string               `json:"xtreamPassword"` // Xtream Codes password
-	MaxStreams            int                  `json:"maxStreams"`     // Maximum concurrent Live TV streams per provider (0 = unlimited)
+	StalkerPortalURL      string               `json:"stalkerPortalUrl,omitempty"`
+	StalkerMAC            string               `json:"stalkerMac,omitempty"`
+	StalkerSerialNumber   string               `json:"stalkerSerialNumber,omitempty"`
+	StalkerDeviceID       string               `json:"stalkerDeviceId,omitempty"`
+	StalkerDeviceID2      string               `json:"stalkerDeviceId2,omitempty"`
+	StalkerSignature      string               `json:"stalkerSignature,omitempty"`
+	StalkerModel          string               `json:"stalkerModel,omitempty"`
+	MaxStreams            int                  `json:"maxStreams"` // Maximum concurrent Live TV streams per provider (0 = unlimited)
 	PlaylistCacheTTLHours int                  `json:"playlistCacheTtlHours"`
 	ProbeSizeMB           int                  `json:"probeSizeMb"`        // FFmpeg probesize in MB (0 = default ~5MB)
 	AnalyzeDurationSec    int                  `json:"analyzeDurationSec"` // FFmpeg analyzeduration in seconds (0 = default ~5s)

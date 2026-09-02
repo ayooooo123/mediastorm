@@ -633,13 +633,20 @@ var SettingsSchema = map[string]interface{}{
 		"order":    2,
 		"testable": true,
 		"fields": map[string]interface{}{
-			"mode":                        map[string]interface{}{"type": "select", "label": "Source Type", "options": []map[string]string{{"value": "m3u", "label": "M3U Playlist URL"}, {"value": "xtream", "label": "Xtream Codes"}, {"value": "stremio", "label": "Stremio Addon"}}, "description": "How to source the IPTV playlist", "order": 0},
+			"mode":                        map[string]interface{}{"type": "select", "label": "Source Type", "options": []map[string]string{{"value": "m3u", "label": "M3U Playlist URL"}, {"value": "xtream", "label": "Xtream Codes"}, {"value": "stremio", "label": "Stremio Addon"}, {"value": "stalker", "label": "Stalker Portal"}}, "description": "How to source the IPTV playlist", "order": 0},
 			"playlistUrl":                 map[string]interface{}{"type": "text", "label": "Playlist URL", "description": "M3U playlist URL", "showWhen": map[string]interface{}{"field": "mode", "value": "m3u"}, "order": 1},
 			"manifestUrl":                 map[string]interface{}{"type": "text", "label": "Manifest URL", "description": "Stremio addon manifest URL (e.g. https://example.com/manifest.json). Channels are built from the addon's catalogs.", "placeholder": "https://example.com/manifest.json", "showWhen": map[string]interface{}{"field": "mode", "value": "stremio"}, "order": 1},
 			"proxyUrl":                    map[string]interface{}{"type": "text", "label": "Proxy URL", "description": "Optional proxy for Live TV provider requests (for example socks5://127.0.0.1:18080).", "placeholder": "socks5://127.0.0.1:18080", "order": 2},
 			"xtreamHost":                  map[string]interface{}{"type": "text", "label": "Server URL", "description": "Xtream Codes server URL (e.g., http://example.com:8080)", "placeholder": "http://example.com:8080", "showWhen": map[string]interface{}{"field": "mode", "value": "xtream"}, "order": 2},
 			"xtreamUsername":              map[string]interface{}{"type": "text", "label": "Username", "description": "Xtream Codes username", "showWhen": map[string]interface{}{"field": "mode", "value": "xtream"}, "order": 3},
 			"xtreamPassword":              map[string]interface{}{"type": "password", "label": "Password", "description": "Xtream Codes password", "showWhen": map[string]interface{}{"field": "mode", "value": "xtream"}, "order": 4},
+			"stalkerPortalUrl":            map[string]interface{}{"type": "text", "label": "Portal URL", "description": "Stalker/Ministra portal URL.", "placeholder": "http://provider.example/stalker_portal/c/", "showWhen": map[string]interface{}{"field": "mode", "value": "stalker"}, "order": 2},
+			"stalkerMac":                  map[string]interface{}{"type": "password", "label": "MAC Address", "description": "Authorized MAG device MAC address.", "placeholder": "00:1A:79:00:00:00", "showWhen": map[string]interface{}{"field": "mode", "value": "stalker"}, "order": 3},
+			"stalkerModel":                map[string]interface{}{"type": "text", "label": "MAG Model", "description": "Device model sent to the portal (default MAG254).", "placeholder": "MAG254", "showWhen": map[string]interface{}{"field": "mode", "value": "stalker"}, "order": 4},
+			"stalkerSerialNumber":         map[string]interface{}{"type": "password", "label": "Serial Number", "description": "Optional provider-issued MAG serial number.", "showWhen": map[string]interface{}{"field": "mode", "value": "stalker"}, "order": 5},
+			"stalkerDeviceId":             map[string]interface{}{"type": "password", "label": "Device ID", "description": "Optional portal device ID.", "showWhen": map[string]interface{}{"field": "mode", "value": "stalker"}, "order": 6},
+			"stalkerDeviceId2":            map[string]interface{}{"type": "password", "label": "Device ID 2", "description": "Optional secondary portal device ID.", "showWhen": map[string]interface{}{"field": "mode", "value": "stalker"}, "order": 7},
+			"stalkerSignature":            map[string]interface{}{"type": "password", "label": "Signature", "description": "Optional portal device signature.", "showWhen": map[string]interface{}{"field": "mode", "value": "stalker"}, "order": 8},
 			"maxStreams":                  map[string]interface{}{"type": "number", "label": "Max Streams", "description": "Maximum concurrent Live TV streams per provider (0 = unlimited)", "order": 5},
 			"streamFormat":                map[string]interface{}{"type": "select", "label": "Stream Format", "description": "HLS re-segments the stream via FFmpeg (more compatible). Direct proxies the source stream (lower latency, less CPU).", "options": []map[string]string{{"value": "hls", "label": "HLS"}, {"value": "direct", "label": "Direct (MPEG-TS)"}}, "order": 6},
 			"playlistCacheTtlHours":       map[string]interface{}{"type": "number", "label": "Cache TTL (hours)", "description": "Playlist cache duration", "order": 7},
@@ -667,7 +674,7 @@ var SettingsSchema = map[string]interface{}{
 		"fields": map[string]interface{}{
 			"id":      map[string]interface{}{"type": "text", "label": "ID", "description": "Stable source identifier. Leave blank to auto-generate.", "order": 0, "group": "source", "groupLabel": "Source", "groupDescription": "Identity and how this provider is sourced."},
 			"name":    map[string]interface{}{"type": "text", "label": "Name", "description": "Display name shown in the apps.", "order": 1, "group": "source", "groupLabel": "Source", "groupDescription": "Identity and how this provider is sourced."},
-			"mode":    map[string]interface{}{"type": "select", "label": "Source Type", "options": []map[string]string{{"value": "m3u", "label": "M3U Playlist URL"}, {"value": "xtream", "label": "Xtream Codes"}, {"value": "stremio", "label": "Stremio Addon"}}, "description": "How to source this IPTV provider.", "order": 2, "group": "source", "groupLabel": "Source", "groupDescription": "Identity and how this provider is sourced."},
+			"mode":    map[string]interface{}{"type": "select", "label": "Source Type", "options": []map[string]string{{"value": "m3u", "label": "M3U Playlist URL"}, {"value": "xtream", "label": "Xtream Codes"}, {"value": "stremio", "label": "Stremio Addon"}, {"value": "stalker", "label": "Stalker Portal"}}, "description": "How to source this IPTV provider.", "order": 2, "group": "source", "groupLabel": "Source", "groupDescription": "Identity and how this provider is sourced."},
 			"enabled": map[string]interface{}{"type": "boolean", "label": "Enabled", "description": "Include this source in Live TV.", "order": 3, "group": "source", "groupLabel": "Source", "groupDescription": "Identity and how this provider is sourced."},
 			"allowedProfiles": map[string]interface{}{
 				"type":             "multiselect",
@@ -685,6 +692,13 @@ var SettingsSchema = map[string]interface{}{
 			"xtreamHost":                  map[string]interface{}{"type": "text", "label": "Server URL", "description": "Xtream Codes server URL (e.g., http://example.com:8080)", "placeholder": "http://example.com:8080", "showWhen": map[string]interface{}{"field": "mode", "value": "xtream"}, "order": 8, "group": "connection", "groupLabel": "Connection", "groupDescription": "Server, proxy, and credentials for reaching this provider."},
 			"xtreamUsername":              map[string]interface{}{"type": "text", "label": "Username", "description": "Xtream Codes username", "showWhen": map[string]interface{}{"field": "mode", "value": "xtream"}, "order": 9, "group": "connection", "groupLabel": "Connection", "groupDescription": "Server, proxy, and credentials for reaching this provider."},
 			"xtreamPassword":              map[string]interface{}{"type": "password", "label": "Password", "description": "Xtream Codes password", "showWhen": map[string]interface{}{"field": "mode", "value": "xtream"}, "order": 10, "group": "connection", "groupLabel": "Connection", "groupDescription": "Server, proxy, and credentials for reaching this provider."},
+			"stalkerPortalUrl":            map[string]interface{}{"type": "text", "label": "Portal URL", "description": "Stalker/Ministra portal URL.", "placeholder": "http://provider.example/stalker_portal/c/", "showWhen": map[string]interface{}{"field": "mode", "value": "stalker"}, "order": 8, "group": "connection"},
+			"stalkerMac":                  map[string]interface{}{"type": "password", "label": "MAC Address", "description": "Authorized MAG device MAC address.", "placeholder": "00:1A:79:00:00:00", "showWhen": map[string]interface{}{"field": "mode", "value": "stalker"}, "order": 9, "group": "connection"},
+			"stalkerModel":                map[string]interface{}{"type": "text", "label": "MAG Model", "placeholder": "MAG254", "showWhen": map[string]interface{}{"field": "mode", "value": "stalker"}, "order": 10, "group": "connection"},
+			"stalkerSerialNumber":         map[string]interface{}{"type": "password", "label": "Serial Number", "showWhen": map[string]interface{}{"field": "mode", "value": "stalker"}, "order": 11, "group": "connection"},
+			"stalkerDeviceId":             map[string]interface{}{"type": "password", "label": "Device ID", "showWhen": map[string]interface{}{"field": "mode", "value": "stalker"}, "order": 12, "group": "connection"},
+			"stalkerDeviceId2":            map[string]interface{}{"type": "password", "label": "Device ID 2", "showWhen": map[string]interface{}{"field": "mode", "value": "stalker"}, "order": 13, "group": "connection"},
+			"stalkerSignature":            map[string]interface{}{"type": "password", "label": "Signature", "showWhen": map[string]interface{}{"field": "mode", "value": "stalker"}, "order": 14, "group": "connection"},
 			"maxStreams":                  map[string]interface{}{"type": "number", "label": "Max Streams", "description": "Maximum concurrent Live TV streams for this source (0 = unlimited)", "order": 11, "group": "playback", "groupLabel": "Playback", "groupDescription": "Stream limits and FFmpeg tuning for this source."},
 			"streamFormat":                map[string]interface{}{"type": "select", "label": "Stream Format", "description": "HLS re-segments the stream via FFmpeg (more compatible). Direct proxies the source stream (lower latency, less CPU).", "options": []map[string]string{{"value": "hls", "label": "HLS"}, {"value": "direct", "label": "Direct (MPEG-TS)"}}, "order": 12, "group": "playback", "groupLabel": "Playback", "groupDescription": "Stream limits and FFmpeg tuning for this source."},
 			"playlistCacheTtlHours":       map[string]interface{}{"type": "number", "label": "Cache TTL (hours)", "description": "Playlist cache duration", "order": 13, "group": "playback", "groupLabel": "Playback", "groupDescription": "Stream limits and FFmpeg tuning for this source."},
@@ -1339,7 +1353,7 @@ var SettingsSchema = map[string]interface{}{
 				"label":       "Source Type",
 				"description": "How to source the IPTV playlist for this profile.",
 				"order":       0,
-				"options":     []map[string]string{{"value": "m3u", "label": "M3U Playlist URL"}, {"value": "xtream", "label": "Xtream Codes"}, {"value": "stremio", "label": "Stremio Addon"}},
+				"options":     []map[string]string{{"value": "m3u", "label": "M3U Playlist URL"}, {"value": "xtream", "label": "Xtream Codes"}, {"value": "stremio", "label": "Stremio Addon"}, {"value": "stalker", "label": "Stalker Portal"}},
 			},
 			"playlistUrl": map[string]interface{}{
 				"type":        "text",
@@ -1385,6 +1399,13 @@ var SettingsSchema = map[string]interface{}{
 				"order":       4,
 				"showWhen":    map[string]interface{}{"field": "mode", "value": "xtream"},
 			},
+			"stalkerPortalUrl":    map[string]interface{}{"type": "text", "label": "Portal URL", "placeholder": "http://provider.example/stalker_portal/c/", "showWhen": map[string]interface{}{"field": "mode", "value": "stalker"}, "order": 2},
+			"stalkerMac":          map[string]interface{}{"type": "password", "label": "MAC Address", "placeholder": "00:1A:79:00:00:00", "showWhen": map[string]interface{}{"field": "mode", "value": "stalker"}, "order": 3},
+			"stalkerModel":        map[string]interface{}{"type": "text", "label": "MAG Model", "placeholder": "MAG254", "showWhen": map[string]interface{}{"field": "mode", "value": "stalker"}, "order": 4},
+			"stalkerSerialNumber": map[string]interface{}{"type": "password", "label": "Serial Number", "showWhen": map[string]interface{}{"field": "mode", "value": "stalker"}, "order": 5},
+			"stalkerDeviceId":     map[string]interface{}{"type": "password", "label": "Device ID", "showWhen": map[string]interface{}{"field": "mode", "value": "stalker"}, "order": 6},
+			"stalkerDeviceId2":    map[string]interface{}{"type": "password", "label": "Device ID 2", "showWhen": map[string]interface{}{"field": "mode", "value": "stalker"}, "order": 7},
+			"stalkerSignature":    map[string]interface{}{"type": "password", "label": "Signature", "showWhen": map[string]interface{}{"field": "mode", "value": "stalker"}, "order": 8},
 			"maxStreams": map[string]interface{}{
 				"type":        "number",
 				"label":       "Max Streams",
@@ -1484,13 +1505,20 @@ var SettingsSchema = map[string]interface{}{
 		"fields": map[string]interface{}{
 			"id":                          map[string]interface{}{"type": "text", "label": "ID", "description": "Stable source identifier. Leave blank to auto-generate.", "order": 0},
 			"name":                        map[string]interface{}{"type": "text", "label": "Name", "description": "Display name shown in the apps.", "order": 1},
-			"mode":                        map[string]interface{}{"type": "select", "label": "Source Type", "options": []map[string]string{{"value": "m3u", "label": "M3U Playlist URL"}, {"value": "xtream", "label": "Xtream Codes"}, {"value": "stremio", "label": "Stremio Addon"}}, "description": "How to source this IPTV provider.", "order": 2},
+			"mode":                        map[string]interface{}{"type": "select", "label": "Source Type", "options": []map[string]string{{"value": "m3u", "label": "M3U Playlist URL"}, {"value": "xtream", "label": "Xtream Codes"}, {"value": "stremio", "label": "Stremio Addon"}, {"value": "stalker", "label": "Stalker Portal"}}, "description": "How to source this IPTV provider.", "order": 2},
 			"playlistUrl":                 map[string]interface{}{"type": "text", "label": "Playlist URL", "description": "M3U playlist URL.", "showWhen": map[string]interface{}{"field": "mode", "value": "m3u"}, "order": 3},
 			"manifestUrl":                 map[string]interface{}{"type": "text", "label": "Manifest URL", "description": "Stremio addon manifest URL (e.g. https://example.com/manifest.json). Channels are built from the addon's catalogs.", "placeholder": "https://example.com/manifest.json", "showWhen": map[string]interface{}{"field": "mode", "value": "stremio"}, "order": 3},
 			"proxyUrl":                    map[string]interface{}{"type": "text", "label": "Proxy URL", "description": "Optional proxy for this Live TV source (for example socks5://127.0.0.1:18080).", "placeholder": "socks5://127.0.0.1:18080", "order": 4},
 			"xtreamHost":                  map[string]interface{}{"type": "text", "label": "Server URL", "description": "Xtream Codes server URL (e.g., http://example.com:8080)", "placeholder": "http://example.com:8080", "showWhen": map[string]interface{}{"field": "mode", "value": "xtream"}, "order": 4},
 			"xtreamUsername":              map[string]interface{}{"type": "text", "label": "Username", "description": "Xtream Codes username", "showWhen": map[string]interface{}{"field": "mode", "value": "xtream"}, "order": 5},
 			"xtreamPassword":              map[string]interface{}{"type": "password", "label": "Password", "description": "Xtream Codes password", "showWhen": map[string]interface{}{"field": "mode", "value": "xtream"}, "order": 6},
+			"stalkerPortalUrl":            map[string]interface{}{"type": "text", "label": "Portal URL", "placeholder": "http://provider.example/stalker_portal/c/", "showWhen": map[string]interface{}{"field": "mode", "value": "stalker"}, "order": 4},
+			"stalkerMac":                  map[string]interface{}{"type": "password", "label": "MAC Address", "placeholder": "00:1A:79:00:00:00", "showWhen": map[string]interface{}{"field": "mode", "value": "stalker"}, "order": 5},
+			"stalkerModel":                map[string]interface{}{"type": "text", "label": "MAG Model", "placeholder": "MAG254", "showWhen": map[string]interface{}{"field": "mode", "value": "stalker"}, "order": 6},
+			"stalkerSerialNumber":         map[string]interface{}{"type": "password", "label": "Serial Number", "showWhen": map[string]interface{}{"field": "mode", "value": "stalker"}, "order": 7},
+			"stalkerDeviceId":             map[string]interface{}{"type": "password", "label": "Device ID", "showWhen": map[string]interface{}{"field": "mode", "value": "stalker"}, "order": 8},
+			"stalkerDeviceId2":            map[string]interface{}{"type": "password", "label": "Device ID 2", "showWhen": map[string]interface{}{"field": "mode", "value": "stalker"}, "order": 9},
+			"stalkerSignature":            map[string]interface{}{"type": "password", "label": "Signature", "showWhen": map[string]interface{}{"field": "mode", "value": "stalker"}, "order": 10},
 			"maxStreams":                  map[string]interface{}{"type": "number", "label": "Max Streams", "description": "Maximum concurrent Live TV streams for this source (0 = unlimited)", "order": 7},
 			"streamFormat":                map[string]interface{}{"type": "select", "label": "Stream Format", "description": "HLS re-segments the stream via FFmpeg (more compatible). Direct proxies the source stream (lower latency, less CPU).", "options": []map[string]string{{"value": "hls", "label": "HLS"}, {"value": "direct", "label": "Direct (MPEG-TS)"}}, "order": 8},
 			"playlistCacheTtlHours":       map[string]interface{}{"type": "number", "label": "Cache TTL (hours)", "description": "Playlist cache duration", "order": 9},
@@ -9755,13 +9783,20 @@ func (h *AdminUIHandler) DisconnectSimklAccount(w http.ResponseWriter, r *http.R
 
 // TestLiveTVRequest represents a request to test a Live TV connection
 type TestLiveTVRequest struct {
-	Mode           string `json:"mode"`
-	PlaylistURL    string `json:"playlistUrl"`
-	ManifestURL    string `json:"manifestUrl"`
-	ProxyURL       string `json:"proxyUrl"`
-	XtreamHost     string `json:"xtreamHost"`
-	XtreamUsername string `json:"xtreamUsername"`
-	XtreamPassword string `json:"xtreamPassword"`
+	Mode                string `json:"mode"`
+	PlaylistURL         string `json:"playlistUrl"`
+	ManifestURL         string `json:"manifestUrl"`
+	ProxyURL            string `json:"proxyUrl"`
+	XtreamHost          string `json:"xtreamHost"`
+	XtreamUsername      string `json:"xtreamUsername"`
+	XtreamPassword      string `json:"xtreamPassword"`
+	StalkerPortalURL    string `json:"stalkerPortalUrl"`
+	StalkerMAC          string `json:"stalkerMac"`
+	StalkerSerialNumber string `json:"stalkerSerialNumber"`
+	StalkerDeviceID     string `json:"stalkerDeviceId"`
+	StalkerDeviceID2    string `json:"stalkerDeviceId2"`
+	StalkerSignature    string `json:"stalkerSignature"`
+	StalkerModel        string `json:"stalkerModel"`
 }
 
 // TestLiveTV tests a Live TV source connection (M3U or Xtream)
@@ -9922,6 +9957,21 @@ func (h *AdminUIHandler) TestLiveTV(w http.ResponseWriter, r *http.Request) {
 			"success": true,
 			"message": fmt.Sprintf("Connected to %s (%d catalogs)", name, len(manifest.Catalogs)),
 		})
+
+	case "stalker":
+		probeCtx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		defer cancel()
+		genreCount, err := probeStalkerPortal(probeCtx, stalkerSourceConfig{
+			PortalURL: req.StalkerPortalURL, MAC: req.StalkerMAC,
+			SerialNumber: req.StalkerSerialNumber, DeviceID: req.StalkerDeviceID,
+			DeviceID2: req.StalkerDeviceID2, Signature: req.StalkerSignature,
+			Model: req.StalkerModel, ProxyURL: req.ProxyURL,
+		})
+		if err != nil {
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "error": fmt.Sprintf("Connection failed: %v", err)})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": fmt.Sprintf("Connected and authenticated (%d genres)", genreCount)})
 
 	default:
 		json.NewEncoder(w).Encode(map[string]interface{}{

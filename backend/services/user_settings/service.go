@@ -821,6 +821,13 @@ func isSettingsEmpty(s models.UserSettings) bool {
 		s.LiveTV.XtreamHost != nil ||
 		s.LiveTV.XtreamUsername != nil ||
 		s.LiveTV.XtreamPassword != nil ||
+		s.LiveTV.StalkerPortalURL != nil ||
+		s.LiveTV.StalkerMAC != nil ||
+		s.LiveTV.StalkerSerialNumber != nil ||
+		s.LiveTV.StalkerDeviceID != nil ||
+		s.LiveTV.StalkerDeviceID2 != nil ||
+		s.LiveTV.StalkerSignature != nil ||
+		s.LiveTV.StalkerModel != nil ||
 		s.LiveTV.MaxStreams != nil ||
 		s.LiveTV.PlaylistCacheTTLHours != nil ||
 		s.LiveTV.ProbeSizeMB != nil ||

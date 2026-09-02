@@ -468,7 +468,7 @@ type HLSSession struct {
 
 	// Live TV session fields
 	IsLive                          bool               // True for live TV streams (no duration, no seeking)
-	LiveProvider                    string             // Live TV provider identifier ("m3u" or "xtream")
+	LiveProvider                    string             // Live TV provider identifier
 	LiveBucket                      string             // Shared stream bucket identifier for limit accounting
 	LiveTuning                      LiveTuningSettings // FFmpeg tuning settings for live sessions
 	livePlaylistWindow              []livePlaylistEntry
@@ -2504,6 +2504,8 @@ func normalizeLiveProvider(provider string) string {
 		return "xtream"
 	case "stremio":
 		return "stremio"
+	case "stalker":
+		return "stalker"
 	default:
 		return "m3u"
 	}

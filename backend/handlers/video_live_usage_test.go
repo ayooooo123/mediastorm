@@ -207,6 +207,21 @@ func TestStartLiveHLSSessionDirectIncludesProfileParams(t *testing.T) {
 	}
 }
 
+func TestResolveLiveStreamTargetUsesPerSourceStreamFormat(t *testing.T) {
+	handler := NewVideoHandler(false, "", "")
+	handler.SetConfigManager(fakeLiveUsageConfigProvider{settings: config.Settings{Live: config.LiveSettings{
+		StreamFormat: "hls",
+		Sources: []config.LivePlaylistSource{
+			{ID: "portal", Name: "Portal", Mode: "stalker", StalkerPortalURL: "https://portal.example/c/", StalkerMAC: "00:1A:79:00:00:01", StreamFormat: "direct"},
+		},
+	}}})
+
+	target := handler.resolveLiveStreamTargetForSource("", "portal")
+	if target.StreamFormat != "direct" {
+		t.Fatalf("stream format = %q, want source-specific direct", target.StreamFormat)
+	}
+}
+
 func TestStartLiveHLSSessionDirectForcesHLSWhenRequested(t *testing.T) {
 	handler := NewVideoHandlerWithProvider(true, "/usr/bin/true", "/usr/bin/true", t.TempDir(), nil)
 	handler.SetConfigManager(fakeLiveUsageConfigProvider{

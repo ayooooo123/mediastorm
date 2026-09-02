@@ -221,11 +221,14 @@ function isConfiguredLiveSource(source) {
     if (mode === 'stremio') {
         return !!source.manifestUrl;
     }
+	if (mode === 'stalker') {
+		return !!(source.stalkerPortalUrl && source.stalkerMac);
+	}
     return !!source.playlistUrl;
 }
 
 function liveSourceLabel(source, index) {
-    const mode = source?.mode === 'xtream' ? 'Xtream Codes' : (source?.mode === 'stremio' ? 'Stremio Addon' : 'M3U Playlist');
+	const mode = source?.mode === 'xtream' ? 'Xtream Codes' : (source?.mode === 'stremio' ? 'Stremio Addon' : (source?.mode === 'stalker' ? 'Stalker Portal' : 'M3U Playlist'));
     const name = source?.name || (source?.id ? source.id : '');
     return name ? `${mode}: ${name}` : mode || `Live TV ${index + 1}`;
 }
@@ -263,7 +266,7 @@ function buildCards() {
             testCards.push(
                 createCard(
                     'Live TV',
-                    settings.live.mode === 'xtream' ? 'Xtream Codes' : 'M3U Playlist',
+					settings.live.mode === 'xtream' ? 'Xtream Codes' : (settings.live.mode === 'stremio' ? 'Stremio Addon' : (settings.live.mode === 'stalker' ? 'Stalker Portal' : 'M3U Playlist')),
                     createBadge(String(settings.live.mode || 'live').toUpperCase(), 'conn-card-badge-meta'),
                     'live',
                     settings.live
