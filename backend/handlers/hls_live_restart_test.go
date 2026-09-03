@@ -144,16 +144,18 @@ func TestBuildSeamlessLivePlaylistCarriesDiscontinuitySequenceWhenSeamRollsOut(t
 	m := &HLSManager{}
 	session := &HLSSession{ID: "discontinuity-sequence", IsLive: true}
 
-	m.buildSeamlessLivePlaylist(session, liveTestPlaylist(0, liveCompatibilityHLSListSize, 2, false))
-	playlist := m.buildSeamlessLivePlaylist(session, liveTestPlaylist(10, 1, 2, true))
-	if !strings.Contains(playlist, "#EXT-X-DISCONTINUITY\n#EXTINF:2.000000,\nsegment10.ts") {
+	m.buildSeamlessLivePlaylist(session, liveTestPlaylist(0, liveNativeHLSListSize, 2, false))
+	playlist := m.buildSeamlessLivePlaylist(session, liveTestPlaylist(liveNativeHLSListSize, 1, 2, true))
+	seam := fmt.Sprintf("#EXT-X-DISCONTINUITY\n#EXTINF:2.000000,\nsegment%d.ts", liveNativeHLSListSize)
+	if !strings.Contains(playlist, seam) {
 		t.Fatalf("restart seam was not retained:\n%s", playlist)
 	}
 
-	for sequence := 11; sequence <= 20; sequence++ {
+	for sequence := liveNativeHLSListSize + 1; sequence <= 2*liveNativeHLSListSize; sequence++ {
 		playlist = m.buildSeamlessLivePlaylist(session, liveTestPlaylist(sequence, 1, 2, false))
 	}
-	if !strings.Contains(playlist, "#EXT-X-MEDIA-SEQUENCE:11") {
+	first := fmt.Sprintf("#EXT-X-MEDIA-SEQUENCE:%d", liveNativeHLSListSize+1)
+	if !strings.Contains(playlist, first) {
 		t.Fatalf("rolling window has the wrong first media sequence:\n%s", playlist)
 	}
 	if !strings.Contains(playlist, "#EXT-X-DISCONTINUITY-SEQUENCE:1") {
@@ -168,14 +170,15 @@ func TestBuildSeamlessLivePlaylistIgnoresAStaleConcurrentRead(t *testing.T) {
 	m := &HLSManager{}
 	session := &HLSSession{ID: "stale-read", IsLive: true}
 
-	stale := liveTestPlaylist(10, liveCompatibilityHLSListSize, 2, false)
+	stale := liveTestPlaylist(10, liveNativeHLSListSize, 2, false)
 	m.buildSeamlessLivePlaylist(session, stale)
-	newer := m.buildSeamlessLivePlaylist(session, liveTestPlaylist(20, 1, 2, false))
+	newest := 10 + liveNativeHLSListSize
+	newer := m.buildSeamlessLivePlaylist(session, liveTestPlaylist(newest, 1, 2, false))
 	if !strings.Contains(newer, "#EXT-X-MEDIA-SEQUENCE:11") {
 		t.Fatalf("new segment did not advance the window:\n%s", newer)
 	}
 	afterStale := m.buildSeamlessLivePlaylist(session, stale)
-	if !strings.Contains(afterStale, "#EXT-X-MEDIA-SEQUENCE:11") || !strings.Contains(afterStale, "segment20.ts") {
+	if !strings.Contains(afterStale, "#EXT-X-MEDIA-SEQUENCE:11") || !strings.Contains(afterStale, fmt.Sprintf("segment%d.ts", newest)) {
 		t.Fatalf("stale read moved the playlist backwards:\n%s", afterStale)
 	}
 }
