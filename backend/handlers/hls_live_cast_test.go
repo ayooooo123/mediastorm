@@ -100,3 +100,37 @@ func TestServeSegmentPrunesConsumedSegmentsForCastLive(t *testing.T) {
 		}
 	}
 }
+
+func TestDeleteOldLiveSegmentsPrunesExpiredFilesAfterInitialHighWaterJump(t *testing.T) {
+	dir := t.TempDir()
+	const highWater = 200
+	for i := 0; i <= highWater; i++ {
+		path := filepath.Join(dir, fmt.Sprintf("segment%d.ts", i))
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	session := &HLSSession{
+		ID:                  "cast-live-initial-jump",
+		OutputDir:           dir,
+		IsLive:              true,
+		PlaybackTarget:      "cast",
+		MaxSegmentRequested: highWater,
+		LastSegmentServed:   highWater,
+	}
+	m := &HLSManager{}
+	m.deleteOldLiveTransmuxSegments(session, highWater)
+
+	cutoff := highWater - liveNativeSegmentKeepBehind
+	for i := 0; i <= cutoff; i++ {
+		if _, err := os.Stat(filepath.Join(dir, fmt.Sprintf("segment%d.ts", i))); !os.IsNotExist(err) {
+			t.Fatalf("segment%d.ts should have been pruned after the initial high-water jump", i)
+		}
+	}
+	for i := cutoff + 1; i <= highWater; i++ {
+		if _, err := os.Stat(filepath.Join(dir, fmt.Sprintf("segment%d.ts", i))); err != nil {
+			t.Fatalf("segment%d.ts must survive the keep-behind window: %v", i, err)
+		}
+	}
+}

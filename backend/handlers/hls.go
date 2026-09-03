@@ -7249,14 +7249,22 @@ func (m *HLSManager) deleteOldLiveTransmuxSegments(session *HLSSession, justServ
 	}
 
 	deletedCount := 0
-	// Bound the walk: only scan the keep window trailing edge, not every segment
-	// from 0 (O(n) over multi-hour live sessions).
-	start := cutoff - liveNativeSegmentKeepBehind
-	if start < 0 {
-		start = 0
+	// Enumerate what is actually on disk so a producer that races far ahead before
+	// the player's first request cannot strand segments below a bounded numeric scan.
+	// Once cleanup has run, this directory remains limited to the retained window.
+	entries, err := os.ReadDir(outputDir)
+	if err != nil {
+		return
 	}
-	for i := start; i <= cutoff; i++ {
-		path := filepath.Join(outputDir, fmt.Sprintf("segment%d.ts", i))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "segment") || !strings.HasSuffix(entry.Name(), ".ts") {
+			continue
+		}
+		var segmentNumber int
+		if _, err := fmt.Sscanf(entry.Name(), "segment%d.ts", &segmentNumber); err != nil || segmentNumber > cutoff {
+			continue
+		}
+		path := filepath.Join(outputDir, entry.Name())
 		if err := os.Remove(path); err == nil {
 			deletedCount++
 		}
