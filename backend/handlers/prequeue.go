@@ -908,7 +908,7 @@ func (h *PrequeueHandler) RunWorkerSyncScoped(ctx context.Context, titleID, titl
 	entry, _ := h.store.CreateScoped(titleID, titleName, userID, mediaType, year, targetEpisode, "prewarm", settingsScopeKey)
 
 	// Run worker synchronously (blocking)
-	h.runPrequeueWorker(entry.ID, titleID, titleName, imdbID, mediaType, year, userID, clientID, targetEpisode, 0, true)
+	h.runPrequeueWorker(entry.ID, titleID, titleName, imdbID, mediaType, year, userID, clientID, targetEpisode, 0, true, prequeueWorkerScheduledPrewarm)
 
 	// Check result
 	result, exists := h.store.Get(entry.ID)
@@ -1176,7 +1176,7 @@ func (h *PrequeueHandler) Prequeue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Start background worker with all the info needed for search
-	go h.runPrequeueWorker(entry.ID, req.TitleID, titleName, req.ImdbID, mediaType, req.Year, req.UserID, clientID, targetEpisode, req.StartOffset, req.SkipHLS)
+	go h.runPrequeueWorker(entry.ID, req.TitleID, titleName, req.ImdbID, mediaType, req.Year, req.UserID, clientID, targetEpisode, req.StartOffset, req.SkipHLS, prequeueWorkerInteractive)
 
 	// Return response
 	resp := playback.PrequeueResponse{
@@ -1680,8 +1680,21 @@ func (h *PrequeueHandler) Options(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// runPrequeueWorker runs the prequeue background task
-func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdbID, mediaType string, year int, userID, clientID string, targetEpisode *models.EpisodeReference, startOffset float64, skipHLS bool) {
+type prequeueWorkerMode int
+
+const (
+	prequeueWorkerInteractive prequeueWorkerMode = iota
+	prequeueWorkerScheduledPrewarm
+)
+
+func resolveFirstReadySourceForWorker(configured bool, mode prequeueWorkerMode) bool {
+	return configured && mode == prequeueWorkerInteractive
+}
+
+// runPrequeueWorker runs the prequeue background task. Interactive prequeues
+// honor Resolve First Ready Source; scheduled pre-warm workers always wait for
+// the complete globally ranked candidate set before resolving.
+func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdbID, mediaType string, year int, userID, clientID string, targetEpisode *models.EpisodeReference, startOffset float64, skipHLS bool, workerMode prequeueWorkerMode) {
 	// Create cancellable context
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
@@ -1820,7 +1833,10 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 	if h.configManager != nil {
 		globalSettings, err := h.configManager.Load()
 		if err == nil {
-			resolveFirstReadySource = globalSettings.Streaming.ResolveFirstReadySource
+			resolveFirstReadySource = resolveFirstReadySourceForWorker(globalSettings.Streaming.ResolveFirstReadySource, workerMode)
+			if globalSettings.Streaming.ResolveFirstReadySource && workerMode == prequeueWorkerScheduledPrewarm {
+				log.Printf("[prequeue] Scheduled pre-warm forcing complete ranked search (Resolve First Ready Source ignored)")
+			}
 			hdrDVPolicy = models.HDRDVPolicy(globalSettings.Filtering.HDRDVPolicy)
 			unknownTrackPolicy = string(globalSettings.Filtering.UnknownTrackPolicy)
 			allowedTrackLanguages = normalizeAllowedTrackLanguages(globalSettings.Playback.AllowedTrackLanguages)

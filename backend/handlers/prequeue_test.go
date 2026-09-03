@@ -40,6 +40,18 @@ func TestNormalizePrequeueSeriesTitle(t *testing.T) {
 	}
 }
 
+func TestResolveFirstReadySourceForWorker(t *testing.T) {
+	if !resolveFirstReadySourceForWorker(true, prequeueWorkerInteractive) {
+		t.Fatal("interactive prequeue must honor enabled early resolution")
+	}
+	if resolveFirstReadySourceForWorker(true, prequeueWorkerScheduledPrewarm) {
+		t.Fatal("scheduled pre-warm must ignore enabled early resolution")
+	}
+	if resolveFirstReadySourceForWorker(false, prequeueWorkerInteractive) {
+		t.Fatal("interactive prequeue must preserve disabled early resolution")
+	}
+}
+
 func TestCombinedPrequeueSearchOptionsPreservesAlternateTitles(t *testing.T) {
 	opts := combinedPrequeueSearchOptions(indexer.SearchOptions{
 		Query:           "Batman: Death in the Family",
