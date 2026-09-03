@@ -1796,6 +1796,10 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 		TargetAirDate:   targetAirDate,
 		EpisodeAirYear:  episodeAirYear,
 		EpisodeReleased: episodeReleased,
+		// Concurrent resolution derives its bulk-attempt buckets from the
+		// effective Result Order. The indexer remains the source of truth for
+		// those lexicographic criterion values.
+		IncludeScoreBreakdown: true,
 	}
 	// Pass absolute episode number for anime matching (if available)
 	if targetEpisode != nil && targetEpisode.AbsoluteEpisodeNumber > 0 {
@@ -2423,6 +2427,7 @@ type prequeueCandidateProcessor func(ctx context.Context, index int, candidate m
 type candidateResolution struct {
 	result         models.NZBResult
 	index          int
+	bucket         int
 	resolution     *models.PlaybackResolution
 	probeResult    *VideoFullResult
 	metadataResult *VideoMetadataResult
@@ -2479,11 +2484,31 @@ type prequeueCandidateSource interface {
 	Snapshot() []models.NZBResult
 }
 
+type prequeueBucketSource interface {
+	bucket(index int) int
+}
+
+func prequeueCandidateBucket(src prequeueCandidateSource, index int) int {
+	if bucketed, ok := src.(prequeueBucketSource); ok {
+		return bucketed.bucket(index)
+	}
+	return 0
+}
+
 // streamedCandidate is one candidate handed to the race alongside its 0-based
 // feed index (used for the in-flight progress window and fallback ordering).
 type streamedCandidate struct {
-	idx  int
-	cand models.NZBResult
+	idx    int
+	cand   models.NZBResult
+	bucket int
+}
+
+// prequeueRankedCandidate carries the Result Order bucket used only by the
+// concurrent prequeue race. Bucket zero is the most preferred cohort. Service
+// Priority is intentionally excluded when these buckets are assigned.
+type prequeueRankedCandidate struct {
+	result models.NZBResult
+	bucket int
 }
 
 // sliceCandidateSource serves a fixed candidate list in order, preserving
@@ -2531,6 +2556,7 @@ type streamCandidateSource struct {
 	mu      sync.Mutex
 	total   int
 	acc     []models.NZBResult
+	buckets []int
 	stopped bool
 }
 
@@ -2543,6 +2569,10 @@ func newStreamCandidateSource() *streamCandidateSource {
 // (no more candidates will arrive). The mutex is never held across the channel
 // send, so Stop/Close can always acquire it and unblock an in-flight Feed.
 func (s *streamCandidateSource) Feed(cand models.NZBResult) bool {
+	return s.feedRanked(prequeueRankedCandidate{result: cand})
+}
+
+func (s *streamCandidateSource) feedRanked(cand prequeueRankedCandidate) bool {
 	it, ok := s.reserve(cand)
 	if !ok {
 		return false
@@ -2561,7 +2591,7 @@ func (s *streamCandidateSource) Feed(cand models.NZBResult) bool {
 // feeder may roll the tail reservation back when a newly completed search
 // source interrupts a blocked handoff, allowing that source to be considered
 // immediately without polluting migration snapshots.
-func (s *streamCandidateSource) reserve(cand models.NZBResult) (streamedCandidate, bool) {
+func (s *streamCandidateSource) reserve(cand prequeueRankedCandidate) (streamedCandidate, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.stopped {
@@ -2572,8 +2602,9 @@ func (s *streamCandidateSource) reserve(cand models.NZBResult) (streamedCandidat
 	// resolution can complete immediately and take a migration snapshot; the
 	// winning candidate must already be present in that snapshot.
 	s.total++
-	s.acc = append(s.acc, cand)
-	return streamedCandidate{idx: idx, cand: cand}, true
+	s.acc = append(s.acc, cand.result)
+	s.buckets = append(s.buckets, cand.bucket)
+	return streamedCandidate{idx: idx, cand: cand.result, bucket: cand.bucket}, true
 }
 
 func (s *streamCandidateSource) rollback(it streamedCandidate) {
@@ -2583,6 +2614,7 @@ func (s *streamCandidateSource) rollback(it streamedCandidate) {
 	if s.total == it.idx+1 && len(s.acc) == it.idx+1 {
 		s.total = it.idx
 		s.acc = s.acc[:it.idx]
+		s.buckets = s.buckets[:it.idx]
 	}
 }
 
@@ -2621,6 +2653,15 @@ func (s *streamCandidateSource) Next(ctx context.Context) (int, models.NZBResult
 	case it, ok := <-s.ch:
 		return it.idx, it.cand, ok
 	}
+}
+
+func (s *streamCandidateSource) bucket(index int) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if index < 0 || index >= len(s.buckets) {
+		return 0
+	}
+	return s.buckets[index]
 }
 
 func (s *streamCandidateSource) Total() int {
@@ -2676,6 +2717,7 @@ func racePrequeueResolutionsWithJoinTimeout(ctx context.Context, src prequeueCan
 
 	type raceReport struct {
 		idx           int
+		bucket        int
 		serviceType   models.ContentServiceType
 		accepted      *candidateResolution
 		deprioritized *candidateResolution
@@ -2695,7 +2737,7 @@ func racePrequeueResolutionsWithJoinTimeout(ctx context.Context, src prequeueCan
 				return
 			}
 			select {
-			case incoming <- streamedCandidate{idx: idx, cand: cand}:
+			case incoming <- streamedCandidate{idx: idx, cand: cand, bucket: prequeueCandidateBucket(src, idx)}:
 			case <-raceCtx.Done():
 				return
 			}
@@ -2709,7 +2751,7 @@ func racePrequeueResolutionsWithJoinTimeout(ctx context.Context, src prequeueCan
 			defer wg.Done()
 			accepted, deprioritized, perr := process(raceCtx, it.idx, it.cand)
 			select {
-			case results <- raceReport{idx: it.idx, serviceType: it.cand.ServiceType, accepted: accepted, deprioritized: deprioritized, err: perr}:
+			case results <- raceReport{idx: it.idx, bucket: it.bucket, serviceType: it.cand.ServiceType, accepted: accepted, deprioritized: deprioritized, err: perr}:
 			case <-raceCtx.Done():
 			}
 		}()
@@ -2723,6 +2765,7 @@ func racePrequeueResolutionsWithJoinTimeout(ctx context.Context, src prequeueCan
 	streamExhausted := false
 	pending := make([]streamedCandidate, 0, width)
 	activeSet := map[int]struct{}{}
+	activeBuckets := map[int]int{}
 	activeByService := map[models.ContentServiceType]int{}
 	cancelAndJoin := func(reason string) {
 		cancelRace()
@@ -2763,8 +2806,22 @@ func racePrequeueResolutionsWithJoinTimeout(ctx context.Context, src prequeueCan
 	}
 	startReadyCandidates := func() {
 		for len(activeSet) < width && len(pending) > 0 {
+			bestBucket := -1
+			for _, bucket := range activeBuckets {
+				if bestBucket < 0 || bucket < bestBucket {
+					bestBucket = bucket
+				}
+			}
+			for _, queued := range pending {
+				if bestBucket < 0 || queued.bucket < bestBucket {
+					bestBucket = queued.bucket
+				}
+			}
 			pick := -1
 			for i, it := range pending {
+				if it.bucket != bestBucket {
+					continue
+				}
 				serviceType := it.cand.ServiceType
 				peerType := models.ServiceTypeUnknown
 				switch serviceType {
@@ -2798,6 +2855,7 @@ func racePrequeueResolutionsWithJoinTimeout(ctx context.Context, src prequeueCan
 			pending = append(pending[:pick], pending[pick+1:]...)
 			handed++
 			activeSet[it.idx] = struct{}{}
+			activeBuckets[it.idx] = it.bucket
 			activeByService[it.cand.ServiceType]++
 			publishWindow()
 			startCandidate(it)
@@ -2833,24 +2891,29 @@ func racePrequeueResolutionsWithJoinTimeout(ctx context.Context, src prequeueCan
 		case r := <-results:
 			reported++
 			delete(activeSet, r.idx)
+			delete(activeBuckets, r.idx)
 			activeByService[r.serviceType]--
 			publishWindow()
 			if r.accepted != nil {
 				if settledBest != nil {
 					// Settling: keep whichever validated candidate ranks best (the
 					// first validation is the incumbent that opened the wait).
-					if r.idx < settledBest.index {
+					if prequeueCandidatePrecedes(r.bucket, r.idx, settledBest.bucket, settledBest.index) {
 						log.Printf("[prequeue] settle: better-ranked candidate %d validated while settling; preferring it over %d", r.idx, settledBest.index)
+						r.accepted.bucket = r.bucket
 						settledBest = r.accepted
 					}
-				} else if better := lowestInFlightBetterRanked(activeSet, r.idx); better >= 0 && (!endEarly || settle > 0) {
+				} else if better, betterBucket := lowestInFlightPreferredCandidate(activeSet, activeBuckets, r.bucket, r.idx); better >= 0 && (!endEarly || settle > 0 || betterBucket < r.bucket) {
 					// A better-ranked candidate is still mid-download (e.g. it
 					// lost the finish by milliseconds). We must not discard it. In
 					// bounded mode (settle > 0 and endEarly enabled) we arm a timer
 					// so it can still win within the window but cannot stall forever.
 					// With endEarly disabled this is an unbounded wait for the batch.
+					r.accepted.bucket = r.bucket
 					settledBest = r.accepted
-					if settle > 0 && endEarly {
+					if betterBucket < r.bucket {
+						log.Printf("[prequeue] candidate %d from bucket %d validated while preferred bucket %d candidate %d is still in flight; waiting for preferred bucket", r.idx, r.bucket, betterBucket, better)
+					} else if settle > 0 && endEarly {
 						settleTimer = time.After(settle)
 						log.Printf("[prequeue] candidate %d validated while better-ranked candidate %d still in flight; settling up to %s", r.idx, better, settle)
 					} else {
@@ -2871,11 +2934,13 @@ func racePrequeueResolutionsWithJoinTimeout(ctx context.Context, src prequeueCan
 					// in flight, keep racing until the stream drains — a streaming
 					// source may still feed a better-ranked candidate (cross-source
 					// strict ordering). Prefer the best-ranked that resolves.
+					r.accepted.bucket = r.bucket
 					settledBest = r.accepted
 					log.Printf("[prequeue] candidate %d validated as best-ranked in flight; endRaceEarly off, waiting for the batch to drain", r.idx)
 				}
 			} else if r.deprioritized != nil {
-				if fallback == nil || r.deprioritized.index < fallback.index {
+				r.deprioritized.bucket = r.bucket
+				if fallback == nil || prequeueCandidatePrecedes(r.bucket, r.deprioritized.index, fallback.bucket, fallback.index) {
 					fallback = r.deprioritized
 				}
 			} else if r.err != nil && (firstErrIdx < 0 || r.idx < firstErrIdx) {
@@ -2885,6 +2950,13 @@ func racePrequeueResolutionsWithJoinTimeout(ctx context.Context, src prequeueCan
 			// Fall through to the exhaustion check below even when a
 			// settle-accepted result just landed, so a drained stream finalizes
 			// the best candidate immediately instead of idling out the window.
+		}
+
+		if settledBest != nil && endEarly && settleTimer == nil {
+			if better, _ := lowestInFlightPreferredCandidate(activeSet, activeBuckets, settledBest.bucket, settledBest.index); better < 0 {
+				cancelAndJoin("preferred bucket exhausted")
+				return settledBest, false, nil
+			}
 		}
 
 		// Every handed candidate has reported and no further candidates are
@@ -2940,17 +3012,24 @@ func waitForPrequeueResolutionWorkers(wg *sync.WaitGroup, timeout time.Duration)
 	}
 }
 
-// lowestInFlightBetterRanked returns the lowest (best-ranked) candidate index
-// currently in flight that ranks above idx, or -1 when none — the condition for
-// entering the resolution settle window.
-func lowestInFlightBetterRanked(activeSet map[int]struct{}, idx int) int {
-	best := -1
+func prequeueCandidatePrecedes(bucket, idx, otherBucket, otherIdx int) bool {
+	return bucket < otherBucket || (bucket == otherBucket && idx < otherIdx)
+}
+
+// lowestInFlightPreferredCandidate returns the best in-flight candidate that
+// precedes the supplied Result Order bucket/index pair.
+func lowestInFlightPreferredCandidate(activeSet map[int]struct{}, activeBuckets map[int]int, bucket, idx int) (best, bestBucket int) {
+	best = -1
+	bestBucket = -1
 	for i := range activeSet {
-		if i < idx && (best == -1 || i < best) {
+		candidateBucket := activeBuckets[i]
+		if prequeueCandidatePrecedes(candidateBucket, i, bucket, idx) &&
+			(best == -1 || prequeueCandidatePrecedes(candidateBucket, i, bestBucket, best)) {
 			best = i
+			bestBucket = candidateBucket
 		}
 	}
-	return best
+	return best, bestBucket
 }
 
 // prequeueCandidateAttempt builds a latency-tracker candidate attempt record
@@ -3427,7 +3506,7 @@ type prequeueFeederConfig struct {
 
 type prequeuePreparedSource struct {
 	source     string
-	candidates []models.NZBResult
+	candidates []prequeueRankedCandidate
 }
 
 // prequeueSearchFeeder consumes and prepares the split sources concurrently,
@@ -3472,7 +3551,7 @@ func (h *PrequeueHandler) prequeueSearchFeeder(ctx context.Context, src *streamC
 		prepare(debridCh)
 	}()
 
-	queues := make(map[string][]models.NZBResult, 2)
+	queues := make(map[string][]prequeueRankedCandidate, 2)
 	fedBySource := make(map[string]int, 2)
 	order := make([]string, 0, 2)
 	nextSource := 0
@@ -3502,11 +3581,11 @@ func (h *PrequeueHandler) prequeueSearchFeeder(ctx context.Context, src *streamC
 		}
 	}
 
-	pickCandidate := func() (string, models.NZBResult, bool) {
+	pickCandidate := func() (string, prequeueRankedCandidate, bool) {
 		if cfg.maxCandidates > 0 && fed >= cfg.maxCandidates {
-			return "", models.NZBResult{}, false
+			return "", prequeueRankedCandidate{}, false
 		}
-		scan := func(enforceReservation bool) (string, models.NZBResult, bool) {
+		scan := func(enforceReservation bool) (string, prequeueRankedCandidate, bool) {
 			for offset := 0; offset < len(order); offset++ {
 				i := (nextSource + offset) % len(order)
 				source := order[i]
@@ -3519,7 +3598,7 @@ func (h *PrequeueHandler) prequeueSearchFeeder(ctx context.Context, src *streamC
 				nextSource = (i + 1) % len(order)
 				return source, queues[source][0], true
 			}
-			return "", models.NZBResult{}, false
+			return "", prequeueRankedCandidate{}, false
 		}
 
 		// Until both sources settle, retain half the budget for the source still
@@ -3530,7 +3609,7 @@ func (h *PrequeueHandler) prequeueSearchFeeder(ctx context.Context, src *streamC
 				return source, candidate, true
 			}
 			if settled < 2 {
-				return "", models.NZBResult{}, false
+				return "", prequeueRankedCandidate{}, false
 			}
 		}
 		return scan(false)
@@ -3589,7 +3668,7 @@ func (h *PrequeueHandler) prequeueSearchFeeder(ctx context.Context, src *streamC
 // returning the locally ranked surviving candidates. Source preparation occurs
 // concurrently, so a slow debrid torrent preflight cannot delay ready Usenet
 // candidates.
-func (h *PrequeueHandler) prepareSourceResults(ctx context.Context, state *prequeueFeedState, cfg prequeueFeederConfig, res indexer.ScoredSplitSearchResult) []models.NZBResult {
+func (h *PrequeueHandler) prepareSourceResults(ctx context.Context, state *prequeueFeedState, cfg prequeueFeederConfig, res indexer.ScoredSplitSearchResult) []prequeueRankedCandidate {
 	if res.Disabled {
 		return nil // source not in the active service mode; nothing to count or feed
 	}
@@ -3625,12 +3704,20 @@ func (h *PrequeueHandler) prepareSourceResults(ctx context.Context, state *prequ
 	}
 	logPrequeueCandidateList(res.Scored, res.Source)
 
-	batch := make([]models.NZBResult, 0, len(res.Scored))
+	passed := make([]models.ScoredNZBResult, 0, len(res.Scored))
 	for _, scored := range res.Scored {
 		if scored.FilterStatus == "filtered" {
 			continue
 		}
+		passed = append(passed, scored)
+	}
+	buckets, bucketCriterion := prequeuePreferenceBuckets(passed)
+	batch := make([]models.NZBResult, 0, len(passed))
+	for _, scored := range passed {
 		batch = append(batch, scored.NZBResult)
+	}
+	if len(batch) > 0 {
+		log.Printf("[prequeue] %s bulk resolution buckets criterion=%q buckets=%d candidates=%d", res.Source, bucketCriterion, prequeueBucketCount(buckets), len(batch))
 	}
 
 	// Deferred debrid torrent preflight (metainfo download for TorBox hash
@@ -3643,10 +3730,94 @@ func (h *PrequeueHandler) prepareSourceResults(ctx context.Context, state *prequ
 		log.Printf("[prequeue] TIMING: deferred debrid candidate preparation complete (%d prepared, elapsed: %v)",
 			len(batch), time.Since(preflightStart))
 	}
+	ranked := make([]prequeueRankedCandidate, len(batch))
 	for i := range batch {
 		annotateResultEpisode(&batch[i], cfg.targetEpisode)
+		bucket := 0
+		if i < len(buckets) {
+			bucket = buckets[i]
+		}
+		ranked[i] = prequeueRankedCandidate{result: batch[i], bucket: bucket}
 	}
-	return batch
+	return ranked
+}
+
+// prequeuePreferenceBuckets partitions a locally sorted source batch using the
+// first enabled Result Order criterion that actually differentiates candidates.
+// Service Priority is deliberately ignored: it still affects normal ordering,
+// but must not split otherwise equivalent candidates into separate bulk tries.
+func prequeuePreferenceBuckets(scored []models.ScoredNZBResult) ([]int, string) {
+	buckets := make([]int, len(scored))
+	if len(scored) < 2 {
+		return buckets, ""
+	}
+
+	criterion := -1
+	criterionName := ""
+	maxCriteria := 0
+	for _, result := range scored {
+		if len(result.ScoreBreakdown) > maxCriteria {
+			maxCriteria = len(result.ScoreBreakdown)
+		}
+	}
+	for position := 0; position < maxCriteria; position++ {
+		name := ""
+		firstPoints := 0
+		haveFirst := false
+		varies := false
+		for _, result := range scored {
+			if position >= len(result.ScoreBreakdown) {
+				continue
+			}
+			item := result.ScoreBreakdown[position]
+			if name == "" {
+				name = item.Criterion
+			}
+			if !haveFirst {
+				firstPoints = item.Points
+				haveFirst = true
+			} else if item.Points != firstPoints {
+				varies = true
+			}
+		}
+		if strings.EqualFold(strings.TrimSpace(name), "Service Priority") || !varies {
+			continue
+		}
+		criterion = position
+		criterionName = name
+		break
+	}
+	if criterion < 0 {
+		return buckets, ""
+	}
+
+	bucketByPoints := make(map[int]int)
+	nextBucket := 0
+	for i, result := range scored {
+		if criterion >= len(result.ScoreBreakdown) {
+			buckets[i] = nextBucket
+			continue
+		}
+		points := result.ScoreBreakdown[criterion].Points
+		bucket, ok := bucketByPoints[points]
+		if !ok {
+			bucket = nextBucket
+			bucketByPoints[points] = bucket
+			nextBucket++
+		}
+		buckets[i] = bucket
+	}
+	return buckets, criterionName
+}
+
+func prequeueBucketCount(buckets []int) int {
+	maxBucket := -1
+	for _, bucket := range buckets {
+		if bucket > maxBucket {
+			maxBucket = bucket
+		}
+	}
+	return maxBucket + 1
 }
 
 func (h *PrequeueHandler) waitForPlaybackQueue(ctx context.Context, prequeueID string, queueID int64, title string) (*models.PlaybackResolution, error) {

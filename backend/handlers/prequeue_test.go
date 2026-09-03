@@ -325,6 +325,91 @@ func TestRacePrequeueResolutionsAdoptsFastSecondCandidate(t *testing.T) {
 	}
 }
 
+func TestPrequeuePreferenceBucketsIgnoreServicePriority(t *testing.T) {
+	scored := []models.ScoredNZBResult{
+		{NZBResult: models.NZBResult{Title: "preferred-service-2160"}, ScoreBreakdown: []models.ScoreBreakdownItem{
+			{Criterion: "Service Priority", Points: 30_000},
+			{Criterion: "Resolution", Points: 40_000},
+		}},
+		{NZBResult: models.NZBResult{Title: "other-service-2160"}, ScoreBreakdown: []models.ScoreBreakdownItem{
+			{Criterion: "Service Priority", Points: 0},
+			{Criterion: "Resolution", Points: 40_000},
+		}},
+		{NZBResult: models.NZBResult{Title: "preferred-service-1080"}, ScoreBreakdown: []models.ScoreBreakdownItem{
+			{Criterion: "Service Priority", Points: 30_000},
+			{Criterion: "Resolution", Points: 20_000},
+		}},
+	}
+
+	buckets, criterion := prequeuePreferenceBuckets(scored)
+	if criterion != "Resolution" {
+		t.Fatalf("criterion = %q, want Resolution", criterion)
+	}
+	if want := []int{0, 0, 1}; !reflect.DeepEqual(buckets, want) {
+		t.Fatalf("buckets = %v, want %v", buckets, want)
+	}
+}
+
+func TestRacePrequeueResolutionsDoesNotStartLowerPreferenceBucketEarly(t *testing.T) {
+	src := newStreamCandidateSource()
+	topStarted := make(chan struct{}, 1)
+	lowerStarted := make(chan struct{}, 1)
+	releaseTop := make(chan struct{})
+
+	process := func(_ context.Context, i int, candidate models.NZBResult) (*candidateResolution, *candidateResolution, error) {
+		if candidate.Title == "2160-dead" {
+			topStarted <- struct{}{}
+			<-releaseTop
+			return nil, nil, errors.New("top bucket unavailable")
+		}
+		lowerStarted <- struct{}{}
+		return &candidateResolution{
+			index:      i,
+			result:     candidate,
+			resolution: &models.PlaybackResolution{WebDAVPath: "/webdav/1080.mkv"},
+		}, nil, nil
+	}
+
+	type outcome struct {
+		winner *candidateResolution
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		winner, _, err := racePrequeueResolutions(context.Background(), src, 8, process, nil, 25*time.Millisecond, true)
+		done <- outcome{winner: winner, err: err}
+	}()
+	go func() {
+		src.feedRanked(prequeueRankedCandidate{result: models.NZBResult{Title: "2160-dead"}, bucket: 0})
+		src.feedRanked(prequeueRankedCandidate{result: models.NZBResult{Title: "1080-fast"}, bucket: 1})
+		src.Close()
+	}()
+
+	select {
+	case <-topStarted:
+	case <-time.After(time.Second):
+		t.Fatal("preferred bucket did not start")
+	}
+	select {
+	case <-lowerStarted:
+		t.Fatal("lower preference bucket started while the preferred bucket was viable")
+	case <-time.After(75 * time.Millisecond):
+	}
+	close(releaseTop)
+
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("race returned error: %v", got.err)
+		}
+		if got.winner == nil || got.winner.result.Title != "1080-fast" {
+			t.Fatalf("winner = %+v, want lower bucket after preferred bucket failed", got.winner)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("race did not advance after preferred bucket failed")
+	}
+}
+
 func TestRacePrequeueResolutionsReservesSlotForLaterSource(t *testing.T) {
 	src := newStreamCandidateSource()
 	raceCtx, cancelRace := context.WithCancel(context.Background())

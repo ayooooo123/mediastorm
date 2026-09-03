@@ -2093,7 +2093,7 @@ func (s *Service) SearchWithScoringSplit(ctx context.Context, opts SearchOptions
 			// candidates on a warm cache. In AIOStreams bypass mode the debrid
 			// partition skips filter/rank, matching splitSearchDebrid.
 			if bypassAIOStreamsRanking && out.source == "debrid" {
-				out.scored = bypassScoredResults(out.raw, rankingBundle.NewestReleaseFirst)
+				out.scored = bypassScoredResults(out.raw, rankingBundle.NewestReleaseFirst, opts.IncludeScoreBreakdown)
 				out.filtered = 0
 			} else {
 				filterOpts := s.buildFilterOptions(opts, filterBundle.Usenet, filterTitles)
@@ -2363,7 +2363,7 @@ func (s *Service) splitSearchDebrid(ctx context.Context, settings config.Setting
 		// enabled scraper and the bypass setting is on, so skip filter/rank and
 		// pass every raw candidate through flagged as ranking-bypassed.
 		log.Printf("[indexer] Bypassing mediastorm filtering/ranking - AIOStreams is the only enabled scraper and bypass setting is enabled")
-		out.scored = bypassScoredResults(raw, rankingBundle.NewestReleaseFirst)
+		out.scored = bypassScoredResults(raw, rankingBundle.NewestReleaseFirst, opts.IncludeScoreBreakdown)
 		out.filtered = 0
 	} else {
 		filterTitles := combineFilterTitles(opts.AlternateTitles, alternateTitles, englishFallbackTitles)
@@ -2416,13 +2416,30 @@ func (s *Service) scoreSourceCandidates(opts SearchOptions, settings config.Sett
 			continue
 		}
 		resultCtx := s.buildScoringContextForResult(opts, settings, filterBundle, rankingBundle, animeSettings, fr.Result)
-		score, _ := ScoreResult(fr.Result, resultCtx)
-		passed = append(passed, models.ScoredNZBResult{NZBResult: fr.Result, TotalScore: score, FilterStatus: "passed"})
+		score, breakdown := ScoreResult(fr.Result, resultCtx)
+		scored := models.ScoredNZBResult{NZBResult: fr.Result, TotalScore: score, FilterStatus: "passed"}
+		if opts.IncludeScoreBreakdown {
+			scored.ScoreBreakdown = breakdown
+		}
+		passed = append(passed, scored)
 	}
 	if len(passed) > 0 {
 		scoringCtx := s.buildScoringContextWithCriteria(opts, settings, filterBundle.Default, animeSettings, rankingBundle.Default)
 		if rankingBundle.NewestReleaseFirst {
 			sortScoredResultsNewestReleaseFirst(passed)
+			if opts.IncludeScoreBreakdown {
+				for i := range passed {
+					points := 0
+					if !passed[i].PublishDate.IsZero() {
+						points = int(passed[i].PublishDate.Unix())
+					}
+					passed[i].ScoreBreakdown = []models.ScoreBreakdownItem{{
+						Criterion: "Newest Release",
+						Points:    points,
+						Reason:    "source-reported release time",
+					}}
+				}
+			}
 		} else {
 			sortScoredResultsByRankingBundle(passed, scoringCtx, rankingBundle)
 		}
@@ -2447,7 +2464,7 @@ func (s *Service) scoreSourceCandidates(opts SearchOptions, settings config.Sett
 // bypassScoredResults wraps raw candidates as ranking-bypassed passed results,
 // mirroring SearchWithScoring's AIOStreams short-circuit: no filtering and no
 // mediastorm ranking (NewestReleaseFirst sorting still applies).
-func bypassScoredResults(raw []models.NZBResult, newestFirst bool) []models.ScoredNZBResult {
+func bypassScoredResults(raw []models.NZBResult, newestFirst, includeScoreBreakdown bool) []models.ScoredNZBResult {
 	scored := make([]models.ScoredNZBResult, len(raw))
 	for i, r := range raw {
 		scored[i] = models.ScoredNZBResult{
@@ -2457,6 +2474,19 @@ func bypassScoredResults(raw []models.NZBResult, newestFirst bool) []models.Scor
 	}
 	if newestFirst {
 		sortScoredResultsNewestReleaseFirst(scored)
+		if includeScoreBreakdown {
+			for i := range scored {
+				points := 0
+				if !scored[i].PublishDate.IsZero() {
+					points = int(scored[i].PublishDate.Unix())
+				}
+				scored[i].ScoreBreakdown = []models.ScoreBreakdownItem{{
+					Criterion: "Newest Release",
+					Points:    points,
+					Reason:    "source-reported release time",
+				}}
+			}
+		}
 	}
 	return scored
 }
