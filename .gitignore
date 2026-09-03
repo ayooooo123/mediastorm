@@ -120,6 +120,7 @@ frontend/.husky
 GEMINI.md
 CLAUDE.md
 NEXT_BUILD_TODO.md
+AGENTS.md
 test-subs.ass
 
 # Frontend (private repo: godver3/mediastorm-frontend)
@@ -146,9 +147,7 @@ build.sh
 
 # Deployment and utility scripts
 deploy/
-/scripts/*
-!/scripts/vikunja-task.py
-!/scripts/test_vikunja_task.py
+scripts/
 
 # Local Docker test stacks and generated container state
 docker/
