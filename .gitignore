@@ -130,9 +130,6 @@ frontend/
 # KSPlayer fork symlink (actual repo at ~/ksplayer)
 /ksplayer
 
-# GitHub Actions (no longer used)
-.github/
-
 # Local-only branding, planning, and operations
 /mediastorm-square.png
 /mediastorm-tv.jpg
