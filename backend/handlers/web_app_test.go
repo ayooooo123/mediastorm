@@ -408,7 +408,7 @@ func TestWebPlaybackTemplateSynchronizesExternalWatchPartyGuests(t *testing.T) {
 	}
 }
 
-func TestWebPlaybackTemplateRecoversStalledSeekWithoutChangingSubtitlePipeline(t *testing.T) {
+func TestWebPlaybackTemplateRecoversStalledSeekWithSelectedSubtitlePipeline(t *testing.T) {
 	body, err := webTemplates.ReadFile("web_templates/playback.html")
 	if err != nil {
 		t.Fatalf("read web playback template: %v", err)
@@ -422,7 +422,8 @@ func TestWebPlaybackTemplateRecoversStalledSeekWithoutChangingSubtitlePipeline(t
 	}
 	seek := rendered[start:end]
 	for _, want := range []string{
-		"seekParams.set('subtitleTrack', '-1');",
+		"const seekSubtitleTrack = Number(webPlayerSelectedSubtitleTrack);",
+		"seekParams.set('subtitleTrack', String(seekSubtitleTrack >= 0 ? seekSubtitleTrack : -1));",
 		"video.addEventListener('canplay', finishSeek",
 		"releaseSeekState(false);",
 		"forceNewSession: true",
@@ -431,8 +432,8 @@ func TestWebPlaybackTemplateRecoversStalledSeekWithoutChangingSubtitlePipeline(t
 			t.Fatalf("web player seek missing recovery hook %q", want)
 		}
 	}
-	if strings.Contains(seek, "seekParams.set('subtitleTrack', String(webPlayerSelectedSubtitleTrack))") {
-		t.Fatal("web player seek must not rebuild its video pipeline around the selected overlay subtitle")
+	if strings.Contains(seek, "seekParams.set('subtitleTrack', '-1');") {
+		t.Fatal("web player seek must not unconditionally detach the selected embedded subtitle")
 	}
 }
 
@@ -455,7 +456,7 @@ func TestWebPlaybackTemplateLocksGuestPlaybackControls(t *testing.T) {
 	}
 }
 
-func TestWebPlaybackTemplateChangesSubtitlesWithoutRestartingPlayer(t *testing.T) {
+func TestWebPlaybackTemplateChangesEmbeddedSubtitlesThroughSyncedPipeline(t *testing.T) {
 	body, err := webTemplates.ReadFile("web_templates/playback.html")
 	if err != nil {
 		t.Fatalf("read web playback template: %v", err)
@@ -468,11 +469,19 @@ func TestWebPlaybackTemplateChangesSubtitlesWithoutRestartingPlayer(t *testing.T
 		t.Fatal("could not locate subtitle track change function")
 	}
 	changeTrack := rendered[start:end]
-	if !strings.Contains(changeTrack, "installSubtitleTrack(video);") {
-		t.Fatal("subtitle track change must update the active player")
+	for _, want := range []string{
+		"if (parsed === EXTERNAL_SUBTITLE_TRACK)",
+		"if (parsed >= 0 && hlsSessionId)",
+		"const startOffset = currentAbsoluteTime();",
+		"startWebPlayerFromSource({ startOffset });",
+		"installSubtitleTrack(video);",
+	} {
+		if !strings.Contains(changeTrack, want) {
+			t.Fatalf("subtitle track change missing %q", want)
+		}
 	}
-	if strings.Contains(changeTrack, "startWebPlayerFromSource") {
-		t.Fatal("subtitle track change must not recreate the HLS session")
+	if strings.Index(changeTrack, "if (parsed === EXTERNAL_SUBTITLE_TRACK)") > strings.Index(changeTrack, "if (parsed >= 0 && hlsSessionId)") {
+		t.Fatal("external subtitles must remain overlay-only without rebuilding HLS")
 	}
 	for _, want := range []string{
 		"X-Subtitle-Timestamp-Base",
@@ -481,6 +490,26 @@ func TestWebPlaybackTemplateChangesSubtitlesWithoutRestartingPlayer(t *testing.T
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("subtitle overlay missing timestamp alignment hook %q", want)
+		}
+	}
+}
+
+func TestWebPlaybackTemplateMapsUnsupportedPreselectionToTextSubtitle(t *testing.T) {
+	body, err := webTemplates.ReadFile("web_templates/playback.html")
+	if err != nil {
+		t.Fatalf("read web playback template: %v", err)
+	}
+
+	rendered := string(body)
+	for _, want := range []string{
+		"const allSubtitleStreams = Array.isArray(metadata?.subtitleStreams) ? metadata.subtitleStreams : [];",
+		"webPlayerSubtitleStreams = allSubtitleStreams.filter(isWebTextSubtitleStream);",
+		"!webPlayerSubtitleStreams.some((stream) => Number(stream?.index) === Number(webPlayerSelectedSubtitleTrack))",
+		"webLanguageMatches(stream, requestedSubtitle?.language)",
+		"webPlayerSelectedSubtitleTrack = Number(replacementSubtitle?.index ?? -1);",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("web playback template missing unsupported subtitle fallback %q", want)
 		}
 	}
 }

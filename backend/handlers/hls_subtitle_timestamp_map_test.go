@@ -42,3 +42,16 @@ func TestSubtitleResponseLeavesAlreadyAlignedContentAlone(t *testing.T) {
 		t.Fatalf("empty content must be left as is; got %q", got)
 	}
 }
+
+func TestClampNegativeSyncedWebVTTCueStarts(t *testing.T) {
+	input := "WEBVTT\n\n00:-2.-50 --> 00:00.510\noverlap\n\n00:00.590 --> 00:02.670 align:start\nnext\n"
+	want := "WEBVTT\n\n00:00.000 --> 00:00.510\noverlap\n\n00:00.590 --> 00:02.670 align:start\nnext\n"
+	if got := clampNegativeSyncedWebVTTCueStarts(input); got != want {
+		t.Fatalf("negative spanning cue was not clamped without shifting later cues:\n got %q\nwant %q", got, want)
+	}
+
+	valid := "WEBVTT\n\n00:00.590 --> 00:02.670\nhello\n"
+	if got := clampNegativeSyncedWebVTTCueStarts(valid); got != valid {
+		t.Fatalf("valid VTT must remain unchanged; got %q", got)
+	}
+}

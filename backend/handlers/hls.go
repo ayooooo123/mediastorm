@@ -4112,6 +4112,13 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 	// ServeSubtitleTrack serves and clearSessionSegments clears on seek.
 	if webSubtitleRendition {
 		syncedVTTPath := filepath.Join(session.OutputDir, fmt.Sprintf("subtitles_%d.vtt", webSubtitleAbsIndex))
+		if !session.CastMode {
+			args = append(args,
+				// Keep the media output's make_zero behavior, but do not let it shift this
+				// WebVTT output by the duration of a cue that overlaps the seek point.
+				"-avoid_negative_ts", "disabled",
+			)
+		}
 		args = append(args,
 			"-map", fmt.Sprintf("0:%d", webSubtitleAbsIndex),
 			"-c:s", "webvtt",
@@ -6476,8 +6483,16 @@ func (m *HLSManager) ServeSubtitleTrack(w http.ResponseWriter, r *http.Request, 
 		content, _ = os.ReadFile(vttPath)
 	}
 
-	// Post-process VTT to merge karaoke character cues (from ASS conversion)
-	processedContent := withWebVTTTimestampMap(mergeKaraokeCues(string(content)), session.subtitleTimestampBase())
+	// Post-process VTT to merge karaoke character cues (from ASS conversion).
+	processedContent := mergeKaraokeCues(string(content))
+	if syncedSamePass && !session.CastMode {
+		// With negative timestamps left enabled for this output, FFmpeg preserves the
+		// correct relative timeline but may serialize the start of a cue spanning the
+		// seek point as an invalid negative WebVTT timestamp. Its visible portion starts
+		// at zero; later cue timestamps must remain unchanged.
+		processedContent = clampNegativeSyncedWebVTTCueStarts(processedContent)
+	}
+	processedContent = withWebVTTTimestampMap(processedContent, session.subtitleTimestampBase())
 
 	w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache") // Don't cache since file is growing
@@ -6495,6 +6510,28 @@ func (m *HLSManager) ServeSubtitleTrack(w http.ResponseWriter, r *http.Request, 
 
 	w.Write([]byte(processedContent))
 	log.Printf("[hls] served subtitles for session %s track %d, size=%d bytes", sessionID, requestedTrack, len(processedContent))
+}
+
+// clampNegativeSyncedWebVTTCueStarts repairs only the first edge case produced by an accurate
+// mid-file seek: a cue that began before the new media origin but ends after it. FFmpeg can emit
+// that cue with a malformed negative start (for example 00:-2.-50). Clamping that start retains
+// the visible tail without shifting any subsequent cues.
+func clampNegativeSyncedWebVTTCueStarts(content string) string {
+	lines := strings.Split(content, "\n")
+	changed := false
+	for i, line := range lines {
+		parts := strings.SplitN(line, "-->", 2)
+		if len(parts) != 2 || !strings.Contains(strings.TrimSpace(parts[0]), "-") {
+			continue
+		}
+		indent := parts[0][:len(parts[0])-len(strings.TrimLeft(parts[0], " \t"))]
+		lines[i] = indent + "00:00.000 -->" + parts[1]
+		changed = true
+	}
+	if !changed {
+		return content
+	}
+	return strings.Join(lines, "\n")
 }
 
 // subtitleTimestampBase reports where this session's MPEG-TS clock starts, in seconds.

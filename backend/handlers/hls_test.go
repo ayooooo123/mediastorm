@@ -1332,6 +1332,91 @@ func TestHLSManager_ServeSubtitleTrackReportsVideoTimestampBase(t *testing.T) {
 	}
 }
 
+func TestHLSManager_ServeSyncedSubtitleClampsOnlySpanningCueStart(t *testing.T) {
+	tmpDir := t.TempDir()
+	manager := NewHLSManager(tmpDir, "", "", nil)
+	defer manager.Shutdown()
+
+	const sessionID = "synced-subtitle-negative-start-test"
+	outputDir := filepath.Join(tmpDir, sessionID)
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	input := "WEBVTT\n\n00:-2.-50 --> 00:00.510\noverlap\n\n00:00.590 --> 00:02.670\nnext\n"
+	if err := os.WriteFile(filepath.Join(outputDir, "subtitles_7.vtt"), []byte(input), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	session := &HLSSession{
+		ID:                    sessionID,
+		OutputDir:             outputDir,
+		CreatedAt:             time.Now(),
+		LastAccess:            time.Now(),
+		SubtitleTrackIndex:    7,
+		UsesSubtitleRendition: true,
+		Completed:             true,
+	}
+	manager.mu.Lock()
+	manager.sessions[sessionID] = session
+	manager.mu.Unlock()
+
+	req := httptest.NewRequest(http.MethodGet, "/video/hls/"+sessionID+"/subtitles-7.vtt", nil)
+	rr := httptest.NewRecorder()
+	manager.ServeSubtitleTrack(rr, req, sessionID, 7, false)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rr.Code)
+	}
+	if got := rr.Header().Get("X-Subtitle-Synced"); got != "true" {
+		t.Fatalf("synced header = %q, want true", got)
+	}
+	want := "WEBVTT\n\n00:00.000 --> 00:00.510\noverlap\n\n00:00.590 --> 00:02.670\nnext\n"
+	if got := rr.Body.String(); got != want {
+		t.Fatalf("served synced VTT changed the relative cue timeline:\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestHLSManager_ServeCastSubtitleLeavesTimestampProcessingUnchanged(t *testing.T) {
+	tmpDir := t.TempDir()
+	manager := NewHLSManager(tmpDir, "", "", nil)
+	defer manager.Shutdown()
+
+	const sessionID = "cast-subtitle-timestamp-test"
+	outputDir := filepath.Join(tmpDir, sessionID)
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	input := "WEBVTT\n\n00:-2.-50 --> 00:00.510\noverlap\n"
+	if err := os.WriteFile(filepath.Join(outputDir, "subtitles_7.vtt"), []byte(input), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	session := &HLSSession{
+		ID:                    sessionID,
+		OutputDir:             outputDir,
+		CreatedAt:             time.Now(),
+		LastAccess:            time.Now(),
+		SubtitleTrackIndex:    7,
+		UsesSubtitleRendition: true,
+		CastMode:              true,
+		Completed:             true,
+	}
+	manager.mu.Lock()
+	manager.sessions[sessionID] = session
+	manager.mu.Unlock()
+
+	req := httptest.NewRequest(http.MethodGet, "/video/hls/"+sessionID+"/subtitles-7.vtt", nil)
+	rr := httptest.NewRecorder()
+	manager.ServeSubtitleTrack(rr, req, sessionID, 7, false)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rr.Code)
+	}
+	if got := rr.Body.String(); got != input {
+		t.Fatalf("cast subtitle timestamp processing changed:\n got %q\nwant %q", got, input)
+	}
+}
+
 func TestHLSManager_Seek_NotFound(t *testing.T) {
 	tmpDir := t.TempDir()
 	manager := NewHLSManager(tmpDir, "", "", nil)

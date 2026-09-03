@@ -1831,9 +1831,8 @@
           });
         }
         webPlayerAudioStreams = Array.isArray(metadata?.audioStreams) ? metadata.audioStreams : [];
-        webPlayerSubtitleStreams = Array.isArray(metadata?.subtitleStreams)
-          ? metadata.subtitleStreams.filter(isWebTextSubtitleStream)
-          : [];
+        const allSubtitleStreams = Array.isArray(metadata?.subtitleStreams) ? metadata.subtitleStreams : [];
+        webPlayerSubtitleStreams = allSubtitleStreams.filter(isWebTextSubtitleStream);
         webPlayerChapters = Array.isArray(metadata?.chapters) ? metadata.chapters : [];
         webPlayerMetadataResolved = true;
         if (!webPlayerManualAudioSelection) {
@@ -1843,6 +1842,13 @@
         if (!webPlayerManualSubtitleSelection) {
           const preferredSubtitle = webPlayerSubtitleStreams.find((stream) => webLanguageMatches(stream, webPlayerPreferences.subtitleLanguage) && (webPlayerPreferences.subtitleMode !== 'forced-only' || isWebForcedSubtitle(stream)));
           webPlayerSelectedSubtitleTrack = webPlayerPreferences.subtitleMode === 'off' ? -1 : Number(preferredSubtitle?.index ?? -1);
+        } else if (Number(webPlayerSelectedSubtitleTrack) >= 0 && !webPlayerSubtitleStreams.some((stream) => Number(stream?.index) === Number(webPlayerSelectedSubtitleTrack))) {
+          // A native client may hand the web player a bitmap (usually PGS)
+          // preselection. Map it to a playable text track in the same language
+          // instead of leaving an invisible value that the select renders as Off.
+          const requestedSubtitle = allSubtitleStreams.find((stream) => Number(stream?.index) === Number(webPlayerSelectedSubtitleTrack));
+          const replacementSubtitle = webPlayerSubtitleStreams.find((stream) => webLanguageMatches(stream, requestedSubtitle?.language)) || webPlayerSubtitleStreams[0];
+          webPlayerSelectedSubtitleTrack = Number(replacementSubtitle?.index ?? -1);
         }
         // Embedded chapters are applied synchronously before this function's
         // first await. Let the remote IntroDB fallback finish off the playback
@@ -2491,10 +2497,11 @@
           time: absoluteTarget.toFixed(2),
           target: 'web',
         });
-        // Browser subtitles are rendered by the independent overlay. Explicitly
-        // detach them from the replacement video pipeline so a sync seek cannot
-        // force a full video transcode (or inherit a previously selected track).
-        seekParams.set('subtitleTrack', '-1');
+        // Keep an enabled embedded text subtitle in the replacement pipeline so
+        // video and WebVTT share the same accurate seek and timestamp rebasing.
+        // External subtitles remain overlay-only and subtitle-off stays detached.
+        const seekSubtitleTrack = Number(webPlayerSelectedSubtitleTrack);
+        seekParams.set('subtitleTrack', String(seekSubtitleTrack >= 0 ? seekSubtitleTrack : -1));
         const response = await apiCall(`/video/hls/${encodeURIComponent(hlsSessionId)}/seek?${seekParams.toString()}`, { method: 'POST' });
         if (!response?.playlistUrl) throw new Error('seek response missing playlist URL');
         const requestedOffset = Number(response.startOffset ?? absoluteTarget);
@@ -3108,6 +3115,15 @@
         webPlayerSubtitleCues = webPlayerExternalSubtitle?.cues || [];
         renderSubtitles();
         closeTrackSheet();
+        return;
+      }
+      if (parsed >= 0 && hlsSessionId) {
+        // A text track selected after a warm start must join the replacement
+        // HLS pipeline. Separate input seeking can begin subtitle packets at the
+        // preceding video keyframe even though A/V is accurately trimmed.
+        const startOffset = currentAbsoluteTime();
+        closeTrackSheet();
+        startWebPlayerFromSource({ startOffset });
         return;
       }
       const video = document.getElementById('webPlayer');
