@@ -16,7 +16,7 @@ services:
       retries: 5
 
   mediastorm:
-    image: godver3/mediastorm:latest
+    image: ${MEDIASTORM_IMAGE:-ghcr.io/ayooooo123/mediastorm:peartube-latest}
     container_name: mediastorm
     # Defaults to root for backward compatibility. Set PUID and PGID in your
     # shell or .env file to opt into running as a specific host user.
