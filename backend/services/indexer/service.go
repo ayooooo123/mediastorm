@@ -2102,34 +2102,37 @@ func (s *Service) SearchWithScoringSplit(ctx context.Context, opts SearchOptions
 	// on a slow scraper (same key searchRawResults would use). The key includes
 	// the English fallback titles so both pipelines compute the identical key.
 	cacheTitles := combineFilterTitles(filterTitles)
-	cacheKey := s.searchCacheKey("raw", opts, settings, cacheTitles, filterSettings, filterBundle, animeSettings, filterOverrides, rankingCriteria, rankingBundle)
-	if cached, ok := s.getCachedSearchResults(cacheKey, searchStart); ok {
-		log.Printf("[indexer] raw search cache hit for query=%q mediaType=%q user=%q client=%q results=%d", opts.Query, opts.MediaType, opts.UserID, opts.ClientID, len(cached))
-		// A cache hit carries only the merged aggregate, so partition it by the
-		// ServiceType the fetchers stamped and emit each partition as its own
-		// source batch (both are immediately available).
-		bySource := partitionResultsBySource(cached)
-		for _, out := range bySource {
-			// A cache hit stores raw results only, so each partitioned source must
-			// be filtered/scored/ranked exactly like a freshly-fetched source
-			// before it is emitted — otherwise the caller sees zero passed
-			// candidates on a warm cache. In AIOStreams bypass mode the debrid
-			// partition skips filter/rank, matching splitSearchDebrid.
-			if bypassAIOStreamsRanking && out.source == "debrid" {
-				out.scored = bypassScoredResults(out.raw, rankingBundle.NewestReleaseFirst, opts.IncludeScoreBreakdown)
-				out.filtered = 0
-			} else {
-				filterOpts := s.buildFilterOptions(opts, filterBundle.Usenet, filterTitles)
-				if out.source == "debrid" {
-					filterOpts = s.buildFilterOptions(opts, filterBundle.Debrid, filterTitles)
+	cacheKey := ""
+	if !includeDebrid || !hasActivePearTubeSearchSource(settings) {
+		cacheKey = s.searchCacheKey("raw", opts, settings, cacheTitles, filterSettings, filterBundle, animeSettings, filterOverrides, rankingCriteria, rankingBundle)
+		if cached, ok := s.getCachedSearchResults(cacheKey, searchStart); ok {
+			log.Printf("[indexer] raw search cache hit for query=%q mediaType=%q user=%q client=%q results=%d", opts.Query, opts.MediaType, opts.UserID, opts.ClientID, len(cached))
+			// A cache hit carries only the merged aggregate, so partition it by the
+			// ServiceType the fetchers stamped and emit each partition as its own
+			// source batch (both are immediately available).
+			bySource := partitionResultsBySource(cached)
+			for _, out := range bySource {
+				// A cache hit stores raw results only, so each partitioned source must
+				// be filtered/scored/ranked exactly like a freshly-fetched source
+				// before it is emitted — otherwise the caller sees zero passed
+				// candidates on a warm cache. In AIOStreams bypass mode the debrid
+				// partition skips filter/rank, matching splitSearchDebrid.
+				if bypassAIOStreamsRanking && out.source == "debrid" {
+					out.scored = bypassScoredResults(out.raw, rankingBundle.NewestReleaseFirst, opts.IncludeScoreBreakdown)
+					out.filtered = 0
+				} else {
+					filterOpts := s.buildFilterOptions(opts, filterBundle.Usenet, filterTitles)
+					if out.source == "debrid" {
+						filterOpts = s.buildFilterOptions(opts, filterBundle.Debrid, filterTitles)
+					}
+					out.scored, out.filtered = s.scoreSourceCandidates(opts, settings, out.raw, filterOpts, filterBundle, animeSettings, filterOverrides, rankingBundle)
 				}
-				out.scored, out.filtered = s.scoreSourceCandidates(opts, settings, out.raw, filterOpts, filterBundle, animeSettings, filterOverrides, rankingBundle)
+				s.emitSplitSourceBatch(usenetOut, debridOut, settings, opts, out)
 			}
-			s.emitSplitSourceBatch(usenetOut, debridOut, settings, opts, out)
+			close(usenetOut)
+			close(debridOut)
+			return usenetOut, debridOut
 		}
-		close(usenetOut)
-		close(debridOut)
-		return usenetOut, debridOut
 	}
 
 	sourceOpts := opts
