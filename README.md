@@ -10,6 +10,13 @@ Features include multi-profile watch history and recommendations, kids profiles,
 
 [Releases](https://github.com/godver3/mediastorm/releases) · [Android Mobile](https://github.com/godver3/mediastorm/releases/download/android-latest/mediastorm-mobile.apk) · [Android TV](https://github.com/godver3/mediastorm/releases/download/android-latest/mediastorm-tv.apk) · [iOS TestFlight](https://testflight.apple.com/join/8vCQ5gmH) · [tvOS TestFlight](https://testflight.apple.com/join/X9bE3dq6) · [Discord](https://discord.gg/kT74mwf4bu)
 
+## Source layout
+
+- `backend/`: Go server and supporting production services.
+- `backend/iroh-host/`: Rust host for encrypted Iroh remote access.
+- Native clients live in the separate [frontend repository](https://github.com/godver3-org/mediastorm-frontend); its `modules/iroh-bridge/` owns the production Rust/native client bridge.
+- `archive/iroh-ios-bridge/`: historical iOS linking scaffold, retained for reference.
+
 ## Features
 
 - **On-demand streaming:** Search multiple Usenet and torrent sources, rank releases, and stream through built-in Usenet or supported debrid providers.

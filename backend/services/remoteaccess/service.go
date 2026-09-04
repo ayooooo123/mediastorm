@@ -718,7 +718,7 @@ const codeAlphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 // 18 chars * 5 bits = ~90 bits of entropy, formatted as three groups of six. This is
 // the entire security boundary of the rendezvous record (the DHT signing key is derived
 // from the code), so it must be high enough to resist an offline brute-force of the
-// published, code-derived public key. See experiments/iroh-direct-spike/src/rendezvous.rs.
+// published, code-derived public key. See backend/iroh-host/src/rendezvous.rs.
 const codeBodyLength = 18
 
 func generateToken() (string, error) {

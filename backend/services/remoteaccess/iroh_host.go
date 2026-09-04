@@ -364,12 +364,12 @@ func (m *IrohHostManager) wait(cmd *exec.Cmd) {
 
 func (m *IrohHostManager) validateWorkDirLocked() error {
 	if m.workDir == "" {
-		m.lastErr = "iroh-direct-spike directory not found"
+		m.lastErr = "iroh host directory not found"
 		m.state = "not_configured"
 		return errors.New(m.lastErr)
 	}
 	if stat, err := os.Stat(m.workDir); err != nil || !stat.IsDir() {
-		m.lastErr = fmt.Sprintf("iroh-direct-spike directory unavailable: %s", m.workDir)
+		m.lastErr = fmt.Sprintf("iroh host directory unavailable: %s", m.workDir)
 		m.state = "not_configured"
 		return errors.New(m.lastErr)
 	}
@@ -381,15 +381,15 @@ func (m *IrohHostManager) validateWorkDirForPublish() error {
 	workDir := m.workDir
 	m.mu.RUnlock()
 	if workDir == "" {
-		return errors.New("iroh-direct-spike directory not found")
+		return errors.New("iroh host directory not found")
 	}
 	if stat, err := os.Stat(workDir); err != nil || !stat.IsDir() {
-		return fmt.Errorf("iroh-direct-spike directory unavailable: %s", workDir)
+		return fmt.Errorf("iroh host directory unavailable: %s", workDir)
 	}
 	return nil
 }
 
-// irohBinaryName is the compiled host binary produced by the Rust spike.
+// irohBinaryName is the compiled host binary produced by the Rust host.
 const irohBinaryName = "iroh-direct-spike"
 
 // irohBinaryCandidates lists, in priority order, where a prebuilt host binary may live
@@ -496,8 +496,8 @@ func discoverIrohWorkDir() string {
 		return ""
 	}
 	candidates := []string{
-		filepath.Join(cwd, "experiments", "iroh-direct-spike"),
-		filepath.Join(cwd, "..", "experiments", "iroh-direct-spike"),
+		filepath.Join(cwd, "backend", "iroh-host"),
+		filepath.Join(cwd, "iroh-host"),
 	}
 	for _, candidate := range candidates {
 		if stat, err := os.Stat(candidate); err == nil && stat.IsDir() {

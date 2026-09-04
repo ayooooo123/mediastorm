@@ -60,11 +60,8 @@ frontend/modules/*/**
 # iroh remote-access bridge (Rust): needed by the iroh-builder stage in
 # backend/Dockerfile. Exclude the local build output (target/) — the image
 # compiles its own Linux binary.
-!experiments/
-!experiments/iroh-direct-spike/
-!experiments/iroh-direct-spike/**
-experiments/iroh-direct-spike/target
-experiments/iroh-direct-spike/target/**
+backend/iroh-host/target
+backend/iroh-host/target/**
 
 backend/.git/
 backend/.cache

@@ -75,7 +75,7 @@ RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked \
 # the iroh remote-access endpoint, so the image needs a Linux build of it.
 FROM rust:1-bookworm@sha256:77fac8b98f9f46062bb680b6d25d5bcaabfc400143952ebc572e924bcbedc3fa AS iroh-builder
 WORKDIR /iroh
-COPY experiments/iroh-direct-spike/ ./
+COPY backend/iroh-host/ ./
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/iroh/target,sharing=locked \
     cargo build --release && \

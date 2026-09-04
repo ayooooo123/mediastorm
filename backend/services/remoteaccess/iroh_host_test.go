@@ -213,3 +213,39 @@ func TestRedactIrohLogLineRemovesInviteAndRendezvousIdentifiers(t *testing.T) {
 		t.Fatalf("stored iroh error was not redacted: %q", m.lastErr)
 	}
 }
+
+func TestDiscoverIrohWorkDir(t *testing.T) {
+	for _, launchDir := range []string{".", "backend"} {
+		t.Run(launchDir, func(t *testing.T) {
+			t.Setenv("MEDIASTORM_IROH_DIRECT_DIR", "")
+			root := t.TempDir()
+			want := filepath.Join(root, "backend", "iroh-host")
+			if err := os.MkdirAll(want, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Chdir(filepath.Join(root, launchDir))
+			want, err := filepath.EvalSymlinks(want)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := filepath.EvalSymlinks(discoverIrohWorkDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != want {
+				t.Fatalf("discoverIrohWorkDir() = %q, want %q", got, want)
+			}
+			t.Setenv("MEDIASTORM_IROH_DIRECT_DIR", " /opt/iroh ")
+			if got := discoverIrohWorkDir(); got != "/opt/iroh" {
+				t.Fatalf("override = %q, want /opt/iroh", got)
+			}
+		})
+	}
+	t.Run("missing host", func(t *testing.T) {
+		t.Setenv("MEDIASTORM_IROH_DIRECT_DIR", "")
+		t.Chdir(t.TempDir())
+		if got := discoverIrohWorkDir(); got != "" {
+			t.Fatalf("missing host = %q, want empty", got)
+		}
+	})
+}

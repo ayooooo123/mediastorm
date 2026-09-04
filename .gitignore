@@ -10,7 +10,8 @@ backend/mediastorm
 backend/mediastorm.exe
 backend/mediastorm-darwin
 backend/mediastorm-linux
-experiments/**/target/
+backend/iroh-host/target/
+archive/**/target/
 *.ipa
 frontend/scripts/build-appstore.sh
 client/NovaStream/android/app/build/
