@@ -829,43 +829,16 @@ func (s *Service) syncPlexToLocal(authToken, profileID, syncSource, deleteBehavi
 	imported := 0
 
 	for i, item := range items {
-		itemID := item.RatingKey
 		extIDs := map[string]string{}
 		if i < len(externalIDs) && externalIDs[i] != nil {
 			extIDs = externalIDs[i]
 		}
-
-		// Prefer TMDB ID, then IMDB, then Plex ratingKey
-		if tmdbID, ok := extIDs["tmdb"]; ok && tmdbID != "" {
-			itemID = tmdbID
-		} else if imdbID, ok := extIDs["imdb"]; ok && imdbID != "" {
-			itemID = imdbID
-		}
-
 		// Add plex ID to external IDs
 		extIDs["plex"] = item.RatingKey
 
 		mediaType := plex.NormalizeMediaType(item.Type)
-		for _, key := range schedulerWatchlistMatchKeys(mediaType, itemID, extIDs) {
-			plexItemKeys[key] = true
-		}
-		isNew := !schedulerWatchlistHasAnyKey(existingKeys, mediaType, itemID, extIDs)
-
-		if dryRun {
-			if isNew {
-				log.Printf("[scheduler] DRY RUN: Would import from Plex: %s (%s)", item.Title, mediaType)
-				result.ToAdd = append(result.ToAdd, config.DryRunItem{
-					Name:      item.Title,
-					MediaType: mediaType,
-					ID:        itemID,
-				})
-			}
-			imported++
-			continue
-		}
-
-		input := models.WatchlistUpsert{
-			ID:          itemID,
+		input := s.enrichSyncedWatchlistIdentity("Plex", models.WatchlistUpsert{
+			ID:          item.RatingKey,
 			MediaType:   mediaType,
 			Name:        item.Title,
 			Year:        item.Year,
@@ -874,6 +847,23 @@ func (s *Service) syncPlexToLocal(authToken, profileID, syncSource, deleteBehavi
 			ExternalIDs: extIDs,
 			SyncSource:  syncSource,
 			SyncedAt:    &now,
+		})
+		for _, key := range schedulerWatchlistMatchKeys(mediaType, input.ID, input.ExternalIDs) {
+			plexItemKeys[key] = true
+		}
+		isNew := !schedulerWatchlistHasAnyKey(existingKeys, mediaType, input.ID, input.ExternalIDs)
+
+		if dryRun {
+			if isNew {
+				log.Printf("[scheduler] DRY RUN: Would import from Plex: %s (%s)", item.Title, mediaType)
+				result.ToAdd = append(result.ToAdd, config.DryRunItem{
+					Name:      item.Title,
+					MediaType: mediaType,
+					ID:        input.ID,
+				})
+			}
+			imported++
+			continue
 		}
 
 		if _, err := s.watchlistService.AddOrUpdate(profileID, input); err != nil {
@@ -1080,23 +1070,29 @@ func (s *Service) syncBidirectional(authToken, profileID, syncSource, deleteBeha
 	// Build maps for quick lookup
 	// plexByKey: mediaType:id -> plex item
 	plexKeys := make(map[string]bool)
+	resolvedPlexInputs := make([]models.WatchlistUpsert, len(plexItems))
 
 	for i, item := range plexItems {
-		itemID := item.RatingKey
 		extIDs := map[string]string{}
 		if i < len(externalIDs) && externalIDs[i] != nil {
 			extIDs = externalIDs[i]
 		}
 
-		if tmdbID, ok := extIDs["tmdb"]; ok && tmdbID != "" {
-			itemID = tmdbID
-		} else if imdbID, ok := extIDs["imdb"]; ok && imdbID != "" {
-			itemID = imdbID
-		}
-
 		extIDs["plex"] = item.RatingKey
 		mediaType := plex.NormalizeMediaType(item.Type)
-		for _, key := range schedulerWatchlistMatchKeys(mediaType, itemID, extIDs) {
+		input := s.enrichSyncedWatchlistIdentity("Plex", models.WatchlistUpsert{
+			ID:          item.RatingKey,
+			MediaType:   mediaType,
+			Name:        item.Title,
+			Year:        item.Year,
+			PosterURL:   plex.GetPosterURL(item.Thumb, authToken),
+			BackdropURL: plex.GetPosterURL(item.Art, authToken),
+			ExternalIDs: extIDs,
+			SyncSource:  syncSource,
+			SyncedAt:    &now,
+		})
+		resolvedPlexInputs[i] = input
+		for _, key := range schedulerWatchlistMatchKeys(mediaType, input.ID, input.ExternalIDs) {
 			plexKeys[key] = true
 		}
 	}
@@ -1112,21 +1108,18 @@ func (s *Service) syncBidirectional(authToken, profileID, syncSource, deleteBeha
 
 	// Step 1: Sync Plex → Local (items in Plex not in local)
 	for i, plexItem := range plexItems {
-		extIDs := map[string]string{}
-		if i < len(externalIDs) && externalIDs[i] != nil {
-			extIDs = externalIDs[i]
-		}
-		itemID := plexItem.RatingKey
-		if tmdbID, ok := extIDs["tmdb"]; ok && tmdbID != "" {
-			itemID = tmdbID
-		} else if imdbID, ok := extIDs["imdb"]; ok && imdbID != "" {
-			itemID = imdbID
-		}
-		extIDs["plex"] = plexItem.RatingKey
-		mediaType := plex.NormalizeMediaType(plexItem.Type)
+		input := resolvedPlexInputs[i]
+		mediaType := input.MediaType
 
-		if schedulerWatchlistHasAnyKey(localKeys, mediaType, itemID, extIDs) {
-			continue // Already in local
+		if schedulerWatchlistHasAnyKey(localKeys, mediaType, input.ID, input.ExternalIDs) {
+			// Re-upsert matched source metadata so newly resolved provider IDs can
+			// merge legacy source-only duplicates and remain available next run.
+			if !dryRun {
+				if _, err := s.watchlistService.AddOrUpdate(profileID, input); err != nil {
+					logWatchlistImportError("Plex", plexItem.Title, err)
+				}
+			}
+			continue
 		}
 
 		if dryRun {
@@ -1134,22 +1127,10 @@ func (s *Service) syncBidirectional(authToken, profileID, syncSource, deleteBeha
 			result.ToAdd = append(result.ToAdd, config.DryRunItem{
 				Name:      plexItem.Title + " (from Plex)",
 				MediaType: mediaType,
-				ID:        itemID,
+				ID:        input.ID,
 			})
 			synced++
 			continue
-		}
-
-		input := models.WatchlistUpsert{
-			ID:          itemID,
-			MediaType:   mediaType,
-			Name:        plexItem.Title,
-			Year:        plexItem.Year,
-			PosterURL:   plex.GetPosterURL(plexItem.Thumb, authToken),
-			BackdropURL: plex.GetPosterURL(plexItem.Art, authToken),
-			ExternalIDs: extIDs,
-			SyncSource:  syncSource,
-			SyncedAt:    &now,
 		}
 
 		if _, err := s.watchlistService.AddOrUpdate(profileID, input); err != nil {
@@ -1441,18 +1422,20 @@ func (s *Service) syncTraktToLocal(traktAccount *config.TraktAccount, profileID,
 	imported := 0
 
 	for _, item := range items {
-		// Prefer TMDB ID, then IMDB, then Trakt ID
-		itemID := item.IDs["trakt"]
-		if tmdbID, ok := item.IDs["tmdb"]; ok && tmdbID != "" {
-			itemID = tmdbID
-		} else if imdbID, ok := item.IDs["imdb"]; ok && imdbID != "" {
-			itemID = imdbID
-		}
+		input := s.enrichSyncedWatchlistIdentity("Trakt", models.WatchlistUpsert{
+			ID:          preferredWatchlistSourceID(item.IDs),
+			MediaType:   item.MediaType,
+			Name:        item.Title,
+			Year:        item.Year,
+			ExternalIDs: item.IDs,
+			SyncSource:  syncSource,
+			SyncedAt:    &now,
+		})
 
-		for _, key := range schedulerWatchlistMatchKeys(item.MediaType, itemID, item.IDs) {
+		for _, key := range schedulerWatchlistMatchKeys(item.MediaType, input.ID, input.ExternalIDs) {
 			traktItemKeys[key] = true
 		}
-		isNew := !schedulerWatchlistHasAnyKey(existingKeys, item.MediaType, itemID, item.IDs)
+		isNew := !schedulerWatchlistHasAnyKey(existingKeys, item.MediaType, input.ID, input.ExternalIDs)
 
 		if dryRun {
 			if isNew {
@@ -1460,21 +1443,11 @@ func (s *Service) syncTraktToLocal(traktAccount *config.TraktAccount, profileID,
 				result.ToAdd = append(result.ToAdd, config.DryRunItem{
 					Name:      item.Title,
 					MediaType: item.MediaType,
-					ID:        itemID,
+					ID:        input.ID,
 				})
 			}
 			imported++
 			continue
-		}
-
-		input := models.WatchlistUpsert{
-			ID:          itemID,
-			MediaType:   item.MediaType,
-			Name:        item.Title,
-			Year:        item.Year,
-			ExternalIDs: item.IDs,
-			SyncSource:  syncSource,
-			SyncedAt:    &now,
 		}
 
 		if _, err := s.watchlistService.AddOrUpdate(profileID, input); err != nil {
@@ -1774,14 +1747,19 @@ func (s *Service) syncTraktBidirectional(traktAccount *config.TraktAccount, prof
 
 	// Build maps for quick lookup
 	traktKeys := make(map[string]bool)
-	for _, item := range traktItems {
-		itemID := item.IDs["trakt"]
-		if tmdbID, ok := item.IDs["tmdb"]; ok && tmdbID != "" {
-			itemID = tmdbID
-		} else if imdbID, ok := item.IDs["imdb"]; ok && imdbID != "" {
-			itemID = imdbID
-		}
-		for _, key := range schedulerWatchlistMatchKeys(item.MediaType, itemID, item.IDs) {
+	resolvedTraktInputs := make([]models.WatchlistUpsert, len(traktItems))
+	for i, item := range traktItems {
+		input := s.enrichSyncedWatchlistIdentity("Trakt", models.WatchlistUpsert{
+			ID:          preferredWatchlistSourceID(item.IDs),
+			MediaType:   item.MediaType,
+			Name:        item.Title,
+			Year:        item.Year,
+			ExternalIDs: item.IDs,
+			SyncSource:  syncSource,
+			SyncedAt:    &now,
+		})
+		resolvedTraktInputs[i] = input
+		for _, key := range schedulerWatchlistMatchKeys(item.MediaType, input.ID, input.ExternalIDs) {
 			traktKeys[key] = true
 		}
 	}
@@ -1796,16 +1774,15 @@ func (s *Service) syncTraktBidirectional(traktAccount *config.TraktAccount, prof
 	synced := 0
 
 	// Step 1: Sync Trakt → Local (items in Trakt not in local)
-	for _, traktItem := range traktItems {
-		itemID := traktItem.IDs["trakt"]
-		if tmdbID, ok := traktItem.IDs["tmdb"]; ok && tmdbID != "" {
-			itemID = tmdbID
-		} else if imdbID, ok := traktItem.IDs["imdb"]; ok && imdbID != "" {
-			itemID = imdbID
-		}
-
-		if schedulerWatchlistHasAnyKey(localKeys, traktItem.MediaType, itemID, traktItem.IDs) {
-			continue // Already in local
+	for i, traktItem := range traktItems {
+		input := resolvedTraktInputs[i]
+		if schedulerWatchlistHasAnyKey(localKeys, traktItem.MediaType, input.ID, input.ExternalIDs) {
+			if !dryRun {
+				if _, err := s.watchlistService.AddOrUpdate(profileID, input); err != nil {
+					logWatchlistImportError("Trakt", traktItem.Title, err)
+				}
+			}
+			continue
 		}
 
 		if dryRun {
@@ -1813,20 +1790,10 @@ func (s *Service) syncTraktBidirectional(traktAccount *config.TraktAccount, prof
 			result.ToAdd = append(result.ToAdd, config.DryRunItem{
 				Name:      traktItem.Title + " (from Trakt)",
 				MediaType: traktItem.MediaType,
-				ID:        itemID,
+				ID:        input.ID,
 			})
 			synced++
 			continue
-		}
-
-		input := models.WatchlistUpsert{
-			ID:          itemID,
-			MediaType:   traktItem.MediaType,
-			Name:        traktItem.Title,
-			Year:        traktItem.Year,
-			ExternalIDs: traktItem.IDs,
-			SyncSource:  syncSource,
-			SyncedAt:    &now,
 		}
 
 		if _, err := s.watchlistService.AddOrUpdate(profileID, input); err != nil {
@@ -4628,19 +4595,26 @@ func (s *Service) executeJellyfinFavoritesSync(task config.ScheduledTask) (SyncR
 	for _, item := range items {
 		mediaType := jellyfin.NormalizeMediaType(item.Type)
 
-		// Prefer TMDB then IMDB then Jellyfin ID
-		itemID := item.ID
-		if tmdbID, ok := item.ProviderIDs["tmdb"]; ok && tmdbID != "" {
-			itemID = tmdbID
-		} else if imdbID, ok := item.ProviderIDs["imdb"]; ok && imdbID != "" {
-			itemID = imdbID
+		extIDs := schedulerNormalizeExternalIDs(item.ProviderIDs)
+		if extIDs == nil {
+			extIDs = make(map[string]string)
 		}
+		extIDs["jellyfin"] = item.ID
 
-		for _, key := range schedulerWatchlistMatchKeys(mediaType, itemID, item.ProviderIDs) {
+		input := s.enrichSyncedWatchlistIdentity("Jellyfin", models.WatchlistUpsert{
+			ID:          item.ID,
+			MediaType:   mediaType,
+			Name:        item.Name,
+			Year:        item.Year,
+			ExternalIDs: extIDs,
+			SyncSource:  syncSource,
+			SyncedAt:    &now,
+		})
+		for _, key := range schedulerWatchlistMatchKeys(mediaType, input.ID, input.ExternalIDs) {
 			jfItemKeys[key] = true
 		}
 
-		isNew := !schedulerWatchlistHasAnyKey(existingKeys, mediaType, itemID, item.ProviderIDs)
+		isNew := !schedulerWatchlistHasAnyKey(existingKeys, mediaType, input.ID, input.ExternalIDs)
 
 		if dryRun {
 			if isNew {
@@ -4648,27 +4622,11 @@ func (s *Service) executeJellyfinFavoritesSync(task config.ScheduledTask) (SyncR
 				result.ToAdd = append(result.ToAdd, config.DryRunItem{
 					Name:      item.Name,
 					MediaType: mediaType,
-					ID:        itemID,
+					ID:        input.ID,
 				})
 			}
 			imported++
 			continue
-		}
-
-		extIDs := item.ProviderIDs
-		if extIDs == nil {
-			extIDs = map[string]string{}
-		}
-		extIDs["jellyfin"] = item.ID
-
-		input := models.WatchlistUpsert{
-			ID:          itemID,
-			MediaType:   mediaType,
-			Name:        item.Name,
-			Year:        item.Year,
-			ExternalIDs: extIDs,
-			SyncSource:  syncSource,
-			SyncedAt:    &now,
 		}
 
 		if _, err := s.watchlistService.AddOrUpdate(profileID, input); err != nil {
@@ -4981,27 +4939,10 @@ func (s *Service) syncMDBListWatchlistToLocal(account *config.MDBListAccount, pr
 		}
 
 		if itemID == "" {
+			log.Printf("[scheduler] Skipping MDBList watchlist item %q: no provider IDs", item.Title)
 			continue
 		}
-
-		for _, key := range schedulerWatchlistMatchKeys(mediaType, itemID, extIDs) {
-			mdblistItemKeys[key] = true
-		}
-		isNew := !schedulerWatchlistHasAnyKey(existingKeys, mediaType, itemID, extIDs)
-
-		if dryRun {
-			if isNew {
-				result.ToAdd = append(result.ToAdd, config.DryRunItem{
-					Name:      item.Title,
-					MediaType: mediaType,
-					ID:        itemID,
-				})
-			}
-			imported++
-			continue
-		}
-
-		input := models.WatchlistUpsert{
+		input := s.enrichSyncedWatchlistIdentity("MDBList", models.WatchlistUpsert{
 			ID:          itemID,
 			MediaType:   mediaType,
 			Name:        item.Title,
@@ -5009,6 +4950,23 @@ func (s *Service) syncMDBListWatchlistToLocal(account *config.MDBListAccount, pr
 			ExternalIDs: extIDs,
 			SyncSource:  syncSource,
 			SyncedAt:    &now,
+		})
+
+		for _, key := range schedulerWatchlistMatchKeys(mediaType, input.ID, input.ExternalIDs) {
+			mdblistItemKeys[key] = true
+		}
+		isNew := !schedulerWatchlistHasAnyKey(existingKeys, mediaType, input.ID, input.ExternalIDs)
+
+		if dryRun {
+			if isNew {
+				result.ToAdd = append(result.ToAdd, config.DryRunItem{
+					Name:      item.Title,
+					MediaType: mediaType,
+					ID:        input.ID,
+				})
+			}
+			imported++
+			continue
 		}
 
 		if _, err := s.watchlistService.AddOrUpdate(profileID, input); err != nil {
@@ -5091,6 +5049,14 @@ func schedulerWatchlistMatchKeys(mediaType, id string, externalIDs map[string]st
 	if v := externalIDs["imdb"]; v != "" {
 		add(v)
 		add("imdb:" + v)
+	}
+	// Source-native IDs are required to reconcile an older source-only row after
+	// metadata enrichment adds a canonical TMDB/TVDB/IMDb identity.
+	for _, provider := range []string{"plex", "trakt", "jellyfin"} {
+		if v := externalIDs[provider]; v != "" {
+			add(v)
+			add(provider + ":" + v)
+		}
 	}
 	return keys
 }

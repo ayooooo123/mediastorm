@@ -46,6 +46,27 @@ func TestResolveMoviePreservesExplicitProviderIDWhenExternalIDsAreSparse(t *test
 	}
 }
 
+func TestResolveTitleKeepsSourceNativeAliasesAfterCanonicalization(t *testing.T) {
+	identity := Resolve(Input{
+		MediaType: "series",
+		ID:        "5fd2a1b82de5fd002dd4c7b1",
+		ExternalIDs: map[string]string{
+			"tmdb": "196322",
+			"plex": "5fd2a1b82de5fd002dd4c7b1",
+		},
+	})
+
+	if identity.ID != "tmdb:tv:196322" {
+		t.Fatalf("ID = %q, want tmdb:tv:196322", identity.ID)
+	}
+	if !contains(identity.CandidateKeys, "series:5fd2a1b82de5fd002dd4c7b1") {
+		t.Fatalf("CandidateKeys missing legacy Plex alias: %#v", identity.CandidateKeys)
+	}
+	if _, ok := identity.Tokens["source:plex:5fd2a1b82de5fd002dd4c7b1"]; !ok {
+		t.Fatalf("Tokens missing Plex source identity: %#v", identity.Tokens)
+	}
+}
+
 func TestResolveEpisodeCanonicalizesSeriesIDAndSuffix(t *testing.T) {
 	identity := Resolve(Input{
 		MediaType:     "episode",
@@ -330,12 +351,12 @@ func TestSanitizeIDStripsRedundantMediaTypePrefixes(t *testing.T) {
 
 func TestSanitizeIDStripsURLAccessTokens(t *testing.T) {
 	cases := map[string]string{
-		"http://192.168.1.100:7777/api/live/recordings/abc/stream?token=SECRET":            "http://192.168.1.100:7777/api/live/recordings/abc/stream",
-		"/api/live/recordings/abc/stream?token=SECRET&profileid=default":                   "/api/live/recordings/abc/stream?profileid=default",
-		"https://host/api/live/recordings/abc/stream?profileid=x&token=SECRET&title=show":  "https://host/api/live/recordings/abc/stream?profileid=x&title=show",
-		"https://host/api/live/recordings/abc/stream?profileid=x&token=SECRET":             "https://host/api/live/recordings/abc/stream?profileid=x",
-		"some title with token= in it":                                                     "some title with token= in it",
-		"tmdb:movie:603":                                                                   "tmdb:movie:603",
+		"http://192.168.1.100:7777/api/live/recordings/abc/stream?token=SECRET":           "http://192.168.1.100:7777/api/live/recordings/abc/stream",
+		"/api/live/recordings/abc/stream?token=SECRET&profileid=default":                  "/api/live/recordings/abc/stream?profileid=default",
+		"https://host/api/live/recordings/abc/stream?profileid=x&token=SECRET&title=show": "https://host/api/live/recordings/abc/stream?profileid=x&title=show",
+		"https://host/api/live/recordings/abc/stream?profileid=x&token=SECRET":            "https://host/api/live/recordings/abc/stream?profileid=x",
+		"some title with token= in it":                                                    "some title with token= in it",
+		"tmdb:movie:603":                                                                  "tmdb:movie:603",
 	}
 	for input, want := range cases {
 		if got := SanitizeID(input); got != want {

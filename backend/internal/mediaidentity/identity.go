@@ -387,8 +387,10 @@ func CandidateIDs(mediaType, id, seriesID string, seasonNumber, episodeNumber in
 			add(v)
 			add("imdb:" + v)
 		}
+		addSourceTitleCandidates(add, externalIDs)
 	case "series":
 		addSeriesCandidates(add, externalIDs)
+		addSourceTitleCandidates(add, externalIDs)
 	case "episode":
 		seriesCandidates := CandidateIDs("series", seriesID, "", 0, 0, externalIDs)
 		for _, candidateSeriesID := range seriesCandidates {
@@ -419,6 +421,11 @@ func IdentityTokens(mediaType, id, seriesID string, seasonNumber, episodeNumber 
 		for _, key := range []string{"tvdb", "tmdb", "imdb"} {
 			if v := externalIDs[key]; v != "" {
 				add("title:"+key, v)
+			}
+		}
+		for _, key := range []string{"plex", "trakt", "jellyfin"} {
+			if v := externalIDs[key]; v != "" {
+				add("source:"+key, v)
 			}
 		}
 	case "episode":
@@ -480,6 +487,15 @@ func addSeriesCandidates(add func(string), externalIDs map[string]string) {
 	if v := normalizeIMDB(externalIDs["imdb"]); v != "" {
 		add("imdb:" + v)
 		add(v)
+	}
+}
+
+func addSourceTitleCandidates(add func(string), externalIDs map[string]string) {
+	for _, provider := range []string{"plex", "trakt", "jellyfin"} {
+		if v := externalIDs[provider]; v != "" {
+			add(provider + ":" + v)
+			add(v)
+		}
 	}
 }
 

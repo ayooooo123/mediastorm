@@ -3799,7 +3799,7 @@ func (s *Service) resolveTMDBSeriesID(ctx context.Context, req models.SeriesDeta
 		if result.Title.TMDBID <= 0 || !strings.EqualFold(strings.TrimSpace(result.Title.MediaType), "series") {
 			continue
 		}
-		if !normalizedListTitleEqual(name, result.Title.Name) && !normalizedListTitleEqual(name, result.Title.OriginalName) {
+		if !normalizedListTitleYearEqual(name, result.Title.Name, req.Year) && !normalizedListTitleYearEqual(name, result.Title.OriginalName, req.Year) {
 			continue
 		}
 		if req.Year > 0 && result.Title.Year > 0 && req.Year != result.Title.Year {
@@ -9790,7 +9790,7 @@ func selectTMDBMovieSearchResult(title string, year int, results []models.Search
 		if result.Title.TMDBID <= 0 {
 			continue
 		}
-		if !normalizedListTitleEqual(title, result.Title.Name) && !normalizedListTitleEqual(title, result.Title.OriginalName) {
+		if !normalizedListTitleYearEqual(title, result.Title.Name, year) && !normalizedListTitleYearEqual(title, result.Title.OriginalName, year) {
 			continue
 		}
 		if year > 0 && result.Title.Year > 0 && result.Title.Year != year {
@@ -9842,6 +9842,33 @@ func normalizedListTitleEqual(left, right string) bool {
 		return false
 	}
 	return leftNorm == rightNorm || stripLeadingListTitleArticle(leftNorm) == stripLeadingListTitleArticle(rightNorm)
+}
+
+// normalizedListTitleYearEqual accepts provider display titles that append the
+// already-known release year, such as "Dark Matter (2024)". Some sync sources
+// use that form to disambiguate remakes while TMDB returns the canonical title
+// without the suffix.
+func normalizedListTitleYearEqual(left, right string, year int) bool {
+	if normalizedListTitleEqual(left, right) {
+		return true
+	}
+	if year <= 0 {
+		return false
+	}
+	return normalizedListTitleEqual(stripTrailingListTitleYear(left, year), stripTrailingListTitleYear(right, year))
+}
+
+func stripTrailingListTitleYear(title string, year int) string {
+	title = strings.TrimSpace(title)
+	for _, suffix := range []string{
+		fmt.Sprintf(" (%d)", year),
+		fmt.Sprintf(" [%d]", year),
+	} {
+		if strings.HasSuffix(title, suffix) {
+			return strings.TrimSpace(strings.TrimSuffix(title, suffix))
+		}
+	}
+	return title
 }
 
 func normalizeListTitleForMatch(title string) string {

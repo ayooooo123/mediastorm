@@ -12237,29 +12237,37 @@ func (h *AdminUIHandler) PlexImportWatchlist(w http.ResponseWriter, r *http.Requ
 	ctx := r.Context()
 
 	for _, item := range req.Items {
-		// Determine the best ID to use - prefer TMDB, then IMDB, then Plex ratingKey
-		itemID := item.RatingKey
-		if tmdbID, ok := item.ExternalIDs["tmdb"]; ok && tmdbID != "" {
-			itemID = tmdbID
-		} else if imdbID, ok := item.ExternalIDs["imdb"]; ok && imdbID != "" {
-			itemID = imdbID
-		}
-
-		// Fetch overview from metadata service if available
-		var overview string
+		metadata := itemMetadata{}
 		if h.metadataService != nil {
-			overview = h.fetchOverviewForItem(ctx, item.MediaType, item.Title, item.Year, item.ExternalIDs)
+			metadata = h.fetchMetadataForItem(ctx, item.MediaType, item.Title, item.Year, item.ExternalIDs)
+		}
+		externalIDs := mergeImportedWatchlistIDs(item.ExternalIDs, metadata.ExternalIDs)
+		if externalIDs == nil {
+			externalIDs = make(map[string]string)
+		}
+		externalIDs["plex"] = item.RatingKey
+		name := item.Title
+		if metadata.Name != "" {
+			name = metadata.Name
 		}
 
 		input := models.WatchlistUpsert{
-			ID:          itemID,
-			MediaType:   item.MediaType,
-			Name:        item.Title,
-			Overview:    overview,
-			Year:        item.Year,
-			PosterURL:   item.PosterURL,
-			BackdropURL: item.BackdropURL,
-			ExternalIDs: item.ExternalIDs,
+			ID:              item.RatingKey,
+			MediaType:       item.MediaType,
+			Name:            name,
+			Overview:        metadata.Overview,
+			Year:            item.Year,
+			PosterURL:       item.PosterURL,
+			BackdropURL:     item.BackdropURL,
+			ExternalIDs:     externalIDs,
+			Status:          metadata.Status,
+			LifecycleStatus: metadata.LifecycleStatus,
+		}
+		if input.PosterURL == "" {
+			input.PosterURL = metadata.PosterURL
+		}
+		if input.BackdropURL == "" {
+			input.BackdropURL = metadata.BackdropURL
 		}
 
 		_, err := h.watchlistService.AddOrUpdate(req.ProfileID, input)
@@ -12286,9 +12294,13 @@ func (h *AdminUIHandler) PlexImportWatchlist(w http.ResponseWriter, r *http.Requ
 
 // itemMetadata holds metadata fetched for watchlist import
 type itemMetadata struct {
-	Overview    string
-	PosterURL   string
-	BackdropURL string
+	Name            string
+	Overview        string
+	PosterURL       string
+	BackdropURL     string
+	Status          string
+	LifecycleStatus string
+	ExternalIDs     map[string]string
 }
 
 // fetchMetadataForItem fetches overview and artwork for a watchlist item from metadata service
@@ -12326,7 +12338,11 @@ func (h *AdminUIHandler) fetchMetadataForItem(ctx context.Context, mediaType, na
 			TVDBID: tvdbID,
 		}
 		if title, err := h.metadataService.MovieDetails(ctx, query); err == nil && title != nil {
+			result.Name = title.Name
 			result.Overview = title.Overview
+			result.Status = title.Status
+			result.LifecycleStatus = title.LifecycleStatus
+			result.ExternalIDs = importedTitleExternalIDs(title)
 			if title.Poster != nil {
 				result.PosterURL = title.Poster.URL
 			}
@@ -12342,7 +12358,11 @@ func (h *AdminUIHandler) fetchMetadataForItem(ctx context.Context, mediaType, na
 			TVDBID: tvdbID,
 		}
 		if title, err := h.metadataService.SeriesInfo(ctx, query); err == nil && title != nil {
+			result.Name = title.Name
 			result.Overview = title.Overview
+			result.Status = title.Status
+			result.LifecycleStatus = title.LifecycleStatus
+			result.ExternalIDs = importedTitleExternalIDs(title)
 			if title.Poster != nil {
 				result.PosterURL = title.Poster.URL
 			}
@@ -12353,6 +12373,41 @@ func (h *AdminUIHandler) fetchMetadataForItem(ctx context.Context, mediaType, na
 	}
 
 	return result
+}
+
+func importedTitleExternalIDs(title *models.Title) map[string]string {
+	if title == nil {
+		return nil
+	}
+	ids := make(map[string]string, 3)
+	if title.TMDBID > 0 {
+		ids["tmdb"] = strconv.FormatInt(title.TMDBID, 10)
+	}
+	if title.TVDBID > 0 {
+		ids["tvdb"] = strconv.FormatInt(title.TVDBID, 10)
+	}
+	if strings.TrimSpace(title.IMDBID) != "" {
+		ids["imdb"] = strings.TrimSpace(title.IMDBID)
+	}
+	return ids
+}
+
+func mergeImportedWatchlistIDs(base, resolved map[string]string) map[string]string {
+	ids := make(map[string]string, len(base)+len(resolved))
+	for key, value := range base {
+		if value = strings.TrimSpace(value); value != "" {
+			ids[strings.ToLower(strings.TrimSpace(key))] = value
+		}
+	}
+	for key, value := range resolved {
+		if value = strings.TrimSpace(value); value != "" {
+			ids[strings.ToLower(strings.TrimSpace(key))] = value
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	return ids
 }
 
 // fetchOverviewForItem fetches the overview/description for a watchlist item from metadata service
@@ -12887,37 +12942,40 @@ func (h *AdminUIHandler) TraktImportWatchlist(w http.ResponseWriter, r *http.Req
 	ctx := r.Context()
 
 	for _, item := range req.Items {
-		// Determine the best ID to use - prefer TMDB, then IMDB, then Trakt
-		itemID := ""
-		if tmdbID, ok := item.ExternalIDs["tmdb"]; ok && tmdbID != "" {
-			itemID = tmdbID
-		} else if imdbID, ok := item.ExternalIDs["imdb"]; ok && imdbID != "" {
-			itemID = imdbID
-		} else if traktID, ok := item.ExternalIDs["trakt"]; ok && traktID != "" {
-			itemID = traktID
-		}
-
-		if itemID == "" {
-			errorCount++
-			errors = append(errors, fmt.Sprintf("%s: no valid ID found", item.Title))
-			continue
-		}
-
 		// Fetch metadata (overview and artwork) from metadata service if available
 		var metadata itemMetadata
 		if h.metadataService != nil {
 			metadata = h.fetchMetadataForItem(ctx, item.MediaType, item.Title, item.Year, item.ExternalIDs)
 		}
+		externalIDs := mergeImportedWatchlistIDs(item.ExternalIDs, metadata.ExternalIDs)
+		itemID := ""
+		for _, key := range []string{"tmdb", "imdb", "tvdb", "trakt"} {
+			if value := strings.TrimSpace(externalIDs[key]); value != "" {
+				itemID = value
+				break
+			}
+		}
+		if itemID == "" {
+			errorCount++
+			errors = append(errors, fmt.Sprintf("%s: no valid ID found", item.Title))
+			continue
+		}
+		name := item.Title
+		if metadata.Name != "" {
+			name = metadata.Name
+		}
 
 		input := models.WatchlistUpsert{
-			ID:          itemID,
-			MediaType:   item.MediaType,
-			Name:        item.Title,
-			Overview:    metadata.Overview,
-			Year:        item.Year,
-			PosterURL:   metadata.PosterURL,
-			BackdropURL: metadata.BackdropURL,
-			ExternalIDs: item.ExternalIDs,
+			ID:              itemID,
+			MediaType:       item.MediaType,
+			Name:            name,
+			Overview:        metadata.Overview,
+			Year:            item.Year,
+			PosterURL:       metadata.PosterURL,
+			BackdropURL:     metadata.BackdropURL,
+			ExternalIDs:     externalIDs,
+			Status:          metadata.Status,
+			LifecycleStatus: metadata.LifecycleStatus,
 		}
 
 		_, err := h.watchlistService.AddOrUpdate(req.ProfileID, input)

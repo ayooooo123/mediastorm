@@ -1789,6 +1789,100 @@ func TestSyncBidirectional_ResolvesPlexIDFromExternalIDsForLocalExport(t *testin
 	}
 }
 
+func TestSyncBidirectional_EnrichesPlexOnlyIdentityAndMergesDuplicate(t *testing.T) {
+	tmpDir := t.TempDir()
+	watchlistSvc, err := watchlist.NewService(tmpDir)
+	if err != nil {
+		t.Fatalf("watchlist.NewService() error = %v", err)
+	}
+	if _, err := watchlistSvc.AddOrUpdate("profile-1", models.WatchlistUpsert{
+		ID:        "tmdb:tv:196322",
+		MediaType: "series",
+		Name:      "Dark Matter",
+		Year:      2024,
+		ExternalIDs: map[string]string{
+			"tmdb": "196322",
+		},
+		Status: "released",
+	}); err != nil {
+		t.Fatalf("seed canonical item: %v", err)
+	}
+	if _, err := watchlistSvc.AddOrUpdate("profile-1", models.WatchlistUpsert{
+		ID:        "5fd2a1b82de5fd002dd4c7b1",
+		MediaType: "series",
+		Name:      "Dark Matter (2024)",
+		Year:      2024,
+		ExternalIDs: map[string]string{
+			"plex": "5fd2a1b82de5fd002dd4c7b1",
+		},
+	}); err != nil {
+		t.Fatalf("seed Plex-only duplicate: %v", err)
+	}
+
+	origTransport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.URL.Host == "discover.provider.plex.tv" && req.URL.Path == "/library/sections/watchlist/all":
+			return jsonResponse(http.StatusOK, `{
+				"MediaContainer": {
+					"size": 1,
+					"totalSize": 1,
+					"Metadata": [{
+						"ratingKey": "5fd2a1b82de5fd002dd4c7b1",
+						"guid": "plex://show/5fd2a1b82de5fd002dd4c7b1",
+						"type": "show",
+						"title": "Dark Matter (2024)",
+						"year": 2024
+					}]
+				}
+			}`), nil
+		case req.URL.Host == "discover.provider.plex.tv" && req.URL.Path == "/library/metadata/5fd2a1b82de5fd002dd4c7b1":
+			return jsonResponse(http.StatusOK, `{"MediaContainer":{"Metadata":[{"guid":"plex://show/5fd2a1b82de5fd002dd4c7b1"}]}}`), nil
+		default:
+			t.Fatalf("unexpected Plex request: %s", req.URL)
+			return nil, io.EOF
+		}
+	})
+	defer func() { http.DefaultTransport = origTransport }()
+
+	metadataSvc := &fakeSchedulerMetadataService{details: &models.SeriesDetails{Title: models.Title{
+		ID:              "tmdb:tv:196322",
+		Name:            "Dark Matter",
+		Year:            2024,
+		MediaType:       "series",
+		TMDBID:          196322,
+		TVDBID:          393159,
+		IMDBID:          "tt19231492",
+		Status:          "released",
+		LifecycleStatus: "Returning Series",
+	}}}
+	svc := &Service{
+		plexClient:       plex.NewClient("test-client"),
+		watchlistService: watchlistSvc,
+		metadataService:  metadataSvc,
+	}
+
+	if _, err := svc.syncBidirectional("plex-token", "profile-1", "plex:acc:task", "additive", "source_wins", false); err != nil {
+		t.Fatalf("syncBidirectional() error = %v", err)
+	}
+	items, err := watchlistSvc.List("profile-1")
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("len(items) = %d, want one merged item: %#v", len(items), items)
+	}
+	if items[0].ID != "tmdb:tv:196322" {
+		t.Fatalf("item ID = %q, want tmdb:tv:196322", items[0].ID)
+	}
+	if got := items[0].ExternalIDs["plex"]; got != "5fd2a1b82de5fd002dd4c7b1" {
+		t.Fatalf("Plex ID = %q, want imported rating key", got)
+	}
+	if metadataSvc.lastQuery.Name != "Dark Matter (2024)" || metadataSvc.lastQuery.Year != 2024 {
+		t.Fatalf("metadata query = %#v", metadataSvc.lastQuery)
+	}
+}
+
 func TestSyncMDBListWatchlistToLocal_MirrorModeKeepsCanonicalMergedItem(t *testing.T) {
 	tmpDir := t.TempDir()
 	watchlistSvc, err := watchlist.NewService(tmpDir)

@@ -151,6 +151,21 @@ func TestSeriesDetailsLiteUsesTMDBWhenTVDBIsUnconfigured(t *testing.T) {
 	}
 }
 
+func TestNormalizedListTitleYearEqualAcceptsMatchingDisplayYearSuffix(t *testing.T) {
+	if !normalizedListTitleYearEqual("Dark Matter (2024)", "Dark Matter", 2024) {
+		t.Fatal("expected matching parenthesized year suffix to be ignored")
+	}
+	if !normalizedListTitleYearEqual("Dark Matter [2024]", "Dark Matter", 2024) {
+		t.Fatal("expected matching bracketed year suffix to be ignored")
+	}
+	if normalizedListTitleYearEqual("Dark Matter (2015)", "Dark Matter", 2024) {
+		t.Fatal("expected a different year suffix to remain significant")
+	}
+	if normalizedListTitleYearEqual("Dark Matter (2024)", "Dark Matters", 2024) {
+		t.Fatal("expected distinct titles not to match")
+	}
+}
+
 func TestBatchSeriesEndpointsAcceptTMDBOnlySeriesWithoutTVDBMapping(t *testing.T) {
 	var tvdbCalls atomic.Int32
 	tvdbHTTP := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {

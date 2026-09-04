@@ -276,8 +276,11 @@ func (c *Client) GetWatchlistDetailsWithProgress(authToken string, items []Watch
 	for w := 0; w < numWorkers; w++ {
 		go func() {
 			for j := range jobs {
-				externalIDs, _ := c.GetItemDetails(authToken, j.item.RatingKey)
-				if externalIDs == nil {
+				externalIDs, err := c.GetItemDetails(authToken, j.item.RatingKey)
+				if err != nil {
+					log.Printf("[plex] watchlist detail lookup failed ratingKey=%q title=%q: %v", j.item.RatingKey, j.item.Title, err)
+				}
+				if len(externalIDs) == 0 {
 					externalIDs = ParseGUID(j.item.GUID)
 				}
 				results[j.index] = externalIDs
@@ -384,7 +387,7 @@ func (c *Client) GetItemDetails(authToken string, ratingKey string) (map[string]
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, nil // Return empty on error, non-critical
+		return nil, fmt.Errorf("plex item details failed: %s", resp.Status)
 	}
 
 	var detailsResp struct {
@@ -399,7 +402,7 @@ func (c *Client) GetItemDetails(authToken string, ratingKey string) (map[string]
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&detailsResp); err != nil {
-		return nil, nil
+		return nil, fmt.Errorf("decode plex item details: %w", err)
 	}
 
 	ids := make(map[string]string)
