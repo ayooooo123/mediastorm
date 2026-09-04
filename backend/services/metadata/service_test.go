@@ -480,6 +480,15 @@ func TestGetMovieDetailsFromTMDBHydratesLogoOnServiceCacheHit(t *testing.T) {
 		tmdb:   newTMDBClient("test-key", "en", &http.Client{Transport: rt}, cache),
 		cache:  cache,
 	}
+	svc.mdblist = newMDBListClient("test-key", []string{"tomatoes", "audience"}, true, 24)
+	svc.ratingsCache = newFileCache(t.TempDir(), 24)
+	if err := svc.ratingsCache.set(ratingsDiskCacheKey("tt34564059", "movie"), []models.Rating{
+		{Source: "imdb", Value: 6.2, Max: 10},
+		{Source: "tomatoes", Value: 80, Max: 100},
+		{Source: "audience", Value: 75, Max: 100},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	const tmdbID int64 = 4512
 	detailsCacheID := cacheKey("tmdb", "movie", "details", "v4", "en", strconv.FormatInt(tmdbID, 10))
 	if err := cache.set(detailsCacheID, models.Title{
@@ -487,6 +496,7 @@ func TestGetMovieDetailsFromTMDBHydratesLogoOnServiceCacheHit(t *testing.T) {
 		Name:      "Cached Movie",
 		MediaType: "movie",
 		TMDBID:    tmdbID,
+		IMDBID:    "tt34564059",
 	}); err != nil {
 		t.Fatalf("seed details cache: %v", err)
 	}
@@ -499,6 +509,9 @@ func TestGetMovieDetailsFromTMDBHydratesLogoOnServiceCacheHit(t *testing.T) {
 	got, err := svc.getMovieDetailsFromTMDB(context.Background(), models.MovieDetailsQuery{TMDBID: tmdbID})
 	if err != nil {
 		t.Fatalf("getMovieDetailsFromTMDB: %v", err)
+	}
+	if len(got.Ratings) != 2 || got.Ratings[0].Source != "tomatoes" || got.Ratings[1].Source != "audience" {
+		t.Fatalf("expected enabled RT ratings, got %#v", got.Ratings)
 	}
 	if got.Logo == nil || got.Logo.URL != logo.URL {
 		t.Fatalf("logo = %#v, want %q", got.Logo, logo.URL)
@@ -550,12 +563,21 @@ func TestMovieDetailsUsesTMDBWhenTVDBIsUnconfiguredDespiteStoredTVDBID(t *testin
 func TestGetMovieDetailsFromTMDBHydratesLogoOnFreshResponse(t *testing.T) {
 	cache := newFileCache(t.TempDir(), 24)
 	rt := &countingRoundTripper{
-		body: `{"id":4512,"title":"Fresh Movie","release_date":"2007-09-02","poster_path":"/poster.jpg","backdrop_path":"/backdrop.jpg"}`,
+		body: `{"id":4512,"title":"Fresh Movie","imdb_id":"tt34564059","release_date":"2007-09-02","poster_path":"/poster.jpg","backdrop_path":"/backdrop.jpg"}`,
 	}
 	svc := &Service{
 		client: &tvdbClient{language: "en"},
 		tmdb:   newTMDBClient("test-key", "en", &http.Client{Transport: rt}, cache),
 		cache:  cache,
+	}
+	svc.mdblist = newMDBListClient("test-key", []string{"tomatoes", "audience"}, true, 24)
+	svc.ratingsCache = newFileCache(t.TempDir(), 24)
+	if err := svc.ratingsCache.set(ratingsDiskCacheKey("tt34564059", "movie"), []models.Rating{
+		{Source: "imdb", Value: 6.2, Max: 10},
+		{Source: "tomatoes", Value: 80, Max: 100},
+		{Source: "audience", Value: 75, Max: 100},
+	}); err != nil {
+		t.Fatal(err)
 	}
 	const tmdbID int64 = 4512
 	if err := cache.set(
@@ -581,6 +603,9 @@ func TestGetMovieDetailsFromTMDBHydratesLogoOnFreshResponse(t *testing.T) {
 	got, err := svc.getMovieDetailsFromTMDB(context.Background(), models.MovieDetailsQuery{TMDBID: tmdbID})
 	if err != nil {
 		t.Fatalf("getMovieDetailsFromTMDB: %v", err)
+	}
+	if len(got.Ratings) != 2 || got.Ratings[0].Source != "tomatoes" || got.Ratings[1].Source != "audience" {
+		t.Fatalf("expected enabled RT ratings, got %#v", got.Ratings)
 	}
 	if got.Logo == nil || got.Logo.URL != logo.URL {
 		t.Fatalf("logo = %#v, want %q", got.Logo, logo.URL)

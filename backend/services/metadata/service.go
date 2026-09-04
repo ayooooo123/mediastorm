@@ -2193,6 +2193,7 @@ func (s *Service) getMovieDetailsFromTMDB(ctx context.Context, req models.MovieD
 		if s.applyCachedTMDBImages(ctx, &cached, "movie", req.TMDBID) {
 			_ = s.cache.set(cacheID, cached)
 		}
+		s.hydrateTMDBRatings(ctx, &cached, req.IMDBID, "movie")
 		return &cached, nil
 	}
 
@@ -2244,10 +2245,30 @@ func (s *Service) getMovieDetailsFromTMDB(ctx context.Context, req models.MovieD
 	// and clean artwork variants come from its separate images endpoint.
 	s.applyCachedTMDBImages(ctx, &movieTitle, "movie", req.TMDBID)
 
+	s.hydrateTMDBRatings(ctx, &movieTitle, req.IMDBID, "movie")
+
 	// Cache the result
 	_ = s.cache.set(cacheID, movieTitle)
 
 	return &movieTitle, nil
+}
+
+// hydrateTMDBRatings keeps TMDB-only details consistent with the TVDB path.
+// Run on cache hits too so existing metadata gains ratings and display settings apply.
+func (s *Service) hydrateTMDBRatings(ctx context.Context, title *models.Title, fallbackIMDBID, mediaType string) {
+	imdbID := title.IMDBID
+	if imdbID == "" {
+		imdbID = fallbackIMDBID
+	}
+	if imdbID == "" || s.mdblist == nil || !s.mdblist.IsEnabled() {
+		return
+	}
+	ratings, err := s.getMDBListDisplayRatings(ctx, imdbID, mediaType, 3*time.Second)
+	if err != nil {
+		log.Printf("[metadata] failed to hydrate TMDB ratings mediaType=%s imdbId=%s: %v", mediaType, imdbID, err)
+		return
+	}
+	title.Ratings = ratings
 }
 
 // searchTVDBMovie searches for a movie in TVDB by title, year, or remote ID
@@ -3926,6 +3947,7 @@ func (s *Service) tmdbSeriesDetailsFallback(ctx context.Context, req models.Seri
 		if cacheUpdated {
 			_ = s.cache.set(cacheID, cached)
 		}
+		s.hydrateTMDBRatings(ctx, &cached.Title, req.IMDBID, "show")
 		return &cached, nil
 	}
 
@@ -3966,6 +3988,7 @@ func (s *Service) tmdbSeriesDetailsFallback(ctx context.Context, req models.Seri
 	details.ActiveOrdering = "official"
 	models.NormalizeReleaseAbsoluteEpisodeNumbers(details)
 	metadataTracef("[metadata] using TMDB series details fallback tmdbId=%d name=%q seasons=%d cause=%v", req.TMDBID, details.Title.Name, len(details.Seasons), cause)
+	s.hydrateTMDBRatings(ctx, &details.Title, req.IMDBID, "show")
 	_ = s.cache.set(cacheID, *details)
 	return details, nil
 }
