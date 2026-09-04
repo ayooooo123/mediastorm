@@ -374,7 +374,7 @@ func filterBundleForService(bundle effectiveFilterBundle, serviceType models.Con
 
 // getEffectiveFilterSettings returns the filtering settings to use for a search.
 // Settings cascade: Global -> Profile -> Client (client settings win)
-func (s *Service) getEffectiveFilterSettings(userID, clientID string, globalSettings config.Settings) (models.FilterSettings, models.AnimeFilteringSettings, effectiveOverrides) {
+func (s *Service) getEffectiveFilterSettings(userID, clientID string, throughput *models.AdaptiveThroughputContext, globalSettings config.Settings) (models.FilterSettings, models.AnimeFilteringSettings, effectiveOverrides) {
 	// Start with global settings (as pointers)
 	filterSettings := models.FilterSettings{
 		MaxSizeMovieGB:                         models.FloatPtr(globalSettings.Filtering.MaxSizeMovieGB),
@@ -455,11 +455,13 @@ func (s *Service) getEffectiveFilterSettings(userID, clientID string, globalSett
 	}
 
 	// Layer 3: Client settings override profile (field-by-field, only if set)
+	var adaptivePlayback *models.AdaptivePlaybackSettings
 	if clientID != "" && s.clientSettings != nil {
 		clientSettings, err := s.clientSettings.Get(clientID, userID)
 		if err != nil {
 			log.Printf("[indexer] failed to get client settings for %s: %v", clientID, err)
 		} else if clientSettings != nil && !clientSettings.IsEmpty() {
+			adaptivePlayback = clientSettings.AdaptivePlayback
 			log.Printf("[indexer] applying per-client filtering overrides for client %s", clientID)
 			if clientSettings.MaxSizeMovieGB != nil {
 				filterSettings.MaxSizeMovieGB = clientSettings.MaxSizeMovieGB
@@ -506,25 +508,22 @@ func (s *Service) getEffectiveFilterSettings(userID, clientID string, globalSett
 			if clientSettings.AnimePreferredLanguage != nil {
 				animeSettings.AnimePreferredLanguage = clientSettings.AnimePreferredLanguage
 			}
-
-			// Layer 4: Adaptive playback overlays transient size/HDR caps derived
-			// from this device's reported throughput + display capability. Gated by
-			// the global toggle; computed on the fly and never persisted into the
-			// flat filter fields.
-			models.ComputeAdaptiveCaps(
-				models.BoolVal(filterSettings.AdaptivePlaybackEnabled, globalSettings.Filtering.AdaptivePlaybackEnabled),
-				models.FloatVal(filterSettings.AdaptiveTargetBufferFactor, globalSettings.Filtering.AdaptiveTargetBufferFactor),
-				clientSettings.AdaptivePlayback,
-				time.Now(),
-			).ApplyTo(&filterSettings)
 		}
 	}
+
+	// Layer 4: apply durable display capability plus volatile request throughput.
+	models.ComputeAdaptiveCaps(
+		models.BoolVal(filterSettings.AdaptivePlaybackEnabled, globalSettings.Filtering.AdaptivePlaybackEnabled),
+		models.FloatVal(filterSettings.AdaptiveTargetBufferFactor, globalSettings.Filtering.AdaptiveTargetBufferFactor),
+		models.AdaptiveSettingsForRequest(adaptivePlayback, throughput),
+		time.Now(),
+	).ApplyTo(&filterSettings)
 
 	return filterSettings, animeSettings, overrides
 }
 
-func (s *Service) getEffectiveFilterBundle(userID, clientID string, globalSettings config.Settings) (effectiveFilterBundle, models.AnimeFilteringSettings, effectiveOverrides) {
-	base, animeSettings, overrides := s.getEffectiveFilterSettings(userID, clientID, globalSettings)
+func (s *Service) getEffectiveFilterBundle(userID, clientID string, throughput *models.AdaptiveThroughputContext, globalSettings config.Settings) (effectiveFilterBundle, models.AnimeFilteringSettings, effectiveOverrides) {
+	base, animeSettings, overrides := s.getEffectiveFilterSettings(userID, clientID, throughput, globalSettings)
 	bundle := effectiveFilterBundle{Default: base, Debrid: base, Usenet: base}
 	var adaptivePlayback *models.AdaptivePlaybackSettings
 
@@ -583,7 +582,7 @@ func (s *Service) getEffectiveFilterBundle(userID, clientID string, globalSettin
 	caps := models.ComputeAdaptiveCaps(
 		models.BoolVal(base.AdaptivePlaybackEnabled, globalSettings.Filtering.AdaptivePlaybackEnabled),
 		models.FloatVal(base.AdaptiveTargetBufferFactor, globalSettings.Filtering.AdaptiveTargetBufferFactor),
-		adaptivePlayback,
+		models.AdaptiveSettingsForRequest(adaptivePlayback, throughput),
 		time.Now(),
 	)
 	caps.ApplyTo(&bundle.Default)
@@ -1250,24 +1249,25 @@ type SearchOptions struct {
 	MaxResults            int
 	IMDBID                string
 	TVDBID                int64
-	AlternateTitles       []string                    // Titles already obtained while hydrating the selected item
-	MediaType             string                      // "movie" or "series"
-	Year                  int                         // Release year (for movies)
-	CountryCode           string                      // Original production country from metadata
-	UserID                string                      // Optional: user ID for per-user filtering settings
-	ClientID              string                      // Optional: client ID for per-client filtering settings
-	TotalSeriesEpisodes   int                         // Deprecated: use EpisodeResolver instead
-	EpisodeResolver       filter.EpisodeCountResolver // Optional: resolver for accurate episode counts from metadata
-	AbsoluteEpisodeNumber int                         // Optional: absolute episode number for anime (e.g., 1153 for One Piece)
-	IsAnime               bool                        // True for anime content - requires waiting for Nyaa scraper
-	IsDaily               bool                        // True for daily shows (talk shows, news) that use date-based naming
-	TargetAirDate         string                      // For daily shows: air date in YYYY-MM-DD format
-	EpisodeAirYear        int                         // Year the target episode aired (for year filter tolerance)
-	EpisodeReleased       bool                        // True only when metadata confirms the target episode has aired
-	IncludeFiltered       bool                        // When true, return filtered results alongside passed results
-	IncludeScoreBreakdown bool                        // When true, attach per-criterion scoring details (admin search tester)
-	SkipFilter            bool                        // When true, skip filtering entirely (used by SearchTest)
-	UseDownloadRanking    bool                        // When true, apply download-only preferred terms as a final ranking boost
+	AlternateTitles       []string                          // Titles already obtained while hydrating the selected item
+	MediaType             string                            // "movie" or "series"
+	Year                  int                               // Release year (for movies)
+	CountryCode           string                            // Original production country from metadata
+	UserID                string                            // Optional: user ID for per-user filtering settings
+	ClientID              string                            // Optional: client ID for per-client filtering settings
+	AdaptiveThroughput    *models.AdaptiveThroughputContext // Volatile route estimate supplied with this request
+	TotalSeriesEpisodes   int                               // Deprecated: use EpisodeResolver instead
+	EpisodeResolver       filter.EpisodeCountResolver       // Optional: resolver for accurate episode counts from metadata
+	AbsoluteEpisodeNumber int                               // Optional: absolute episode number for anime (e.g., 1153 for One Piece)
+	IsAnime               bool                              // True for anime content - requires waiting for Nyaa scraper
+	IsDaily               bool                              // True for daily shows (talk shows, news) that use date-based naming
+	TargetAirDate         string                            // For daily shows: air date in YYYY-MM-DD format
+	EpisodeAirYear        int                               // Year the target episode aired (for year filter tolerance)
+	EpisodeReleased       bool                              // True only when metadata confirms the target episode has aired
+	IncludeFiltered       bool                              // When true, return filtered results alongside passed results
+	IncludeScoreBreakdown bool                              // When true, attach per-criterion scoring details (admin search tester)
+	SkipFilter            bool                              // When true, skip filtering entirely (used by SearchTest)
+	UseDownloadRanking    bool                              // When true, apply download-only preferred terms as a final ranking boost
 
 	// Internal Newznab request controls used by the daily-show tiered search.
 	usenetSearchType      string
@@ -1540,7 +1540,7 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBR
 	settings = config.FilterSettingsForProfile(settings, opts.UserID)
 
 	// Get effective filtering settings (cascade: global -> profile -> client)
-	filterBundle, animeSettings, filterOverrides := s.getEffectiveFilterBundle(opts.UserID, opts.ClientID, settings)
+	filterBundle, animeSettings, filterOverrides := s.getEffectiveFilterBundle(opts.UserID, opts.ClientID, opts.AdaptiveThroughput, settings)
 	filterSettings := filterBundle.Default
 
 	// Inject anime language filter-out terms early (before search/filter calls)
@@ -1823,7 +1823,7 @@ func (s *Service) SearchWithScoring(ctx context.Context, opts SearchOptions) ([]
 	}
 	settings = config.FilterSettingsForProfile(settings, opts.UserID)
 
-	filterBundle, animeSettings, filterOverrides := s.getEffectiveFilterBundle(opts.UserID, opts.ClientID, settings)
+	filterBundle, animeSettings, filterOverrides := s.getEffectiveFilterBundle(opts.UserID, opts.ClientID, opts.AdaptiveThroughput, settings)
 	filterSettings := filterBundle.Default
 	rankingBundle := s.getEffectiveRankingBundle(opts.UserID, opts.ClientID, settings)
 	metadataLanguage := s.getEffectiveMetadataLanguage(opts.UserID, settings)
@@ -2035,7 +2035,7 @@ func (s *Service) SearchWithScoringSplit(ctx context.Context, opts SearchOptions
 	includeUsenet := shouldUseUsenet(settings.Streaming.ServiceMode)
 	includeDebrid := shouldUseDebrid(settings.Streaming.ServiceMode)
 
-	filterBundle, animeSettings, filterOverrides := s.getEffectiveFilterBundle(opts.UserID, opts.ClientID, settings)
+	filterBundle, animeSettings, filterOverrides := s.getEffectiveFilterBundle(opts.UserID, opts.ClientID, opts.AdaptiveThroughput, settings)
 	filterSettings := filterBundle.Default
 
 	// Mirror SearchWithScoring: skip filter/rank for the debrid source when
@@ -2567,7 +2567,7 @@ func (s *Service) searchRawResults(ctx context.Context, opts SearchOptions) ([]m
 	filterTitles := combineFilterTitles(opts.AlternateTitles, alternateTitles, englishFallbackTitles)
 	parsedQuery := debrid.ParseQuery(opts.Query)
 	searchQueries := buildSearchQueries(opts, parsedQuery, alternateTitles)
-	filterBundle, animeSettings, filterOverrides := s.getEffectiveFilterBundle(opts.UserID, opts.ClientID, settings)
+	filterBundle, animeSettings, filterOverrides := s.getEffectiveFilterBundle(opts.UserID, opts.ClientID, opts.AdaptiveThroughput, settings)
 	filterSettings := filterBundle.Default
 	rankingBundle := s.getEffectiveRankingBundle(opts.UserID, opts.ClientID, settings)
 	rankingCriteria := rankingBundle.Default
@@ -2891,7 +2891,7 @@ func (s *Service) SearchSplit(ctx context.Context, opts SearchOptions) (debridCh
 	}
 	settings = config.FilterSettingsForProfile(settings, opts.UserID)
 
-	filterBundle, animeSettings2, filterOverrides := s.getEffectiveFilterBundle(opts.UserID, opts.ClientID, settings)
+	filterBundle, animeSettings2, filterOverrides := s.getEffectiveFilterBundle(opts.UserID, opts.ClientID, opts.AdaptiveThroughput, settings)
 	filterSettings := filterBundle.Default
 
 	// Inject anime language filter-out terms early (before search/filter calls)

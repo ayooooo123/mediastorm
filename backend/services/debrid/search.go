@@ -463,7 +463,7 @@ func (s *SearchService) getEffectiveFilterSettings(userID, clientID string, glob
 	models.ComputeAdaptiveCaps(
 		models.BoolVal(filterSettings.AdaptivePlaybackEnabled, globalSettings.Filtering.AdaptivePlaybackEnabled),
 		models.FloatVal(filterSettings.AdaptiveTargetBufferFactor, globalSettings.Filtering.AdaptiveTargetBufferFactor),
-		adaptivePlayback,
+		models.AdaptiveSettingsForRequest(adaptivePlayback, nil),
 		time.Now(),
 	).ApplyTo(&filterSettings)
 

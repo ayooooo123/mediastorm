@@ -582,7 +582,7 @@ func readyEntryFitsAdaptiveCaps(entry *playback.PrequeueEntry, caps models.Adapt
 	return float64(entry.FileSize)/(1024*1024*1024) <= *capGB
 }
 
-func (h *PrequeueHandler) prequeueSettingsScope(userID, clientID, titleID string) (string, models.AdaptiveCaps) {
+func (h *PrequeueHandler) prequeueSettingsScope(userID, clientID, titleID string, throughput *models.AdaptiveThroughputContext) (string, models.AdaptiveCaps) {
 	var global prequeueScopeSignature
 	var adaptiveCaps models.AdaptiveCaps
 	defaults := models.UserSettings{}
@@ -652,7 +652,7 @@ func (h *PrequeueHandler) prequeueSettingsScope(userID, clientID, titleID string
 			adaptiveCaps = models.ComputeAdaptiveCaps(
 				models.BoolVal(effective.Filtering.AdaptivePlaybackEnabled, globalSettings.Filtering.AdaptivePlaybackEnabled),
 				models.FloatVal(effective.Filtering.AdaptiveTargetBufferFactor, globalSettings.Filtering.AdaptiveTargetBufferFactor),
-				adaptive,
+				models.AdaptiveSettingsForRequest(adaptive, throughput),
 				time.Now(),
 			)
 			applyAdaptiveScopePolicy(&effective.Filtering, adaptiveCaps)
@@ -674,7 +674,7 @@ func (h *PrequeueHandler) prequeueSettingsScope(userID, clientID, titleID string
 }
 
 func (h *PrequeueHandler) prequeueSettingsScopeKey(userID, clientID, titleID string) string {
-	scopeKey, _ := h.prequeueSettingsScope(userID, clientID, titleID)
+	scopeKey, _ := h.prequeueSettingsScope(userID, clientID, titleID, nil)
 	return scopeKey
 }
 
@@ -908,7 +908,7 @@ func (h *PrequeueHandler) RunWorkerSyncScoped(ctx context.Context, titleID, titl
 	entry, _ := h.store.CreateScoped(titleID, titleName, userID, mediaType, year, targetEpisode, "prewarm", settingsScopeKey)
 
 	// Run worker synchronously (blocking)
-	h.runPrequeueWorker(entry.ID, titleID, titleName, imdbID, mediaType, year, userID, clientID, targetEpisode, 0, true, prequeueWorkerScheduledPrewarm)
+	h.runPrequeueWorker(entry.ID, titleID, titleName, imdbID, mediaType, year, userID, clientID, nil, targetEpisode, 0, true, prequeueWorkerScheduledPrewarm)
 
 	// Check result
 	result, exists := h.store.Get(entry.ID)
@@ -1050,7 +1050,8 @@ func (h *PrequeueHandler) Prequeue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	settingsScopeKey, adaptiveCaps := h.prequeueSettingsScope(req.UserID, clientID, req.TitleID)
+	throughput := adaptiveThroughputFromRequest(r)
+	settingsScopeKey, adaptiveCaps := h.prequeueSettingsScope(req.UserID, clientID, req.TitleID, throughput)
 	log.Printf("[prequeue] Effective settings scope for title=%s user=%s client=%s: %s", req.TitleID, req.UserID, clientID, settingsScopeKey)
 
 	// Check for pre-warmed entry before creating a new one
@@ -1176,7 +1177,7 @@ func (h *PrequeueHandler) Prequeue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Start background worker with all the info needed for search
-	go h.runPrequeueWorker(entry.ID, req.TitleID, titleName, req.ImdbID, mediaType, req.Year, req.UserID, clientID, targetEpisode, req.StartOffset, req.SkipHLS, prequeueWorkerInteractive)
+	go h.runPrequeueWorker(entry.ID, req.TitleID, titleName, req.ImdbID, mediaType, req.Year, req.UserID, clientID, throughput, targetEpisode, req.StartOffset, req.SkipHLS, prequeueWorkerInteractive)
 
 	// Return response
 	resp := playback.PrequeueResponse{
@@ -1694,7 +1695,7 @@ func resolveFirstReadySourceForWorker(configured bool, mode prequeueWorkerMode) 
 // runPrequeueWorker runs the prequeue background task. Interactive prequeues
 // honor Resolve First Ready Source; scheduled pre-warm workers always wait for
 // the complete globally ranked candidate set before resolving.
-func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdbID, mediaType string, year int, userID, clientID string, targetEpisode *models.EpisodeReference, startOffset float64, skipHLS bool, workerMode prequeueWorkerMode) {
+func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdbID, mediaType string, year int, userID, clientID string, throughput *models.AdaptiveThroughputContext, targetEpisode *models.EpisodeReference, startOffset float64, skipHLS bool, workerMode prequeueWorkerMode) {
 	// Create cancellable context
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
@@ -1793,22 +1794,23 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 	// Use the same search path as the regular search UI: wait for all sources
 	// (debrid + usenet), combine, rank, and return a single ordered list.
 	searchOpts := indexer.SearchOptions{
-		Query:           query,
-		MaxResults:      50,
-		MediaType:       mediaType,
-		IMDBID:          imdbID,
-		TVDBID:          tvdbID,
-		AlternateTitles: alternateTitles,
-		Year:            year,
-		CountryCode:     countryCode,
-		UserID:          userID,
-		ClientID:        clientID,
-		EpisodeResolver: episodeResolver,
-		IsDaily:         isDaily,
-		IsAnime:         isAnime,
-		TargetAirDate:   targetAirDate,
-		EpisodeAirYear:  episodeAirYear,
-		EpisodeReleased: episodeReleased,
+		Query:              query,
+		MaxResults:         50,
+		MediaType:          mediaType,
+		IMDBID:             imdbID,
+		TVDBID:             tvdbID,
+		AlternateTitles:    alternateTitles,
+		Year:               year,
+		CountryCode:        countryCode,
+		UserID:             userID,
+		ClientID:           clientID,
+		AdaptiveThroughput: throughput,
+		EpisodeResolver:    episodeResolver,
+		IsDaily:            isDaily,
+		IsAnime:            isAnime,
+		TargetAirDate:      targetAirDate,
+		EpisodeAirYear:     episodeAirYear,
+		EpisodeReleased:    episodeReleased,
 		// Concurrent resolution derives its bulk-attempt buckets from the
 		// effective Result Order. The indexer remains the source of truth for
 		// those lexicographic criterion values.
@@ -3428,6 +3430,7 @@ func combinedPrequeueSearchOptions(opts indexer.SearchOptions) indexer.SearchOpt
 		CountryCode:           opts.CountryCode,
 		UserID:                opts.UserID,
 		ClientID:              opts.ClientID,
+		AdaptiveThroughput:    opts.AdaptiveThroughput,
 		EpisodeResolver:       opts.EpisodeResolver,
 		TotalSeriesEpisodes:   opts.TotalSeriesEpisodes,
 		AbsoluteEpisodeNumber: opts.AbsoluteEpisodeNumber,

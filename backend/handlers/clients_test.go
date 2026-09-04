@@ -46,6 +46,23 @@ func (recordingClientSettings) Move(clientID, fromUserID, toUserID string) error
 	return nil
 }
 
+type capturingClientSettings struct {
+	stored *models.ClientFilterSettings
+}
+
+func (c *capturingClientSettings) Get(clientID, userID string) (*models.ClientFilterSettings, error) {
+	return c.stored, nil
+}
+func (c *capturingClientSettings) Update(clientID, userID string, settings models.ClientFilterSettings) error {
+	c.stored = &settings
+	return nil
+}
+func (c *capturingClientSettings) Delete(clientID, userID string) error { return nil }
+func (c *capturingClientSettings) DeleteByClient(clientID string) error { return nil }
+func (c *capturingClientSettings) Move(clientID, fromUserID, toUserID string) error {
+	return nil
+}
+
 func clientsAuthRequest(method, path string, body any, vars map[string]string, accountID string, isMaster bool) *http.Request {
 	var buf bytes.Buffer
 	if body != nil {
@@ -115,6 +132,41 @@ func TestClientsHandler_Register_LinksDeviceToAdditionalProfile(t *testing.T) {
 	}
 	if got := svc.ListByUser("profile-b"); len(got) != 1 || got[0].ID != "device-1" {
 		t.Fatalf("profile-b devices = %+v, want device-1", got)
+	}
+}
+
+func TestClientsHandler_UpdateSettingsStripsVolatileThroughput(t *testing.T) {
+	svc, err := clients.NewService(t.TempDir())
+	if err != nil {
+		t.Fatalf("new clients service: %v", err)
+	}
+	if _, err := svc.Register("device-1", "profile-a", "Apple TV", "tvOS", "1.0", "TV", ""); err != nil {
+		t.Fatalf("seed register: %v", err)
+	}
+	settings := &capturingClientSettings{}
+	ownership := &fakeClientOwnership{membership: map[string]map[string]bool{"account-a": {"profile-a": true}}}
+	h := handlers.NewClientsHandler(svc, settings, ownership)
+	body := models.ClientFilterSettings{AdaptivePlayback: &models.AdaptivePlaybackSettings{
+		MeasuredMbps: models.FloatPtr(29.1),
+		MeasuredAt:   models.Int64Ptr(1_700_000_000),
+		DisplayHDR:   models.BoolPtr(true),
+	}}
+	r := clientsAuthRequest(http.MethodPut, "/api/clients/device-1/settings?userId=profile-a", body, map[string]string{"clientID": "device-1"}, "account-a", false)
+	w := httptest.NewRecorder()
+	h.UpdateSettings(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if settings.stored == nil || settings.stored.AdaptivePlayback == nil {
+		t.Fatal("display capability settings were not stored")
+	}
+	adaptive := settings.stored.AdaptivePlayback
+	if adaptive.MeasuredMbps != nil || adaptive.MeasuredAt != nil {
+		t.Fatalf("volatile throughput was persisted: %+v", adaptive)
+	}
+	if adaptive.DisplayHDR == nil || !*adaptive.DisplayHDR {
+		t.Fatal("display capability was not preserved")
 	}
 }
 

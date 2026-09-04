@@ -522,14 +522,48 @@ func (h *ClientsHandler) UpdateSettings(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if settings.AdaptivePlayback != nil && (settings.AdaptivePlayback.MeasuredMbps != nil || settings.AdaptivePlayback.MeasuredAt != nil) {
+		log.Printf("[adaptive] stripping persisted throughput from client settings clientId=%q userId=%q", clientID, userID)
+		settings.AdaptivePlayback.MeasuredMbps = nil
+		settings.AdaptivePlayback.MeasuredAt = nil
+	}
+	previous, previousErr := h.settings.Get(clientID, userID)
 
 	if err := h.settings.Update(clientID, userID, settings); err != nil {
 		writeJSONError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if settings.AdaptivePlayback != nil || (previous != nil && previous.AdaptivePlayback != nil) {
+		var previousAdaptive *models.AdaptivePlaybackSettings
+		if previous != nil {
+			previousAdaptive = previous.AdaptivePlayback
+		}
+		log.Printf("[adaptive] client measurement update clientId=%q userId=%q previousMbps=%v previousMeasuredAt=%v nextMbps=%v nextMeasuredAt=%v previousReadError=%v",
+			clientID,
+			userID,
+			adaptiveFloatLogValue(previousAdaptive, func(a *models.AdaptivePlaybackSettings) *float64 { return a.MeasuredMbps }),
+			adaptiveInt64LogValue(previousAdaptive, func(a *models.AdaptivePlaybackSettings) *int64 { return a.MeasuredAt }),
+			adaptiveFloatLogValue(settings.AdaptivePlayback, func(a *models.AdaptivePlaybackSettings) *float64 { return a.MeasuredMbps }),
+			adaptiveInt64LogValue(settings.AdaptivePlayback, func(a *models.AdaptivePlaybackSettings) *int64 { return a.MeasuredAt }),
+			previousErr)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(settings)
+}
+
+func adaptiveFloatLogValue(settings *models.AdaptivePlaybackSettings, field func(*models.AdaptivePlaybackSettings) *float64) any {
+	if settings == nil || field(settings) == nil {
+		return nil
+	}
+	return *field(settings)
+}
+
+func adaptiveInt64LogValue(settings *models.AdaptivePlaybackSettings, field func(*models.AdaptivePlaybackSettings) *int64) any {
+	if settings == nil || field(settings) == nil {
+		return nil
+	}
+	return *field(settings)
 }
 
 // PatchFrontendSetting updates one admin-exposed device override without

@@ -20,6 +20,31 @@ func TestComputeAdaptiveCaps_Disabled(t *testing.T) {
 	}
 }
 
+func TestAdaptiveSettingsForRequestIgnoresPersistedThroughput(t *testing.T) {
+	legacyMbps := 29.1
+	legacyAt := int64(100)
+	displayHDR := true
+	display := &AdaptivePlaybackSettings{
+		MeasuredMbps: &legacyMbps,
+		MeasuredAt:   &legacyAt,
+		DisplayHDR:   &displayHDR,
+	}
+
+	displayOnly := AdaptiveSettingsForRequest(display, nil)
+	if displayOnly.MeasuredMbps != nil || displayOnly.MeasuredAt != nil {
+		t.Fatalf("persisted throughput leaked into request settings: %+v", displayOnly)
+	}
+	if displayOnly.DisplayHDR == nil || !*displayOnly.DisplayHDR {
+		t.Fatal("durable display capability was not preserved")
+	}
+
+	request := &AdaptiveThroughputContext{MeasuredMbps: 938.1, MeasuredAt: 200}
+	combined := AdaptiveSettingsForRequest(display, request)
+	if combined.MeasuredMbps == nil || *combined.MeasuredMbps != 938.1 || combined.MeasuredAt == nil || *combined.MeasuredAt != 200 {
+		t.Fatalf("request throughput not applied: %+v", combined)
+	}
+}
+
 func TestComputeAdaptiveCaps_SizeCaps(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	a := &AdaptivePlaybackSettings{
