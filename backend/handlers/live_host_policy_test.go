@@ -188,7 +188,9 @@ func TestStartLiveHDHomeRunSessionAllowsTunerStreamPort(t *testing.T) {
 	}
 }
 
-func TestStartLiveOrdinaryDirectCastRetainsDirectMode(t *testing.T) {
+// Cast receivers get the managed live HLS session even when the source is
+// configured direct; upstream forces HLS for Cast only on HDHomeRun input.
+func TestStartLiveOrdinaryDirectCastForcesHLS(t *testing.T) {
 	h := NewVideoHandlerWithProvider(true, "/usr/bin/true", "/usr/bin/true", t.TempDir(), nil)
 	t.Cleanup(h.hlsManager.Shutdown)
 	h.SetConfigManager(fakeLiveUsageConfigProvider{settings: config.Settings{
@@ -198,13 +200,13 @@ func TestStartLiveOrdinaryDirectCastRetainsDirectMode(t *testing.T) {
 	h.StartLiveHLSSession(response, httptest.NewRequest(http.MethodGet,
 		"/live/hls/start?target=cast&url="+url.QueryEscape("https://93.184.216.34/channel.ts"), nil))
 	var result struct {
-		IsDirect  bool   `json:"isDirect"`
-		StreamURL string `json:"streamUrl"`
+		IsDirect    bool   `json:"isDirect"`
+		PlaylistURL string `json:"playlistUrl"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if response.Code != http.StatusOK || !result.IsDirect || !strings.HasPrefix(result.StreamURL, "/live/stream?") {
+	if response.Code != http.StatusOK || result.IsDirect || !strings.HasPrefix(result.PlaylistURL, "/video/hls/") {
 		t.Fatalf("ordinary direct Cast response: status=%d body=%s", response.Code, response.Body.String())
 	}
 }

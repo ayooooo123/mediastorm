@@ -5297,7 +5297,7 @@ func (h *VideoHandler) StartLiveHLSSession(w http.ResponseWriter, r *http.Reques
 
 	forceHLS := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("format")), "hls") ||
 		strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("target")), "web") ||
-		(hdHomeRunInput && strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("target")), "cast"))
+		strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("target")), "cast")
 
 	// Determine stream format (default to "hls")
 	streamFormat := target.StreamFormat
