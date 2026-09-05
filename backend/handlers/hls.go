@@ -2661,6 +2661,11 @@ func (m *HLSManager) startLiveTranscoding(ctx context.Context, session *HLSSessi
 		// options abort the command ("Option ... not found").
 		if session.LiveTuning.ForceHLSInput || inputLooksLikeHLS(session.Path) {
 			args = append(args,
+				"-readrate", "1",
+				"-http_persistent", "0",
+				"-seg_max_retry", "5",
+				"-reconnect_on_network_error", "1",
+				"-reconnect_on_http_error", "4xx,5xx",
 				"-allowed_extensions", "ALL",
 				"-allowed_segment_extensions", "ALL",
 				"-extension_picky", "0",
@@ -2815,7 +2820,7 @@ func (m *HLSManager) startLiveTranscoding(ctx context.Context, session *HLSSessi
 					lastProgress = time.Now()
 					continue
 				}
-				stallTimeout := liveStallTimeoutForOutputDir(session.OutputDir)
+				stallTimeout := liveStallTimeoutForOutputDir(session.OutputDir, session.PlaybackTarget)
 				if time.Since(lastProgress) < stallTimeout {
 					continue
 				}
@@ -2943,9 +2948,18 @@ const liveNativeSegmentKeepBehind = 60
 const liveStallTimeoutFloor = 45 * time.Second
 const liveStallTargetDurations = 3
 
-func liveStallTimeoutForOutputDir(outputDir string) time.Duration {
+func liveStallTimeoutForOutputDir(outputDir string, targets ...string) time.Duration {
 	targetDuration := readLivePlaylistTargetDuration(filepath.Join(outputDir, "stream.m3u8"))
 	derived := time.Duration(targetDuration*liveStallTargetDurations) * time.Second
+	if len(targets) > 0 && !isNativeLivePlaybackTarget(targets[0]) {
+		if derived > 15*time.Second {
+			return 15 * time.Second
+		}
+		if derived < 6*time.Second {
+			return 6 * time.Second
+		}
+		return derived
+	}
 	if derived > liveStallTimeoutFloor {
 		return derived
 	}
@@ -3068,7 +3082,7 @@ func liveHLSOutputArgs(playbackTarget, segmentPattern, playlistPath string, resu
 
 	return append(args,
 		"-f", "hls",
-		"-hls_init_time", "1",
+		"-hls_init_time", "2",
 		"-hls_time", "2",
 		"-hls_list_size", listSize,
 		"-hls_flags", hlsFlags,
