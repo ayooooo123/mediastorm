@@ -145,3 +145,13 @@ func ComputeAdaptiveCaps(enabled bool, bufferFactor float64, a *AdaptivePlayback
 
 	return caps
 }
+
+// AdaptiveSearchSummary describes the actual adaptive filter used by a search.
+type AdaptiveSearchSummary struct {
+	Enabled       bool     `json:"enabled"`
+	MeasuredMbps  float64  `json:"measuredMbps,omitempty"`
+	MeasuredAt    int64    `json:"measuredAt,omitempty"`
+	MaxSizeGB     *float64 `json:"maxSizeGB,omitempty"`
+	FilteredCount int      `json:"filteredCount"`
+	Bypassed      bool     `json:"bypassed,omitempty"`
+}

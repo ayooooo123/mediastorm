@@ -1244,6 +1244,7 @@ func (s *Service) sortResultsByScore(results []models.NZBResult, scoringCtx Scor
 }
 
 type SearchOptions struct {
+	AdaptiveSummary       *models.AdaptiveSearchSummary // Optional request-owned output, populated before presentation limits.
 	Query                 string
 	Categories            []string
 	MaxResults            int
@@ -1825,12 +1826,20 @@ func (s *Service) SearchWithScoring(ctx context.Context, opts SearchOptions) ([]
 
 	filterBundle, animeSettings, filterOverrides := s.getEffectiveFilterBundle(opts.UserID, opts.ClientID, opts.AdaptiveThroughput, settings)
 	filterSettings := filterBundle.Default
+	if opts.AdaptiveSummary != nil {
+		*opts.AdaptiveSummary = buildAdaptiveSearchSummary(filterSettings, settings, opts)
+	}
+
 	rankingBundle := s.getEffectiveRankingBundle(opts.UserID, opts.ClientID, settings)
 	metadataLanguage := s.getEffectiveMetadataLanguage(opts.UserID, settings)
 	alternateTitles := s.resolveAlternateTitles(ctx, opts, metadataLanguage, settings.Streaming.MaxAlternateTitleSearches)
 	englishFallbackTitles := s.resolveEnglishFallbackTitles(ctx, opts, metadataLanguage)
 	filterTitles := combineFilterTitles(opts.AlternateTitles, alternateTitles, englishFallbackTitles)
 	if shouldBypassAIOStreamsRanking(settings, filterOverrides, shouldUseUsenet(settings.Streaming.ServiceMode)) {
+		if opts.AdaptiveSummary != nil {
+			opts.AdaptiveSummary.Bypassed = true
+			opts.AdaptiveSummary.MaxSizeGB = nil
+		}
 		log.Printf("[indexer] Bypassing mediastorm filtering/ranking - AIOStreams is the only enabled scraper and bypass setting is enabled")
 		scored := make([]models.ScoredNZBResult, len(rawResults))
 		for i, r := range rawResults {
@@ -1873,6 +1882,10 @@ func (s *Service) SearchWithScoring(ctx context.Context, opts SearchOptions) ([]
 		}
 		resultDetails := filter.ResultsWithDetails([]models.NZBResult{raw}, filterOpts)
 		if len(resultDetails) > 0 {
+			if opts.AdaptiveSummary != nil && opts.AdaptiveSummary.MaxSizeGB != nil && resultDetails[0].SizeExceeded {
+				opts.AdaptiveSummary.FilteredCount++
+			}
+
 			detailed = append(detailed, resultDetails[0])
 		}
 	}

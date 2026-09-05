@@ -255,6 +255,7 @@ type FilteredResult struct {
 	Result       models.NZBResult
 	Passed       bool
 	RejectReason string
+	SizeExceeded bool
 }
 
 // Results filters NZB search results based on parsed title information
@@ -563,6 +564,7 @@ func ResultsWithDetails(results []models.NZBResult, opts Options) []FilteredResu
 					reason := fmt.Sprintf("size %.1f GB > %.1f GB limit", sizeGB, opts.MaxSizeMovieGB)
 					log.Printf("[filter] Rejecting %q: %s (movie)", result.Title, reason)
 					reject(result, reason)
+					detailed[len(detailed)-1].SizeExceeded = true
 					continue
 				}
 			} else if !opts.IsMovie && opts.MaxSizeEpisodeGB > 0 {
@@ -575,6 +577,7 @@ func ResultsWithDetails(results []models.NZBResult, opts Options) []FilteredResu
 					reason := fmt.Sprintf("size %.1f GB > %.1f GB limit", effectiveSizeGB, opts.MaxSizeEpisodeGB)
 					log.Printf("[filter] Rejecting %q: %s (episode)", result.Title, reason)
 					reject(result, reason)
+					detailed[len(detailed)-1].SizeExceeded = true
 					continue
 				}
 			}

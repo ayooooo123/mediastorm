@@ -168,6 +168,10 @@ func (h *IndexerHandler) Search(w http.ResponseWriter, r *http.Request) {
 
 	if includeFiltered {
 		opts.IncludeFiltered = true
+		includeSummary := r.URL.Query().Get("includeAdaptiveSummary") == "true"
+		if includeSummary {
+			opts.AdaptiveSummary = &models.AdaptiveSearchSummary{}
+		}
 		scored, err := h.Service.SearchWithScoring(r.Context(), opts)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
@@ -193,7 +197,14 @@ func (h *IndexerHandler) Search(w http.ResponseWriter, r *http.Request) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(scored)
+		if includeSummary {
+			json.NewEncoder(w).Encode(struct {
+				Results  []models.ScoredNZBResult      `json:"results"`
+				Adaptive *models.AdaptiveSearchSummary `json:"adaptive"`
+			}{scored, opts.AdaptiveSummary})
+		} else {
+			json.NewEncoder(w).Encode(scored)
+		}
 		return
 	}
 
