@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 )
@@ -33,6 +34,13 @@ func readVersionFile() {
 			"version.txt",         // Current directory (backend/)
 			"backend/version.txt", // From repo root
 			"/app/version.txt",    // Docker container path
+		}
+		if execPath, err := os.Executable(); err == nil {
+			execDir := filepath.Dir(execPath)
+			paths = append(paths,
+				filepath.Join(execDir, "version.txt"),
+				filepath.Join(execDir, "backend", "version.txt"),
+			)
 		}
 
 		for _, path := range paths {
