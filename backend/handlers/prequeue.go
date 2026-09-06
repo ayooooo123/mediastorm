@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"reflect"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -3810,21 +3811,32 @@ func prequeuePreferenceBuckets(scored []models.ScoredNZBResult) ([]int, string) 
 		return buckets, ""
 	}
 
+	// Candidate order can include promotions unrelated to this criterion.
+	// Rank distinct scores explicitly so a promoted lower-quality release
+	// cannot make its entire preference bucket the first one attempted.
 	bucketByPoints := make(map[int]int)
-	nextBucket := 0
-	for i, result := range scored {
+	var scores []int
+	for _, result := range scored {
 		if criterion >= len(result.ScoreBreakdown) {
-			buckets[i] = nextBucket
 			continue
 		}
 		points := result.ScoreBreakdown[criterion].Points
-		bucket, ok := bucketByPoints[points]
-		if !ok {
-			bucket = nextBucket
-			bucketByPoints[points] = bucket
-			nextBucket++
+		if _, ok := bucketByPoints[points]; !ok {
+			bucketByPoints[points] = 0
+			scores = append(scores, points)
 		}
-		buckets[i] = bucket
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(scores)))
+	for bucket, points := range scores {
+		bucketByPoints[points] = bucket
+	}
+	for i, result := range scored {
+		if criterion >= len(result.ScoreBreakdown) {
+			buckets[i] = len(scores)
+			continue
+		}
+		points := result.ScoreBreakdown[criterion].Points
+		buckets[i] = bucketByPoints[points]
 	}
 	return buckets, criterionName
 }

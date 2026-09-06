@@ -362,6 +362,28 @@ func TestPrequeuePreferenceBucketsIgnoreServicePriority(t *testing.T) {
 	}
 }
 
+func TestPrequeuePreferenceBucketsRankScoresRegardlessOfCandidateOrder(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		points []int
+		want   []int
+	}{
+		{"promoted 720p before 2160p and 1080p", []int{10000, 40000, 20000, 10000, 20000}, []int{2, 0, 1, 2, 1}},
+		{"negative preference scores", []int{-200, 0, -100, -200}, []int{2, 0, 1, 2}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			scored := make([]models.ScoredNZBResult, len(tc.points))
+			for i, points := range tc.points {
+				scored[i].ScoreBreakdown = []models.ScoreBreakdownItem{{Criterion: "Resolution", Points: points}}
+			}
+			buckets, criterion := prequeuePreferenceBuckets(scored)
+			if criterion != "Resolution" || !reflect.DeepEqual(buckets, tc.want) {
+				t.Fatalf("buckets = %v (%s), want %v (Resolution)", buckets, criterion, tc.want)
+			}
+		})
+	}
+}
+
 func TestRacePrequeueResolutionsDoesNotStartLowerPreferenceBucketEarly(t *testing.T) {
 	src := newStreamCandidateSource()
 	topStarted := make(chan struct{}, 1)
