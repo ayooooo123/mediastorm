@@ -111,6 +111,11 @@
                 <div class="form-help">Off by default. Prepends the profile name, e.g. godver3 - Watching. If the title template contains {{"{{"}}profileName{{"}}"}}, its placement is used instead.</div>
             </div>
 
+            <div class="form-group" id="device-name-settings">
+                <label class="check-row"><input type="checkbox" id="include-device-name"> Include client device in notification title</label>
+                <div class="form-help">Off by default. Uses the nickname first, then display name, OS device name, or device type. Missing devices are omitted. Use {{"{{"}}deviceName{{"}}"}} in the title template to choose its placement without a duplicate prefix.</div>
+            </div>
+
             <div class="form-group" id="poster-settings">
                 <label class="check-row"><input type="checkbox" id="include-poster" checked> Include item poster when available</label>
             </div>
@@ -123,7 +128,7 @@
                 <label class="form-label" for="body-template">Body template</label>
                 <textarea class="form-input" id="body-template" rows="3">{{"{{"}}mediaLabel{{"}}"}}{{"{{"}}progressLabel{{"}}"}}{{"{{"}}releaseLabel{{"}}"}}</textarea>
                 <div class="form-help template-help">
-                    Available: <code>{{"{{"}}profileName{{"}}"}}</code> (profile name, even with the toggle off), <code>{{"{{"}}eventLabel{{"}}"}}</code>, <code>{{"{{"}}title{{"}}"}}</code>,
+                    Available: <code>{{"{{"}}deviceName{{"}}"}}</code> (client device, even with the toggle off), <code>{{"{{"}}profileName{{"}}"}}</code> (profile name, even with the toggle off), <code>{{"{{"}}eventLabel{{"}}"}}</code>, <code>{{"{{"}}title{{"}}"}}</code>,
                     <code>{{"{{"}}year{{"}}"}}</code>, <code>{{"{{"}}mediaLabel{{"}}"}}</code>,
                     <code>{{"{{"}}episode{{"}}"}}</code><span id="watch-template-fields">,
                     <code>{{"{{"}}percent{{"}}"}}</code></span><span id="release-template-fields" hidden>,
@@ -317,6 +322,7 @@ function updateProgressAvailability() {
     const progressInput = document.querySelector('input[name="watch-event"][value="watch.progress"]');
     const isDiscord = document.getElementById('channel-type').value === 'discord';
     document.getElementById('profile-name-settings').hidden = selectedCategory() !== 'watch' || !isDiscord;
+    document.getElementById('device-name-settings').hidden = selectedCategory() !== 'watch' || !isDiscord;
     progressInput.disabled = selectedCategory() !== 'watch' || !isDiscord;
     if (!isDiscord) progressInput.checked = false;
 }
@@ -343,6 +349,7 @@ function previewValues() {
     const watchEvent = watchEvents[previewWatchEvent] || watchEvents['watch.started'];
     return {
         profileName: profileName.trim(),
+        deviceName: isRelease || isSystem ? '' : 'Living Room TV',
         event: isSystem ? systemEvent : (isRelease ? 'release.available' : previewWatchEvent),
         eventLabel: isSystem ? systemLabel : (isRelease ? 'Now available' : watchEvent.label),
         title: isSystem ? 'mediastorm' : 'Example Movie',
@@ -378,6 +385,12 @@ function updatePreview() {
         'Preview · ' + values.eventLabel;
     const titleTemplate = document.getElementById('title-template').value;
     let title = renderPreviewTemplate(titleTemplate, values);
+    if (document.getElementById('include-device-name').checked &&
+        document.getElementById('channel-type').value === 'discord' &&
+        selectedCategory() === 'watch' && values.deviceName &&
+        !titleTemplate.includes('\u007b\u007bdeviceName\u007d\u007d')) {
+        title = values.deviceName + ' - ' + title;
+    }
     if (document.getElementById('include-profile-name').checked &&
         document.getElementById('channel-type').value === 'discord' &&
         selectedCategory() === 'watch' && values.profileName &&
@@ -411,6 +424,7 @@ async function saveChannel(event) {
             : [],
         titleTemplate: document.getElementById('title-template').value,
         bodyTemplate: document.getElementById('body-template').value,
+        includeDeviceName: document.getElementById('include-device-name').checked,
         includeProfileName: document.getElementById('include-profile-name').checked,
         includePoster: !isSystem && document.getElementById('include-poster').checked
     };
@@ -447,6 +461,7 @@ function editChannel(id) {
     document.getElementById('body-template').value = channel.bodyTemplate;
     document.getElementById('include-poster').checked = channel.includePoster;
     document.getElementById('include-profile-name').checked = !!channel.includeProfileName;
+    document.getElementById('include-device-name').checked = !!channel.includeDeviceName;
     const isRelease = (channel.events || []).includes('release.available');
     const isSystem = (channel.events || []).some(event => event.startsWith('system.'));
     const category = isRelease ? 'release' : (isSystem ? 'system' : 'watch');
@@ -526,6 +541,7 @@ async function deleteChannel(id) {
 
 document.getElementById('title-template').addEventListener('input', updatePreview);
 document.getElementById('body-template').addEventListener('input', updatePreview);
+document.getElementById('include-device-name').addEventListener('change', updatePreview);
 document.getElementById('include-profile-name').addEventListener('change', updatePreview);
 document.getElementById('include-poster').addEventListener('change', updatePreview);
 document.getElementById('channel-type').addEventListener('change', () => {

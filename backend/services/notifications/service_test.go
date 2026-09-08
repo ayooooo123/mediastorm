@@ -911,20 +911,20 @@ func TestDiscordProgressNotificationEditsThenCompletesOneMessage(t *testing.T) {
 		ID: "channel", ProfileID: "profile", Type: models.NotificationChannelDiscord,
 		URL: server.URL + "/api/webhooks/1/token", Enabled: true,
 		Events:        []string{models.NotificationEventWatchProgress, models.NotificationEventWatchWatched},
-		TitleTemplate: defaultTitleTemplate, BodyTemplate: defaultBodyTemplate, IncludeProfileName: true,
+		TitleTemplate: defaultTitleTemplate, BodyTemplate: defaultBodyTemplate, IncludeProfileName: true, IncludeDeviceName: true,
 	}
-	service := New(repo, notificationProfiles{"profile": {Name: "godver3"}})
+	service := New(repo, WithProfiles(notificationProfiles{"profile": {Name: "godver3"}}), WithClients(notificationClients{client: &models.Client{Nickname: "Living Room TV", Name: "Display"}}))
 	defer service.Close()
 
 	update := models.PlaybackProgressUpdate{
-		MediaType: "movie", ItemID: "tmdb:1", MovieName: "Movie", Duration: 100,
+		MediaType: "movie", ItemID: "tmdb:1", MovieName: "Movie", Duration: 100, ClientID: "device",
 	}
 	service.HandlePlaybackUpdate("profile", update, 0)
 	first := waitForNotificationRequest(t, received)
 	if first.method != http.MethodPost || first.path != "/api/webhooks/1/token" || first.query != "wait=true" {
 		t.Fatalf("initial request = %s %s?%s", first.method, first.path, first.query)
 	}
-	if first.title != "godver3 - Watching: Movie" || !strings.Contains(first.body, "0%") ||
+	if first.title != "godver3 - Living Room TV - Watching: Movie" || !strings.Contains(first.body, "0%") ||
 		!strings.Contains(first.body, "▱") {
 		t.Fatalf("initial progress payload = title %q body %q", first.title, first.body)
 	}
@@ -955,7 +955,7 @@ func TestDiscordProgressNotificationEditsThenCompletesOneMessage(t *testing.T) {
 		completed.path != "/api/webhooks/1/token/messages/discord-message-1" {
 		t.Fatalf("completion request = %s %s", completed.method, completed.path)
 	}
-	if completed.title != "godver3 - Watched: Movie" || strings.Contains(completed.body, "%") {
+	if completed.title != "godver3 - Living Room TV - Watched: Movie" || strings.Contains(completed.body, "%") {
 		t.Fatalf("completion payload = title %q body %q", completed.title, completed.body)
 	}
 

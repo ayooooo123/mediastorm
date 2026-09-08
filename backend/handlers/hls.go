@@ -5104,6 +5104,7 @@ func (m *HLSManager) KeepAlive(w http.ResponseWriter, r *http.Request, sessionID
 	keyframeDelta := actualStartOffset - startOffset
 	duration := session.Duration
 	profileID := session.ProfileID
+	clientID := session.ClientID
 	metadata := session.MediaMetadata
 	paused := session.PlaybackPaused
 	buffering := session.PlaybackBuffering
@@ -5134,6 +5135,7 @@ func (m *HLSManager) KeepAlive(w http.ResponseWriter, r *http.Request, sessionID
 				IsBuffering:       buffering,
 				PlaybackEnded:     ended,
 				PlaybackSessionID: "hls:" + sessionID,
+				ClientID:          clientID,
 				SourcePath:        sourcePath,
 			}, metadata)
 			percent := 0.0

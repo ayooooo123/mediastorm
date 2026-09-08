@@ -726,7 +726,7 @@ func main() {
 
 	// Calendar service provides upcoming content from watchlist, history, and MDBList
 	calendarService := calendar.New(metadataService, watchlistService, historyService, userSettingsService, userService)
-	notificationService := notifications.New(store.Notifications(), userService)
+	notificationService := notifications.New(store.Notifications(), notifications.WithProfiles(userService), notifications.WithClients(clientsService))
 	defer notificationService.Close()
 	calendarService.SetReleaseObserver(notificationService)
 	historyService.SetWatchStateChangedHook(calendarService.Invalidate)

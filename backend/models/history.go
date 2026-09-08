@@ -139,6 +139,8 @@ type PlaybackProgressUpdate struct {
 	// PlaybackSessionID is assigned internally after a player heartbeat is
 	// matched to an Active Streams session. It is never accepted from clients.
 	PlaybackSessionID string `json:"-"`
+	// ClientID is resolved from the active playback session, never the JSON payload.
+	ClientID string `json:"-"`
 }
 
 // PlaybackProgress stores the current playback progress for a media item.

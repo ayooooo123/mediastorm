@@ -23,6 +23,7 @@ func TestHLSManagerKeepAliveReportsAuthoritativePlaybackState(t *testing.T) {
 		sessions: map[string]*HLSSession{
 			"session-1": {
 				ID:                 "session-1",
+				ClientID:           "device",
 				ProfileID:          "profile",
 				Duration:           120,
 				LastSegmentRequest: time.Now(),
@@ -48,6 +49,9 @@ func TestHLSManagerKeepAliveReportsAuthoritativePlaybackState(t *testing.T) {
 	case update := <-observer.calls:
 		if update.PlaybackSessionID != "hls:session-1" {
 			t.Fatalf("PlaybackSessionID = %q, want %q", update.PlaybackSessionID, "hls:session-1")
+		}
+		if update.ClientID != "device" {
+			t.Fatalf("ClientID = %q", update.ClientID)
 		}
 		if update.MovieName != "Active Movie" {
 			t.Fatalf("MovieName = %q, want %q", update.MovieName, "Active Movie")
@@ -119,6 +123,7 @@ func TestStreamTrackerObservePlaybackActivityUsesStablePlaybackIdentity(t *testi
 		streams: map[string]*TrackedStream{
 			"range-1": {
 				ID:            "range-1",
+				ClientID:      "device",
 				ProfileID:     "profile",
 				Path:          "/movie.mkv",
 				LastActivity:  time.Now(),
@@ -136,6 +141,9 @@ func TestStreamTrackerObservePlaybackActivityUsesStablePlaybackIdentity(t *testi
 		t.Fatalf("first ObservePlaybackActivity() matched %d streams, want 1", matched)
 	}
 	first := <-observer.calls
+	if first.ClientID != "device" {
+		t.Fatalf("ClientID = %q", first.ClientID)
+	}
 
 	tracker.mu.Lock()
 	tracker.streams["range-2"] = &TrackedStream{

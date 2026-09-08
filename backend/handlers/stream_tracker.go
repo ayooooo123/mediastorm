@@ -348,6 +348,7 @@ func (t *StreamTracker) ObservePlaybackActivity(userID string, update models.Pla
 		// single playback. Key notifications like the consolidated Active
 		// Streams row, not by an individual transport connection.
 		update.PlaybackSessionID = "direct:" + trackedStreamSlotKey(best)
+		update.ClientID = best.ClientID
 		// A player that reported no source path still has one: the request this
 		// heartbeat was matched to names it. Consumers that must reach the source
 		// again, rather than merely name it, depend on that.

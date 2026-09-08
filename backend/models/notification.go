@@ -31,6 +31,7 @@ type NotificationChannel struct {
 	ReleaseTypes       []string  `json:"releaseTypes"`
 	TitleTemplate      string    `json:"titleTemplate"`
 	BodyTemplate       string    `json:"bodyTemplate"`
+	IncludeDeviceName  bool      `json:"includeDeviceName"`
 	IncludeProfileName bool      `json:"includeProfileName"`
 	IncludePoster      bool      `json:"includePoster"`
 	CreatedAt          time.Time `json:"createdAt"`
@@ -61,6 +62,8 @@ type NotificationEvent struct {
 	ID            string            `json:"id"`
 	Type          string            `json:"type"`
 	ProfileID     string            `json:"profileId"`
+	ClientID      string            `json:"clientId,omitempty"`
+	DeviceName    string            `json:"deviceName,omitempty"`
 	ProfileName   string            `json:"profileName,omitempty"`
 	Title         string            `json:"title"`
 	MediaType     string            `json:"mediaType"`
