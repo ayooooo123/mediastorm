@@ -35,6 +35,11 @@ const segmentFetchAttempts = 3
 // the segment currently capable of blocking playback is watched.
 const requiredSegmentNoProgressTimeout = 3 * time.Second
 
+// Allow protocol/integrity finalization after delivery, but retire abandoned work.
+const consumedSegmentFinalizationTimeout = 30 * time.Second
+
+var errSegmentFinalizationTimeout = errors.New("consumed segment finalization timed out")
+
 var errRequiredSegmentNoProgress = errors.New("required usenet segment made no progress")
 
 type progressWriter struct {
@@ -323,8 +328,12 @@ func (b *usenetReader) Read(p []byte) (int, error) {
 		s.markRequired()
 		reader := s.GetReader()
 		nn, err := reader.Read(p[n:])
+		s.clearRequired()
 		n += nn
 		s.addBytesRead(nn)
+		if s.IsComplete() {
+			atomic.CompareAndSwapInt64(&s.consumedAt, 0, time.Now().UnixNano())
+		}
 
 		if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) {
 			b.log.Warn("usenet segment read error",
@@ -686,9 +695,14 @@ func (b *usenetReader) fetchSegmentBodyWithWatchdog(
 			bodyWriter = trackedWriter
 		}
 		watchDone := make(chan struct{})
+		watchExited := make(chan struct{})
+		// Only one of BODY completion or watchdog cancellation may win.
+		var attemptFinished atomic.Bool
 		var stalled atomic.Bool
+		var finalizationExpired atomic.Bool
 		if trackedWriter != nil {
 			go func() {
+				defer close(watchExited)
 				interval := noProgressTimeout / 4
 				if interval > 250*time.Millisecond {
 					interval = 250 * time.Millisecond
@@ -708,8 +722,27 @@ func (b *usenetReader) fetchSegmentBodyWithWatchdog(
 						if ctx.Err() != nil {
 							return
 						}
-						lastProgress := time.Unix(0, trackedWriter.lastProgressAt.Load())
-						if segment.isRequired() && now.Sub(lastProgress) >= noProgressTimeout {
+						// A retired segment is cleanup, not starvation. Cancel its
+						// remaining BODY work without reporting a playback failure.
+						if atomic.LoadInt32(&segment.closed) != 0 {
+							if !attemptFinished.CompareAndSwap(false, true) {
+								return
+							}
+							cancelAttempt()
+							return
+						}
+						if consumedAt := atomic.LoadInt64(&segment.consumedAt); consumedAt != 0 && now.Sub(time.Unix(0, consumedAt)) >= consumedSegmentFinalizationTimeout {
+							if !attemptFinished.CompareAndSwap(false, true) {
+								return
+							}
+							finalizationExpired.Store(true)
+							cancelAttempt()
+							return
+						}
+						if segment.requiredStalled(now, trackedWriter.lastProgressAt.Load(), noProgressTimeout) {
+							if !attemptFinished.CompareAndSwap(false, true) {
+								return
+							}
 							stalled.Store(true)
 							cancelAttempt()
 							return
@@ -720,12 +753,19 @@ func (b *usenetReader) fetchSegmentBodyWithWatchdog(
 		}
 
 		bytesFetched, err := cp.Body(attemptCtx, segmentID, bodyWriter, groups)
+		attemptFinished.CompareAndSwap(false, true)
 		close(watchDone)
+		if trackedWriter != nil {
+			<-watchExited
+		}
 		cancelAttempt()
 		if trackedWriter != nil {
 			if written := trackedWriter.bytesWritten(); written > bytesFetched {
 				bytesFetched = written
 			}
+		}
+		if finalizationExpired.Load() {
+			return bytesFetched, fmt.Errorf("%w: %s", errSegmentFinalizationTimeout, segmentID)
 		}
 		// A provider may race the watchdog and report a nil error after its
 		// context was cancelled. Do not turn that zero-progress timeout into a

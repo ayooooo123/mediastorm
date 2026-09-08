@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/acomagu/bufpipe"
 	"github.com/mnightingale/rapidyenc"
@@ -139,18 +140,34 @@ type segment struct {
 	boundBytes    int64
 	decoder       *rapidyenc.Decoder
 	maxReadWindow int64
-	required      int32
+	consumedAt    int64
+	requiredSince int64
+	closed        int32
 }
 
-// markRequired identifies the segment currently blocking ordered delivery to
-// the consumer. Download workers may fetch later segments concurrently, but a
-// pause in this segment is the only one that can stall playback.
+// Required state covers one consumer read, including decoder initialization.
+// Time spent prefetched or between reads is not playback starvation.
 func (s *segment) markRequired() {
-	atomic.StoreInt32(&s.required, 1)
+	atomic.StoreInt64(&s.requiredSince, time.Now().UnixNano())
+}
+
+func (s *segment) clearRequired() {
+	atomic.StoreInt64(&s.requiredSince, 0)
 }
 
 func (s *segment) isRequired() bool {
-	return atomic.LoadInt32(&s.required) != 0
+	return atomic.LoadInt32(&s.closed) == 0 && atomic.LoadInt64(&s.requiredSince) != 0
+}
+
+func (s *segment) requiredStalled(now time.Time, lastProgress int64, timeout time.Duration) bool {
+	since := atomic.LoadInt64(&s.requiredSince)
+	if since == 0 || atomic.LoadInt32(&s.closed) != 0 {
+		return false
+	}
+	if since > lastProgress {
+		lastProgress = since
+	}
+	return now.Sub(time.Unix(0, lastProgress)) >= timeout
 }
 
 func (s *segment) GetReader() io.Reader {
@@ -353,6 +370,8 @@ func (s *segment) shouldLogFetch() bool {
 }
 
 func (s *segment) Close() error {
+	atomic.StoreInt32(&s.closed, 1)
+	s.clearRequired()
 	s.mx.Lock()
 	defer s.mx.Unlock()
 
