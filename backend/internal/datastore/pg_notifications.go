@@ -24,7 +24,7 @@ func scanNotificationChannel(row pgx.Row) (*models.NotificationChannel, error) {
 		&channel.ID, &channel.ProfileID, &channel.Name, &channel.Type, &channel.URL,
 		&channel.Enabled, &eventsJSON, &channel.NotifyWatchlist, &channel.NotifyTrending,
 		&channel.TrendingLimit, &releaseTypesJSON, &channel.TitleTemplate, &channel.BodyTemplate,
-		&channel.IncludePoster, &channel.CreatedAt, &channel.UpdatedAt,
+		&channel.IncludePoster, &channel.IncludeProfileName, &channel.CreatedAt, &channel.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -46,7 +46,7 @@ func (r *pgNotificationRepo) GetChannel(ctx context.Context, id string) (*models
 	return scanNotificationChannel(r.pool.QueryRow(ctx, `
 		SELECT id, profile_id, name, type, url, enabled, events, notify_watchlist,
 		       notify_trending, trending_limit, release_types, title_template, body_template,
-		       include_poster, created_at, updated_at
+		       include_poster, include_profile_name, created_at, updated_at
 		FROM notification_channels WHERE id = $1`, id))
 }
 
@@ -54,7 +54,7 @@ func (r *pgNotificationRepo) ListChannels(ctx context.Context, profileID string)
 	return r.listChannels(ctx, `
 		SELECT id, profile_id, name, type, url, enabled, events, notify_watchlist,
 		       notify_trending, trending_limit, release_types, title_template, body_template,
-		       include_poster, created_at, updated_at
+		       include_poster, include_profile_name, created_at, updated_at
 		FROM notification_channels WHERE profile_id = $1 ORDER BY created_at`, profileID)
 }
 
@@ -62,7 +62,7 @@ func (r *pgNotificationRepo) ListAllChannels(ctx context.Context) ([]models.Noti
 	return r.listChannels(ctx, `
 		SELECT id, profile_id, name, type, url, enabled, events, notify_watchlist,
 		       notify_trending, trending_limit, release_types, title_template, body_template,
-		       include_poster, created_at, updated_at
+		       include_poster, include_profile_name, created_at, updated_at
 		FROM notification_channels ORDER BY created_at`)
 }
 
@@ -90,12 +90,12 @@ func (r *pgNotificationRepo) CreateChannel(ctx context.Context, channel *models.
 		INSERT INTO notification_channels (
 			id, profile_id, name, type, url, enabled, events, notify_watchlist,
 			notify_trending, trending_limit, release_types, title_template, body_template,
-			include_poster, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+			include_poster, include_profile_name, created_at, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
 		channel.ID, channel.ProfileID, channel.Name, channel.Type, channel.URL,
 		channel.Enabled, eventsJSON, channel.NotifyWatchlist, channel.NotifyTrending,
 		channel.TrendingLimit, releaseTypesJSON, channel.TitleTemplate, channel.BodyTemplate,
-		channel.IncludePoster, channel.CreatedAt, channel.UpdatedAt)
+		channel.IncludePoster, channel.IncludeProfileName, channel.CreatedAt, channel.UpdatedAt)
 	return err
 }
 
@@ -106,12 +106,12 @@ func (r *pgNotificationRepo) UpdateChannel(ctx context.Context, channel *models.
 		UPDATE notification_channels SET
 			name=$3, type=$4, url=$5, enabled=$6, events=$7, notify_watchlist=$8,
 			notify_trending=$9, trending_limit=$10, release_types=$11, title_template=$12,
-			body_template=$13, include_poster=$14, updated_at=$15
+			body_template=$13, include_poster=$14, include_profile_name=$15, updated_at=$16
 		WHERE id=$1 AND profile_id=$2`,
 		channel.ID, channel.ProfileID, channel.Name, channel.Type, channel.URL,
 		channel.Enabled, eventsJSON, channel.NotifyWatchlist, channel.NotifyTrending,
 		channel.TrendingLimit, releaseTypesJSON, channel.TitleTemplate, channel.BodyTemplate,
-		channel.IncludePoster, channel.UpdatedAt)
+		channel.IncludePoster, channel.IncludeProfileName, channel.UpdatedAt)
 	if err != nil {
 		return err
 	}

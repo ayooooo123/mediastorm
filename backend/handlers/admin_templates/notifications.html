@@ -106,6 +106,11 @@
                 <div class="form-help">Shutdown is sent synchronously before services are stopped. Docker Compose allows a 45-second stop grace period so the request can finish.</div>
             </div>
 
+            <div class="form-group" id="profile-name-settings">
+                <label class="check-row"><input type="checkbox" id="include-profile-name"> Include profile name in notification title</label>
+                <div class="form-help">Off by default. Prepends the profile name, e.g. godver3 - Watching. If the title template contains {{"{{"}}profileName{{"}}"}}, its placement is used instead.</div>
+            </div>
+
             <div class="form-group" id="poster-settings">
                 <label class="check-row"><input type="checkbox" id="include-poster" checked> Include item poster when available</label>
             </div>
@@ -118,7 +123,7 @@
                 <label class="form-label" for="body-template">Body template</label>
                 <textarea class="form-input" id="body-template" rows="3">{{"{{"}}mediaLabel{{"}}"}}{{"{{"}}progressLabel{{"}}"}}{{"{{"}}releaseLabel{{"}}"}}</textarea>
                 <div class="form-help template-help">
-                    Available: <code>{{"{{"}}eventLabel{{"}}"}}</code>, <code>{{"{{"}}title{{"}}"}}</code>,
+                    Available: <code>{{"{{"}}profileName{{"}}"}}</code> (profile name, even with the toggle off), <code>{{"{{"}}eventLabel{{"}}"}}</code>, <code>{{"{{"}}title{{"}}"}}</code>,
                     <code>{{"{{"}}year{{"}}"}}</code>, <code>{{"{{"}}mediaLabel{{"}}"}}</code>,
                     <code>{{"{{"}}episode{{"}}"}}</code><span id="watch-template-fields">,
                     <code>{{"{{"}}percent{{"}}"}}</code></span><span id="release-template-fields" hidden>,
@@ -188,6 +193,7 @@
 
 <script>
 const profileId = {{json .Profile.ID}};
+const profileName = {{json .Profile.Name}};
 const notificationsBasePath = {{json .BasePath}};
 let channels = [];
 let previewWatchEvent = 'watch.started';
@@ -310,6 +316,7 @@ function updateCategoryVisibility() {
 function updateProgressAvailability() {
     const progressInput = document.querySelector('input[name="watch-event"][value="watch.progress"]');
     const isDiscord = document.getElementById('channel-type').value === 'discord';
+    document.getElementById('profile-name-settings').hidden = selectedCategory() !== 'watch' || !isDiscord;
     progressInput.disabled = selectedCategory() !== 'watch' || !isDiscord;
     if (!isDiscord) progressInput.checked = false;
 }
@@ -335,6 +342,7 @@ function previewValues() {
     };
     const watchEvent = watchEvents[previewWatchEvent] || watchEvents['watch.started'];
     return {
+        profileName: profileName.trim(),
         event: isSystem ? systemEvent : (isRelease ? 'release.available' : previewWatchEvent),
         eventLabel: isSystem ? systemLabel : (isRelease ? 'Now available' : watchEvent.label),
         title: isSystem ? 'mediastorm' : 'Example Movie',
@@ -347,7 +355,7 @@ function previewValues() {
         season: '',
         episodeNumber: '',
         percent: isRelease || isSystem ? '' : watchEvent.percent,
-        progressLabel: isRelease || isSystem ? '' : ' · ' + watchEvent.percent + '%',
+        progressLabel: isRelease || isSystem || previewWatchEvent === 'watch.watched' ? '' : ' · ' + watchEvent.percent + '%',
         releaseType: isRelease ? 'Digital' : '',
         releaseDate: isRelease ? '2026-07-23' : '',
         releaseLabel: isRelease ? ' · Digital · 2026-07-23' : '',
@@ -368,8 +376,15 @@ function updatePreview() {
     const values = previewValues();
     document.getElementById('preview-label').textContent =
         'Preview · ' + values.eventLabel;
-    document.getElementById('preview-title').textContent =
-        renderPreviewTemplate(document.getElementById('title-template').value, values) || '(No title)';
+    const titleTemplate = document.getElementById('title-template').value;
+    let title = renderPreviewTemplate(titleTemplate, values);
+    if (document.getElementById('include-profile-name').checked &&
+        document.getElementById('channel-type').value === 'discord' &&
+        selectedCategory() === 'watch' && values.profileName &&
+        !titleTemplate.includes('\u007b\u007bprofileName\u007d\u007d')) {
+        title = values.profileName + ' - ' + title;
+    }
+    document.getElementById('preview-title').textContent = title || '(No title)';
     document.getElementById('preview-body').textContent =
         renderPreviewTemplate(document.getElementById('body-template').value, values) || '(No message)';
     document.getElementById('preview-poster').hidden =
@@ -396,6 +411,7 @@ async function saveChannel(event) {
             : [],
         titleTemplate: document.getElementById('title-template').value,
         bodyTemplate: document.getElementById('body-template').value,
+        includeProfileName: document.getElementById('include-profile-name').checked,
         includePoster: !isSystem && document.getElementById('include-poster').checked
     };
     try {
@@ -430,6 +446,7 @@ function editChannel(id) {
     document.getElementById('title-template').value = channel.titleTemplate;
     document.getElementById('body-template').value = channel.bodyTemplate;
     document.getElementById('include-poster').checked = channel.includePoster;
+    document.getElementById('include-profile-name').checked = !!channel.includeProfileName;
     const isRelease = (channel.events || []).includes('release.available');
     const isSystem = (channel.events || []).some(event => event.startsWith('system.'));
     const category = isRelease ? 'release' : (isSystem ? 'system' : 'watch');
@@ -509,6 +526,7 @@ async function deleteChannel(id) {
 
 document.getElementById('title-template').addEventListener('input', updatePreview);
 document.getElementById('body-template').addEventListener('input', updatePreview);
+document.getElementById('include-profile-name').addEventListener('change', updatePreview);
 document.getElementById('include-poster').addEventListener('change', updatePreview);
 document.getElementById('channel-type').addEventListener('change', () => {
     updateProgressAvailability();

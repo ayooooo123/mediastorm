@@ -911,9 +911,9 @@ func TestDiscordProgressNotificationEditsThenCompletesOneMessage(t *testing.T) {
 		ID: "channel", ProfileID: "profile", Type: models.NotificationChannelDiscord,
 		URL: server.URL + "/api/webhooks/1/token", Enabled: true,
 		Events:        []string{models.NotificationEventWatchProgress, models.NotificationEventWatchWatched},
-		TitleTemplate: defaultTitleTemplate, BodyTemplate: defaultBodyTemplate,
+		TitleTemplate: defaultTitleTemplate, BodyTemplate: defaultBodyTemplate, IncludeProfileName: true,
 	}
-	service := New(repo)
+	service := New(repo, notificationProfiles{"profile": {Name: "godver3"}})
 	defer service.Close()
 
 	update := models.PlaybackProgressUpdate{
@@ -924,7 +924,7 @@ func TestDiscordProgressNotificationEditsThenCompletesOneMessage(t *testing.T) {
 	if first.method != http.MethodPost || first.path != "/api/webhooks/1/token" || first.query != "wait=true" {
 		t.Fatalf("initial request = %s %s?%s", first.method, first.path, first.query)
 	}
-	if first.title != "Watching: Movie" || !strings.Contains(first.body, "0%") ||
+	if first.title != "godver3 - Watching: Movie" || !strings.Contains(first.body, "0%") ||
 		!strings.Contains(first.body, "▱") {
 		t.Fatalf("initial progress payload = title %q body %q", first.title, first.body)
 	}
@@ -955,7 +955,7 @@ func TestDiscordProgressNotificationEditsThenCompletesOneMessage(t *testing.T) {
 		completed.path != "/api/webhooks/1/token/messages/discord-message-1" {
 		t.Fatalf("completion request = %s %s", completed.method, completed.path)
 	}
-	if completed.title != "Watched: Movie" || strings.Contains(completed.body, "%") {
+	if completed.title != "godver3 - Watched: Movie" || strings.Contains(completed.body, "%") {
 		t.Fatalf("completion payload = title %q body %q", completed.title, completed.body)
 	}
 
