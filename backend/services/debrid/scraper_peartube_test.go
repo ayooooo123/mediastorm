@@ -190,9 +190,23 @@ func TestPearTubeStructuredQualityFactsCannotBypassFilters(t *testing.T) {
 }
 
 func TestPearTubeScraperForwardsExactEpisodeCoordinates(t *testing.T) {
+	var calls atomic.Int32
 	relay := pearTubeCompanionStub(t, `{"candidates":[],"cursor":null}`, func(r *http.Request) {
-		if got, want := r.URL.RequestURI(), "/api/v2/search?episode=2&identifier=tt0944947&kind=episode&namespace=imdb&season=1"; got != want {
-			t.Errorf("request target = %q, want %q", got, want)
+		query := r.URL.Query()
+		if query.Get("kind") != "episode" || query.Get("season") != "1" || query.Get("episode") != "2" {
+			t.Errorf("search lost structured episode identity: %s", r.URL.RequestURI())
+		}
+		switch calls.Add(1) {
+		case 1:
+			if query.Get("namespace") != "imdb" || query.Get("identifier") != "tt0944947" {
+				t.Errorf("initial search lost external identity: %s", r.URL.RequestURI())
+			}
+		case 2:
+			if query.Get("title") != "Game of Thrones" || query.Has("identifier") || query.Has("namespace") {
+				t.Errorf("fallback must use the parsed title without external identity: %s", r.URL.RequestURI())
+			}
+		default:
+			t.Errorf("unexpected companion request: %s", r.URL.RequestURI())
 		}
 	})
 	scraper, err := NewPearTubeScraper(relay.URL, "PearTube")
@@ -209,6 +223,9 @@ func TestPearTubeScraperForwardsExactEpisodeCoordinates(t *testing.T) {
 	}
 	if len(results) != 0 {
 		t.Fatalf("results = %d, want 0", len(results))
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("companion calls = %d, want identity search and title fallback", got)
 	}
 }
 
