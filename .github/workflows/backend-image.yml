@@ -1,13 +1,7 @@
 name: Backend Image
 
-# Builds the backend Docker image (including the Expo web export and the iroh
-# bridge binary) and publishes it to GHCR, so a branch can be tested via
-# docker compose without waiting for an upstream release:
-#
-#   image: ghcr.io/ayooooo123/mediastorm:<branch-name-slug>
-#
-# The image is built without the /watch web UI (WEB_APP_STAGE=web-stub) so the
-# build needs nothing beyond this repo — the Android/TV apps never use /watch.
+# Build each architecture natively, then publish one multi-platform image.
+# The fork omits /watch (WEB_APP_STAGE=web-stub); native clients use the API.
 on:
   push:
     branches:
@@ -28,12 +22,18 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-
-      - uses: docker/setup-qemu-action@v3
 
       - uses: docker/setup-buildx-action@v3
 
@@ -51,19 +51,71 @@ jobs:
             type=ref,event=branch
             type=sha
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
-            type=raw,value=peartube-latest,enable=${{ startsWith(github.ref, 'refs/heads/feat/') || github.ref == 'refs/heads/bitter-moth' || github.ref == 'refs/heads/check-image-builds-peartube-branch' }}
+            type=raw,value=peartube-latest,enable=${{ github.ref == 'refs/heads/feat/peartube' }}
 
-      - uses: docker/build-push-action@v6
+      - id: build
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: backend/Dockerfile
-          push: true
-          # Publish both native server architectures so Apple Silicon/local ARM hosts
-          # do not have to run the amd64 image through emulation.
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/${{ matrix.arch }}
           build-args: |
             WEB_APP_STAGE=web-stub
-          tags: ${{ steps.meta.outputs.tags }}
+          outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=backend-${{ matrix.arch }}
+          cache-to: type=gha,scope=backend-${{ matrix.arch }},mode=max
+
+      - name: Export digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/digests"
+          touch "${RUNNER_TEMP}/digests/${DIGEST#sha256:}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          retention-days: 1
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=sha
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
+            type=raw,value=peartube-latest,enable=${{ github.ref == 'refs/heads/feat/peartube' }}
+
+      - name: Publish multi-platform manifest
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          METADATA: ${{ steps.meta.outputs.json }}
+        run: |
+          mapfile -t tags < <(jq -r '.tags[]' <<< "$METADATA")
+          args=()
+          for tag in "${tags[@]}"; do args+=(--tag "$tag"); done
+          for digest in *; do args+=("$IMAGE@sha256:$digest"); done
+          docker buildx imagetools create "${args[@]}"
+          docker buildx imagetools inspect "${tags[0]}"
