@@ -67,6 +67,61 @@ func newCompanionSearchClient(t *testing.T, handler http.HandlerFunc) *Client {
 	return client
 }
 
+// TestContributeRotatesKeyWhenRelayReturnsDeadJob covers the replay trap: the
+// relay's request path is idempotent and hands back an unrecoverable failed job
+// unchanged, but a grant only attaches to a queued job, so re-attaching to that
+// corpse fails forever. Because the seed key comes from the release's source
+// path — which a provider keeps for a cached release — the next playback of that
+// release replays the same key and inherits the same corpse. The submission must
+// move to a different job instead.
+func TestContributeRotatesKeyWhenRelayReturnsDeadJob(t *testing.T) {
+	const deadKey = "mediastorm-v2_dead"
+	var keys []string
+	client := newCompanionSearchClient(t, func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		var submitted ContributeAcquisitionRequest
+		if err := json.Unmarshal(body, &submitted); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		keys = append(keys, submitted.IdempotencyKey)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		if submitted.IdempotencyKey == deadKey {
+			// What the relay does with an unrecoverable failure: the same job,
+			// still failed, never queued again.
+			_, _ = w.Write([]byte(`{"acquisition":{"acquisitionId":"acq_corpse","state":"failed"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"acquisition":{"acquisitionId":"acq_fresh","state":"queued"}}`))
+	})
+
+	job, err := client.contributeFreshAcquisition(context.Background(), ContributeAcquisitionRequest{
+		IdempotencyKey: deadKey,
+		Title:          "Night at the Museum",
+		Selector:       ContributeAcquisitionSelector{Kind: "movie", Namespace: "tmdb", Identifier: "1593"},
+	})
+	if err != nil {
+		t.Fatalf("contributeFreshAcquisition: %v", err)
+	}
+	if job.JobID != "acq_fresh" || job.Status != "queued" {
+		t.Fatalf("job = %+v, want the fresh queued job acq_fresh", job)
+	}
+	if len(keys) != 2 || keys[0] != deadKey {
+		t.Fatalf("submitted keys = %v, want the original followed by a rotation", keys)
+	}
+	if keys[1] == deadKey {
+		t.Fatal("the rotated submission reused the dead key")
+	}
+	// Derived, not random: a later attempt in the same session must converge on
+	// the same successor rather than minting a new job every playback heartbeat.
+	if got := rotatedSeedIdempotencyKey(deadKey, "acq_corpse"); got != keys[1] {
+		t.Fatalf("rotation is not derived from the retired job: %q vs %q", got, keys[1])
+	}
+}
+
 func assertCompanionAuth(t *testing.T, r *http.Request) {
 	t.Helper()
 	assertCompanionAuthBody(t, r, nil)

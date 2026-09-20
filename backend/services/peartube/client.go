@@ -1818,6 +1818,66 @@ func (c *Client) AttachSourceGrant(ctx context.Context, acquisitionID string, gr
 	return nil
 }
 
+// contributeFreshAcquisition submits a contribution and guarantees the job it
+// returns can still take a source grant.
+//
+// The relay's request path is idempotent: an existing job for the same key is
+// returned unchanged unless it is failed AND recoverable. A grant can only
+// attach to a queued job, and that refusal reaches this process as an opaque
+// 503, so a terminal job under our key is a dead end — re-attaching to it fails
+// forever. The seed key is derived from the release's source path, which a
+// provider keeps for a cached release, so the next playback of that release
+// replays the same key and inherits the same corpse.
+//
+// Rotating the key off the dead job's own id breaks that loop: it is derived,
+// not random, so every attempt in this session converges on the same successor
+// instead of littering the relay, and a successor that dies in turn rotates off
+// its own id.
+func (c *Client) contributeFreshAcquisition(ctx context.Context, req ContributeAcquisitionRequest) (*ArchiveJob, error) {
+	job, err := c.ContributeAcquisition(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if !deadAcquisitionState(job.Status) {
+		return job, nil
+	}
+	retired := job
+	req.IdempotencyKey = rotatedSeedIdempotencyKey(req.IdempotencyKey, retired.JobID)
+	job, err = c.ContributeAcquisition(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("resubmit after relay returned %s job %s: %w", retired.Status, retired.JobID, err)
+	}
+	if deadAcquisitionState(job.Status) {
+		return nil, fmt.Errorf(
+			"relay returned %s job %s for the rotated key after %s job %s",
+			job.Status, job.JobID, retired.Status, retired.JobID,
+		)
+	}
+	return job, nil
+}
+
+// deadAcquisitionState reports the states a job never leaves and can never take
+// a grant from, so the only way forward is a different job. A completed job is
+// also final, but it means the title is already archived under this key: that
+// needs no grant and no second download, so it is deliberately not rotated.
+func deadAcquisitionState(state string) bool {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "failed", "cancelled":
+		return true
+	default:
+		return false
+	}
+}
+
+func rotatedSeedIdempotencyKey(key, retiredJobID string) string {
+	sum := sha512.Sum512_256([]byte(strings.Join([]string{
+		"mediastorm.seed.rotate.v1",
+		strings.TrimSpace(key),
+		strings.TrimSpace(retiredJobID),
+	}, "\x00")))
+	return "mediastorm-v2_" + hex.EncodeToString(sum[:])
+}
+
 func (c *Client) submitGrantedIngest(ctx context.Context, registry *SourceGrantRegistry, prepared *PreparedSource, ingest grantedIngestSubmission) (*ArchiveJob, error) {
 	facts := prepared.facts()
 	selectorKind := ingest.Coordinates.ContentKind
@@ -1851,7 +1911,7 @@ func (c *Client) submitGrantedIngest(ctx context.Context, registry *SourceGrantR
 	if contributeReq.Title == "" {
 		contributeReq.Title = "Contributed media"
 	}
-	job, err := c.ContributeAcquisition(ctx, contributeReq)
+	job, err := c.contributeFreshAcquisition(ctx, contributeReq)
 	if err != nil {
 		return nil, fmt.Errorf("request companion contribution acquisition: %w", err)
 	}
