@@ -1271,6 +1271,64 @@ func TestResolveCandidatesAdoptsFastHealthyCandidate(t *testing.T) {
 	}
 }
 
+// TestResolveCandidatesAcceptsMappedAnthologyEpisode pins the interaction
+// between the TMDB-order target and a verified anthology season released under
+// the provider's numbering: TMDB 299939 S01E01 is Cinemeta Monster S04E01, so
+// an S04E01 release is the target episode and an S04E02 release is not. The
+// explicit-mismatch guard used to compare against the TMDB code alone and threw
+// away every mapped release that filtering had just accepted.
+func TestResolveCandidatesAcceptsMappedAnthologyEpisode(t *testing.T) {
+	var resolved []string
+	var mu sync.Mutex
+	playbackSvc := &stubPlaybackService{
+		resolve: func(ctx context.Context, candidate models.NZBResult) (*models.PlaybackResolution, error) {
+			mu.Lock()
+			resolved = append(resolved, candidate.Title)
+			mu.Unlock()
+			return &models.PlaybackResolution{WebDAVPath: "/webdav/mapped.mkv", HealthStatus: "healthy"}, nil
+		},
+	}
+	handler := &PrequeueHandler{
+		store:       playback.NewPrequeueStore(time.Minute),
+		playbackSvc: playbackSvc,
+		fullProber:  &raceProbeResult{},
+	}
+
+	const mismatched = "Monster.S04E02.1080p.WEB-DL"
+	const mapped = "Monster.S04E01.1080p.WEB-DL"
+	choice, err := handler.resolveCandidates(
+		context.Background(),
+		"prequeue-anthology",
+		newSliceCandidateSource([]models.NZBResult{
+			{Title: mismatched, ServiceType: models.ServiceTypeUsenet},
+			{Title: mapped, ServiceType: models.ServiceTypeUsenet},
+		}),
+		prequeueResolutionOptions{
+			mediaType:          "series",
+			titleID:            "tmdb:tv:299939",
+			targetEpisode:      &models.EpisodeReference{SeasonNumber: 1, EpisodeNumber: 1},
+			hdrDVPolicy:        models.HDRDVPolicyIncludeHDRDV,
+			unknownTrackPolicy: "none",
+		},
+	)
+	if err != nil {
+		t.Fatalf("resolveCandidates returned error: %v", err)
+	}
+	if choice.resolution == nil {
+		t.Fatal("resolveCandidates rejected the mapped anthology release")
+	}
+	if choice.selectedResultIndex != 1 {
+		t.Fatalf("selectedResultIndex = %d, want 1 (the mapped S04E01 release)", choice.selectedResultIndex)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, title := range resolved {
+		if title == mismatched {
+			t.Fatalf("resolved %q; a different episode of the mapped season must stay rejected", mismatched)
+		}
+	}
+}
+
 // TestResolveCandidatesProbeRejectionMarksBadStream covers the bad-stream
 // marking of a candidate rejected by the cheap availability probe (surfaced
 // as playback.ErrUsenetProbeRejected, which wraps importer.ErrArticleUnavailable):

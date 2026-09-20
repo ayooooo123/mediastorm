@@ -1971,6 +1971,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 
 	choice, resolveErr := h.resolveCandidates(ctx, prequeueID, candidates, prequeueResolutionOptions{
 		mediaType:              mediaType,
+		titleID:                titleID,
 		targetEpisode:          targetEpisode,
 		userID:                 userID,
 		hdrDVPolicy:            hdrDVPolicy,
@@ -2477,6 +2478,7 @@ type prequeueResolutionChoice struct {
 // prequeueResolutionOptions configures the resolution phase.
 type prequeueResolutionOptions struct {
 	mediaType              string
+	titleID                string
 	targetEpisode          *models.EpisodeReference
 	userID                 string
 	hdrDVPolicy            models.HDRDVPolicy
@@ -3106,15 +3108,44 @@ func (h *PrequeueHandler) resolveCandidates(ctx context.Context, prequeueID stri
 			}
 		}()
 
-		// Check episode match for target episode
+		// Check episode match for target episode. The target stays in TMDB order,
+		// but a verified anthology season is released under the provider's own
+		// numbering (Lizzie Borden is TMDB 299939 S01 and Cinemeta Monster S04),
+		// and filtering already accepts those releases. Both codes are therefore
+		// legitimate here; only a release that mismatches every accepted code is
+		// for a different episode.
 		if opts.targetEpisode != nil && opts.targetEpisode.SeasonNumber > 0 && opts.targetEpisode.EpisodeNumber > 0 {
 			episodeCode := mediaresolve.EpisodeCode{Season: opts.targetEpisode.SeasonNumber, Episode: opts.targetEpisode.EpisodeNumber}
-			if mediaresolve.CandidateExplicitlyMismatchesEpisode(result.Title, episodeCode) {
+			acceptedCodes := []mediaresolve.EpisodeCode{episodeCode}
+			mapped, mappedKnown := mediaidentity.KnownAnthologyEpisode(
+				opts.titleID,
+				opts.targetEpisode.SeasonNumber,
+				opts.targetEpisode.EpisodeNumber,
+			)
+			if mappedKnown {
+				acceptedCodes = append(acceptedCodes, mediaresolve.EpisodeCode{Season: mapped.Season, Episode: mapped.Episode})
+			}
+			mismatchesEvery := true
+			for _, code := range acceptedCodes {
+				if !mediaresolve.CandidateExplicitlyMismatchesEpisode(result.Title, code) {
+					mismatchesEvery = false
+					break
+				}
+			}
+			if mismatchesEvery {
 				log.Printf("[prequeue] Skipping result [%d] - release explicitly mismatches target (S%02dE%02d): %s",
 					i, opts.targetEpisode.SeasonNumber, opts.targetEpisode.EpisodeNumber, result.Title)
 				return nil, nil, nil
 			}
-			if opts.targetEpisode.AbsoluteEpisodeNumber > 0 && result.EpisodeCount <= 1 {
+			// A release carrying the mapped code is already identified by season
+			// and episode, so the absolute-number cross-check does not apply: the
+			// mapped season restarts numbering and filtering drops the absolute
+			// target for exactly these releases.
+			matchesMappedCode := mappedKnown && mediaresolve.CandidateMatchesEpisode(
+				result.Title,
+				mediaresolve.EpisodeCode{Season: mapped.Season, Episode: mapped.Episode},
+			)
+			if opts.targetEpisode.AbsoluteEpisodeNumber > 0 && result.EpisodeCount <= 1 && !matchesMappedCode {
 				parsedEp, hasEpisode := mediaresolve.ParseAbsoluteEpisodeNumber(result.Title)
 				if hasEpisode {
 					matchesSXXEXX := mediaresolve.CandidateMatchesEpisode(result.Title, episodeCode)
