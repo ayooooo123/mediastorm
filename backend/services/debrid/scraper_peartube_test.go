@@ -109,7 +109,7 @@ func TestPearTubeScraperFallsBackToExactTitleWhenLegacyPublicationHasNoExternalI
 			}
 			_, _ = w.Write([]byte(`{"candidates":[],"cursor":null}`))
 		case 2:
-			if got, want := r.URL.RequestURI(), "/api/v2/search?kind=movie&title=Justice+League+Dark&year=2017"; got != want {
+			if got, want := r.URL.RequestURI(), "/api/v2/search?kind=movie&title=Justice%20League%20Dark&year=2017"; got != want {
 				t.Errorf("title fallback request = %q, want %q", got, want)
 			}
 			_, _ = w.Write([]byte(oneMovieCandidate))

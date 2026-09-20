@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -233,7 +234,7 @@ func TestSearchUsesExactEpisodeQueryFields(t *testing.T) {
 
 func TestSearchEncodesFallbackTitleAndYear(t *testing.T) {
 	client := newCompanionSearchClient(t, func(w http.ResponseWriter, r *http.Request) {
-		if got, want := r.URL.RequestURI(), "/api/v2/search?kind=movie&title=The+Matrix+%26+Friends&year=1999"; got != want {
+		if got, want := r.URL.RequestURI(), "/api/v2/search?kind=movie&title=The%20Matrix%20%26%20Friends&year=1999"; got != want {
 			t.Errorf("request target = %q, want %q", got, want)
 		}
 		writeCompanionCandidates(t, w, nil)
@@ -253,11 +254,28 @@ func TestCompanionSearchTargetAndMACMatchPlan08Vector(t *testing.T) {
 	if err != nil {
 		t.Fatalf("companionSearchTarget: %v", err)
 	}
+	// The wire target percent-encodes spaces. A '+' here is ambiguous: a
+	// receiver that does not form-decode it re-encodes the literal plus as
+	// '%2B' and no correct signature can match, which is why every multi-word
+	// search failed INVALID_MAC against the deployed relay.
+	const wantTarget = "/api/v2/search?kind=movie&title=M*A*S*H%20%7E&year=1972"
+	if target != wantTarget {
+		t.Fatalf("target = %q, want percent-encoded wire target %q", target, wantTarget)
+	}
+
+	// The MAC is computed over the canonical form, which the signer rebuilds by
+	// re-parsing the target it is about to send. Both encodings decode to the
+	// same query, so changing the wire form must not move the signature.
+	parsed, err := url.Parse(target)
+	if err != nil {
+		t.Fatalf("parse target: %v", err)
+	}
+	canonical := parsed.EscapedPath() + "?" + encodeCompanionQuery(parsed.Query())
 	// Pinned to packages/cli/src/companion/auth.js under the Plan 08 Node
 	// runtime, whose URLSearchParams serializer differs from Go's QueryEscape.
-	const wantTarget = "/api/v2/search?kind=movie&title=M*A*S*H+%7E&year=1972"
-	if target != wantTarget {
-		t.Fatalf("target = %q, want Plan 08 WHATWG target %q", target, wantTarget)
+	const wantCanonical = "/api/v2/search?kind=movie&title=M*A*S*H+%7E&year=1972"
+	if canonical != wantCanonical {
+		t.Fatalf("canonical = %q, want Plan 08 WHATWG canonical %q", canonical, wantCanonical)
 	}
 
 	key, err := hex.DecodeString(companionTestSecret)
@@ -266,7 +284,7 @@ func TestCompanionSearchTargetAndMACMatchPlan08Vector(t *testing.T) {
 	}
 	gotMAC := companionRequestMAC(
 		http.MethodGet,
-		target,
+		canonical,
 		"1786406400000",
 		"review-vector-0001",
 		key,

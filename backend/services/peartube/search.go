@@ -117,13 +117,30 @@ func (r SearchRequest) companionSearchTarget() (string, int, error) {
 		limit = min(r.MaxResults, companionMaxCandidates)
 		values.Set("limit", strconv.Itoa(limit))
 	}
-	return companionAPIPrefix + "/search?" + encodeCompanionQuery(values), limit, nil
+	return companionAPIPrefix + "/search?" + encodeCompanionWireQuery(values), limit, nil
 }
 
-// encodeCompanionQuery matches WHATWG URLSearchParams serialization used by
-// companion auth: sorted decoded entries, form-style spaces, '*' preserved,
-// and '~' percent-encoded.
+// encodeCompanionQuery produces the canonical query the companion MAC is
+// computed over: WHATWG URLSearchParams serialization — sorted decoded entries,
+// form-style spaces, '*' preserved, and '~' percent-encoded.
 func encodeCompanionQuery(values url.Values) string {
+	return encodeCompanionQueryWithSpace(values, '+')
+}
+
+// encodeCompanionWireQuery produces the query actually put on the wire. It is
+// identical to the canonical form except that a space is percent-encoded rather
+// than written as '+'. Both forms decode to the same value, so the MAC — which
+// the signer recomputes from the parsed query — is unchanged; but only '%20' is
+// unambiguous to a receiver that does not apply form decoding to '+'. The relay
+// canonicalizes by re-parsing the request target, and a '+' that survives
+// parsing as a literal plus re-encodes to '%2B', which no correct client can
+// match: every multi-word search then fails with INVALID_MAC while single-word
+// searches pass. Sending '%20' removes the ambiguity from the exchange.
+func encodeCompanionWireQuery(values url.Values) string {
+	return encodeCompanionQueryWithSpace(values, ' ')
+}
+
+func encodeCompanionQueryWithSpace(values url.Values, space byte) string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
 		keys = append(keys, key)
@@ -140,15 +157,18 @@ func encodeCompanionQuery(values url.Values) string {
 				encoded.WriteByte('&')
 			}
 			first = false
-			writeCompanionFormValue(&encoded, key)
+			writeCompanionFormValue(&encoded, key, space)
 			encoded.WriteByte('=')
-			writeCompanionFormValue(&encoded, value)
+			writeCompanionFormValue(&encoded, value, space)
 		}
 	}
 	return encoded.String()
 }
 
-func writeCompanionFormValue(encoded *strings.Builder, value string) {
+// writeCompanionFormValue percent-encodes everything outside the companion's
+// unreserved set. A space is written as '+' when space is '+', and percent-
+// encoded otherwise.
+func writeCompanionFormValue(encoded *strings.Builder, value string, space byte) {
 	const hexadecimal = "0123456789ABCDEF"
 	for i := range len(value) {
 		character := value[i]
@@ -158,7 +178,7 @@ func writeCompanionFormValue(encoded *strings.Builder, value string) {
 			character >= '0' && character <= '9',
 			character == '*', character == '-', character == '.', character == '_':
 			encoded.WriteByte(character)
-		case character == ' ':
+		case character == ' ' && space == '+':
 			encoded.WriteByte('+')
 		default:
 			encoded.WriteByte('%')
