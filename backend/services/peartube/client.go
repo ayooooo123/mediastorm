@@ -233,6 +233,11 @@ func validHeaderText(value string) bool {
 const blobStreamReferencePrefix = "peartube-blob:"
 const maxBlobStreamLeases = 256
 
+// maxSeedKeyRotations bounds how far one submission walks a chain of dead relay
+// jobs. Four covers a genuine chain of stale corpses; beyond that the relay is
+// failing everything and resubmitting only adds rows.
+const maxSeedKeyRotations = 4
+
 type blobStreamLease struct {
 	url       string
 	expiresAt time.Time
@@ -1831,29 +1836,41 @@ func (c *Client) AttachSourceGrant(ctx context.Context, acquisitionID string, gr
 //
 // Rotating the key off the dead job's own id breaks that loop: it is derived,
 // not random, so every attempt in this session converges on the same successor
-// instead of littering the relay, and a successor that dies in turn rotates off
-// its own id.
+// instead of littering the relay.
+//
+// The walk continues from each corpse it finds, because a successor dies too:
+// once B has failed, starting from A and stopping at B would replay A then B
+// forever and never reach C. Each step rotates off the id of the job the relay
+// just returned, so the chain is recomputed from the original key every time
+// and needs no state kept in this process. The bound exists so a relay that
+// fails every job cannot turn one playback into an unbounded submission storm.
 func (c *Client) contributeFreshAcquisition(ctx context.Context, req ContributeAcquisitionRequest) (*ArchiveJob, error) {
 	job, err := c.ContributeAcquisition(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	if !deadAcquisitionState(job.Status) {
-		return job, nil
-	}
-	retired := job
-	req.IdempotencyKey = rotatedSeedIdempotencyKey(req.IdempotencyKey, retired.JobID)
-	job, err = c.ContributeAcquisition(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("resubmit after relay returned %s job %s: %w", retired.Status, retired.JobID, err)
-	}
-	if deadAcquisitionState(job.Status) {
-		return nil, fmt.Errorf(
-			"relay returned %s job %s for the rotated key after %s job %s",
-			job.Status, job.JobID, retired.Status, retired.JobID,
-		)
+	for rotation := 0; deadAcquisitionState(job.Status); rotation++ {
+		if rotation >= maxSeedKeyRotations {
+			return nil, fmt.Errorf(
+				"relay returned a %s job for every key in the chain after %d rotations (last %s)",
+				job.Status, rotation, job.JobID,
+			)
+		}
+		retired := job
+		req.IdempotencyKey = rotatedSeedIdempotencyKey(req.IdempotencyKey, retired.JobID)
+		job, err = c.ContributeAcquisition(ctx, req)
+		if err != nil {
+			return nil, fmt.Errorf("resubmit after relay returned %s job %s: %w", retired.Status, retired.JobID, err)
+		}
 	}
 	return job, nil
+}
+
+// grantableAcquisitionState reports the one state the relay attaches a source
+// grant in. Everything else is either already reading through a capability it
+// holds or finished with one.
+func grantableAcquisitionState(state string) bool {
+	return strings.EqualFold(strings.TrimSpace(state), "queued")
 }
 
 // deadAcquisitionState reports the states a job never leaves and can never take
@@ -1914,6 +1931,20 @@ func (c *Client) submitGrantedIngest(ctx context.Context, registry *SourceGrantR
 	job, err := c.contributeFreshAcquisition(ctx, contributeReq)
 	if err != nil {
 		return nil, fmt.Errorf("request companion contribution acquisition: %w", err)
+	}
+
+	// Only a queued job accepts a grant. An acquisition already under way is
+	// pulling through the capability it was given, and a completed one needs
+	// nothing: issuing a second grant would be pointless, and the refused
+	// attach that followed would call RevokeJob, which drops *every* capability
+	// for that job and would starve the archive currently reading through it.
+	// A replay of a live archive must therefore report it and touch nothing.
+	if !grantableAcquisitionState(job.Status) {
+		return &ArchiveJob{
+			JobID:      job.JobID,
+			Status:     job.Status,
+			EntityHint: companionEntityHint(ingest.Coordinates),
+		}, nil
 	}
 
 	issued, err := registry.Issue(prepared, SourceGrantScope{
