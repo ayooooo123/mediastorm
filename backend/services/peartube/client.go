@@ -233,10 +233,13 @@ func validHeaderText(value string) bool {
 const blobStreamReferencePrefix = "peartube-blob:"
 const maxBlobStreamLeases = 256
 
-// maxSeedKeyRotations bounds how far one submission walks a chain of dead relay
-// jobs. Four covers a genuine chain of stale corpses; beyond that the relay is
-// failing everything and resubmitting only adds rows.
-const maxSeedKeyRotations = 4
+// maxSeedKeyGenerations bounds how many generations of dead relay jobs one
+// submission will walk. It is a guard against a relay that answers every key
+// with a fresh corpse, not a budget: walking costs one request per generation
+// and creates nothing, so this has to stay far above the number of failures a
+// release can plausibly accumulate over its life, or the ceiling itself becomes
+// the wedge. The cycle check is what stops a pathological relay immediately.
+const maxSeedKeyGenerations = 64
 
 type blobStreamLease struct {
 	url       string
@@ -1842,25 +1845,47 @@ func (c *Client) AttachSourceGrant(ctx context.Context, acquisitionID string, gr
 // once B has failed, starting from A and stopping at B would replay A then B
 // forever and never reach C. Each step rotates off the id of the job the relay
 // just returned, so the chain is recomputed from the original key every time
-// and needs no state kept in this process. The bound exists so a relay that
-// fails every job cannot turn one playback into an unbounded submission storm.
+// and needs no state kept in this process.
+//
+// Walking is cheap and must not be capped like a budget. Every hop over a job
+// that already exists creates nothing — the relay answers an existing key with
+// the existing job — so only the final, unknown key can create a row. A ceiling
+// on hops would therefore be a ceiling on the release's lifetime rather than on
+// load: after that many generations had accumulated, every future submission
+// would walk the whole history and stop one short of the live generation, which
+// is the wedge this walk exists to remove. The depth limit is only a guard
+// against a relay that answers forever, and the real storm protection is the
+// cycle check: a relay that keeps handing back a job already retired in this
+// walk is answering pathologically, and one more rotation would be the first
+// that creates anything.
 func (c *Client) contributeFreshAcquisition(ctx context.Context, req ContributeAcquisitionRequest) (*ArchiveJob, error) {
 	job, err := c.ContributeAcquisition(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	for rotation := 0; deadAcquisitionState(job.Status); rotation++ {
-		if rotation >= maxSeedKeyRotations {
+	retired := make(map[string]struct{}, 8)
+	for deadAcquisitionState(job.Status) {
+		if _, repeat := retired[job.JobID]; repeat {
 			return nil, fmt.Errorf(
-				"relay returned a %s job for every key in the chain after %d rotations (last %s)",
-				job.Status, rotation, job.JobID,
+				"relay returned %s job %s again for a rotated key, so the chain does not advance",
+				job.Status, job.JobID,
 			)
 		}
-		retired := job
-		req.IdempotencyKey = rotatedSeedIdempotencyKey(req.IdempotencyKey, retired.JobID)
+		if len(retired) >= maxSeedKeyGenerations {
+			return nil, fmt.Errorf(
+				"relay returned a %s job for %d generations of the key chain (last %s)",
+				job.Status, len(retired), job.JobID,
+			)
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("walking the key chain past %s job %s: %w", job.Status, job.JobID, err)
+		}
+		retired[job.JobID] = struct{}{}
+		previous := job
+		req.IdempotencyKey = rotatedSeedIdempotencyKey(req.IdempotencyKey, previous.JobID)
 		job, err = c.ContributeAcquisition(ctx, req)
 		if err != nil {
-			return nil, fmt.Errorf("resubmit after relay returned %s job %s: %w", retired.Status, retired.JobID, err)
+			return nil, fmt.Errorf("resubmit after relay returned %s job %s: %w", previous.Status, previous.JobID, err)
 		}
 	}
 	return job, nil

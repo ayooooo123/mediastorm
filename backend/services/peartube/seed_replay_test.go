@@ -89,26 +89,72 @@ func TestContributeFollowsChainOfDeadJobsAcrossTwoLifecycles(t *testing.T) {
 	}
 }
 
-// A relay that fails every job must not turn one playback into an unbounded
-// submission storm.
-func TestContributeStopsWalkingAfterRotationBound(t *testing.T) {
+// Five dead generations is not a pathological relay, it is a release that has
+// failed five times over its life — and every one of those jobs stays in the
+// relay's history. A hop limit low enough to stop here would put a ceiling on
+// the release's lifetime instead of on load: every later submission would walk
+// the whole history and stop one short of the generation that can still take a
+// grant, which is the wedge this walk exists to remove.
+func TestContributeReachesLiveGenerationPastFiveDeadOnes(t *testing.T) {
+	const firstKey = "mediastorm-v2_generation"
+	jobs := map[string]string{}
+	key := firstKey
+	var wantKeys []string
+	for generation := 1; generation <= 5; generation++ {
+		id := fmt.Sprintf("acq_gen%d", generation)
+		jobs[key] = fmt.Sprintf(`{"acquisitionId":%q,"state":"failed"}`, id)
+		wantKeys = append(wantKeys, key)
+		key = rotatedSeedIdempotencyKey(key, id)
+	}
+	jobs[key] = `{"acquisitionId":"acq_live","state":"queued"}`
+	wantKeys = append(wantKeys, key)
+
+	stub := &contributeStub{t: t, jobs: jobs, fallback: `{"acquisitionId":"acq_unexpected","state":"queued"}`}
+	client := newCompanionSearchClient(t, stub.ServeHTTP)
+
+	job, err := client.contributeFreshAcquisition(context.Background(), ContributeAcquisitionRequest{
+		IdempotencyKey: firstKey,
+		Title:          "Night at the Museum",
+		Selector:       ContributeAcquisitionSelector{Kind: "movie", Namespace: "tmdb", Identifier: "1593"},
+	})
+	if err != nil {
+		t.Fatalf("contributeFreshAcquisition: %v", err)
+	}
+	if job.JobID != "acq_live" || job.Status != "queued" {
+		t.Fatalf("job = %+v, want the live generation acq_live queued", job)
+	}
+	if len(stub.keys) != len(wantKeys) {
+		t.Fatalf("submitted %d keys, want %d (five dead generations then the live one)", len(stub.keys), len(wantKeys))
+	}
+	for i := range wantKeys {
+		if stub.keys[i] != wantKeys[i] {
+			t.Fatalf("submitted key [%d] = %q, want %q", i, stub.keys[i], wantKeys[i])
+		}
+	}
+}
+
+// Storm protection is the cycle check, not the depth limit: a relay that keeps
+// answering with a job this walk already retired is not advancing, and the next
+// rotation would be the first submission that creates anything.
+func TestContributeStopsWhenTheChainDoesNotAdvance(t *testing.T) {
 	stub := &contributeStub{
-		t:       t,
-		jobs:    map[string]string{},
-		fallback: `{"acquisitionId":"acq_dead","state":"failed"}`,
+		t:        t,
+		jobs:     map[string]string{},
+		fallback: `{"acquisitionId":"acq_same","state":"failed"}`,
 	}
 	client := newCompanionSearchClient(t, stub.ServeHTTP)
 
 	_, err := client.contributeFreshAcquisition(context.Background(), ContributeAcquisitionRequest{
-		IdempotencyKey: "mediastorm-v2_always_dead",
+		IdempotencyKey: "mediastorm-v2_same_corpse",
 		Title:          "Night at the Museum",
 		Selector:       ContributeAcquisitionSelector{Kind: "movie", Namespace: "tmdb", Identifier: "1593"},
 	})
 	if err == nil {
-		t.Fatal("expected an error once the rotation bound is reached")
+		t.Fatal("expected an error when the relay keeps returning the same retired job")
 	}
-	if got, want := len(stub.keys), maxSeedKeyRotations+1; got != want {
-		t.Fatalf("submissions = %d, want %d (the original plus %d rotations)", got, want, maxSeedKeyRotations)
+	// The original, then exactly one rotation that proves the chain is stuck.
+	if got := len(stub.keys); got != 2 {
+		t.Fatalf("submissions = %d, want 2; a stuck chain must not keep submitting", got)
 	}
 }
 
