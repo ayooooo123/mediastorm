@@ -1040,7 +1040,6 @@ func (c *Client) fetchIngestJob(ctx context.Context, jobID string) (*companionIn
 type CompanionNetworkPolicy struct {
 	PolicyVersion           int    `json:"policyVersion"`
 	ConsentVersion          int    `json:"consentVersion"`
-	MigrationRequired       bool   `json:"migrationRequired"`
 	ContributeWatchedMedia  bool   `json:"contributeWatchedMedia"`
 	ArchiveEnabled          bool   `json:"archiveEnabled"`
 	ContributionBudgetBytes int64  `json:"contributionBudgetBytes"`

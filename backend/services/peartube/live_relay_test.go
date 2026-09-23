@@ -86,7 +86,6 @@ func TestLiveCompanionPolicyAndAcquisition(t *testing.T) {
 	policy := CompanionNetworkPolicy{
 		PolicyVersion:           2,
 		ConsentVersion:          1,
-		MigrationRequired:       false,
 		ContributeWatchedMedia:  true,
 		ArchiveEnabled:          true,
 		ContributionBudgetBytes: 10737418240,

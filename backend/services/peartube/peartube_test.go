@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -171,7 +172,6 @@ func TestApplyNetworkPolicyUsesAuthenticatedCompleteControlSnapshot(t *testing.T
 	policy := CompanionNetworkPolicy{
 		PolicyVersion:           2,
 		ConsentVersion:          1,
-		MigrationRequired:       false,
 		ContributeWatchedMedia:  true,
 		ArchiveEnabled:          false,
 		ContributionBudgetBytes: 4 * 1024 * 1024 * 1024,
@@ -191,6 +191,26 @@ func TestApplyNetworkPolicyUsesAuthenticatedCompleteControlSnapshot(t *testing.T
 		var got CompanionNetworkPolicy
 		if err := json.Unmarshal(body, &got); err != nil {
 			t.Fatalf("decode policy body: %v", err)
+		}
+		// The relay decodes this body against an exact field set and answers
+		// 400 UNKNOWN_FIELD for anything else, which aborts every acquisition
+		// that reconciles policy first. Mirror of POLICY_FIELDS in
+		// peartube packages/cli/src/companion/contracts.js.
+		var wire map[string]json.RawMessage
+		if err := json.Unmarshal(body, &wire); err != nil {
+			t.Fatalf("decode policy keys: %v", err)
+		}
+		keys := make([]string, 0, len(wire))
+		for key := range wire {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		relayFields := []string{
+			"archiveBudgetBytes", "archiveEnabled", "consentVersion", "contributeWatchedMedia",
+			"contributionBudgetBytes", "policyVersion", "uploadCeilingBytes", "uploadPermission",
+		}
+		if strings.Join(keys, ",") != strings.Join(relayFields, ",") {
+			t.Fatalf("policy wire fields = %v, relay accepts exactly %v", keys, relayFields)
 		}
 		if got != policy {
 			t.Fatalf("policy = %#v, want %#v", got, policy)

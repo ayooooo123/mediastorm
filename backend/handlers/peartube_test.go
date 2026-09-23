@@ -256,8 +256,9 @@ func TestSeedPublishesLocalMediaItem(t *testing.T) {
 		t.Fatalf("relay mutation order = %v, want policy then ingest", capture.events)
 	}
 	policy := capture.policies[0]
+	_, sentMigrationRequired := policy["migrationRequired"]
 	if policy["policyVersion"] != float64(2) || policy["consentVersion"] != float64(1) ||
-		policy["migrationRequired"] != false || policy["archiveEnabled"] != true ||
+		sentMigrationRequired || policy["archiveEnabled"] != true ||
 		policy["contributeWatchedMedia"] != false {
 		t.Fatalf("policy snapshot = %#v", policy)
 	}

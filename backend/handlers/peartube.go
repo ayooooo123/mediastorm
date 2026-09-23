@@ -337,7 +337,6 @@ func resolvedPolicySnapshot(resolved peartube.Resolved) (peartube.CompanionNetwo
 	return peartube.CompanionNetworkPolicy{
 		PolicyVersion:           companionPolicyVersion,
 		ConsentVersion:          companionConsentVersion,
-		MigrationRequired:       false,
 		ContributeWatchedMedia:  contribute,
 		ArchiveEnabled:          archive,
 		ContributionBudgetBytes: contributionBytes,
