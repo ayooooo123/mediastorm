@@ -1422,6 +1422,16 @@ func (s *Service) searchCacheKey(mode string, opts SearchOptions, settings confi
 	return hex.EncodeToString(sum[:])
 }
 
+// searchCacheKeyUnlessLive returns "" (no caching) when a PearTube relay is a
+// search source: a title the relay archives must show up on the next search,
+// not after the cache TTL.
+func searchCacheKeyUnlessLive(includeDebrid bool, settings config.Settings, key func() string) string {
+	if includeDebrid && settings.PearTubeConfig().RelayURL != "" {
+		return ""
+	}
+	return key()
+}
+
 func (s *Service) getCachedSearchResults(key string, now time.Time) ([]models.NZBResult, bool) {
 	if s == nil || key == "" {
 		return nil, false
@@ -1583,7 +1593,9 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBR
 	rankingBundle := s.getEffectiveRankingBundle(opts.UserID, opts.ClientID, settings)
 	rankingCriteria := rankingBundle.Default
 	cacheTitles := combineFilterTitles(filterTitles)
-	cacheKey := s.searchCacheKey("ranked", opts, settings, cacheTitles, filterSettings, filterBundle, animeSettings, filterOverrides, rankingCriteria, rankingBundle)
+	cacheKey := searchCacheKeyUnlessLive(includeDebrid, settings, func() string {
+		return s.searchCacheKey("ranked", opts, settings, cacheTitles, filterSettings, filterBundle, animeSettings, filterOverrides, rankingCriteria, rankingBundle)
+	})
 	if cached, ok := s.getCachedSearchResults(cacheKey, searchStart); ok {
 		log.Printf("[indexer] search cache hit for query=%q mediaType=%q user=%q client=%q results=%d", opts.Query, opts.MediaType, opts.UserID, opts.ClientID, len(cached))
 		log.Printf("[search-stats] Search #%d cache hit: %d results in %v (totals: search=%d, splitSearch=%d, usenetAPICalls=%d)",
@@ -2096,7 +2108,9 @@ func (s *Service) SearchWithScoringSplit(ctx context.Context, opts SearchOptions
 	// on a slow scraper (same key searchRawResults would use). The key includes
 	// the English fallback titles so both pipelines compute the identical key.
 	cacheTitles := combineFilterTitles(filterTitles)
-	cacheKey := s.searchCacheKey("raw", opts, settings, cacheTitles, filterSettings, filterBundle, animeSettings, filterOverrides, rankingCriteria, rankingBundle)
+	cacheKey := searchCacheKeyUnlessLive(includeDebrid, settings, func() string {
+		return s.searchCacheKey("raw", opts, settings, cacheTitles, filterSettings, filterBundle, animeSettings, filterOverrides, rankingCriteria, rankingBundle)
+	})
 	if cached, ok := s.getCachedSearchResults(cacheKey, searchStart); ok {
 		log.Printf("[indexer] raw search cache hit for query=%q mediaType=%q user=%q client=%q results=%d", opts.Query, opts.MediaType, opts.UserID, opts.ClientID, len(cached))
 		// A cache hit carries only the merged aggregate, so partition it by the
@@ -2592,7 +2606,9 @@ func (s *Service) searchRawResults(ctx context.Context, opts SearchOptions) ([]m
 	rankingBundle := s.getEffectiveRankingBundle(opts.UserID, opts.ClientID, settings)
 	rankingCriteria := rankingBundle.Default
 	cacheTitles := combineFilterTitles(filterTitles)
-	cacheKey := s.searchCacheKey("raw", opts, settings, cacheTitles, filterSettings, filterBundle, animeSettings, filterOverrides, rankingCriteria, rankingBundle)
+	cacheKey := searchCacheKeyUnlessLive(includeDebrid, settings, func() string {
+		return s.searchCacheKey("raw", opts, settings, cacheTitles, filterSettings, filterBundle, animeSettings, filterOverrides, rankingCriteria, rankingBundle)
+	})
 	if cached, ok := s.getCachedSearchResults(cacheKey, searchStart); ok {
 		log.Printf("[indexer] raw search cache hit for query=%q mediaType=%q user=%q client=%q results=%d", opts.Query, opts.MediaType, opts.UserID, opts.ClientID, len(cached))
 		return cached, nil
