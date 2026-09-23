@@ -165,3 +165,29 @@ func TestClientV1Contract(t *testing.T) {
 		t.Fatalf("Status = %+v", status)
 	}
 }
+
+// The video proxy admits a private address only for a stream origin an
+// authenticated relay search returned, not every port on the relay's host.
+func TestSearchAdmitsOnlyReturnedStreamOrigins(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[{"key":"k","id":"imdb:tt0111161","title":"t","size":1,"sha256":"s","local":true,"streamUrl":"http://10.9.8.7:8175/?key=x&token=y"}]}`))
+	}))
+	defer server.Close()
+	client, err := New(server.URL, "secret-secret-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if IsStreamOrigin("10.9.8.7", "8175") {
+		t.Fatal("origin admitted before any search returned it")
+	}
+	if _, err := client.Search(context.Background(), "imdb:tt0111161"); err != nil {
+		t.Fatal(err)
+	}
+	if !IsStreamOrigin("10.9.8.7", "8175") {
+		t.Fatal("returned stream origin was not admitted")
+	}
+	if IsStreamOrigin("10.9.8.7", "5432") {
+		t.Fatal("another port on the relay host was admitted")
+	}
+}

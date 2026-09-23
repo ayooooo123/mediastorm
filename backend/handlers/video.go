@@ -41,6 +41,7 @@ import (
 	"novastream/services/credits"
 	"novastream/services/debrid"
 	"novastream/services/libraryaccess"
+	"novastream/services/peartube"
 	"novastream/services/playback"
 	"novastream/services/streaming"
 
@@ -7299,10 +7300,6 @@ func configuredProviderHostPolicy(configManager ConfigProvider) requestsecurity.
 					addURLOrigin(scraper.URL)
 				}
 			}
-			// A PearTube relay serves its streams from another port on the same host.
-			if relay, err := url.Parse(settings.PearTubeConfig().RelayURL); err == nil && relay.Hostname() != "" {
-				allowed[privateMediaEndpointKey(relay.Hostname(), "*")] = struct{}{}
-			}
 			addURLOrigin(settings.Live.PlaylistURL)
 			addURLOrigin(settings.Live.ManifestURL)
 			addURLOrigin(settings.Live.XtreamHost)
@@ -7318,11 +7315,10 @@ func configuredProviderHostPolicy(configManager ConfigProvider) requestsecurity.
 		}
 	}
 	return func(hostname, port string) bool {
-		_, ok := allowed[privateMediaEndpointKey(hostname, port)]
-		if !ok {
-			_, ok = allowed[privateMediaEndpointKey(hostname, "*")]
+		if _, ok := allowed[privateMediaEndpointKey(hostname, port)]; ok {
+			return true
 		}
-		return ok
+		return peartube.IsStreamOrigin(strings.Trim(hostname, "[]"), port)
 	}
 }
 

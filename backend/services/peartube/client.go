@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -107,13 +109,35 @@ func New(baseURL, secret string) (*Client, error) {
 // BaseURL is the relay address this client talks to.
 func (c *Client) BaseURL() string { return c.baseURL }
 
+// streamOrigins holds every host:port an authenticated relay search returned
+// as a stream URL. The video proxy admits a private address only for these,
+// never a whole host: a relay usually shares its host with other services.
+var streamOrigins sync.Map
+
+// IsStreamOrigin reports whether hostname:port served a relay stream URL.
+func IsStreamOrigin(hostname, port string) bool {
+	_, ok := streamOrigins.Load(strings.ToLower(net.JoinHostPort(hostname, port)))
+	return ok
+}
+
 // Search lists the tracker entries for id.
 func (c *Client) Search(ctx context.Context, id string) ([]Result, error) {
 	var out struct {
 		Results []Result `json:"results"`
 	}
-	err := c.do(ctx, http.MethodGet, "/v1/search?id="+url.QueryEscape(id), nil, &out)
-	return out.Results, err
+	if err := c.do(ctx, http.MethodGet, "/v1/search?id="+url.QueryEscape(id), nil, &out); err != nil {
+		return nil, err
+	}
+	for _, r := range out.Results {
+		if u, err := url.Parse(r.StreamURL); err == nil && u.Hostname() != "" {
+			port := u.Port()
+			if port == "" {
+				port = map[string]string{"http": "80", "https": "443"}[u.Scheme]
+			}
+			streamOrigins.Store(strings.ToLower(net.JoinHostPort(u.Hostname(), port)), struct{}{})
+		}
+	}
+	return out.Results, nil
 }
 
 // Acquire asks the relay to fetch sourceURL (with headers), store it, and
