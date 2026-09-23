@@ -37,7 +37,7 @@ func (a *archiveRelay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/v1/jobs":
 		jobs := []map[string]any{}
 		for id := range a.active {
-			jobs = append(jobs, map[string]any{"jobId": "j-" + id, "id": id, "status": "running"})
+			jobs = append(jobs, map[string]any{"jobId": "j-" + id, "id": id, "status": "announcing"})
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"jobs": jobs})
 	case "/v1/acquire":

@@ -24,11 +24,14 @@ const (
 
 // Job statuses reported by the relay.
 const (
-	JobQueued    = "queued"
-	JobRunning   = "running"
-	JobDone      = "done"
-	JobFailed    = "failed"
-	JobCancelled = "cancelled"
+	JobQueued  = "queued"
+	JobRunning = "running"
+	// JobAnnouncing: the file is stored and the relay is publishing it to the
+	// tracker; it still holds the job.
+	JobAnnouncing = "announcing"
+	JobDone       = "done"
+	JobFailed     = "failed"
+	JobCancelled  = "cancelled"
 )
 
 // Result is one tracker entry for an id. StreamURL is an absolute,
@@ -57,7 +60,7 @@ type Job struct {
 
 // Active reports whether the relay is still working on the job.
 func (j Job) Active() bool {
-	return j.Status == JobQueued || j.Status == JobRunning
+	return j.Status == JobQueued || j.Status == JobRunning || j.Status == JobAnnouncing
 }
 
 // Status describes the relay.
@@ -86,7 +89,8 @@ type Client struct {
 	http    *http.Client
 }
 
-// New builds a client for the relay at baseURL, authenticated with secret.
+// New builds a client for the relay at baseURL. An empty secret sends no
+// Authorization header (the relay has no auth for now).
 func New(baseURL, secret string) (*Client, error) {
 	parsed, err := url.Parse(strings.TrimSpace(baseURL))
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
@@ -96,9 +100,6 @@ func New(baseURL, secret string) (*Client, error) {
 		return nil, errors.New("relay URL must not include credentials, a query, or a fragment")
 	}
 	secret = strings.TrimSpace(secret)
-	if secret == "" {
-		return nil, errors.New("relay secret is required")
-	}
 	return &Client{
 		baseURL: strings.TrimRight(parsed.String(), "/"),
 		secret:  secret,
@@ -223,7 +224,9 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.secret)
+	if c.secret != "" {
+		req.Header.Set("Authorization", "Bearer "+c.secret)
+	}
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")

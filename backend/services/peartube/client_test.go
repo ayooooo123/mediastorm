@@ -17,12 +17,11 @@ type fakeRelay struct {
 	mu     sync.Mutex
 	jobs   []map[string]any
 	source map[string]any
+	auth   []string
 }
 
 var relayID = regexp.MustCompile(`^[a-z0-9]+:[a-z0-9]+(:s\d{2}e\d{2,3})?$`)
 var relayJobPath = regexp.MustCompile(`^/v1/jobs/([0-9a-f-]{36})$`)
-
-const relaySecret = "sixteen-char-secret"
 
 func (f *fakeRelay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	reply := func(status int, payload any) {
@@ -30,12 +29,11 @@ func (f *fakeRelay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(payload)
 	}
-	if r.Header.Get("Authorization") != "Bearer "+relaySecret {
-		reply(http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
-		return
-	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if header := r.Header.Get("Authorization"); header != "" {
+		f.auth = append(f.auth, header)
+	}
 	path := r.URL.Path
 	switch {
 	case r.Method == http.MethodGet && path == "/v1/status":
@@ -85,21 +83,14 @@ func TestClientV1Contract(t *testing.T) {
 	defer server.Close()
 	ctx := context.Background()
 
-	if _, err := New(server.URL, ""); err == nil {
-		t.Fatal("New accepted an empty secret")
-	}
-	wrong, err := New(server.URL, "not-the-secret")
+	// The relay has no auth for now: an empty secret sends no header.
+	client, err := New(server.URL+"/", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	var apiErr *APIError
-	if _, err := wrong.Status(ctx); !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusUnauthorized || apiErr.Message != "unauthorized" {
-		t.Fatalf("wrong secret: err = %v", err)
-	}
-
-	client, err := New(server.URL+"/", relaySecret)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := client.Search(ctx, "not an id"); !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusBadRequest || apiErr.Message != "bad id" {
+		t.Fatalf("bad id: err = %v", err)
 	}
 
 	for _, tc := range []struct {
@@ -163,6 +154,9 @@ func TestClientV1Contract(t *testing.T) {
 	}
 	if status != (Status{Tracker: "aa", Writer: "bb", Blobs: "cc", BlobBytes: 1234, Peers: 3}) {
 		t.Fatalf("Status = %+v", status)
+	}
+	if len(relay.auth) != 0 {
+		t.Fatalf("an empty secret sent Authorization headers: %v", relay.auth)
 	}
 }
 
