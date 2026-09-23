@@ -263,12 +263,17 @@ const TorrentScraperTypePearTube = "peartube"
 // archiving played titles to the relay.
 const PearTubeConfigArchiveEnabled = "archiveEnabled"
 
+// PearTubeConfigSourceURL is the scraper config key for the address where the
+// relay can reach MediaStorm to fetch sources only MediaStorm can read.
+const PearTubeConfigSourceURL = "sourceUrl"
+
 // PearTubeSettings is the relay MediaStorm archives to: the first enabled
 // PearTube scraper. The zero value means no relay.
 type PearTubeSettings struct {
 	RelayURL       string
 	Secret         string
 	ArchiveEnabled bool
+	SourceURL      string
 }
 
 // PearTubeConfig reads the first enabled PearTube scraper.
@@ -280,6 +285,7 @@ func (s Settings) PearTubeConfig() PearTubeSettings {
 				RelayURL:       strings.TrimSpace(entry.URL),
 				Secret:         strings.TrimSpace(entry.APIKey),
 				ArchiveEnabled: archive,
+				SourceURL:      strings.TrimSpace(entry.Config[PearTubeConfigSourceURL]),
 			}
 		}
 	}

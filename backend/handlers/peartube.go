@@ -73,11 +73,17 @@ func (h *PearTubeHandler) ApplyPearTubeSettings(settings config.Settings) {
 			configErr = err.Error()
 		}
 	}
+	// The relay fetches MediaStorm-only sources here. It is usually a LAN
+	// address, unlike the public external backend URL used for invite links.
+	sourceBase := cfg.SourceURL
+	if sourceBase == "" {
+		sourceBase = settings.Server.ExternalBackendURL
+	}
 	h.mu.Lock()
 	h.client = client
 	h.relayURL = cfg.RelayURL
 	h.archive = cfg.ArchiveEnabled
-	h.sourceBase = strings.TrimRight(settings.Server.ExternalBackendURL, "/")
+	h.sourceBase = strings.TrimRight(sourceBase, "/")
 	h.configErr = configErr
 	h.mu.Unlock()
 }

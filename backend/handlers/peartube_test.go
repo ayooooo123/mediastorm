@@ -200,3 +200,28 @@ func TestPearTubeArchivesSourceOnRelayHostButNotRelayStreams(t *testing.T) {
 		t.Fatalf("acquisitions = %v, want the same-host direct source", acquired)
 	}
 }
+
+// The relay fetches usenet sources from sourceUrl, a LAN address, not from
+// the public external backend URL used for invite links.
+func TestPearTubeUsenetSourceUsesSourceURL(t *testing.T) {
+	relay := &archiveRelay{local: map[string]bool{}, active: map[string]bool{}}
+	server := httptest.NewServer(relay)
+	defer server.Close()
+	handler := NewPearTubeHandler(&archiveStreams{})
+	settings := config.Settings{TorrentScrapers: []config.TorrentScraperConfig{{
+		Type: config.TorrentScraperTypePearTube, URL: server.URL, APIKey: "secret", Enabled: true,
+		Config: map[string]string{config.PearTubeConfigArchiveEnabled: "true", config.PearTubeConfigSourceURL: "http://10.0.0.5:7777/"},
+	}}}
+	settings.Server.ExternalBackendURL = "https://public.example"
+	handler.ApplyPearTubeSettings(settings)
+
+	handler.OnPlaybackStarted(models.PlaybackProgressUpdate{MediaType: "movie", ExternalIDs: map[string]string{"imdb": "tt0000099"}, SourcePath: "/webdav/nzbs/Movie.mkv"})
+	deadline := time.Now().Add(2 * time.Second)
+	for len(relay.acquisitions()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	acquired := relay.acquisitions()
+	if len(acquired) != 1 || acquired[0]["source"].(map[string]any)["url"] != "http://10.0.0.5:7777"+peartube.SourceRoute {
+		t.Fatalf("acquisitions = %v, want the sourceUrl base", acquired)
+	}
+}
