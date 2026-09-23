@@ -41,7 +41,6 @@ import (
 	"novastream/services/credits"
 	"novastream/services/debrid"
 	"novastream/services/libraryaccess"
-	"novastream/services/peartube"
 	"novastream/services/playback"
 	"novastream/services/streaming"
 
@@ -1192,15 +1191,6 @@ func (h *VideoHandler) StreamVideo(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *VideoHandler) streamViaProvider(w http.ResponseWriter, r *http.Request, cleanPath string) (bool, error) {
-	if peartube.IsBlobStreamReference(cleanPath) {
-		if client := peartube.Default(); client != nil {
-			return h.proxyPearTubeBlob(w, r, client, cleanPath)
-		}
-	}
-	if peartube.IsRawBlobStreamURL(cleanPath) {
-		http.Error(w, "raw PearTube blob URLs are not accepted", http.StatusBadRequest)
-		return true, errors.New("raw PearTube blob URL bypassed its opaque handle")
-	}
 	// Check if this is a pre-resolved external URL (e.g., from AIOStreams)
 	// These URLs should be proxied directly rather than going through the provider
 	if strings.HasPrefix(cleanPath, "http://") || strings.HasPrefix(cleanPath, "https://") {
@@ -6534,31 +6524,6 @@ func (h *VideoHandler) videoFullToUnifiedProbe(result *VideoFullResult) *Unified
 	return cached
 }
 
-func (h *VideoHandler) proxyPearTubeBlob(w http.ResponseWriter, r *http.Request, client *peartube.Client, streamReference string) (bool, error) {
-	response, err := client.OpenBlobStream(r.Context(), streamReference, r.Method, r.Header)
-	if err != nil {
-		http.Error(w, "PearTube stream is unavailable", http.StatusBadGateway)
-		return true, err
-	}
-	defer response.Body.Close()
-
-	h.writeCommonHeaders(w)
-	for _, name := range []string{"Accept-Ranges", "Cache-Control", "Content-Length", "Content-Range", "Content-Type", "ETag", "Last-Modified"} {
-		if value := response.Header.Get(name); value != "" {
-			w.Header().Set(name, value)
-		}
-	}
-	w.WriteHeader(response.StatusCode)
-	if r.Method == http.MethodHead {
-		return true, nil
-	}
-	_, err = io.Copy(w, response.Body)
-	if err != nil && !isClientGone(err) {
-		return true, err
-	}
-	return true, nil
-}
-
 // proxyExternalURL proxies a pre-resolved external URL (e.g., from AIOStreams) to the client.
 // It supports range requests for seeking and passes through the response from the remote server.
 func (h *VideoHandler) proxyExternalURL(w http.ResponseWriter, r *http.Request, externalURL string) (bool, error) {
@@ -7334,6 +7299,10 @@ func configuredProviderHostPolicy(configManager ConfigProvider) requestsecurity.
 					addURLOrigin(scraper.URL)
 				}
 			}
+			// A PearTube relay serves its streams from another port on the same host.
+			if relay, err := url.Parse(settings.PearTubeConfig().RelayURL); err == nil && relay.Hostname() != "" {
+				allowed[privateMediaEndpointKey(relay.Hostname(), "*")] = struct{}{}
+			}
 			addURLOrigin(settings.Live.PlaylistURL)
 			addURLOrigin(settings.Live.ManifestURL)
 			addURLOrigin(settings.Live.XtreamHost)
@@ -7350,6 +7319,9 @@ func configuredProviderHostPolicy(configManager ConfigProvider) requestsecurity.
 	}
 	return func(hostname, port string) bool {
 		_, ok := allowed[privateMediaEndpointKey(hostname, port)]
+		if !ok {
+			_, ok = allowed[privateMediaEndpointKey(hostname, "*")]
+		}
 		return ok
 	}
 }
@@ -7837,14 +7809,4 @@ func (h *VideoHandler) SetCastCapabilities(store *castcaps.Store) {
 	if h.hlsManager != nil {
 		h.hlsManager.SetCastCapabilities(store)
 	}
-}
-
-// GetActiveStreamPaths lists the file paths the stream pool is currently
-// serving. Used by PearTube queued-acquisition recovery to re-grant a relay
-// job whose source is still being streamed.
-func (h *VideoHandler) GetActiveStreamPaths() []string {
-	if h == nil || h.streamPool == nil {
-		return nil
-	}
-	return h.streamPool.ActiveStreamPaths()
 }

@@ -23,7 +23,6 @@ import (
 
 	"novastream/config"
 	"novastream/services/credits"
-	"novastream/services/peartube"
 	"novastream/services/playback"
 	"novastream/services/streaming"
 )
@@ -89,54 +88,6 @@ func TestDetectContainerExt(t *testing.T) {
 				t.Errorf("detectContainerExt(%q) = %q, want %q", tc.input, result, tc.expected)
 			}
 		})
-	}
-}
-
-func TestStreamViaProviderReadsPearTubeBlobServerOverLoopback(t *testing.T) {
-	blobServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Range") != "bytes=1-3" {
-			t.Errorf("Range = %q", r.Header.Get("Range"))
-		}
-		w.Header().Set("Accept-Ranges", "bytes")
-		w.Header().Set("Content-Range", "bytes 1-3/5")
-		w.Header().Set("Content-Length", "3")
-		w.WriteHeader(http.StatusPartialContent)
-		_, _ = io.WriteString(w, "edi")
-	}))
-	defer blobServer.Close()
-	peartube.Configure(peartube.Resolved{RelayURL: "http://127.0.0.1:8175", Enabled: true})
-	t.Cleanup(func() { peartube.Configure(peartube.Resolved{}) })
-
-	streamURL := blobServer.URL + "/?key=" + strings.Repeat("a", 64) +
-		"&blob=0%3A1%3A0%3A5&type=video%2Fmp4&token=" + strings.Repeat("b", 64)
-	streamReference, err := peartube.Default().RegisterBlobStream(streamURL, time.Now().Add(5*time.Minute).UnixMilli())
-	if err != nil {
-		t.Fatalf("register blob stream: %v", err)
-	}
-	handler := NewVideoHandler(false, "", "")
-	request := httptest.NewRequest(http.MethodGet, "/api/video/stream", nil)
-	request.Header.Set("Range", "bytes=1-3")
-	recorder := httptest.NewRecorder()
-	handled, err := handler.streamViaProvider(recorder, request, streamReference)
-	if err != nil || !handled {
-		t.Fatalf("streamViaProvider: handled=%t err=%v", handled, err)
-	}
-	if recorder.Code != http.StatusPartialContent || recorder.Body.String() != "edi" {
-		t.Fatalf("stream response = %d %q", recorder.Code, recorder.Body.String())
-	}
-	if recorder.Header().Get("Content-Range") != "bytes 1-3/5" {
-		t.Fatalf("Content-Range = %q", recorder.Header().Get("Content-Range"))
-	}
-
-	rawRequest := httptest.NewRequest(http.MethodGet, "/api/video/stream", nil)
-	rawRequest.Header.Set("Range", "bytes=1-3")
-	rawRecorder := httptest.NewRecorder()
-	rawHandled, rawErr := handler.streamViaProvider(rawRecorder, rawRequest, streamURL)
-	if !rawHandled || rawErr == nil {
-		t.Fatalf("raw loopback URL bypassed opaque handle: handled=%t err=%v", rawHandled, rawErr)
-	}
-	if rawRecorder.Code != http.StatusBadRequest {
-		t.Fatalf("raw loopback status = %d, want 400", rawRecorder.Code)
 	}
 }
 

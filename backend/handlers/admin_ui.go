@@ -746,26 +746,22 @@ var SettingsSchema = map[string]interface{}{
 		"order":       1,
 		"is_array":    true,
 		"fields": map[string]interface{}{
-			"name":                          map[string]interface{}{"type": "text", "label": "Name", "description": "Scraper name", "order": 0},
-			"type":                          map[string]interface{}{"type": "select", "label": "Type", "options": []string{"torrentio", "prowlarr", "jackett", "zilean", "aiostreams", "nyaa", "comet", "mediafusion", "internetarchive", "peartube"}, "description": "Source/addon type", "order": 1},
-			"options":                       map[string]interface{}{"type": "text", "label": "Options", "description": `Torrentio URL path options, not a full addon URL. Use the <a href="https://torrentio.strem.fun/configure" target="_blank" rel="noopener noreferrer">Torrentio configurator</a>, then copy only the options segment before /stream (for example: sort=qualitysize|qualityfilter=480p,scr,cam).`, "showWhen": map[string]interface{}{"field": "type", "value": "torrentio"}, "order": 2, "placeholder": "sort=qualitysize|qualityfilter=480p,scr,cam"},
-			"url":                           map[string]interface{}{"type": "text", "label": "URL", "description": "API URL. For Prowlarr, use the Prowlarr base URL and the backend will add each enabled torrent indexer on save. For AIOStreams/Comet/MediaFusion, use the full Stremio addon URL. For Torrentio, this can replace https://torrentio.strem.fun. For Internet Archive, leave blank unless testing another archive.org-compatible host. For PearTube, the relay base URL; leave blank to fall back to PEARTUBE_RELAY_URL.", "showWhen": map[string]interface{}{"operator": "or", "conditions": []map[string]interface{}{{"field": "type", "value": "prowlarr"}, {"field": "type", "value": "jackett"}, {"field": "type", "value": "zilean"}, {"field": "type", "value": "aiostreams"}, {"field": "type", "value": "comet"}, {"field": "type", "value": "mediafusion"}, {"field": "type", "value": "internetarchive"}, {"field": "type", "value": "torrentio"}, {"field": "type", "value": "peartube"}}}, "order": 3, "placeholder": "http://prowlarr:9696"},
-			"apiKey":                        map[string]interface{}{"type": "password", "label": "API Key", "description": "Prowlarr or Jackett API key", "showWhen": map[string]interface{}{"operator": "or", "conditions": []map[string]interface{}{{"field": "type", "value": "prowlarr"}, {"field": "type", "value": "jackett"}}}, "order": 4},
-			"config.passthroughFormat":      map[string]interface{}{"type": "boolean", "label": "Passthrough Format", "description": "Show AIOStreams' raw provider-formatted name and details in manual selection. This does not change MediaStorm filtering or result ordering.", "showWhen": map[string]interface{}{"field": "type", "value": "aiostreams"}, "order": 5},
-			"config.category":               map[string]interface{}{"type": "select", "label": "Category", "options": []string{"1_0", "1_2", "1_3", "1_4"}, "description": "Nyaa category (1_0=All Anime, 1_2=English-translated, 1_3=Non-English, 1_4=Raw)", "showWhen": map[string]interface{}{"field": "type", "value": "nyaa"}, "order": 6},
-			"config.filter":                 map[string]interface{}{"type": "select", "label": "Filter", "options": []string{"0", "1", "2"}, "description": "Nyaa filter (0=All, 1=No remakes, 2=Trusted only)", "showWhen": map[string]interface{}{"field": "type", "value": "nyaa"}, "order": 7},
-			"config.contributeWatchedMedia": map[string]interface{}{"type": "boolean", "label": "Contribute watched media", "description": "Explicitly allow watched titles to be contributed to the swarm. Off is watch-only: search and playback remain available, and nothing watched is published.", "showWhen": map[string]interface{}{"field": "type", "value": "peartube"}, "default": false, "order": 7},
-			"config.archiveOnPlaybackStart": map[string]interface{}{"type": "boolean", "label": "Archive on playback start", "description": "Archive the whole title as soon as playback starts, as a separate download that keeps running if the viewer stops watching. Off waits for continuous playback evidence before contributing anything, and abandons the transfer when playback ends. This only applies where \"Contribute watched media\" is already on; it grants no new permission.", "showWhen": map[string]interface{}{"field": "type", "value": "peartube"}, "default": true, "order": 8},
-			"config.contributionBudget":     map[string]interface{}{"type": "number", "label": "Contribution budget (GiB)", "description": "Maximum contribution-cache storage in GiB. This evictable budget is separate from archive retention.", "showWhen": map[string]interface{}{"field": "type", "value": "peartube"}, "default": config.PearTubeDefaultContributionBudgetGiB, "min": config.PearTubeContributionBudgetMinGiB, "max": config.PearTubeContributionBudgetMaxGiB, "step": 1, "order": 9},
-			"config.archiveEnabled":         map[string]interface{}{"type": "boolean", "label": "Enable archive retention", "description": "Separately opt in to long-term archive retention. Contribution consent never enables archive retention.", "showWhen": map[string]interface{}{"field": "type", "value": "peartube"}, "default": false, "order": 10},
-			"config.archiveBudget":          map[string]interface{}{"type": "number", "label": "Archive budget (GiB)", "description": "Maximum archive-retention storage in GiB. This budget is independent from the contribution cache.", "showWhen": map[string]interface{}{"field": "type", "value": "peartube"}, "default": config.PearTubeDefaultArchiveBudgetGiB, "min": config.PearTubeArchiveBudgetMinGiB, "max": config.PearTubeArchiveBudgetMaxGiB, "step": 1, "order": 11},
-			"enabled":                       map[string]interface{}{"type": "boolean", "label": "Relay search enabled", "description": "Use this relay for search and playback discovery. This does not grant contribution or archive permission.", "order": 12},
+			"name":                     map[string]interface{}{"type": "text", "label": "Name", "description": "Scraper name", "order": 0},
+			"type":                     map[string]interface{}{"type": "select", "label": "Type", "options": []string{"torrentio", "prowlarr", "jackett", "zilean", "aiostreams", "nyaa", "comet", "mediafusion", "internetarchive", "peartube"}, "description": "Source/addon type", "order": 1},
+			"options":                  map[string]interface{}{"type": "text", "label": "Options", "description": `Torrentio URL path options, not a full addon URL. Use the <a href="https://torrentio.strem.fun/configure" target="_blank" rel="noopener noreferrer">Torrentio configurator</a>, then copy only the options segment before /stream (for example: sort=qualitysize|qualityfilter=480p,scr,cam).`, "showWhen": map[string]interface{}{"field": "type", "value": "torrentio"}, "order": 2, "placeholder": "sort=qualitysize|qualityfilter=480p,scr,cam"},
+			"url":                      map[string]interface{}{"type": "text", "label": "URL", "description": "API URL. For Prowlarr, use the Prowlarr base URL and the backend will add each enabled torrent indexer on save. For AIOStreams/Comet/MediaFusion, use the full Stremio addon URL. For Torrentio, this can replace https://torrentio.strem.fun. For Internet Archive, leave blank unless testing another archive.org-compatible host. For PearTube, the relay API URL (for example http://relay:8174).", "showWhen": map[string]interface{}{"operator": "or", "conditions": []map[string]interface{}{{"field": "type", "value": "prowlarr"}, {"field": "type", "value": "jackett"}, {"field": "type", "value": "zilean"}, {"field": "type", "value": "aiostreams"}, {"field": "type", "value": "comet"}, {"field": "type", "value": "mediafusion"}, {"field": "type", "value": "internetarchive"}, {"field": "type", "value": "torrentio"}, {"field": "type", "value": "peartube"}}}, "order": 3, "placeholder": "http://prowlarr:9696"},
+			"apiKey":                   map[string]interface{}{"type": "password", "label": "API Key", "description": "Prowlarr or Jackett API key. For PearTube, the relay secret (PEARTUBE_SECRET).", "showWhen": map[string]interface{}{"operator": "or", "conditions": []map[string]interface{}{{"field": "type", "value": "prowlarr"}, {"field": "type", "value": "jackett"}, {"field": "type", "value": "peartube"}}}, "order": 4},
+			"config.passthroughFormat": map[string]interface{}{"type": "boolean", "label": "Passthrough Format", "description": "Show AIOStreams' raw provider-formatted name and details in manual selection. This does not change MediaStorm filtering or result ordering.", "showWhen": map[string]interface{}{"field": "type", "value": "aiostreams"}, "order": 5},
+			"config.category":          map[string]interface{}{"type": "select", "label": "Category", "options": []string{"1_0", "1_2", "1_3", "1_4"}, "description": "Nyaa category (1_0=All Anime, 1_2=English-translated, 1_3=Non-English, 1_4=Raw)", "showWhen": map[string]interface{}{"field": "type", "value": "nyaa"}, "order": 6},
+			"config.filter":            map[string]interface{}{"type": "select", "label": "Filter", "options": []string{"0", "1", "2"}, "description": "Nyaa filter (0=All, 1=No remakes, 2=Trusted only)", "showWhen": map[string]interface{}{"field": "type", "value": "nyaa"}, "order": 7},
+			"config.archiveEnabled":    map[string]interface{}{"type": "boolean", "label": "Archive played titles", "description": "When a user plays a title from another source, ask the relay to fetch and store it so PearTube can serve it next time. Sources only MediaStorm can read (usenet) need the external backend URL to be set.", "showWhen": map[string]interface{}{"field": "type", "value": "peartube"}, "order": 8},
+			"enabled":                  map[string]interface{}{"type": "boolean", "label": "Enabled", "description": "Enable this scraper", "order": 9},
 			"allowedProfiles": map[string]interface{}{
 				"type":        "multiselect",
 				"label":       "Allowed Profiles",
 				"description": "Profiles allowed to use this source. Leave empty for all profiles.",
 				"optionsFrom": "profiles",
-				"order":       13,
+				"order":       10,
 			},
 		},
 	},
@@ -5104,26 +5100,14 @@ func (h *AdminUIHandler) testPearTubeScraper(w http.ResponseWriter, req TestScra
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	relayURL := strings.TrimSpace(req.URL)
-	if relayURL == "" {
-		if peartube.Default() != nil && (strings.HasPrefix(peartube.Default().BaseURL(), "http://") || strings.HasPrefix(peartube.Default().BaseURL(), "https://")) {
-			relayURL = peartube.Default().BaseURL()
-		} else if envURL := strings.TrimSpace(os.Getenv(peartube.RelayURLEnv)); strings.HasPrefix(envURL, "http://") || strings.HasPrefix(envURL, "https://") {
-			relayURL = envURL
-		} else {
-			relayURL = "http://127.0.0.1:8175"
-		}
-	}
-
-	client, err := peartube.New(relayURL)
+	client, err := peartube.New(req.URL, req.APIKey)
 	if err != nil {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": false,
-			"error":   fmt.Sprintf("Invalid PearTube relay URL: %v", err),
+			"error":   fmt.Sprintf("PearTube relay is misconfigured: %v", err),
 		})
 		return
 	}
-
 	status, err := client.Status(ctx)
 	if err != nil {
 		json.NewEncoder(w).Encode(map[string]interface{}{
@@ -5132,24 +5116,9 @@ func (h *AdminUIHandler) testPearTubeScraper(w http.ResponseWriter, req TestScra
 		})
 		return
 	}
-
-	diag := status.Diagnostics
-	if diag.Ready || diag.SearchAvailable || status.Status == "available" || status.Status == "ready" {
-		searchStatus := "ready"
-		if !diag.SearchAvailable {
-			searchStatus = "indexing"
-		}
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"success": true,
-			"message": fmt.Sprintf("PearTube relay is working (search %s, active acquisitions %d, queued %d)",
-				searchStatus, diag.ActiveAcquisitions, diag.QueuedAcquisitions),
-		})
-		return
-	}
-
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
-		"message": fmt.Sprintf("PearTube relay is reachable (status: %s)", status.Status),
+		"message": fmt.Sprintf("PearTube relay is working (%d peers, %d bytes stored)", status.Peers, status.BlobBytes),
 	})
 }
 

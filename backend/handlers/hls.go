@@ -5117,8 +5117,8 @@ func (m *HLSManager) KeepAlive(w http.ResponseWriter, r *http.Request, sessionID
 	buffering := session.PlaybackBuffering
 	ended := session.PlaybackEnded
 	// The internal stream path this session transcodes from. Consumers that have
-	// to reach the source again — the p2p auto-seeder re-resolves it to a current
-	// URL — cannot recover it from anywhere else on this request.
+	// to reach the source again cannot recover it from anywhere else on this
+	// request.
 	sourcePath := session.Path
 	session.mu.Unlock()
 

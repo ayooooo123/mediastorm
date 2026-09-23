@@ -376,7 +376,7 @@ func main() {
 	badStreamsHandler := handlers.NewBadStreamsHandler(badStreamsService)
 	indexerHandler.SetBadStreamsService(badStreamsService)
 
-	playbackService := playback.NewService(cfgManager, nzbSystem, nzbSystem.MetadataReader(), &peartube.Resolver{})
+	playbackService := playback.NewService(cfgManager, nzbSystem, nzbSystem.MetadataReader())
 	// Wire the preflight availability probe: usenet candidates are
 	// segment-sampled concurrently with the full resolve, so dead releases are
 	// cancelled and rejected cheaply (fail-open — only a definitive
@@ -893,92 +893,15 @@ func main() {
 	localMediaHandler := handlers.NewLocalMediaHandler(localMediaService, userService, settings.Transmux.Enabled)
 	localMediaHandler.SetMetadataLanguageProviders(metadataService, cfgManager, userSettingsService)
 	localMediaHandler.SetRemoteMediaService(remoteMediaService)
-	// Inert unless the admin settings or PEARTUBE_RELAY_URL/PEARTUBE_ENABLED name
-	// a relay. ApplyPearTubeSettings below installs the effective configuration.
-	pearTubeHandler := handlers.NewPearTubeHandler(localMediaService)
-	sourceGrants := peartube.NewSourceGrantRegistryFromEnv()
-	defer sourceGrants.Close()
-	pearTubeHandler.SetSourceGrants(sourceGrants)
-	r.Handle(peartube.SourceCallbackRoute, sourceGrants).Methods(http.MethodHead, http.MethodGet, http.MethodDelete)
-	// Lets a seed name the stream path a playback resolve returned. The same
-	// provider then serves the relay's byte ranges through an authenticated
-	// grant, re-resolving the expiring debrid address underneath, so no caller
-	// ever ships a URL that can go stale mid-archive.
-	var _ peartube.RemoteRangeReader = compositeProvider
-	pearTubeHandler.SetStreamResolver(compositeProvider)
-	// Configure the integration from the stored settings, and again on every
-	// settings save, so a relay can be added, moved, or switched off from the
-	// admin settings page without restarting the container.
-	if err := pearTubeHandler.ApplyPearTubeSettings(settings.PearTubeConfig()); err != nil {
-		// Startup remains available for private playback, but contribution stays
-		// fail-closed until a later settings save reconciles the relay.
-		log.Printf("[peartube] initial relay policy reconciliation failed: %v", err)
-	}
+	// PearTube: archive played titles to the configured relay, and serve the
+	// relay the sources only MediaStorm can read. Reconfigured on settings save.
+	pearTubeHandler := handlers.NewPearTubeHandler(compositeProvider)
+	pearTubeHandler.ApplyPearTubeSettings(settings)
 	settingsHandler.SetPearTubeConfigurer(pearTubeHandler)
-	// Contribute watched media only when the current persisted policy explicitly
-	// opts in. Relay search/playback remains independent from this observer.
-	//
-	// Every playback signal is registered, because no single one of them sees
-	// every player. The progress endpoint below is the web player's heartbeat;
-	// the HLS keepalive is the web player behind a transcode; and a byte-range
-	// stream request opening a new playback is the only signal an app produces.
-	// One title still seeds once: the seeder claims by title, not by signal.
-	//
-	// The metadata service is handed over because no app client sends a TMDB id:
-	// it names titles by TVDB and IMDb, and the swarm keys every entity by TMDB
-	// number, so the id has to be recovered here rather than demanded of clients
-	// that are already in the field.
-	pearTubeHandler.SetTMDBResolver(metadataService)
-	historyHandler.SetAutoSeeder(pearTubeHandler)
-	videoHandler.GetHLSManager().AddPlaybackActivityObserver(pearTubeHandler)
-	handlers.GetStreamTracker().AddPlaybackActivityObserver(pearTubeHandler)
-	handlers.GetStreamTracker().SetPlaybackAutoSeeder(pearTubeHandler)
+	r.Handle(peartube.SourceRoute, pearTubeHandler.Sources()).Methods(http.MethodGet)
+	historyHandler.SetArchiver(pearTubeHandler)
+	handlers.GetStreamTracker().SetPlaybackArchiver(pearTubeHandler)
 	localMediaHandler.SetLibraryAccessService(libraryAccessService)
-
-	// Re-grant the relay's orphaned queued acquisitions. A relay restart wipes
-	// its in-memory source grants; a queued job with confirmed bytes waits
-	// forever unless the grant issuer - this process - re-attaches one. The
-	// matcher pairs a queued job with a stream this process is still serving,
-	// so recovery covers the common case: the relay restarted while playback
-	// (and its source stream) stayed alive.
-	pearTubeHandler.SetQueuedAcquisitionMatcher(func(job peartube.QueuedAcquisition) string {
-		jobName := strings.TrimSpace(job.SourceFileName)
-		// 1. Exact base-name match from active stream pool
-		if jobName != "" {
-			for _, path := range videoHandler.GetActiveStreamPaths() {
-				if filepath.Base(path) == jobName || filepath.Clean(path) == filepath.Clean(jobName) {
-					return path
-				}
-			}
-		}
-		// 2. Match from prequeue store ready entries
-		if prequeueStore := prequeueHandler.GetStore(); prequeueStore != nil {
-			for _, entry := range prequeueStore.ListAll() {
-				if entry == nil || entry.Status != playback.PrequeueStatusReady || strings.TrimSpace(entry.StreamPath) == "" {
-					continue
-				}
-				if jobName != "" && (filepath.Base(entry.StreamPath) == jobName || filepath.Clean(entry.StreamPath) == filepath.Clean(jobName)) {
-					return entry.StreamPath
-				}
-				if job.MediaContext.Kind == "movie" && job.MediaContext.Identifier != "" {
-					if entry.TitleID == "tmdb:movie:"+job.MediaContext.Identifier || entry.TitleID == "movie:"+job.MediaContext.Identifier || entry.TitleID == job.MediaContext.Identifier {
-						return entry.StreamPath
-					}
-				} else if job.MediaContext.Kind == "episode" && job.MediaContext.SeriesIdentifier != "" {
-					if (entry.TitleID == "tmdb:series:"+job.MediaContext.SeriesIdentifier || entry.TitleID == "series:"+job.MediaContext.SeriesIdentifier || entry.TitleID == job.MediaContext.SeriesIdentifier) &&
-						entry.TargetEpisode != nil && entry.TargetEpisode.SeasonNumber == job.MediaContext.SeasonNumber && entry.TargetEpisode.EpisodeNumber == job.MediaContext.EpisodeNumber {
-						return entry.StreamPath
-					}
-				}
-			}
-		}
-		return ""
-	})
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		pearTubeHandler.RecoverQueuedAcquisitions(ctx)
-	}()
 	userSettingsHandler.LocalMedia = localMediaService
 	userSettingsHandler.SetPrequeueStore(prequeueHandler.GetStore())
 	userSettingsHandler.SetSearchCacheClearer(indexerService)
@@ -1277,9 +1200,6 @@ func main() {
 	r.HandleFunc("/admin/api/debrid-status", adminUIHandler.RequireAuth(adminUIHandler.GetDebridStatus)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/p2p/status", adminUIHandler.RequireAuth(pearTubeHandler.Status)).Methods(http.MethodGet)
 	r.HandleFunc("/account/api/p2p/status", adminUIHandler.RequireAuth(pearTubeHandler.Status)).Methods(http.MethodGet)
-	r.HandleFunc("/admin/api/peartube/status", adminUIHandler.RequireAuth(pearTubeHandler.Status)).Methods(http.MethodGet)
-	r.HandleFunc("/admin/api/peartube/seed", adminUIHandler.RequireAuth(pearTubeHandler.Seed)).Methods(http.MethodPost)
-	r.HandleFunc("/admin/api/peartube/seed/{jobId}", adminUIHandler.RequireAuth(pearTubeHandler.SeedStatus)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/user-settings", adminUIHandler.RequireAuth(adminUIHandler.GetUserSettings)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/user-settings", adminUIHandler.RequireAuth(adminUIHandler.SaveUserSettings)).Methods(http.MethodPut)
 	r.HandleFunc("/admin/api/user-settings", adminUIHandler.RequireAuth(adminUIHandler.ResetUserSettings)).Methods(http.MethodDelete)

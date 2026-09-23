@@ -49,7 +49,6 @@ type SearchOptions struct {
 	Categories            []string
 	MaxResults            int
 	IMDBID                string                      // Optional IMDB ID to bypass metadata search
-	TMDBID                string                      // Optional TMDB ID for exact companion searches
 	MediaType             string                      // Optional: "movie" or "series" - helps with filtering
 	Year                  int                         // Optional: Release year - helps with filtering
 	AlternateTitles       []string                    // Optional: alternate or foreign titles for fuzzy filtering
@@ -117,23 +116,11 @@ func buildScrapersFromSettings(settings config.Settings) []Scraper {
 	log.Printf("[debrid] Using indexer timeout: %.1fs", timeout)
 
 	var scrapers []Scraper
-	pearTubeSelected := false
 	for _, scraperCfg := range settings.TorrentScrapers {
-		scraperType := strings.ToLower(strings.TrimSpace(scraperCfg.Type))
-		if scraperType == config.TorrentScraperTypePearTube {
-			if pearTubeSelected {
-				log.Printf("[debrid] Ignoring additional PearTube scraper: %s", scraperCfg.Name)
-				continue
-			}
-			pearTubeSelected = true
-			if !scraperCfg.Enabled {
-				log.Printf("[debrid] Authoritative PearTube scraper is disabled: %s", scraperCfg.Name)
-				continue
-			}
-		} else if !scraperCfg.Enabled {
+		if !scraperCfg.Enabled {
 			continue
 		}
-		switch scraperType {
+		switch strings.ToLower(scraperCfg.Type) {
 		case "torrentio":
 			log.Printf("[debrid] Initializing Torrentio scraper: %s (custom URL=%v)", scraperCfg.Name, strings.TrimSpace(scraperCfg.URL) != "")
 			scrapers = append(scrapers, NewTorrentioScraper(httpClient, scraperCfg.Options, scraperCfg.Name, scraperCfg.URL))
@@ -199,17 +186,12 @@ func buildScrapersFromSettings(settings config.Settings) []Scraper {
 			log.Printf("[debrid] Initializing Internet Archive scraper: %s", scraperCfg.Name)
 			scrapers = append(scrapers, NewInternetArchiveScraper(httpClient, scraperCfg.URL, scraperCfg.Name, scraperCfg.Config))
 		case config.TorrentScraperTypePearTube:
-			relayURL := strings.TrimSpace(scraperCfg.URL)
-			if relayURL == "" {
-				log.Printf("[debrid] Skipping PearTube scraper %s: no relay URL", scraperCfg.Name)
-				continue
-			}
-			relay, err := NewPearTubeScraper(relayURL, scraperCfg.Name)
+			relay, err := NewPearTubeScraper(scraperCfg.URL, scraperCfg.APIKey, scraperCfg.Name)
 			if err != nil {
 				log.Printf("[debrid] Skipping PearTube scraper %s: %v", scraperCfg.Name, err)
 				continue
 			}
-			log.Printf("[debrid] Initializing PearTube scraper: %s at %s", scraperCfg.Name, requestsecurity.URLForLog(relayURL))
+			log.Printf("[debrid] Initializing PearTube scraper: %s at %s", scraperCfg.Name, requestsecurity.URLForLog(scraperCfg.URL))
 			scrapers = append(scrapers, relay)
 		default:
 			log.Printf("[debrid] Unknown scraper type: %s", scraperCfg.Type)
@@ -546,7 +528,6 @@ func (s *SearchService) Search(ctx context.Context, opts SearchOptions) ([]model
 		MaxResults:      opts.MaxResults,
 		Parsed:          parsed,
 		IMDBID:          imdbID,
-		TMDBID:          opts.TMDBID,
 		IsDaily:         opts.IsDaily,
 		TargetAirDate:   opts.TargetAirDate,
 		EpisodeReleased: opts.EpisodeReleased,
@@ -727,24 +708,12 @@ func hasActiveDebridProviders(providers []config.DebridProviderSettings) bool {
 }
 
 func hasActiveDirectStreamScrapers(scrapers []config.TorrentScraperConfig) bool {
-	pearTubeSelected := false
 	for _, scraper := range scrapers {
-		scraperType := strings.ToLower(strings.TrimSpace(scraper.Type))
-		if scraperType == config.TorrentScraperTypePearTube {
-			if pearTubeSelected {
-				continue
-			}
-			pearTubeSelected = true
-			if scraper.Enabled {
-				return true
-			}
-			continue
-		}
 		if !scraper.Enabled {
 			continue
 		}
-		switch scraperType {
-		case "aiostreams", "comet", "mediafusion", "internetarchive":
+		switch strings.ToLower(strings.TrimSpace(scraper.Type)) {
+		case "aiostreams", "comet", "mediafusion", "internetarchive", config.TorrentScraperTypePearTube:
 			return true
 		}
 	}
@@ -792,9 +761,6 @@ func normalizeScrapeResult(res ScrapeResult) models.NZBResult {
 		Attributes:  map[string]string{},
 		ServiceType: models.ServiceTypeDebrid,
 	}
-	if res.ServiceType != models.ServiceTypeUnknown {
-		result.ServiceType = res.ServiceType
-	}
 
 	if res.InfoHash != "" {
 		lowered := strings.ToLower(res.InfoHash)
@@ -840,11 +806,6 @@ func normalizeScrapeResult(res ScrapeResult) models.NZBResult {
 			continue
 		}
 		result.Attributes[key] = value
-	}
-	if result.GUID == "" {
-		if candidateRef := result.Attributes["peartube_candidate_ref"]; candidateRef != "" {
-			result.GUID = "peartube:candidate:" + candidateRef
-		}
 	}
 	annotateDirectStreamCacheHint(result.Attributes)
 	return result

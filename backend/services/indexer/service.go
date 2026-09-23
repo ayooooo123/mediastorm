@@ -72,11 +72,6 @@ const (
 	searchResultsCacheMaxEntries = 256
 )
 
-func hasActivePearTubeSearchSource(settings config.Settings) bool {
-	pearTube := settings.PearTubeConfig()
-	return pearTube.Enabled != nil && *pearTube.Enabled && strings.TrimSpace(pearTube.RelayURL) != ""
-}
-
 // sanitizeXMLAmpersands escapes unescaped ampersands in XML that aren't part of valid entity references.
 // This fixes malformed XML from indexers that don't properly escape titles like "Tom & Jerry".
 func sanitizeXMLAmpersands(data []byte) ([]byte, int) {
@@ -1256,7 +1251,6 @@ type SearchOptions struct {
 	MaxResults            int
 	IMDBID                string
 	TVDBID                int64
-	TMDBID                string
 	AlternateTitles       []string                          // Titles already obtained while hydrating the selected item
 	MediaType             string                            // "movie" or "series"
 	Year                  int                               // Release year (for movies)
@@ -1589,16 +1583,13 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBR
 	rankingBundle := s.getEffectiveRankingBundle(opts.UserID, opts.ClientID, settings)
 	rankingCriteria := rankingBundle.Default
 	cacheTitles := combineFilterTitles(filterTitles)
-	cacheKey := ""
-	if !includeDebrid || !hasActivePearTubeSearchSource(settings) {
-		cacheKey = s.searchCacheKey("ranked", opts, settings, cacheTitles, filterSettings, filterBundle, animeSettings, filterOverrides, rankingCriteria, rankingBundle)
-		if cached, ok := s.getCachedSearchResults(cacheKey, searchStart); ok {
-			log.Printf("[indexer] search cache hit for query=%q mediaType=%q user=%q client=%q results=%d", opts.Query, opts.MediaType, opts.UserID, opts.ClientID, len(cached))
-			log.Printf("[search-stats] Search #%d cache hit: %d results in %v (totals: search=%d, splitSearch=%d, usenetAPICalls=%d)",
-				callNum, len(cached), time.Since(searchStart),
-				s.searchCount.Load(), s.searchSplitCount.Load(), s.usenetAPICallCount.Load())
-			return cached, nil
-		}
+	cacheKey := s.searchCacheKey("ranked", opts, settings, cacheTitles, filterSettings, filterBundle, animeSettings, filterOverrides, rankingCriteria, rankingBundle)
+	if cached, ok := s.getCachedSearchResults(cacheKey, searchStart); ok {
+		log.Printf("[indexer] search cache hit for query=%q mediaType=%q user=%q client=%q results=%d", opts.Query, opts.MediaType, opts.UserID, opts.ClientID, len(cached))
+		log.Printf("[search-stats] Search #%d cache hit: %d results in %v (totals: search=%d, splitSearch=%d, usenetAPICalls=%d)",
+			callNum, len(cached), time.Since(searchStart),
+			s.searchCount.Load(), s.searchSplitCount.Load(), s.usenetAPICallCount.Load())
+		return cached, nil
 	}
 	sourceOpts := opts
 	if rankingBundle.NewestReleaseFirst {
@@ -1662,7 +1653,6 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBR
 				Categories:            append([]string{}, opts.Categories...),
 				MaxResults:            sourceOpts.MaxResults,
 				IMDBID:                opts.IMDBID,
-				TMDBID:                opts.TMDBID,
 				MediaType:             opts.MediaType,
 				Year:                  opts.Year,
 				AlternateTitles:       append([]string{}, filterTitles...),
@@ -2106,37 +2096,34 @@ func (s *Service) SearchWithScoringSplit(ctx context.Context, opts SearchOptions
 	// on a slow scraper (same key searchRawResults would use). The key includes
 	// the English fallback titles so both pipelines compute the identical key.
 	cacheTitles := combineFilterTitles(filterTitles)
-	cacheKey := ""
-	if !includeDebrid || !hasActivePearTubeSearchSource(settings) {
-		cacheKey = s.searchCacheKey("raw", opts, settings, cacheTitles, filterSettings, filterBundle, animeSettings, filterOverrides, rankingCriteria, rankingBundle)
-		if cached, ok := s.getCachedSearchResults(cacheKey, searchStart); ok {
-			log.Printf("[indexer] raw search cache hit for query=%q mediaType=%q user=%q client=%q results=%d", opts.Query, opts.MediaType, opts.UserID, opts.ClientID, len(cached))
-			// A cache hit carries only the merged aggregate, so partition it by the
-			// ServiceType the fetchers stamped and emit each partition as its own
-			// source batch (both are immediately available).
-			bySource := partitionResultsBySource(cached)
-			for _, out := range bySource {
-				// A cache hit stores raw results only, so each partitioned source must
-				// be filtered/scored/ranked exactly like a freshly-fetched source
-				// before it is emitted — otherwise the caller sees zero passed
-				// candidates on a warm cache. In AIOStreams bypass mode the debrid
-				// partition skips filter/rank, matching splitSearchDebrid.
-				if bypassAIOStreamsRanking && out.source == "debrid" {
-					out.scored = bypassScoredResults(out.raw, rankingBundle.NewestReleaseFirst, opts.IncludeScoreBreakdown)
-					out.filtered = 0
-				} else {
-					filterOpts := s.buildFilterOptions(opts, filterBundle.Usenet, filterTitles)
-					if out.source == "debrid" {
-						filterOpts = s.buildFilterOptions(opts, filterBundle.Debrid, filterTitles)
-					}
-					out.scored, out.filtered = s.scoreSourceCandidates(opts, settings, out.raw, filterOpts, filterBundle, animeSettings, filterOverrides, rankingBundle)
+	cacheKey := s.searchCacheKey("raw", opts, settings, cacheTitles, filterSettings, filterBundle, animeSettings, filterOverrides, rankingCriteria, rankingBundle)
+	if cached, ok := s.getCachedSearchResults(cacheKey, searchStart); ok {
+		log.Printf("[indexer] raw search cache hit for query=%q mediaType=%q user=%q client=%q results=%d", opts.Query, opts.MediaType, opts.UserID, opts.ClientID, len(cached))
+		// A cache hit carries only the merged aggregate, so partition it by the
+		// ServiceType the fetchers stamped and emit each partition as its own
+		// source batch (both are immediately available).
+		bySource := partitionResultsBySource(cached)
+		for _, out := range bySource {
+			// A cache hit stores raw results only, so each partitioned source must
+			// be filtered/scored/ranked exactly like a freshly-fetched source
+			// before it is emitted — otherwise the caller sees zero passed
+			// candidates on a warm cache. In AIOStreams bypass mode the debrid
+			// partition skips filter/rank, matching splitSearchDebrid.
+			if bypassAIOStreamsRanking && out.source == "debrid" {
+				out.scored = bypassScoredResults(out.raw, rankingBundle.NewestReleaseFirst, opts.IncludeScoreBreakdown)
+				out.filtered = 0
+			} else {
+				filterOpts := s.buildFilterOptions(opts, filterBundle.Usenet, filterTitles)
+				if out.source == "debrid" {
+					filterOpts = s.buildFilterOptions(opts, filterBundle.Debrid, filterTitles)
 				}
-				s.emitSplitSourceBatch(usenetOut, debridOut, settings, opts, out)
+				out.scored, out.filtered = s.scoreSourceCandidates(opts, settings, out.raw, filterOpts, filterBundle, animeSettings, filterOverrides, rankingBundle)
 			}
-			close(usenetOut)
-			close(debridOut)
-			return usenetOut, debridOut
+			s.emitSplitSourceBatch(usenetOut, debridOut, settings, opts, out)
 		}
+		close(usenetOut)
+		close(debridOut)
+		return usenetOut, debridOut
 	}
 
 	sourceOpts := opts
@@ -2605,13 +2592,10 @@ func (s *Service) searchRawResults(ctx context.Context, opts SearchOptions) ([]m
 	rankingBundle := s.getEffectiveRankingBundle(opts.UserID, opts.ClientID, settings)
 	rankingCriteria := rankingBundle.Default
 	cacheTitles := combineFilterTitles(filterTitles)
-	cacheKey := ""
-	if !includeDebrid || !hasActivePearTubeSearchSource(settings) {
-		cacheKey = s.searchCacheKey("raw", opts, settings, cacheTitles, filterSettings, filterBundle, animeSettings, filterOverrides, rankingCriteria, rankingBundle)
-		if cached, ok := s.getCachedSearchResults(cacheKey, searchStart); ok {
-			log.Printf("[indexer] raw search cache hit for query=%q mediaType=%q user=%q client=%q results=%d", opts.Query, opts.MediaType, opts.UserID, opts.ClientID, len(cached))
-			return cached, nil
-		}
+	cacheKey := s.searchCacheKey("raw", opts, settings, cacheTitles, filterSettings, filterBundle, animeSettings, filterOverrides, rankingCriteria, rankingBundle)
+	if cached, ok := s.getCachedSearchResults(cacheKey, searchStart); ok {
+		log.Printf("[indexer] raw search cache hit for query=%q mediaType=%q user=%q client=%q results=%d", opts.Query, opts.MediaType, opts.UserID, opts.ClientID, len(cached))
+		return cached, nil
 	}
 
 	type searchResult struct {
@@ -2687,7 +2671,6 @@ func (s *Service) searchRawResults(ctx context.Context, opts SearchOptions) ([]m
 				Categories:            append([]string{}, opts.Categories...),
 				MaxResults:            opts.MaxResults,
 				IMDBID:                opts.IMDBID,
-				TMDBID:                opts.TMDBID,
 				MediaType:             opts.MediaType,
 				Year:                  opts.Year,
 				AlternateTitles:       append([]string{}, filterTitles...),
@@ -3013,7 +2996,6 @@ func (s *Service) SearchSplit(ctx context.Context, opts SearchOptions) (debridCh
 			Categories:            append([]string{}, opts.Categories...),
 			MaxResults:            opts.MaxResults,
 			IMDBID:                opts.IMDBID,
-			TMDBID:                opts.TMDBID,
 			MediaType:             opts.MediaType,
 			Year:                  opts.Year,
 			AlternateTitles:       append([]string{}, filterTitles...),

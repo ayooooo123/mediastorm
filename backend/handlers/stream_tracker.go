@@ -17,7 +17,7 @@ import (
 	"novastream/models"
 )
 
-type playbackAutoSeeder interface {
+type playbackArchiver interface {
 	OnPlaybackStarted(models.PlaybackProgressUpdate)
 }
 
@@ -30,7 +30,7 @@ type StreamTracker struct {
 	mu               sync.RWMutex
 	counter          uint64
 	playbackObserver PlaybackActivityObserver
-	autoSeeder       playbackAutoSeeder
+	archiver         playbackArchiver
 }
 
 type recentlyEndedStream struct {
@@ -257,14 +257,14 @@ func (t *StreamTracker) AddPlaybackActivityObserver(observer PlaybackActivityObs
 	t.mu.Unlock()
 }
 
-// SetPlaybackAutoSeeder registers the p2p integration on the only playback
+// SetPlaybackArchiver registers the p2p integration on the only playback
 // signal a native player produces.
-func (t *StreamTracker) SetPlaybackAutoSeeder(seeder playbackAutoSeeder) {
-	if t == nil || seeder == nil {
+func (t *StreamTracker) SetPlaybackArchiver(archiver playbackArchiver) {
+	if t == nil || archiver == nil {
 		return
 	}
 	t.mu.Lock()
-	t.autoSeeder = seeder
+	t.archiver = archiver
 	t.mu.Unlock()
 }
 
@@ -497,10 +497,10 @@ func (t *StreamTracker) StartStreamWithAccount(r *http.Request, path string, con
 	return id, bytesCounter, activityCounter
 }
 
-// observePlaybackStartLocked hands a newly opened playback to the auto-seeder.
+// observePlaybackStartLocked hands a newly opened playback to the PearTube archiver.
 // It never blocks or fails the viewer's stream.
 func (t *StreamTracker) observePlaybackStartLocked(stream *TrackedStream) {
-	if t.autoSeeder == nil {
+	if t.archiver == nil {
 		return
 	}
 	update := enrichPlaybackUpdateFromStream(models.PlaybackProgressUpdate{
@@ -512,17 +512,17 @@ func (t *StreamTracker) observePlaybackStartLocked(stream *TrackedStream) {
 	// A stream's coordinates come from the query the player opened it with, so a
 	// request that omits mediaType or itemId can never be archived - and used to
 	// say nothing at all, which is indistinguishable from archiving being off.
-	// Observed live: a usenet title streamed for minutes with no seed attempt and
+	// Observed live: a usenet title streamed for minutes with no archive attempt and
 	// no log line explaining the silence.
 	if update.MediaType == "" || update.MediaType == "live" || update.ItemID == "" {
 		if update.MediaType != "live" {
-			log.Printf("[peartube] playback not archivable: no swarm coordinates on the stream request (mediaType=%q itemId=%q path=%q)",
+			log.Printf("[peartube] playback not archivable: no media identity on the stream request (mediaType=%q itemId=%q path=%q)",
 				update.MediaType, update.ItemID, stream.Path)
 		}
 		return
 	}
-	seeder := t.autoSeeder
-	go seeder.OnPlaybackStarted(update)
+	archiver := t.archiver
+	go archiver.OnPlaybackStarted(update)
 }
 
 // SetStreamCancel attaches a cancellation function to a tracked stream.

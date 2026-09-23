@@ -66,7 +66,7 @@ type HistoryHandler struct {
 	DemoMode               bool
 	PrequeueStore          continueWatchingPrequeueStore
 	ActivePlaybackTrackers []activePlaybackTracker
-	AutoSeeder             playbackAutoSeeder
+	Archiver               playbackArchiver
 }
 
 type hideContinueWatchingRequest struct {
@@ -93,10 +93,10 @@ func (h *HistoryHandler) SetActivePlaybackTrackers(trackers ...activePlaybackTra
 	h.ActivePlaybackTrackers = trackers
 }
 
-// SetAutoSeeder wires the p2p integration onto playback starts.
-func (h *HistoryHandler) SetAutoSeeder(seeder playbackAutoSeeder) {
-	if seeder != nil {
-		h.AutoSeeder = seeder
+// SetArchiver wires the p2p integration onto playback starts.
+func (h *HistoryHandler) SetArchiver(archiver playbackArchiver) {
+	if archiver != nil {
+		h.Archiver = archiver
 	}
 }
 
@@ -617,8 +617,8 @@ func (h *HistoryHandler) UpdatePlaybackProgress(w http.ResponseWriter, r *http.R
 			break
 		}
 	}
-	if h.AutoSeeder != nil {
-		h.AutoSeeder.OnPlaybackStarted(update)
+	if h.Archiver != nil {
+		h.Archiver.OnPlaybackStarted(update)
 	}
 	if reason, migrate := GetStreamTracker().ShouldMigratePlayback(userID, update); migrate {
 		progress.MigrationRequested = true

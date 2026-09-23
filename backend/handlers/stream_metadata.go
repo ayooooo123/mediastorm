@@ -162,7 +162,7 @@ func addStreamMediaMetadataParams(values url.Values, meta StreamMediaMetadata) {
 
 func normalizeStreamSourceServiceType(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "debrid", "usenet", "local", "plex", "jellyfin", "peartube":
+	case "debrid", "usenet", "local", "plex", "jellyfin":
 		return strings.ToLower(strings.TrimSpace(value))
 	default:
 		return ""
