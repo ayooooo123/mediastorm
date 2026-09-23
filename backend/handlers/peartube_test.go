@@ -19,10 +19,11 @@ import (
 
 // archiveRelay is a /v1 relay that records acquisitions.
 type archiveRelay struct {
-	mu       sync.Mutex
-	local    map[string]bool
-	active   map[string]bool
-	acquired []map[string]any
+	mu        sync.Mutex
+	local     map[string]bool
+	active    map[string]bool
+	acquired  []map[string]any
+	streamURL string
 }
 
 func (a *archiveRelay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -32,7 +33,7 @@ func (a *archiveRelay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/v1/search":
 		id := r.URL.Query().Get("id")
-		_ = json.NewEncoder(w).Encode(map[string]any{"results": []map[string]any{{"id": id, "local": a.local[id], "streamUrl": "http://relay/x"}}})
+		_ = json.NewEncoder(w).Encode(map[string]any{"results": []map[string]any{{"id": id, "local": a.local[id], "streamUrl": a.streamURL}}})
 	case "/v1/jobs":
 		jobs := []map[string]any{}
 		for id := range a.active {
@@ -112,16 +113,6 @@ func TestPearTubeArchivesPlayedTitleOnce(t *testing.T) {
 		t.Fatalf("debrid source = %v", source)
 	}
 
-	// A PearTube stream is never archived back to the relay.
-	fromRelay := models.PlaybackProgressUpdate{MediaType: "movie", ExternalIDs: map[string]string{"imdb": "tt0110912"}, SourcePath: server.URL + "/?key=x"}
-	handler.OnPlaybackStarted(fromRelay)
-	handler.mu.Lock()
-	_, claimed := handler.claims["imdb:tt0110912"]
-	handler.mu.Unlock()
-	if claimed {
-		t.Fatal("a relay stream was treated as an archivable source")
-	}
-
 	client, err := peartube.New(server.URL, "secret")
 	if err != nil {
 		t.Fatal(err)
@@ -162,5 +153,50 @@ func TestPearTubeArchivesPlayedTitleOnce(t *testing.T) {
 	}
 	if second := fetch(); second.Code != http.StatusUnauthorized {
 		t.Fatalf("second source fetch = %d, want 401 (one-time token)", second.Code)
+	}
+}
+
+// MediaStorm and the relay often share a host. Only the exact stream origin a
+// relay search returned is a relay stream; another port on that host is an
+// ordinary source and is archived.
+func TestPearTubeArchivesSourceOnRelayHostButNotRelayStreams(t *testing.T) {
+	relay := &archiveRelay{local: map[string]bool{}, active: map[string]bool{}}
+	server := httptest.NewServer(relay)
+	defer server.Close()
+	relay.streamURL = server.URL + "/stream?key=x"
+	direct := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "media") }))
+	defer direct.Close()
+
+	handler := NewPearTubeHandler(&archiveStreams{})
+	settings := config.Settings{TorrentScrapers: []config.TorrentScraperConfig{{
+		Type: config.TorrentScraperTypePearTube, URL: server.URL, APIKey: "secret", Enabled: true,
+		Config: map[string]string{config.PearTubeConfigArchiveEnabled: "true"},
+	}}}
+	handler.ApplyPearTubeSettings(settings)
+	client, err := peartube.New(server.URL, "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Search(context.Background(), "imdb:tt0110912"); err != nil {
+		t.Fatal(err)
+	}
+
+	handler.OnPlaybackStarted(models.PlaybackProgressUpdate{MediaType: "movie", ExternalIDs: map[string]string{"imdb": "tt0110912"}, SourcePath: relay.streamURL})
+	handler.mu.Lock()
+	_, claimed := handler.claims["imdb:tt0110912"]
+	handler.mu.Unlock()
+	if claimed {
+		t.Fatal("a relay stream was treated as an archivable source")
+	}
+
+	source := direct.URL + "/movie.mkv"
+	handler.OnPlaybackStarted(models.PlaybackProgressUpdate{MediaType: "movie", ExternalIDs: map[string]string{"imdb": "tt0120737"}, SourcePath: source})
+	deadline := time.Now().Add(2 * time.Second)
+	for len(relay.acquisitions()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	acquired := relay.acquisitions()
+	if len(acquired) != 1 || acquired[0]["source"].(map[string]any)["url"] != source {
+		t.Fatalf("acquisitions = %v, want the same-host direct source", acquired)
 	}
 }

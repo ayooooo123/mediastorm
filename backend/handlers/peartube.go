@@ -129,7 +129,7 @@ func (h *PearTubeHandler) OnPlaybackStarted(update models.PlaybackProgressUpdate
 	}
 	path := strings.TrimSpace(update.SourcePath)
 	id := pearTubePlaybackID(update)
-	if path == "" || id == "" || isRelayStream(client.BaseURL(), path) || !h.claim(id) {
+	if path == "" || id == "" || peartube.IsStreamURL(path) || !h.claim(id) {
 		return
 	}
 	title := pearTubeTitle(update)
@@ -273,19 +273,6 @@ func pearTubeTitle(update models.PlaybackProgressUpdate) string {
 		cut--
 	}
 	return title[:cut]
-}
-
-// isRelayStream reports whether path is a stream served by the relay itself.
-func isRelayStream(relayURL, path string) bool {
-	if !isHTTPURL(path) {
-		return false
-	}
-	stream, err := url.Parse(path)
-	if err != nil {
-		return false
-	}
-	relay, err := url.Parse(relayURL)
-	return err == nil && strings.EqualFold(stream.Hostname(), relay.Hostname())
 }
 
 func isHTTPURL(value string) bool {

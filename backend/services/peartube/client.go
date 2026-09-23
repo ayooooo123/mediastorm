@@ -111,12 +111,39 @@ func (c *Client) BaseURL() string { return c.baseURL }
 
 // streamOrigins holds every host:port an authenticated relay search returned
 // as a stream URL. The video proxy admits a private address only for these,
-// never a whole host: a relay usually shares its host with other services.
+// and only these count as relay streams: a relay usually shares its host with
+// other services, including MediaStorm itself.
 var streamOrigins sync.Map
+
+func originKey(hostname, port string) string {
+	return strings.ToLower(net.JoinHostPort(hostname, port))
+}
+
+func urlOrigin(raw string) (string, bool) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" {
+		return "", false
+	}
+	port := u.Port()
+	if port == "" {
+		port = map[string]string{"http": "80", "https": "443"}[u.Scheme]
+	}
+	return originKey(u.Hostname(), port), true
+}
 
 // IsStreamOrigin reports whether hostname:port served a relay stream URL.
 func IsStreamOrigin(hostname, port string) bool {
-	_, ok := streamOrigins.Load(strings.ToLower(net.JoinHostPort(hostname, port)))
+	_, ok := streamOrigins.Load(originKey(hostname, port))
+	return ok
+}
+
+// IsStreamURL reports whether raw points at a relay stream origin.
+func IsStreamURL(raw string) bool {
+	key, ok := urlOrigin(raw)
+	if !ok {
+		return false
+	}
+	_, ok = streamOrigins.Load(key)
 	return ok
 }
 
@@ -129,12 +156,8 @@ func (c *Client) Search(ctx context.Context, id string) ([]Result, error) {
 		return nil, err
 	}
 	for _, r := range out.Results {
-		if u, err := url.Parse(r.StreamURL); err == nil && u.Hostname() != "" {
-			port := u.Port()
-			if port == "" {
-				port = map[string]string{"http": "80", "https": "443"}[u.Scheme]
-			}
-			streamOrigins.Store(strings.ToLower(net.JoinHostPort(u.Hostname(), port)), struct{}{})
+		if key, ok := urlOrigin(r.StreamURL); ok {
+			streamOrigins.Store(key, struct{}{})
 		}
 	}
 	return out.Results, nil
