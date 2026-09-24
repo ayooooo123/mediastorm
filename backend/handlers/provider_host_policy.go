@@ -7,6 +7,7 @@ import (
 
 	"novastream/config"
 	"novastream/internal/requestsecurity"
+	"novastream/services/peartube"
 )
 
 func configuredProviderHostPolicy(configManager ConfigProvider) requestsecurity.RestrictedHostPolicy {
@@ -76,8 +77,10 @@ func configuredProviderHostPolicy(configManager ConfigProvider) requestsecurity.
 		}
 	}
 	return func(hostname, port string) bool {
-		_, ok := allowed[privateMediaEndpointKey(hostname, port)]
-		return ok
+		if _, ok := allowed[privateMediaEndpointKey(hostname, port)]; ok {
+			return true
+		}
+		return peartube.IsStreamOrigin(strings.Trim(hostname, "[]"), port)
 	}
 }
 
