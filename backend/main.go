@@ -53,6 +53,7 @@ import (
 	"novastream/services/metadata"
 	"novastream/services/notifications"
 	"novastream/services/numbersstation"
+	"novastream/services/peartube"
 	"novastream/services/playback"
 	"novastream/services/plex"
 	"novastream/services/prewarm"
@@ -893,6 +894,14 @@ func main() {
 	localMediaHandler := handlers.NewLocalMediaHandler(localMediaService, userService, settings.Transmux.Enabled)
 	localMediaHandler.SetMetadataLanguageProviders(metadataService, cfgManager, userSettingsService)
 	localMediaHandler.SetRemoteMediaService(remoteMediaService)
+	// PearTube: archive played titles to the configured relay, and serve the
+	// relay the sources only MediaStorm can read. Reconfigured on settings save.
+	pearTubeHandler := handlers.NewPearTubeHandler(compositeProvider)
+	pearTubeHandler.ApplyPearTubeSettings(settings)
+	settingsHandler.SetPearTubeConfigurer(pearTubeHandler)
+	r.Handle(peartube.SourceRoute, pearTubeHandler.Sources()).Methods(http.MethodGet)
+	historyHandler.SetArchiver(pearTubeHandler)
+	handlers.GetStreamTracker().SetPlaybackArchiver(pearTubeHandler)
 	localMediaHandler.SetLibraryAccessService(libraryAccessService)
 	userSettingsHandler.LocalMedia = localMediaService
 	userSettingsHandler.SetPrequeueStore(prequeueHandler.GetStore())
@@ -1210,6 +1219,8 @@ func main() {
 		r.HandleFunc("/account/api/numbers-station/answer", adminUIHandler.RequireAuth(api.RateLimitHandlerFunc(numbersStationLimiter, numbersStationHandler.Submit))).Methods(http.MethodPost)
 	}
 	r.HandleFunc("/admin/api/debrid-status", adminUIHandler.RequireAuth(adminUIHandler.GetDebridStatus)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/api/p2p/status", adminUIHandler.RequireAuth(pearTubeHandler.Status)).Methods(http.MethodGet)
+	r.HandleFunc("/account/api/p2p/status", adminUIHandler.RequireAuth(pearTubeHandler.Status)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/user-settings", adminUIHandler.RequireAuth(adminUIHandler.GetUserSettings)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/user-settings", adminUIHandler.RequireAuth(adminUIHandler.SaveUserSettings)).Methods(http.MethodPut)
 	r.HandleFunc("/admin/api/user-settings", adminUIHandler.RequireAuth(adminUIHandler.ResetUserSettings)).Methods(http.MethodDelete)

@@ -52,6 +52,7 @@ import (
 	"novastream/services/localmedia"
 	"novastream/services/metadata"
 	"novastream/services/notifications"
+	"novastream/services/peartube"
 	"novastream/services/plex"
 	"novastream/services/remoteaccess"
 	"novastream/services/remotemedia"
@@ -746,20 +747,22 @@ var SettingsSchema = map[string]interface{}{
 		"is_array":    true,
 		"fields": map[string]interface{}{
 			"name":                     map[string]interface{}{"type": "text", "label": "Name", "description": "Scraper name", "order": 0},
-			"type":                     map[string]interface{}{"type": "select", "label": "Type", "options": []string{"torrentio", "prowlarr", "jackett", "zilean", "aiostreams", "stremio-direct", "nyaa", "comet", "mediafusion", "internetarchive"}, "description": "Source/addon type", "order": 1},
+			"type":                     map[string]interface{}{"type": "select", "label": "Type", "options": []string{"torrentio", "prowlarr", "jackett", "zilean", "aiostreams", "stremio-direct", "nyaa", "comet", "mediafusion", "internetarchive", "peartube"}, "description": "Source/addon type", "order": 1},
 			"options":                  map[string]interface{}{"type": "text", "label": "Options", "description": `Torrentio URL path options, not a full addon URL. Use the <a href="https://torrentio.strem.fun/configure" target="_blank" rel="noopener noreferrer">Torrentio configurator</a>, then copy only the options segment before /stream (for example: sort=qualitysize|qualityfilter=480p,scr,cam).`, "showWhen": map[string]interface{}{"field": "type", "value": "torrentio"}, "order": 2, "placeholder": "sort=qualitysize|qualityfilter=480p,scr,cam"},
-			"url":                      map[string]interface{}{"type": "text", "label": "URL", "description": "API URL. For Prowlarr, use the Prowlarr base URL and the backend will add each enabled torrent indexer on save. For AIOStreams, Direct Stremio, Comet, and MediaFusion, use the full Stremio addon manifest URL. Credential-bearing Direct Stremio URLs are write-only. For Torrentio, this can replace https://torrentio.strem.fun. For Internet Archive, leave blank unless testing another archive.org-compatible host.", "showWhen": map[string]interface{}{"operator": "or", "conditions": []map[string]interface{}{{"field": "type", "value": "prowlarr"}, {"field": "type", "value": "jackett"}, {"field": "type", "value": "zilean"}, {"field": "type", "value": "aiostreams"}, {"field": "type", "value": "stremio-direct"}, {"field": "type", "value": "comet"}, {"field": "type", "value": "mediafusion"}, {"field": "type", "value": "internetarchive"}, {"field": "type", "value": "torrentio"}}}, "order": 3, "placeholder": "https://addon.example/config/manifest.json"},
-			"apiKey":                   map[string]interface{}{"type": "password", "label": "API Key", "description": "Prowlarr or Jackett API key", "showWhen": map[string]interface{}{"operator": "or", "conditions": []map[string]interface{}{{"field": "type", "value": "prowlarr"}, {"field": "type", "value": "jackett"}}}, "order": 4},
+			"url":                      map[string]interface{}{"type": "text", "label": "URL", "description": "API URL. For Prowlarr, use the Prowlarr base URL and the backend will add each enabled torrent indexer on save. For AIOStreams, Direct Stremio, Comet, and MediaFusion, use the full Stremio addon manifest URL. Credential-bearing Direct Stremio URLs are write-only. For Torrentio, this can replace https://torrentio.strem.fun. For Internet Archive, leave blank unless testing another archive.org-compatible host. For PearTube, the relay API URL (for example http://relay:8174).", "showWhen": map[string]interface{}{"operator": "or", "conditions": []map[string]interface{}{{"field": "type", "value": "prowlarr"}, {"field": "type", "value": "jackett"}, {"field": "type", "value": "zilean"}, {"field": "type", "value": "aiostreams"}, {"field": "type", "value": "stremio-direct"}, {"field": "type", "value": "comet"}, {"field": "type", "value": "mediafusion"}, {"field": "type", "value": "internetarchive"}, {"field": "type", "value": "peartube"}, {"field": "type", "value": "torrentio"}}}, "order": 3, "placeholder": "https://addon.example/config/manifest.json"},
+			"apiKey":                   map[string]interface{}{"type": "password", "label": "API Key", "description": "Prowlarr or Jackett API key. For PearTube, the relay secret (optional).", "showWhen": map[string]interface{}{"operator": "or", "conditions": []map[string]interface{}{{"field": "type", "value": "prowlarr"}, {"field": "type", "value": "jackett"}, {"field": "type", "value": "peartube"}}}, "order": 4},
 			"config.passthroughFormat": map[string]interface{}{"type": "boolean", "label": "Passthrough Format", "description": "Show AIOStreams' raw provider-formatted name and details in manual selection. This does not change MediaStorm filtering or result ordering.", "showWhen": map[string]interface{}{"field": "type", "value": "aiostreams"}, "order": 5},
 			"config.category":          map[string]interface{}{"type": "select", "label": "Category", "options": []string{"1_0", "1_2", "1_3", "1_4"}, "description": "Nyaa category (1_0=All Anime, 1_2=English-translated, 1_3=Non-English, 1_4=Raw)", "showWhen": map[string]interface{}{"field": "type", "value": "nyaa"}, "order": 6},
 			"config.filter":            map[string]interface{}{"type": "select", "label": "Filter", "options": []string{"0", "1", "2"}, "description": "Nyaa filter (0=All, 1=No remakes, 2=Trusted only)", "showWhen": map[string]interface{}{"field": "type", "value": "nyaa"}, "order": 7},
-			"enabled":                  map[string]interface{}{"type": "boolean", "label": "Enabled", "description": "Enable this scraper", "order": 8},
+			"config.archiveEnabled":    map[string]interface{}{"type": "boolean", "label": "Archive played titles", "description": "When a user plays a title from another source, ask the relay to fetch and store it so PearTube can serve it next time.", "showWhen": map[string]interface{}{"field": "type", "value": "peartube"}, "order": 8},
+			"config.sourceUrl":         map[string]interface{}{"type": "text", "label": "MediaStorm address for the relay", "description": "Where the relay can reach this MediaStorm to fetch sources only MediaStorm can read (usenet), e.g. http://10.0.40.100:7777. Defaults to the external backend URL.", "showWhen": map[string]interface{}{"field": "type", "value": "peartube"}, "order": 8},
+			"enabled":                  map[string]interface{}{"type": "boolean", "label": "Enabled", "description": "Enable this scraper", "order": 9},
 			"allowedProfiles": map[string]interface{}{
 				"type":        "multiselect",
 				"label":       "Allowed Profiles",
 				"description": "Profiles allowed to use this source. Leave empty for all profiles.",
 				"optionsFrom": "profiles",
-				"order":       9,
+				"order":       10,
 			},
 		},
 	},
@@ -5116,6 +5119,8 @@ func (h *AdminUIHandler) TestScraper(w http.ResponseWriter, r *http.Request) {
 		h.testMediaFusionScraper(w, req)
 	case "internetarchive":
 		h.testInternetArchiveScraper(w, req)
+	case "peartube":
+		h.testPearTubeScraper(w, req)
 	case "torrentio":
 		fallthrough
 	default:
@@ -5183,6 +5188,32 @@ func (h *AdminUIHandler) testInternetArchiveScraper(w http.ResponseWriter, req T
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
 		"message": fmt.Sprintf("Internet Archive is working (%d playable test videos found)", len(results)),
+	})
+}
+
+func (h *AdminUIHandler) testPearTubeScraper(w http.ResponseWriter, req TestScraperRequest) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	client, err := peartube.New(req.URL, req.APIKey)
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("PearTube relay is misconfigured: %v", err),
+		})
+		return
+	}
+	status, err := client.Status(ctx)
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("PearTube relay error: %v", err),
+		})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": fmt.Sprintf("PearTube relay is working (%d peers, %d bytes stored)", status.Peers, status.BlobBytes),
 	})
 }
 

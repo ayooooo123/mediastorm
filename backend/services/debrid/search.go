@@ -194,6 +194,14 @@ func buildScrapersFromSettings(settings config.Settings) []Scraper {
 		case "internetarchive":
 			log.Printf("[debrid] Initializing Internet Archive scraper: %s", scraperCfg.Name)
 			scrapers = append(scrapers, NewInternetArchiveScraper(httpClient, scraperCfg.URL, scraperCfg.Name, scraperCfg.Config))
+		case config.TorrentScraperTypePearTube:
+			relay, err := NewPearTubeScraper(scraperCfg.URL, scraperCfg.APIKey, scraperCfg.Name)
+			if err != nil {
+				log.Printf("[debrid] Skipping PearTube scraper %s: %v", scraperCfg.Name, err)
+				continue
+			}
+			log.Printf("[debrid] Initializing PearTube scraper: %s at %s", scraperCfg.Name, requestsecurity.URLForLog(scraperCfg.URL))
+			scrapers = append(scrapers, relay)
 		default:
 			log.Printf("[debrid] Unknown scraper type: %s", scraperCfg.Type)
 		}
@@ -725,7 +733,7 @@ func hasActiveDirectStreamScrapers(scrapers []config.TorrentScraperConfig) bool 
 			continue
 		}
 		switch strings.ToLower(strings.TrimSpace(scraper.Type)) {
-		case "aiostreams", directStremioType, "comet", "mediafusion", "internetarchive":
+		case "aiostreams", directStremioType, "comet", "mediafusion", "internetarchive", config.TorrentScraperTypePearTube:
 			return true
 		}
 	}

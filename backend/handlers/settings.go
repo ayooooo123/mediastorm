@@ -39,6 +39,12 @@ type SearchCacheClearer interface {
 	ClearSearchCache()
 }
 
+// PearTubeConfigurer applies saved PearTube settings to the running relay
+// integration, so a relay change takes effect without a restart.
+type PearTubeConfigurer interface {
+	ApplyPearTubeSettings(config.Settings)
+}
+
 func shouldClearPrequeueForGlobalSettingsChange(oldSettings, newSettings config.Settings) bool {
 	if oldSettings.Streaming.ResolveFirstReadySource != newSettings.Streaming.ResolveFirstReadySource ||
 		oldSettings.Streaming.ResolutionEndRaceEarly != newSettings.Streaming.ResolutionEndRaceEarly ||
@@ -71,6 +77,7 @@ type SettingsHandler struct {
 	ClientSettingsBatch user_settings.ClientSettingsBatch
 	PrequeueStore       PrequeueClearer
 	SearchCache         SearchCacheClearer
+	PearTube            PearTubeConfigurer
 }
 
 func NewSettingsHandler(m *config.Manager) *SettingsHandler {
@@ -134,6 +141,11 @@ func (h *SettingsHandler) SetPrequeueStore(ps PrequeueClearer) {
 // SetSearchCacheClearer sets the search cache invalidator for ranking/filtering changes.
 func (h *SettingsHandler) SetSearchCacheClearer(sc SearchCacheClearer) {
 	h.SearchCache = sc
+}
+
+// SetPearTubeConfigurer sets the PearTube integration for hot reloading.
+func (h *SettingsHandler) SetPearTubeConfigurer(pt PearTubeConfigurer) {
+	h.PearTube = pt
 }
 
 // SettingsResponse wraps config.Settings with additional runtime information.
@@ -1215,6 +1227,9 @@ func displayName(name, fallback string) string {
 
 // reloadServices reloads services that cache configuration at startup
 func (h *SettingsHandler) reloadServices(s config.Settings) {
+	if h.PearTube != nil {
+		h.PearTube.ApplyPearTubeSettings(s)
+	}
 	// Reload NNTP connection pool with new usenet providers
 	if h.PoolManager != nil {
 		providers := config.ToNNTPProviders(s.Usenet)

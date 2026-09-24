@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -246,14 +247,50 @@ type IndexerConfig struct {
 }
 
 type TorrentScraperConfig struct {
-	Name            string            `json:"name"`    // "Torrentio", "Prowlarr", "Jackett", "Zilean", "AIOStreams", "PenguPlay", "Nyaa", "Comet", "MediaFusion", "Internet Archive"
-	Type            string            `json:"type"`    // "torrentio", "prowlarr", "jackett", "zilean", "aiostreams", "stremio-direct", "nyaa", "comet", "mediafusion", "internetarchive"
-	URL             string            `json:"url"`     // For Prowlarr/Jackett/Zilean/Stremio addons/Nyaa/Internet Archive (full URL with config token if needed)
-	APIKey          string            `json:"apiKey"`  // For Prowlarr/Jackett
+	Name            string            `json:"name"`    // "Torrentio", "Prowlarr", "Jackett", "Zilean", "AIOStreams", "PenguPlay", "Nyaa", "Comet", "MediaFusion", "Internet Archive", "PearTube"
+	Type            string            `json:"type"`    // "torrentio", "prowlarr", "jackett", "zilean", "aiostreams", "stremio-direct", "nyaa", "comet", "mediafusion", "internetarchive", "peartube"
+	URL             string            `json:"url"`     // For Prowlarr/Jackett/Zilean/Stremio addons/Nyaa/Internet Archive (full URL with config token if needed); PearTube relay URL
+	APIKey          string            `json:"apiKey"`  // For Prowlarr/Jackett; PearTube relay secret
 	Options         string            `json:"options"` // For Torrentio: URL path options (e.g., "sort=qualitysize|qualityfilter=480p,scr,cam")
 	Enabled         bool              `json:"enabled"`
 	Config          map[string]string `json:"config,omitempty"` // Scraper-specific config
 	AllowedProfiles []string          `json:"allowedProfiles,omitempty"`
+}
+
+// TorrentScraperTypePearTube is the scraper type naming a PearTube relay.
+const TorrentScraperTypePearTube = "peartube"
+
+// PearTubeConfigArchiveEnabled is the scraper config key that turns on
+// archiving played titles to the relay.
+const PearTubeConfigArchiveEnabled = "archiveEnabled"
+
+// PearTubeConfigSourceURL is the scraper config key for the address where the
+// relay can reach MediaStorm to fetch sources only MediaStorm can read.
+const PearTubeConfigSourceURL = "sourceUrl"
+
+// PearTubeSettings is the relay MediaStorm archives to: the first enabled
+// PearTube scraper. The zero value means no relay.
+type PearTubeSettings struct {
+	RelayURL       string
+	Secret         string
+	ArchiveEnabled bool
+	SourceURL      string
+}
+
+// PearTubeConfig reads the first enabled PearTube scraper.
+func (s Settings) PearTubeConfig() PearTubeSettings {
+	for _, entry := range s.TorrentScrapers {
+		if entry.Enabled && strings.EqualFold(strings.TrimSpace(entry.Type), TorrentScraperTypePearTube) {
+			archive, _ := strconv.ParseBool(strings.TrimSpace(entry.Config[PearTubeConfigArchiveEnabled]))
+			return PearTubeSettings{
+				RelayURL:       strings.TrimSpace(entry.URL),
+				Secret:         strings.TrimSpace(entry.APIKey),
+				ArchiveEnabled: archive,
+				SourceURL:      strings.TrimSpace(entry.Config[PearTubeConfigSourceURL]),
+			}
+		}
+	}
+	return PearTubeSettings{}
 }
 
 type MetadataSettings struct {

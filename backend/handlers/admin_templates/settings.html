@@ -2676,6 +2676,7 @@
     let mediaLibrariesData = []; // Configured local, Plex, and Jellyfin libraries
     let hasDefaultPassword = false; // Whether admin has default password
     let hardwareAccelerationStatus = null;
+    let pearTubeStatus = null;
     let userOverrides = {{json .UserOverrides}}; // Map of userId -> hasOverrides
     const isAdmin = {{json .IsAdmin}};
     const settingsScopeUsername = {{json .Username}};
@@ -6654,6 +6655,57 @@
             console.warn('Failed to load hardware acceleration status:', e);
         }
     }
+
+    async function loadPearTubeStatus() {
+        if (!isAdmin) return;
+        try {
+            const response = await fetch(basePath + '/api/p2p/status', { credentials: 'same-origin' });
+            if (!response.ok) return;
+            pearTubeStatus = await response.json();
+            if (!selectedUserId && !selectedClientId) renderSettings();
+        } catch (e) {
+            console.warn('Failed to load PearTube status:', e);
+        }
+    }
+
+    function renderPearTubeStatusPanel() {
+        const configured = Array.isArray(currentSettings?.torrentScrapers) &&
+            currentSettings.torrentScrapers.some(scraper => scraper?.type === 'peartube');
+        if (!configured) return '';
+        if (!pearTubeStatus) {
+            return '<div class="form-hint" style="margin-bottom: 1rem;">Checking the PearTube relay…</div>';
+        }
+        const state = String(pearTubeStatus.state || 'disabled');
+        const tones = {
+            ready: { color: 'var(--success)', label: 'PearTube relay ready' },
+            unreachable: { color: 'var(--error)', label: 'PearTube relay unreachable' },
+            misconfigured: { color: 'var(--warning)', label: 'PearTube relay misconfigured' },
+            disabled: { color: 'var(--text-muted)', label: 'PearTube relay disabled' },
+        };
+        const tone = tones[state] || tones.disabled;
+        const facts = [];
+        if (pearTubeStatus.relayUrl) facts.push('Relay: <code>' + escapeHtml(pearTubeStatus.relayUrl) + '</code>');
+        facts.push('Archive played titles: ' + (pearTubeStatus.archiveEnabled ? 'on' : 'off'));
+        const relay = pearTubeStatus.relay;
+        if (relay) {
+            facts.push('Peers: ' + Number(relay.peers || 0));
+            facts.push('LAN peers: ' + Number(relay.lanPeers || 0));
+            facts.push('Stored: ' + (Number(relay.blobBytes || 0) / (1024 ** 3)).toFixed(2) + ' GiB');
+            facts.push('Tracker: <code>' + escapeHtml(relay.tracker || '') + '</code>');
+        }
+        const errorHtml = pearTubeStatus.error
+            ? '<div class="form-hint" style="margin-top:0.5rem;overflow-wrap:anywhere;color:var(--error);">' + escapeHtml(pearTubeStatus.error) + '</div>'
+            : '';
+        return '<div style="margin-bottom:1.25rem;padding:0.85rem 1rem;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius);">' +
+            '<div style="display:flex;align-items:center;gap:0.55rem;font-weight:600;font-size:0.875rem;">' +
+                '<span style="width:9px;height:9px;border-radius:50%;background:' + tone.color + ';flex-shrink:0;"></span>' +
+                escapeHtml(tone.label) +
+            '</div>' +
+            '<div class="form-hint" style="margin-top:0.5rem;overflow-wrap:anywhere;">' + facts.join(' · ') + '</div>' +
+            errorHtml +
+            '<div style="margin-top:0.75rem;"><button type="button" class="btn btn-secondary btn-sm" onclick="void loadPearTubeStatus()">Re-check relay</button></div>' +
+        '</div>';
+    }
     // Detect when an API-key field has had a full URL/query string pasted into it
     // instead of the bare key. Newznab/debrid keys are plain tokens; if the value
     // carries URL or query syntax the backend will send it verbatim as apikey= and
@@ -8832,6 +8884,7 @@
                     btn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>';
                     showToast('Settings saved successfully');
                     void loadHardwareAccelerationStatus();
+                    void loadPearTubeStatus();
                     setTimeout(() => renderSettings(), 500);
                     await updateProfileSaveImpact(changedGroups);
                     renderSettings();
@@ -13697,6 +13750,10 @@
             customHtml = renderProviderPriorityUI();
         }
 
+        // The relay's live verdict belongs above the fields it explains.
+        if (sectionKey === 'torrentScrapers') {
+            customHtml = renderPearTubeStatusPanel();
+        }
         // Add test button for testable object sections
         let testHtml = '';
         if (sectionDef.testable && !selectedUserId && !selectedClientId) {
@@ -13705,7 +13762,8 @@
                 '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg> Test Connection</button>'+
                 '<span id="test-result-'+sectionKey+'" class="test-result"></span></div>';
         }
-        return fieldsHtml + customHtml + testHtml;
+        const prependCustom = sectionKey === 'display' || sectionKey === 'torrentScrapers';
+        return (prependCustom ? customHtml + fieldsHtml : fieldsHtml + customHtml) + testHtml;
     }
 
     function sectionShowWhenMatches(sectionDef) {
@@ -14988,6 +15046,7 @@
                     announceSettingsSaved();
                     showToast('Settings saved successfully');
                     void loadHardwareAccelerationStatus();
+                    void loadPearTubeStatus();
                     if (committedPendingTextArrays) renderSettings();
                     await updateProfileSaveImpact(changedGroups);
                     renderSettings();
@@ -15017,6 +15076,7 @@
 
         if (isAdmin) {
             void loadHardwareAccelerationStatus();
+            void loadPearTubeStatus();
             await Promise.all([loadProfiles(), loadAccounts(), loadSettingsScopeClients(), loadTraktAccounts(), loadSimklAccounts(), loadLetterboxdLists(), loadMediaLibraries(), checkDefaultPassword()]);
             const selector = document.getElementById('userSelector');
             // Pre-select from query param if provided

@@ -3041,20 +3041,14 @@ func liveHLSOutputArgs(playbackTarget, segmentPattern, playlistPath string, resu
 	listSize := strconv.Itoa(liveNativeHLSListSize)
 	if isNativeLivePlaybackTarget(playbackTarget) {
 		// Native apps (ExoPlayer / KSPlayer / MPV) demux/decode IPTV codecs themselves.
-		// Always transmux (copy) for those targets — never libx264/aac here. Web browser
-		// playback is the only live path that should re-encode for broad codec support.
-		//
-		// Do not use FFmpeg delete_segments for native live: stream-copy produces segments
-		// faster than the player can pull the first URI, so delete_segments removes
-		// segment0.ts before ExoPlayer's first request finishes (SEGMENT_TIMEOUT → 404).
-		// Keep a wider playlist window and clean old files ourselves after serve.
+		// Always transmux (copy) for those targets — never libx264/aac here.
 		args = append(args,
 			"-c:v", "copy",
 			"-c:a", "copy",
 			"-max_muxing_queue_size", "1024",
 		)
 		// temp_file only: atomic segment publish, no independent_segments (copy cannot
-		// force keyframes at segment boundaries), no delete_segments (see above).
+		// force keyframes at segment boundaries).
 		hlsFlags = "temp_file"
 		listSize = strconv.Itoa(liveNativeHLSListSize)
 	} else {
@@ -5135,8 +5129,8 @@ func (m *HLSManager) KeepAlive(w http.ResponseWriter, r *http.Request, sessionID
 	buffering := session.PlaybackBuffering
 	ended := session.PlaybackEnded
 	// The internal stream path this session transcodes from. Consumers that have
-	// to reach the source again — the p2p auto-seeder re-resolves it to a current
-	// URL — cannot recover it from anywhere else on this request.
+	// to reach the source again cannot recover it from anywhere else on this
+	// request.
 	sourcePath := session.Path
 	session.mu.Unlock()
 
@@ -5162,6 +5156,7 @@ func (m *HLSManager) KeepAlive(w http.ResponseWriter, r *http.Request, sessionID
 				PlaybackSessionID: "hls:" + sessionID,
 				ClientID:          clientID,
 				SourcePath:        sourcePath,
+				ReleaseTitle:      firstStreamValue(metadata.DisplayName, metadata.Title, session.OriginalPath),
 			}, metadata)
 			percent := 0.0
 			if duration > 0 {
@@ -5668,7 +5663,7 @@ func (m *HLSManager) ServePlaylist(w http.ResponseWriter, r *http.Request, sessi
 	var headerTags []string
 
 	if session.IsLive && !strings.Contains(playlistContent, "#EXT-X-START") {
-		if startTag := livePlaylistStartTag(playlistContent); startTag != "" {
+		if startTag := livePlaylistStartTag(playlistContent, session.PlaybackTarget); startTag != "" {
 			headerTags = append(headerTags, startTag)
 		}
 	}
@@ -7262,17 +7257,34 @@ func (m *HLSManager) buildSeamlessLivePlaylist(session *HLSSession, onDiskConten
 	return sb.String()
 }
 
-const liveMinimumStartOffsetSeconds = 14
+const (
+	liveMinimumStartOffsetSeconds     = 14
+	liveCastMinimumStartOffsetSeconds = 28
+)
+
+func isCastLivePlaybackTarget(playbackTarget string) bool {
+	switch strings.ToLower(strings.TrimSpace(playbackTarget)) {
+	case "cast", "chromecast", "googlecast", "cast-direct", "direct-cast":
+		return true
+	default:
+		return false
+	}
+}
 
 // RFC 8216 recommends starting an open live playlist at least three target durations behind its
-// edge. Keep the historical 14-second latency for two-second Cast transcodes, but derive a deeper
-// start for stream-copy sources with long GOPs. Omit the tag until that point exists in the window.
-func livePlaylistStartTag(content string) string {
+// edge. Keep the historical 14-second latency for general/native live streams, but use a deeper
+// 28-second start for Cast transcodes to give the Chromecast a safety buffer against upstream gaps.
+// Omit the tag until that point exists in the window.
+func livePlaylistStartTag(content string, target ...string) string {
 	snapshot := parseLivePlaylist(content)
 	if len(snapshot.Entries) == 0 || snapshot.TargetDuration <= 0 {
 		return ""
 	}
-	offset := max(liveMinimumStartOffsetSeconds, snapshot.TargetDuration*liveStallTargetDurations)
+	minOffset := liveMinimumStartOffsetSeconds
+	if len(target) > 0 && isCastLivePlaybackTarget(target[0]) {
+		minOffset = liveCastMinimumStartOffsetSeconds
+	}
+	offset := max(minOffset, snapshot.TargetDuration*liveStallTargetDurations)
 	playlistDuration := 0.0
 	for _, entry := range snapshot.Entries {
 		playlistDuration += entry.Duration

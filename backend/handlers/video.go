@@ -42,6 +42,7 @@ import (
 	"novastream/services/credits"
 	"novastream/services/debrid"
 	"novastream/services/libraryaccess"
+	"novastream/services/peartube"
 	"novastream/services/playback"
 	"novastream/services/streaming"
 
@@ -7340,8 +7341,10 @@ func configuredProviderHostPolicy(configManager ConfigProvider) requestsecurity.
 		}
 	}
 	return func(hostname, port string) bool {
-		_, ok := allowed[privateMediaEndpointKey(hostname, port)]
-		return ok
+		if _, ok := allowed[privateMediaEndpointKey(hostname, port)]; ok {
+			return true
+		}
+		return peartube.IsStreamOrigin(strings.Trim(hostname, "[]"), port)
 	}
 }
 

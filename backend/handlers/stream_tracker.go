@@ -17,6 +17,10 @@ import (
 	"novastream/models"
 )
 
+type playbackArchiver interface {
+	OnPlaybackStarted(models.PlaybackProgressUpdate)
+}
+
 // StreamTracker tracks active video streams for monitoring
 type StreamTracker struct {
 	streams          map[string]*TrackedStream
@@ -26,6 +30,7 @@ type StreamTracker struct {
 	mu               sync.RWMutex
 	counter          uint64
 	playbackObserver PlaybackActivityObserver
+	archiver         playbackArchiver
 }
 
 type recentlyEndedStream struct {
@@ -252,6 +257,17 @@ func (t *StreamTracker) AddPlaybackActivityObserver(observer PlaybackActivityObs
 	t.mu.Unlock()
 }
 
+// SetPlaybackArchiver registers the p2p integration on the only playback
+// signal a native player produces.
+func (t *StreamTracker) SetPlaybackArchiver(archiver playbackArchiver) {
+	if t == nil || archiver == nil {
+		return
+	}
+	t.mu.Lock()
+	t.archiver = archiver
+	t.mu.Unlock()
+}
+
 // AssociateClientWithPlayback binds the authenticated app client sending a
 // playback heartbeat to its active direct transport connections. Older native
 // app bundles did not include clientId in the media URL, even though their API
@@ -378,6 +394,9 @@ func enrichPlaybackUpdateFromStream(update models.PlaybackProgressUpdate, meta S
 	if update.SeriesName == "" {
 		update.SeriesName = firstStreamValue(meta.SeriesName, meta.Title)
 	}
+	if update.ReleaseTitle == "" {
+		update.ReleaseTitle = firstStreamValue(meta.DisplayName, meta.Title)
+	}
 	if update.EpisodeName == "" {
 		update.EpisodeName = meta.EpisodeName
 	}
@@ -470,8 +489,40 @@ func (t *StreamTracker) StartStreamWithAccount(r *http.Request, path string, con
 		activityCounter: activityCounter,
 	}
 
+	newPlayback := !t.hasPlaybackSlotLocked(nil, trackedStreamSlotKey(stream))
 	t.streams[id] = stream
+	if newPlayback {
+		t.observePlaybackStartLocked(stream)
+	}
 	return id, bytesCounter, activityCounter
+}
+
+// observePlaybackStartLocked hands a newly opened playback to the PearTube archiver.
+// It never blocks or fails the viewer's stream.
+func (t *StreamTracker) observePlaybackStartLocked(stream *TrackedStream) {
+	if t.archiver == nil {
+		return
+	}
+	update := enrichPlaybackUpdateFromStream(models.PlaybackProgressUpdate{
+		SourcePath:        stream.Path,
+		ReleaseTitle:      firstStreamValue(stream.MediaMetadata.DisplayName, stream.MediaMetadata.Title, stream.Filename),
+		Timestamp:         stream.StartTime,
+		PlaybackSessionID: "direct:" + trackedStreamSlotKey(stream),
+	}, stream.MediaMetadata)
+	// A stream's coordinates come from the query the player opened it with, so a
+	// request that omits mediaType or itemId can never be archived - and used to
+	// say nothing at all, which is indistinguishable from archiving being off.
+	// Observed live: a usenet title streamed for minutes with no archive attempt and
+	// no log line explaining the silence.
+	if update.MediaType == "" || update.MediaType == "live" || update.ItemID == "" {
+		if update.MediaType != "live" {
+			log.Printf("[peartube] playback not archivable: no media identity on the stream request (mediaType=%q itemId=%q path=%q)",
+				update.MediaType, update.ItemID, stream.Path)
+		}
+		return
+	}
+	archiver := t.archiver
+	go archiver.OnPlaybackStarted(update)
 }
 
 // SetStreamCancel attaches a cancellation function to a tracked stream.
