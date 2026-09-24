@@ -70,6 +70,7 @@ type Status struct {
 	Blobs     string `json:"blobs"`
 	BlobBytes int64  `json:"blobBytes"`
 	Peers     int    `json:"peers"`
+	LanPeers  int    `json:"lanPeers"`
 }
 
 // APIError is a non-2xx relay answer.

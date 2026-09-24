@@ -37,7 +37,7 @@ func (f *fakeRelay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 	switch {
 	case r.Method == http.MethodGet && path == "/v1/status":
-		reply(http.StatusOK, map[string]any{"tracker": "aa", "writer": "bb", "blobs": "cc", "blobBytes": 1234, "peers": 3})
+		reply(http.StatusOK, map[string]any{"tracker": "aa", "writer": "bb", "blobs": "cc", "blobBytes": 1234, "peers": 3, "lanPeers": 2})
 	case r.Method == http.MethodGet && path == "/v1/search":
 		id := r.URL.Query().Get("id")
 		if !relayID.MatchString(id) {
@@ -152,7 +152,7 @@ func TestClientV1Contract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	if status != (Status{Tracker: "aa", Writer: "bb", Blobs: "cc", BlobBytes: 1234, Peers: 3}) {
+	if status != (Status{Tracker: "aa", Writer: "bb", Blobs: "cc", BlobBytes: 1234, Peers: 3, LanPeers: 2}) {
 		t.Fatalf("Status = %+v", status)
 	}
 	if len(relay.auth) != 0 {

@@ -6689,6 +6689,7 @@
         const relay = pearTubeStatus.relay;
         if (relay) {
             facts.push('Peers: ' + Number(relay.peers || 0));
+            facts.push('LAN peers: ' + Number(relay.lanPeers || 0));
             facts.push('Stored: ' + (Number(relay.blobBytes || 0) / (1024 ** 3)).toFixed(2) + ' GiB');
             facts.push('Tracker: <code>' + escapeHtml(relay.tracker || '') + '</code>');
         }
