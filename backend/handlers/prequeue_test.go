@@ -1286,6 +1286,71 @@ func TestResolveCandidatesAcceptsMappedAnthologyEpisode(t *testing.T) {
 	}
 }
 
+// TestResolveCandidatesAcceptsFilterMappedReleaseEpisode covers episode
+// mappings outside the anthology table: filtering stamps the release's own
+// numbering into targetSeason/targetEpisode next to mappedCatalogEpisode, and
+// the explicit-mismatch guard must accept that code while still rejecting a
+// release whose code matches neither the catalog nor the stamped mapping.
+func TestResolveCandidatesAcceptsFilterMappedReleaseEpisode(t *testing.T) {
+	var resolved []string
+	var mu sync.Mutex
+	playbackSvc := &stubPlaybackService{
+		resolve: func(ctx context.Context, candidate models.NZBResult) (*models.PlaybackResolution, error) {
+			mu.Lock()
+			resolved = append(resolved, candidate.Title)
+			mu.Unlock()
+			return &models.PlaybackResolution{WebDAVPath: "/webdav/mapped.mkv", HealthStatus: "healthy"}, nil
+		},
+	}
+	handler := &PrequeueHandler{
+		store:       playback.NewPrequeueStore(time.Minute),
+		playbackSvc: playbackSvc,
+		fullProber:  &raceProbeResult{},
+	}
+
+	mappedAttrs := func() map[string]string {
+		return map[string]string{
+			"mappedCatalogEpisode":   "S01E14",
+			"mappedCatalogNumbering": models.EpisodeNumberingKey(nil),
+			"targetSeason":           "2",
+			"targetEpisode":          "1",
+		}
+	}
+	const unmapped = "Show.S02E03.1080p.WEB-DL"
+	const mapped = "Show.S02E01.1080p.WEB-DL"
+	choice, err := handler.resolveCandidates(
+		context.Background(),
+		"prequeue-filter-mapped",
+		newSliceCandidateSource([]models.NZBResult{
+			{Title: unmapped, ServiceType: models.ServiceTypeUsenet, Attributes: mappedAttrs()},
+			{Title: mapped, ServiceType: models.ServiceTypeUsenet, Attributes: mappedAttrs()},
+		}),
+		prequeueResolutionOptions{
+			mediaType:          "series",
+			titleID:            "tmdb:tv:1",
+			targetEpisode:      &models.EpisodeReference{SeasonNumber: 1, EpisodeNumber: 14, AbsoluteEpisodeNumber: 14},
+			hdrDVPolicy:        models.HDRDVPolicyIncludeHDRDV,
+			unknownTrackPolicy: "none",
+		},
+	)
+	if err != nil {
+		t.Fatalf("resolveCandidates returned error: %v", err)
+	}
+	if choice.resolution == nil {
+		t.Fatal("resolveCandidates rejected the filter-mapped release")
+	}
+	if choice.selectedResultIndex != 1 {
+		t.Fatalf("selectedResultIndex = %d, want 1 (the mapped S02E01 release)", choice.selectedResultIndex)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, title := range resolved {
+		if title == unmapped {
+			t.Fatalf("resolved %q; a code matching neither catalog nor mapping must stay rejected", unmapped)
+		}
+	}
+}
+
 // TestResolveCandidatesProbeRejectionMarksBadStream covers the bad-stream
 // marking of a candidate rejected by the cheap availability probe (surfaced
 // as playback.ErrUsenetProbeRejected, which wraps importer.ErrArticleUnavailable):
