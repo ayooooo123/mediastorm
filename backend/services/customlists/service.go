@@ -303,6 +303,9 @@ func (s *Service) AddItem(userID, listID string, input models.WatchlistUpsert) (
 	if strings.TrimSpace(input.PosterURL) != "" {
 		item.PosterURL = input.PosterURL
 	}
+	if strings.TrimSpace(input.TextPosterURL) != "" {
+		item.TextPosterURL = input.TextPosterURL
+	}
 	if strings.TrimSpace(input.BackdropURL) != "" {
 		item.BackdropURL = input.BackdropURL
 	}
@@ -693,6 +696,9 @@ func mergeListItems(base, incoming models.WatchlistItem) models.WatchlistItem {
 	}
 	if base.PosterURL == "" {
 		base.PosterURL = incoming.PosterURL
+	}
+	if base.TextPosterURL == "" {
+		base.TextPosterURL = incoming.TextPosterURL
 	}
 	if base.BackdropURL == "" {
 		base.BackdropURL = incoming.BackdropURL

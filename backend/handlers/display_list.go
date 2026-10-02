@@ -46,6 +46,7 @@ type DisplayListResponse struct {
 	UnfilteredTotal int         `json:"unfilteredTotal,omitempty"`
 	Genres          []string    `json:"genres,omitempty"`
 	AlphabetBuckets []string    `json:"alphabetBuckets,omitempty"`
+	MetadataPending bool        `json:"metadataPending,omitempty"`
 }
 
 const (
@@ -318,8 +319,15 @@ func (h *DisplayListHandler) get(w http.ResponseWriter, r *http.Request) {
 	}
 	logDisplayListWatchlistArtworkTrace(userID, source, items)
 	responseItems := interface{}(items)
+	metadataPending := false
 	if source == "permanent-prequeue" || customListShelf {
-		responseItems = watchlistItemsToTrending(items)
+		trendingItems := watchlistItemsToTrending(items)
+		if customListShelf {
+			deferArtwork := strings.EqualFold(r.URL.Query().Get("shelfPhase"), "cards") ||
+				strings.EqualFold(r.URL.Query().Get("deferArtwork"), "true")
+			metadataPending = enrichCustomListShelfTextPosters(r.Context(), trendingItems, h.metadataForUser(userID), deferArtwork)
+		}
+		responseItems = trendingItems
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(DisplayListResponse{
@@ -330,6 +338,7 @@ func (h *DisplayListHandler) get(w http.ResponseWriter, r *http.Request) {
 		UnfilteredTotal: unfilteredTotal,
 		Genres:          genres,
 		AlphabetBuckets: alphabet,
+		MetadataPending: metadataPending,
 	})
 }
 
@@ -702,11 +711,16 @@ func (h *DisplayListHandler) requireUser(w http.ResponseWriter, r *http.Request)
 	return userID, true
 }
 
-func (h *DisplayListHandler) enrich(userID string, items []models.WatchlistItem, r *http.Request) {
+func (h *DisplayListHandler) metadataForUser(userID string) metadataService {
 	metadataSvc := h.MetadataService
 	if h.MetadataHandler != nil {
 		metadataSvc = h.MetadataHandler.serviceForUser(userID)
 	}
+	return metadataSvc
+}
+
+func (h *DisplayListHandler) enrich(userID string, items []models.WatchlistItem, r *http.Request) {
+	metadataSvc := h.metadataForUser(userID)
 
 	if h.HistoryService != nil {
 		wh, whErr := h.HistoryService.ListWatchHistory(userID)
