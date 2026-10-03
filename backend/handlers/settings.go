@@ -954,6 +954,15 @@ func (h *SettingsHandler) PutSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Older clients omit sports update controls. Preserve the saved selection so
+	// normalization cannot re-enable background work during an unrelated save.
+	if s.Sports.Enabled == nil {
+		s.Sports.Enabled = oldSettings.Sports.Enabled
+	}
+	if s.Sports.EnabledLeagues == nil {
+		s.Sports.EnabledLeagues = oldSettings.Sports.EnabledLeagues
+	}
+
 	// An explicit navigation choice is not a legacy list requiring migration.
 	if len(s.Display.NavigationTabVisibility) > 0 {
 		s.UI.NavigationTabVisibilityIncludesSports = true
