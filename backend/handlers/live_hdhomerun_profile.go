@@ -16,6 +16,8 @@ func liveGuideSourcesChanged(previous, next models.LiveTVSettings) bool {
 		!reflect.DeepEqual(previous.PlaylistSources, next.PlaylistSources) ||
 		!reflect.DeepEqual(previous.Mode, next.Mode) ||
 		!reflect.DeepEqual(previous.HDHomeRunHost, next.HDHomeRunHost) ||
+		!reflect.DeepEqual(previous.HDHomeRunGuideEmail, next.HDHomeRunGuideEmail) ||
+		!reflect.DeepEqual(previous.HDHomeRunGuideDeviceIDs, next.HDHomeRunGuideDeviceIDs) ||
 		!reflect.DeepEqual(previous.EPG, next.EPG)
 }
 

@@ -78,7 +78,7 @@ func TestHDHomeRunForbiddenRetry(t *testing.T) {
 			defer cloud.Close()
 			service := &Service{client: tuner.Client(), hdHomeRunGuideURL: cloud.URL}
 			schedule := &models.EPGSchedule{Channels: map[string]models.EPGChannel{}, Programs: map[string][]models.EPGProgram{}}
-			err := service.downloadHDHomeRunGuide(context.Background(), tuner.URL+"/discover.json", schedule)
+			err := service.downloadHDHomeRunGuide(context.Background(), tuner.URL+"/discover.json", schedule, config.LivePlaylistSource{})
 			if (err != nil) != test.wantError {
 				t.Fatalf("download error=%v, want error=%v", err, test.wantError)
 			}

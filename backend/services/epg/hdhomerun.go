@@ -6,12 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
 	"log"
 	"math/rand/v2"
-	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,7 +28,7 @@ type hdHomeRunGuideCache struct {
 func hdHomeRunSources(settings config.Settings) []config.LivePlaylistSource {
 	sources := configuredLiveSources(settings)
 	if len(sources) == 0 {
-		sources = []config.LivePlaylistSource{{Mode: settings.Live.Mode, HDHomeRunHost: settings.Live.HDHomeRunHost, EPG: settings.Live.EPG}}
+		sources = []config.LivePlaylistSource{{Mode: settings.Live.Mode, HDHomeRunHost: settings.Live.HDHomeRunHost, HDHomeRunGuideEmail: settings.Live.HDHomeRunGuideEmail, HDHomeRunGuideDeviceIDs: settings.Live.HDHomeRunGuideDeviceIDs, EPG: settings.Live.EPG}}
 	}
 	var result []config.LivePlaylistSource
 	seen := map[string]bool{}
@@ -45,10 +41,7 @@ func hdHomeRunSources(settings config.Settings) []config.LivePlaylistSource {
 		if len(appendEPGXMLTVSources(nil, source.EPG, "", "", 0)) > 0 {
 			continue
 		}
-		key, err := config.HDHomeRunURL(source.HDHomeRunHost, "/discover.json")
-		if err != nil {
-			key = source.HDHomeRunHost
-		}
+		key := hdHomeRunSourceKey(source)
 		if seen[key] {
 			continue
 		}
@@ -83,10 +76,7 @@ func (s *Service) hdHomeRunSources(settings config.Settings) []config.LivePlayli
 	seen := map[string]bool{}
 	unique := result[:0]
 	for _, source := range result {
-		key, _ := config.HDHomeRunURL(source.HDHomeRunHost, "/discover.json")
-		if key == "" {
-			key = source.HDHomeRunHost
-		}
+		key := hdHomeRunSourceKey(source)
 		if !seen[key] {
 			unique = append(unique, source)
 			seen[key] = true
@@ -116,16 +106,35 @@ func (s *Service) HDHomeRunRefreshDue() bool {
 	s.hdHomeRunMu.Lock()
 	defer s.hdHomeRunMu.Unlock()
 	for _, source := range sources {
-		key, err := config.HDHomeRunURL(source.HDHomeRunHost, "/discover.json")
+		_, err := config.HDHomeRunURL(source.HDHomeRunHost, "/discover.json")
 		if err != nil {
 			continue
 		}
-		cache, ok := s.hdHomeRunCache[key]
+		cache, ok := s.hdHomeRunCache[hdHomeRunSourceKey(source)]
 		if !ok || !time.Now().Before(cache.NextRefresh) {
 			return true
 		}
 	}
 	return false
+}
+
+// Authentication changes must not reuse a previous guide or error deadline.
+// Keep the legacy key for automatic DeviceAuth, and hash account identifiers so
+// neither in-memory keys nor cache filenames reveal the email or device IDs.
+func hdHomeRunSourceKey(source config.LivePlaylistSource) string {
+	key, _ := config.HDHomeRunURL(source.HDHomeRunHost, "/discover.json")
+	if key == "" {
+		key = source.HDHomeRunHost
+	}
+	email, ids, err := config.NormalizeHDHomeRunGuideAuth(source.HDHomeRunGuideEmail, source.HDHomeRunGuideDeviceIDs)
+	if err != nil {
+		email, ids = strings.TrimSpace(source.HDHomeRunGuideEmail), strings.TrimSpace(source.HDHomeRunGuideDeviceIDs)
+	}
+	if email != "" || ids != "" {
+		hash := sha256.Sum256([]byte(email + "\x00" + ids))
+		key += "#guide=" + hex.EncodeToString(hash[:16])
+	}
+	return key
 }
 
 func (s *Service) hdHomeRunCachePath(key string) string {
@@ -134,10 +143,11 @@ func (s *Service) hdHomeRunCachePath(key string) string {
 }
 
 func (s *Service) fetchHDHomeRunEPG(ctx context.Context, source config.LivePlaylistSource, target *models.EPGSchedule) error {
-	key, err := config.HDHomeRunURL(source.HDHomeRunHost, "/discover.json")
+	discoveryURL, err := config.HDHomeRunURL(source.HDHomeRunHost, "/discover.json")
 	if err != nil {
 		return err
 	}
+	key := hdHomeRunSourceKey(source)
 	s.hdHomeRunMu.Lock()
 	if s.hdHomeRunCache == nil {
 		s.hdHomeRunCache = make(map[string]hdHomeRunGuideCache)
@@ -153,7 +163,7 @@ func (s *Service) fetchHDHomeRunEPG(ctx context.Context, source config.LivePlayl
 		started := time.Now()
 		log.Printf("[hdhomerun-epg] refresh start source=%q tuner=%q cachedPrograms=%d previousError=%v", source.Name, key, countSchedulePrograms(cache.Schedule), cache.LastError != "")
 		guide := &models.EPGSchedule{Channels: make(map[string]models.EPGChannel), Programs: make(map[string][]models.EPGProgram)}
-		err = s.downloadHDHomeRunGuide(ctx, key, guide)
+		err = s.downloadHDHomeRunGuide(ctx, discoveryURL, guide, source)
 		if err == nil && countSchedulePrograms(guide) == 0 {
 			err = errors.New("HDHomeRun guide returned no usable programs")
 		}
@@ -210,69 +220,4 @@ func (s *Service) fetchHDHomeRunEPG(ctx context.Context, source config.LivePlayl
 		return errors.New(cache.LastError)
 	}
 	return nil
-}
-
-func (s *Service) downloadHDHomeRunGuide(ctx context.Context, discoveryURL string, schedule *models.EPGSchedule) error {
-	ctx, cancel := context.WithTimeout(ctx, defaultHTTPTimeout)
-	defer cancel()
-	client := *s.client
-	client.Timeout = defaultHTTPTimeout
-	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		return errors.New("HDHomeRun discovery redirect rejected")
-	}
-	previousAuth := ""
-	for attempt := 1; attempt <= 2; attempt++ {
-		// DeviceAuth rotates every 16-24 hours. Re-read it for each request,
-		// including the one retry allowed after an upstream 403.
-		deviceAuth, err := fetchHDHomeRunDeviceAuth(ctx, &client, discoveryURL)
-		if err != nil {
-			return err
-		}
-		log.Printf("[hdhomerun-epg] guide attempt tuner=%q attempt=%d freshAuth=true authChanged=%v userAgent=%q", discoveryURL, attempt, attempt > 1 && deviceAuth != previousAuth, "MediaStorm")
-		guideURL := hdHomeRunGuideURL
-		if s.hdHomeRunGuideURL != "" {
-			guideURL = s.hdHomeRunGuideURL
-		}
-		guideURL += "?" + url.Values{"DeviceAuth": {deviceAuth}}.Encode()
-		// Identify our client without impersonating the official app. Never
-		// send the rotating token through a configured proxy or log its URL.
-		importer := Service{client: &client, xmltvInvalidTimes: make(map[string]int), xmltvUserAgent: "MediaStorm"}
-		err = importer.fetchXMLTVWithProxy(ctx, guideURL, "", schedule)
-		if err == nil {
-			logHDHomeRunGuideCoverage(discoveryURL, "download", schedule, importer.xmltvInvalidTimes, time.Now().UTC())
-			return nil
-		}
-		var statusErr *epgHTTPStatusError
-		if attempt == 1 && errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusForbidden {
-			log.Printf("[hdhomerun-epg] guide forbidden tuner=%q attempt=%d retry=fresh-discovery", discoveryURL, attempt)
-			previousAuth = deviceAuth
-			continue
-		}
-		logHDHomeRunGuideCoverage(discoveryURL, "download", schedule, importer.xmltvInvalidTimes, time.Now().UTC())
-		return fmt.Errorf("HDHomeRun guide: %w", err)
-	}
-	return errors.New("HDHomeRun guide retry exhausted")
-}
-
-func fetchHDHomeRunDeviceAuth(ctx context.Context, client *http.Client, discoveryURL string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, discoveryURL, nil)
-	if err != nil {
-		return "", errors.New("invalid HDHomeRun discovery URL")
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", errors.New("could not reach HDHomeRun tuner for DeviceAuth")
-	}
-	defer resp.Body.Close()
-	log.Printf("[hdhomerun-epg] discovery tuner=%q status=%d", discoveryURL, resp.StatusCode)
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("HDHomeRun discovery returned HTTP %d", resp.StatusCode)
-	}
-	var device struct {
-		DeviceAuth string `json:"DeviceAuth"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 64*1024)).Decode(&device); err != nil || strings.TrimSpace(device.DeviceAuth) == "" {
-		return "", errors.New("HDHomeRun discovery did not return a valid DeviceAuth")
-	}
-	return strings.TrimSpace(device.DeviceAuth), nil
 }

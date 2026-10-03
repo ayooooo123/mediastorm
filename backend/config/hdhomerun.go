@@ -1,10 +1,44 @@
 package config
 
 import (
+	"encoding/hex"
 	"errors"
+	"net/mail"
 	"net/url"
+	"sort"
 	"strings"
 )
+
+// NormalizeHDHomeRunGuideAuth validates the optional account-based XMLTV method.
+// Errors intentionally exclude account identifiers so they are safe to log.
+func NormalizeHDHomeRunGuideAuth(email, deviceIDs string) (string, string, error) {
+	email = strings.TrimSpace(email)
+	deviceIDs = strings.TrimSpace(deviceIDs)
+	if email == "" && deviceIDs == "" {
+		return "", "", nil
+	}
+	if email == "" || deviceIDs == "" {
+		return "", "", errors.New("HDHomeRun guide email and device IDs must both be provided, or both left empty for automatic authentication")
+	}
+	address, err := mail.ParseAddress(email)
+	if err != nil || address.Address != email {
+		return "", "", errors.New("HDHomeRun guide email must be a valid email address")
+	}
+	seen := make(map[string]bool)
+	var ids []string
+	for _, raw := range strings.Split(deviceIDs, ",") {
+		id := strings.ToUpper(strings.TrimSpace(raw))
+		if _, err := hex.DecodeString(id); len(id) != 8 || err != nil {
+			return "", "", errors.New("HDHomeRun guide device IDs must be comma-separated 8-character hexadecimal IDs from the tuner web UI")
+		}
+		if !seen[id] {
+			ids = append(ids, id)
+			seen[id] = true
+		}
+	}
+	sort.Strings(ids)
+	return email, strings.Join(ids, ","), nil
+}
 
 // HDHomeRunURL accepts a tuner IP/hostname or base URL. Only the device's
 // documented endpoints are constructed; credentials and arbitrary paths are invalid.

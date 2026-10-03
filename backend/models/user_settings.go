@@ -243,25 +243,27 @@ type LiveTVSettings struct {
 	FavoriteChannels   []string `json:"favoriteChannels"`   // Channel IDs that are favorited
 	SelectedCategories []string `json:"selectedCategories"` // Selected category filters
 	// Per-profile IPTV source override (nil = use global)
-	Mode                *string              `json:"mode,omitempty"`
-	PlaylistURL         *string              `json:"playlistUrl,omitempty"`
-	HDHomeRunHost       *string              `json:"hdhomerunHost,omitempty"`
-	ManifestURL         *string              `json:"manifestUrl,omitempty"`
-	ProxyURL            *string              `json:"proxyUrl,omitempty"`
-	Sources             []LivePlaylistSource `json:"sources,omitempty"`
-	PlaylistSources     []LivePlaylistSource `json:"playlistSources,omitempty"`
-	SourcesOverride     *bool                `json:"sourcesOverride,omitempty"`
-	XtreamHost          *string              `json:"xtreamHost,omitempty"`
-	XtreamUsername      *string              `json:"xtreamUsername,omitempty"`
-	XtreamPassword      *string              `json:"xtreamPassword,omitempty"`
-	StalkerPortalURL    *string              `json:"stalkerPortalUrl,omitempty"`
-	StalkerMAC          *string              `json:"stalkerMac,omitempty"`
-	StalkerSerialNumber *string              `json:"stalkerSerialNumber,omitempty"`
-	StalkerDeviceID     *string              `json:"stalkerDeviceId,omitempty"`
-	StalkerDeviceID2    *string              `json:"stalkerDeviceId2,omitempty"`
-	StalkerSignature    *string              `json:"stalkerSignature,omitempty"`
-	StalkerModel        *string              `json:"stalkerModel,omitempty"`
-	MaxStreams          *int                 `json:"maxStreams,omitempty"`
+	Mode                    *string              `json:"mode,omitempty"`
+	PlaylistURL             *string              `json:"playlistUrl,omitempty"`
+	HDHomeRunHost           *string              `json:"hdhomerunHost,omitempty"`
+	HDHomeRunGuideEmail     *string              `json:"hdhomerunGuideEmail,omitempty"`
+	HDHomeRunGuideDeviceIDs *string              `json:"hdhomerunGuideDeviceIds,omitempty"`
+	ManifestURL             *string              `json:"manifestUrl,omitempty"`
+	ProxyURL                *string              `json:"proxyUrl,omitempty"`
+	Sources                 []LivePlaylistSource `json:"sources,omitempty"`
+	PlaylistSources         []LivePlaylistSource `json:"playlistSources,omitempty"`
+	SourcesOverride         *bool                `json:"sourcesOverride,omitempty"`
+	XtreamHost              *string              `json:"xtreamHost,omitempty"`
+	XtreamUsername          *string              `json:"xtreamUsername,omitempty"`
+	XtreamPassword          *string              `json:"xtreamPassword,omitempty"`
+	StalkerPortalURL        *string              `json:"stalkerPortalUrl,omitempty"`
+	StalkerMAC              *string              `json:"stalkerMac,omitempty"`
+	StalkerSerialNumber     *string              `json:"stalkerSerialNumber,omitempty"`
+	StalkerDeviceID         *string              `json:"stalkerDeviceId,omitempty"`
+	StalkerDeviceID2        *string              `json:"stalkerDeviceId2,omitempty"`
+	StalkerSignature        *string              `json:"stalkerSignature,omitempty"`
+	StalkerModel            *string              `json:"stalkerModel,omitempty"`
+	MaxStreams              *int                 `json:"maxStreams,omitempty"`
 	// Per-profile tuning overrides (nil = use global)
 	PlaylistCacheTTLHours *int    `json:"playlistCacheTtlHours,omitempty"`
 	ProbeSizeMB           *int    `json:"probeSizeMb,omitempty"`
@@ -276,34 +278,36 @@ type LiveTVSettings struct {
 
 // LivePlaylistSource represents a named M3U playlist source.
 type LivePlaylistSource struct {
-	ID                    string                 `json:"id"`
-	Name                  string                 `json:"name"`
-	Mode                  string                 `json:"mode,omitempty"`
-	PlaylistURL           string                 `json:"playlistUrl"`
-	HDHomeRunHost         string                 `json:"hdhomerunHost,omitempty"`
-	ManifestURL           string                 `json:"manifestUrl,omitempty"` // Stremio addon manifest URL (used when mode is "stremio")
-	ProxyURL              string                 `json:"proxyUrl,omitempty"`
-	XtreamHost            string                 `json:"xtreamHost,omitempty"`
-	XtreamUsername        string                 `json:"xtreamUsername,omitempty"`
-	XtreamPassword        string                 `json:"xtreamPassword,omitempty"`
-	StalkerPortalURL      string                 `json:"stalkerPortalUrl,omitempty"`
-	StalkerMAC            string                 `json:"stalkerMac,omitempty"`
-	StalkerSerialNumber   string                 `json:"stalkerSerialNumber,omitempty"`
-	StalkerDeviceID       string                 `json:"stalkerDeviceId,omitempty"`
-	StalkerDeviceID2      string                 `json:"stalkerDeviceId2,omitempty"`
-	StalkerSignature      string                 `json:"stalkerSignature,omitempty"`
-	StalkerModel          string                 `json:"stalkerModel,omitempty"`
-	MaxStreams            int                    `json:"maxStreams,omitempty"`
-	PlaylistCacheTTLHours int                    `json:"playlistCacheTtlHours,omitempty"`
-	ProbeSizeMB           int                    `json:"probeSizeMb,omitempty"`
-	AnalyzeDurationSec    int                    `json:"analyzeDurationSec,omitempty"`
-	LowLatency            *bool                  `json:"lowLatency,omitempty"`
-	StreamFormat          string                 `json:"streamFormat,omitempty"`
-	Filtering             *LiveTVFilterOverrides `json:"filtering,omitempty"`
-	EnabledCategories     []string               `json:"enabledCategories,omitempty"`
-	MaxChannels           *int                   `json:"maxChannels,omitempty"`
-	EPG                   *LivePlaylistEPGSource `json:"epg,omitempty"`
-	Enabled               *bool                  `json:"enabled,omitempty"`
+	ID                      string                 `json:"id"`
+	Name                    string                 `json:"name"`
+	Mode                    string                 `json:"mode,omitempty"`
+	PlaylistURL             string                 `json:"playlistUrl"`
+	HDHomeRunHost           string                 `json:"hdhomerunHost,omitempty"`
+	HDHomeRunGuideEmail     string                 `json:"hdhomerunGuideEmail,omitempty"`
+	HDHomeRunGuideDeviceIDs string                 `json:"hdhomerunGuideDeviceIds,omitempty"`
+	ManifestURL             string                 `json:"manifestUrl,omitempty"` // Stremio addon manifest URL (used when mode is "stremio")
+	ProxyURL                string                 `json:"proxyUrl,omitempty"`
+	XtreamHost              string                 `json:"xtreamHost,omitempty"`
+	XtreamUsername          string                 `json:"xtreamUsername,omitempty"`
+	XtreamPassword          string                 `json:"xtreamPassword,omitempty"`
+	StalkerPortalURL        string                 `json:"stalkerPortalUrl,omitempty"`
+	StalkerMAC              string                 `json:"stalkerMac,omitempty"`
+	StalkerSerialNumber     string                 `json:"stalkerSerialNumber,omitempty"`
+	StalkerDeviceID         string                 `json:"stalkerDeviceId,omitempty"`
+	StalkerDeviceID2        string                 `json:"stalkerDeviceId2,omitempty"`
+	StalkerSignature        string                 `json:"stalkerSignature,omitempty"`
+	StalkerModel            string                 `json:"stalkerModel,omitempty"`
+	MaxStreams              int                    `json:"maxStreams,omitempty"`
+	PlaylistCacheTTLHours   int                    `json:"playlistCacheTtlHours,omitempty"`
+	ProbeSizeMB             int                    `json:"probeSizeMb,omitempty"`
+	AnalyzeDurationSec      int                    `json:"analyzeDurationSec,omitempty"`
+	LowLatency              *bool                  `json:"lowLatency,omitempty"`
+	StreamFormat            string                 `json:"streamFormat,omitempty"`
+	Filtering               *LiveTVFilterOverrides `json:"filtering,omitempty"`
+	EnabledCategories       []string               `json:"enabledCategories,omitempty"`
+	MaxChannels             *int                   `json:"maxChannels,omitempty"`
+	EPG                     *LivePlaylistEPGSource `json:"epg,omitempty"`
+	Enabled                 *bool                  `json:"enabled,omitempty"`
 }
 
 // LivePlaylistEPGSource contains per-source EPG overrides.

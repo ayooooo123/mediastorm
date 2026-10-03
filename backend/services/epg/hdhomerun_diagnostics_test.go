@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"novastream/config"
 	"novastream/models"
 )
 
@@ -37,7 +38,7 @@ func TestHDHomeRunPartialGuideDiagnostics(t *testing.T) {
 	defer guide.Close()
 	service := &Service{client: tuner.Client(), hdHomeRunGuideURL: guide.URL}
 	schedule := &models.EPGSchedule{Channels: map[string]models.EPGChannel{}, Programs: map[string][]models.EPGProgram{}}
-	if err := service.downloadHDHomeRunGuide(context.Background(), tuner.URL+"/discover.json", schedule); err != nil {
+	if err := service.downloadHDHomeRunGuide(context.Background(), tuner.URL+"/discover.json", schedule, config.LivePlaylistSource{}); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"channelMetadata=3 programChannels=1 programs=1 withoutPrograms=2 withCurrent=1 withFuture=0 invalidTimes=2", `id="invalid" name="BADTIME" aliases=["BADTIME"] metadataPresent=true programs=0 current=0 future=0 invalidTimes=2`, `id="missing" name="EMPTY"`, `id="available" name="5.1" aliases=["5.1" "TESTTV"]`} {
