@@ -49,6 +49,7 @@ type Service struct {
 	hdHomeRunCache          map[string]hdHomeRunGuideCache
 	hdHomeRunGuideURL       string         // test endpoint; production always uses SiliconDust
 	xmltvInvalidTimes       map[string]int // optional diagnostics on the isolated HDHomeRun importer
+	xmltvUserAgent          string         // optional application identity for native guide requests
 
 	// normalizedIDIndex/normalizedNameIndex let findProgramsByChannelMatch resolve most
 	// misses with an O(1) lookup instead of the linear scan it used to always fall back to
@@ -611,6 +612,16 @@ func (s *Service) fetchXMLTVWithProxy(ctx context.Context, xmltvURL, proxyURL st
 	return s.fetchXMLTVWithProxyAndUserAgents(ctx, xmltvURL, proxyURL, schedule, nil)
 }
 
+// Keep the existing error text while letting native guide providers decide
+// whether an HTTP response warrants a bounded authentication retry.
+type epgHTTPStatusError struct {
+	StatusCode int
+}
+
+func (e *epgHTTPStatusError) Error() string {
+	return fmt.Sprintf("EPG fetch returned status %d", e.StatusCode)
+}
+
 func (s *Service) fetchXMLTVWithProxyAndUserAgents(ctx context.Context, xmltvURL, proxyURL string, schedule *models.EPGSchedule, userAgents []string) error {
 	started := time.Now()
 	hostLabel := xmltvHostLabel(xmltvURL)
@@ -624,6 +635,9 @@ func (s *Service) fetchXMLTVWithProxyAndUserAgents(ctx context.Context, xmltvURL
 
 	// Add Accept-Encoding for gzip
 	req.Header.Set("Accept-Encoding", "gzip")
+	if s.xmltvUserAgent != "" {
+		req.Header.Set("User-Agent", s.xmltvUserAgent)
+	}
 
 	client := s.httpClient(proxyURL)
 	var resp *http.Response
@@ -647,7 +661,7 @@ func (s *Service) fetchXMLTVWithProxyAndUserAgents(ctx context.Context, xmltvURL
 	)
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("EPG fetch returned status %d", resp.StatusCode)
+		return &epgHTTPStatusError{StatusCode: resp.StatusCode}
 	}
 
 	// Handle gzip compression
@@ -979,19 +993,27 @@ func (s *Service) GetNowPlaying(channelIDs []string, timeOffset ...time.Duration
 			byNormalizedID[key] = programs
 		}
 	}
-	byNormalizedName := make(map[string][]models.EPGProgram, len(s.schedule.Channels))
+	byNormalizedName := make(map[string]string, len(s.schedule.Channels))
 	ambiguousNames := make(map[string]struct{})
 	for epgChannelID, channel := range s.schedule.Channels {
 		programs := s.schedule.Programs[epgChannelID]
 		if len(programs) == 0 {
 			continue
 		}
-		key := normalizeChannelID(channel.Name)
-		if _, exists := byNormalizedName[key]; exists {
-			delete(byNormalizedName, key)
-			ambiguousNames[key] = struct{}{}
-		} else if _, ambiguous := ambiguousNames[key]; !ambiguous {
-			byNormalizedName[key] = programs
+		// HDHomeRun XMLTV commonly lists the number first and the callsign in
+		// another display-name. Repeated aliases of the same station are safe;
+		// aliases shared by different stations must remain unresolved.
+		for _, name := range append([]string{channel.Name}, channel.Aliases...) {
+			key := normalizeChannelID(name)
+			if key == "" {
+				continue
+			}
+			if existingID, exists := byNormalizedName[key]; exists && existingID != epgChannelID {
+				delete(byNormalizedName, key)
+				ambiguousNames[key] = struct{}{}
+			} else if _, ambiguous := ambiguousNames[key]; !ambiguous {
+				byNormalizedName[key] = epgChannelID
+			}
 		}
 	}
 
@@ -1009,7 +1031,9 @@ func (s *Service) GetNowPlaying(channelIDs []string, timeOffset ...time.Duration
 			key := normalizeChannelID(channelID)
 			programs = byNormalizedID[key]
 			if len(programs) == 0 {
-				programs = byNormalizedName[key]
+				if matchedID, ok := byNormalizedName[key]; ok {
+					programs = s.schedule.Programs[matchedID]
+				}
 			}
 		}
 

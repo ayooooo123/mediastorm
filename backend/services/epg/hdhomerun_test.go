@@ -78,6 +78,10 @@ func TestHDHomeRunRefreshGzipFreshAuthCacheAndFailureRecovery(t *testing.T) {
 		if programs := service.GetSchedule(id, now.Add(-time.Hour), now.Add(time.Hour)); len(programs) != 1 {
 			t.Errorf("channel matching failed for %s", id)
 		}
+		playing := service.GetNowPlaying([]string{id})
+		if len(playing) != 1 || playing[0].Current == nil || playing[0].Next == nil {
+			t.Errorf("now-playing alias matching failed for %s: %+v", id, playing)
+		}
 	}
 	key, _ := config.HDHomeRunURL(tuner.URL, "/discover.json")
 	service.hdHomeRunMu.Lock()
@@ -109,6 +113,9 @@ func TestHDHomeRunRefreshGzipFreshAuthCacheAndFailureRecovery(t *testing.T) {
 	}
 	if guideCalls.Load() != 1 {
 		t.Fatal("restart triggered premature download")
+	}
+	if playing := restarted.GetNowPlaying([]string{"TESTTV"}); len(playing) != 1 || playing[0].Current == nil {
+		t.Fatal("cached guide lost callsign matching after restart")
 	}
 	// Force the deadline to pass, then simulate a failed refresh.
 	restarted.hdHomeRunMu.Lock()
