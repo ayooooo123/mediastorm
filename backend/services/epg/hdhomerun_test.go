@@ -1,10 +1,12 @@
 package epg
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,6 +21,10 @@ import (
 )
 
 func TestHDHomeRunRefreshGzipFreshAuthCacheAndFailureRecovery(t *testing.T) {
+	var logs bytes.Buffer
+	previousOutput := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previousOutput) })
 	var discoveryCalls, guideCalls atomic.Int32
 	var fail atomic.Bool
 	now := time.Now().UTC()
@@ -134,6 +140,16 @@ func TestHDHomeRunRefreshGzipFreshAuthCacheAndFailureRecovery(t *testing.T) {
 	}
 	if restarted.GetStatus().LastError != "" || discoveryCalls.Load() != 3 || guideCalls.Load() != 3 {
 		t.Fatal("guide did not recover using a fresh token")
+	}
+	for _, want := range []string{"[hdhomerun-epg] refresh start", "[hdhomerun-epg] cache reuse", "retainedCache=true", "skippedExistingProgramChannels=", "phase=\"download\"", "aliases=[\"5.1\" \"TESTTV\"]"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("missing diagnostic %q", want)
+		}
+	}
+	for _, secret := range []string{"secret", "DeviceAuth=", "Day thirteen", "<tv>"} {
+		if strings.Contains(logs.String(), secret) {
+			t.Errorf("logs leaked %q", secret)
+		}
 	}
 }
 

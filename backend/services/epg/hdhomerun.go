@@ -150,6 +150,8 @@ func (s *Service) fetchHDHomeRunEPG(ctx context.Context, source config.LivePlayl
 		}
 	}
 	if !time.Now().Before(cache.NextRefresh) || (countSchedulePrograms(cache.Schedule) == 0 && cache.LastError == "") {
+		started := time.Now()
+		log.Printf("[hdhomerun-epg] refresh start source=%q tuner=%q cachedPrograms=%d previousError=%v", source.Name, key, countSchedulePrograms(cache.Schedule), cache.LastError != "")
 		guide := &models.EPGSchedule{Channels: make(map[string]models.EPGChannel), Programs: make(map[string][]models.EPGProgram)}
 		err = s.downloadHDHomeRunGuide(ctx, key, guide)
 		if err == nil && countSchedulePrograms(guide) == 0 {
@@ -166,6 +168,8 @@ func (s *Service) fetchHDHomeRunEPG(ctx context.Context, source config.LivePlayl
 			cache.LastError = err.Error()
 			cache.NextRefresh = time.Now().UTC().Add(time.Hour)
 		}
+		log.Printf("[hdhomerun-epg] refresh result source=%q tuner=%q success=%v retainedCache=%v channels=%d programs=%d nextRefresh=%s elapsed=%s error=%q",
+			source.Name, key, err == nil, err != nil && cache.Schedule != nil, hdHomeRunChannelCount(cache.Schedule), countSchedulePrograms(cache.Schedule), cache.NextRefresh.Format(time.RFC3339), time.Since(started).Round(time.Millisecond), cache.LastError)
 		if data, marshalErr := json.Marshal(cache); marshalErr == nil {
 			path := s.hdHomeRunCachePath(key)
 			if writeErr := os.WriteFile(path+".tmp", data, 0600); writeErr == nil {
@@ -176,11 +180,16 @@ func (s *Service) fetchHDHomeRunEPG(ctx context.Context, source config.LivePlayl
 				log.Print("[epg] failed to persist HDHomeRun guide cache")
 			}
 		}
+	} else {
+		log.Printf("[hdhomerun-epg] cache reuse source=%q tuner=%q channels=%d programs=%d lastUpdated=%s nextRefresh=%s lastError=%q",
+			source.Name, key, hdHomeRunChannelCount(cache.Schedule), countSchedulePrograms(cache.Schedule), hdHomeRunGuideUpdated(cache.Schedule), cache.NextRefresh.Format(time.RFC3339), cache.LastError)
+		logHDHomeRunGuideCoverage(key, "cache", cache.Schedule, nil, time.Now().UTC())
 	}
 	s.hdHomeRunMu.Lock()
 	s.hdHomeRunCache[key] = cache
 	s.hdHomeRunMu.Unlock()
 	if cache.Schedule != nil {
+		addedPrograms, skippedProgramChannels := 0, 0
 		for id, channel := range cache.Schedule.Channels {
 			target.Channels[id] = channel
 		}
@@ -189,9 +198,13 @@ func (s *Service) fetchHDHomeRunEPG(ctx context.Context, source config.LivePlayl
 			// first guide once rather than duplicate every program for each tuner.
 			if len(target.Programs[id]) == 0 {
 				target.Programs[id] = append([]models.EPGProgram(nil), programs...)
+				addedPrograms += len(programs)
+			} else {
+				skippedProgramChannels++
 			}
 		}
 		target.SourceType = "xmltv"
+		log.Printf("[hdhomerun-epg] merge source=%q tuner=%q addedPrograms=%d skippedExistingProgramChannels=%d", source.Name, key, addedPrograms, skippedProgramChannels)
 	}
 	if cache.LastError != "" {
 		return errors.New(cache.LastError)
@@ -217,6 +230,7 @@ func (s *Service) downloadHDHomeRunGuide(ctx context.Context, discoveryURL strin
 		return errors.New("could not reach HDHomeRun tuner for DeviceAuth")
 	}
 	defer resp.Body.Close()
+	log.Printf("[hdhomerun-epg] discovery tuner=%q status=%d", discoveryURL, resp.StatusCode)
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("HDHomeRun discovery returned HTTP %d", resp.StatusCode)
 	}
@@ -233,8 +247,10 @@ func (s *Service) downloadHDHomeRunGuide(ctx context.Context, discoveryURL strin
 	guideURL += "?" + url.Values{"DeviceAuth": {device.DeviceAuth}}.Encode()
 	// The existing importer explicitly requests and decodes gzip. Do not pass
 	// the rotating token through a configured proxy or include the URL in errors.
-	importer := Service{client: &client}
-	if err := importer.fetchXMLTVWithProxy(ctx, guideURL, "", schedule); err != nil {
+	importer := Service{client: &client, xmltvInvalidTimes: make(map[string]int)}
+	err = importer.fetchXMLTVWithProxy(ctx, guideURL, "", schedule)
+	logHDHomeRunGuideCoverage(discoveryURL, "download", schedule, importer.xmltvInvalidTimes, time.Now().UTC())
+	if err != nil {
 		return fmt.Errorf("HDHomeRun guide: %w", err)
 	}
 	return nil

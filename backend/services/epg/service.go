@@ -47,7 +47,8 @@ type Service struct {
 	hdHomeRunProfileSources func(config.Settings) []config.LivePlaylistSource
 	hdHomeRunMu             sync.Mutex
 	hdHomeRunCache          map[string]hdHomeRunGuideCache
-	hdHomeRunGuideURL       string // test endpoint; production always uses SiliconDust
+	hdHomeRunGuideURL       string         // test endpoint; production always uses SiliconDust
+	xmltvInvalidTimes       map[string]int // optional diagnostics on the isolated HDHomeRun importer
 
 	// normalizedIDIndex/normalizedNameIndex let findProgramsByChannelMatch resolve most
 	// misses with an O(1) lookup instead of the linear scan it used to always fall back to
@@ -542,6 +543,9 @@ func (s *Service) Refresh(ctx context.Context) error {
 			}
 		}
 		newSchedule.Programs[channelID] = filtered
+		if hdChannelIDs[channelID] && len(filtered) != len(programs) {
+			log.Printf("[hdhomerun-epg] retention channel=%q before=%d after=%d cutoff=%s futureLimit=%s", channelID, len(programs), len(filtered), cutoff.UTC().Format(time.RFC3339), channelFutureLimit.UTC().Format(time.RFC3339))
+		}
 	}
 
 	programCount := countSchedulePrograms(newSchedule)
@@ -785,11 +789,17 @@ func (s *Service) parseXMLTV(reader io.Reader, schedule *models.EPGSchedule) err
 				start, err := parseXMLTVTime(prog.Start)
 				if err != nil {
 					invalidTimeCount++
+					if s.xmltvInvalidTimes != nil {
+						s.xmltvInvalidTimes[strings.ToLower(prog.Channel)]++
+					}
 					continue
 				}
 				stop, err := parseXMLTVTime(prog.Stop)
 				if err != nil {
 					invalidTimeCount++
+					if s.xmltvInvalidTimes != nil {
+						s.xmltvInvalidTimes[strings.ToLower(prog.Channel)]++
+					}
 					continue
 				}
 

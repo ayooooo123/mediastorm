@@ -1383,11 +1383,15 @@ func tagChannelsWithSource(channels []LiveChannel, source resolvedM3USource, inc
 		return channels
 	}
 	tagged := make([]LiveChannel, len(channels))
+	playlist, _ := url.Parse(source.PlaylistURL)
+	isTunerLineup := playlist != nil && playlist.Path == "/lineup.m3u"
+	if isTunerLineup {
+		log.Printf("[hdhomerun-epg] lineup source=%q channels=%d omittedDetails=%d", source.ID, len(channels), max(0, len(channels)-100))
+	}
 	for i, ch := range channels {
 		// HDHomeRun playlists may omit tvg-id. Give the frontend a guide lookup
 		// key using the tuner callsign; XMLTV display names are indexed as aliases.
-		playlist, _ := url.Parse(source.PlaylistURL)
-		if ch.TvgID == "" && playlist != nil && playlist.Path == "/lineup.m3u" {
+		if ch.TvgID == "" && isTunerLineup {
 			ch.TvgID = ch.TvgName
 			if ch.TvgID == "" {
 				ch.TvgID = ch.Name
@@ -1396,6 +1400,9 @@ func tagChannelsWithSource(channels []LiveChannel, source resolvedM3USource, inc
 				number := strings.TrimPrefix(path.Base(stream.Path), "v")
 				ch.TvgID = strings.TrimPrefix(ch.TvgID, number+" ")
 			}
+		}
+		if isTunerLineup && i < 100 {
+			log.Printf("[hdhomerun-epg] lineup channel source=%q name=%q tvgName=%q lookupID=%q", source.ID, ch.Name, ch.TvgName, ch.TvgID)
 		}
 		ch.SourceID = source.ID
 		ch.SourceName = source.Name

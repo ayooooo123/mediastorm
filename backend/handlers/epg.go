@@ -163,9 +163,12 @@ func (h *EPGHandler) GetNowPlaying(w http.ResponseWriter, r *http.Request) {
 	result := h.epgService.GetNowPlaying(channelIDs, -offset)
 	currentCount := 0
 	nextCount := 0
+	var missingCurrentIDs []string
 	for _, item := range result {
 		if item.Current != nil {
 			currentCount++
+		} else if len(missingCurrentIDs) < 20 {
+			missingCurrentIDs = append(missingCurrentIDs, item.ChannelID)
 		}
 		if item.Next != nil {
 			nextCount++
@@ -179,6 +182,9 @@ func (h *EPGHandler) GetNowPlaying(w http.ResponseWriter, r *http.Request) {
 		nextCount,
 		int(offset.Minutes()),
 	)
+	if len(missingCurrentIDs) > 0 && h.epgService.HasHDHomeRunGuide() {
+		log.Printf("[hdhomerun-epg] now coverage requested=%d withoutCurrent=%d lookupIDSample=%q offsetMinutes=%d", len(channelIDs), len(result)-currentCount, missingCurrentIDs, int(offset.Minutes()))
+	}
 
 	if offset != 0 {
 		for i := range result {
@@ -315,6 +321,12 @@ func (h *EPGHandler) GetScheduleMultiple(w http.ResponseWriter, r *http.Request)
 	schedules := h.epgService.GetScheduleMultiple(channelIDs, start, end)
 	matchedChannels := 0
 	totalPrograms := 0
+	var emptyIDs []string
+	for _, id := range channelIDs {
+		if len(schedules[id]) == 0 && len(emptyIDs) < 20 {
+			emptyIDs = append(emptyIDs, id)
+		}
+	}
 	for _, programs := range schedules {
 		if len(programs) > 0 {
 			matchedChannels++
@@ -330,6 +342,9 @@ func (h *EPGHandler) GetScheduleMultiple(w http.ResponseWriter, r *http.Request)
 		startOffset,
 		int(offset.Minutes()),
 	)
+	if len(emptyIDs) > 0 && h.epgService.HasHDHomeRunGuide() {
+		log.Printf("[hdhomerun-epg] query coverage requested=%d emptyChannels=%d lookupIDSample=%q start=%s end=%s offsetMinutes=%d", len(channelIDs), len(channelIDs)-matchedChannels, emptyIDs, start.Format(time.RFC3339), end.Format(time.RFC3339), int(offset.Minutes()))
+	}
 
 	if offset != 0 {
 		for chID, programs := range schedules {
