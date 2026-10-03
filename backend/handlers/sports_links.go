@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -530,6 +531,9 @@ func (h *SportsLinksHandler) SyncTeamsFromGames(ctx context.Context, games []mod
 func (h *SportsLinksHandler) SyncTeams(ctx context.Context, teams []models.SportsTeamRecord) {
 	seen := make(map[string]struct{}, len(teams))
 	for _, team := range teams {
+		if ctx.Err() != nil {
+			return
+		}
 		if team.ID == "" {
 			continue
 		}
@@ -538,6 +542,10 @@ func (h *SportsLinksHandler) SyncTeams(ctx context.Context, teams []models.Sport
 		}
 		seen[team.ID] = struct{}{}
 		if err := h.links.UpsertTeam(ctx, team); err != nil {
+			if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				log.Printf("[sports-links] SyncTeams: batch interrupted: %v", err)
+				return
+			}
 			log.Printf("[sports-links] SyncTeams: upsert team %s failed: %v", team.ID, err)
 		}
 	}

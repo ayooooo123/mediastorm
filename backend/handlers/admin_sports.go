@@ -85,7 +85,7 @@ func (h *AdminUIHandler) SportsCatalogAPI(w http.ResponseWriter, r *http.Request
 	service := h.sportsHandler.service
 	w.Header().Set("Cache-Control", "no-store")
 	if r.URL.Query().Get("teams") != "1" {
-		writeSportsJSON(w, map[string]any{"leagues": service.Leagues()})
+		writeSportsJSON(w, map[string]any{"leagues": service.Leagues(), "enabled": service.GetStatus().Enabled})
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)

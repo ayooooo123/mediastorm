@@ -58,6 +58,8 @@ type Settings struct {
 // Server-wide (not per-user) since the poller fetches once for the whole server on a
 // shared interval - see services/sports.LeagueCatalog for the supported league IDs.
 type SportsSettings struct {
+	// Nil preserves the enabled default for settings written before this switch existed.
+	Enabled *bool `json:"enabled"`
 	// No omitempty on these: Normalize() guarantees they're always non-nil ([]/{} at
 	// minimum), but Go's encoding/json omits a zero-length slice/map as "empty" regardless
 	// of nil-ness when omitempty is set - the common case (no favorites/overrides added
@@ -86,7 +88,11 @@ var defaultEnabledLeagueIDs = []string{"pga", "boxing", "cricket-8048", "nfl", "
 // HTTP handlers, which previously did this ad hoc inline) sees a consistent, non-nil shape -
 // matching the pattern every other settings struct in this file follows.
 func (s *SportsSettings) Normalize() {
-	if len(s.EnabledLeagues) == 0 {
+	if s.Enabled == nil {
+		enabled := true
+		s.Enabled = &enabled
+	}
+	if s.EnabledLeagues == nil {
 		s.EnabledLeagues = append([]string(nil), defaultEnabledLeagueIDs...)
 	}
 	if s.FavoriteTeamIDs == nil {
@@ -101,6 +107,16 @@ func (s *SportsSettings) Normalize() {
 	if s.LeagueSearchOverrides == nil {
 		s.LeagueSearchOverrides = map[string]SportsSearchScope{}
 	}
+}
+
+// PollingLeagueIDs returns the effective server-wide polling selection.
+// Normalize a copy so legacy settings receive defaults without changing the caller.
+func (s SportsSettings) PollingLeagueIDs() []string {
+	s.Normalize()
+	if !*s.Enabled {
+		return []string{}
+	}
+	return s.EnabledLeagues
 }
 
 type ServerSettings struct {

@@ -996,33 +996,10 @@ func main() {
 	sportsHandler.SetConfigManager(cfgManager)
 	sportsLinksHandler := handlers.NewSportsLinksHandler(store.SportsLinks(), liveHandler)
 	sportsLinksHandler.SetConfigManager(cfgManager)
+	sportsService.SetEnabledLeagueIDs(settings.Sports.PollingLeagueIDs())
 	go func() {
 		refresh := func() {
-			// Re-read enabled leagues from live config each tick (not just at startup) so an
-			// admin change to Settings.Sports.EnabledLeagues takes effect on the next poll
-			// without a server restart.
-			if liveSettings, err := cfgManager.Load(); err == nil {
-				sportsService.SetEnabledLeagueIDs(liveSettings.Sports.EnabledLeagues)
-			}
-			refreshCtx, cancelRefresh := context.WithTimeout(context.Background(), 15*time.Second)
-			if err := sportsService.Refresh(refreshCtx); err != nil {
-				log.Printf("[sports] refresh error: %v", err)
-			}
-			cancelRefresh()
-
-			syncGamesCtx, cancelSyncGames := context.WithTimeout(context.Background(), 10*time.Second)
-			sportsLinksHandler.SyncTeamsFromGames(syncGamesCtx, sportsService.GetScoreboard(""))
-			cancelSyncGames()
-
-			catalogCtx, cancelCatalog := context.WithTimeout(context.Background(), 30*time.Second)
-			catalog, err := sportsService.EnsureTeamCatalog(catalogCtx)
-			cancelCatalog()
-			if err != nil {
-				log.Printf("[sports] team catalog refresh error: %v", err)
-			}
-			syncCatalogCtx, cancelSyncCatalog := context.WithTimeout(context.Background(), 10*time.Second)
-			sportsLinksHandler.SyncTeams(syncCatalogCtx, catalog)
-			cancelSyncCatalog()
+			sportsHandler.RefreshBackground(context.Background(), sportsLinksHandler)
 		}
 		refresh()
 		ticker := time.NewTicker(90 * time.Second)

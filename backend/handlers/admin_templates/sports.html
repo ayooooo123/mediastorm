@@ -101,7 +101,7 @@ html { scrollbar-color: var(--text-muted) var(--bg-primary); scrollbar-width: th
 <details class="sports-panel sports-server sports-section" id="sports-server"><summary>Server league availability <span>Server-wide · affects every profile</span></summary>
 <p>Select a sport to enable or disable all its leagues, or choose leagues individually. All leagues are enabled by default.</p>
 <label for="sports-server-search">Find a league</label><input type="search" id="sports-server-search" placeholder="Search server leagues">
-<fieldset id="sports-server-fields" disabled><div class="sports-availability-tools"><p id="sports-availability-count" aria-live="polite"></p><button type="button" class="btn btn-secondary" id="sports-enable-all">Select all</button><button type="button" class="btn btn-secondary" id="sports-disable-all">Deselect all</button></div><div id="sports-availability" class="sports-list"></div></fieldset>
+<fieldset id="sports-server-fields" disabled><label><input type="checkbox" id="sports-server-enabled"> Enable background sports updates</label><p>Server-wide: turn off to stop automatic score polling and team syncing. Your league selections are kept. Hiding Sports Hub in a device menu does not change this setting.</p><div class="sports-availability-tools"><p id="sports-availability-count" aria-live="polite"></p><button type="button" class="btn btn-secondary" id="sports-enable-all">Select all</button><button type="button" class="btn btn-secondary" id="sports-disable-all">Deselect all</button></div><div id="sports-availability" class="sports-list"></div></fieldset>
 <div class="sports-actions"><button type="button" class="btn btn-primary" id="sports-save-server" disabled>Save availability</button><button type="button" class="btn btn-secondary" id="sports-reload-server">Reload</button></div>
 <p id="sports-server-status" class="sports-status" role="status" aria-live="polite">Loading league availability…</p>
 </details>
@@ -168,6 +168,7 @@ html { scrollbar-color: var(--text-muted) var(--bg-primary); scrollbar-width: th
     settings = null,
     availability = new Set();
   let allSupported = false;
+  let updatesEnabled = true;
   let snapshot = null,
     draft = null,
     profile = '',
@@ -276,6 +277,11 @@ html { scrollbar-color: var(--text-muted) var(--bg-primary); scrollbar-width: th
   const loadedTeamLeagues = new Set();
   async function loadTeams() {
     const current = ++teamGeneration;
+    if (!updatesEnabled) {
+      status('team-status', 'Sports updates are off on this server. Saved favorites are kept.');
+      el('reload-teams').disabled = true;
+      return;
+    }
     el('reload-teams').disabled = true;
     const pending = leagues.filter((l) => l.supportsTeams && !loadedTeamLeagues.has(l.id));
     const failures = [];
@@ -481,6 +487,8 @@ html { scrollbar-color: var(--text-muted) var(--bg-primary); scrollbar-width: th
     status('server-status', 'Loading league availability…');
     try {
       settings = await request('/settings');
+      el('server-enabled').checked = settings.enabled !== false;
+      updatesEnabled = settings.enabled !== false && settings.enabledLeagues.length > 0;
       allSupported = settings.enabledLeagues.includes("*");
       availability = new Set(allSupported ? leagues.map((item) => item.id) : settings.enabledLeagues);
       serverDirty = false;
@@ -504,6 +512,10 @@ html { scrollbar-color: var(--text-muted) var(--bg-primary); scrollbar-width: th
       section.querySelector('summary').focus({ preventScroll: true });
       section.scrollIntoView?.({ block: 'start', behavior: 'instant' });
     });
+    el('server-enabled').addEventListener('change', () => {
+      serverDirty = true;
+      status('server-status', 'Save to apply background update settings.');
+    });
     el('server-search').addEventListener('input', renderAvailability);
     el('enable-all').addEventListener('click', () => { changeAvailability(leagues, true); allSupported = true; status('server-status', 'All supported leagues selected, including future validated additions. Save to apply.'); });
     el('disable-all').addEventListener('click', () => changeAvailability(leagues, false));
@@ -512,10 +524,6 @@ html { scrollbar-color: var(--text-muted) var(--bg-primary); scrollbar-width: th
     });
     el('save-server').addEventListener('click', async () => {
       if (!settings || serverSaving) return;
-      if (!availability.size) {
-        status('server-status', 'Enable at least one league before saving.', true);
-        return;
-      }
       serverSaving = true;
       el('server-fields').disabled = true;
       el('save-server').disabled = true;
@@ -523,14 +531,18 @@ html { scrollbar-color: var(--text-muted) var(--bg-primary); scrollbar-width: th
       status('server-status', 'Saving league availability…');
       try {
         // Preserve stream search scopes and other server settings not edited on this page.
-        settings = await request('/settings', 'PUT', { ...settings, enabledLeagues: allSupported ? ["*"] : [...availability] });
+        settings = await request('/settings', 'PUT', { ...settings, enabled: el('server-enabled').checked, enabledLeagues: allSupported ? ["*"] : [...availability] });
+        updatesEnabled = settings.enabled !== false && settings.enabledLeagues.length > 0;
+        if (!updatesEnabled) ++teamGeneration;
         serverDirty = false;
         leagues = leagues.map((item) => ({ ...item, enabled: settings.enabledLeagues.includes("*") || settings.enabledLeagues.includes(item.id) }));
         if (draft) renderFavorites();
         void loadTeams();
         status(
           'server-status',
-          'Saved. Sports feeds are refreshing; reopen Sports Hub to see the new coverage.',
+          settings.enabled === false || !settings.enabledLeagues.length
+            ? 'Saved. Background sports updates are off. Any current operation will finish before the worker stops.'
+            : 'Saved. Sports feeds are refreshing; reopen Sports Hub to see the new coverage.',
         );
       } catch (error) {
         status('server-status', error.message, true);
@@ -552,6 +564,7 @@ html { scrollbar-color: var(--text-muted) var(--bg-primary); scrollbar-width: th
     try {
       const data = await request('/catalog');
       leagues = data.leagues;
+      updatesEnabled = data.enabled !== false;
       sports = [...new Set([...leagues.map((league) => sportID(league.sport)), 'cycling'])].map((id) => [id, sportLabels[id] || id]);
       for (const [id, label] of sports) { const option = document.createElement('option'); option.value = id; option.textContent = label; el('filter').append(option); }
       renderTeamLeagueFilter();

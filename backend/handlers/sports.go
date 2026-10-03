@@ -254,29 +254,40 @@ func (h *SportsHandler) PutSettings(w http.ResponseWriter, r *http.Request) {
 		seen[id] = struct{}{}
 		clean = append(clean, id)
 	}
-	if len(clean) == 0 {
+	if len(clean) == 0 && len(next.EnabledLeagues) > 0 {
 		http.Error(w, `{"error":"enable at least one supported league"}`, http.StatusBadRequest)
 		return
 	}
-	next.EnabledLeagues = clean
+	if next.EnabledLeagues != nil {
+		next.EnabledLeagues = clean
+	}
 	settings, err := h.config.Load()
 	if err != nil {
 		http.Error(w, `{"error":"failed to load settings"}`, http.StatusInternalServerError)
 		return
 	}
+	if next.Enabled == nil {
+		next.Enabled = settings.Sports.Enabled
+	}
+	if next.EnabledLeagues == nil {
+		next.EnabledLeagues = settings.Sports.EnabledLeagues
+	}
+	next.Normalize()
 	settings.Sports = next
 	if err := h.config.Save(settings); err != nil {
 		http.Error(w, `{"error":"failed to save sports settings"}`, http.StatusInternalServerError)
 		return
 	}
-	h.service.SetEnabledLeagueIDs(next.EnabledLeagues)
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), sportsRefreshTimeout)
-		defer cancel()
-		if err := h.service.Refresh(ctx); err != nil {
-			log.Printf("[sports] settings refresh error: %v", err)
-		}
-	}()
+	h.service.SetEnabledLeagueIDs(next.PollingLeagueIDs())
+	if h.service.GetStatus().Enabled {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), sportsRefreshTimeout)
+			defer cancel()
+			if err := h.service.Refresh(ctx); err != nil {
+				log.Printf("[sports] settings refresh error: %v", err)
+			}
+		}()
+	}
 	writeSportsJSON(w, next)
 }
 

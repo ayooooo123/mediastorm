@@ -365,8 +365,7 @@ func (s *Service) GetCachedLogo(ctx context.Context, rawURL string) ([]byte, str
 }
 
 // SetEnabledLeagueIDs replaces the set of leagues this service polls/serves, filtered from
-// LeagueCatalog by ID. Unknown IDs are ignored; an empty/all-unknown list falls back to
-// DefaultLeagues rather than polling nothing. Safe to call concurrently with Refresh -
+// LeagueCatalog by ID. Empty/all-unknown lists disable polling. Safe to call concurrently with Refresh -
 // intended to be called with the admin-configured config.Settings.Sports.EnabledLeagues
 // before each refresh tick, so a settings change takes effect on the next poll without a
 // server restart.
@@ -380,9 +379,6 @@ func (s *Service) SetEnabledLeagueIDs(ids []string) {
 		if _, ok := enabled[l.ID]; (ok || wantedAll(enabled)) && l.active() {
 			next = append(next, l)
 		}
-	}
-	if len(next) == 0 && len(ids) == 0 {
-		next = defaultLeagues()
 	}
 	s.mu.Lock()
 	s.leagues = next
@@ -400,7 +396,7 @@ func (s *Service) GetStatus() models.SportsStatus {
 	}
 
 	status := models.SportsStatus{
-		Enabled:     true,
+		Enabled:     len(s.leagues) > 0,
 		DateQueries: true,
 		GameCount:   count,
 		Refreshing:  s.refreshing,

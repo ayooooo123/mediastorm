@@ -76,3 +76,13 @@ func TestCyclingAvailabilityControlsSeparateFeed(t *testing.T) {
 		t.Fatal("disabled cycling still selected")
 	}
 }
+
+func TestNoEnabledLeaguesDoesNotRestoreDefaults(t *testing.T) {
+	s := NewService(t.TempDir())
+	s.SetEnabledLeagueIDs([]string{})
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.leagues) != 0 {
+		t.Fatal("empty leagues restored defaults")
+	}
+}
