@@ -272,12 +272,15 @@ COPY --from=ccextractor-builder /out/libgpac.so* /usr/local/lib/
 RUN ldconfig \
 	&& ccextractor -V >/dev/null
 
-# Install a checksum-pinned yt-dlp release for YouTube trailer support.
-ARG YTDLP_VERSION=2026.06.09
-ARG YTDLP_SHA256=e5d57466682cfa9d61e9cf7c8a4f09b00f4a62af37d3bbdc4bcffdf63615feac
+# The release build resolves latest stable once and passes the version/checksum
+# as build args. Keep verified defaults for direct Docker builds and rollback.
+ARG YTDLP_VERSION=2026.08.19
+ARG YTDLP_SHA256=1fa6733c37ea6fb51c99ad8fe785e7b7e5f3246c9b980230329d4fb72ed8d4d6
+LABEL io.mediastorm.ytdlp.version="${YTDLP_VERSION}"
 RUN wget -q "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp" -O /usr/local/bin/yt-dlp \
 	&& echo "${YTDLP_SHA256}  /usr/local/bin/yt-dlp" | sha256sum -c - \
-	&& chmod +x /usr/local/bin/yt-dlp
+	&& chmod +x /usr/local/bin/yt-dlp \
+	&& test "$(/usr/local/bin/yt-dlp --version)" = "${YTDLP_VERSION}"
 
 # Install deno (JavaScript runtime required by yt-dlp for YouTube challenge solving)
 ARG DENO_VERSION=2.9.3
