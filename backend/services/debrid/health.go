@@ -1050,7 +1050,7 @@ func (s *HealthService) checkProviderHealth(ctx context.Context, client Provider
 	} else if torrentURL != "" {
 		// Download and upload torrent file
 		log.Printf("[debrid-health] downloading torrent file from %s", safeURLForLog(torrentURL))
-		torrentData, filename, downloadErr := s.downloadTorrentFile(ctx, torrentURL)
+		source, downloadErr := downloadTorrentSource(ctx, torrentURL, 60*time.Second)
 		if downloadErr != nil {
 			log.Printf("[debrid-health] %s download torrent failed for %s: %v", providerName, identifierForLog, downloadErr)
 			return &DebridHealthCheck{
@@ -1062,17 +1062,20 @@ func (s *HealthService) checkProviderHealth(ctx context.Context, client Provider
 				ErrorMessage: fmt.Sprintf("download torrent file failed: %v", downloadErr),
 			}, nil
 		}
-		log.Printf("[debrid-health] uploading torrent file (%d bytes) to %s", len(torrentData), providerName)
-		addResp, err = client.AddTorrentFile(ctx, torrentData, filename)
+		addResp, err = source.add(ctx, client)
+		if source.magnet != "" {
+			result.Link = source.magnet
+			infoHash = extractInfoHashFromMagnet(source.magnet)
+		}
 		if err != nil {
-			log.Printf("[debrid-health] %s add torrent file failed for %s: %v", providerName, identifierForLog, err)
+			log.Printf("[debrid-health] %s add torrent source failed for %s: %v", providerName, identifierForLog, err)
 			return &DebridHealthCheck{
 				Healthy:      false,
 				Status:       "error",
 				Cached:       false,
 				Provider:     providerName,
 				InfoHash:     infoHash,
-				ErrorMessage: fmt.Sprintf("add torrent file failed: %v", err),
+				ErrorMessage: fmt.Sprintf("add torrent source failed: %v", err),
 			}, nil
 		}
 	} else {
@@ -1562,76 +1565,6 @@ func selectMediaFiles(files []File, hints mediaresolve.SelectionHints) *mediaFil
 	selection.promotePreferredToFront()
 
 	return selection
-}
-
-// downloadTorrentFile downloads a .torrent file from a URL and returns its contents.
-func (s *HealthService) downloadTorrentFile(ctx context.Context, torrentURL string) ([]byte, string, error) {
-	// 60s timeout for private trackers via Jackett (two-hop: backend → Jackett → tracker)
-	client := &http.Client{Timeout: 60 * time.Second}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, torrentURL, nil)
-	if err != nil {
-		return nil, "", fmt.Errorf("create request: %w", err)
-	}
-
-	// Set common headers that some trackers expect
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; mediastorm/1.0)")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, "", fmt.Errorf("download failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, "", fmt.Errorf("download failed with status %d", resp.StatusCode)
-	}
-
-	// Limit torrent file size to 10MB (should be more than enough)
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
-	if err != nil {
-		return nil, "", fmt.Errorf("read response: %w", err)
-	}
-
-	// Verify it looks like a torrent file (starts with "d" for bencoded dictionary)
-	if len(data) < 10 || data[0] != 'd' {
-		return nil, "", fmt.Errorf("invalid torrent file format (expected bencoded data)")
-	}
-
-	// Extract filename from URL or Content-Disposition header
-	filename := s.extractTorrentFilename(resp, torrentURL)
-
-	log.Printf("[debrid-health] downloaded torrent file: %s (%d bytes)", filename, len(data))
-	return data, filename, nil
-}
-
-// extractTorrentFilename tries to get a filename for the torrent file.
-func (s *HealthService) extractTorrentFilename(resp *http.Response, torrentURL string) string {
-	// Try Content-Disposition header first
-	if cd := resp.Header.Get("Content-Disposition"); cd != "" {
-		if strings.Contains(cd, "filename=") {
-			parts := strings.Split(cd, "filename=")
-			if len(parts) >= 2 {
-				filename := strings.Trim(parts[1], `"' `)
-				if filename != "" {
-					return filename
-				}
-			}
-		}
-	}
-
-	// Try to extract from URL path
-	if parsed, err := url.Parse(torrentURL); err == nil {
-		filename := path.Base(parsed.Path)
-		if filename != "" && filename != "." && filename != "/" {
-			if !strings.HasSuffix(strings.ToLower(filename), ".torrent") {
-				filename += ".torrent"
-			}
-			return filename
-		}
-	}
-
-	return "download.torrent"
 }
 
 // bitmapSubtitleCodecs maps codec names to their display type

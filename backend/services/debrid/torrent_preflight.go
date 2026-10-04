@@ -195,11 +195,10 @@ type torrentPreflightGroup struct {
 }
 
 type torrentPreflightResult struct {
-	group    *torrentPreflightGroup
-	hash     string
-	data     []byte
-	filename string
-	err      error
+	group  *torrentPreflightGroup
+	hash   string
+	source torrentSource
+	err    error
 }
 
 func (s *PlaybackService) enrichTorrentFileGroups(ctx context.Context, candidates []models.NZBResult, candidateLimit, groupLimit int) int {
@@ -258,9 +257,9 @@ func (s *PlaybackService) enrichTorrentFileGroups(ctx context.Context, candidate
 		go func() {
 			defer wg.Done()
 			for group := range queue {
-				hash, data, filename, err := s.resolveTorrentGroupInfoHash(ctx, group)
+				hash, source, err := s.resolveTorrentGroupInfoHash(ctx, group)
 				results <- torrentPreflightResult{
-					group: group, hash: hash, data: data, filename: filename, err: err,
+					group: group, hash: hash, source: source, err: err,
 				}
 			}
 		}()
@@ -291,8 +290,11 @@ func (s *PlaybackService) enrichTorrentFileGroups(ctx context.Context, candidate
 				candidates[index].Attributes = make(map[string]string)
 			}
 			candidates[index].Attributes["infoHash"] = result.hash
+			if result.source.magnet != "" {
+				candidates[index].Link = result.source.magnet
+			}
 		}
-		s.preflightData.put(result.hash, result.data, result.filename)
+		s.preflightData.put(result.hash, result.source.data, result.source.filename)
 		enrichedCount++
 		log.Printf("[debrid-preflight] enriched release=%q candidates=%d hash=%s",
 			result.group.key, len(result.group.indexes), result.hash)
@@ -317,45 +319,44 @@ func torrentFileCandidateNeedsHash(candidate models.NZBResult) bool {
 	return strings.HasPrefix(torrentURL, "http://") || strings.HasPrefix(torrentURL, "https://")
 }
 
-func (s *PlaybackService) resolveTorrentGroupInfoHash(ctx context.Context, group *torrentPreflightGroup) (string, []byte, string, error) {
+func (s *PlaybackService) resolveTorrentGroupInfoHash(ctx context.Context, group *torrentPreflightGroup) (string, torrentSource, error) {
 	if group == nil || len(group.urls) == 0 {
-		return "", nil, "", fmt.Errorf("no torrent URLs")
+		return "", torrentSource{}, fmt.Errorf("no torrent URLs")
 	}
-	limit := len(group.urls)
-	if limit > torrentPreflightAlternateLimit {
-		limit = torrentPreflightAlternateLimit
-	}
-
+	limit := min(len(group.urls), torrentPreflightAlternateLimit)
 	groupCtx, cancel := context.WithTimeout(ctx, torrentPreflightGroupTimeout)
 	defer cancel()
 	type result struct {
-		hash     string
-		data     []byte
-		filename string
-		err      error
+		hash   string
+		source torrentSource
+		err    error
 	}
 	resultCh := make(chan result, limit)
 	for _, torrentURL := range group.urls[:limit] {
 		go func(url string) {
-			data, filename, err := s.downloadTorrentFile(groupCtx, url)
+			source, err := downloadTorrentSource(groupCtx, url, 30*time.Second)
 			if err != nil {
 				resultCh <- result{err: err}
 				return
 			}
-			hash, err := torrentV1InfoHash(data)
-			resultCh <- result{hash: hash, data: data, filename: filename, err: err}
+			var hash string
+			if source.magnet != "" {
+				hash = extractInfoHashFromMagnet(source.magnet)
+			} else {
+				hash, err = torrentV1InfoHash(source.data)
+			}
+			resultCh <- result{hash: hash, source: source, err: err}
 		}(torrentURL)
 	}
-
 	var lastErr error
 	for i := 0; i < limit; i++ {
 		select {
 		case <-ctx.Done():
-			return "", nil, "", ctx.Err()
+			return "", torrentSource{}, ctx.Err()
 		case result := <-resultCh:
 			if result.err == nil && result.hash != "" {
 				cancel()
-				return result.hash, result.data, result.filename, nil
+				return result.hash, result.source, nil
 			}
 			if result.err != nil {
 				lastErr = result.err
@@ -365,16 +366,16 @@ func (s *PlaybackService) resolveTorrentGroupInfoHash(ctx context.Context, group
 	if lastErr == nil {
 		lastErr = fmt.Errorf("torrent metadata did not contain a v1 info hash")
 	}
-	return "", nil, "", lastErr
+	return "", torrentSource{}, lastErr
 }
 
-func (s *PlaybackService) torrentFileForResolution(ctx context.Context, infoHash, torrentURL string) ([]byte, string, bool, error) {
+func (s *PlaybackService) torrentSourceForResolution(ctx context.Context, infoHash, torrentURL string) (torrentSource, bool, error) {
 	if data, filename, ok := s.preflightData.get(infoHash); ok {
-		return data, filename, true, nil
+		return torrentSource{data: data, filename: filename}, true, nil
 	}
-	log.Printf("[debrid-playback] downloading torrent file from %s", safeURLForLog(torrentURL))
-	data, filename, err := s.downloadTorrentFile(ctx, torrentURL)
-	return data, filename, false, err
+	log.Printf("[debrid-playback] downloading torrent source from %s", safeURLForLog(torrentURL))
+	source, err := downloadTorrentSource(ctx, torrentURL, 30*time.Second)
+	return source, false, err
 }
 
 func normalizedReleaseGroupKey(title string) string {

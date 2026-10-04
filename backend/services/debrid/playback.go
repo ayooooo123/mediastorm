@@ -3,9 +3,7 @@ package debrid
 import (
 	"context"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"net/url"
 	"path"
 	"strings"
@@ -224,17 +222,19 @@ func (s *PlaybackService) resolveWithProvider(ctx context.Context, client Provid
 		// Reuse metainfo fetched during cache preflight when possible. Besides
 		// avoiding a second tracker request, this preserves the exact private
 		// tracker metadata that produced the checked info hash.
-		torrentData, filename, reused, downloadErr := s.torrentFileForResolution(ctx, infoHash, torrentURL)
+		source, reused, downloadErr := s.torrentSourceForResolution(ctx, infoHash, torrentURL)
 		if downloadErr != nil {
 			return nil, fmt.Errorf("download torrent file: %w", downloadErr)
 		}
 		if reused {
-			log.Printf("[debrid-playback] reusing preflight torrent file hash=%s (%d bytes)", infoHash, len(torrentData))
+			log.Printf("[debrid-playback] reusing preflight torrent file hash=%s (%d bytes)", infoHash, len(source.data))
 		}
-		log.Printf("[debrid-playback] uploading torrent file (%d bytes) to %s", len(torrentData), providerName)
-		addResp, err = client.AddTorrentFile(ctx, torrentData, filename)
+		addResp, err = source.add(ctx, client)
+		if source.magnet != "" {
+			candidate.Link = source.magnet
+		}
 		if err != nil {
-			return nil, fmt.Errorf("add torrent file: %w", err)
+			return nil, fmt.Errorf("add torrent source: %w", err)
 		}
 	} else {
 		return nil, fmt.Errorf("no magnet link or torrent URL available")
@@ -778,75 +778,6 @@ func (s *PlaybackService) FilterCachedResults(ctx context.Context, results []mod
 	return cached
 }
 
-// downloadTorrentFile downloads a .torrent file from a URL and returns its contents.
-func (s *PlaybackService) downloadTorrentFile(ctx context.Context, torrentURL string) ([]byte, string, error) {
-	client := &http.Client{Timeout: 30 * time.Second}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, torrentURL, nil)
-	if err != nil {
-		return nil, "", fmt.Errorf("create request: %w", err)
-	}
-
-	// Set common headers that some trackers expect
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; mediastorm/1.0)")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, "", fmt.Errorf("download failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, "", fmt.Errorf("download failed with status %d", resp.StatusCode)
-	}
-
-	// Limit torrent file size to 10MB (should be more than enough)
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
-	if err != nil {
-		return nil, "", fmt.Errorf("read response: %w", err)
-	}
-
-	// Verify it looks like a torrent file (starts with "d" for bencoded dictionary)
-	if len(data) < 10 || data[0] != 'd' {
-		return nil, "", fmt.Errorf("invalid torrent file format (expected bencoded data)")
-	}
-
-	// Extract filename from URL or Content-Disposition header
-	filename := extractTorrentFilename(resp, torrentURL)
-
-	log.Printf("[debrid-playback] downloaded torrent file: %s (%d bytes)", filename, len(data))
-	return data, filename, nil
-}
-
-// extractTorrentFilename tries to get a filename for the torrent file.
-func extractTorrentFilename(resp *http.Response, torrentURL string) string {
-	// Try Content-Disposition header first
-	if cd := resp.Header.Get("Content-Disposition"); cd != "" {
-		if strings.Contains(cd, "filename=") {
-			parts := strings.Split(cd, "filename=")
-			if len(parts) >= 2 {
-				filename := strings.Trim(parts[1], `"' `)
-				if filename != "" {
-					return filename
-				}
-			}
-		}
-	}
-
-	// Try to extract from URL path
-	if parsed, err := url.Parse(torrentURL); err == nil {
-		filename := path.Base(parsed.Path)
-		if filename != "" && filename != "." && filename != "/" {
-			if !strings.HasSuffix(strings.ToLower(filename), ".torrent") {
-				filename += ".torrent"
-			}
-			return filename
-		}
-	}
-
-	return "download.torrent"
-}
-
 // cloneAttributes returns a shallow copy of the map so per-episode mutations are safe.
 func cloneAttributes(src map[string]string) map[string]string {
 	if src == nil {
@@ -924,11 +855,15 @@ func (s *PlaybackService) ResolveBatch(ctx context.Context, candidate models.NZB
 	if hasMagnet {
 		addResp, err = client.AddMagnet(ctx, candidate.Link)
 	} else {
-		torrentData, filename, dlErr := s.downloadTorrentFile(ctx, torrentURL)
+		source, dlErr := downloadTorrentSource(ctx, torrentURL, 30*time.Second)
 		if dlErr != nil {
 			return nil, fmt.Errorf("download torrent file: %w", dlErr)
 		}
-		addResp, err = client.AddTorrentFile(ctx, torrentData, filename)
+		addResp, err = source.add(ctx, client)
+		if source.magnet != "" {
+			candidate.Link = source.magnet
+			hasMagnet = true
+		}
 	}
 	if err != nil {
 		return nil, fmt.Errorf("add torrent: %w", err)

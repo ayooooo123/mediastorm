@@ -3,9 +3,7 @@ package debrid
 import (
 	"context"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"strings"
 	"time"
 
@@ -178,7 +176,7 @@ func (s *MultiProviderService) checkFastestMode(
 
 	// No provider had cache
 	if firstError != nil {
-		return nil, fmt.Errorf("torrent not cached on any provider: %w", firstError)
+		return nil, fmt.Errorf("torrent cache check failed: %w", firstError)
 	}
 	return nil, fmt.Errorf("torrent not cached on any enabled provider")
 }
@@ -206,13 +204,16 @@ func (s *MultiProviderService) checkProviderCache(
 		log.Printf("[multi-provider] %s: adding magnet", providerName)
 		addResp, err = pe.client.AddMagnet(ctx, candidate.Link)
 	} else if torrentURL != "" {
-		log.Printf("[multi-provider] %s: downloading and uploading torrent file from %s", providerName, safeURLForLog(torrentURL))
-		torrentData, filename, downloadErr := s.downloadTorrentFile(ctx, torrentURL)
+		log.Printf("[multi-provider] %s: resolving torrent source from %s", providerName, safeURLForLog(torrentURL))
+		source, downloadErr := downloadTorrentSource(ctx, torrentURL, 30*time.Second)
 		if downloadErr != nil {
 			result.Error = fmt.Errorf("download torrent file: %w", downloadErr)
 			return result
 		}
-		addResp, err = pe.client.AddTorrentFile(ctx, torrentData, filename)
+		addResp, err = source.add(ctx, pe.client)
+		if source.magnet != "" {
+			candidate.Link = source.magnet
+		}
 	} else {
 		result.Error = fmt.Errorf("no magnet or torrent URL")
 		return result
@@ -281,48 +282,4 @@ func (s *MultiProviderService) checkProviderCache(
 	}
 
 	return result
-}
-
-// downloadTorrentFile downloads a .torrent file from a URL and returns its contents.
-func (s *MultiProviderService) downloadTorrentFile(ctx context.Context, torrentURL string) ([]byte, string, error) {
-	client := &http.Client{Timeout: 30 * time.Second}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, torrentURL, nil)
-	if err != nil {
-		return nil, "", fmt.Errorf("create request: %w", err)
-	}
-
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; mediastorm/1.0)")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, "", fmt.Errorf("download failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, "", fmt.Errorf("download failed with status %d", resp.StatusCode)
-	}
-
-	// Limit torrent file size to 10MB
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
-	if err != nil {
-		return nil, "", fmt.Errorf("read response: %w", err)
-	}
-
-	// Verify it looks like a torrent file
-	if len(data) < 10 || data[0] != 'd' {
-		return nil, "", fmt.Errorf("invalid torrent file format")
-	}
-
-	// Extract filename
-	filename := "download.torrent"
-	if cd := resp.Header.Get("Content-Disposition"); cd != "" && strings.Contains(cd, "filename=") {
-		parts := strings.Split(cd, "filename=")
-		if len(parts) >= 2 {
-			filename = strings.Trim(parts[1], `"' `)
-		}
-	}
-
-	return data, filename, nil
 }

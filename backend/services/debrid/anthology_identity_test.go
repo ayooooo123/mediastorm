@@ -110,9 +110,12 @@ func TestAnthologySearchUsesProviderCoordinates(t *testing.T) {
 }
 
 func TestDevilInSilverSearchPreservesSeparateIMDbAndQueriesParentSeason(t *testing.T) {
+	var pathsMu sync.Mutex
 	var paths []string
 	client := newStubClient(func(r *http.Request) (*http.Response, error) {
+		pathsMu.Lock()
 		paths = append(paths, r.URL.Path)
+		pathsMu.Unlock()
 		if strings.Contains(r.URL.Path, "tt31186255") {
 			return jsonResponse(http.StatusOK, `{"streams":[]}`), nil
 		}
@@ -132,10 +135,20 @@ func TestDevilInSilverSearchPreservesSeparateIMDbAndQueriesParentSeason(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 2 || !strings.HasSuffix(paths[0], "/stream/series/tt31186255:1:6.json") || !strings.HasSuffix(paths[1], "/stream/series/tt2708480:3:6.json") {
+	// Catalog and parent identity searches run concurrently; arrival order is
+	// not part of their contract.
+	seenPaths := make(map[string]bool)
+	for _, path := range paths {
+		seenPaths[path] = true
+	}
+	if len(paths) != 2 || !seenPaths["/stream/series/tt31186255:1:6.json"] || !seenPaths["/stream/series/tt2708480:3:6.json"] {
 		t.Fatalf("incorrect stream identities: %v", paths)
 	}
-	if len(text.requests) != 2 || text.requests[1].Query != "The Terror S03E06" {
+	hasParentQuery := false
+	for _, request := range text.requests {
+		hasParentQuery = hasParentQuery || request.Query == "The Terror S03E06"
+	}
+	if len(text.requests) != 2 || !hasParentQuery {
 		t.Fatalf("incorrect text requests: %+v", text.requests)
 	}
 	if len(results) != 1 || results[0].Attributes["targetSeason"] != "3" || results[0].Attributes["targetEpisode"] != "6" || results[0].Attributes["mappedCatalogEpisode"] != "S01E06" {

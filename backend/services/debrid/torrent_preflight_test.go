@@ -138,20 +138,20 @@ func TestPrepareTorrentCandidatesEnrichesAndGroupsWithoutReordering(t *testing.T
 		t.Fatalf("torrent downloads = %d, want 2 raced alternate sources", count)
 	}
 
-	data, filename, reused, err := service.torrentFileForResolution(
+	source, reused, err := service.torrentSourceForResolution(
 		context.Background(), torrentHash, got[1].Attributes["torrentURL"],
 	)
 	if err != nil {
-		t.Fatalf("torrentFileForResolution returned error: %v", err)
+		t.Fatalf("torrentSourceForResolution returned error: %v", err)
 	}
 	if !reused {
-		t.Fatal("torrentFileForResolution did not reuse preflight metainfo")
+		t.Fatal("torrentSourceForResolution did not reuse preflight metainfo")
 	}
-	if string(data) != string(metainfo) {
+	if string(source.data) != string(metainfo) {
 		t.Fatal("reused torrent metainfo differs from downloaded data")
 	}
-	if filename != "movie.torrent" {
-		t.Fatalf("reused filename = %q, want movie.torrent", filename)
+	if source.filename != "movie.torrent" {
+		t.Fatalf("reused filename = %q, want movie.torrent", source.filename)
 	}
 	if count := downloads.Load(); count != 2 {
 		t.Fatalf("torrent downloads after resolution lookup = %d, want 2", count)
