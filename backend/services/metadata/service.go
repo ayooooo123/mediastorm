@@ -4271,7 +4271,7 @@ func (s *Service) SeriesDetails(ctx context.Context, req models.SeriesDetailsQue
 
 		// Date-based release detection depends on genres, so run after parallel block.
 		if changed, genre := applyDateBasedSeriesClassification(&cached.Title); changed {
-			log.Printf("[metadata] cached series marked for date-based episode matching tvdbId=%d genre=%q", tvdbID, genre)
+			log.Printf("[metadata] cached series release classification updated tvdbId=%d reason=%q", tvdbID, genre)
 			cacheUpdated = true
 		}
 
@@ -4489,7 +4489,7 @@ func (s *Service) SeriesDetails(ctx context.Context, req models.SeriesDetailsQue
 
 	// Detect series types that commonly use date-based episode naming.
 	seriesType := strings.ToLower(strings.TrimSpace(extended.Type))
-	if isDateBasedSeriesClassification(seriesType) {
+	if !hasSeasonEpisodeReleaseException(&seriesTitle) && isDateBasedSeriesClassification(seriesType) {
 		seriesTitle.IsDaily = true
 		log.Printf("[metadata] series marked for date-based episode matching based on TVDB type tvdbId=%d type=%q", tvdbID, seriesType)
 	}
@@ -4785,7 +4785,7 @@ func (s *Service) SeriesDetails(ctx context.Context, req models.SeriesDetailsQue
 
 			// Also check for genres that commonly use date-based episode naming.
 			if changed, genre := applyDateBasedSeriesClassification(&seriesTitle); changed {
-				log.Printf("[metadata] series marked for date-based episode matching based on TMDB genre tvdbId=%d genre=%q", tvdbID, genre)
+				log.Printf("[metadata] series release classification updated from TMDB genres tvdbId=%d reason=%q", tvdbID, genre)
 			}
 			details.Title = seriesTitle
 		} else if err != nil {
@@ -4804,7 +4804,7 @@ func (s *Service) SeriesDetails(ctx context.Context, req models.SeriesDetailsQue
 	populateAiredDateTimeUTC(&details)
 	seriesTitle.Status = models.SeriesReleaseStatusFromSeasons(details.Seasons)
 	if changed, genre := applyDateBasedSeriesClassification(&seriesTitle); changed {
-		log.Printf("[metadata] series marked for date-based episode matching from final genres tvdbId=%d genre=%q", tvdbID, genre)
+		log.Printf("[metadata] series release classification updated from final genres tvdbId=%d reason=%q", tvdbID, genre)
 	}
 	details.Title = seriesTitle
 
@@ -5090,6 +5090,10 @@ func (s *Service) SeriesDetailsLite(ctx context.Context, req models.SeriesDetail
 	var fullCached models.SeriesDetails
 	if ok, _ := s.cache.get(fullCacheID, &fullCached); ok && len(fullCached.Seasons) > 0 {
 		cacheChanged := models.NormalizeReleaseAbsoluteEpisodeNumbers(&fullCached)
+		if hasSeasonEpisodeReleaseException(&fullCached.Title) && fullCached.Title.IsDaily {
+			fullCached.Title.IsDaily = false
+			cacheChanged = true
+		}
 		log.Printf("[metadata] series details lite full-cache hit tvdbId=%d seasons=%d", tvdbID, len(fullCached.Seasons))
 		if seriesTMDBIDMismatch(fullCached.Title, req.TMDBID) {
 			log.Printf("[metadata] lite full-cache tmdb mismatch tvdbId=%d cachedTmdbId=%d requestedTmdbId=%d; using TMDB fallback",
@@ -5127,6 +5131,10 @@ func (s *Service) SeriesDetailsLite(ctx context.Context, req models.SeriesDetail
 	if ok, _ := s.cache.get(cacheID, &cached); ok && len(cached.Seasons) > 0 {
 		normalizeSeriesDetailsReleaseStatus(&cached)
 		cacheChanged := models.NormalizeReleaseAbsoluteEpisodeNumbers(&cached)
+		if hasSeasonEpisodeReleaseException(&cached.Title) && cached.Title.IsDaily {
+			cached.Title.IsDaily = false
+			cacheChanged = true
+		}
 		log.Printf("[metadata] series details lite cache hit tvdbId=%d seasons=%d", tvdbID, len(cached.Seasons))
 		if seriesTMDBIDMismatch(cached.Title, req.TMDBID) {
 			log.Printf("[metadata] lite cache tmdb mismatch tvdbId=%d cachedTmdbId=%d requestedTmdbId=%d; using TMDB fallback",
@@ -5297,7 +5305,7 @@ func (s *Service) SeriesDetailsLite(ctx context.Context, req models.SeriesDetail
 	if extended.Status.Name != "" {
 		seriesTitle.LifecycleStatus = extended.Status.Name
 	}
-	if isDateBasedSeriesClassification(extended.Type) {
+	if !hasSeasonEpisodeReleaseException(&seriesTitle) && isDateBasedSeriesClassification(extended.Type) {
 		seriesTitle.IsDaily = true
 		log.Printf("[metadata] lite series marked for date-based episode matching based on TVDB type tvdbId=%d type=%q", tvdbID, extended.Type)
 	}
@@ -5556,6 +5564,10 @@ func (s *Service) BatchSeriesDetails(ctx context.Context, queries []models.Serie
 		var cached models.SeriesDetails
 		if ok, _ := s.cache.get(cacheID, &cached); ok && len(cached.Seasons) > 0 {
 			models.NormalizeReleaseAbsoluteEpisodeNumbers(&cached)
+			if hasSeasonEpisodeReleaseException(&cached.Title) && cached.Title.IsDaily {
+				cached.Title.IsDaily = false
+				_ = s.cache.set(cacheID, cached)
+			}
 			log.Printf("[metadata] batch series cache hit index=%d tvdbId=%d name=%q", i, tvdbID, query.Name)
 			models.StampEpisodeNumbering(&cached, fmt.Sprintf("tvdb:series:%d", tvdbID))
 			results[i].Details = &cached
@@ -11430,8 +11442,23 @@ func isDateBasedSeriesClassification(value string) bool {
 	}
 }
 
+// Big Brother (US) releases use season/episode numbering despite its Game Show
+// genre. Match stable IDs so localized titles and cached metadata behave alike.
+func hasSeasonEpisodeReleaseException(title *models.Title) bool {
+	return title != nil && (title.TVDBID == 76706 || title.TMDBID == 10160 ||
+		strings.EqualFold(strings.TrimSpace(title.IMDBID), "tt0251497"))
+}
+
 func applyDateBasedSeriesClassification(title *models.Title) (bool, string) {
-	if title == nil || title.IsDaily {
+	if title == nil {
+		return false, ""
+	}
+	if hasSeasonEpisodeReleaseException(title) {
+		changed := title.IsDaily
+		title.IsDaily = false
+		return changed, "season/episode exception"
+	}
+	if title.IsDaily {
 		return false, ""
 	}
 	for _, genre := range title.Genres {
