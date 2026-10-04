@@ -10,12 +10,9 @@ import (
 	resultfilter "novastream/utils/filter"
 )
 
-// This is the existing restricted-file ranking preset, now applied only when
-// deciding whether Real-Debrid is eligible to resolve a candidate.
-const realDebridRestrictedReleaseTerm = `/(?:web-dl|webrip|bdrip|hdrip|dvdrip|bluray\.x264|hdtv\.(?:x264|xvid)|web[ ._-]+(?:x264|h264))/`
 const realDebridRestrictedTermsFilterAttribute = "realDebridRestrictedTermsFilterEnabled"
 
-var compiledRealDebridRestrictedReleaseTerms = resultfilter.CompileTerms([]string{realDebridRestrictedReleaseTerm})
+var compiledRealDebridRestrictedReleaseTerms = resultfilter.CompileTerms([]string{resultfilter.RealDebridRestrictedReleaseTerm})
 
 // RestrictedTermError reports a local provider eligibility decision. No
 // provider request was made, but trying another source is the right recovery.
@@ -42,8 +39,10 @@ func realDebridRestrictionForCandidate(settings config.Settings, provider config
 	}
 
 	title := strings.TrimSpace(candidate.Title)
-	if rawTitle := strings.TrimSpace(candidate.Attributes["raw_title"]); rawTitle != "" && !strings.EqualFold(rawTitle, title) {
-		title += " " + rawTitle
+	// The original filename is authoritative: a display title may have changed
+	// capitalization or separators, both of which now affect RD eligibility.
+	if rawTitle := strings.TrimSpace(candidate.Attributes["raw_title"]); rawTitle != "" {
+		title = rawTitle
 	}
 	if matched := resultfilter.MatchedTerm(title, compiledRealDebridRestrictedReleaseTerms); matched != "" {
 		return &RestrictedTermError{Provider: provider.Name, Title: candidate.Title, Term: matched}

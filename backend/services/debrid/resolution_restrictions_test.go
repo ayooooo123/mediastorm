@@ -23,10 +23,17 @@ func TestRealDebridRestrictionForCandidate(t *testing.T) {
 	}{
 		{name: "web dl", provider: realDebrid, title: "Movie.2026.1080p.WEB-DL.H264-GROUP", restricted: true},
 		{name: "web h264 raw title", provider: realDebrid, title: "Movie 2026", rawTitle: "Movie.2026.WEB.H264-GROUP", restricted: true},
-		{name: "web h264 spaced", provider: realDebrid, title: "Movie 2026 1080p WEB H264-GROUP", restricted: true},
-		{name: "web x264 spaced", provider: realDebrid, title: "Movie 2026 1080p WEB x264-GROUP", restricted: true},
+		{name: "web h264 spaced", provider: realDebrid, title: "Movie 2026 1080p WEB H264-GROUP", restricted: false},
+		{name: "web x264 spaced", provider: realDebrid, title: "Movie 2026 1080p WEB x264-GROUP", restricted: false},
+		{name: "case-only raw title difference blocks", provider: realDebrid, title: "Movie.2026.WEB.h264-GROUP", rawTitle: "Movie.2026.WEB.H264-GROUP", restricted: true},
+		{name: "case-only raw title difference passes", provider: realDebrid, title: "Movie.2026.WEB.H264-GROUP", rawTitle: "Movie.2026.WEB.h264-GROUP", restricted: false},
+		{name: "raw separators are authoritative", provider: realDebrid, title: "Movie.2026.WEB.H264-GROUP", rawTitle: "Movie 2026 WEB H264-GROUP", restricted: false},
+		{name: "blank raw title falls back", provider: realDebrid, title: "Movie.2026.WEB.H264-GROUP", rawTitle: "  ", restricted: true},
+		{name: "web rip now eligible", provider: realDebrid, title: "Movie.2026.1080p.WEBRip.x264-GROUP", restricted: false},
+		{name: "bluray x264 now eligible", provider: realDebrid, title: "Movie.2026.1080p.BluRay.x264-GROUP", restricted: false},
 		{name: "remux remains eligible", provider: realDebrid, title: "Movie.2026.2160p.UHD.BluRay.REMUX", restricted: false},
 		{name: "other provider remains eligible", provider: torbox, title: "Movie.2026.1080p.WEB-DL.H264-GROUP", restricted: false},
+		{name: "other provider ignores restricted raw title", provider: torbox, title: "Movie 2026", rawTitle: "Movie.2026.WEB.H264-GROUP", restricted: false},
 	}
 
 	for _, tt := range tests {

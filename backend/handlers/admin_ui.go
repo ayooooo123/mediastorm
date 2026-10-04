@@ -62,6 +62,7 @@ import (
 	user_settings "novastream/services/user_settings"
 	"novastream/services/users"
 	"novastream/services/watchlist"
+	resultfilter "novastream/utils/filter"
 )
 
 //go:embed admin_templates/*
@@ -472,13 +473,13 @@ var SettingsSchema = map[string]interface{}{
 			"realDebridRestrictedTermsFilterEnabled": map[string]interface{}{
 				"type":        "boolean",
 				"label":       "Skip Real-Debrid Restricted Releases",
-				"description": "Skip Real-Debrid resolution for release names matching its commonly restricted WEB/encode patterns. Matching results remain available to all other providers.",
+				"description": "Skip Real-Debrid resolution for filenames containing WEB-DL, WEB.x264, WEB.H264, HDTV.x264, or HDTV.XviD exactly as written (case-sensitive). Matching results remain available to all other providers.",
 				"order":       12,
 			},
 			"requiredTerms":          map[string]interface{}{"type": "tags", "label": "Required Terms", "description": "At least one of these terms must match for a result to be kept."},
 			"filterOutTerms":         map[string]interface{}{"type": "tags", "label": "Filter Out Terms", "description": "Terms that exclude matching results."},
 			"preferredTerms":         map[string]interface{}{"type": "weighted-tags", "label": "Preferred Terms", "description": "Terms to prioritize in results. Higher weights have a stronger influence on ranking."},
-			"nonPreferredTerms":      map[string]interface{}{"type": "weighted-tags", "label": "Non-Preferred Terms", "description": "Terms to derank in results. Higher weights apply a stronger penalty. The restricted-file quick add can help when Real Debrid is the sole provider."},
+			"nonPreferredTerms":      map[string]interface{}{"type": "weighted-tags", "label": "Non-Preferred Terms", "description": "Terms to derank in results. Higher weights apply a stronger penalty. The restricted-file quick add can help when Real Debrid is the sole provider.", "quickAddTerm": resultfilter.RealDebridRestrictedReleaseTerm},
 			"downloadPreferredTerms": map[string]interface{}{"type": "weighted-tags", "label": "Download Preferred Terms", "description": "Terms to prioritize only during downloads. They do not affect interactive search or playback prequeue ranking."},
 			"unknownTrackPolicy": map[string]interface{}{
 				"type":  "select",
