@@ -2169,6 +2169,9 @@ components:
           type: string
         textBackdropUrl:
           type: string
+        logoUrl:
+          type: string
+          description: Title logo (transparent wordmark) for the hero, when the metadata has one.
         backdropUrls:
           type: array
           items:

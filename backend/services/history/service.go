@@ -2880,6 +2880,9 @@ func enrichSeriesWatchStateArtwork(state *models.SeriesWatchState, title *models
 	if title.TextBackdrop != nil {
 		state.TextBackdropURL = title.TextBackdrop.URL
 	}
+	if title.Logo != nil {
+		state.LogoURL = title.Logo.URL
+	}
 
 	seen := make(map[string]struct{})
 	state.BackdropURLs = state.BackdropURLs[:0]

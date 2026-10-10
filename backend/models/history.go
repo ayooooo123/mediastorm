@@ -47,6 +47,7 @@ type SeriesWatchState struct {
 	TextPosterURL   string                      `json:"textPosterUrl,omitempty"`
 	BackdropURL     string                      `json:"backdropUrl,omitempty"`
 	TextBackdropURL string                      `json:"textBackdropUrl,omitempty"`
+	LogoURL         string                      `json:"logoUrl,omitempty"`
 	BackdropURLs    []string                    `json:"backdropUrls,omitempty"`
 	Year            int                         `json:"year,omitempty"`
 	ExternalIDs     map[string]string           `json:"externalIds,omitempty"`
