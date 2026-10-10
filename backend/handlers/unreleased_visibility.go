@@ -281,6 +281,7 @@ func filterWatchlistItemsByUnreleasedVisibility(items []models.WatchlistItem, po
 			Year:        item.Year,
 			Theatrical:  item.Theatrical,
 			HomeRelease: item.HomeRelease,
+			ReleaseDate: item.ReleaseDate,
 		}
 		if titleAllowedByUnreleasedVisibility(title, policy) {
 			filtered = append(filtered, item)

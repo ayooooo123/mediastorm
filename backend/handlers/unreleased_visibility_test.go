@@ -3,6 +3,7 @@ package handlers
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	"novastream/config"
 	"novastream/models"
@@ -166,5 +167,24 @@ func TestFilterPersonalizedRecommendationsByUnreleasedVisibility(t *testing.T) {
 	}
 	if len(filtered.Series) != 1 {
 		t.Fatalf("unexpected filtered series: %+v", filtered.Series)
+	}
+}
+
+func TestFilterWatchlistItemsByUnreleasedVisibilityUsesReleaseDate(t *testing.T) {
+	now := time.Now().UTC()
+	items := []models.WatchlistItem{
+		{Name: "Toy Story 2", MediaType: "movie", Year: 1999},
+		// Festival year is last year but the watchable date is still ahead;
+		// the year alone would wrongly count it as released.
+		{Name: "Festival Premiere", MediaType: "movie", Year: now.Year() - 1, ReleaseDate: now.AddDate(0, 1, 0).Format("2006-01-02")},
+	}
+
+	filtered := filterWatchlistItemsByUnreleasedVisibility(items, unreleasedVisibilityPolicy{
+		IncludeMovies: false,
+		IncludeShows:  true,
+	})
+
+	if len(filtered) != 1 || filtered[0].Name != "Toy Story 2" {
+		t.Fatalf("expected the future-dated movie to be hidden, got %+v", filtered)
 	}
 }

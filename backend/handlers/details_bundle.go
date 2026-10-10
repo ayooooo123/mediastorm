@@ -662,6 +662,7 @@ func slimTitles(titles []models.Title) []models.Title {
 			LifecycleStatus: t.LifecycleStatus,
 			Theatrical:      t.Theatrical,
 			HomeRelease:     t.HomeRelease,
+			ReleaseDate:     t.ReleaseDate,
 			Genres:          t.Genres,
 		}
 	}

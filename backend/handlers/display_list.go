@@ -407,6 +407,7 @@ func watchlistItemsToTrending(items []models.WatchlistItem) []models.TrendingIte
 			LifecycleStatus: item.LifecycleStatus,
 			Theatrical:      item.Theatrical,
 			HomeRelease:     item.HomeRelease,
+			ReleaseDate:     item.ReleaseDate,
 		}
 		if value := item.ExternalIDs["tmdb"]; value != "" {
 			title.TMDBID, _ = strconv.ParseInt(value, 10, 64)
