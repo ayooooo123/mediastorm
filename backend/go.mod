@@ -13,6 +13,7 @@ require (
 	github.com/avast/retry-go/v4 v4.6.1
 	github.com/bodgit/sevenzip v1.6.1
 	github.com/gabriel-vasile/mimetype v1.4.10
+	github.com/getkin/kin-openapi v0.149.0
 	github.com/go-pkgz/auth/v2 v2.1.2
 	github.com/javi11/nntpcli v1.1.1
 	github.com/javi11/nntppool v1.5.5
@@ -48,6 +49,8 @@ require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dghubble/oauth1 v0.7.3 // indirect
 	github.com/go-oauth2/oauth2/v4 v4.5.4 // indirect
+	github.com/go-openapi/jsonpointer v0.22.5 // indirect
+	github.com/go-openapi/swag/jsonname v0.25.5 // indirect
 	github.com/go-pkgz/repeater/v2 v2.2.0 // indirect
 	github.com/go-pkgz/rest v1.21.0 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
@@ -64,9 +67,12 @@ require (
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/mfridman/interpolate v0.0.2 // indirect
 	github.com/montanaflynn/stats v0.9.0 // indirect
+	github.com/oasdiff/yaml v0.1.1 // indirect
+	github.com/oasdiff/yaml3 v0.0.14 // indirect
 	github.com/pierrec/lz4/v4 v4.1.22 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/rrivera/identicon v0.0.0-20240116195454-d5ba35832c0d // indirect
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3 // indirect
 	github.com/sethvargo/go-retry v0.3.0 // indirect
 	github.com/ulikunitz/xz v0.5.15 // indirect
 	github.com/xdg-go/pbkdf2 v1.0.0 // indirect

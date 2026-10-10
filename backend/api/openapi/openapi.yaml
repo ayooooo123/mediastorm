@@ -1,0 +1,2969 @@
+openapi: 3.1.0
+info:
+  title: MediaStorm client API
+  version: 1.0.0
+  summary: Client-facing routes used by the native TV clients (tvOS, Android TV).
+  description: |
+    Contract for the backend routes the native TV clients call. Shapes are
+    derived from the Go handlers and models in `backend/handlers` and
+    `backend/models`; `backend/handlers/openapi_contract_test.go` validates
+    representative handler requests and responses against this document.
+
+    Conventions:
+
+    - **Units.** Positions, durations and offsets are seconds unless a field
+      name says otherwise (`runtimeMinutes`, `waitMs`, `sizeBytes`).
+      Percentages (`percentWatched`, `resumePercent`, `resume.percent`) are
+      0–100, never 0–1.
+    - **Optional fields.** Newer servers add fields over time and older
+      servers omit them. Every field not listed under `required` may be
+      absent; clients must check for presence and degrade gracefully. This
+      applies in particular to `releaseDate`/`availability`, `resume`,
+      `itemId`, `trackSelection`, `sourceHealth` and `upNextEpisode`.
+    - **Unknown fields.** Responses are open: clients must ignore fields
+      they do not know. Some request bodies are closed (the server rejects
+      unknown fields with 400); those schemas set
+      `additionalProperties: false`.
+    - **Auth.** Every route except login requires a session token as
+      `Authorization: Bearer <token>`. Media URLs that cannot carry headers
+      (`/api/video/stream`) may instead pass `?token=`.
+    - **Client identity.** Send `X-Client-ID` (a stable per-device ID) on
+      every request. Device settings, stream limits, adaptive playback and
+      track preferences key off it.
+    - **Errors.** Most failures return `{"error": "..."}`. Some older handler
+      paths use Go's `http.Error`, which sends the message as `text/plain`
+      (sometimes a JSON-looking string); clients should treat any non-2xx
+      body as an opaque message when it does not parse.
+servers:
+  - url: /
+security:
+  - bearerAuth: []
+tags:
+  - name: auth
+  - name: profiles
+  - name: history
+  - name: metadata
+  - name: lists
+  - name: sources
+  - name: playback
+  - name: clients
+
+paths:
+  /api/auth/login:
+    post:
+      tags: [auth]
+      operationId: login
+      summary: Create a session token
+      description: |
+        Rate limited to 5 attempts per minute per IP. A master account still
+        using the default bootstrap password gets 428 with
+        `code: password_change_required`; resubmit with `newPassword`.
+        Sessions last 30 days with `rememberMe`, otherwise the server default.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/ClientID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Session created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '400':
+          $ref: '#/components/responses/Error'
+        '401':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+        '428':
+          $ref: '#/components/responses/Error'
+        '429':
+          $ref: '#/components/responses/Error'
+
+  /api/users:
+    get:
+      tags: [profiles]
+      operationId: listProfiles
+      summary: List the signed-in account's profiles
+      parameters:
+        - $ref: '#/components/parameters/ClientID'
+      responses:
+        '200':
+          description: Profiles owned by the account, oldest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Profile'
+        '401':
+          $ref: '#/components/responses/Error'
+
+  /api/users/{userId}/pin/verify:
+    post:
+      tags: [profiles]
+      operationId: verifyProfilePin
+      summary: Check a profile PIN
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+        - $ref: '#/components/parameters/ClientID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PinVerifyRequest'
+      responses:
+        '200':
+          description: PIN accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PinVerifyResponse'
+        '400':
+          $ref: '#/components/responses/Error'
+        '401':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /api/users/{userId}/history/continue:
+    get:
+      tags: [history]
+      operationId: listContinueWatching
+      summary: Continue Watching shelf
+      description: |
+        Each item carries a server-computed `resume` describing what it would
+        play (the movie, or `nextEpisode` for a series). Offer Resume only when
+        `resume.eligible`.
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+        - $ref: '#/components/parameters/ClientID'
+      responses:
+        '200':
+          description: Continue Watching items, most recent first. Older servers may send `null` for an empty shelf.
+          content:
+            application/json:
+              schema:
+                type: [array, 'null']
+                items:
+                  $ref: '#/components/schemas/SeriesWatchState'
+        '400':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /api/users/{userId}/history/series/{seriesId}:
+    get:
+      tags: [history]
+      operationId: getSeriesWatchState
+      summary: Watch state for one series
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+        - name: seriesId
+          in: path
+          required: true
+          description: Series title ID (for example `tmdb:tv:95350`).
+          schema:
+            type: string
+        - $ref: '#/components/parameters/ClientID'
+      responses:
+        '200':
+          description: Series watch state; `resume` describes `nextEpisode` when present.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SeriesWatchState'
+        '400':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /api/users/{userId}/history/progress:
+    get:
+      tags: [history]
+      operationId: listPlaybackProgress
+      summary: Playback progress rows
+      description: |
+        Without filters returns every progress row for the profile. The title
+        filters scope the list to one title (a series' episodes); older
+        servers ignore them and return everything.
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+        - name: titleId
+          in: query
+          schema:
+            type: string
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [series, movie]
+        - name: tmdbId
+          in: query
+          schema:
+            type: integer
+            format: int64
+        - name: tvdbId
+          in: query
+          schema:
+            type: integer
+            format: int64
+        - name: imdbId
+          in: query
+          schema:
+            type: string
+        - $ref: '#/components/parameters/ClientID'
+      responses:
+        '200':
+          description: Progress rows, each with a computed `resume`.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PlaybackProgress'
+        '400':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+    post:
+      tags: [history]
+      operationId: updatePlaybackProgress
+      summary: Report playback progress (player heartbeat)
+      description: |
+        Send every ~10 s while playing and once with `playbackEnded: true`.
+        Episodes may be addressed by `seriesId` + `seasonNumber` +
+        `episodeNumber` without `itemId`; read `itemId` from episodes and
+        Continue Watching items verbatim instead of building one. The body is
+        strict: unknown fields are rejected with 400.
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+        - $ref: '#/components/parameters/ClientID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlaybackProgressUpdate'
+      responses:
+        '200':
+          description: Stored progress plus playback-control hints.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlaybackProgress'
+        '400':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /api/users/{userId}/history/watched:
+    get:
+      tags: [history]
+      operationId: listWatchHistory
+      summary: Watch history
+      description: |
+        Default: full `WatchHistoryItem` rows. `fields=status` returns a slim
+        projection; `fields=status&format=keys` returns every candidate
+        identity key of watched items.
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+        - name: fields
+          in: query
+          schema:
+            type: string
+            enum: [status]
+        - name: format
+          in: query
+          schema:
+            type: string
+            enum: [keys]
+        - $ref: '#/components/parameters/ClientID'
+      responses:
+        '200':
+          description: Watch history in the requested projection.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - type: array
+                    items:
+                      $ref: '#/components/schemas/WatchHistoryItem'
+                  - type: array
+                    items:
+                      $ref: '#/components/schemas/WatchStatusProjection'
+                  - $ref: '#/components/schemas/WatchStatusKeys'
+        '404':
+          $ref: '#/components/responses/Error'
+    post:
+      tags: [history]
+      operationId: updateWatchHistory
+      summary: Mark an item watched or unwatched
+      description: |
+        Episodes may be addressed by `seriesId` + `seasonNumber` +
+        `episodeNumber` with `mediaType: episode` and no `itemId`.
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+        - $ref: '#/components/parameters/ClientID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WatchHistoryUpdate'
+      responses:
+        '200':
+          description: The updated history item.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WatchHistoryItem'
+        '400':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /api/users/{userId}/details-bundle:
+    get:
+      tags: [metadata]
+      operationId: getDetailsBundle
+      summary: Everything a details page needs in one call
+      description: |
+        Series: `seriesDetails.seasons[].episodes[]` carry `itemId`, `watched`
+        and `resume`; `upNextEpisode` and top-level `resume` drive the
+        play/resume button. Sub-fetch failures leave their field `null`
+        rather than failing the request. Responses ≥ 8 KiB are gzip-encoded
+        when the client sends `Accept-Encoding: gzip`.
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+        - name: type
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [series, movie]
+        - $ref: '#/components/parameters/TitleIDQuery'
+        - $ref: '#/components/parameters/NameQuery'
+        - $ref: '#/components/parameters/YearQuery'
+        - $ref: '#/components/parameters/IMDBIDQuery'
+        - $ref: '#/components/parameters/TMDBIDQuery'
+        - $ref: '#/components/parameters/TVDBIDQuery'
+        - name: season
+          in: query
+          description: Season number for season-scoped trailers.
+          schema:
+            type: integer
+        - $ref: '#/components/parameters/SeasonTypeQuery'
+        - $ref: '#/components/parameters/ClientID'
+      responses:
+        '200':
+          description: Details bundle.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailsBundle'
+        '400':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /api/metadata/movies/details:
+    get:
+      tags: [metadata]
+      operationId: getMovieDetails
+      summary: Movie details
+      parameters:
+        - $ref: '#/components/parameters/TitleIDQuery'
+        - $ref: '#/components/parameters/NameQuery'
+        - $ref: '#/components/parameters/YearQuery'
+        - $ref: '#/components/parameters/IMDBIDQuery'
+        - $ref: '#/components/parameters/TMDBIDQuery'
+        - $ref: '#/components/parameters/TVDBIDQuery'
+        - $ref: '#/components/parameters/UserIDQuery'
+        - $ref: '#/components/parameters/ClientID'
+      responses:
+        '200':
+          description: Movie title.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Title'
+        '502':
+          $ref: '#/components/responses/Error'
+
+  /api/metadata/series/details:
+    get:
+      tags: [metadata]
+      operationId: getSeriesDetails
+      summary: Series details with seasons and episodes
+      parameters:
+        - $ref: '#/components/parameters/TitleIDQuery'
+        - $ref: '#/components/parameters/NameQuery'
+        - $ref: '#/components/parameters/YearQuery'
+        - $ref: '#/components/parameters/IMDBIDQuery'
+        - $ref: '#/components/parameters/TMDBIDQuery'
+        - $ref: '#/components/parameters/TVDBIDQuery'
+        - $ref: '#/components/parameters/SeasonTypeQuery'
+        - $ref: '#/components/parameters/UserIDQuery'
+        - $ref: '#/components/parameters/ClientID'
+      responses:
+        '200':
+          description: Series details. Per-user episode fields (`itemId`, `watched`, `resume`) are only filled by `/details-bundle`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SeriesDetails'
+        '404':
+          $ref: '#/components/responses/Error'
+        '502':
+          $ref: '#/components/responses/Error'
+
+  /api/search:
+    get:
+      tags: [metadata]
+      operationId: searchTitles
+      summary: Title and person search
+      parameters:
+        - name: q
+          in: query
+          description: Search text (`query` is accepted as an alias).
+          schema:
+            type: string
+        - name: query
+          in: query
+          schema:
+            type: string
+        - name: type
+          in: query
+          description: Restrict to `movie`, `series` or `person`.
+          schema:
+            type: string
+        - $ref: '#/components/parameters/UserIDQuery'
+        - $ref: '#/components/parameters/ClientID'
+      responses:
+        '200':
+          description: Ranked results; titles carry `releaseDate`/`availability` for badges.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SearchResult'
+        '502':
+          $ref: '#/components/responses/Error'
+
+  /api/users/{userId}/watchlist:
+    get:
+      tags: [lists]
+      operationId: listWatchlist
+      summary: Raw watchlist
+      description: Prefer `/display-list?source=watchlist` for sorted, filtered, paged rendering.
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+        - $ref: '#/components/parameters/ClientID'
+      responses:
+        '200':
+          description: Watchlist items.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WatchlistItem'
+        '400':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+    post:
+      tags: [lists]
+      operationId: addToWatchlist
+      summary: Add or update a watchlist item
+      description: The body is strict; unknown fields are rejected with 400.
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+        - $ref: '#/components/parameters/ClientID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WatchlistUpsert'
+      responses:
+        '200':
+          description: The stored item.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WatchlistItem'
+        '400':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /api/users/{userId}/watchlist/{mediaType}/{id}:
+    delete:
+      tags: [lists]
+      operationId: removeFromWatchlist
+      summary: Remove a watchlist item
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+        - name: mediaType
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [movie, series]
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/ClientID'
+      responses:
+        '204':
+          description: Removed.
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /api/users/{userId}/display-list:
+    get:
+      tags: [lists]
+      operationId: getDisplayList
+      summary: Server-sorted, filtered and paged list for shelves and list screens
+      description: |
+        The server sorts and filters before paging; never re-sort pages on the
+        client. Use `total` for paging and `genres` for filter facets.
+        `items` is `WatchlistItem[]` for `watchlist` / `custom-list`,
+        `TrendingItem[]` for `permanent-prequeue` and custom-list shelves, and
+        the delegated metadata payload (usually `TrendingItem[]`) for
+        discovery sources.
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+        - name: source
+          in: query
+          description: |
+            List source. Defaults to `watchlist`. Also: `custom-list` (needs
+            `listId`), `continue-watching`, `permanent-prequeue`, `top-ten`,
+            `popular-on-server`, `recently-watched`, `trending`, `genre`,
+            `decade`, `mdblist`, `stremio`, `tmdb-list`, `trakt-list`,
+            `publicmetadb-list`, `simkl-list`, `letterboxd-list`,
+            `personalized`, `custom-ai`, `similar`, `collection`.
+          schema:
+            type: string
+            default: watchlist
+        - name: listId
+          in: query
+          schema:
+            type: string
+        - name: sortBy
+          in: query
+          schema:
+            type: string
+            enum: [default, added, name, year, duration, rating]
+        - name: sortDirection
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+        - name: ratingSource
+          in: query
+          description: Rating source used by `sortBy=rating` (for example `imdb`, `tmdb`).
+          schema:
+            type: string
+        - name: genres
+          in: query
+          description: Comma-separated genre names; an item matches if it has any of them.
+          schema:
+            type: string
+        - name: watchStatus
+          in: query
+          description: |
+            `none`/`partial`/`complete`, or the aliases `unwatched`,
+            `in_progress`, `watched`. `all` disables the filter.
+          schema:
+            type: string
+        - name: titleFilter
+          in: query
+          description: Case-insensitive substring match on the title.
+          schema:
+            type: string
+        - name: filterMediaType
+          in: query
+          schema:
+            type: string
+            enum: [all, movie, series]
+        - name: alphabet
+          in: query
+          description: Restrict to one alphabet bucket from `alphabetBuckets`.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+        - name: includeFacets
+          in: query
+          schema:
+            type: boolean
+        - name: includeUnwatchedCounts
+          in: query
+          schema:
+            type: boolean
+        - name: homeView
+          in: query
+          schema:
+            type: string
+        - $ref: '#/components/parameters/ClientID'
+      responses:
+        '200':
+          description: One page of the list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DisplayListResponse'
+        '400':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '503':
+          $ref: '#/components/responses/Error'
+
+  /api/indexers/search:
+    get:
+      tags: [sources]
+      operationId: searchSources
+      summary: Search configured indexers and scrapers for playable sources
+      description: |
+        Plain searches return `IndexerResult[]`. `includeFiltered=true` adds
+        scoring fields (and filtered-out results); adding
+        `includeAdaptiveSummary=true` wraps the list in
+        `IndexerSearchEnvelope`. With `includeSourceHealth=true` each result
+        carries `sourceHealth`; poll `/api/indexers/source-health` with the
+        token of `pending` results.
+      parameters:
+        - name: q
+          in: query
+          description: Search text (title, plus `SxxEyy` for episodes).
+          schema:
+            type: string
+        - name: mediaType
+          in: query
+          schema:
+            type: string
+            enum: [movie, series]
+        - name: imdbId
+          in: query
+          schema:
+            type: string
+        - name: titleId
+          in: query
+          schema:
+            type: string
+        - name: year
+          in: query
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          description: Maximum results (default 5).
+          schema:
+            type: integer
+            minimum: 1
+        - name: cat
+          in: query
+          description: Newznab categories; repeatable.
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: true
+        - $ref: '#/components/parameters/UserIDQuery'
+        - name: clientId
+          in: query
+          description: Fallback when the `X-Client-ID` header cannot be sent.
+          schema:
+            type: string
+        - name: episodeNumberingId
+          in: query
+          schema:
+            type: string
+        - name: episodeOrdering
+          in: query
+          schema:
+            type: string
+        - name: includeFiltered
+          in: query
+          schema:
+            type: boolean
+        - name: includeAdaptiveSummary
+          in: query
+          description: Only honoured with `includeFiltered=true`.
+          schema:
+            type: boolean
+        - name: includeSourceHealth
+          in: query
+          schema:
+            type: boolean
+        - name: downloadRanking
+          in: query
+          schema:
+            type: boolean
+        - name: seasonPacks
+          in: query
+          schema:
+            type: boolean
+        - $ref: '#/components/parameters/ClientID'
+        - $ref: '#/components/parameters/AdaptiveThroughputMbps'
+        - $ref: '#/components/parameters/AdaptiveThroughputMeasuredAt'
+      responses:
+        '200':
+          description: Search results.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - type: array
+                    items:
+                      $ref: '#/components/schemas/IndexerResult'
+                  - $ref: '#/components/schemas/IndexerSearchEnvelope'
+        '502':
+          $ref: '#/components/responses/SearchError'
+        '504':
+          $ref: '#/components/responses/SearchError'
+
+  /api/indexers/source-health:
+    get:
+      tags: [sources]
+      operationId: pollSourceHealth
+      summary: Long-poll pending source health checks
+      parameters:
+        - name: token
+          in: query
+          required: true
+          description: '`sourceHealth.token` of a pending result.'
+          schema:
+            type: string
+        - name: waitMs
+          in: query
+          description: Long-poll wait in milliseconds (capped at 25000). Without it the current snapshot returns immediately.
+          schema:
+            type: integer
+            minimum: 0
+        - $ref: '#/components/parameters/ClientID'
+      responses:
+        '200':
+          description: Snapshot; apply each entry by `index` into the original result list. Poll again until `complete`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourceHealthSnapshot'
+        '400':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '503':
+          $ref: '#/components/responses/Error'
+
+  /api/playback/prequeue:
+    post:
+      tags: [playback]
+      operationId: startPrequeue
+      summary: Start (or reuse) a background search, resolve and probe
+      description: |
+        For series without `seasonNumber`/`episodeNumber` the server picks the
+        next episode from watch history (falling back to S01E01). Poll
+        `GET /api/playback/prequeue/{prequeueId}` until `ready` or `failed`.
+        The body is strict: unknown fields are rejected with 400.
+      parameters:
+        - $ref: '#/components/parameters/ClientID'
+        - $ref: '#/components/parameters/AdaptiveThroughputMbps'
+        - $ref: '#/components/parameters/AdaptiveThroughputMeasuredAt'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PrequeueRequest'
+      responses:
+        '200':
+          description: Prequeue accepted (new, in progress or already ready).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrequeueResponse'
+        '400':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /api/playback/prequeue/{prequeueId}:
+    get:
+      tags: [playback]
+      operationId: getPrequeueStatus
+      summary: Prequeue status, stream path and track selection
+      parameters:
+        - name: prequeueId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/ClientID'
+      responses:
+        '200':
+          description: Current status; stream and track fields are filled once `ready`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrequeueStatusResponse'
+        '400':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /api/playback/resolve:
+    post:
+      tags: [playback]
+      operationId: resolveSource
+      summary: Resolve a manually picked search result into a stream path
+      description: |
+        Send `includeTrackSelection: true` with `profileId`, `titleId` and the
+        `X-Client-ID` header to get the server's audio/subtitle choice. When
+        the result is queued (`queueId` > 0 and no `webdavPath`), poll
+        `/api/playback/queue/{queueId}`.
+      parameters:
+        - $ref: '#/components/parameters/ClientID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResolveRequest'
+      responses:
+        '200':
+          description: Resolution.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlaybackResolution'
+        '400':
+          $ref: '#/components/responses/Error'
+        '409':
+          description: The source is marked bad (resend with `allowMarkedBad` to override).
+          content:
+            text/plain:
+              schema:
+                type: string
+        '422':
+          description: Unsupported source (for example `.m2ts`).
+          content:
+            text/plain:
+              schema:
+                type: string
+        '502':
+          $ref: '#/components/responses/Error'
+
+  /api/playback/queue/{queueId}:
+    get:
+      tags: [playback]
+      operationId: getQueueStatus
+      summary: Status of a queued resolve
+      parameters:
+        - name: queueId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - name: includeTrackSelection
+          in: query
+          schema:
+            type: boolean
+        - name: profileId
+          in: query
+          schema:
+            type: string
+        - name: titleId
+          in: query
+          schema:
+            type: string
+        - name: clientId
+          in: query
+          schema:
+            type: string
+        - $ref: '#/components/parameters/ClientID'
+      responses:
+        '200':
+          description: Resolution once ready.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlaybackResolution'
+        '400':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '422':
+          description: Unsupported source.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '502':
+          $ref: '#/components/responses/Error'
+
+  /api/video/stream:
+    get:
+      tags: [playback]
+      operationId: streamVideo
+      summary: Raw or transmuxed media stream
+      description: |
+        Supports HTTP range requests for direct play. Native clients use
+        `transmux=0` and play the container directly. Concurrent stream
+        limits (global, per profile, per account) are enforced on GET only and
+        answer 429 with `StreamLimitError`.
+      security:
+        - bearerAuth: []
+        - queryToken: []
+      parameters:
+        - $ref: '#/components/parameters/StreamPath'
+        - $ref: '#/components/parameters/StreamTransmux'
+        - $ref: '#/components/parameters/StreamTarget'
+        - $ref: '#/components/parameters/StreamProfileID'
+        - $ref: '#/components/parameters/StreamUserID'
+        - $ref: '#/components/parameters/StreamProfileName'
+        - $ref: '#/components/parameters/StreamDisplayName'
+        - $ref: '#/components/parameters/StreamClientID'
+        - $ref: '#/components/parameters/StreamDV'
+        - $ref: '#/components/parameters/StreamFormat'
+        - $ref: '#/components/parameters/StreamDLNAProfile'
+        - $ref: '#/components/parameters/ClientID'
+        - $ref: '#/components/parameters/Range'
+      responses:
+        '200':
+          description: Full media body.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '206':
+          description: Partial content for a range request.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '429':
+          description: A concurrent stream limit was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StreamLimitError'
+        '503':
+          $ref: '#/components/responses/Error'
+    head:
+      tags: [playback]
+      operationId: headVideo
+      summary: Stream metadata (size, type) without a body
+      description: HEAD never counts toward stream limits.
+      security:
+        - bearerAuth: []
+        - queryToken: []
+      parameters:
+        - $ref: '#/components/parameters/StreamPath'
+        - $ref: '#/components/parameters/StreamTransmux'
+        - $ref: '#/components/parameters/StreamTarget'
+        - $ref: '#/components/parameters/StreamProfileID'
+        - $ref: '#/components/parameters/ClientID'
+      responses:
+        '200':
+          description: Headers only.
+        '400':
+          $ref: '#/components/responses/Error'
+
+  /api/video/segments:
+    post:
+      tags: [playback]
+      operationId: resolveSkipSegments
+      summary: Intro, recap, credits and preview ranges
+      description: |
+        Merges IntroDB, SkipDB and the player's chapter names server-side
+        (cached). All body fields are optional: providers are queried only for
+        a valid `imdbId` + `season` + `episode`; chapters are always merged as
+        the lowest-priority source. Re-post when chapters or duration become
+        known. `outro` doubles as movie end credits. Provider failures degrade
+        to chapter-only results; this endpoint does not fail playback.
+      parameters:
+        - $ref: '#/components/parameters/ClientID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SkipSegmentsRequest'
+      responses:
+        '200':
+          description: Resolved segments (possibly empty).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkipSegmentsResponse'
+        '400':
+          $ref: '#/components/responses/Error'
+
+  /api/clients/register:
+    post:
+      tags: [clients]
+      operationId: registerClient
+      summary: Register this device under a profile
+      description: |
+        Call on start and on profile switch. Display capabilities and
+        throughput measurements are not part of registration; they are
+        reported through the per-client settings routes (outside this spec).
+      parameters:
+        - $ref: '#/components/parameters/ClientID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClientRegistrationRequest'
+      responses:
+        '200':
+          description: Registered client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientRegistrationResponse'
+        '400':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Session token from `POST /api/auth/login`.
+    queryToken:
+      type: apiKey
+      in: query
+      name: token
+      description: Session token as a query parameter; only accepted on media URLs such as `/api/video/stream`.
+
+  parameters:
+    ClientID:
+      name: X-Client-ID
+      in: header
+      description: Stable per-device client ID. The literal `unknown` is treated as missing.
+      schema:
+        type: string
+    UserID:
+      name: userId
+      in: path
+      required: true
+      description: Profile ID (from `GET /api/users`).
+      schema:
+        type: string
+    UserIDQuery:
+      name: userId
+      in: query
+      description: Profile ID; applies profile language, kids and visibility rules.
+      schema:
+        type: string
+    TitleIDQuery:
+      name: titleId
+      in: query
+      schema:
+        type: string
+    NameQuery:
+      name: name
+      in: query
+      schema:
+        type: string
+    YearQuery:
+      name: year
+      in: query
+      schema:
+        type: integer
+    IMDBIDQuery:
+      name: imdbId
+      in: query
+      schema:
+        type: string
+    TMDBIDQuery:
+      name: tmdbId
+      in: query
+      schema:
+        type: integer
+        format: int64
+    TVDBIDQuery:
+      name: tvdbId
+      in: query
+      schema:
+        type: integer
+        format: int64
+    SeasonTypeQuery:
+      name: seasonType
+      in: query
+      description: TVDB episode ordering (`official`, `dvd`, `absolute`, ...). Defaults to the profile's stored choice, else official.
+      schema:
+        type: string
+    AdaptiveThroughputMbps:
+      name: X-Adaptive-Throughput-Mbps
+      in: header
+      description: Client-measured client↔server throughput in Mbps (adaptive playback).
+      schema:
+        type: number
+    AdaptiveThroughputMeasuredAt:
+      name: X-Adaptive-Throughput-Measured-At
+      in: header
+      description: Unix seconds when the throughput was measured.
+      schema:
+        type: integer
+        format: int64
+    StreamPath:
+      name: path
+      in: query
+      required: true
+      description: '`streamPath` from prequeue status or `webdavPath` from resolve.'
+      schema:
+        type: string
+    StreamTransmux:
+      name: transmux
+      in: query
+      description: '`0`/`false` serves the original container; `1`/`force` forces a transmux.'
+      schema:
+        type: string
+    StreamTarget:
+      name: target
+      in: query
+      description: '`web`/`browser` forces browser-compatible output (AAC audio).'
+      schema:
+        type: string
+    StreamProfileID:
+      name: profileId
+      in: query
+      description: Profile for stream-limit accounting and Active Streams.
+      schema:
+        type: string
+    StreamUserID:
+      name: userId
+      in: query
+      description: Alias for `profileId`.
+      schema:
+        type: string
+    StreamProfileName:
+      name: profileName
+      in: query
+      schema:
+        type: string
+    StreamDisplayName:
+      name: displayName
+      in: query
+      description: Title shown in Active Streams.
+      schema:
+        type: string
+    StreamClientID:
+      name: clientId
+      in: query
+      schema:
+        type: string
+    StreamDV:
+      name: dv
+      in: query
+      description: '`true` requests a Dolby Vision-preserving transmux.'
+      schema:
+        type: boolean
+    StreamFormat:
+      name: format
+      in: query
+      schema:
+        type: string
+    StreamDLNAProfile:
+      name: dlnaProfile
+      in: query
+      schema:
+        type: string
+    Range:
+      name: Range
+      in: header
+      schema:
+        type: string
+
+  responses:
+    Error:
+      description: 'Error. JSON `{"error": "..."}`, or a plain-text message from older handler paths.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+        text/plain:
+          schema:
+            type: string
+    SearchError:
+      description: Search failed or timed out.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+          description: Machine-readable code where one exists (for example `password_change_required`, `GATEWAY_TIMEOUT`).
+        message:
+          type: string
+          description: Human-readable guidance where one exists.
+
+    StreamLimitError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          const: STREAM_LIMIT_REACHED
+        message:
+          type: string
+        currentStreams:
+          type: integer
+        maxStreams:
+          type: integer
+        scope:
+          type: string
+          description: '`global`, `profile` or `account`.'
+
+    ExternalIDs:
+      type: object
+      description: Provider IDs keyed by provider (`tmdb`, `tvdb`, `imdb`, ...).
+      additionalProperties:
+        type: string
+
+    # ---------------------------------------------------------------- auth
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+        newPassword:
+          type: string
+          description: Replacement for the default master password (see 428).
+        rememberMe:
+          type: boolean
+
+    LoginResponse:
+      type: object
+      required: [token, expiresAt, accountId, username, isMaster]
+      properties:
+        token:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+        accountId:
+          type: string
+        username:
+          type: string
+        isMaster:
+          type: boolean
+
+    Profile:
+      type: object
+      required: [id, accountId, name]
+      properties:
+        id:
+          type: string
+        accountId:
+          type: string
+        name:
+          type: string
+        color:
+          type: string
+        iconUrl:
+          type: string
+        pinLength:
+          type: integer
+          description: PIN length, so clients can render fixed-length entry.
+        hasPin:
+          type: boolean
+        hasIcon:
+          type: boolean
+          description: When true, fetch the image from `GET /api/users/{userId}/icon`.
+        traktAccountId:
+          type: string
+        plexAccountId:
+          type: string
+        mdblistAccountId:
+          type: string
+        simklAccountId:
+          type: string
+        scrobAccountId:
+          type: string
+        isKidsProfile:
+          type: boolean
+        allowShareLinks:
+          type: boolean
+        activityPrivacy:
+          type: string
+          enum: [shared, shared_anonymous, not_shared]
+        kidsMode:
+          type: string
+          description: '`rating`, `content_list`, or empty (disabled).'
+        kidsMaxRating:
+          type: string
+          deprecated: true
+        kidsMaxMovieRating:
+          type: string
+        kidsMaxTVRating:
+          type: string
+        kidsAllowedLists:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    PinVerifyRequest:
+      type: object
+      additionalProperties: false
+      required: [pin]
+      properties:
+        pin:
+          type: string
+
+    PinVerifyResponse:
+      type: object
+      required: [valid]
+      properties:
+        valid:
+          type: boolean
+
+    # ---------------------------------------------------------------- titles
+
+    Image:
+      type: object
+      required: [url]
+      description: Artwork. Note the flag fields are snake_case, unlike the rest of the API.
+      properties:
+        url:
+          type: string
+        type:
+          type: string
+          description: '`poster`, `backdrop` or `logo`.'
+        width:
+          type: integer
+        height:
+          type: integer
+        is_dark:
+          type: boolean
+        is_textless:
+          type: boolean
+        language:
+          type: string
+        is_fallback_language:
+          type: boolean
+
+    Trailer:
+      type: object
+      required: [name, url]
+      properties:
+        name:
+          type: string
+        site:
+          type: string
+        type:
+          type: string
+        url:
+          type: string
+        embedUrl:
+          type: string
+        thumbnailUrl:
+          type: string
+        language:
+          type: string
+        country:
+          type: string
+        key:
+          type: string
+        official:
+          type: boolean
+        publishedAt:
+          type: string
+        resolution:
+          type: integer
+        source:
+          type: string
+        durationSeconds:
+          type: integer
+        seasonNumber:
+          type: integer
+          description: 0 = series-level trailer.
+
+    TrailerResponse:
+      type: object
+      required: [trailers]
+      properties:
+        primaryTrailer:
+          $ref: '#/components/schemas/Trailer'
+        trailers:
+          type: [array, 'null']
+          items:
+            $ref: '#/components/schemas/Trailer'
+
+    Rating:
+      type: object
+      required: [source, value, max]
+      properties:
+        source:
+          type: string
+          description: '`imdb`, `tmdb`, `trakt`, `letterboxd`, `tomatoes`, `audience`, `metacritic`, ...'
+        value:
+          type: number
+        max:
+          type: number
+          description: Scale maximum (10 for IMDb, 100 for Rotten Tomatoes, ...).
+
+    Release:
+      type: object
+      required: [type, date]
+      properties:
+        type:
+          type: string
+          description: '`theatrical`, `theatricalLimited`, `digital`, `physical`, `premiere` or `tv`.'
+        date:
+          type: string
+          description: ISO 8601 date or date-time.
+        country:
+          type: string
+        note:
+          type: string
+        source:
+          type: string
+        primary:
+          type: boolean
+        released:
+          type: boolean
+
+    CastMember:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+        character:
+          type: string
+        order:
+          type: integer
+        profilePath:
+          type: string
+        profileUrl:
+          type: string
+
+    Credits:
+      type: object
+      properties:
+        cast:
+          type: [array, 'null']
+          items:
+            $ref: '#/components/schemas/CastMember'
+
+    Collection:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+        poster:
+          $ref: '#/components/schemas/Image'
+        backdrop:
+          $ref: '#/components/schemas/Image'
+
+    EpisodeNumbering:
+      type: object
+      required: [seriesId]
+      description: Which series and episode ordering a season/episode pair is numbered under.
+      properties:
+        seriesId:
+          type: string
+        ordering:
+          type: string
+
+    Availability:
+      type: string
+      description: |
+        Release badge state, derived when the response is encoded:
+        `released` (watchable at home / a series has aired), `theatrical`
+        (in theaters only), `coming_soon` (`releaseDate` within 30 days) or
+        `unreleased`.
+      enum: [released, theatrical, coming_soon, unreleased]
+
+    Title:
+      type: object
+      required: [id, name, mediaType]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        originalName:
+          type: string
+        alternateTitles:
+          type: array
+          items:
+            type: string
+        overview:
+          type: string
+        year:
+          type: integer
+        language:
+          type: string
+        countryCode:
+          type: string
+        poster:
+          $ref: '#/components/schemas/Image'
+        textPoster:
+          $ref: '#/components/schemas/Image'
+        posters:
+          type: array
+          items:
+            $ref: '#/components/schemas/Image'
+        backdrop:
+          $ref: '#/components/schemas/Image'
+        textBackdrop:
+          $ref: '#/components/schemas/Image'
+        backdrops:
+          type: array
+          items:
+            $ref: '#/components/schemas/Image'
+        logo:
+          $ref: '#/components/schemas/Image'
+        mediaType:
+          type: string
+          description: '`movie`, `series`, or `person` (search cards only).'
+        tvdbId:
+          type: integer
+          format: int64
+        imdbId:
+          type: string
+        tmdbId:
+          type: integer
+          format: int64
+        popularity:
+          type: number
+        voteCount:
+          type: integer
+        network:
+          type: string
+        airsTime:
+          type: string
+          description: Local air time from TVDB, for example `21:00`.
+        airsTimezone:
+          type: string
+          description: IANA time zone.
+        status:
+          type: string
+          description: Coarse release status (movies `released`/`theatrical`/`upcoming`/`unknown`; series `released`/`unreleased`). Prefer `availability`.
+        lifecycleStatus:
+          type: string
+          description: Series lifecycle from the provider (`Continuing`, `Ended`, ...).
+        isDaily:
+          type: boolean
+        certification:
+          type: string
+        primaryTrailer:
+          $ref: '#/components/schemas/Trailer'
+        trailers:
+          type: array
+          items:
+            $ref: '#/components/schemas/Trailer'
+        releases:
+          type: array
+          items:
+            $ref: '#/components/schemas/Release'
+        theatricalRelease:
+          $ref: '#/components/schemas/Release'
+        homeRelease:
+          $ref: '#/components/schemas/Release'
+        releaseDate:
+          type: string
+          format: date
+          description: First watchable date, `YYYY-MM-DD` (movie earliest theatrical/home window; series premiere).
+        availability:
+          $ref: '#/components/schemas/Availability'
+        ratings:
+          type: array
+          items:
+            $ref: '#/components/schemas/Rating'
+        credits:
+          $ref: '#/components/schemas/Credits'
+        runtimeMinutes:
+          type: integer
+          description: Minutes (movies).
+        collection:
+          $ref: '#/components/schemas/Collection'
+        genres:
+          type: array
+          items:
+            type: string
+        adult:
+          type: boolean
+        watchState:
+          type: string
+          enum: [none, partial, complete]
+        unwatchedCount:
+          type: integer
+          description: Series only; released episodes minus watched.
+        cardSubtitle:
+          type: string
+        cardImage:
+          $ref: '#/components/schemas/Image'
+        forceTitleOverlay:
+          type: boolean
+
+    SearchResult:
+      type: object
+      required: [title, score]
+      properties:
+        title:
+          $ref: '#/components/schemas/Title'
+        score:
+          type: integer
+
+    TrendingItem:
+      type: object
+      required: [rank, title]
+      properties:
+        rank:
+          type: integer
+        title:
+          $ref: '#/components/schemas/Title'
+
+    Resume:
+      type: object
+      required: [position, duration, percent, eligible]
+      description: |
+        Server-computed resume decision. Offer "Resume" only when `eligible`.
+        When only a percentage is known (for example a Trakt import),
+        `position` and `duration` are 0: seek to `percent` of the media
+        duration once it is known.
+      properties:
+        position:
+          type: number
+          description: Seconds.
+        duration:
+          type: number
+          description: Seconds.
+        percent:
+          type: number
+          minimum: 0
+          maximum: 100
+          description: 0–100.
+        eligible:
+          type: boolean
+
+    Episode:
+      type: object
+      required: [id, name, seasonNumber, episodeNumber]
+      properties:
+        numbering:
+          $ref: '#/components/schemas/EpisodeNumbering'
+        id:
+          type: string
+        tmdbId:
+          type: integer
+          format: int64
+        tmdbSeasonNumber:
+          type: integer
+        tmdbEpisodeNumber:
+          type: integer
+        tvdbId:
+          type: integer
+          format: int64
+        name:
+          type: string
+        overview:
+          type: string
+        seasonNumber:
+          type: integer
+        episodeNumber:
+          type: integer
+        absoluteEpisodeNumber:
+          type: integer
+          description: Release absolute number; excludes season-zero specials.
+        airedDate:
+          type: string
+        airedDateTimeUTC:
+          type: string
+        runtimeMinutes:
+          type: integer
+        image:
+          $ref: '#/components/schemas/Image'
+        itemId:
+          type: string
+          description: Canonical progress/watch item ID (details-bundle only). Use verbatim.
+        watched:
+          type: boolean
+          description: Watched per history (details-bundle only).
+        resume:
+          $ref: '#/components/schemas/Resume'
+
+    Season:
+      type: object
+      required: [id, name, number, episodes]
+      properties:
+        id:
+          type: string
+        tvdbId:
+          type: integer
+          format: int64
+        name:
+          type: string
+        number:
+          type: integer
+        overview:
+          type: string
+        type:
+          type: string
+        image:
+          $ref: '#/components/schemas/Image'
+        episodeCount:
+          type: integer
+        episodes:
+          type: [array, 'null']
+          items:
+            $ref: '#/components/schemas/Episode'
+
+    SeriesOrdering:
+      type: object
+      required: [type, name]
+      properties:
+        type:
+          type: string
+        name:
+          type: string
+        seasonCount:
+          type: integer
+        isOfficial:
+          type: boolean
+
+    SeriesDetails:
+      type: object
+      required: [title, seasons]
+      properties:
+        numbering:
+          $ref: '#/components/schemas/EpisodeNumbering'
+        title:
+          $ref: '#/components/schemas/Title'
+        seasons:
+          type: [array, 'null']
+          items:
+            $ref: '#/components/schemas/Season'
+        preferredSeason:
+          type: integer
+        episodeTmdbEnriched:
+          type: boolean
+        availableOrderings:
+          type: array
+          description: Present only when more than one ordering exists.
+          items:
+            $ref: '#/components/schemas/SeriesOrdering'
+        activeOrdering:
+          type: string
+
+    ContentPreference:
+      type: object
+      required: [contentId, contentType]
+      properties:
+        contentId:
+          type: string
+        contentType:
+          type: string
+          enum: [series, movie]
+        audioLanguage:
+          type: string
+          description: ISO 639-2 code.
+        subtitleLanguage:
+          type: string
+        subtitleMode:
+          type: string
+          enum: ['off', 'on', forced-only]
+        updatedAt:
+          type: string
+          format: date-time
+
+    DetailsBundle:
+      type: object
+      required: [seriesDetails, movieDetails, similar, trailers, contentPreference, watchState, playbackProgress]
+      properties:
+        seriesDetails:
+          anyOf:
+            - $ref: '#/components/schemas/SeriesDetails'
+            - type: 'null'
+        movieDetails:
+          anyOf:
+            - $ref: '#/components/schemas/Title'
+            - type: 'null'
+        similar:
+          type: array
+          items:
+            $ref: '#/components/schemas/Title'
+        trailers:
+          anyOf:
+            - $ref: '#/components/schemas/TrailerResponse'
+            - type: 'null'
+        contentPreference:
+          anyOf:
+            - $ref: '#/components/schemas/ContentPreference'
+            - type: 'null'
+        watchState:
+          anyOf:
+            - $ref: '#/components/schemas/SeriesWatchState'
+            - type: 'null'
+        playbackProgress:
+          type: array
+          description: Progress rows for this title only.
+          items:
+            $ref: '#/components/schemas/PlaybackProgress'
+        upNextEpisode:
+          $ref: '#/components/schemas/EpisodeReference'
+        resume:
+          $ref: '#/components/schemas/Resume'
+
+    # ---------------------------------------------------------------- history
+
+    EpisodeReference:
+      type: object
+      required: [seasonNumber, episodeNumber]
+      properties:
+        numbering:
+          $ref: '#/components/schemas/EpisodeNumbering'
+        seasonNumber:
+          type: integer
+        episodeNumber:
+          type: integer
+        absoluteEpisodeNumber:
+          type: integer
+        episodeId:
+          type: string
+        tvdbId:
+          type: string
+        title:
+          type: string
+        overview:
+          type: string
+        runtimeMinutes:
+          type: integer
+        airDate:
+          type: string
+        airDateTimeUTC:
+          type: string
+        airTimeEstimated:
+          type: boolean
+        image:
+          $ref: '#/components/schemas/Image'
+        watchedAt:
+          type: string
+          format: date-time
+          description: '`0001-01-01T00:00:00Z` when unknown.'
+        itemId:
+          type: string
+          description: Canonical progress/watch item ID for this episode. Use verbatim; never build `…:sNNeNN` yourself.
+
+    SeriesWatchState:
+      type: object
+      required: [seriesId, seriesTitle, updatedAt, lastWatched]
+      description: A Continue Watching row or a series' watch state. Movies use the same shape without `nextEpisode`.
+      properties:
+        seriesId:
+          type: string
+        seriesTitle:
+          type: string
+        overview:
+          type: string
+        posterUrl:
+          type: string
+        textPosterUrl:
+          type: string
+        backdropUrl:
+          type: string
+        textBackdropUrl:
+          type: string
+        backdropUrls:
+          type: array
+          items:
+            type: string
+        year:
+          type: integer
+        externalIds:
+          $ref: '#/components/schemas/ExternalIDs'
+        updatedAt:
+          type: string
+          format: date-time
+        lastWatched:
+          $ref: '#/components/schemas/EpisodeReference'
+        nextEpisode:
+          $ref: '#/components/schemas/EpisodeReference'
+        watchedEpisodes:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/EpisodeReference'
+        percentWatched:
+          type: number
+          description: 0–100. Prefer `resume`.
+        resumePercent:
+          type: number
+          description: 0–100. Prefer `resume`.
+        resume:
+          $ref: '#/components/schemas/Resume'
+        watchedEpisodeCount:
+          type: integer
+        totalEpisodeCount:
+          type: integer
+        prequeueId:
+          type: string
+        prequeueStatus:
+          $ref: '#/components/schemas/PrequeueStatus'
+        status:
+          type: string
+        lifecycleStatus:
+          type: string
+        theatricalRelease:
+          $ref: '#/components/schemas/Release'
+        homeRelease:
+          $ref: '#/components/schemas/Release'
+
+    PlaybackProgressUpdate:
+      type: object
+      additionalProperties: false
+      required: [mediaType]
+      description: |
+        Player heartbeat. Strict: the server rejects unknown fields. Address
+        the item with `itemId`, or for episodes with `seriesId` +
+        `seasonNumber` + `episodeNumber`.
+      properties:
+        mediaType:
+          type: string
+          enum: [movie, episode, live]
+        itemId:
+          type: string
+        position:
+          type: number
+          description: Seconds.
+        duration:
+          type: number
+          description: Seconds.
+        percentWatched:
+          type: number
+          minimum: 0
+          maximum: 100
+          description: 0–100. Only needed when the duration is unknown; otherwise derived from position/duration.
+        timestamp:
+          type: string
+          format: date-time
+        isPaused:
+          type: boolean
+        isBuffering:
+          type: boolean
+        playbackEnded:
+          type: boolean
+          description: True on the final heartbeat of a playback session.
+        bufferAheadSeconds:
+          type: number
+          description: Seconds of playable buffer ahead of the playhead.
+        requiredBandwidthMbps:
+          type: number
+          description: Estimated average bitrate of the active release, Mbps.
+        sourcePath:
+          type: string
+          description: The active stream path.
+        posterUrl:
+          type: string
+        notificationImageUrl:
+          type: string
+        externalIds:
+          $ref: '#/components/schemas/ExternalIDs'
+        seasonNumber:
+          type: integer
+        episodeNumber:
+          type: integer
+        seriesId:
+          type: string
+        seriesName:
+          type: string
+        episodeName:
+          type: string
+        movieName:
+          type: string
+        year:
+          type: integer
+
+    PlaybackProgress:
+      type: object
+      required: [id, mediaType, itemId, position, duration, percentWatched, updatedAt]
+      properties:
+        id:
+          type: string
+          description: '`mediaType:itemId`.'
+        mediaType:
+          type: string
+          enum: [movie, episode, live]
+        itemId:
+          type: string
+        position:
+          type: number
+          description: Seconds.
+        duration:
+          type: number
+          description: Seconds.
+        percentWatched:
+          type: number
+          description: 0–100.
+        updatedAt:
+          type: string
+          format: date-time
+        isPaused:
+          type: boolean
+        isBuffering:
+          type: boolean
+        watchedSeconds:
+          type: number
+          description: Accumulated actual playback time, seconds.
+        externalIds:
+          $ref: '#/components/schemas/ExternalIDs'
+        seasonNumber:
+          type: integer
+        episodeNumber:
+          type: integer
+        seriesId:
+          type: string
+        seriesName:
+          type: string
+        episodeName:
+          type: string
+        movieName:
+          type: string
+        year:
+          type: integer
+        hiddenFromContinueWatching:
+          type: boolean
+        resume:
+          $ref: '#/components/schemas/Resume'
+        allowedToContinue:
+          type: boolean
+          description: Heartbeat responses only. False when the server wants playback stopped (for example a stream limit).
+        migrationRequested:
+          type: boolean
+          description: Heartbeat responses only (stream migration; deferred for native clients).
+        migrationReason:
+          type: string
+        migrationPreparationRequested:
+          type: boolean
+        migrationPreparationReason:
+          type: string
+
+    WatchHistoryItem:
+      type: object
+      required: [id, mediaType, itemId, name, watched]
+      properties:
+        id:
+          type: string
+        mediaType:
+          type: string
+          enum: [movie, series, episode, live]
+        itemId:
+          type: string
+        name:
+          type: string
+        year:
+          type: integer
+        watched:
+          type: boolean
+        watchedAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        watchedSeconds:
+          type: number
+        externalIds:
+          $ref: '#/components/schemas/ExternalIDs'
+        seasonNumber:
+          type: integer
+        episodeNumber:
+          type: integer
+        seriesId:
+          type: string
+        seriesName:
+          type: string
+
+    WatchHistoryUpdate:
+      type: object
+      required: [mediaType]
+      properties:
+        mediaType:
+          type: string
+          enum: [movie, series, episode]
+        itemId:
+          type: string
+          description: Optional for episodes addressed by `seriesId` + `seasonNumber` + `episodeNumber`.
+        name:
+          type: string
+        year:
+          type: integer
+        watched:
+          type: boolean
+          description: Omitted means watched.
+        watchedAt:
+          type: string
+          format: date-time
+        watchedSeconds:
+          type: number
+        externalIds:
+          $ref: '#/components/schemas/ExternalIDs'
+        seasonNumber:
+          type: integer
+        episodeNumber:
+          type: integer
+        seriesId:
+          type: string
+        seriesName:
+          type: string
+
+    WatchStatusProjection:
+      type: object
+      required: [mediaType, itemId, watched]
+      properties:
+        mediaType:
+          type: string
+        itemId:
+          type: string
+        watched:
+          type: boolean
+
+    WatchStatusKeys:
+      type: object
+      required: [watched]
+      properties:
+        watched:
+          type: array
+          items:
+            type: string
+
+    # ---------------------------------------------------------------- lists
+
+    WatchlistItem:
+      type: object
+      required: [id, mediaType, name, addedAt]
+      properties:
+        id:
+          type: string
+        mediaType:
+          type: string
+          enum: [movie, series]
+        name:
+          type: string
+        overview:
+          type: string
+        year:
+          type: integer
+        posterUrl:
+          type: string
+        textPosterUrl:
+          type: string
+        backdropUrl:
+          type: string
+        textBackdropUrl:
+          type: string
+        backdropUrls:
+          type: array
+          items:
+            type: string
+        addedAt:
+          type: string
+          format: date-time
+        externalIds:
+          $ref: '#/components/schemas/ExternalIDs'
+        genres:
+          type: array
+          items:
+            type: string
+        runtimeMinutes:
+          type: integer
+        syncSource:
+          type: string
+        syncedAt:
+          type: string
+          format: date-time
+        watchState:
+          type: string
+          enum: [none, partial, complete]
+        unwatchedCount:
+          type: integer
+        ratings:
+          type: array
+          items:
+            $ref: '#/components/schemas/Rating'
+        status:
+          type: string
+        lifecycleStatus:
+          type: string
+        theatricalRelease:
+          $ref: '#/components/schemas/Release'
+        homeRelease:
+          $ref: '#/components/schemas/Release'
+        releaseDate:
+          type: string
+          format: date
+        availability:
+          $ref: '#/components/schemas/Availability'
+
+    WatchlistUpsert:
+      type: object
+      additionalProperties: false
+      required: [id, mediaType, name]
+      description: Strict; the server rejects unknown fields.
+      properties:
+        id:
+          type: string
+        mediaType:
+          type: string
+          enum: [movie, series]
+        name:
+          type: string
+        overview:
+          type: string
+        year:
+          type: integer
+        posterUrl:
+          type: string
+        textPosterUrl:
+          type: string
+        backdropUrl:
+          type: string
+        externalIds:
+          $ref: '#/components/schemas/ExternalIDs'
+        genres:
+          type: array
+          items:
+            type: string
+        runtimeMinutes:
+          type: integer
+        status:
+          type: string
+        lifecycleStatus:
+          type: string
+        syncSource:
+          type: string
+        syncedAt:
+          type: string
+          format: date-time
+
+    DisplayListResponse:
+      type: object
+      required: [source, items, total]
+      properties:
+        source:
+          type: string
+          description: Canonical source name actually served.
+        listId:
+          type: string
+        items:
+          type: array
+          items:
+            anyOf:
+              - $ref: '#/components/schemas/WatchlistItem'
+              - $ref: '#/components/schemas/TrendingItem'
+              - $ref: '#/components/schemas/SeriesWatchState'
+        total:
+          type: integer
+          description: Total matching items before paging.
+        unfilteredTotal:
+          type: integer
+        sourceTotal:
+          type: integer
+        genres:
+          type: array
+          description: Genre facets for the filter UI.
+          items:
+            type: string
+        alphabetBuckets:
+          type: array
+          items:
+            type: string
+        metadataPending:
+          type: boolean
+          description: Artwork is still being prepared; refetch later for full cards.
+
+    # ---------------------------------------------------------------- sources
+
+    SourceHealth:
+      type: object
+      required: [state]
+      properties:
+        state:
+          type: string
+          description: |
+            `healthy`/`cached` (green), `unhealthy`/`not_cached` (red),
+            `unknown` (no badge), `pending` (spinner; poll with `token`).
+          enum: [healthy, unhealthy, cached, not_cached, pending, unknown]
+        checkedAt:
+          type: string
+          format: date-time
+        token:
+          type: string
+          description: Poll token for `pending` results.
+        provider:
+          type: string
+        status:
+          type: string
+          description: Raw checker status.
+        error:
+          type: string
+
+    ScoreBreakdownItem:
+      type: object
+      required: [criterion, points, rankValue, reason]
+      properties:
+        criterion:
+          type: string
+        points:
+          type: integer
+        rankValue:
+          type: integer
+          format: int64
+        reason:
+          type: string
+
+    IndexerResult:
+      type: object
+      required: [title, indexer, guid, link, downloadUrl, sizeBytes, publishDate]
+      description: A playable source. Scoring fields appear only with `includeFiltered=true`.
+      properties:
+        title:
+          type: string
+        indexer:
+          type: string
+        guid:
+          type: string
+        link:
+          type: string
+        downloadUrl:
+          type: string
+        sizeBytes:
+          type: integer
+          format: int64
+          description: Bytes. For packs this is the pack total unless `sizePerFile`.
+        publishDate:
+          type: string
+          format: date-time
+        categories:
+          type: array
+          items:
+            type: string
+        attributes:
+          type: object
+          description: Parsed release attributes (`resolution`, `hdr`, `codec`, `infoHash`, `profileId`, ...).
+          additionalProperties:
+            type: string
+        serviceType:
+          type: string
+          enum: [usenet, debrid]
+        episodeCount:
+          type: integer
+          description: Episodes in a pack; 0 when not a pack.
+        sizePerFile:
+          type: boolean
+        filterStatus:
+          type: string
+          enum: [passed, filtered]
+        filterReason:
+          type: string
+        totalScore:
+          type: integer
+        scoreBreakdown:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScoreBreakdownItem'
+        sourceHealth:
+          $ref: '#/components/schemas/SourceHealth'
+
+    AdaptiveSearchSummary:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        measuredMbps:
+          type: number
+        measuredAt:
+          type: integer
+          format: int64
+        maxSizeGB:
+          type: number
+        filteredCount:
+          type: integer
+        bypassed:
+          type: boolean
+
+    IndexerSearchEnvelope:
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/IndexerResult'
+        adaptive:
+          anyOf:
+            - $ref: '#/components/schemas/AdaptiveSearchSummary'
+            - type: 'null'
+        sourceHealthToken:
+          type: string
+
+    IndexedSourceHealth:
+      type: object
+      required: [index, health]
+      properties:
+        index:
+          type: integer
+          description: Position of the result in the original search response.
+        health:
+          $ref: '#/components/schemas/SourceHealth'
+
+    SourceHealthSnapshot:
+      type: object
+      required: [token, complete, results]
+      properties:
+        token:
+          type: string
+        complete:
+          type: boolean
+        results:
+          type: [array, 'null']
+          items:
+            $ref: '#/components/schemas/IndexedSourceHealth'
+
+    # ---------------------------------------------------------------- playback
+
+    PrequeueStatus:
+      type: string
+      enum: [queued, searching, resolving, probing, ready, failed, expired]
+
+    PrequeueRequest:
+      type: object
+      additionalProperties: false
+      required: [titleId, titleName, userId]
+      description: Strict; the server rejects unknown fields.
+      properties:
+        numbering:
+          $ref: '#/components/schemas/EpisodeNumbering'
+        titleId:
+          type: string
+        titleName:
+          type: string
+        mediaType:
+          type: string
+          description: '`movie` (default) or `series`.'
+        userId:
+          type: string
+          description: Profile ID.
+        clientId:
+          type: string
+          description: Falls back to `X-Client-ID`.
+        imdbId:
+          type: string
+        tmdbId:
+          type: string
+        tvdbId:
+          type: string
+        year:
+          type: integer
+        seasonNumber:
+          type: integer
+        episodeNumber:
+          type: integer
+        absoluteEpisodeNumber:
+          type: integer
+        startOffset:
+          type: number
+          description: Resume position in seconds.
+        reason:
+          type: string
+          description: '`details` (default), `next_episode`, or `manual` (kept until removed).'
+        skipHLS:
+          type: boolean
+          description: Native clients set this to skip HLS session creation.
+
+    PrequeueResponse:
+      type: object
+      required: [prequeueId, status]
+      properties:
+        prequeueId:
+          type: string
+        targetEpisode:
+          $ref: '#/components/schemas/EpisodeReference'
+        status:
+          $ref: '#/components/schemas/PrequeueStatus'
+
+    AudioTrackInfo:
+      type: object
+      required: [index]
+      properties:
+        index:
+          type: integer
+          description: Container (ffprobe) stream index.
+        language:
+          type: string
+        codec:
+          type: string
+        profile:
+          type: string
+        title:
+          type: string
+
+    SubtitleTrackInfo:
+      type: object
+      required: [index]
+      properties:
+        index:
+          type: integer
+          description: Container (ffprobe) stream index on prequeue status (same number as `absoluteIndex`).
+        absoluteIndex:
+          type: integer
+        language:
+          type: string
+        title:
+          type: string
+        codec:
+          type: string
+        forced:
+          type: boolean
+        isBitmap:
+          type: boolean
+
+    SubtitleSessionInfo:
+      type: object
+      required: [sessionId, vttUrl, trackIndex]
+      properties:
+        sessionId:
+          type: string
+        vttUrl:
+          type: string
+        subtitleUrl:
+          type: string
+        format:
+          type: string
+        trackIndex:
+          type: integer
+        language:
+          type: string
+        title:
+          type: string
+        codec:
+          type: string
+        isForced:
+          type: boolean
+        isExtracting:
+          type: boolean
+        firstCueTime:
+          type: number
+          description: Seconds.
+
+    DolbyVisionConfiguration:
+      type: object
+      properties:
+        streamIndex:
+          type: integer
+        pixelFormat:
+          type: string
+        versionMajor:
+          type: integer
+        versionMinor:
+          type: integer
+        profile:
+          type: integer
+        level:
+          type: integer
+        rpuPresentFlag:
+          type: integer
+        elPresentFlag:
+          type: integer
+        blPresentFlag:
+          type: integer
+        blSignalCompatibilityId:
+          type: integer
+
+    Track:
+      type: object
+      required: [streamIndex, typeIndex]
+      description: |
+        One container track the server chose. Map onto a player's track list
+        by `typeIndex`, falling back to `languageCode` + `languageIndex`, then
+        `codec`/`title`/`forced` as tie-breakers.
+      properties:
+        streamIndex:
+          type: integer
+          description: Container (ffprobe) stream number; the number space of HLS `audioTrack`/`subtitleTrack` params. Not a list position.
+        typeIndex:
+          type: integer
+          description: 0-based position among same-kind tracks in container order.
+        language:
+          type: string
+          description: Raw container language tag.
+        languageCode:
+          type: string
+          description: Normalised ISO 639-2 code.
+        languageIndex:
+          type: integer
+          description: 0-based position among same-kind tracks of the same language.
+        languageCount:
+          type: integer
+        codec:
+          type: string
+        profile:
+          type: string
+        title:
+          type: string
+        forced:
+          type: boolean
+        default:
+          type: boolean
+        bitmap:
+          type: boolean
+          description: Image-based subtitle (PGS/VobSub).
+
+    TrackSelection:
+      type: object
+      required: [subtitleMode]
+      description: |
+        Server audio/subtitle choice from the effective profile, client and
+        title preferences. Missing `audio`: keep the player default. Use
+        `subtitle` when the renderer draws bitmap subtitles, else
+        `textSubtitle`. Missing `subtitle` with `subtitleMode` other than
+        `off` means no embedded track matched: search online in
+        `subtitleLanguage`.
+      properties:
+        audio:
+          $ref: '#/components/schemas/Track'
+        subtitle:
+          $ref: '#/components/schemas/Track'
+        textSubtitle:
+          $ref: '#/components/schemas/Track'
+        audioLanguage:
+          type: string
+        subtitleLanguage:
+          type: string
+        subtitleMode:
+          type: string
+          enum: ['off', forced-only, 'on']
+
+    PrequeueStatusResponse:
+      type: object
+      required: [prequeueId, status]
+      properties:
+        prequeueId:
+          type: string
+        status:
+          $ref: '#/components/schemas/PrequeueStatus'
+        userId:
+          type: string
+        targetEpisode:
+          $ref: '#/components/schemas/EpisodeReference'
+        progressStage:
+          type: string
+        progressDetail:
+          type: string
+        progressCurrent:
+          type: integer
+        progressCurrentMin:
+          type: integer
+        progressCurrentMax:
+          type: integer
+        progressTotal:
+          type: integer
+        streamPath:
+          type: string
+          description: Pass as `path` to `/api/video/stream`.
+        displayName:
+          type: string
+        serviceType:
+          type: string
+        debridProvider:
+          type: string
+        fileSize:
+          type: integer
+          format: int64
+          description: Bytes.
+        healthStatus:
+          type: string
+        hasDolbyVision:
+          type: boolean
+        hasHdr10:
+          type: boolean
+        dolbyVisionProfile:
+          type: string
+        dolbyVisionConfiguration:
+          $ref: '#/components/schemas/DolbyVisionConfiguration'
+        needsAudioTranscode:
+          type: boolean
+        hlsSessionId:
+          type: string
+        hlsPlaylistUrl:
+          type: string
+        duration:
+          type: number
+          description: Seconds.
+        frameRate:
+          type: string
+        selectedAudioTrack:
+          type: integer
+          deprecated: true
+          description: Container stream index (not a list position); -1 = player default. Prefer `trackSelection.audio`.
+        selectedSubtitleTrack:
+          type: integer
+          deprecated: true
+          description: Container stream index (not a list position); -1 = none. Prefer `trackSelection.subtitle`.
+        trackSelection:
+          $ref: '#/components/schemas/TrackSelection'
+        audioTracks:
+          type: array
+          items:
+            $ref: '#/components/schemas/AudioTrackInfo'
+        subtitleTracks:
+          type: array
+          items:
+            $ref: '#/components/schemas/SubtitleTrackInfo'
+        subtitleSessions:
+          type: object
+          description: Keyed by subtitle stream index.
+          additionalProperties:
+            $ref: '#/components/schemas/SubtitleSessionInfo'
+        passthroughName:
+          type: string
+        passthroughDescription:
+          type: string
+        resultAttributes:
+          type: object
+          additionalProperties:
+            type: string
+        selectedResult:
+          $ref: '#/components/schemas/IndexerResult'
+        selectedResultIndex:
+          type: integer
+        migrationCandidates:
+          type: array
+          description: Stream migration candidates (deferred for native clients).
+          items:
+            $ref: '#/components/schemas/IndexerResult'
+        error:
+          type: string
+
+    ResolveRequest:
+      type: object
+      required: [result]
+      properties:
+        result:
+          $ref: '#/components/schemas/IndexerResult'
+        startOffset:
+          type: number
+          description: Seconds.
+        profileId:
+          type: string
+        allowMarkedBad:
+          type: boolean
+        includeTrackSelection:
+          type: boolean
+        titleId:
+          type: string
+          description: Per-title language preference key.
+        clientId:
+          type: string
+          description: Falls back to `X-Client-ID`.
+
+    PlaybackResolution:
+      type: object
+      required: [queueId, webdavPath, healthStatus]
+      properties:
+        queueId:
+          type: integer
+          format: int64
+        webdavPath:
+          type: string
+          description: Pass as `path` to `/api/video/stream`.
+        healthStatus:
+          type: string
+        debridProvider:
+          type: string
+        fileSize:
+          type: integer
+          format: int64
+        sourceNzbPath:
+          type: string
+        subtitleSessions:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/SubtitleSessionInfo'
+        trackSelection:
+          $ref: '#/components/schemas/TrackSelection'
+
+    Chapter:
+      type: object
+      required: [title, start]
+      properties:
+        title:
+          type: string
+          description: Chapter name as reported by the player (truncated to 200 characters).
+        start:
+          type: number
+          description: Seconds.
+        end:
+          type: number
+          description: Seconds; optional (falls back to the next chapter's start, then the duration).
+
+    SkipSegmentsRequest:
+      type: object
+      properties:
+        imdbId:
+          type: string
+        season:
+          type: integer
+        episode:
+          type: integer
+        duration:
+          type: number
+          description: Media duration in seconds.
+        chapters:
+          type: array
+          maxItems: 500
+          items:
+            $ref: '#/components/schemas/Chapter'
+
+    Segment:
+      type: object
+      required: [type, start, end, source]
+      properties:
+        type:
+          type: string
+          enum: [intro, recap, outro, preview]
+          description: '`outro` is the end-credits range (also movie credits); `preview` comes only from SkipDB.'
+        start:
+          type: number
+          description: Seconds from the start of the media.
+        end:
+          type: number
+          description: Seconds from the start of the media.
+        source:
+          type: string
+          enum: [introdb, skipdb, chapter-explicit, chapter-heuristic]
+
+    SkipSegmentsResponse:
+      type: object
+      required: [segments]
+      properties:
+        segments:
+          type: array
+          items:
+            $ref: '#/components/schemas/Segment'
+
+    # ---------------------------------------------------------------- clients
+
+    ClientRegistrationRequest:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+          description: Stable device ID (same value as `X-Client-ID`).
+        userId:
+          type: string
+          description: Active profile ID.
+        deviceName:
+          type: string
+        nickname:
+          type: string
+        deviceType:
+          type: string
+          description: For example `Apple TV`, `Android TV`.
+        os:
+          type: string
+          description: For example `tvOS`, `Android`.
+        appVersion:
+          type: string
+
+    Client:
+      type: object
+      required: [id, userId]
+      properties:
+        id:
+          type: string
+        userId:
+          type: string
+        name:
+          type: string
+        nickname:
+          type: string
+        deviceName:
+          type: string
+        deviceType:
+          type: string
+        os:
+          type: string
+        appVersion:
+          type: string
+        lastSeenAt:
+          type: string
+          format: date-time
+        firstSeenAt:
+          type: string
+          format: date-time
+        filterEnabled:
+          type: boolean
+
+    ClientRegistrationResponse:
+      type: object
+      required: [client]
+      properties:
+        client:
+          $ref: '#/components/schemas/Client'
