@@ -1303,3 +1303,46 @@ func TestLoadEmptyNavigationUsesCoreDefaults(t *testing.T) {
 		t.Fatalf("empty navigation restored unexpected defaults: %v", settings.Display.NavigationTabVisibility)
 	}
 }
+
+func TestLoadBackfillsSecurityAndLANDiscoveryDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(path, []byte(`{"server":{"host":"0.0.0.0","port":7777}}`), 0o600); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	settings, err := NewManager(path).Load()
+	if err != nil {
+		t.Fatalf("load settings: %v", err)
+	}
+	if !settings.Server.LANDiscoveryEnabled {
+		t.Fatal("LAN discovery must default on for existing installs")
+	}
+	if settings.Security.EnforceProfilePins {
+		t.Fatal("profile PIN enforcement must default off")
+	}
+	if settings.Security.ProfileUnlockTTLHours != DefaultProfileUnlockTTLHours {
+		t.Fatalf("ProfileUnlockTTLHours = %d, want %d", settings.Security.ProfileUnlockTTLHours, DefaultProfileUnlockTTLHours)
+	}
+
+	defaults := DefaultSettings()
+	if !defaults.Server.LANDiscoveryEnabled || defaults.Security.EnforceProfilePins || defaults.Security.ProfileUnlockTTLHours != DefaultProfileUnlockTTLHours {
+		t.Fatalf("unexpected defaults: server=%+v security=%+v", defaults.Server, defaults.Security)
+	}
+}
+
+func TestLoadPreservesExplicitSecurityAndLANDiscoverySettings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	raw := `{"server":{"port":7777,"lanDiscoveryEnabled":false},"security":{"enforceProfilePins":true,"profileUnlockTtlHours":0}}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	settings, err := NewManager(path).Load()
+	if err != nil {
+		t.Fatalf("load settings: %v", err)
+	}
+	if settings.Server.LANDiscoveryEnabled || !settings.Security.EnforceProfilePins || settings.Security.ProfileUnlockTTLHours != 0 {
+		t.Fatalf("explicit values not preserved: server=%+v security=%+v", settings.Server, settings.Security)
+	}
+	if settings.Security.ProfileUnlockTTL() != 0 {
+		t.Fatal("0 hours means session lifetime")
+	}
+}

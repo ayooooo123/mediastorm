@@ -128,6 +128,9 @@ func (ds *DataStore) Notifications() NotificationRepository {
 	return &pgNotificationRepo{pool: ds.pool}
 }
 func (ds *DataStore) SportsLinks() SportsLinksRepository { return &pgSportsLinksRepo{pool: ds.pool} }
+func (ds *DataStore) ProfileUnlocks() ProfileUnlockRepository {
+	return &pgProfileUnlockRepo{pool: ds.pool}
+}
 
 // --- Transaction support ---
 

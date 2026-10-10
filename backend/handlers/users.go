@@ -4,12 +4,16 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"novastream/config"
+	"novastream/internal/apierror"
 	"novastream/internal/auth"
 	"novastream/models"
+	"novastream/services/profileunlock"
 	"novastream/services/users"
 
 	"github.com/gorilla/mux"
@@ -60,6 +64,35 @@ type UsersHandler struct {
 	Service       usersService
 	accounts      accountPasswordVerifier
 	configManager *config.Manager
+	unlocks       profileUnlockIssuer
+	unlockTTL     func() time.Duration
+}
+
+// profileUnlockIssuer issues and revokes server-side profile unlock tokens.
+type profileUnlockIssuer interface {
+	Issue(req profileunlock.IssueRequest) (string, time.Time, error)
+	RevokeProfile(profileID string)
+}
+
+type pinFingerprinter interface {
+	PinFingerprint(id string) string
+}
+
+// SetProfileUnlocks enables unlock-token issuance on PIN verification. ttl
+// returns the configured unlock lifetime (0 = session lifetime).
+func (h *UsersHandler) SetProfileUnlocks(unlocks profileUnlockIssuer, ttl func() time.Duration) {
+	h.unlocks = unlocks
+	h.unlockTTL = ttl
+}
+
+// VerifyPinResponse is returned by POST /api/users/{id}/pin/verify.
+type VerifyPinResponse struct {
+	Valid bool `json:"valid"`
+	// UnlockToken proves the PIN was verified for this profile within the
+	// calling session. Send it as X-Profile-Unlock (or ?profileUnlock=).
+	UnlockToken string `json:"unlockToken,omitempty"`
+	// ExpiresAt is when UnlockToken stops working (RFC 3339, UTC).
+	ExpiresAt string `json:"expiresAt,omitempty"`
 }
 
 type accountPasswordVerifier interface {
@@ -521,6 +554,9 @@ func (h *UsersHandler) SetPin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	user, err := h.Service.SetPin(id, body.Pin)
+	if err == nil && h.unlocks != nil {
+		h.unlocks.RevokeProfile(id)
+	}
 	if err != nil {
 		status := http.StatusInternalServerError
 		switch {
@@ -554,6 +590,9 @@ func (h *UsersHandler) ClearPin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	user, err := h.Service.ClearPin(id)
+	if err == nil && h.unlocks != nil {
+		h.unlocks.RevokeProfile(id)
+	}
 	if err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, users.ErrUserNotFound) {
@@ -588,16 +627,54 @@ func (h *UsersHandler) VerifyPin(w http.ResponseWriter, r *http.Request) {
 
 	err := h.Service.VerifyPin(id, body.Pin)
 	if err != nil {
-		status := http.StatusUnauthorized
-		if errors.Is(err, users.ErrUserNotFound) {
-			status = http.StatusNotFound
+		switch {
+		case errors.Is(err, users.ErrUserNotFound):
+			apierror.Write(w, http.StatusNotFound, "profile_not_found", err.Error())
+		case errors.Is(err, users.ErrPinInvalid):
+			// Stays 401 with the original "invalid PIN" text: shipped Expo builds
+			// detect a wrong PIN by status 401 and the tvOS client by the word
+			// "pin" in the body. The session itself remains valid.
+			code := apierror.CodePinInvalid
+			if strings.TrimSpace(body.Pin) == "" {
+				code = apierror.CodePinRequired
+			}
+			apierror.Write(w, http.StatusUnauthorized, code, err.Error())
+		default:
+			apierror.Write(w, http.StatusInternalServerError, "", err.Error())
 		}
-		http.Error(w, err.Error(), status)
 		return
 	}
 
+	resp := VerifyPinResponse{Valid: true}
+	if h.unlocks != nil {
+		if session, ok := auth.GetSession(r); ok && session.Token != "" {
+			var ttl time.Duration
+			if h.unlockTTL != nil {
+				ttl = h.unlockTTL()
+			}
+			fingerprint := ""
+			if fp, ok := h.Service.(pinFingerprinter); ok {
+				fingerprint = fp.PinFingerprint(id)
+			}
+			token, expiresAt, issueErr := h.unlocks.Issue(profileunlock.IssueRequest{
+				SessionToken:     session.Token,
+				SessionExpiresAt: session.ExpiresAt,
+				AccountID:        session.AccountID,
+				ProfileID:        id,
+				PinFingerprint:   fingerprint,
+				TTL:              ttl,
+			})
+			if issueErr != nil {
+				log.Printf("[users] failed to issue profile unlock for %s: %v", id, issueErr)
+			} else {
+				resp.UnlockToken = token
+				resp.ExpiresAt = expiresAt.UTC().Format(time.RFC3339)
+			}
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]bool{"valid": true})
+	json.NewEncoder(w).Encode(resp)
 }
 
 // SetTraktAccount associates a Trakt account with a user profile.

@@ -1121,6 +1121,11 @@
     const ROUTE_PARAMS = new URLSearchParams(window.location.search || '');
     const AUTH_TOKEN = routeParam('token');
     const CLIENT_ID = routeParam('clientId');
+    // Profile unlock token from POST /api/users/{id}/pin/verify, handed over by
+    // the launching app. Sent as X-Profile-Unlock on API calls and as
+    // ?profileUnlock= on media URLs so PIN-protected profiles keep working when
+    // the server enforces profile PINs (security.enforceProfilePins).
+    const PROFILE_UNLOCK = routeParam('profileUnlock');
     // Share mode: the page was opened from a one-time share link. Hide navigation
     // affordances (no back buttons / no share button) and do not write playback
     // progress back to the sharer's history.
@@ -4748,9 +4753,10 @@
       try {
         const url = new URL(value, window.location.origin);
         if (url.searchParams.has('token')) url.searchParams.set('token', 'redacted');
+        if (url.searchParams.has('profileUnlock')) url.searchParams.set('profileUnlock', 'redacted');
         return url.toString();
       } catch {
-        return String(value).replace(/([?&]token=)[^&]+/i, '$1redacted');
+        return String(value).replace(/([?&](?:token|profileUnlock)=)[^&]+/gi, '$1redacted');
       }
     }
 
@@ -4758,6 +4764,7 @@
       return {
         ...(AUTH_TOKEN ? { Authorization: `Bearer ${AUTH_TOKEN}` } : {}),
         ...(CLIENT_ID ? { 'X-Client-ID': CLIENT_ID } : {}),
+        ...(PROFILE_UNLOCK ? { 'X-Profile-Unlock': PROFILE_UNLOCK } : {}),
         ...headers,
       };
     }
@@ -4781,10 +4788,12 @@
       try {
         const url = new URL(value, window.location.origin);
         if (!url.searchParams.has('token')) url.searchParams.set('token', AUTH_TOKEN);
+        if (PROFILE_UNLOCK && !url.searchParams.has('profileUnlock')) url.searchParams.set('profileUnlock', PROFILE_UNLOCK);
         return url.toString();
       } catch {
         const separator = value.includes('?') ? '&' : '?';
-        return `${value}${separator}token=${encodeURIComponent(AUTH_TOKEN)}`;
+        const unlock = PROFILE_UNLOCK ? `&profileUnlock=${encodeURIComponent(PROFILE_UNLOCK)}` : '';
+        return `${value}${separator}token=${encodeURIComponent(AUTH_TOKEN)}${unlock}`;
       }
     }
 

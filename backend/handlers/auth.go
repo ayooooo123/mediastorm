@@ -6,7 +6,9 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
+	"novastream/internal/apierror"
 	"novastream/internal/auth"
 	"novastream/internal/requestsecurity"
 	"novastream/models"
@@ -18,6 +20,19 @@ import (
 type AuthHandler struct {
 	accounts *accounts.Service
 	sessions *sessions.Service
+	unlocks  profileUnlockSessionHooks
+}
+
+// profileUnlockSessionHooks keeps profile unlock grants in step with the
+// account session lifecycle (revoked on logout, carried over on refresh).
+type profileUnlockSessionHooks interface {
+	RevokeSession(sessionToken string)
+	RebindSession(oldSessionToken, newSessionToken string, newSessionExpiresAt time.Time)
+}
+
+// SetProfileUnlocks wires the profile unlock service into logout/refresh.
+func (h *AuthHandler) SetProfileUnlocks(unlocks profileUnlockSessionHooks) {
+	h.unlocks = unlocks
 }
 
 // NewAuthHandler creates a new auth handler.
@@ -86,12 +101,12 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("[auth] login authentication failed user=%q ip=%s err=%v", strings.TrimSpace(req.Username), getClientIPAddress(r), err)
 		msg := "invalid username or password"
+		code := apierror.CodeInvalidCredentials
 		if errors.Is(err, accounts.ErrAccountExpired) {
 			msg = "this account has expired"
+			code = apierror.CodeAccountExpired
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]string{"error": msg})
+		apierror.Write(w, http.StatusUnauthorized, code, msg)
 		return
 	}
 	if account.IsMaster && h.accounts.HasDefaultPassword() {
@@ -100,12 +115,8 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		// issuing any session instead of trying to infer whether the host is local.
 		if strings.TrimSpace(req.NewPassword) == "" {
 			log.Printf("[auth] requiring legacy default master password replacement from %s", getClientIPAddress(r))
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusPreconditionRequired)
-			json.NewEncoder(w).Encode(map[string]string{
-				"code":  "password_change_required",
-				"error": "change the default admin password by resubmitting login with newPassword",
-			})
+			apierror.Write(w, http.StatusPreconditionRequired, apierror.CodeDefaultPassword,
+				"change the default admin password by resubmitting login with newPassword")
 			return
 		}
 		if err := h.accounts.ReplaceDefaultMasterPassword(req.NewPassword); err != nil {
@@ -159,6 +170,9 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.unlocks != nil {
+		h.unlocks.RevokeSession(token)
+	}
 	if err := h.sessions.Revoke(token); err != nil {
 		// Session not found is OK - might already be expired
 		if err != sessions.ErrSessionNotFound {
@@ -175,15 +189,13 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	token := extractBearerToken(r)
 	if token == "" {
-		http.Error(w, `{"error": "not authenticated"}`, http.StatusUnauthorized)
+		apierror.Write(w, http.StatusUnauthorized, apierror.CodeUnauthorized, "not authenticated")
 		return
 	}
 
 	session, err := h.sessions.Validate(token)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]string{"error": "invalid or expired session"})
+		apierror.Write(w, http.StatusUnauthorized, apierror.CodeSessionExpired, "invalid or expired session")
 		return
 	}
 
@@ -224,9 +236,7 @@ func (h *AuthHandler) VerifyPassword(w http.ResponseWriter, r *http.Request) {
 	}
 	verified, err := h.accounts.Authenticate(account.Username, req.Password)
 	if err != nil || verified.ID != accountID {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]string{"error": "account password is incorrect"})
+		apierror.Write(w, http.StatusUnauthorized, apierror.CodePasswordInvalid, "account password is incorrect")
 		return
 	}
 
@@ -239,16 +249,20 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	token := extractBearerToken(r)
 	if token == "" {
-		http.Error(w, `{"error": "not authenticated"}`, http.StatusUnauthorized)
+		apierror.Write(w, http.StatusUnauthorized, apierror.CodeUnauthorized, "not authenticated")
 		return
 	}
 
 	session, err := h.sessions.RefreshForClient(token, r.Header.Get("X-Client-ID"))
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]string{"error": "invalid or expired session"})
+		apierror.Write(w, http.StatusUnauthorized, apierror.CodeSessionExpired, "invalid or expired session")
 		return
+	}
+
+	if h.unlocks != nil {
+		// The old token was deleted by the rotation; carry profile unlocks over
+		// so a refresh never re-prompts for a PIN.
+		h.unlocks.RebindSession(token, session.Token, session.ExpiresAt)
 	}
 
 	account, ok := h.accounts.Get(session.AccountID)
@@ -280,15 +294,13 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	token := extractBearerToken(r)
 	if token == "" {
-		http.Error(w, `{"error": "not authenticated"}`, http.StatusUnauthorized)
+		apierror.Write(w, http.StatusUnauthorized, apierror.CodeUnauthorized, "not authenticated")
 		return
 	}
 
 	session, err := h.sessions.Validate(token)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]string{"error": "invalid or expired session"})
+		apierror.Write(w, http.StatusUnauthorized, apierror.CodeSessionExpired, "invalid or expired session")
 		return
 	}
 
@@ -306,9 +318,7 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := h.accounts.Authenticate(account.Username, req.CurrentPassword); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]string{"error": "current password is incorrect"})
+		apierror.Write(w, http.StatusUnauthorized, apierror.CodePasswordInvalid, "current password is incorrect")
 		return
 	}
 

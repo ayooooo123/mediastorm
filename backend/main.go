@@ -47,6 +47,7 @@ import (
 	"novastream/services/indexer"
 	"novastream/services/invitations"
 	"novastream/services/jellyfin"
+	"novastream/services/landiscovery"
 	"novastream/services/letterboxd"
 	"novastream/services/libraryaccess"
 	"novastream/services/localmedia"
@@ -57,6 +58,7 @@ import (
 	"novastream/services/playback"
 	"novastream/services/plex"
 	"novastream/services/prewarm"
+	"novastream/services/profileunlock"
 	"novastream/services/realtimesessions"
 	"novastream/services/recordings"
 	"novastream/services/remoteaccess"
@@ -1084,6 +1086,13 @@ func main() {
 	log.Printf("[startup] phase=post-video-service-wiring duration=%s", time.Since(startupPhaseStarted))
 	startupPhaseStarted = time.Now()
 
+	var profileUnlockStore profileunlock.Store
+	if store != nil {
+		profileUnlockStore = store.ProfileUnlocks()
+	}
+	profileUnlockService := profileunlock.NewService(profileUnlockStore)
+	profileUnlockService.StartCleanup(context.Background(), time.Hour)
+
 	api.Register(
 		r,
 		settingsHandler,
@@ -1127,6 +1136,7 @@ func main() {
 		watchPartyHandler,
 		settings.Server.HomepageAPIKey,
 		latencyAdmin,
+		api.WithProfileUnlocks(profileUnlockService, api.CachedSecuritySettings(cfgManager, 3*time.Second)),
 	)
 	log.Printf("[startup] phase=primary-api-routes duration=%s", time.Since(startupPhaseStarted))
 	startupPhaseStarted = time.Now()
@@ -2064,6 +2074,20 @@ func main() {
 	if remoteAccessService != nil {
 		go superviseRemoteAccess(remoteAccessService)
 	}
+	var lanAdvertiser *landiscovery.Advertiser
+	if settings.Server.LANDiscoveryEnabled {
+		lanAdvertiser = landiscovery.Start(landiscovery.Config{
+			Name:     settings.Server.LANDiscoveryName,
+			Port:     settings.Server.Port,
+			Version:  handlers.GetBackendVersion(),
+			BasePath: settings.Server.BasePath,
+		})
+		if lanAdvertiser.Active() && remoteAccessService != nil {
+			go publishLANDiscoveryServerID(lanAdvertiser, remoteAccessService, shutdownDone)
+		}
+	} else {
+		log.Printf("[lan-discovery] mDNS advertising disabled by settings (server.lanDiscoveryEnabled=false)")
+	}
 
 	// Start server in goroutine
 	go func() {
@@ -2119,6 +2143,7 @@ func main() {
 	<-shutdownChan
 	close(shutdownDone)
 	log.Println("🛑 Shutdown signal received, cleaning up...")
+	lanAdvertiser.Shutdown()
 
 	// Create shutdown context with timeout
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -2167,6 +2192,27 @@ func main() {
 	}
 
 	log.Println("✅ Shutdown complete")
+}
+
+// publishLANDiscoveryServerID adds the remote-access identity to the mDNS TXT
+// record once the Iroh host has started (it may start after the listener).
+func publishLANDiscoveryServerID(advertiser *landiscovery.Advertiser, service *remoteaccess.Service, done <-chan struct{}) {
+	publish := func() {
+		if id, err := service.PublicIdentity(); err == nil && id != "" {
+			advertiser.SetServerID(id)
+		}
+	}
+	publish()
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			publish()
+		}
+	}
 }
 
 func superviseRemoteAccess(service *remoteaccess.Service) {

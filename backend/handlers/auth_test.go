@@ -163,8 +163,8 @@ func TestLogin_DefaultMasterPasswordRequiresReplacement(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if response["code"] != "password_change_required" {
-		t.Fatalf("code = %q, want password_change_required", response["code"])
+	if response["code"] != "default_password" {
+		t.Fatalf("code = %q, want default_password", response["code"])
 	}
 }
 

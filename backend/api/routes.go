@@ -7,9 +7,11 @@ import (
 	"strconv"
 	"time"
 
+	"novastream/config"
 	"novastream/handlers"
 	"novastream/internal/requestsecurity"
 	"novastream/services/accounts"
+	"novastream/services/profileunlock"
 	"novastream/services/sessions"
 	"novastream/services/users"
 	"novastream/utils"
@@ -71,7 +73,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, X-PIN, X-Client-ID, X-Remote-Access-Credential, X-Adaptive-Throughput-Mbps, X-Adaptive-Throughput-Measured-At, Cache-Control, Pragma")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, X-PIN, X-Client-ID, X-Profile-Unlock, X-Remote-Access-Credential, X-Adaptive-Throughput-Mbps, X-Adaptive-Throughput-Measured-At, Cache-Control, Pragma")
 		}
 
 		// Handle preflight requests
@@ -93,6 +95,23 @@ func handleOptions(w http.ResponseWriter, r *http.Request) {
 // mappings behind the same ownership boundary as the rest of the admin settings.
 func masterOnlySportsMutation(handler http.HandlerFunc) http.Handler {
 	return MasterOnlyMiddleware()(handler)
+}
+
+// RegisterOption customises Register without widening its positional signature.
+type RegisterOption func(*registerOptions)
+
+type registerOptions struct {
+	unlocks  *profileunlock.Service
+	security SecuritySettingsFunc
+}
+
+// WithProfileUnlocks enables server-issued profile unlock tokens and, when the
+// security.enforceProfilePins setting is on, server-side PIN enforcement.
+func WithProfileUnlocks(unlocks *profileunlock.Service, security SecuritySettingsFunc) RegisterOption {
+	return func(o *registerOptions) {
+		o.unlocks = unlocks
+		o.security = security
+	}
 }
 
 // Register mounts API endpoints onto the provided router.
@@ -139,7 +158,14 @@ func Register(
 	watchPartyHandler *handlers.WatchPartyHandler,
 	homepageAPIKey string,
 	latencyAdmin *handlers.PlaybackLatencyAdmin,
+	opts ...RegisterOption,
 ) {
+	var options registerOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&options)
+		}
+	}
 	if videoHandler != nil && liveHandler != nil {
 		videoHandler.SetLiveChannelProvider(liveHandler)
 	}
@@ -154,6 +180,8 @@ func Register(
 	defaultPwLimiter := NewIPRateLimiter(rate.Every(6*time.Second), 10) // 10/min per IP
 	profileCreateLimiter := NewIPRateLimiter(rate.Every(12*time.Second), 5)
 	passwordVerifyLimiter := NewIPRateLimiter(rate.Every(12*time.Second), 5)
+	// PINs are short; once the server enforces them, guessing must be throttled.
+	pinVerifyLimiter := NewIPRateLimiter(rate.Every(6*time.Second), 10)
 
 	// Rate limiters for resource-intensive endpoints (spawn FFmpeg processes)
 	probeLimiter := NewIPRateLimiter(rate.Every(6*time.Second), 10)    // 10/min per IP
@@ -163,6 +191,18 @@ func Register(
 
 	// Auth routes (no authentication required)
 	authHandler := handlers.NewAuthHandler(accountsSvc, sessionsSvc)
+	if options.unlocks != nil {
+		authHandler.SetProfileUnlocks(options.unlocks)
+		if usersHandler != nil {
+			security := options.security
+			usersHandler.SetProfileUnlocks(options.unlocks, func() time.Duration {
+				if security == nil {
+					return time.Duration(config.DefaultProfileUnlockTTLHours) * time.Hour
+				}
+				return security().ProfileUnlockTTL()
+			})
+		}
+	}
 	api.HandleFunc("/auth/login", RateLimitHandlerFunc(loginLimiter, authHandler.Login)).Methods(http.MethodPost)
 	api.HandleFunc("/auth/login", authHandler.Options).Methods(http.MethodOptions)
 	api.HandleFunc("/auth/me", authHandler.Me).Methods(http.MethodGet)
@@ -203,6 +243,9 @@ func Register(
 	// Protected routes - require authentication
 	protected := api.PathPrefix("").Subrouter()
 	protected.Use(AccountAuthMiddleware(sessionsSvc, accountsSvc))
+	if options.unlocks != nil && usersSvc != nil && options.security != nil {
+		protected.Use(ProfilePinMiddleware(usersSvc, options.unlocks, options.security))
+	}
 
 	// Logout requires a valid session to prevent unauthenticated session revocation
 	protected.HandleFunc("/auth/logout", authHandler.Logout).Methods(http.MethodPost)
@@ -766,7 +809,7 @@ func Register(
 	profileProtected.HandleFunc("/{userID}/pin", usersHandler.SetPin).Methods(http.MethodPut)
 	profileProtected.HandleFunc("/{userID}/pin", usersHandler.ClearPin).Methods(http.MethodDelete)
 	profileProtected.HandleFunc("/{userID}/pin", usersHandler.Options).Methods(http.MethodOptions)
-	profileProtected.HandleFunc("/{userID}/pin/verify", usersHandler.VerifyPin).Methods(http.MethodPost)
+	profileProtected.HandleFunc("/{userID}/pin/verify", RateLimitHandlerFunc(pinVerifyLimiter, usersHandler.VerifyPin)).Methods(http.MethodPost)
 	profileProtected.HandleFunc("/{userID}/pin/verify", usersHandler.Options).Methods(http.MethodOptions)
 	profileProtected.HandleFunc("/{userID}/trakt", usersHandler.SetTraktAccount).Methods(http.MethodPut)
 	profileProtected.HandleFunc("/{userID}/trakt", usersHandler.ClearTraktAccount).Methods(http.MethodDelete)

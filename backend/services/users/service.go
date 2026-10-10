@@ -2,6 +2,8 @@ package users
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -672,6 +674,24 @@ func (s *Service) VerifyPin(id, pin string) error {
 	}
 
 	return nil
+}
+
+// PinFingerprint returns a short, non-reversible fingerprint of the profile's
+// current PIN hash, or "" when no PIN is set. Profile unlock grants embed it so
+// any PIN change or removal invalidates outstanding unlocks.
+func (s *Service) PinFingerprint(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ""
+	}
+	s.mu.RLock()
+	user, ok := s.users[id]
+	s.mu.RUnlock()
+	if !ok || user.PinHash == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(user.PinHash))
+	return hex.EncodeToString(sum[:8])
 }
 
 // HasPin returns true if the user has a PIN set.

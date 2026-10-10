@@ -3009,3 +3009,22 @@ func TestAdminUIHandler_TestLiveTV_HDHomeRun(t *testing.T) {
 		t.Fatalf("tuner test failed: %s", rec.Body.String())
 	}
 }
+
+func TestSettingsSchemaProfilePinEnforcementIsGlobalOnlyAndExplained(t *testing.T) {
+	section, ok := handlers.SettingsSchema["security"].(map[string]interface{})
+	if !ok {
+		t.Fatal("security settings schema is missing")
+	}
+	fields := section["fields"].(map[string]interface{})
+	enforce, ok := fields["enforceProfilePins"].(map[string]interface{})
+	if !ok || enforce["type"] != "boolean" || enforce["globalOnly"] != true {
+		t.Fatalf("enforceProfilePins schema = %#v", enforce)
+	}
+	if desc, _ := enforce["description"].(string); !strings.Contains(desc, "Update every app first") {
+		t.Fatalf("enforceProfilePins must warn that clients need updating: %q", desc)
+	}
+	server := handlers.SettingsSchema["server"].(map[string]interface{})["fields"].(map[string]interface{})
+	if field, ok := server["lanDiscoveryEnabled"].(map[string]interface{}); !ok || field["type"] != "boolean" {
+		t.Fatalf("lanDiscoveryEnabled schema = %#v", server["lanDiscoveryEnabled"])
+	}
+}

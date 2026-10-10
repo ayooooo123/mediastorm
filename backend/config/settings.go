@@ -52,6 +52,31 @@ type Settings struct {
 	Ranking         RankingSettings         `json:"ranking,omitempty"`
 	BackupRetention BackupRetentionSettings `json:"backupRetention,omitempty"`
 	Sports          SportsSettings          `json:"sports,omitempty"`
+	Security        SecuritySettings        `json:"security"`
+}
+
+// DefaultProfileUnlockTTLHours is the default lifetime of a profile unlock
+// token issued by a successful PIN verification.
+const DefaultProfileUnlockTTLHours = 12
+
+// SecuritySettings holds server-wide access-control policy.
+type SecuritySettings struct {
+	// EnforceProfilePins makes the server reject requests that target a
+	// PIN-protected profile unless they carry a valid profile unlock token
+	// (X-Profile-Unlock header or profileUnlock query parameter). Off by
+	// default because older clients do not send unlock tokens.
+	EnforceProfilePins bool `json:"enforceProfilePins"`
+	// ProfileUnlockTTLHours is the lifetime of an unlock token. 0 means the
+	// unlock lasts as long as the account session (including refreshes).
+	ProfileUnlockTTLHours int `json:"profileUnlockTtlHours"`
+}
+
+// ProfileUnlockTTL returns the unlock lifetime; 0 means session lifetime.
+func (s SecuritySettings) ProfileUnlockTTL() time.Duration {
+	if s.ProfileUnlockTTLHours <= 0 {
+		return 0
+	}
+	return time.Duration(s.ProfileUnlockTTLHours) * time.Hour
 }
 
 // SportsSettings controls which leagues the ESPN-backed sports scoreboard service polls.
@@ -126,6 +151,11 @@ type ServerSettings struct {
 	ExternalBackendURL         string   `json:"externalBackendUrl,omitempty"`         // Public backend URL used for external Watch Together invitations
 	HomepageAPIKey             string   `json:"homepageApiKey,omitempty"`             // API key for Homepage dashboard integration
 	AllowedPrivateMediaOrigins []string `json:"allowedPrivateMediaOrigins,omitempty"` // Explicit private origins permitted for server-side media requests
+	// LANDiscoveryEnabled advertises the server on the local network via
+	// mDNS/Bonjour (_mediastorm._tcp). Defaults to true; requires restart.
+	LANDiscoveryEnabled bool `json:"lanDiscoveryEnabled"`
+	// LANDiscoveryName overrides the advertised instance name (default: hostname).
+	LANDiscoveryName string `json:"lanDiscoveryName,omitempty"`
 }
 
 // NormalizeExternalBackendURL validates the optional public backend address.
@@ -2036,7 +2066,8 @@ func DefaultRankingCriteria() []RankingCriterion {
 func DefaultSettings() Settings {
 	sabnzbdEnabled := false
 	return Settings{
-		Server:        ServerSettings{Host: "0.0.0.0", Port: 7777},
+		Server:        ServerSettings{Host: "0.0.0.0", Port: 7777, LANDiscoveryEnabled: true},
+		Security:      SecuritySettings{EnforceProfilePins: false, ProfileUnlockTTLHours: DefaultProfileUnlockTTLHours},
 		Usenet:        []UsenetSettings{},
 		UsenetEngines: DefaultUsenetEngineSettings(),
 		Indexers:      []IndexerConfig{},
@@ -2389,6 +2420,24 @@ func (m *Manager) Load() (Settings, error) {
 			}
 			// Remove from streaming
 			delete(streamingRaw, "servicePriority")
+		}
+	}
+
+	// Backfill LAN discovery (default on) and security defaults for installs
+	// that predate these fields. Explicitly stored values are preserved.
+	if serverRaw, ok := raw["server"].(map[string]interface{}); ok {
+		if _, has := serverRaw["lanDiscoveryEnabled"]; !has {
+			serverRaw["lanDiscoveryEnabled"] = true
+		}
+	}
+	if securityRaw, ok := raw["security"].(map[string]interface{}); ok {
+		if _, has := securityRaw["profileUnlockTtlHours"]; !has {
+			securityRaw["profileUnlockTtlHours"] = DefaultProfileUnlockTTLHours
+		}
+	} else {
+		raw["security"] = map[string]interface{}{
+			"enforceProfilePins":    false,
+			"profileUnlockTtlHours": DefaultProfileUnlockTTLHours,
 		}
 	}
 
@@ -3161,6 +3210,9 @@ func (m *Manager) Save(s Settings) error {
 	s.Playback.NormalizeAllowedTrackLanguages()
 	s.Playback.NormalizePreroll()
 	s.Sports.Normalize()
+	if s.Security.ProfileUnlockTTLHours < 0 {
+		s.Security.ProfileUnlockTTLHours = 0
+	}
 	if err := s.Server.NormalizeAllowedPrivateMediaOrigins(); err != nil {
 		return err
 	}

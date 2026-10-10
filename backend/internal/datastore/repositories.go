@@ -71,6 +71,16 @@ type SessionRepository interface {
 	Count(ctx context.Context) (int64, error)
 }
 
+// ProfileUnlockRepository persists server-issued profile PIN unlock grants.
+type ProfileUnlockRepository interface {
+	Create(ctx context.Context, unlock *models.ProfileUnlock) error
+	List(ctx context.Context) ([]models.ProfileUnlock, error)
+	DeleteBySession(ctx context.Context, sessionHash string) error
+	DeleteByProfile(ctx context.Context, profileID string) error
+	RebindSession(ctx context.Context, oldSessionHash, newSessionHash string, sessionExpiresAt time.Time) error
+	DeleteExpired(ctx context.Context) (int64, error)
+}
+
 // InvitationRepository manages invitation persistence.
 type InvitationRepository interface {
 	Get(ctx context.Context, id string) (*models.Invitation, error)

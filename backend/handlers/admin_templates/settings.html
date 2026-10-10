@@ -2852,7 +2852,7 @@
         'playback', 'subtitles', 'transmux',
         'metadata', 'mdblist',
         'homeShelves', 'display',
-        'server', 'network'
+        'server', 'network', 'security'
     ].map((key, index) => [key, index]));
     const advancedSections = new Set(['ranking', 'server', 'transmux']);
     const advancedFieldPaths = new Set([
@@ -3156,7 +3156,7 @@
         if (['metadata', 'mdblist'].includes(sectionKey)) return 'metadata';
         if (sectionKey === 'homeShelves') return 'interface';
         if (sectionKey === 'display') return 'appearance';
-        if (['server', 'network'].includes(sectionKey)) return 'server';
+        if (['server', 'network', 'security'].includes(sectionKey)) return 'server';
         return {
             providers: 'sources',
             searchFiltering: 'search',
