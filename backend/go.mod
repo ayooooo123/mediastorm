@@ -21,6 +21,7 @@ require (
 	github.com/javi11/nzbparser v0.4.1
 	github.com/javi11/rardecode/v2 v2.1.2-0.20260610075131-4664d7a7325a
 	github.com/javi11/rarlist v1.1.4
+	github.com/libp2p/zeroconf/v2 v2.2.0
 	github.com/mattn/go-sqlite3 v1.14.32
 	github.com/mnightingale/rapidyenc v0.0.0-20250628164132-aaf36ba945ef
 	github.com/mozillazg/go-unidecode v0.2.0
@@ -66,6 +67,7 @@ require (
 	github.com/klauspost/compress v1.18.5 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/mfridman/interpolate v0.0.2 // indirect
+	github.com/miekg/dns v1.1.43 // indirect
 	github.com/montanaflynn/stats v0.9.0 // indirect
 	github.com/oasdiff/yaml v0.1.1 // indirect
 	github.com/oasdiff/yaml3 v0.0.14 // indirect
