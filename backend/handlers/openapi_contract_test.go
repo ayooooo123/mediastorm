@@ -13,12 +13,14 @@ import (
 	"github.com/gorilla/mux"
 
 	"novastream/api/openapi"
+	"novastream/internal/apierror"
 	"novastream/internal/auth"
 	"novastream/models"
 	"novastream/services/accounts"
 	"novastream/services/clients"
 	"novastream/services/customlists"
 	"novastream/services/playback"
+	"novastream/services/profileunlock"
 	"novastream/services/sessions"
 	"novastream/services/sourcehealth"
 	"novastream/services/users"
@@ -43,6 +45,8 @@ type contractCall struct {
 	vars    map[string]string
 	master  bool
 	headers map[string]string
+	// session, when set, is injected as the authenticated session.
+	session *models.Session
 	// invalid marks a deliberately non-conforming request (negative tests):
 	// the spec must reject it, and the handler's error response is validated.
 	invalid bool
@@ -78,6 +82,9 @@ func (c contractCall) request(t *testing.T) (*http.Request, []byte) {
 	}
 	ctx := context.WithValue(req.Context(), auth.ContextKeyAccountID, contractAccountID)
 	ctx = context.WithValue(ctx, auth.ContextKeyIsMaster, c.master)
+	if c.session != nil {
+		ctx = context.WithValue(ctx, auth.ContextKeySession, *c.session)
+	}
 	return req.WithContext(ctx), raw
 }
 
@@ -385,6 +392,36 @@ func TestOpenAPIContract(t *testing.T) {
 		}
 		login("contract-test-master-password", http.StatusOK)
 		login("wrong", http.StatusUnauthorized)
+
+		account, ok := accountsSvc.GetByUsername("admin")
+		if !ok {
+			t.Fatal("admin account missing")
+		}
+		session, err := sessionsSvc.Create(account.ID, true, "contract", "127.0.0.1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		bearer := map[string]string{"Authorization": "Bearer " + session.Token}
+
+		rec := exercise(t, v, contractCall{method: http.MethodPost, target: "/api/auth/refresh", headers: bearer}, h.Refresh, http.StatusOK)
+		refreshed := decodeContract[LoginResponse](t, rec)
+		if refreshed.Token == "" || refreshed.Token == session.Token {
+			t.Fatalf("refresh must rotate the token: %+v", refreshed)
+		}
+		// The rotated-out token is gone.
+		rec = exercise(t, v, contractCall{method: http.MethodPost, target: "/api/auth/refresh", headers: bearer}, h.Refresh, http.StatusUnauthorized)
+		if body := decodeContract[map[string]string](t, rec); body["code"] != "session_expired" {
+			t.Fatalf("stale refresh code = %q", body["code"])
+		}
+
+		newBearer := map[string]string{"Authorization": "Bearer " + refreshed.Token}
+		exercise(t, v, contractCall{method: http.MethodPost, target: "/api/auth/logout", headers: newBearer}, h.Logout, http.StatusOK)
+		if _, err := sessionsSvc.Validate(refreshed.Token); err == nil {
+			t.Fatal("logout must revoke the session")
+		}
+		exercise(t, v, contractCall{method: http.MethodPost, target: "/api/auth/logout", headers: map[string]string{"Authorization": ""}}, h.Logout, http.StatusBadRequest)
+
+		exercise(t, v, contractCall{method: http.MethodGet, target: "/api/version"}, NewVersionHandler().GetVersion, http.StatusOK)
 	})
 
 	t.Run("profiles", func(t *testing.T) {
@@ -400,6 +437,9 @@ func TestOpenAPIContract(t *testing.T) {
 			t.Fatal(err)
 		}
 		h := NewUsersHandler(usersSvc)
+		unlocks := profileunlock.NewService(nil)
+		h.SetProfileUnlocks(unlocks, func() time.Duration { return time.Hour })
+		session := &models.Session{Token: "contract-test-token", AccountID: contractAccountID, ExpiresAt: time.Now().Add(24 * time.Hour)}
 
 		rec := exercise(t, v, contractCall{method: http.MethodGet, target: "/api/users"}, h.List, http.StatusOK)
 		profiles := decodeContract[[]map[string]any](t, rec)
@@ -410,12 +450,34 @@ func TestOpenAPIContract(t *testing.T) {
 			t.Fatal("pinHash must not be serialised")
 		}
 
-		verify := func(pin string, status int) {
-			exercise(t, v, contractCall{method: http.MethodPost, target: "/api/users/" + profile.ID + "/pin/verify",
-				body: map[string]string{"pin": pin}, vars: map[string]string{"userID": profile.ID}}, h.VerifyPin, status)
+		verify := func(pin string, status int) *httptest.ResponseRecorder {
+			return exercise(t, v, contractCall{method: http.MethodPost, target: "/api/users/" + profile.ID + "/pin/verify",
+				body: map[string]string{"pin": pin}, vars: map[string]string{"userID": profile.ID}, session: session}, h.VerifyPin, status)
 		}
-		verify("1234", http.StatusOK)
-		verify("0000", http.StatusUnauthorized)
+		ok := decodeContract[VerifyPinResponse](t, verify("1234", http.StatusOK))
+		if !ok.Valid || ok.UnlockToken == "" || ok.ExpiresAt == "" {
+			t.Fatalf("verify must return an unlock token: %+v", ok)
+		}
+		if !unlocks.Validate([]string{ok.UnlockToken}, session.Token, profile.ID, usersSvc.PinFingerprint(profile.ID)) {
+			t.Fatal("issued unlock token does not validate")
+		}
+		wrong := decodeContract[map[string]string](t, verify("0000", http.StatusUnauthorized))
+		if wrong["code"] != "pin_invalid" || wrong["error"] != "invalid PIN" {
+			t.Fatalf("wrong PIN body = %v", wrong)
+		}
+
+		// The enforcement middleware lives in package api (which imports this
+		// package), so validate its 403 envelope against the spec directly.
+		lockedReq, _ := contractCall{method: http.MethodGet, target: "/api/users/" + profile.ID + "/details-bundle?type=movie&titleId=tmdb:movie:603",
+			headers: map[string]string{"X-Profile-Unlock": "pu_stale"}}.request(t)
+		if err := v.ValidateRequest(lockedReq, nil); err != nil {
+			t.Fatalf("X-Profile-Unlock request does not match spec: %v", err)
+		}
+		locked := httptest.NewRecorder()
+		apierror.Write(locked, http.StatusForbidden, apierror.CodeProfileLocked, "profile is locked", map[string]string{"profileId": profile.ID})
+		if err := v.ValidateResponse(lockedReq, locked.Code, locked.Header(), locked.Body.Bytes()); err != nil {
+			t.Fatalf("profile_locked response does not match spec: %v", err)
+		}
 	})
 
 	history := &contractHistory{

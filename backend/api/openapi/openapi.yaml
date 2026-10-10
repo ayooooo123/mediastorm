@@ -24,16 +24,50 @@ info:
       they do not know. Some request bodies are closed (the server rejects
       unknown fields with 400); those schemas set
       `additionalProperties: false`.
-    - **Auth.** Every route except login requires a session token as
-      `Authorization: Bearer <token>`. Media URLs that cannot carry headers
-      (`/api/video/stream`) may instead pass `?token=`.
+    - **Auth.** Every route except login and `GET /api/version` requires a
+      session token as `Authorization: Bearer <token>`. Media URLs that
+      cannot carry headers (`/api/video/stream`) may instead pass `?token=`.
+      Tokens rotate on `POST /api/auth/refresh`; the old token stops working
+      immediately.
+    - **Profile PINs.** `POST /api/users/{userId}/pin/verify` returns an
+      `unlockToken` for PIN-protected profiles. Send it on every request that
+      names that profile (path `{userId}`, `profileId`/`userId` query
+      parameters, or `profileId`/`userId` JSON body fields) as the
+      `X-Profile-Unlock` header (comma-separate several tokens), or as the
+      `profileUnlock` query parameter on media URLs that cannot carry
+      headers. When the server setting `security.enforceProfilePins` is on,
+      requests for a PIN-protected profile without a valid unlock get 403
+      with `code: profile_locked` (the session is still valid; prompt for the
+      PIN, verify, retry). When the setting is off (the default) the header
+      is accepted and ignored. Unlocks survive `POST /api/auth/refresh`, end
+      at logout, when the profile's PIN changes or is removed, and at
+      `expiresAt`.
     - **Client identity.** Send `X-Client-ID` (a stable per-device ID) on
       every request. Device settings, stream limits, adaptive playback and
       track preferences key off it.
-    - **Errors.** Most failures return `{"error": "..."}`. Some older handler
-      paths use Go's `http.Error`, which sends the message as `text/plain`
-      (sometimes a JSON-looking string); clients should treat any non-2xx
-      body as an opaque message when it does not parse.
+    - **Errors.** Most failures return `{"error": "...", "code": "..."}`
+      (`Error` schema). Branch on `code`, never on the `error` text (the text
+      is kept stable only for older clients). Stable auth-related codes:
+
+      | status | code | meaning |
+      |---|---|---|
+      | 401 | `unauthorized` | no session token supplied |
+      | 401 | `session_expired` | token unknown, revoked, rotated or expired — refresh or sign in |
+      | 401 | `account_expired` | the account expired; all sessions were revoked |
+      | 401 | `invalid_credentials` | wrong username/password at login |
+      | 401 | `password_invalid` | wrong current password on a re-auth check; session still valid |
+      | 401 | `pin_invalid` | wrong profile PIN; session still valid |
+      | 401 | `pin_required` | PIN verify sent without a PIN; session still valid |
+      | 403 | `profile_locked` | PIN-protected profile not unlocked; session still valid |
+      | 403 | `forbidden` / `master_required` | the session may not use this route |
+      | 404 | `profile_not_found` | profile does not exist or belongs to another account |
+      | 428 | `default_password` | master still uses the default password; resubmit login with `newPassword` |
+      | 429 | `rate_limited` | too many attempts; honour `Retry-After` (seconds) |
+
+      Only `session_expired`, `unauthorized` and `account_expired` mean the
+      session is unusable. Some older handler paths still use Go's
+      `http.Error`, which sends the message as `text/plain`; treat any
+      non-2xx body as an opaque message when it does not parse.
 servers:
   - url: /
 security:
@@ -57,7 +91,9 @@ paths:
       description: |
         Rate limited to 5 attempts per minute per IP. A master account still
         using the default bootstrap password gets 428 with
-        `code: password_change_required`; resubmit with `newPassword`.
+        `code: default_password`; resubmit with `newPassword`. Wrong
+        credentials answer 401 `invalid_credentials`; an expired account
+        answers 401 `account_expired`.
         Sessions last 30 days with `rememberMe`, otherwise the server default.
       security: []
       parameters:
@@ -86,6 +122,72 @@ paths:
         '429':
           $ref: '#/components/responses/Error'
 
+  /api/auth/refresh:
+    post:
+      tags: [auth]
+      operationId: refreshSession
+      summary: Rotate the session token and extend its lifetime
+      description: |
+        Issues a **new** token and deletes the presented one: the old token
+        is rejected (401 `session_expired`) from the moment this call
+        succeeds, so store the new token before issuing further requests.
+        The new session lasts the server's default session duration.
+        Profile unlock tokens issued to the old session are carried over to
+        the new one (no PIN re-prompt). Share-link (stream-scoped) sessions
+        cannot be refreshed. The token must be sent in the `Authorization`
+        header.
+      parameters:
+        - $ref: '#/components/parameters/ClientID'
+      responses:
+        '200':
+          description: Token rotated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '401':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /api/auth/logout:
+    post:
+      tags: [auth]
+      operationId: logout
+      summary: Revoke the current session
+      description: |
+        Deletes the session token from the `Authorization` header and every
+        profile unlock issued to it. Already-revoked tokens are treated as
+        success.
+      parameters:
+        - $ref: '#/components/parameters/ClientID'
+      responses:
+        '200':
+          description: Session revoked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogoutResponse'
+        '400':
+          $ref: '#/components/responses/Error'
+        '401':
+          $ref: '#/components/responses/Error'
+
+  /api/version:
+    get:
+      tags: [auth]
+      operationId: getVersion
+      summary: Backend version
+      description: Unauthenticated; usable as a reachability probe.
+      security: []
+      responses:
+        '200':
+          description: Version information.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionResponse'
+
   /api/users:
     get:
       tags: [profiles]
@@ -109,7 +211,17 @@ paths:
     post:
       tags: [profiles]
       operationId: verifyProfilePin
-      summary: Check a profile PIN
+      summary: Check a profile PIN and obtain a profile unlock token
+      description: |
+        On success returns `valid: true` plus an `unlockToken` bound to the
+        calling session and this profile. Send it as `X-Profile-Unlock` (or
+        `?profileUnlock=` on media URLs) on requests for this profile. A
+        profile without a PIN also verifies (any PIN) and gets a token.
+
+        A wrong PIN answers **401** with `{"error": "invalid PIN", "code":
+        "pin_invalid"}` (`pin_required` when the PIN is empty). This 401 does
+        not mean the session expired — do not refresh or sign out on it.
+        Rate limited to 10 attempts per minute per IP (429 `rate_limited`).
       parameters:
         - $ref: '#/components/parameters/UserID'
         - $ref: '#/components/parameters/ClientID'
@@ -132,6 +244,8 @@ paths:
           $ref: '#/components/responses/Error'
         '404':
           $ref: '#/components/responses/Error'
+        '429':
+          $ref: '#/components/responses/Error'
 
   /api/users/{userId}/history/continue:
     get:
@@ -145,6 +259,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/UserID'
         - $ref: '#/components/parameters/ClientID'
+        - $ref: '#/components/parameters/ProfileUnlock'
       responses:
         '200':
           description: Continue Watching items, most recent first. Older servers may send `null` for an empty shelf.
@@ -156,6 +271,8 @@ paths:
                   $ref: '#/components/schemas/SeriesWatchState'
         '400':
           $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/Error'
 
@@ -173,6 +290,7 @@ paths:
           schema:
             type: string
         - $ref: '#/components/parameters/ClientID'
+        - $ref: '#/components/parameters/ProfileUnlock'
       responses:
         '200':
           description: Series watch state; `resume` describes `nextEpisode` when present.
@@ -182,6 +300,8 @@ paths:
                 $ref: '#/components/schemas/SeriesWatchState'
         '400':
           $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/Error'
 
@@ -220,6 +340,7 @@ paths:
           schema:
             type: string
         - $ref: '#/components/parameters/ClientID'
+        - $ref: '#/components/parameters/ProfileUnlock'
       responses:
         '200':
           description: Progress rows, each with a computed `resume`.
@@ -231,6 +352,8 @@ paths:
                   $ref: '#/components/schemas/PlaybackProgress'
         '400':
           $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/Error'
     post:
@@ -246,6 +369,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/UserID'
         - $ref: '#/components/parameters/ClientID'
+        - $ref: '#/components/parameters/ProfileUnlock'
       requestBody:
         required: true
         content:
@@ -261,6 +385,8 @@ paths:
                 $ref: '#/components/schemas/PlaybackProgress'
         '400':
           $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/Error'
 
@@ -286,6 +412,7 @@ paths:
             type: string
             enum: [keys]
         - $ref: '#/components/parameters/ClientID'
+        - $ref: '#/components/parameters/ProfileUnlock'
       responses:
         '200':
           description: Watch history in the requested projection.
@@ -300,6 +427,8 @@ paths:
                     items:
                       $ref: '#/components/schemas/WatchStatusProjection'
                   - $ref: '#/components/schemas/WatchStatusKeys'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/Error'
     post:
@@ -312,6 +441,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/UserID'
         - $ref: '#/components/parameters/ClientID'
+        - $ref: '#/components/parameters/ProfileUnlock'
       requestBody:
         required: true
         content:
@@ -327,6 +457,8 @@ paths:
                 $ref: '#/components/schemas/WatchHistoryItem'
         '400':
           $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/Error'
 
@@ -362,6 +494,7 @@ paths:
             type: integer
         - $ref: '#/components/parameters/SeasonTypeQuery'
         - $ref: '#/components/parameters/ClientID'
+        - $ref: '#/components/parameters/ProfileUnlock'
       responses:
         '200':
           description: Details bundle.
@@ -371,6 +504,8 @@ paths:
                 $ref: '#/components/schemas/DetailsBundle'
         '400':
           $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/Error'
 
@@ -388,6 +523,7 @@ paths:
         - $ref: '#/components/parameters/TVDBIDQuery'
         - $ref: '#/components/parameters/UserIDQuery'
         - $ref: '#/components/parameters/ClientID'
+        - $ref: '#/components/parameters/ProfileUnlock'
       responses:
         '200':
           description: Movie title.
@@ -395,6 +531,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Title'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '502':
           $ref: '#/components/responses/Error'
 
@@ -413,6 +551,7 @@ paths:
         - $ref: '#/components/parameters/SeasonTypeQuery'
         - $ref: '#/components/parameters/UserIDQuery'
         - $ref: '#/components/parameters/ClientID'
+        - $ref: '#/components/parameters/ProfileUnlock'
       responses:
         '200':
           description: Series details. Per-user episode fields (`itemId`, `watched`, `resume`) are only filled by `/details-bundle`.
@@ -420,6 +559,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SeriesDetails'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/Error'
         '502':
@@ -447,6 +588,7 @@ paths:
             type: string
         - $ref: '#/components/parameters/UserIDQuery'
         - $ref: '#/components/parameters/ClientID'
+        - $ref: '#/components/parameters/ProfileUnlock'
       responses:
         '200':
           description: Ranked results; titles carry `releaseDate`/`availability` for badges.
@@ -456,6 +598,8 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/SearchResult'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '502':
           $ref: '#/components/responses/Error'
 
@@ -468,6 +612,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/UserID'
         - $ref: '#/components/parameters/ClientID'
+        - $ref: '#/components/parameters/ProfileUnlock'
       responses:
         '200':
           description: Watchlist items.
@@ -479,6 +624,8 @@ paths:
                   $ref: '#/components/schemas/WatchlistItem'
         '400':
           $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/Error'
     post:
@@ -489,6 +636,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/UserID'
         - $ref: '#/components/parameters/ClientID'
+        - $ref: '#/components/parameters/ProfileUnlock'
       requestBody:
         required: true
         content:
@@ -504,6 +652,8 @@ paths:
                 $ref: '#/components/schemas/WatchlistItem'
         '400':
           $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/Error'
 
@@ -526,9 +676,12 @@ paths:
           schema:
             type: string
         - $ref: '#/components/parameters/ClientID'
+        - $ref: '#/components/parameters/ProfileUnlock'
       responses:
         '204':
           description: Removed.
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/Error'
 
@@ -627,6 +780,7 @@ paths:
           schema:
             type: string
         - $ref: '#/components/parameters/ClientID'
+        - $ref: '#/components/parameters/ProfileUnlock'
       responses:
         '200':
           description: One page of the list.
@@ -636,6 +790,8 @@ paths:
                 $ref: '#/components/schemas/DisplayListResponse'
         '400':
           $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/Error'
         '503':
@@ -727,6 +883,7 @@ paths:
           schema:
             type: boolean
         - $ref: '#/components/parameters/ClientID'
+        - $ref: '#/components/parameters/ProfileUnlock'
         - $ref: '#/components/parameters/AdaptiveThroughputMbps'
         - $ref: '#/components/parameters/AdaptiveThroughputMeasuredAt'
       responses:
@@ -740,6 +897,8 @@ paths:
                     items:
                       $ref: '#/components/schemas/IndexerResult'
                   - $ref: '#/components/schemas/IndexerSearchEnvelope'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '502':
           $ref: '#/components/responses/SearchError'
         '504':
@@ -790,6 +949,7 @@ paths:
         The body is strict: unknown fields are rejected with 400.
       parameters:
         - $ref: '#/components/parameters/ClientID'
+        - $ref: '#/components/parameters/ProfileUnlock'
         - $ref: '#/components/parameters/AdaptiveThroughputMbps'
         - $ref: '#/components/parameters/AdaptiveThroughputMeasuredAt'
       requestBody:
@@ -807,6 +967,8 @@ paths:
                 $ref: '#/components/schemas/PrequeueResponse'
         '400':
           $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/Error'
 
@@ -848,6 +1010,7 @@ paths:
         `/api/playback/queue/{queueId}`.
       parameters:
         - $ref: '#/components/parameters/ClientID'
+        - $ref: '#/components/parameters/ProfileUnlock'
       requestBody:
         required: true
         content:
@@ -863,6 +1026,8 @@ paths:
                 $ref: '#/components/schemas/PlaybackResolution'
         '400':
           $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '409':
           description: The source is marked bad (resend with `allowMarkedBad` to override).
           content:
@@ -908,6 +1073,7 @@ paths:
           schema:
             type: string
         - $ref: '#/components/parameters/ClientID'
+        - $ref: '#/components/parameters/ProfileUnlock'
       responses:
         '200':
           description: Resolution once ready.
@@ -917,6 +1083,8 @@ paths:
                 $ref: '#/components/schemas/PlaybackResolution'
         '400':
           $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/Error'
         '422':
@@ -954,6 +1122,8 @@ paths:
         - $ref: '#/components/parameters/StreamFormat'
         - $ref: '#/components/parameters/StreamDLNAProfile'
         - $ref: '#/components/parameters/ClientID'
+        - $ref: '#/components/parameters/ProfileUnlock'
+        - $ref: '#/components/parameters/ProfileUnlockQuery'
         - $ref: '#/components/parameters/Range'
       responses:
         '200':
@@ -973,7 +1143,7 @@ paths:
         '400':
           $ref: '#/components/responses/Error'
         '403':
-          $ref: '#/components/responses/Error'
+          $ref: '#/components/responses/Forbidden'
         '429':
           description: A concurrent stream limit was reached.
           content:
@@ -996,11 +1166,15 @@ paths:
         - $ref: '#/components/parameters/StreamTarget'
         - $ref: '#/components/parameters/StreamProfileID'
         - $ref: '#/components/parameters/ClientID'
+        - $ref: '#/components/parameters/ProfileUnlock'
+        - $ref: '#/components/parameters/ProfileUnlockQuery'
       responses:
         '200':
           description: Headers only.
         '400':
           $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Forbidden'
 
   /api/video/segments:
     post:
@@ -1074,6 +1248,22 @@ components:
       description: Session token as a query parameter; only accepted on media URLs such as `/api/video/stream`.
 
   parameters:
+    ProfileUnlock:
+      name: X-Profile-Unlock
+      in: header
+      description: |
+        Profile unlock token(s) from `POST /api/users/{userId}/pin/verify`,
+        comma-separated when a request names several PIN-protected profiles.
+        Required for PIN-protected profiles only when the server enforces
+        profile PINs; otherwise ignored.
+      schema:
+        type: string
+    ProfileUnlockQuery:
+      name: profileUnlock
+      in: query
+      description: Query-string form of `X-Profile-Unlock` for media URLs that cannot carry headers.
+      schema:
+        type: string
     ClientID:
       name: X-Client-ID
       in: header
@@ -1214,6 +1404,18 @@ components:
         type: string
 
   responses:
+    Forbidden:
+      description: |
+        Forbidden. `code: profile_locked` (with `profileId`) when the request
+        targets a PIN-protected profile without a valid `X-Profile-Unlock`
+        while the server enforces profile PINs; the session remains valid.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+        text/plain:
+          schema:
+            type: string
     Error:
       description: 'Error. JSON `{"error": "..."}`, or a plain-text message from older handler paths.'
       content:
@@ -1239,10 +1441,19 @@ components:
           type: string
         code:
           type: string
-          description: Machine-readable code where one exists (for example `password_change_required`, `GATEWAY_TIMEOUT`).
+          description: |
+            Stable machine-readable code where one exists. Auth codes:
+            `unauthorized`, `session_expired`, `account_expired`,
+            `invalid_credentials`, `password_invalid`, `pin_invalid`,
+            `pin_required`, `profile_locked`, `forbidden`, `master_required`,
+            `profile_not_found`, `default_password`, `rate_limited`. Other
+            routes use codes such as `GATEWAY_TIMEOUT`.
         message:
           type: string
           description: Human-readable guidance where one exists.
+        profileId:
+          type: string
+          description: With `profile_locked`, the profile that needs unlocking.
 
     StreamLimitError:
       type: object
@@ -1373,6 +1584,34 @@ components:
       properties:
         valid:
           type: boolean
+        unlockToken:
+          type: string
+          description: |
+            Opaque profile unlock token (prefix `pu_`). Bound to the session
+            token that called verify (carried over by refresh) and to this
+            profile's current PIN. Absent only on servers that predate
+            server-side unlocks.
+        expiresAt:
+          type: string
+          format: date-time
+          description: When `unlockToken` stops working (UTC). Re-verify the PIN after this.
+
+    LogoutResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          const: logged out
+
+    VersionResponse:
+      type: object
+      required: [version]
+      properties:
+        version:
+          type: string
+        buildId:
+          type: string
 
     # ---------------------------------------------------------------- titles
 
