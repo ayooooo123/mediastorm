@@ -8,6 +8,7 @@ import (
 
 	"github.com/gorilla/mux"
 
+	"novastream/internal/apierror"
 	"novastream/internal/auth"
 	"novastream/models"
 	"novastream/services/accounts"
@@ -111,9 +112,7 @@ func AccountAuthMiddleware(sessionsSvc *sessions.Service, accountsSvc *accounts.
 			// Extract token from header or query param
 			token := extractToken(r)
 			if token == "" {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusUnauthorized)
-				json.NewEncoder(w).Encode(map[string]string{"error": "authentication required"})
+				apierror.Write(w, http.StatusUnauthorized, apierror.CodeUnauthorized, "authentication required")
 				return
 			}
 
@@ -126,9 +125,7 @@ func AccountAuthMiddleware(sessionsSvc *sessions.Service, accountsSvc *accounts.
 
 			session, err := sessionsSvc.Validate(token)
 			if err != nil {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusUnauthorized)
-				json.NewEncoder(w).Encode(map[string]string{"error": "invalid or expired session"})
+				apierror.Write(w, http.StatusUnauthorized, apierror.CodeSessionExpired, "invalid or expired session")
 				return
 			}
 			if session.ClientID == "" {
@@ -138,27 +135,21 @@ func AccountAuthMiddleware(sessionsSvc *sessions.Service, accountsSvc *accounts.
 			// Check if the account has expired
 			if accountsSvc != nil && accountsSvc.IsExpired(session.AccountID) {
 				sessionsSvc.RevokeAllForAccount(session.AccountID)
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusUnauthorized)
-				json.NewEncoder(w).Encode(map[string]string{"error": "account has expired"})
+				apierror.Write(w, http.StatusUnauthorized, apierror.CodeAccountExpired, "account has expired")
 				return
 			}
 
 			// Stream-scoped sessions (one-time share links) may only reach
 			// streaming/playback endpoints — never the rest of the account API.
 			if session.Scope == models.SessionScopeStream && !isStreamScopedRequestAllowed(r, session) {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusForbidden)
-				json.NewEncoder(w).Encode(map[string]string{"error": "session not permitted for this endpoint"})
+				apierror.Write(w, http.StatusForbidden, apierror.CodeForbidden, "session not permitted for this endpoint")
 				return
 			}
 			// Watch-party guest sessions are consumed only by the dedicated public
 			// handlers, which additionally bind the cookie to one exact room. They
 			// must never inherit the surrounding account's protected API access.
 			if session.Scope == models.SessionScopeWatchParty {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusForbidden)
-				json.NewEncoder(w).Encode(map[string]string{"error": "session not permitted for this endpoint"})
+				apierror.Write(w, http.StatusForbidden, apierror.CodeForbidden, "session not permitted for this endpoint")
 				return
 			}
 
@@ -181,9 +172,7 @@ func MasterOnlyMiddleware() mux.MiddlewareFunc {
 			}
 
 			if !IsMaster(r) {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusForbidden)
-				json.NewEncoder(w).Encode(map[string]string{"error": "master account required"})
+				apierror.Write(w, http.StatusForbidden, apierror.CodeMasterRequired, "master account required")
 				return
 			}
 
@@ -219,9 +208,7 @@ func ProfileOwnershipMiddleware(usersSvc *users.Service) mux.MiddlewareFunc {
 			// Check ownership
 			accountID := GetAccountID(r)
 			if !usersSvc.BelongsToAccount(profileID, accountID) {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusNotFound)
-				json.NewEncoder(w).Encode(map[string]string{"error": "profile not found"})
+				apierror.Write(w, http.StatusNotFound, "profile_not_found", "profile not found")
 				return
 			}
 

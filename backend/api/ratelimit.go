@@ -1,11 +1,11 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"sync"
 	"time"
 
+	"novastream/internal/apierror"
 	"novastream/internal/requestsecurity"
 
 	"golang.org/x/time/rate"
@@ -79,10 +79,8 @@ func RateLimitHandler(rl *IPRateLimiter, next http.Handler) http.Handler {
 		ip := getClientIP(r)
 		limiter := rl.getLimiter(ip)
 		if !limiter.Allow() {
-			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Retry-After", "60")
-			w.WriteHeader(http.StatusTooManyRequests)
-			json.NewEncoder(w).Encode(map[string]string{"error": "too many requests"})
+			apierror.Write(w, http.StatusTooManyRequests, apierror.CodeRateLimited, "too many requests")
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -95,10 +93,8 @@ func RateLimitHandlerFunc(rl *IPRateLimiter, next http.HandlerFunc) http.Handler
 		ip := getClientIP(r)
 		limiter := rl.getLimiter(ip)
 		if !limiter.Allow() {
-			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Retry-After", "60")
-			w.WriteHeader(http.StatusTooManyRequests)
-			json.NewEncoder(w).Encode(map[string]string{"error": "too many requests"})
+			apierror.Write(w, http.StatusTooManyRequests, apierror.CodeRateLimited, "too many requests")
 			return
 		}
 		next(w, r)

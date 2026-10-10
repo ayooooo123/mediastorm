@@ -62,6 +62,9 @@ func TestRateLimitHandler_BlocksExcessRequests(t *testing.T) {
 	if body["error"] != "too many requests" {
 		t.Fatalf("expected 'too many requests', got %q", body["error"])
 	}
+	if body["code"] != "rate_limited" {
+		t.Fatalf("expected code rate_limited, got %q", body["code"])
+	}
 
 	// Verify Retry-After header
 	if rec.Header().Get("Retry-After") != "60" {
