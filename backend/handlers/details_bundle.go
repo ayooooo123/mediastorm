@@ -33,6 +33,12 @@ type DetailsBundleHandler struct {
 	watchlist    watchlistMembership
 }
 
+// movieWatchState answers "is this movie marked watched?" across ID forms.
+// Optional on the history service, so lighter fakes need not implement it.
+type movieWatchState interface {
+	IsMovieWatched(userID, itemID string, externalIDs map[string]string) bool
+}
+
 // watchlistMembership answers "is this title on the profile's watchlist?"
 // with the watchlist's own identity matching.
 type watchlistMembership interface {
@@ -124,6 +130,9 @@ type DetailsBundleResponse struct {
 	// InWatchlist says whether the title is on the profile's watchlist, matched
 	// across ID forms. Absent when the server has no watchlist service.
 	InWatchlist *bool `json:"inWatchlist,omitempty"`
+	// Watched says whether a movie is marked watched, matched across ID forms.
+	// Movies only (series carry per-episode watched); absent on older servers.
+	Watched *bool `json:"watched,omitempty"`
 }
 
 // DetailsShellResponse is a lightweight early payload returned by
@@ -530,6 +539,12 @@ func (h *DetailsBundleHandler) GetDetailsBundle(w http.ResponseWriter, r *http.R
 		}
 		inWatchlist := h.watchlist.Contains(userID, mediaType, titleID, detailsBundleExternalIDs(resp, imdbID, tvdbID, tmdbID).asMap())
 		resp.InWatchlist = &inWatchlist
+	}
+	if contentType != "series" && resp.MovieDetails != nil {
+		if watchState, ok := h.history.(movieWatchState); ok {
+			watched := watchState.IsMovieWatched(userID, titleID, detailsBundleExternalIDs(resp, imdbID, tvdbID, tmdbID).asMap())
+			resp.Watched = &watched
+		}
 	}
 	log.Printf("[details-bundle timing] TOTAL: %dms (type=%s, titleId=%s)", time.Since(bundleStart).Milliseconds(), contentType, titleID)
 

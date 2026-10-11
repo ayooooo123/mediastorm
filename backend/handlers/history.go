@@ -546,6 +546,13 @@ func (h *HistoryHandler) BulkUpdateWatchHistory(w http.ResponseWriter, r *http.R
 		http.Error(w, "at least one update is required", http.StatusBadRequest)
 		return
 	}
+	// Episodes may be addressed by series + season + episode, as on the single-item route.
+	for i := range updates {
+		if updates[i].ItemID == "" {
+			updates[i].ItemID = episodeItemIDFromParts(updates[i].MediaType, updates[i].SeriesID, updates[i].ExternalIDs,
+				updates[i].SeasonNumber, updates[i].EpisodeNumber)
+		}
+	}
 
 	var items []models.WatchHistoryItem
 	var err error

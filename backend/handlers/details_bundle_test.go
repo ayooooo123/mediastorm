@@ -891,3 +891,65 @@ func TestDetailsBundleHandler_InWatchlist(t *testing.T) {
 		}
 	}
 }
+
+type mockMovieWatchedHistory struct {
+	mockHistoryServiceDetailsBundle
+	gotUser, gotID string
+	gotExt         map[string]string
+	watched        bool
+}
+
+func (m *mockMovieWatchedHistory) IsMovieWatched(userID, itemID string, externalIDs map[string]string) bool {
+	m.gotUser, m.gotID, m.gotExt = userID, itemID, externalIDs
+	return m.watched
+}
+
+func TestDetailsBundleHandler_MovieWatched(t *testing.T) {
+	metadata := &mockMetadataServiceDetailsBundle{
+		movieDetails:  &models.Title{Name: "Test Movie", ID: "tmdb:movie:789", TMDBID: 789, IMDBID: "tt0000789"},
+		seriesDetails: &models.SeriesDetails{Title: models.Title{Name: "Test Show", ID: "tmdb:tv:456"}},
+	}
+	plain := func() *handlers.DetailsBundleHandler {
+		return handlers.NewDetailsBundleHandler(metadata, &mockHistoryServiceDetailsBundle{},
+			&mockContentPrefsServiceDetailsBundle{}, &mockUserServiceDetailsBundle{exists: true})
+	}
+	with := func(history *mockMovieWatchedHistory) *handlers.DetailsBundleHandler {
+		return handlers.NewDetailsBundleHandler(metadata, history,
+			&mockContentPrefsServiceDetailsBundle{}, &mockUserServiceDetailsBundle{exists: true})
+	}
+	get := func(h *handlers.DetailsBundleHandler, query string) map[string]json.RawMessage {
+		req := httptest.NewRequest(http.MethodGet, "/api/users/user1/details-bundle?"+query, nil)
+		req = mux.SetURLVars(req, map[string]string{"userID": "user1"})
+		rec := httptest.NewRecorder()
+		h.GetDetailsBundle(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+		return raw
+	}
+	const movie = "type=movie&titleId=tmdb:movie:789&tmdbId=789&name=Test+Movie"
+
+	if _, ok := get(plain(), movie)["watched"]; ok {
+		t.Error("expected watched to be omitted when the history service cannot answer it")
+	}
+	for _, watched := range []bool{true, false} {
+		history := &mockMovieWatchedHistory{watched: watched}
+		if got := string(get(with(history), movie)["watched"]); got != fmt.Sprint(watched) {
+			t.Errorf("watched = %s, want %v", got, watched)
+		}
+		if history.gotUser != "user1" || history.gotID != "tmdb:movie:789" {
+			t.Errorf("IsMovieWatched called with (%q, %q)", history.gotUser, history.gotID)
+		}
+		if history.gotExt["tmdb"] != "789" || history.gotExt["imdb"] != "tt0000789" {
+			t.Errorf("IsMovieWatched external IDs = %v", history.gotExt)
+		}
+	}
+	// Series carry per-episode watched instead.
+	if _, ok := get(with(&mockMovieWatchedHistory{watched: true}), "type=series&titleId=tmdb:tv:456&name=Test+Show")["watched"]; ok {
+		t.Error("expected watched to be omitted for series")
+	}
+}

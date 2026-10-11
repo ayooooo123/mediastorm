@@ -7256,3 +7256,34 @@ func TestUpdatePlaybackProgressContextDropsCanceledQueuedHeartbeat(t *testing.T)
 		t.Fatalf("canceled update mutated playback progress: %+v", items)
 	}
 }
+
+func TestIsMovieWatchedMatchesAcrossIDForms(t *testing.T) {
+	svc, err := NewService(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	// A Trakt-style import stored under the IMDB ID only.
+	svc.watchHistory = map[string]map[string]models.WatchHistoryItem{
+		"profile-1": {"movie:tt0133093": {
+			ID: "movie:tt0133093", MediaType: "movie", ItemID: "tt0133093", Watched: true,
+			ExternalIDs: map[string]string{"imdb": "tt0133093"},
+		}},
+	}
+
+	if !svc.IsMovieWatched("profile-1", "tmdb:movie:603", map[string]string{"tmdb": "603", "imdb": "tt0133093"}) {
+		t.Error("expected the IMDB-keyed row to match the TMDB title with its IMDB external ID")
+	}
+	if svc.IsMovieWatched("profile-1", "tmdb:movie:604", map[string]string{"tmdb": "604", "imdb": "tt0234215"}) {
+		t.Error("a different movie matched")
+	}
+	if svc.IsMovieWatched("profile-2", "tmdb:movie:603", map[string]string{"imdb": "tt0133093"}) {
+		t.Error("another profile's history matched")
+	}
+
+	svc.watchHistory["profile-1"]["movie:tt0133093"] = models.WatchHistoryItem{
+		ID: "movie:tt0133093", MediaType: "movie", ItemID: "tt0133093", Watched: false,
+	}
+	if svc.IsMovieWatched("profile-1", "tt0133093", nil) {
+		t.Error("an unwatched row reported watched")
+	}
+}

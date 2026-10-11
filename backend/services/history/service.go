@@ -3389,6 +3389,35 @@ func (s *Service) GetWatchHistoryItem(userID, mediaType, itemID string) (*models
 	return nil, nil
 }
 
+// IsMovieWatched reports whether a movie is marked watched, matching rows stored
+// under any equivalent ID form (TMDB, IMDB, Trakt/Simkl imports) via its external IDs.
+func (s *Service) IsMovieWatched(userID, itemID string, externalIDs map[string]string) bool {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return false
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	perUser, ok := s.watchHistory[userID]
+	if !ok {
+		return false
+	}
+	identity := watchHistoryUpdateIdentity(models.WatchHistoryUpdate{MediaType: "movie", ItemID: itemID, ExternalIDs: externalIDs})
+	for _, key := range identity.CandidateKeys {
+		if item, ok := perUser[key]; ok {
+			return item.Watched
+		}
+	}
+	for _, item := range perUser {
+		if watchHistoryItemMatchesIdentity(item, identity) {
+			return item.Watched
+		}
+	}
+	return false
+}
+
 // ToggleWatched toggles the watched status for an item (movie, series, or episode).
 func (s *Service) ToggleWatched(userID string, update models.WatchHistoryUpdate) (models.WatchHistoryItem, error) {
 	userID = strings.TrimSpace(userID)

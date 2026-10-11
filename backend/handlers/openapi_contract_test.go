@@ -308,6 +308,29 @@ func (h *contractHistory) UpdateWatchHistory(_ string, update models.WatchHistor
 	}, nil
 }
 
+func (h *contractHistory) BulkUpdateWatchHistory(userID string, updates []models.WatchHistoryUpdate) ([]models.WatchHistoryItem, error) {
+	return h.BulkUpdateScopedWatchHistory(userID, updates, "")
+}
+
+func (h *contractHistory) BulkUpdateScopedWatchHistory(userID string, updates []models.WatchHistoryUpdate, _ string) ([]models.WatchHistoryItem, error) {
+	items := make([]models.WatchHistoryItem, 0, len(updates))
+	for _, update := range updates {
+		item, _ := h.UpdateWatchHistory(userID, update)
+		h.watched = append(h.watched, item)
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+func (h *contractHistory) IsMovieWatched(_, itemID string, _ map[string]string) bool {
+	for _, item := range h.watched {
+		if item.MediaType == "movie" && item.ItemID == itemID {
+			return item.Watched
+		}
+	}
+	return false
+}
+
 type contractUsers struct{}
 
 func (contractUsers) Exists(string) bool { return true }
@@ -555,6 +578,15 @@ func TestOpenAPIContract(t *testing.T) {
 		exercise(t, v, contractCall{method: http.MethodPost, target: "/api/users/u1/history/watched", vars: userVars,
 			body: map[string]any{"mediaType": "episode", "seriesId": "tmdb:tv:95350", "seasonNumber": 1, "episodeNumber": 2, "watched": true}},
 			historyHandler.UpdateWatchHistory, http.StatusOK)
+		exercise(t, v, contractCall{method: http.MethodPost, target: "/api/users/u1/history/watched/bulk?scope=season", vars: userVars,
+			body: []map[string]any{
+				{"mediaType": "episode", "seriesId": "tmdb:tv:95350", "seasonNumber": 1, "episodeNumber": 1, "watched": true},
+				{"mediaType": "episode", "itemId": "tmdb:tv:95350:s01e02", "seriesId": "tmdb:tv:95350", "seasonNumber": 1, "episodeNumber": 2, "watched": true},
+			}},
+			historyHandler.BulkUpdateWatchHistory, http.StatusOK)
+		exercise(t, v, contractCall{method: http.MethodPost, target: "/api/users/u1/history/watched/bulk", vars: userVars,
+			body: []map[string]any{{"mediaType": "movie", "itemId": "tmdb:movie:603", "watched": true}}},
+			historyHandler.BulkUpdateWatchHistory, http.StatusOK)
 	})
 
 	metadata := &fakeMetadataService{
@@ -592,8 +624,13 @@ func TestOpenAPIContract(t *testing.T) {
 		rec = exercise(t, v, contractCall{method: http.MethodGet,
 			target: "/api/users/u1/details-bundle?type=movie&titleId=tmdb:movie:603&name=The+Matrix&year=1999&imdbId=tt0133093&tmdbId=603", vars: userVars},
 			h.GetDetailsBundle, http.StatusOK)
-		if movie := decodeContract[DetailsBundleResponse](t, rec); movie.InWatchlist == nil || !*movie.InWatchlist {
+		movie := decodeContract[DetailsBundleResponse](t, rec)
+		if movie.InWatchlist == nil || !*movie.InWatchlist {
 			t.Fatalf("movie bundle missing inWatchlist=true: %s", rec.Body.String())
+		}
+		// Marked watched in history/watched/bulk above.
+		if movie.Watched == nil || !*movie.Watched {
+			t.Fatalf("movie bundle missing watched=true: %s", rec.Body.String())
 		}
 	})
 

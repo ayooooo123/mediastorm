@@ -462,6 +462,51 @@ paths:
         '404':
           $ref: '#/components/responses/Error'
 
+  /api/users/{userId}/history/watched/bulk:
+    post:
+      tags: [history]
+      operationId: bulkUpdateWatchHistory
+      summary: Mark several items watched or unwatched
+      description: |
+        Same items as the single-item POST; rows are matched across ID forms.
+        `scope=show` (a whole show) or `scope=season` (one season) tells
+        Trakt-style providers the intent so they can use their own bulk calls;
+        scoped requests must be episodes of one show with an explicit
+        `watched`, and `season` scope one season.
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+        - name: scope
+          in: query
+          schema:
+            type: string
+            enum: [show, season]
+        - $ref: '#/components/parameters/ClientID'
+        - $ref: '#/components/parameters/ProfileUnlock'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              minItems: 1
+              items:
+                $ref: '#/components/schemas/WatchHistoryUpdate'
+      responses:
+        '200':
+          description: The updated history items.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WatchHistoryItem'
+        '400':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/Error'
+
   /api/users/{userId}/details-bundle:
     get:
       tags: [metadata]
@@ -2114,6 +2159,11 @@ components:
           description: |
             Whether the title is on the profile's watchlist, matched across
             TMDB / TVDB / IMDB ID forms. Absent on older servers.
+        watched:
+          type: boolean
+          description: |
+            Movies only: whether the movie is marked watched, matched across
+            ID forms (series carry per-episode `watched`). Absent on older servers.
 
     # ---------------------------------------------------------------- history
 
