@@ -30,6 +30,13 @@ type DetailsBundleHandler struct {
 	users        userService
 	cfgManager   *config.Manager
 	userSettings userSettingsProvider
+	watchlist    watchlistMembership
+}
+
+// watchlistMembership answers "is this title on the profile's watchlist?"
+// with the watchlist's own identity matching.
+type watchlistMembership interface {
+	Contains(userID, mediaType, id string, externalIDs map[string]string) bool
 }
 
 type seriesDetailsLiteProvider interface {
@@ -61,6 +68,10 @@ func (h *DetailsBundleHandler) SetConfigManager(cfg *config.Manager) {
 
 func (h *DetailsBundleHandler) SetUserSettingsProvider(provider userSettingsProvider) {
 	h.userSettings = provider
+}
+
+func (h *DetailsBundleHandler) SetWatchlistService(service watchlistMembership) {
+	h.watchlist = service
 }
 
 func (h *DetailsBundleHandler) metadataForUser(userID string) metadataService {
@@ -110,6 +121,9 @@ type DetailsBundleResponse struct {
 	// movie, or UpNextEpisode for series. Present (eligible=false) even when
 	// there is no progress, so clients need no thresholds of their own.
 	Resume *models.ResumeState `json:"resume,omitempty"`
+	// InWatchlist says whether the title is on the profile's watchlist, matched
+	// across ID forms. Absent when the server has no watchlist service.
+	InWatchlist *bool `json:"inWatchlist,omitempty"`
 }
 
 // DetailsShellResponse is a lightweight early payload returned by
@@ -509,6 +523,14 @@ func (h *DetailsBundleHandler) GetDetailsBundle(w http.ResponseWriter, r *http.R
 		resp.PlaybackProgress = filterProgressForTitle(allProgress, titleID, contentType, detailsBundleExternalIDs(resp, imdbID, tvdbID, tmdbID))
 	}
 	annotateDetailsBundleProgress(&resp, contentType, titleID, imdbID, tvdbID, tmdbID, watchHistory)
+	if h.watchlist != nil {
+		mediaType := "movie" // the details fetch above treats anything but series as a movie
+		if contentType == "series" {
+			mediaType = "series"
+		}
+		inWatchlist := h.watchlist.Contains(userID, mediaType, titleID, detailsBundleExternalIDs(resp, imdbID, tvdbID, tmdbID).asMap())
+		resp.InWatchlist = &inWatchlist
+	}
 	log.Printf("[details-bundle timing] TOTAL: %dms (type=%s, titleId=%s)", time.Since(bundleStart).Milliseconds(), contentType, titleID)
 
 	// Ensure nil slices become empty arrays in JSON
@@ -675,6 +697,21 @@ type titleExternalIDs struct {
 	imdb string // lowercased
 	tvdb string // numeric string, "" when unknown
 	tmdb string // numeric string, "" when unknown
+}
+
+// asMap returns the known IDs keyed the way external ID maps are elsewhere.
+func (ext titleExternalIDs) asMap() map[string]string {
+	ids := map[string]string{}
+	if ext.imdb != "" {
+		ids["imdb"] = ext.imdb
+	}
+	if ext.tvdb != "" {
+		ids["tvdb"] = ext.tvdb
+	}
+	if ext.tmdb != "" {
+		ids["tmdb"] = ext.tmdb
+	}
+	return ids
 }
 
 // filterProgressForTitle returns only playback progress items relevant to the

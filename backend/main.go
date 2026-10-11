@@ -763,6 +763,7 @@ func main() {
 	)
 	detailsBundleHandler.SetConfigManager(cfgManager)
 	detailsBundleHandler.SetUserSettingsProvider(userSettingsService)
+	detailsBundleHandler.SetWatchlistService(watchlistService)
 
 	// Calendar service provides upcoming content from watchlist, history, and MDBList
 	calendarService := calendar.New(metadataService, watchlistService, historyService, userSettingsService, userService)

@@ -518,3 +518,42 @@ func TestClearRemovesAllWatchlistsAndTombstones(t *testing.T) {
 		t.Fatalf("sync item remained tombstoned after Clear(): %v", err)
 	}
 }
+
+func TestServiceContainsMatchesEquivalentIdentities(t *testing.T) {
+	svc, err := watchlist.NewService(t.TempDir())
+	if err != nil {
+		t.Fatalf("expected service, got error: %v", err)
+	}
+	// A Trakt-style import keyed by TVDB, with the other IDs alongside.
+	if _, err := svc.AddOrUpdate(models.DefaultUserID, models.WatchlistUpsert{
+		ID:          "tvdb:series:121361",
+		MediaType:   "series",
+		Name:        "Game of Thrones",
+		ExternalIDs: map[string]string{"tvdb": "121361", "tmdb": "1399", "imdb": "tt0944947"},
+	}); err != nil {
+		t.Fatalf("failed to add item: %v", err)
+	}
+
+	cases := []struct {
+		name      string
+		mediaType string
+		id        string
+		ext       map[string]string
+		want      bool
+	}{
+		{"canonical tmdb id", "series", "tmdb:tv:1399", nil, true},
+		{"tvdb id", "series", "tvdb:series:121361", nil, true},
+		{"tv alias with external ids only", "tv", "", map[string]string{"imdb": "tt0944947"}, true},
+		{"other title", "series", "tmdb:tv:1396", nil, false},
+		{"wrong media type", "movie", "tmdb:movie:1399", nil, false},
+		{"no identifiers", "series", "", nil, false},
+	}
+	for _, tc := range cases {
+		if got := svc.Contains(models.DefaultUserID, tc.mediaType, tc.id, tc.ext); got != tc.want {
+			t.Errorf("%s: Contains = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	if svc.Contains("someone-else", "series", "tmdb:tv:1399", nil) {
+		t.Error("expected another profile's watchlist to be separate")
+	}
+}

@@ -105,6 +105,40 @@ func (s *Service) List(userID string) ([]models.WatchlistItem, error) {
 	return items, nil
 }
 
+// Contains reports whether the profile's watchlist holds the title, matching
+// the same equivalent identities (canonical ID, TMDB/TVDB/IMDB forms) that
+// AddOrUpdate merges on, so clients never compare ID strings themselves.
+func (s *Service) Contains(userID, mediaType, id string, externalIDs map[string]string) bool {
+	userID = strings.TrimSpace(userID)
+	mediaType = mediaidentity.NormalizeMediaType(mediaType)
+	externalIDs = normaliseExternalIDs(externalIDs)
+	if userID == "" || mediaType == "" || (strings.TrimSpace(id) == "" && len(externalIDs) == 0) {
+		return false
+	}
+	canonicalID := canonicalWatchlistID(mediaType, id, externalIDs)
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	perUser := s.items[userID]
+	if len(perUser) == 0 {
+		return false
+	}
+	for _, key := range watchlistCandidateKeys(mediaType, canonicalID, externalIDs) {
+		if _, ok := perUser[key]; ok {
+			return true
+		}
+	}
+	for _, existing := range perUser {
+		// The second check is Remove's: a bare ID matches any stored variant.
+		if watchlistItemsEquivalent(mediaType, canonicalID, externalIDs, existing) ||
+			watchlistItemMatchesIdentifier(existing, mediaType, id) {
+			return true
+		}
+	}
+	return false
+}
+
 // Clear removes every profile's watchlist and sync tombstones, returning the
 // number of visible watchlist entries removed.
 func (s *Service) Clear() (int, error) {

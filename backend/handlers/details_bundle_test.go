@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -828,5 +829,65 @@ func TestDetailsBundleHandler_EmptyUserID(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+type mockWatchlistMembership struct {
+	gotUser, gotType, gotID string
+	gotExt                  map[string]string
+	contains                bool
+}
+
+func (m *mockWatchlistMembership) Contains(userID, mediaType, id string, externalIDs map[string]string) bool {
+	m.gotUser, m.gotType, m.gotID, m.gotExt = userID, mediaType, id, externalIDs
+	return m.contains
+}
+
+func TestDetailsBundleHandler_InWatchlist(t *testing.T) {
+	newHandler := func() *handlers.DetailsBundleHandler {
+		return handlers.NewDetailsBundleHandler(
+			&mockMetadataServiceDetailsBundle{
+				movieDetails: &models.Title{Name: "Test Movie", ID: "tmdb:movie:789", TMDBID: 789, IMDBID: "tt0000789"},
+			},
+			&mockHistoryServiceDetailsBundle{},
+			&mockContentPrefsServiceDetailsBundle{},
+			&mockUserServiceDetailsBundle{exists: true},
+		)
+	}
+	get := func(h *handlers.DetailsBundleHandler) map[string]json.RawMessage {
+		req := httptest.NewRequest(http.MethodGet,
+			"/api/users/user1/details-bundle?type=movie&titleId=tmdb:movie:789&tmdbId=789&name=Test+Movie", nil)
+		req = mux.SetURLVars(req, map[string]string{"userID": "user1"})
+		rec := httptest.NewRecorder()
+		h.GetDetailsBundle(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+		return raw
+	}
+
+	if _, ok := get(newHandler())["inWatchlist"]; ok {
+		t.Error("expected inWatchlist to be omitted without a watchlist service")
+	}
+
+	for _, contains := range []bool{true, false} {
+		membership := &mockWatchlistMembership{contains: contains}
+		h := newHandler()
+		h.SetWatchlistService(membership)
+		raw := get(h)
+		if got := string(raw["inWatchlist"]); got != fmt.Sprint(contains) {
+			t.Errorf("inWatchlist = %s, want %v", got, contains)
+		}
+		if membership.gotUser != "user1" || membership.gotType != "movie" || membership.gotID != "tmdb:movie:789" {
+			t.Errorf("Contains called with (%q, %q, %q)", membership.gotUser, membership.gotType, membership.gotID)
+		}
+		// Resolved metadata IDs are passed along with the request's.
+		if membership.gotExt["tmdb"] != "789" || membership.gotExt["imdb"] != "tt0000789" {
+			t.Errorf("Contains external IDs = %v", membership.gotExt)
+		}
 	}
 }

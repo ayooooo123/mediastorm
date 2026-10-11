@@ -2109,6 +2109,11 @@ components:
           $ref: '#/components/schemas/EpisodeReference'
         resume:
           $ref: '#/components/schemas/Resume'
+        inWatchlist:
+          type: boolean
+          description: |
+            Whether the title is on the profile's watchlist, matched across
+            TMDB / TVDB / IMDB ID forms. Absent on older servers.
 
     # ---------------------------------------------------------------- history
 

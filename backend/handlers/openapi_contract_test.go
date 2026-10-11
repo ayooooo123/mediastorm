@@ -581,9 +581,20 @@ func TestOpenAPIContract(t *testing.T) {
 			t.Fatalf("episodes missing itemId/watched/resume: %+v", episodes)
 		}
 
-		exercise(t, v, contractCall{method: http.MethodGet,
+		wl, err := watchlist.NewService(t.TempDir())
+		if err != nil {
+			t.Fatalf("watchlist service: %v", err)
+		}
+		if _, err := wl.AddOrUpdate("u1", models.WatchlistUpsert{ID: "tmdb:movie:603", MediaType: "movie", Name: "The Matrix"}); err != nil {
+			t.Fatalf("watchlist add: %v", err)
+		}
+		h.SetWatchlistService(wl)
+		rec = exercise(t, v, contractCall{method: http.MethodGet,
 			target: "/api/users/u1/details-bundle?type=movie&titleId=tmdb:movie:603&name=The+Matrix&year=1999&imdbId=tt0133093&tmdbId=603", vars: userVars},
 			h.GetDetailsBundle, http.StatusOK)
+		if movie := decodeContract[DetailsBundleResponse](t, rec); movie.InWatchlist == nil || !*movie.InWatchlist {
+			t.Fatalf("movie bundle missing inWatchlist=true: %s", rec.Body.String())
+		}
 	})
 
 	t.Run("metadata/details", func(t *testing.T) {
