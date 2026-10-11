@@ -41,6 +41,7 @@ import (
 	"novastream/services/credits"
 	"novastream/services/customlists"
 	"novastream/services/debrid"
+	"novastream/services/demomedia"
 	"novastream/services/epg"
 	"novastream/services/hiddenitems"
 	"novastream/services/history"
@@ -250,6 +251,14 @@ func main() {
 	metadataHandler := handlers.NewMetadataHandler(metadataService, cfgManager)
 	debridSearchService := debrid.NewSearchService(cfgManager)
 	indexerService := indexer.NewService(cfgManager, metadataService, debridSearchService)
+	// Demo mode plays only the royalty-free files in <cache>/demo-media.
+	var demoCatalog *demomedia.Catalog
+	if *demoMode {
+		demoDir := filepath.Join(settings.Cache.Directory, "demo-media")
+		demoCatalog = demomedia.NewCatalog(demoDir)
+		indexerService.SetDemoCatalog(demoCatalog)
+		fmt.Printf("🧪 Demo mode sources: %s\n", demoDir)
+	}
 	indexerHandler := handlers.NewIndexerHandler(indexerService, *demoMode)
 	indexerHandler.SetMetadataService(metadataService)      // Enable episode resolver for pack size filtering
 	indexerHandler.SetMovieMetadataService(metadataService) // Enable movie anime detection for manual search
@@ -386,6 +395,9 @@ func main() {
 	indexerHandler.SetBadStreamsService(badStreamsService)
 
 	playbackService := playback.NewService(cfgManager, nzbSystem, nzbSystem.MetadataReader())
+	if demoCatalog != nil {
+		playbackService.SetDemoCatalog(demoCatalog)
+	}
 	// Wire the preflight availability probe: usenet candidates are
 	// segment-sampled concurrently with the full resolve, so dead releases are
 	// cancelled and rejected cheaply (fail-open — only a definitive
@@ -812,7 +824,11 @@ func main() {
 
 	// Create composite streaming provider that handles both usenet and debrid
 	debridStreamingProvider := debrid.NewStreamingProvider(cfgManager)
-	compositeProvider := debrid.NewCompositeProvider(localMediaProvider, remoteMediaProvider, recordingsStreamProvider, debridStreamingProvider, nzbSystem)
+	streamProviders := []streaming.Provider{localMediaProvider, remoteMediaProvider, recordingsStreamProvider, debridStreamingProvider, nzbSystem}
+	if demoCatalog != nil {
+		streamProviders = []streaming.Provider{demoCatalog}
+	}
+	compositeProvider := debrid.NewCompositeProvider(streamProviders...)
 	prequeueHandler.GetStore().SetStreamPathValidator(func(ctx context.Context, streamPath string) error {
 		cleanPath := strings.TrimSpace(streamPath)
 		if strings.HasPrefix(cleanPath, "http://") || strings.HasPrefix(cleanPath, "https://") {

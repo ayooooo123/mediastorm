@@ -31,6 +31,7 @@ import (
 	"novastream/internal/providerbreaker"
 	"novastream/models"
 	"novastream/services/debrid"
+	"novastream/services/demomedia"
 	"novastream/utils/filter"
 	"novastream/utils/language"
 
@@ -156,6 +157,7 @@ type (
 )
 
 type Service struct {
+	demo           *demomedia.Catalog // demo mode: the only source of results
 	cfg            *config.Manager
 	httpc          *http.Client
 	debrid         debridSearchService
@@ -1560,7 +1562,24 @@ func annotateDailySearchResults(results []models.NZBResult, opts SearchOptions) 
 	return true
 }
 
+// SetDemoCatalog makes every search return only the demo catalog's files.
+func (s *Service) SetDemoCatalog(catalog *demomedia.Catalog) {
+	s.demo = catalog
+}
+
+func (s *Service) demoScored(opts SearchOptions) []models.ScoredNZBResult {
+	results := s.demo.Results(opts.IMDBID, opts.Query, opts.MediaType)
+	scored := make([]models.ScoredNZBResult, len(results))
+	for i, r := range results {
+		scored[i] = models.ScoredNZBResult{NZBResult: r, FilterStatus: "passed"}
+	}
+	return scored
+}
+
 func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBResult, error) {
+	if s.demo != nil {
+		return s.demo.Results(opts.IMDBID, opts.Query, opts.MediaType), nil
+	}
 	searchStart := time.Now()
 	callNum := s.searchCount.Add(1)
 	log.Printf("[search-stats] Search #%d started (query=%q, mediaType=%q, user=%q, client=%q)",
@@ -1812,6 +1831,9 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]models.NZBR
 // SearchWithScoring runs Search and wraps results as ScoredNZBResult with filter status.
 // When opts.IncludeFiltered is true, filtered results are appended after passed results.
 func (s *Service) SearchWithScoring(ctx context.Context, opts SearchOptions) ([]models.ScoredNZBResult, error) {
+	if s.demo != nil {
+		return s.demoScored(opts), nil
+	}
 	if !opts.IncludeFiltered {
 		// Standard path: just wrap passed results
 		results, err := s.Search(ctx, opts)
@@ -2049,6 +2071,14 @@ func (s *Service) SearchWithScoringSplit(ctx context.Context, opts SearchOptions
 
 	usenetOut := make(chan ScoredSplitSearchResult, 1)
 	debridOut := make(chan ScoredSplitSearchResult, 1)
+	if s.demo != nil {
+		scored := s.demoScored(opts)
+		usenetOut <- ScoredSplitSearchResult{Source: "usenet", Scored: scored, RawCount: len(scored)}
+		debridOut <- ScoredSplitSearchResult{Source: "debrid", Disabled: true}
+		close(usenetOut)
+		close(debridOut)
+		return usenetOut, debridOut
+	}
 	if s.cfg == nil {
 		cfgErr := errors.New("config manager not configured")
 		usenetOut <- ScoredSplitSearchResult{Source: "usenet", Err: cfgErr}
@@ -2510,6 +2540,9 @@ func bypassScoredResults(raw []models.NZBResult, newestFirst, includeScoreBreakd
 
 // SearchTest runs search with full scoring breakdown and filter details for the admin search tester.
 func (s *Service) SearchTest(ctx context.Context, opts SearchOptions) ([]models.ScoredNZBResult, error) {
+	if s.demo != nil {
+		return s.demoScored(opts), nil
+	}
 	searchStart := time.Now()
 	log.Printf("[indexer] SearchTest started for query=%q mediaType=%q", opts.Query, opts.MediaType)
 

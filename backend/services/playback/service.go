@@ -34,6 +34,7 @@ import (
 	"novastream/internal/requestsecurity"
 	"novastream/models"
 	"novastream/services/debrid"
+	"novastream/services/demomedia"
 	"novastream/services/usenetengine"
 
 	"github.com/javi11/nzbparser"
@@ -47,6 +48,7 @@ type metadataService interface {
 
 // Service coordinates NZB validation and prepares backend-hosted playback streams.
 type Service struct {
+	demo        *demomedia.Catalog // demo mode: catalog links resolve to themselves
 	cfg         *config.Manager
 	httpClient  *http.Client
 	debrid      *debrid.PlaybackService
@@ -229,7 +231,18 @@ func (s *Service) ResolveBatch(ctx context.Context, candidate models.NZBResult, 
 }
 
 // Resolve ingests the supplied NZB search result and returns a streaming path.
+// SetDemoCatalog lets demo catalog results resolve straight to their files.
+func (s *Service) SetDemoCatalog(catalog *demomedia.Catalog) {
+	s.demo = catalog
+}
+
 func (s *Service) Resolve(ctx context.Context, candidate models.NZBResult) (*models.PlaybackResolution, error) {
+	if s.demo != nil {
+		if !demomedia.IsStreamPath(candidate.Link) {
+			return nil, fmt.Errorf("demo mode only plays demo catalog sources")
+		}
+		return s.demo.Resolution(candidate.Link)
+	}
 	log.Printf("[playback] resolve start title=%q downloadURL=%q link=%q serviceType=%q", strings.TrimSpace(candidate.Title), safeURLForLog(candidate.DownloadURL), safeURLForLog(candidate.Link), candidate.ServiceType)
 
 	// Route to debrid service if this is a debrid result
