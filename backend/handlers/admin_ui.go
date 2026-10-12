@@ -2669,9 +2669,17 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 		h.hlsManager.mu.RUnlock()
 	}
 
-	// Get direct streams from the global tracker
+	// Get direct streams from the global tracker. Lingering streams cover the
+	// idle gaps between a native player's short range requests; they are listed
+	// only while the playback heartbeat is fresh.
 	tracker := GetStreamTracker()
-	for _, stream := range tracker.GetActiveStreams() {
+	activeStreams := tracker.GetActiveStreams()
+	lingering := make(map[string]bool)
+	for _, stream := range tracker.GetLingeringStreams() {
+		lingering[stream.ID] = true
+		activeStreams = append(activeStreams, stream)
+	}
+	for _, stream := range activeStreams {
 		// Skip streams that don't belong to this account's profiles
 		if !isAdmin && !allowedProfileIDs[stream.ProfileID] {
 			continue
@@ -2759,6 +2767,9 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 		// interpolation instead of freezing at the last reported position.
 		shareHeartbeatFresh := stream.ViaShareLink && !stream.ShareUpdatedAt.IsZero() && now.Sub(stream.ShareUpdatedAt) <= heartbeatEndedThreshold
 		heartbeatFresh := matchedProgress != nil && now.Sub(matchedProgress.UpdatedAt) <= heartbeatEndedThreshold
+		if lingering[stream.ID] && !heartbeatFresh {
+			continue
+		}
 		if heartbeatFresh {
 			if matchedProgress.IsPaused {
 				streamData["is_paused"] = true

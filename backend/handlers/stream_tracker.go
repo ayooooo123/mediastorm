@@ -34,6 +34,8 @@ type StreamTracker struct {
 type recentlyEndedStream struct {
 	stream  *TrackedStream
 	endedAt time.Time
+	// terminated marks a stream an admin cut off; it never lingers on the dashboard.
+	terminated bool
 }
 
 type playbackMigrationSignal struct {
@@ -1066,6 +1068,10 @@ func (t *StreamTracker) TerminateStream(id string) bool {
 		return false
 	}
 	t.rememberEndedStreamLocked(stream, time.Now())
+	if ended, ok := t.recentlyEnded[id]; ok {
+		ended.terminated = true
+		t.recentlyEnded[id] = ended
+	}
 	delete(t.streams, id)
 	t.mu.Unlock()
 
@@ -1099,45 +1105,95 @@ func (t *StreamTracker) GetActiveStreams() []*TrackedStream {
 
 	streams := make([]*TrackedStream, 0, len(t.streams))
 	for _, s := range t.streams {
-		// Read last activity from atomic counter
-		lastActivity := s.StartTime
-		if s.activityCounter != nil {
-			if nanos := atomic.LoadInt64(s.activityCounter); nanos > 0 {
-				lastActivity = time.Unix(0, nanos)
-			}
-		}
-		bytesNow := atomic.LoadInt64(s.bytesCounter)
-		// Create a copy with current bytes count and activity time
-		streamCopy := &TrackedStream{
-			ID:             s.ID,
-			Path:           s.Path,
-			Filename:       s.Filename,
-			ClientIP:       s.ClientIP,
-			ClientID:       s.ClientID,
-			ProfileID:      s.ProfileID,
-			ProfileName:    s.ProfileName,
-			AccountID:      s.AccountID,
-			StartTime:      s.StartTime,
-			LastActivity:   lastActivity,
-			BytesStreamed:  bytesNow,
-			ContentLength:  s.ContentLength,
-			RangeStart:     s.RangeStart,
-			RangeEnd:       s.RangeEnd,
-			Method:         s.Method,
-			UserAgent:      s.UserAgent,
-			ViaShareLink:   s.ViaShareLink,
-			MediaMetadata:  s.MediaMetadata,
-			SharePosition:  s.SharePosition,
-			ShareDuration:  s.ShareDuration,
-			SharePercent:   s.SharePercent,
-			ShareUpdatedAt: s.ShareUpdatedAt,
-			SharePaused:    s.SharePaused,
-			ShareBuffering: s.ShareBuffering,
-			ThroughputBps:  sampleThroughput(bytesNow, &s.lastSampleBytes, &s.lastSampleNanos, &s.throughputBps),
-		}
-		streams = append(streams, streamCopy)
+		streams = append(streams, snapshotTrackedStream(s, true))
 	}
 	return streams
+}
+
+// GetLingeringStreams returns streams whose request ended within the teardown
+// grace and whose playback has no open request. Native players read the file
+// in short range requests with idle gaps between them; the dashboard keeps
+// such a playback listed through the gaps while its heartbeat stays fresh.
+// At most one stream (the latest to end) is returned per playback slot.
+func (t *StreamTracker) GetLingeringStreams() []*TrackedStream {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	now := time.Now()
+	active := make(map[string]struct{}, len(t.streams))
+	for _, s := range t.streams {
+		active[trackedStreamSlotKey(s)] = struct{}{}
+	}
+	latest := make(map[string]recentlyEndedStream)
+	for _, ended := range t.recentlyEnded {
+		if ended.stream == nil || ended.terminated || now.Sub(ended.endedAt) > playbackNotificationTeardownGrace {
+			continue
+		}
+		key := trackedStreamSlotKey(ended.stream)
+		if key == "" {
+			continue
+		}
+		if _, ok := active[key]; ok {
+			continue
+		}
+		if prev, ok := latest[key]; !ok || ended.endedAt.After(prev.endedAt) {
+			latest[key] = ended
+		}
+	}
+	streams := make([]*TrackedStream, 0, len(latest))
+	for _, ended := range latest {
+		streams = append(streams, snapshotTrackedStream(ended.stream, false))
+	}
+	return streams
+}
+
+// snapshotTrackedStream copies a stream with its live byte and activity
+// counters. sample advances the throughput sampler; an ended stream reports
+// its last sampled rate instead.
+func snapshotTrackedStream(s *TrackedStream, sample bool) *TrackedStream {
+	// Read last activity from atomic counter
+	lastActivity := s.StartTime
+	if s.activityCounter != nil {
+		if nanos := atomic.LoadInt64(s.activityCounter); nanos > 0 {
+			lastActivity = time.Unix(0, nanos)
+		}
+	}
+	var bytesNow int64
+	if s.bytesCounter != nil {
+		bytesNow = atomic.LoadInt64(s.bytesCounter)
+	}
+	throughput := atomic.LoadInt64(&s.throughputBps)
+	if sample {
+		throughput = sampleThroughput(bytesNow, &s.lastSampleBytes, &s.lastSampleNanos, &s.throughputBps)
+	}
+	// Create a copy with current bytes count and activity time
+	return &TrackedStream{
+		ID:             s.ID,
+		Path:           s.Path,
+		Filename:       s.Filename,
+		ClientIP:       s.ClientIP,
+		ClientID:       s.ClientID,
+		ProfileID:      s.ProfileID,
+		ProfileName:    s.ProfileName,
+		AccountID:      s.AccountID,
+		StartTime:      s.StartTime,
+		LastActivity:   lastActivity,
+		BytesStreamed:  bytesNow,
+		ContentLength:  s.ContentLength,
+		RangeStart:     s.RangeStart,
+		RangeEnd:       s.RangeEnd,
+		Method:         s.Method,
+		UserAgent:      s.UserAgent,
+		ViaShareLink:   s.ViaShareLink,
+		MediaMetadata:  s.MediaMetadata,
+		SharePosition:  s.SharePosition,
+		ShareDuration:  s.ShareDuration,
+		SharePercent:   s.SharePercent,
+		ShareUpdatedAt: s.ShareUpdatedAt,
+		SharePaused:    s.SharePaused,
+		ShareBuffering: s.ShareBuffering,
+		ThroughputBps:  throughput,
+	}
 }
 
 // Count returns the number of active streams

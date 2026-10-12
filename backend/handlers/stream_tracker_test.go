@@ -734,3 +734,65 @@ func TestMergeDashboardStreamRowsCollapsesNativeConnections(t *testing.T) {
 		t.Errorf("expected via_share_link to survive merge")
 	}
 }
+
+func TestGetLingeringStreamsBridgesRangeRequestGaps(t *testing.T) {
+	now := time.Now()
+	movie := func(id string) *TrackedStream {
+		return &TrackedStream{
+			ID:            id,
+			ProfileID:     "profile",
+			Path:          "/movie.mkv",
+			MediaMetadata: StreamMediaMetadata{MediaType: "movie", ItemID: "tmdb:movie:1"},
+		}
+	}
+	episode := &TrackedStream{
+		ID:            "episode-range",
+		ProfileID:     "profile",
+		Path:          "/episode.mkv",
+		MediaMetadata: StreamMediaMetadata{MediaType: "episode", ItemID: "tmdb:tv:2:s01e01"},
+	}
+	tracker := &StreamTracker{
+		streams: make(map[string]*TrackedStream),
+		recentlyEnded: map[string]recentlyEndedStream{
+			"older":         {stream: movie("older"), endedAt: now.Add(-10 * time.Second)},
+			"newer":         {stream: movie("newer"), endedAt: now.Add(-2 * time.Second)},
+			"episode-range": {stream: episode, endedAt: now.Add(-playbackNotificationTeardownGrace - time.Second)},
+		},
+	}
+
+	got := tracker.GetLingeringStreams()
+	if len(got) != 1 || got[0].ID != "newer" {
+		t.Fatalf("GetLingeringStreams() = %v, want only the latest ended request of the unexpired playback", streamIDs(got))
+	}
+
+	// An open request for the same playback already lists it.
+	tracker.streams["open"] = movie("open")
+	if got := tracker.GetLingeringStreams(); len(got) != 0 {
+		t.Fatalf("GetLingeringStreams() with an open request = %v, want none", streamIDs(got))
+	}
+}
+
+func TestGetLingeringStreamsSkipsTerminatedStreams(t *testing.T) {
+	stream := &TrackedStream{
+		ID:            "cut",
+		ProfileID:     "profile",
+		Path:          "/movie.mkv",
+		MediaMetadata: StreamMediaMetadata{MediaType: "movie", ItemID: "tmdb:movie:1"},
+		cancel:        func() {},
+	}
+	tracker := &StreamTracker{streams: map[string]*TrackedStream{stream.ID: stream}}
+	if !tracker.TerminateStream(stream.ID) {
+		t.Fatal("TerminateStream() = false")
+	}
+	if got := tracker.GetLingeringStreams(); len(got) != 0 {
+		t.Fatalf("GetLingeringStreams() after terminate = %v, want none", streamIDs(got))
+	}
+}
+
+func streamIDs(streams []*TrackedStream) []string {
+	ids := make([]string, 0, len(streams))
+	for _, s := range streams {
+		ids = append(ids, s.ID)
+	}
+	return ids
+}
