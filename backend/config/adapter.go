@@ -3,7 +3,7 @@ package config
 import (
 	"sync"
 
-	"github.com/javi11/nntppool"
+	"github.com/javi11/nntppool/v2"
 	"novastream/internal/usenet"
 )
 

@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/javi11/nntppool"
+	"github.com/javi11/nntppool/v2"
 	"github.com/sourcegraph/conc/pool"
 )
 
@@ -906,37 +906,25 @@ func summarizePoolSnapshot(cp nntppool.UsenetConnectionPool) string {
 
 	snapshot := cp.GetMetricsSnapshot()
 	providers := make([]string, 0, len(snapshot.ProviderMetrics))
+	active := 0
 	for _, p := range snapshot.ProviderMetrics {
+		active += p.ActiveConnections
 		providers = append(providers, fmt.Sprintf(
-			"%s state=%v conn=%d/%d acquired=%d idle=%d constructing=%d empty_acquires=%d empty_wait=%s bytes_down_mb=%d articles=%d success=%.1f%%",
-			p.ProviderID,
+			"%s state=%v conn=%d/%d bytes_down_mb=%d articles=%d errors=%d",
+			p.Host,
 			p.State,
-			p.TotalConnections,
+			p.ActiveConnections,
 			p.MaxConnections,
-			p.AcquiredConnections,
-			p.IdleConnections,
-			p.ConstructingConnections,
-			p.EmptyAcquireCount,
-			p.EmptyAcquireWaitTime,
-			p.TotalBytesDownloaded/1024/1024,
-			p.TotalArticlesRetrieved,
-			p.SuccessRate,
+			p.BytesDownloaded/1024/1024,
+			p.ArticlesDownloaded,
+			p.TotalErrors,
 		))
 	}
 
 	return fmt.Sprintf(
-		"conn=%d acquired=%d idle=%d active=%d acquires=%d releases=%d avg_wait=%s recent_down=%.2fMBps historical_down=%.2fMBps errors=%d retries=%d providers=[%s]",
-		snapshot.TotalConnections,
-		snapshot.AcquiredConnections,
-		snapshot.IdleConnections,
-		snapshot.ActiveConnections,
-		snapshot.TotalAcquires,
-		snapshot.TotalReleases,
-		snapshot.AverageAcquireWaitTime,
-		snapshot.DownloadSpeed/1024/1024,
-		snapshot.HistoricalDownloadSpeed/1024/1024,
+		"active=%d errors=%d providers=[%s]",
+		active,
 		snapshot.TotalErrors,
-		snapshot.TotalRetries,
 		strings.Join(providers, "; "),
 	)
 }

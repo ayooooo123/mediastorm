@@ -14,7 +14,7 @@ import (
 	metapb "novastream/internal/nzb/metadata/proto"
 	"novastream/internal/pool"
 
-	"github.com/javi11/nntppool"
+	"github.com/javi11/nntppool/v2"
 	"github.com/javi11/rardecode/v2"
 	"github.com/javi11/rarlist"
 )

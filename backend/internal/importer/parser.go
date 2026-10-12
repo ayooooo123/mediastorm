@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/avast/retry-go/v4"
-	"github.com/javi11/nntpcli"
+	"github.com/javi11/nntppool/v2/pkg/nntpcli"
 	"github.com/javi11/nzbparser"
 	"golang.org/x/sync/errgroup"
 	"novastream/internal/encryption"

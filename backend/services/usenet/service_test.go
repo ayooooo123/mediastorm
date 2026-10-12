@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/javi11/nntpcli"
-	"github.com/javi11/nntppool"
+	"github.com/javi11/nntppool/v2"
+	"github.com/javi11/nntppool/v2/pkg/nntpcli"
 
 	"novastream/config"
 	"novastream/internal/httpheaders"
@@ -108,16 +108,12 @@ func (s *stubPool) GetProviderStatus(providerID string) (*nntppool.ProviderInfo,
 	return nil, false
 }
 
-func (s *stubPool) Reconfigure(configs ...nntppool.Config) error { return nil }
-
-func (s *stubPool) GetReconfigurationStatus(migrationID string) (*nntppool.ReconfigurationStatus, bool) {
-	return nil, false
-}
-
-func (s *stubPool) GetActiveReconfigurations() map[string]*nntppool.ReconfigurationStatus {
+func (p *stubPool) BodyBatch(context.Context, string, []nntppool.BodyBatchRequest) []nntppool.BodyBatchResult {
 	return nil
 }
-
+func (p *stubPool) TestProviderPipelineSupport(context.Context, string, string) (bool, int, error) {
+	return false, 0, nil
+}
 func (s *stubPool) GetMetrics() *nntppool.PoolMetrics { return nil }
 
 func (s *stubPool) GetMetricsSnapshot() nntppool.PoolMetricsSnapshot {

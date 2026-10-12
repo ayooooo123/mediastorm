@@ -1608,6 +1608,7 @@ var SettingsSchema = map[string]interface{}{
 // AdminUIHandler serves the admin dashboard UI
 type AdminUIHandler struct {
 	GuideChanged          func()
+	usenetSpeed           usenetSpeedSampler
 	settingsTemplate      *template.Template
 	sportsTemplate        *template.Template
 	sportsHandler         *SportsHandler
@@ -3150,18 +3151,15 @@ type dashboardWatchTimeTypeStats struct {
 }
 
 type dashboardUsenetProviderActivity struct {
-	ProviderID              string  `json:"providerId"`
-	Host                    string  `json:"host"`
-	State                   string  `json:"state"`
-	AcquiredConnections     int32   `json:"acquiredConnections"`
-	AvailableConnections    int32   `json:"availableConnections"`
-	IdleConnections         int32   `json:"idleConnections"`
-	TotalConnections        int32   `json:"totalConnections"`
-	MaxConnections          int32   `json:"maxConnections"`
-	ConstructingConnections int32   `json:"constructingConnections"`
-	DownloadedBytes         int64   `json:"downloadedBytes"`
-	ArticlesRetrieved       int64   `json:"articlesRetrieved"`
-	SuccessRate             float64 `json:"successRate"`
+	ProviderID           string  `json:"providerId"`
+	Host                 string  `json:"host"`
+	State                string  `json:"state"`
+	AcquiredConnections  int32   `json:"acquiredConnections"`
+	AvailableConnections int32   `json:"availableConnections"`
+	MaxConnections       int32   `json:"maxConnections"`
+	DownloadedBytes      int64   `json:"downloadedBytes"`
+	ArticlesRetrieved    int64   `json:"articlesRetrieved"`
+	SuccessRate          float64 `json:"successRate"`
 }
 
 type dashboardUsenetActivity struct {
@@ -3339,26 +3337,27 @@ func (h *AdminUIHandler) dashboardUsenetActivity() dashboardUsenetActivity {
 
 	snapshot := cp.GetMetricsSnapshot()
 	result.Available = true
-	result.RecentBytesPerSec = snapshot.DownloadSpeed
+	result.RecentBytesPerSec = h.usenetSpeed.sample(time.Now(), snapshot.BytesDownloaded)
 	result.Providers = make([]dashboardUsenetProviderActivity, 0, len(snapshot.ProviderMetrics))
 	for _, p := range snapshot.ProviderMetrics {
-		available := p.MaxConnections - p.AcquiredConnections - p.ConstructingConnections
+		available := p.MaxConnections - p.ActiveConnections
 		if available < 0 {
 			available = 0
 		}
+		var successRate float64
+		if attempts := p.ArticlesDownloaded + p.TotalErrors; attempts > 0 {
+			successRate = float64(p.ArticlesDownloaded) / float64(attempts) * 100
+		}
 		result.Providers = append(result.Providers, dashboardUsenetProviderActivity{
-			ProviderID:              p.ProviderID,
-			Host:                    p.Host,
-			State:                   fmt.Sprint(p.State),
-			AcquiredConnections:     p.AcquiredConnections,
-			AvailableConnections:    available,
-			IdleConnections:         p.IdleConnections,
-			TotalConnections:        p.TotalConnections,
-			MaxConnections:          p.MaxConnections,
-			ConstructingConnections: p.ConstructingConnections,
-			DownloadedBytes:         p.TotalBytesDownloaded,
-			ArticlesRetrieved:       p.TotalArticlesRetrieved,
-			SuccessRate:             p.SuccessRate,
+			ProviderID:           p.Host,
+			Host:                 p.Host,
+			State:                p.State,
+			AcquiredConnections:  int32(p.ActiveConnections),
+			AvailableConnections: int32(available),
+			MaxConnections:       int32(p.MaxConnections),
+			DownloadedBytes:      p.BytesDownloaded,
+			ArticlesRetrieved:    p.ArticlesDownloaded,
+			SuccessRate:          successRate,
 		})
 	}
 	sort.Slice(result.Providers, func(i, j int) bool {

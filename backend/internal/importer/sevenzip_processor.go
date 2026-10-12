@@ -12,7 +12,7 @@ import (
 	metapb "novastream/internal/nzb/metadata/proto"
 	"novastream/internal/pool"
 
-	"github.com/javi11/nntppool"
+	"github.com/javi11/nntppool/v2"
 )
 
 // SevenZipDiscoveryCallback is called when a file is discovered during progressive 7z analysis.

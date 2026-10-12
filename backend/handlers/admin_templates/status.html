@@ -1428,7 +1428,6 @@ body.numbers-station-open {
                         <th>Provider</th>
                         <th>Active</th>
                         <th>Available</th>
-                        <th>Pool</th>
                         <th>State</th>
                         <th>Downloaded</th>
                         <th>Used For</th>
@@ -1436,7 +1435,7 @@ body.numbers-station-open {
                 </thead>
                 <tbody id="usenetActivityBody">
                     <tr>
-                        <td colspan="7" style="color: var(--text-muted); text-align: center; padding: 1rem;">No active Usenet activity</td>
+                        <td colspan="6" style="color: var(--text-muted); text-align: center; padding: 1rem;">No active Usenet activity</td>
                     </tr>
                 </tbody>
             </table>
@@ -3388,19 +3387,15 @@ body.numbers-station-open {
             : '<span style="color: var(--text-muted);">No active readers</span>';
 
         if (providers.length === 0) {
-            body.innerHTML = `<tr><td colspan="7" style="color: var(--text-muted); text-align: center; padding: 1rem;">${activity?.available ? 'No Usenet providers in pool' : 'No Usenet pool configured'}</td></tr>`;
+            body.innerHTML = `<tr><td colspan="6" style="color: var(--text-muted); text-align: center; padding: 1rem;">${activity?.available ? 'No Usenet providers in pool' : 'No Usenet pool configured'}</td></tr>`;
             return;
         }
 
         body.innerHTML = providers.map((provider) => {
             const acquired = Number(provider.acquiredConnections || 0);
-            const available = Number(provider.availableConnections ?? Math.max(0, Number(provider.maxConnections || 0) - acquired - Number(provider.constructingConnections || 0)));
-            const total = Number(provider.totalConnections || 0);
+            const available = Number(provider.availableConnections ?? Math.max(0, Number(provider.maxConnections || 0) - acquired));
             const max = Number(provider.maxConnections || 0);
-            const idle = Number(provider.idleConnections || 0);
-            const constructing = Number(provider.constructingConnections || 0);
             const providerName = provider.host || provider.providerId || 'Provider';
-            const poolText = `${total} created, ${idle} ready${constructing > 0 ? ', ' + constructing + ' starting' : ''}`;
             return `
                 <tr>
                     <td>
@@ -3408,7 +3403,6 @@ body.numbers-station-open {
                     </td>
                     <td>${max > 0 ? `${acquired}/${max}` : acquired}</td>
                     <td>${max > 0 ? `${available}/${max}` : '∞'}</td>
-                    <td>${escapeHtml(poolText)}</td>
                     <td>${escapeHtml(provider.state || '-')}</td>
                     <td>
                         <div>${formatBytes(Number(provider.downloadedBytes || 0))}</div>

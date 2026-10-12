@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/javi11/nntppool"
+	"github.com/javi11/nntppool/v2"
 )
 
 // Manager provides centralized NNTP connection pool management
@@ -223,7 +223,7 @@ func (m *manager) AvailableConnections() int {
 	snap := pool.GetMetricsSnapshot()
 	var free int
 	for _, p := range snap.ProviderMetrics {
-		if n := int(p.MaxConnections - p.AcquiredConnections); n > 0 {
+		if n := int(p.MaxConnections - p.ActiveConnections); n > 0 {
 			free += n
 		}
 	}

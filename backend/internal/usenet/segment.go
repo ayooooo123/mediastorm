@@ -124,6 +124,10 @@ func (r *segmentRange) Clear() error {
 	return nil
 }
 
+// yencDecodeBufferSize is the minimum scratch buffer handed to the yEnc
+// decoder; it must exceed the longest yEnc header line.
+const yencDecodeBufferSize = 32 * 1024
+
 type segment struct {
 	Id            string
 	Start         int64
@@ -187,9 +191,13 @@ func (s *segment) GetReader() io.Reader {
 		if s.reader != nil {
 			bufReader := bufio.NewReader(baseReader)
 			if isYEncStream(bufReader) {
-				decoder := rapidyenc.AcquireDecoder(bufReader)
+				decoder := rapidyenc.NewDecoder(bufReader)
 				s.decoder = decoder
-				baseReader = decoder
+				// rapidyenc decodes in the caller's buffer and spins returning
+				// (0, nil) when it is shorter than a yEnc header line, which the
+				// window limiter below produces for small ranges. Buffering here
+				// guarantees the decoder a full scratch buffer.
+				baseReader = bufio.NewReaderSize(decoder, yencDecodeBufferSize)
 			} else {
 				baseReader = bufReader
 			}
@@ -378,7 +386,6 @@ func (s *segment) Close() error {
 	var e1, e2 error
 
 	if s.decoder != nil {
-		rapidyenc.ReleaseDecoder(s.decoder)
 		s.decoder = nil
 	}
 

@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/acomagu/bufpipe"
-	"github.com/javi11/nntppool"
+	"github.com/javi11/nntppool/v2"
 	"go.uber.org/mock/gomock"
 )
 

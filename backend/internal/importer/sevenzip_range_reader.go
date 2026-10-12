@@ -10,7 +10,7 @@ import (
 
 	"novastream/internal/usenet"
 
-	"github.com/javi11/nntppool"
+	"github.com/javi11/nntppool/v2"
 )
 
 const (

@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/javi11/nntpcli"
+	"github.com/javi11/nntppool/v2/pkg/nntpcli"
 )
 
 // guardedNNTPBodyReader contains panics from the external NNTP pool at the

@@ -23,7 +23,7 @@ import (
 	"novastream/models"
 	"novastream/services/usenetengine"
 
-	"github.com/javi11/nntppool"
+	"github.com/javi11/nntppool/v2"
 )
 
 type statClient interface {

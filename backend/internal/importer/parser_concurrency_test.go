@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/javi11/nntpcli"
-	"github.com/javi11/nntppool"
+	"github.com/javi11/nntppool/v2"
+	"github.com/javi11/nntppool/v2/pkg/nntpcli"
 	"github.com/javi11/nzbparser"
 )
 
@@ -90,12 +90,11 @@ func (p *trackPool) GetProvidersInfo() []nntppool.ProviderInfo { return nil }
 func (p *trackPool) GetProviderStatus(string) (*nntppool.ProviderInfo, bool) {
 	return nil, false
 }
-func (p *trackPool) Reconfigure(...nntppool.Config) error { return fmt.Errorf("not implemented") }
-func (p *trackPool) GetReconfigurationStatus(string) (*nntppool.ReconfigurationStatus, bool) {
-	return nil, false
-}
-func (p *trackPool) GetActiveReconfigurations() map[string]*nntppool.ReconfigurationStatus {
+func (p *trackPool) BodyBatch(context.Context, string, []nntppool.BodyBatchRequest) []nntppool.BodyBatchResult {
 	return nil
+}
+func (p *trackPool) TestProviderPipelineSupport(context.Context, string, string) (bool, int, error) {
+	return false, 0, nil
 }
 func (p *trackPool) GetMetrics() *nntppool.PoolMetrics { return nil }
 func (p *trackPool) GetMetricsSnapshot() nntppool.PoolMetricsSnapshot {
