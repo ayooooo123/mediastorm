@@ -2673,6 +2673,7 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 	// idle gaps between a native player's short range requests; they are listed
 	// only while the playback heartbeat is fresh.
 	tracker := GetStreamTracker()
+	slotStats := tracker.PlaybackSlotStats()
 	activeStreams := tracker.GetActiveStreams()
 	lingering := make(map[string]bool)
 	for _, stream := range tracker.GetLingeringStreams() {
@@ -2819,6 +2820,7 @@ func (h *AdminUIHandler) buildStreamsPayload(isAdmin bool, accountID string) ([]
 	// logic (profile + media), so two distinct profiles watching the same title stay
 	// as separate rows.
 	streams = mergeDashboardStreamRows(streams)
+	applyPlaybackSlotStats(streams, slotStats)
 
 	liveUsage, liveUsageByUser, liveUsageBuckets := h.buildDashboardLiveUsage(isAdmin, scopedUsers, allowedProfileIDs)
 
@@ -2921,6 +2923,25 @@ func dashboardProgressUpdatedAt(
 // For each group the most-recently-active entry is kept as the representative (so its
 // progress/state/position are the freshest), while bytes transferred and throughput
 // are summed across all member connections to reflect the true aggregate.
+// applyPlaybackSlotStats replaces each direct row's per-request bytes and
+// throughput with its playback's totals across range requests.
+func applyPlaybackSlotStats(rows []map[string]interface{}, stats map[string]PlaybackSlotStats) {
+	str := func(m map[string]interface{}, k string) string {
+		v, _ := m[k].(string)
+		return v
+	}
+	for _, row := range rows {
+		if str(row, "type") != "direct" {
+			continue
+		}
+		key := streamSlotKey(str(row, "profile_id"), str(row, "profile_name"), str(row, "client_ip"), str(row, "media_type"), str(row, "item_id"), str(row, "path"))
+		if st, ok := stats[key]; ok {
+			row["bytes_streamed"] = st.BytesStreamed
+			row["throughput_bps"] = st.ThroughputBps
+		}
+	}
+}
+
 func mergeDashboardStreamRows(rows []map[string]interface{}) []map[string]interface{} {
 	if len(rows) <= 1 {
 		return rows

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -795,4 +796,37 @@ func streamIDs(streams []*TrackedStream) []string {
 		ids = append(ids, s.ID)
 	}
 	return ids
+}
+
+func TestPlaybackSlotStatsAccumulatesAcrossRangeRequests(t *testing.T) {
+	movie := func(id string, bytes int64) *TrackedStream {
+		counter := bytes
+		return &TrackedStream{
+			ID:            id,
+			ProfileID:     "profile",
+			Path:          "/movie.mkv",
+			MediaMetadata: StreamMediaMetadata{MediaType: "movie", ItemID: "tmdb:movie:1"},
+			bytesCounter:  &counter,
+		}
+	}
+	tracker := &StreamTracker{streams: make(map[string]*TrackedStream)}
+	for i, bytes := range []int64{1000, 2000} {
+		s := movie(fmt.Sprintf("range-%d", i), bytes)
+		tracker.streams[s.ID] = s
+		tracker.EndStream(s.ID)
+	}
+	open := movie("open", 500)
+	tracker.streams[open.ID] = open
+
+	key := trackedStreamSlotKey(open)
+	if got := tracker.PlaybackSlotStats()[key].BytesStreamed; got != 3500 {
+		t.Fatalf("BytesStreamed = %d, want ended + open requests (3500)", got)
+	}
+
+	// A playback idle past the teardown grace is dropped.
+	delete(tracker.streams, open.ID)
+	tracker.slotTotals[key].lastSeen = time.Now().Add(-playbackNotificationTeardownGrace - time.Second)
+	if _, ok := tracker.PlaybackSlotStats()[key]; ok {
+		t.Fatal("expired playback slot still reported")
+	}
 }

@@ -19,8 +19,10 @@ import (
 
 // StreamTracker tracks active video streams for monitoring
 type StreamTracker struct {
-	streams          map[string]*TrackedStream
-	recentlyEnded    map[string]recentlyEndedStream
+	streams       map[string]*TrackedStream
+	recentlyEnded map[string]recentlyEndedStream
+	// slotTotals accumulates bytes per playback slot across its range requests.
+	slotTotals       map[string]*playbackSlotTotals
 	stopPlaybacks    map[string]time.Time
 	migrationSignals map[string]playbackMigrationSignal
 	// Direct-link playbacks bypass the backend transport; see direct_link_playback.go.
@@ -29,6 +31,23 @@ type StreamTracker struct {
 	mu                  sync.RWMutex
 	counter             uint64
 	playbackObserver    PlaybackActivityObserver
+}
+
+// playbackSlotTotals carries one playback's transfer across the many short
+// range requests a native player makes, so the dashboard can report the
+// playback's bytes and sustained throughput rather than one request's.
+type playbackSlotTotals struct {
+	endedBytes      int64
+	lastSeen        time.Time
+	lastSampleBytes int64
+	lastSampleNanos int64
+	throughputBps   int64
+}
+
+// PlaybackSlotStats is one playback's transfer totals across its requests.
+type PlaybackSlotStats struct {
+	BytesStreamed int64
+	ThroughputBps int64
 }
 
 type recentlyEndedStream struct {
@@ -1088,6 +1107,60 @@ func (t *StreamTracker) rememberEndedStreamLocked(stream *TrackedStream, now tim
 		t.recentlyEnded = make(map[string]recentlyEndedStream)
 	}
 	t.recentlyEnded[stream.ID] = recentlyEndedStream{stream: stream, endedAt: now}
+	if key := trackedStreamSlotKey(stream); key != "" {
+		totals := t.slotTotalsLocked(key, now)
+		if stream.bytesCounter != nil {
+			totals.endedBytes += atomic.LoadInt64(stream.bytesCounter)
+		}
+	}
+}
+
+func (t *StreamTracker) slotTotalsLocked(key string, now time.Time) *playbackSlotTotals {
+	if t.slotTotals == nil {
+		t.slotTotals = make(map[string]*playbackSlotTotals)
+	}
+	totals, ok := t.slotTotals[key]
+	if !ok {
+		totals = &playbackSlotTotals{}
+		t.slotTotals[key] = totals
+	}
+	totals.lastSeen = now
+	return totals
+}
+
+// PlaybackSlotStats returns transfer totals keyed by playback slot
+// (trackedStreamSlotKey) for every playback with an open request or one that
+// ended within the teardown grace. Throughput is the smoothed rate of the
+// slot's cumulative bytes, so idle gaps between range requests don't read as 0.
+func (t *StreamTracker) PlaybackSlotStats() map[string]PlaybackSlotStats {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	now := time.Now()
+	openBytes := make(map[string]int64, len(t.streams))
+	for _, s := range t.streams {
+		key := trackedStreamSlotKey(s)
+		if key == "" {
+			continue
+		}
+		t.slotTotalsLocked(key, now)
+		if s.bytesCounter != nil {
+			openBytes[key] += atomic.LoadInt64(s.bytesCounter)
+		}
+	}
+	stats := make(map[string]PlaybackSlotStats, len(t.slotTotals))
+	for key, totals := range t.slotTotals {
+		if now.Sub(totals.lastSeen) > playbackNotificationTeardownGrace {
+			delete(t.slotTotals, key)
+			continue
+		}
+		bytes := totals.endedBytes + openBytes[key]
+		stats[key] = PlaybackSlotStats{
+			BytesStreamed: bytes,
+			ThroughputBps: sampleThroughput(bytes, &totals.lastSampleBytes, &totals.lastSampleNanos, &totals.throughputBps),
+		}
+	}
+	return stats
 }
 
 func (t *StreamTracker) pruneRecentlyEndedLocked(now time.Time) {
