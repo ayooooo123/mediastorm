@@ -74,3 +74,5 @@ require (
 	go4.org v0.0.0-20200411211856-f5505b9728dd // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace github.com/javi11/nntppool/v2 => ./third_party/nntppool

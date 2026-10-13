@@ -47,8 +47,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy go mod files
+# Copy go mod files, plus the locally patched modules go.mod replaces
 COPY backend/go.mod backend/go.sum ./
+COPY backend/third_party ./third_party
 
 # The builder image matches go.mod, so avoid downloading a toolchain during
 # dependency resolution.
