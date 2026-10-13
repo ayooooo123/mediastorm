@@ -330,90 +330,11 @@ func (c *RealDebridClient) calculateRetryDelay(resp *http.Response, attempt int)
 	return delay
 }
 
-// InstantAvailabilityResponse represents the cached status for a torrent hash.
-type InstantAvailabilityResponse map[string]map[string][]InstantAvailabilityVariant
-
-// InstantAvailabilityVariant represents a specific file variant that is cached.
-type InstantAvailabilityVariant struct {
-	Filename string                               `json:"filename"`
-	Filesize int64                                `json:"filesize"`
-	ID       json.Number                          `json:"id"` // File ID within the torrent
-	Files    map[string]InstantAvailabilityFileID `json:"files,omitempty"`
-}
-
-// InstantAvailabilityFileID represents file IDs that are available.
-type InstantAvailabilityFileID struct {
-	Filename string `json:"filename,omitempty"`
-	Filesize int64  `json:"filesize,omitempty"`
-}
-
-// CheckInstantAvailability checks if a torrent hash is cached on Real-Debrid.
-// Returns true if the torrent is cached and available for instant download.
-func (c *RealDebridClient) CheckInstantAvailability(ctx context.Context, infoHash string) (bool, error) {
-	if c.apiKey == "" {
-		return false, fmt.Errorf("real-debrid API key not configured")
-	}
-
-	normalizedHash := strings.ToLower(strings.TrimSpace(infoHash))
-	if normalizedHash == "" {
-		return false, fmt.Errorf("info hash is required")
-	}
-
-	endpoint := fmt.Sprintf("%s/torrents/instantAvailability/%s", c.baseURL, normalizedHash)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return false, fmt.Errorf("build instant availability request: %w", err)
-	}
-
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.apiKey))
-
-	resp, err := c.doWithRetry(req, 3)
-	if err != nil {
-		return false, fmt.Errorf("instant availability request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusUnauthorized {
-		return false, fmt.Errorf("real-debrid authentication failed: invalid API key")
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return false, fmt.Errorf("instant availability failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-
-	var availability InstantAvailabilityResponse
-	if err := json.NewDecoder(resp.Body).Decode(&availability); err != nil {
-		return false, fmt.Errorf("decode instant availability response: %w", err)
-	}
-
-	// Check if the hash exists and has cached variants
-	hashData, exists := availability[normalizedHash]
-	if !exists {
-		log.Printf("[realdebrid] instant availability: hash %s not found in response", normalizedHash)
-		return false, nil
-	}
-
-	if len(hashData) == 0 {
-		log.Printf("[realdebrid] instant availability: hash %s has no variants", normalizedHash)
-		return false, nil
-	}
-
-	// If any variant exists for this hash, it's cached
-	variantCount := 0
-	for _, variants := range hashData {
-		if len(variants) > 0 {
-			variantCount++
-		}
-	}
-
-	if variantCount > 0 {
-		log.Printf("[realdebrid] instant availability: hash %s is CACHED with %d variants", normalizedHash, variantCount)
-		return true, nil
-	}
-
-	log.Printf("[realdebrid] instant availability: hash %s has no valid variants", normalizedHash)
-	return false, nil
+// CheckInstantAvailability always reports ErrInstantAvailabilityUnsupported:
+// Real-Debrid disabled /torrents/instantAvailability (403 disabled_endpoint,
+// error_code 37), and each refused call still cost ~3.5s.
+func (c *RealDebridClient) CheckInstantAvailability(context.Context, string) (bool, error) {
+	return false, fmt.Errorf("real-debrid: %w", ErrInstantAvailabilityUnsupported)
 }
 
 // addMagnetResponse represents the raw Real-Debrid API response when adding a magnet link.

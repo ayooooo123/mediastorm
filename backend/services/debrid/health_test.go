@@ -2,6 +2,7 @@ package debrid
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"novastream/config"
@@ -672,5 +673,81 @@ func TestPreResolvedHead403FallsBackToRangeGet(t *testing.T) {
 	}
 	if !health.Healthy || !health.Cached {
 		t.Fatalf("expected ranged GET to verify stream, got %#v", health)
+	}
+}
+
+type bulkCacheProvider struct {
+	*mockProvider
+	cached map[string]bool
+}
+
+func (p *bulkCacheProvider) CheckInstantAvailabilityBulk(_ context.Context, hashes []string) (map[string]bool, error) {
+	out := make(map[string]bool, len(hashes))
+	for _, hash := range hashes {
+		out[hash] = p.cached[hash]
+	}
+	return out, nil
+}
+
+type unsupportedInstantProvider struct {
+	*mockProvider
+}
+
+func (p *unsupportedInstantProvider) CheckInstantAvailability(context.Context, string) (bool, error) {
+	atomic.AddInt64(&p.instantCalls, 1)
+	return false, ErrInstantAvailabilityUnsupported
+}
+
+func TestCheckQuickCacheOnlyBulkStopsAtUnsupportedProvider(t *testing.T) {
+	bulk := &bulkCacheProvider{
+		mockProvider: &mockProvider{name: "health_bulk_supported"},
+		cached:       map[string]bool{"aaaa1111": true, "bbbb2222": true},
+	}
+	unsupported := &unsupportedInstantProvider{mockProvider: &mockProvider{name: "health_bulk_unsupported"}}
+	RegisterProvider(bulk.name, func(string) Provider { return bulk })
+	RegisterProvider(unsupported.name, func(string) Provider { return unsupported })
+
+	cfg := config.NewManager(t.TempDir() + "/settings.json")
+	settings := config.DefaultSettings()
+	settings.Streaming.DebridProviders = []config.DebridProviderSettings{
+		{Name: "Bulk", Provider: bulk.name, APIKey: "one", Enabled: true},
+		{Name: "Unsupported", Provider: unsupported.name, APIKey: "two", Enabled: true},
+	}
+	if err := cfg.Save(settings); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	hashes := []string{"aaaa1111", "bbbb2222", "cccc3333"}
+	results := make([]models.NZBResult, len(hashes))
+	for i, hash := range hashes {
+		results[i] = models.NZBResult{
+			Title:       "Example " + hash,
+			ServiceType: models.ServiceTypeDebrid,
+			Attributes:  map[string]string{"infoHash": hash},
+		}
+	}
+
+	out, err := NewHealthService(cfg).CheckQuickCacheOnlyBulk(context.Background(), results)
+	if err != nil {
+		t.Fatalf("CheckQuickCacheOnlyBulk returned error: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if !out[i].Cached || out[i].Status != "cached" || out[i].Provider != bulk.name {
+			t.Fatalf("result %d: expected cached on %s, got %#v", i, bulk.name, out[i])
+		}
+	}
+	// Not cached on the provider that answered, unknown on the other: not a definitive miss.
+	if out[2].Cached || out[2].Status != "skipped" {
+		t.Fatalf("result 2: expected skipped (unknown), got %#v", out[2])
+	}
+	if got := atomic.LoadInt64(&unsupported.instantCalls); got != 1 {
+		t.Fatalf("unsupported provider calls = %d, want 1", got)
+	}
+}
+
+func TestRealDebridInstantAvailabilityIsUnsupported(t *testing.T) {
+	_, err := NewRealDebridClient("test-key").CheckInstantAvailability(context.Background(), "abcdef1234567890")
+	if !errors.Is(err, ErrInstantAvailabilityUnsupported) {
+		t.Fatalf("expected ErrInstantAvailabilityUnsupported, got %v", err)
 	}
 }

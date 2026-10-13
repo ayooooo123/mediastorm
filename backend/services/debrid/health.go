@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -440,15 +441,24 @@ func (s *HealthService) checkQuickCacheAcrossProvidersBulk(ctx context.Context, 
 					result.cached = cached
 				}
 			} else {
-				for _, hash := range hashes {
+				for i, hash := range hashes {
 					cached, err := provider.client.CheckInstantAvailability(ctx, hash)
 					if err != nil {
 						result.errors[hash] = err
+						// Every remaining hash would fail the same way: stop instead of
+						// spending the caller's budget on calls that cannot succeed.
+						if errors.Is(err, ErrInstantAvailabilityUnsupported) || ctx.Err() != nil {
+							for _, rest := range hashes[i+1:] {
+								result.errors[rest] = err
+							}
+							break
+						}
 						continue
 					}
 					result.cached[hash] = cached
 				}
 			}
+			logQuickCacheProviderErrors(provider.name, len(hashes), result.errors)
 			resultCh <- result
 		}(provider)
 	}
@@ -498,6 +508,31 @@ func (s *HealthService) checkQuickCacheAcrossProvidersBulk(ctx context.Context, 
 	}
 
 	return out, true
+}
+
+// quickCacheUnsupportedLogged records providers whose missing cache lookup has
+// already been logged, so the permanent condition is reported once per process.
+var quickCacheUnsupportedLogged sync.Map
+
+// logQuickCacheProviderErrors summarizes one provider's failed quick cache
+// lookups. Without it a provider that never answers only shows up as a
+// successes=1/2 count on each hash.
+func logQuickCacheProviderErrors(provider string, total int, errs map[string]error) {
+	var sample error
+	for _, err := range errs {
+		sample = err
+		break
+	}
+	if sample == nil {
+		return
+	}
+	if errors.Is(sample, ErrInstantAvailabilityUnsupported) {
+		if _, seen := quickCacheUnsupportedLogged.LoadOrStore(provider, true); !seen {
+			log.Printf("[debrid-health] %s has no quick cache lookup; its cache status stays unknown in quick checks", provider)
+		}
+		return
+	}
+	log.Printf("[debrid-health] %s quick cache check failed for %d/%d hash(es): %v", provider, len(errs), total, sample)
 }
 
 func (s *HealthService) checkHealth(ctx context.Context, result models.NZBResult, verifyUncached, quickOnly bool) (*DebridHealthCheck, error) {

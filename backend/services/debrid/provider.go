@@ -2,9 +2,14 @@ package debrid
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 )
+
+// ErrInstantAvailabilityUnsupported is returned by CheckInstantAvailability when
+// the provider has no cache lookup that avoids adding the torrent.
+var ErrInstantAvailabilityUnsupported = errors.New("instant availability not supported")
 
 // Provider defines the interface that all debrid providers must implement.
 // This abstraction allows the debrid services to work with any provider
@@ -33,8 +38,8 @@ type Provider interface {
 	// UnrestrictLink converts a restricted link to an actual download URL.
 	UnrestrictLink(ctx context.Context, link string) (*UnrestrictResult, error)
 
-	// CheckInstantAvailability checks if a torrent hash is cached.
-	// Note: Some providers may not support this (Real-Debrid deprecated it).
+	// CheckInstantAvailability checks if a torrent hash is cached. Providers
+	// without a cache lookup return ErrInstantAvailabilityUnsupported.
 	CheckInstantAvailability(ctx context.Context, infoHash string) (bool, error)
 }
 
