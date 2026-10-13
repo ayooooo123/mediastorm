@@ -289,6 +289,24 @@ type IndexerConfig struct {
 	Categories      string   `json:"categories"` // Comma-separated newznab category IDs (e.g., "2000,2010,2020" for movies, "5000,5010,5020" for TV)
 	Enabled         bool     `json:"enabled"`
 	AllowedProfiles []string `json:"allowedProfiles,omitempty"`
+	// UserAgent overrides the User-Agent sent for searches and NZB downloads.
+	// Some indexers reject requests unless they come from a recent *arr tool.
+	UserAgent string `json:"userAgent,omitempty"`
+}
+
+// IndexerUserAgent returns the User-Agent override configured for the named
+// indexer, or "" when none is set.
+func (s Settings) IndexerUserAgent(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	for _, idx := range s.Indexers {
+		if strings.EqualFold(strings.TrimSpace(idx.Name), name) {
+			return strings.TrimSpace(idx.UserAgent)
+		}
+	}
+	return ""
 }
 
 type TorrentScraperConfig struct {

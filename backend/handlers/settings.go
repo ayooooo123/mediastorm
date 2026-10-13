@@ -1097,6 +1097,7 @@ func expandProwlarrSources(ctx context.Context, s *config.Settings) error {
 				Type:       "newznab",
 				Categories: idx.Categories,
 				Enabled:    idx.Enabled,
+				UserAgent:  idx.UserAgent,
 			})
 			added++
 		}

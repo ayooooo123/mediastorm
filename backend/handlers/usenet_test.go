@@ -108,7 +108,7 @@ func TestUsenetTrackProberFetchNZBSetsDownloadHeaders(t *testing.T) {
 	defer server.Close()
 
 	prober := &usenetTrackProber{httpClient: server.Client()}
-	_, _, err := prober.fetchNZB(context.Background(), server.URL+"/test.nzb")
+	_, _, err := prober.fetchNZB(context.Background(), server.URL+"/test.nzb", "")
 	if err != nil {
 		t.Fatalf("fetchNZB returned error: %v", err)
 	}
@@ -117,6 +117,14 @@ func TestUsenetTrackProberFetchNZBSetsDownloadHeaders(t *testing.T) {
 	}
 	if receivedAccept == "" {
 		t.Fatal("expected Accept header to be set")
+	}
+
+	const override = "Sonarr/4.0.20.3014 (ubuntu 24.04)"
+	if _, _, err := prober.fetchNZB(context.Background(), server.URL+"/test.nzb", override); err != nil {
+		t.Fatalf("fetchNZB with override returned error: %v", err)
+	}
+	if receivedUserAgent != override {
+		t.Fatalf("User-Agent = %q, want override %q", receivedUserAgent, override)
 	}
 }
 

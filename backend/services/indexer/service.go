@@ -4404,7 +4404,7 @@ func (s *Service) searchTorznab(ctx context.Context, idx config.IndexerConfig, o
 	if err != nil {
 		return nil, err
 	}
-	httpheaders.SetIndexerSearchHeaders(req)
+	httpheaders.SetIndexerSearchHeaders(req, idx.UserAgent)
 	req.URL.RawQuery = params.Encode()
 
 	resp, err := apiusage.Do(s.httpc, idx.Name, "Newznab search", req)

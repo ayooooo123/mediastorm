@@ -784,6 +784,7 @@ var SettingsSchema = map[string]interface{}{
 				"optionsFrom": "profiles",
 				"order":       6,
 			},
+			"userAgent": map[string]interface{}{"type": "text", "label": "User-Agent Override", "description": "Optional User-Agent sent for searches and NZB downloads from this indexer. Use when an indexer rejects requests that don't come from a current *arr tool (e.g. 403 \"tool is not on the newest version\"). Leave empty for the default.", "placeholder": "Sonarr/4.0.20.3014 (ubuntu 24.04)", "order": 7},
 		},
 	},
 	"torrentScrapers": map[string]interface{}{
@@ -4793,10 +4794,11 @@ func (h *AdminUIHandler) renderLoginError(w http.ResponseWriter, errMsg string) 
 
 // TestIndexerRequest represents a request to test an indexer
 type TestIndexerRequest struct {
-	URL    string `json:"url"`
-	APIKey string `json:"apiKey"`
-	Name   string `json:"name"`
-	Type   string `json:"type"`
+	URL       string `json:"url"`
+	APIKey    string `json:"apiKey"`
+	Name      string `json:"name"`
+	Type      string `json:"type"`
+	UserAgent string `json:"userAgent"`
 }
 
 // TestIndexer tests an indexer by running a search
@@ -4858,7 +4860,7 @@ func (h *AdminUIHandler) TestIndexer(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	httpheaders.SetIndexerSearchHeaders(searchReq)
+	httpheaders.SetIndexerSearchHeaders(searchReq, req.UserAgent)
 	resp, err := apiusage.Do(client, displayName(req.Name, "Indexer"), "Indexer search test", searchReq)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")

@@ -7683,7 +7683,7 @@
         switch(sectionKey) {
             case 'indexers':
                 endpoint = basePath + '/api/test/indexer';
-                payload = { url: item.url, apiKey: item.apiKey, name: item.name, type: item.type };
+                payload = { url: item.url, apiKey: item.apiKey, name: item.name, type: item.type, userAgent: item.userAgent };
                 break;
             case 'torrentScrapers':
                 endpoint = basePath + '/api/test/scraper';

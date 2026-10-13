@@ -49,6 +49,8 @@ type usenetTrackProber struct {
 	ffprobePath      string
 	webdavBase       string // e.g. "http://user:pass@127.0.0.1:7777"
 	webdavPrefix     string // e.g. "/webdav"
+	// userAgentFor returns the per-indexer User-Agent override, if any.
+	userAgentFor func(indexer string) string
 }
 
 type usenetProbeMediaCandidate struct {
@@ -81,7 +83,11 @@ func (p *usenetTrackProber) probe(ctx context.Context, candidate models.NZBResul
 	}
 
 	// Fetch NZB bytes (second fetch; health check already fetched internally)
-	nzbBytes, fileName, err := p.fetchNZB(ctx, downloadURL)
+	userAgent := ""
+	if p.userAgentFor != nil {
+		userAgent = p.userAgentFor(candidate.Indexer)
+	}
+	nzbBytes, fileName, err := p.fetchNZB(ctx, downloadURL, userAgent)
 	if err != nil {
 		return nil, nil, fmt.Sprintf("fetch NZB: %v", err)
 	}
@@ -275,12 +281,12 @@ func (p *usenetTrackProber) findBestProbeMediaFile(dirPath string, hints mediare
 	return candidates[0].path, nil
 }
 
-func (p *usenetTrackProber) fetchNZB(ctx context.Context, downloadURL string) ([]byte, string, error) {
+func (p *usenetTrackProber) fetchNZB(ctx context.Context, downloadURL, userAgent string) ([]byte, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
 		return nil, "", err
 	}
-	httpheaders.SetNZBDownloadHeaders(req)
+	httpheaders.SetNZBDownloadHeaders(req, userAgent)
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
 		return nil, "", err
@@ -448,6 +454,7 @@ type UsenetHandler struct {
 	Service      usenetHealthService
 	trackProber  *usenetTrackProber
 	healthMemory usenetHealthRecorder
+	userAgentFor func(indexer string) string
 }
 
 // usenetHealthRecorder remembers explicit health check outcomes so search
@@ -465,6 +472,15 @@ var _ usenetHealthService = (*usenetsvc.Service)(nil)
 
 func NewUsenetHandler(s usenetHealthService) *UsenetHandler {
 	return &UsenetHandler{Service: s}
+}
+
+// SetIndexerUserAgentLookup supplies per-indexer User-Agent overrides for
+// NZB fetches made by track probing. Call before ConfigureTrackProbing.
+func (h *UsenetHandler) SetIndexerUserAgentLookup(fn func(indexer string) string) {
+	h.userAgentFor = fn
+	if h.trackProber != nil {
+		h.trackProber.userAgentFor = fn
+	}
 }
 
 // ConfigureTrackProbing enables optional audio/subtitle track probing via WebDAV + ffprobe.
@@ -495,6 +511,7 @@ func (h *UsenetHandler) ConfigureTrackProbing(importer nzbImporter, metadata use
 		ffprobePath:      ffprobePath,
 		webdavBase:       strings.TrimRight(parsed.String(), "/"),
 		webdavPrefix:     "/" + strings.Trim(prefix, "/"),
+		userAgentFor:     h.userAgentFor,
 	}
 	log.Printf("[usenet-tracks] track probing configured via WebDAV")
 }

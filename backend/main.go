@@ -411,6 +411,13 @@ func main() {
 	sourceHealthService := sourcehealth.New(debridPlaybackService, sourcehealth.DefaultConfig())
 	indexerHandler.SetSourceHealthService(sourceHealthService)
 	usenetHandler.SetHealthRecorder(sourceHealthService)
+	usenetHandler.SetIndexerUserAgentLookup(func(indexer string) string {
+		current, err := cfgManager.Load()
+		if err != nil {
+			return ""
+		}
+		return current.IndexerUserAgent(indexer)
+	})
 
 	// Initialize accounts before users — users table has a foreign key on accounts,
 	// so the master account must exist before the default user can be created.

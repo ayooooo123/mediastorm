@@ -2180,6 +2180,17 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+func (s *Service) indexerUserAgent(indexer string) string {
+	if s.cfg == nil {
+		return ""
+	}
+	settings, err := s.cfg.Load()
+	if err != nil {
+		return ""
+	}
+	return settings.IndexerUserAgent(indexer)
+}
+
 func externalUsenetEnabledForCandidate(settings config.Settings, candidate models.NZBResult) bool {
 	return externalUsenetEnabledForProfile(settings, strings.TrimSpace(candidate.Attributes["profileId"]))
 }
@@ -2213,7 +2224,7 @@ func (s *Service) fetchNZB(ctx context.Context, downloadURL string, candidate mo
 	if err != nil {
 		return nil, "", fmt.Errorf("build nzb request: %w", err)
 	}
-	httpheaders.SetNZBDownloadHeaders(req)
+	httpheaders.SetNZBDownloadHeaders(req, s.indexerUserAgent(candidate.Indexer))
 
 	log.Printf("[playback] sending http request...")
 	resp, err := s.httpClient.Do(req)
