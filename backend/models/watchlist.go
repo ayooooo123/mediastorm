@@ -14,6 +14,7 @@ type WatchlistItem struct {
 	BackdropURL     string            `json:"backdropUrl,omitempty"`
 	TextBackdropURL string            `json:"textBackdropUrl,omitempty"` // Backdrop with title text (enriched at response time)
 	BackdropURLs    []string          `json:"backdropUrls,omitempty"`    // Ranked alternate backdrops (enriched at response time)
+	LogoURL         string            `json:"logoUrl,omitempty"`         // Title logo (enriched at response time)
 	AddedAt         time.Time         `json:"addedAt"`
 	ExternalIDs     map[string]string `json:"externalIds,omitempty"`
 	Genres          []string          `json:"genres,omitempty"`

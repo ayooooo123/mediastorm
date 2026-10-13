@@ -1185,6 +1185,53 @@ func TestGetCachedArtworkURLsResolvesSeriesTMDBToTVDBCache(t *testing.T) {
 	}
 }
 
+func TestGetCachedLogoURLPrefersDetailsThenImagesCache(t *testing.T) {
+	cache := newFileCache(t.TempDir(), 24)
+	svc := &Service{
+		client: &tvdbClient{language: "eng"},
+		cache:  cache,
+	}
+
+	if err := cache.set(cacheKey("tmdb", "images", "v10", "eng", "movie", "603"), tmdbImagesResult{
+		Logo: &models.Image{URL: "https://example.test/images-logo.png", Type: "logo"},
+	}); err != nil {
+		t.Fatalf("set images cache: %v", err)
+	}
+	if got := svc.GetCachedLogoURL("movie", 603, 0); got != "https://example.test/images-logo.png" {
+		t.Fatalf("logo = %q, want images cache logo", got)
+	}
+
+	if err := cache.set(cacheKey("tmdb", "movie", "details", "v3", "eng", "603"), models.Title{
+		Logo: &models.Image{URL: "https://example.test/details-logo.png", Type: "logo"},
+	}); err != nil {
+		t.Fatalf("set details cache: %v", err)
+	}
+	if got := svc.GetCachedLogoURL("movie", 603, 0); got != "https://example.test/details-logo.png" {
+		t.Fatalf("logo = %q, want details cache logo", got)
+	}
+
+	if got := svc.GetCachedLogoURL("series", 999, 0); got != "" {
+		t.Fatalf("uncached logo = %q, want empty", got)
+	}
+}
+
+func TestGetCachedLogoURLReadsTMDBSeriesFallbackCache(t *testing.T) {
+	cache := newFileCache(t.TempDir(), 24)
+	svc := &Service{
+		client: &tvdbClient{language: "eng"},
+		cache:  cache,
+	}
+
+	if err := cache.set(cacheKey("tmdb", "series", "details-fallback", "v4", "eng", "75191"), models.SeriesDetails{
+		Title: models.Title{Logo: &models.Image{URL: "https://example.test/fallback-logo.png", Type: "logo"}},
+	}); err != nil {
+		t.Fatalf("set fallback cache: %v", err)
+	}
+	if got := svc.GetCachedLogoURL("series", 75191, 0); got != "https://example.test/fallback-logo.png" {
+		t.Fatalf("logo = %q, want TMDB fallback logo", got)
+	}
+}
+
 func TestGetCachedArtworkURLsUsesMetadataLanguageForTMDBImages(t *testing.T) {
 	cache := newFileCache(t.TempDir(), 24)
 	svc := &Service{

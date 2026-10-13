@@ -241,6 +241,11 @@ func (h *WatchlistHandler) EnrichMissingArtwork(userIDs []string) {
 	}
 }
 
+// cachedLogoProvider is the optional cache-only title logo lookup.
+type cachedLogoProvider interface {
+	GetCachedLogoURL(mediaType string, tmdbID int64, tvdbID int64) string
+}
+
 // enrichWatchlistArtwork refreshes artwork URLs from the metadata cache when
 // available, falling back to persisted values in the DB record. This is a fast,
 // cache-only operation with no API calls.
@@ -248,6 +253,7 @@ func enrichWatchlistArtwork(items []models.WatchlistItem, meta metadataService) 
 	if meta == nil {
 		return
 	}
+	logos, _ := meta.(cachedLogoProvider)
 	for i := range items {
 		tmdbID, tvdbID := watchlist.NumericIDs(items[i].ExternalIDs)
 		if tmdbID > 0 || tvdbID > 0 {
@@ -286,6 +292,9 @@ func enrichWatchlistArtwork(items []models.WatchlistItem, meta metadataService) 
 			}
 			if len(backdropURLs) > 0 {
 				items[i].BackdropURLs = backdropURLs
+			}
+			if logos != nil {
+				items[i].LogoURL = logos.GetCachedLogoURL(items[i].MediaType, tmdbID, tvdbID)
 			}
 		}
 		// If cache misses, persisted artwork URLs from the DB record are kept as-is.

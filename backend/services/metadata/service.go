@@ -1136,11 +1136,33 @@ func (s *Service) GetTextPosterURL(mediaType string, tmdbID int64, tvdbID int64)
 // GetCachedArtworkURLs returns artwork URLs for a title from cache, if available.
 // This is a fast cache-only lookup with no API calls.
 func (s *Service) GetCachedArtworkURLs(mediaType string, tmdbID int64, tvdbID int64) (string, string, []string) {
+	art := s.cachedArtwork(mediaType, tmdbID, tvdbID)
+	return art.textPosterURL, art.textBackdropURL, art.backdropURLs
+}
+
+// GetCachedLogoURL returns the title logo URL from cache, if available.
+// This is a fast cache-only lookup with no API calls.
+func (s *Service) GetCachedLogoURL(mediaType string, tmdbID int64, tvdbID int64) string {
+	return s.cachedArtwork(mediaType, tmdbID, tvdbID).logoURL
+}
+
+type cachedArtworkURLs struct {
+	textPosterURL   string
+	textBackdropURL string
+	backdropURLs    []string
+	logoURL         string
+}
+
+func (s *Service) cachedArtwork(mediaType string, tmdbID int64, tvdbID int64) cachedArtworkURLs {
 	var textPosterURL string
 	var textBackdropURL string
 	var backdropURLs []string
+	var logoURL string
 
 	mergeTitle := func(title models.Title) {
+		if logoURL == "" && title.Logo != nil {
+			logoURL = title.Logo.URL
+		}
 		if textPosterURL == "" && title.TextPoster != nil {
 			textPosterURL = title.TextPoster.URL
 		}
@@ -1150,6 +1172,9 @@ func (s *Service) GetCachedArtworkURLs(mediaType string, tmdbID int64, tvdbID in
 		backdropURLs = mergeArtworkURLStrings(backdropURLs, title.Backdrops)
 	}
 	mergeImages := func(images tmdbImagesResult) {
+		if logoURL == "" && images.Logo != nil {
+			logoURL = images.Logo.URL
+		}
 		if textPosterURL == "" && images.TextPoster != nil {
 			textPosterURL = images.TextPoster.URL
 		}
@@ -1162,10 +1187,12 @@ func (s *Service) GetCachedArtworkURLs(mediaType string, tmdbID int64, tvdbID in
 	if mediaType == "movie" {
 		// Try TMDB-only cache first (used when no TVDB ID was available)
 		if tmdbID > 0 {
-			cacheID := cacheKey("tmdb", "movie", "details", "v3", s.client.language, strconv.FormatInt(tmdbID, 10))
-			var cached models.Title
-			if ok, _ := s.cache.get(cacheID, &cached); ok {
-				mergeTitle(cached)
+			for _, version := range []string{"v4", "v3"} {
+				cacheID := cacheKey("tmdb", "movie", "details", version, s.client.language, strconv.FormatInt(tmdbID, 10))
+				var cached models.Title
+				if ok, _ := s.cache.get(cacheID, &cached); ok {
+					mergeTitle(cached)
+				}
 			}
 			imagesKey := cacheKey("tmdb", "images", "v10", s.client.language, "movie", fmt.Sprintf("%d", tmdbID))
 			var images tmdbImagesResult
@@ -1207,6 +1234,14 @@ func (s *Service) GetCachedArtworkURLs(mediaType string, tmdbID int64, tvdbID in
 			}
 		}
 		if tmdbID > 0 {
+			// Series without a TVDB match are served from the TMDB fallback.
+			cacheID := cacheKey("tmdb", "series", "details-fallback", "v4", s.client.language, strconv.FormatInt(tmdbID, 10))
+			var cached models.SeriesDetails
+			if ok, _ := s.cache.get(cacheID, &cached); ok {
+				mergeTitle(cached.Title)
+			}
+		}
+		if tmdbID > 0 {
 			imagesKey := cacheKey("tmdb", "images", "v10", s.client.language, "series", fmt.Sprintf("%d", tmdbID))
 			var images tmdbImagesResult
 			if ok, _ := s.cache.get(imagesKey, &images); ok {
@@ -1214,7 +1249,12 @@ func (s *Service) GetCachedArtworkURLs(mediaType string, tmdbID int64, tvdbID in
 			}
 		}
 	}
-	return textPosterURL, textBackdropURL, backdropURLs
+	return cachedArtworkURLs{
+		textPosterURL:   textPosterURL,
+		textBackdropURL: textBackdropURL,
+		backdropURLs:    backdropURLs,
+		logoURL:         logoURL,
+	}
 }
 
 // GetCachedOverview returns a title overview from cache, if available.
