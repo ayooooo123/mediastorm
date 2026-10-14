@@ -1640,6 +1640,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 	var seasonPremiereYear int
 	var episodeReleased bool
 	var countryCode string
+	var originalLanguage string
 	var tvdbID int64
 	var alternateTitles []string
 	if mediaType == "series" && h.metadataSvc != nil {
@@ -1653,6 +1654,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 		seasonPremiereYear = seriesMeta.SeasonPremiereYear
 		episodeReleased = seriesMeta.EpisodeReleased
 		countryCode = seriesMeta.CountryCode
+		originalLanguage = seriesMeta.OriginalLanguage
 		tvdbID = seriesMeta.TVDBID
 		if imdbID == "" && seriesMeta.IMDBID != "" {
 			imdbID = seriesMeta.IMDBID
@@ -1696,6 +1698,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 		}
 		if movieTitle, err := h.movieMetadataSvc.MovieInfo(ctx, movieQuery); err == nil && movieTitle != nil {
 			countryCode = strings.TrimSpace(movieTitle.CountryCode)
+			originalLanguage = strings.TrimSpace(movieTitle.Language)
 			alternateTitles = hydratedMovieSearchTitles(movieTitle)
 			if isAnimeTitle(movieTitle) {
 				isAnime = true
@@ -1717,6 +1720,7 @@ func (h *PrequeueHandler) runPrequeueWorker(prequeueID, titleID, titleName, imdb
 		AlternateTitles:    alternateTitles,
 		Year:               year,
 		CountryCode:        countryCode,
+		OriginalLanguage:   originalLanguage,
 		UserID:             userID,
 		ClientID:           clientID,
 		AdaptiveThroughput: throughput,
@@ -3234,6 +3238,7 @@ func combinedPrequeueSearchOptions(opts indexer.SearchOptions) indexer.SearchOpt
 		MediaType:             opts.MediaType,
 		Year:                  opts.Year,
 		CountryCode:           opts.CountryCode,
+		OriginalLanguage:      opts.OriginalLanguage,
 		UserID:                opts.UserID,
 		ClientID:              opts.ClientID,
 		AdaptiveThroughput:    opts.AdaptiveThroughput,
@@ -3854,6 +3859,7 @@ type SeriesMetadataResult struct {
 	IMDBID             string // Resolved IMDb ID used by ID-aware search providers
 	TVDBID             int64  // Resolved TVDB ID used by structured Newznab TV searches
 	CountryCode        string // Original production country used to disambiguate regional remakes
+	OriginalLanguage   string // Original spoken language; an audio preference matching it needs no pin
 }
 
 // createEpisodeResolverAndLookupAbsoluteEp fetches series metadata, creates an episode resolver,
@@ -3899,6 +3905,7 @@ func (h *PrequeueHandler) createEpisodeResolverAndLookupAbsoluteEp(ctx context.C
 	result.IMDBID = strings.TrimSpace(details.Title.IMDBID)
 	result.TVDBID = details.Title.TVDBID
 	result.CountryCode = strings.TrimSpace(details.Title.CountryCode)
+	result.OriginalLanguage = strings.TrimSpace(details.Title.Language)
 
 	// Check if this is a daily show from the metadata
 	result.IsDaily = details.Title.IsDaily

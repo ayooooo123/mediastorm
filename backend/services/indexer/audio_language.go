@@ -59,3 +59,13 @@ func prioritizeExplicitAudioScored(results []models.ScoredNZBResult, preferred s
 	}
 	sort.SliceStable(results, func(i, j int) bool { return compareLanguage(results[i].NZBResult, results[j].NZBResult, preferred) < 0 })
 }
+
+// A preference for the title's original language needs no pin: untagged
+// releases carry that audio, so pinning would only promote tagged dubs.
+func (s *Service) explicitAudioLanguageFor(opts SearchOptions) string {
+	preferred := s.explicitAudioLanguage(opts.UserID, opts.ClientID)
+	if preferred != "" && language.NormalizeToCode(opts.OriginalLanguage) == preferred {
+		return ""
+	}
+	return preferred
+}

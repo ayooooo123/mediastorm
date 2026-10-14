@@ -98,6 +98,7 @@ func (h *IndexerHandler) Search(w http.ResponseWriter, r *http.Request) {
 	var episodeReleased bool
 	var absoluteEpisodeNumber int
 	var countryCode string
+	var originalLanguage string
 	var tvdbID int64
 	var alternateTitles []string
 	if mediaType == "series" && h.MetadataSvc != nil {
@@ -116,6 +117,7 @@ func (h *IndexerHandler) Search(w http.ResponseWriter, r *http.Request) {
 			episodeReleased = seriesMeta.EpisodeReleased
 			absoluteEpisodeNumber = seriesMeta.AbsoluteEpisodeNumber
 			countryCode = seriesMeta.CountryCode
+			originalLanguage = seriesMeta.OriginalLanguage
 			tvdbID = seriesMeta.TVDBID
 			if year == 0 && seriesMeta.Year > 0 {
 				year = seriesMeta.Year
@@ -140,6 +142,7 @@ func (h *IndexerHandler) Search(w http.ResponseWriter, r *http.Request) {
 		}
 		if movieTitle, err := h.MovieMetadataSvc.MovieInfo(r.Context(), movieQuery); err == nil && movieTitle != nil {
 			countryCode = strings.TrimSpace(movieTitle.CountryCode)
+			originalLanguage = strings.TrimSpace(movieTitle.Language)
 			// Keep the hydrated canonical title in the filter identity set because
 			// the incoming query may itself be an alternate title. Outbound alias
 			// queries are capped separately from the complete filter-title set.
@@ -164,6 +167,7 @@ func (h *IndexerHandler) Search(w http.ResponseWriter, r *http.Request) {
 		MediaType:             mediaType,
 		Year:                  year,
 		CountryCode:           countryCode,
+		OriginalLanguage:      originalLanguage,
 		UserID:                userID,
 		ClientID:              clientID,
 		AdaptiveThroughput:    adaptiveThroughputFromRequest(r),
@@ -398,6 +402,7 @@ func (h *IndexerHandler) SearchTest(w http.ResponseWriter, r *http.Request) {
 	var episodeReleased bool
 	var absoluteEpisodeNumber int
 	var countryCode string
+	var originalLanguage string
 	var tvdbID int64
 	var alternateTitles []string
 	if mediaType == "series" && h.MetadataSvc != nil {
@@ -416,6 +421,7 @@ func (h *IndexerHandler) SearchTest(w http.ResponseWriter, r *http.Request) {
 			episodeReleased = seriesMeta.EpisodeReleased
 			absoluteEpisodeNumber = seriesMeta.AbsoluteEpisodeNumber
 			countryCode = seriesMeta.CountryCode
+			originalLanguage = seriesMeta.OriginalLanguage
 			tvdbID = seriesMeta.TVDBID
 			if year == 0 && seriesMeta.Year > 0 {
 				year = seriesMeta.Year
@@ -432,6 +438,7 @@ func (h *IndexerHandler) SearchTest(w http.ResponseWriter, r *http.Request) {
 		}
 		if movieTitle, err := h.MovieMetadataSvc.MovieInfo(r.Context(), movieQuery); err == nil && movieTitle != nil {
 			countryCode = strings.TrimSpace(movieTitle.CountryCode)
+			originalLanguage = strings.TrimSpace(movieTitle.Language)
 			alternateTitles = hydratedMovieSearchTitles(movieTitle)
 			if isAnimeTitle(movieTitle) {
 				isAnime = true
@@ -453,6 +460,7 @@ func (h *IndexerHandler) SearchTest(w http.ResponseWriter, r *http.Request) {
 		MediaType:             mediaType,
 		Year:                  year,
 		CountryCode:           countryCode,
+		OriginalLanguage:      originalLanguage,
 		UserID:                userID,
 		ClientID:              clientID,
 		AdaptiveThroughput:    adaptiveThroughputFromRequest(r),
@@ -600,6 +608,7 @@ type seriesSearchMetadata struct {
 	EpisodeReleased       bool   // True only when metadata confirms the target episode has aired
 	AbsoluteEpisodeNumber int
 	CountryCode           string
+	OriginalLanguage      string
 	TVDBID                int64
 }
 
@@ -648,12 +657,13 @@ func (h *IndexerHandler) getSeriesSearchMetadata(ctx context.Context, query stri
 	}
 
 	result := &seriesSearchMetadata{
-		Numbering:   details.Numbering,
-		TitleID:     details.Title.ID,
-		IsDaily:     details.Title.IsDaily,
-		Year:        details.Title.Year,
-		CountryCode: details.Title.CountryCode,
-		TVDBID:      details.Title.TVDBID,
+		Numbering:        details.Numbering,
+		TitleID:          details.Title.ID,
+		IsDaily:          details.Title.IsDaily,
+		Year:             details.Title.Year,
+		CountryCode:      details.Title.CountryCode,
+		OriginalLanguage: strings.TrimSpace(details.Title.Language),
+		TVDBID:           details.Title.TVDBID,
 	}
 
 	result.IsAnime = isAnimeTitle(&details.Title)

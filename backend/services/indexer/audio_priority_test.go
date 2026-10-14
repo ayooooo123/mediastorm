@@ -114,3 +114,19 @@ func TestExplicitAudioPreferenceChangesCacheKey(t *testing.T) {
 		t.Fatal("explicit preference reused inherited ranking cache despite changed precedence")
 	}
 }
+
+func TestExplicitAudioMatchingOriginalLanguageIsNotPinned(t *testing.T) {
+	profile := &models.UserSettings{}
+	profile.Playback.PreferredAudioLanguage = "eng"
+	svc := &Service{userSettings: staticUserSettingsProvider{settings: profile}}
+	// Untagged English scene releases must not sink below tagged foreign dubs.
+	if got := svc.explicitAudioLanguageFor(SearchOptions{UserID: "profile", OriginalLanguage: "en"}); got != "" {
+		t.Fatalf("original-language preference pinned: %q", got)
+	}
+	if got := svc.explicitAudioLanguageFor(SearchOptions{UserID: "profile", OriginalLanguage: "ja"}); got != "eng" {
+		t.Fatalf("dub preference lost: %q", got)
+	}
+	if got := svc.explicitAudioLanguageFor(SearchOptions{UserID: "profile"}); got != "eng" {
+		t.Fatalf("unknown original language dropped preference: %q", got)
+	}
+}
