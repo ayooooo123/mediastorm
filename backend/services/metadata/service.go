@@ -2827,6 +2827,7 @@ func (s *Service) Search(ctx context.Context, query string, mediaType string) ([
 		seriesResults, seriesErr := s.Search(ctx, q, "series")
 		personResults, _ := s.Search(ctx, q, "person")
 		results := mergeSearchResults(append(append(movieResults, seriesResults...), personResults...))
+		rankSearchResults(q, results)
 		s.finalizeSearchReleaseStatuses(results)
 		if len(results) > 0 || movieErr == nil || seriesErr == nil {
 			return results, nil
@@ -2853,6 +2854,7 @@ func (s *Service) Search(ctx context.Context, query string, mediaType string) ([
 			}
 		}
 		if valid {
+			rankSearchResults(q, cached)
 			s.finalizeSearchReleaseStatuses(cached)
 			return cached, nil
 		}
@@ -3081,6 +3083,7 @@ func (s *Service) Search(ctx context.Context, query string, mediaType string) ([
 		return nil, tvdbErr
 	}
 	s.enrichSearchResults(ctx, results)
+	rankSearchResults(q, results)
 	s.finalizeSearchReleaseStatuses(results)
 	_ = s.cache.set(key, results)
 	return results, nil
