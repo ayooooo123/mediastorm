@@ -117,6 +117,20 @@ func TestRankSearchResultsSubtitleSegmentBeatsLowVoteExact(t *testing.T) {
 	)
 }
 
+func TestRankSearchResultsPopularityDecidesBetweenPartialMatches(t *testing.T) {
+	results := []models.SearchResult{
+		searchResult("movie", "Daniel Brühl: Breaking Bad", 1, 3),
+		searchResult("movie", "El Camino: A Breaking Bad Movie", 10, 5000),
+		searchResult("series", "Breaking Bad", 300, 15000),
+	}
+	rankSearchResults("breaking bad", results)
+	assertOrder(t, results,
+		"series:Breaking Bad",
+		"movie:El Camino: A Breaking Bad Movie",
+		"movie:Daniel Brühl: Breaking Bad",
+	)
+}
+
 func TestNormalizeSearchText(t *testing.T) {
 	cases := map[string]string{
 		"The Gilded Age":        "the gilded age",

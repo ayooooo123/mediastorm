@@ -24,16 +24,18 @@ const (
 )
 
 // Relevance bonuses share the log1p(popularity) scale, so a better tier wins
-// unless the other title is substantially more popular (e^1 ≈ 2.7x from exact
-// to prefix, e^2 ≈ 7x from prefix to all-words). An obscure exact match can
-// therefore still lose to a blockbuster prefix match ("dune" → Dune: Part Two
-// above a 37-vote film also named "Dune"), while comparably popular titles
-// order by match quality.
+// unless the other title is substantially more popular. Exact matches keep a
+// clear lead (e^0.75 ≈ 2x over a prefix match, e^1.75 ≈ 5.8x over an
+// all-words match), so an obscure exact match can still lose to a blockbuster
+// prefix match ("dune" → Dune: Part Two above a 37-vote film also named
+// "Dune"). The partial tiers sit close together so popularity mostly decides
+// between them: "breaking bad" → El Camino: A Breaking Bad Movie above the
+// obscure "Daniel Brühl: Breaking Bad" despite its weaker match.
 var searchMatchBonus = map[searchMatchTier]float64{
 	searchMatchNone:      0,
-	searchMatchSubstring: 1,
-	searchMatchAllWords:  2,
-	searchMatchPrefix:    4,
+	searchMatchSubstring: 2.75,
+	searchMatchAllWords:  3.25,
+	searchMatchPrefix:    4.25,
 	// A colon/dash-delimited part of the title equals the query, e.g.
 	// "fellowship of the ring" → "The Lord of the Rings: The Fellowship of
 	// the Ring". Nearly as strong as an exact match.
