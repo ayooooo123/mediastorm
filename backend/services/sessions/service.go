@@ -262,7 +262,35 @@ func (s *Service) BindClient(token, clientID string) error {
 }
 
 // Validate checks if a token is valid and returns the associated session.
+//
+// Jellyfin bridge sessions are never returned here: their tokens travel in
+// media URLs and must not unlock the admin/account UIs or account APIs that
+// validate cookies and bearer tokens through this method. The bridge uses
+// ValidateScoped instead.
 func (s *Service) Validate(token string) (models.Session, error) {
+	session, err := s.validate(token)
+	if err != nil {
+		return models.Session{}, err
+	}
+	if session.Scope == models.SessionScopeJellyfin {
+		return models.Session{}, ErrSessionNotFound
+	}
+	return session, nil
+}
+
+// ValidateScoped validates a token that must carry exactly the given scope.
+func (s *Service) ValidateScoped(token, scope string) (models.Session, error) {
+	session, err := s.validate(token)
+	if err != nil {
+		return models.Session{}, err
+	}
+	if session.Scope != scope {
+		return models.Session{}, ErrSessionNotFound
+	}
+	return session, nil
+}
+
+func (s *Service) validate(token string) (models.Session, error) {
 	if token == "" {
 		return models.Session{}, ErrInvalidToken
 	}

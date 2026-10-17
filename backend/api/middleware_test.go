@@ -102,6 +102,31 @@ func TestWatchPartySessionCannotReachProtectedAccountAPI(t *testing.T) {
 	}
 }
 
+func TestJellyfinBridgeSessionCannotReachProtectedAccountAPI(t *testing.T) {
+	sessionsService, err := sessions.NewService("", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := sessionsService.CreateScopedWithResource("account-1", true, "test", "127.0.0.1", time.Hour, models.SessionScopeJellyfin, "profile-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	handler := AccountAuthMiddleware(sessionsService, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+	req.Header.Set("Authorization", "Bearer "+session.Token)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+	// Validate itself refuses bridge sessions (401); the middleware scope check
+	// is a second line of defence (403). Either way the handler must not run.
+	if (recorder.Code != http.StatusUnauthorized && recorder.Code != http.StatusForbidden) || called {
+		t.Fatalf("jellyfin bridge session status=%d called=%v, want 401/403 and no protected handler", recorder.Code, called)
+	}
+}
+
 func TestLocalhostOnlyMiddlewareUsesTCPPeer(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	handler := localhostOnlyMiddleware(next)

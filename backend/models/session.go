@@ -31,6 +31,11 @@ const SessionScopeStream = "stream"
 // identified by ScopeResource. It does not grant account or media access.
 const SessionScopeWatchParty = "watch_party"
 
+// SessionScopeJellyfin marks a token issued by the Jellyfin bridge. ScopeResource
+// holds the profile ID the token is bound to. These tokens are only valid on the
+// bridge listener and must never reach the main API.
+const SessionScopeJellyfin = "jellyfin"
+
 // SessionScopeResourcePlaceholder lets share-link playback pages refer to the
 // bound source without putting the real filename or URL in the browser address.
 const SessionScopeResourcePlaceholder = "__shared_source__"

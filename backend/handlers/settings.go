@@ -963,6 +963,10 @@ func (h *SettingsHandler) PutSettings(w http.ResponseWriter, r *http.Request) {
 		s.Sports.EnabledLeagues = oldSettings.Sports.EnabledLeagues
 	}
 
+	// The Jellyfin bridge is configured on the Integrations page (which
+	// applies changes live); a settings-page save keeps what is stored.
+	s.JellyfinBridge = oldSettings.JellyfinBridge
+
 	// An explicit navigation choice is not a legacy list requiring migration.
 	if len(s.Display.NavigationTabVisibility) > 0 {
 		s.UI.NavigationTabVisibilityIncludesSports = true

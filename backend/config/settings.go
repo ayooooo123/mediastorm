@@ -46,6 +46,7 @@ type Settings struct {
 	Scrob           ScrobSettings           `json:"scrob,omitempty"`
 	Plex            PlexSettings            `json:"plex,omitempty"`
 	Jellyfin        JellyfinSettings        `json:"jellyfin,omitempty"`
+	JellyfinBridge  JellyfinBridgeSettings  `json:"jellyfinBridge"`
 	Log             LogConfig               `json:"log"`
 	ScheduledTasks  ScheduledTasksSettings  `json:"scheduledTasks,omitempty"`
 	Network         NetworkSettings         `json:"network,omitempty"`
@@ -1891,6 +1892,60 @@ func (p *PlexSettings) RemoveAccount(id string) bool {
 	return false
 }
 
+// JellyfinBridgeSettings controls the optional Jellyfin-compatible server that
+// lets stock Jellyfin clients (web, Android TV, Swiftfin, …) browse and play
+// mediastorm content. It listens on its own port; changes need a restart.
+type JellyfinBridgeSettings struct {
+	Enabled    bool   `json:"enabled"`
+	Host       string `json:"host,omitempty"`
+	Port       int    `json:"port,omitempty"`       // default 8096
+	ServerName string `json:"serverName,omitempty"` // shown in client server lists
+	// ServerID is the stable Jellyfin server GUID (32 hex). Generated on first start.
+	ServerID string `json:"serverId,omitempty"`
+	// AllowPinLogin lets a profile PIN be used as the Jellyfin password.
+	AllowPinLogin bool `json:"allowPinLogin"`
+	// ShowUserList lists profiles ("account/profile") to anonymous clients
+	// on the sign-in screen. Off by default: the list names account logins.
+	// Without it, users type the name or use Quick Connect.
+	ShowUserList bool `json:"showUserList"`
+	// TrustedProxies lists reverse-proxy addresses/CIDRs whose
+	// X-Forwarded-For header identifies the real client (loopback is always
+	// trusted). Needed for per-client login limits behind a Docker proxy.
+	TrustedProxies []string `json:"trustedProxies,omitempty"`
+	// PrequeueOnDetails starts resolving a stream as soon as a client opens a
+	// movie/episode details page, hiding search latency at play time.
+	PrequeueOnDetails bool `json:"prequeueOnDetails"`
+	// PlaybackInfoWaitSeconds bounds how long PlaybackInfo blocks on stream resolution.
+	PlaybackInfoWaitSeconds int  `json:"playbackInfoWaitSeconds,omitempty"`
+	UDPDiscovery            bool `json:"udpDiscovery"`
+	// QuickConnect lets a signed-in user approve another device (e.g. a TV)
+	// by entering the code it shows.
+	QuickConnect bool `json:"quickConnect"`
+	// CopyHEVC, CopyHDR and CopyDolbyVision let stable copy sessions pass
+	// HEVC/AV1, HDR10/HLG and Dolby Vision through to clients that declare
+	// them, instead of transcoding to SDR H.264.
+	CopyHEVC        bool `json:"copyHevc"`
+	CopyHDR         bool `json:"copyHdr"`
+	CopyDolbyVision bool `json:"copyDolbyVision"`
+	// DisableVideoTranscoding never re-encodes video for Jellyfin clients:
+	// it is copied whatever the client declared, and a stream that cannot be
+	// copied does not play. Live TV is then passed through as received.
+	DisableVideoTranscoding bool `json:"disableVideoTranscoding"`
+	// DisableAudioTranscoding keeps every audio track as it is, also when
+	// the video is transcoded.
+	DisableAudioTranscoding bool `json:"disableAudioTranscoding"`
+	// AutoAvoidVideoTranscoding makes the automatic version skip down
+	// mediastorm's ranking to a release whose video the client can play
+	// without transcoding, when the first choice would need it.
+	AutoAvoidVideoTranscoding bool `json:"autoAvoidVideoTranscoding"`
+	// ReleaseVersions is how many of mediastorm's top-ranked releases movies
+	// and episodes offer as versions (0: no version choice, Auto only).
+	ReleaseVersions int `json:"releaseVersions"`
+	// WebClientDir is the jellyfin-web build served at /web (default: the
+	// copy shipped in the image, /app/jellyfin-web).
+	WebClientDir string `json:"webClientDir,omitempty"`
+}
+
 // JellyfinAccount represents a connected Jellyfin server account.
 type JellyfinAccount struct {
 	ID             string `json:"id"`
@@ -2125,6 +2180,19 @@ func DefaultSettings() Settings {
 			RealDebridRestrictedTermsFilterEnabled: true,
 		},
 		AnimeFiltering: AnimeFilteringSettings{},
+		JellyfinBridge: JellyfinBridgeSettings{
+			Port:                      8096,
+			ServerName:                "mediastorm",
+			PrequeueOnDetails:         true,
+			PlaybackInfoWaitSeconds:   20,
+			UDPDiscovery:              true,
+			QuickConnect:              true,
+			CopyHEVC:                  true,
+			CopyHDR:                   true,
+			CopyDolbyVision:           true,
+			AutoAvoidVideoTranscoding: true,
+			ReleaseVersions:           15,
+		},
 		UI: UISettings{
 			LoadingAnimationEnabled:                   true,
 			NavigationTabVisibilityIncludesSystemTabs: true,
@@ -2457,6 +2525,31 @@ func (m *Manager) Load() (Settings, error) {
 			"enforceProfilePins":    false,
 			"profileUnlockTtlHours": DefaultProfileUnlockTTLHours,
 		}
+	}
+
+	// Backfill Jellyfin bridge defaults for installs that predate the section;
+	// toggles that default to on would otherwise read as off.
+	bridgeDefaults := map[string]interface{}{
+		"port":                      8096,
+		"serverName":                "mediastorm",
+		"prequeueOnDetails":         true,
+		"playbackInfoWaitSeconds":   20,
+		"udpDiscovery":              true,
+		"quickConnect":              true,
+		"copyHevc":                  true,
+		"copyHdr":                   true,
+		"copyDolbyVision":           true,
+		"autoAvoidVideoTranscoding": true,
+		"releaseVersions":           15,
+	}
+	if bridgeRaw, ok := raw["jellyfinBridge"].(map[string]interface{}); ok {
+		for key, value := range bridgeDefaults {
+			if _, has := bridgeRaw[key]; !has {
+				bridgeRaw[key] = value
+			}
+		}
+	} else {
+		raw["jellyfinBridge"] = bridgeDefaults
 	}
 
 	// Backfill the search and resolution race policy defaults for installs that

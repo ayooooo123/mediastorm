@@ -25,6 +25,7 @@ import (
 	"novastream/internal/database"
 	"novastream/internal/datastore"
 	"novastream/internal/integration"
+	"novastream/internal/jellyfinbridge"
 	"novastream/internal/mediaidentity"
 	"novastream/internal/pool"
 	"novastream/internal/slogutil"
@@ -1193,6 +1194,7 @@ func main() {
 	adminLoginLimiter := api.NewIPRateLimiter(rate.Every(12*time.Second), 5)
 
 	// Register admin UI routes
+	jellyfinBridge := jellyfinbridge.NewController()
 	adminUIHandler := handlers.NewAdminUIHandler(configPath, settings.Log.File, videoHandler.GetHLSManager(), userService, userSettingsService, cfgManager)
 	adminUIHandler.GuideChanged = reconcileProfileLiveGuide
 	adminUIHandler.SetUsenetPoolManager(poolManager)
@@ -1260,6 +1262,12 @@ func main() {
 	r.HandleFunc("/admin/playback", adminUIHandler.RequireAuth(adminUIHandler.PlaybackPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/accounts", adminUIHandler.RequireAuth(adminUIHandler.AccountsPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/paired-devices", adminUIHandler.RequireMasterAuth(adminUIHandler.PairedDevicesPage)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/jellyfin-devices", adminUIHandler.RequireMasterAuth(adminUIHandler.JellyfinDevicesPage)).Methods(http.MethodGet)
+	jellyfinBridgeAdmin := handlers.NewJellyfinBridgeAdmin(cfgManager, jellyfinBridgeController{jellyfinBridge})
+	r.HandleFunc("/admin/api/jellyfin-bridge", adminUIHandler.RequireMasterAuth(jellyfinBridgeAdmin.Get)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/api/jellyfin-bridge", adminUIHandler.RequireMasterAuth(jellyfinBridgeAdmin.Put)).Methods(http.MethodPut)
+	r.HandleFunc("/admin/api/jellyfin-devices", adminUIHandler.RequireMasterAuth(adminUIHandler.GetJellyfinDevices)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/api/jellyfin-devices/{deviceID}", adminUIHandler.RequireMasterAuth(adminUIHandler.RevokeJellyfinDevice)).Methods(http.MethodDelete)
 	r.HandleFunc("/admin/notifications", adminUIHandler.RequireAuth(adminUIHandler.NotificationsPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/library", adminUIHandler.RequireAuth(adminUIHandler.LibraryPage)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/kids-settings", adminUIHandler.RequireAuth(adminUIHandler.KidsSettingsPage)).Methods(http.MethodGet)
@@ -1678,6 +1686,9 @@ func main() {
 	r.HandleFunc("/account/status", adminUIHandler.RequireAuth(adminUIHandler.StatusPage)).Methods(http.MethodGet)
 	r.HandleFunc("/account/settings", adminUIHandler.RequireAuth(adminUIHandler.SettingsPage)).Methods(http.MethodGet)
 	r.HandleFunc("/account/history", adminUIHandler.RequireAuth(adminUIHandler.HistoryPage)).Methods(http.MethodGet)
+	r.HandleFunc("/account/jellyfin-devices", adminUIHandler.RequireAuth(adminUIHandler.JellyfinDevicesPage)).Methods(http.MethodGet)
+	r.HandleFunc("/account/api/jellyfin-devices", adminUIHandler.RequireAuth(adminUIHandler.GetJellyfinDevices)).Methods(http.MethodGet)
+	r.HandleFunc("/account/api/jellyfin-devices/{deviceID}", adminUIHandler.RequireAuth(adminUIHandler.RevokeJellyfinDevice)).Methods(http.MethodDelete)
 	r.HandleFunc("/account/tools", adminUIHandler.RequireAuth(adminUIHandler.ToolsPage)).Methods(http.MethodGet)
 	r.HandleFunc("/account/tasks", adminUIHandler.RequireAuth(adminUIHandler.ToolsPage)).Methods(http.MethodGet)
 	r.HandleFunc("/account/integrations", adminUIHandler.RequireAuth(adminUIHandler.ToolsPage)).Methods(http.MethodGet)
@@ -1926,6 +1937,112 @@ func main() {
 	if webdavHandler != nil {
 		r.PathPrefix(settings.WebDAV.Prefix + "/").Handler(webdavHandler)
 		fmt.Printf("✅ WebDAV mounted at %s\n", settings.WebDAV.Prefix)
+	}
+
+	// Jellyfin bridge: a separate listener that lets stock Jellyfin clients
+	// sign in with a mediastorm profile, browse and play. It only runs while
+	// enabled (admin Integrations page), which starts and stops it live.
+	{
+		jellyfinBridge.Configure(jellyfinbridge.Deps{
+			CacheDir:     settings.Cache.Directory,
+			Accounts:     accountsService,
+			Users:        userService,
+			Sessions:     sessionsService,
+			Metadata:     metadataService,
+			History:      historyService,
+			Watchlist:    watchlistService,
+			CustomLists:  customListsService,
+			EPG:          epgService,
+			Calendar:     calendarService,
+			SubtitleDone: videoHandler.SubtitleExtractionDone,
+			Settings: func() (config.JellyfinBridgeSettings, error) {
+				current, err := cfgManager.Load()
+				return current.JellyfinBridge, err
+			},
+			ThumbnailsEnabled: videoHandler.ThumbnailsEnabled,
+			ThumbnailFrames: func(streamPath string) ([]jellyfinbridge.ThumbnailFrame, bool) {
+				frames, done := videoHandler.ThumbnailFrames(streamPath)
+				out := make([]jellyfinbridge.ThumbnailFrame, len(frames))
+				for i, f := range frames {
+					out[i] = jellyfinbridge.ThumbnailFrame{TimeSec: f.TimeSec, Path: f.Path}
+				}
+				return out, done
+			},
+			StreamPlan: func(hlsSessionID string) (jellyfinbridge.StreamPlan, bool) {
+				plan, ok := videoHandler.HLSOutputPlan(hlsSessionID)
+				return jellyfinbridge.StreamPlan{
+					Live:                 plan.Live,
+					SourceVideoCodec:     plan.SourceVideoCodec,
+					SourcePixFmt:         plan.SourcePixFmt,
+					SourceHDR:            plan.SourceHDR,
+					SourceDV:             plan.SourceDV,
+					SourceAudioCodec:     plan.SourceAudioCodec,
+					VideoCodec:           plan.VideoCodec,
+					VideoCopied:          plan.VideoCopied,
+					Encoder:              plan.Encoder,
+					HardwareEncode:       plan.HardwareEncode,
+					AudioCodec:           plan.AudioCodec,
+					AudioCopied:          plan.AudioCopied,
+					AudioChannels:        plan.AudioChannels,
+					CompletionPercentage: plan.CompletionPercentage,
+					EncodeFPS:            plan.EncodeFPS,
+					Container:            plan.Container,
+					VideoRange:           plan.VideoRange,
+				}, ok
+			},
+			EPGTimeOffset: func(profileID string) time.Duration {
+				offset := 0
+				if current, err := cfgManager.Load(); err == nil {
+					offset = current.Live.EPG.TimeOffsetMinutes
+				}
+				if userSettingsService != nil {
+					if us, err := userSettingsService.Get(profileID); err == nil && us != nil && us.LiveTV.EPG != nil && us.LiveTV.EPG.TimeOffsetMinutes != nil {
+						offset = *us.LiveTV.EPG.TimeOffsetMinutes
+					}
+				}
+				return time.Duration(offset) * time.Minute
+			},
+			ProfilePinsEnforced: func() bool {
+				current, err := cfgManager.Load()
+				return err == nil && current.Security.EnforceProfilePins
+			},
+			Handlers: jellyfinbridge.Handlers{
+				Prequeue:          prequeueHandler.Prequeue,
+				PrequeueStatus:    prequeueHandler.GetStatus,
+				HLSStart:          videoHandler.StartHLSSession,
+				LiveHLSStart:      videoHandler.StartLiveHLSSession,
+				HLSMaster:         videoHandler.ServeHLSMasterPlaylist,
+				HLSPlaylist:       videoHandler.ServeHLSPlaylist,
+				HLSSegment:        videoHandler.ServeHLSSegment,
+				HLSSubPlaylist:    videoHandler.ServeHLSSubtitlePlaylist,
+				HLSSubTrack:       videoHandler.ServeHLSSubtitleTrack,
+				HLSKeepAlive:      videoHandler.KeepAliveHLSSession,
+				HLSStop:           videoHandler.StopHLSSession,
+				Stream:            videoHandler.StreamVideo,
+				LiveStream:        liveHandler.StreamChannel,
+				SubtitleStart:     videoHandler.StartSubtitleExtract,
+				SubtitleServe:     videoHandler.ServeExtractedSubtitles,
+				LiveChannels:      liveHandler.GetChannels,
+				ImageProxy:        imageHandler.Proxy,
+				LocalLibraries:    localMediaHandler.ListLibraries,
+				LocalGroups:       localMediaHandler.ListGroups,
+				LocalItemPlayback: localMediaHandler.GetPlayback,
+				LibraryArtwork:    localMediaHandler.GetArtwork,
+				ProbeVideo:        videoHandler.ProbeVideo,
+				SkipSegments:      videoHandler.GetIntroSegments,
+				ThumbnailsStart:   videoHandler.StartThumbnails,
+				IndexerSearch:     indexerHandler.Search,
+				PlaybackResolve:   playbackHandler.Resolve,
+				PlaybackQueue:     playbackHandler.QueueStatus,
+			},
+		}, func() (config.JellyfinBridgeSettings, error) {
+			return jellyfinbridge.EnsureServerID(cfgManager, settings.Cache.Directory)
+		})
+		if settings.JellyfinBridge.Enabled {
+			if err := jellyfinBridge.Apply(settings.JellyfinBridge); err == nil {
+				fmt.Printf("🪼 Jellyfin bridge listening on port %d\n", jellyfinBridge.Status().Port)
+			}
+		}
 	}
 
 	addr := fmt.Sprintf("%s:%d", settings.Server.Host, settings.Server.Port)
@@ -2204,6 +2321,11 @@ func main() {
 		log.Printf("NZB system shutdown error: %v", err)
 	}
 
+	if jellyfinBridge.Status().Running {
+		log.Println("🧹 Stopping Jellyfin bridge...")
+		jellyfinBridge.Shutdown(shutdownCtx)
+	}
+
 	// Cleanup video handler (includes HLS manager shutdown)
 	if videoHandler != nil {
 		log.Println("🧹 Cleaning up video handler...")
@@ -2341,4 +2463,16 @@ func warmUpUsenetArticle(ctx context.Context, manager pool.Manager, messageID st
 	)
 
 	return nil
+}
+
+// jellyfinBridgeController adapts the bridge controller to the admin API.
+type jellyfinBridgeController struct{ c *jellyfinbridge.Controller }
+
+func (a jellyfinBridgeController) Apply(cfg config.JellyfinBridgeSettings) error {
+	return a.c.Apply(cfg)
+}
+
+func (a jellyfinBridgeController) Status() handlers.JellyfinBridgeStatus {
+	st := a.c.Status()
+	return handlers.JellyfinBridgeStatus{Running: st.Running, Port: st.Port, ServerID: st.ServerID, Error: st.Error}
 }
