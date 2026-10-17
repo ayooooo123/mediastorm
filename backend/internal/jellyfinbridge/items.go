@@ -271,6 +271,17 @@ func (s *Server) childrenOf(ctx context.Context, p *principal, u *userState, q i
 				}
 				return items
 			}
+			// Clients that search per library (Plezy) send the library as
+			// ParentId; the movie and show libraries search the whole
+			// catalog, as a search without a library does.
+			if mediaType := catalogSearchType(ref.Ctx.ViewKey); q.SearchTerm != "" && mediaType != "" {
+				titles := s.searchTitles(ctx, p.Profile, q.SearchTerm, mediaType)
+				out := make([]dto.BaseItemDto, 0, len(titles))
+				for _, t := range titles {
+					out = append(out, s.titleItem(u, t))
+				}
+				return out
+			}
 			titles := s.viewTitles(ctx, p.Profile, ref.Ctx.ViewKey)
 			if q.SearchTerm != "" {
 				titles = filterTitlesByName(titles, q.SearchTerm)
@@ -315,6 +326,18 @@ func (s *Server) childrenOf(ctx context.Context, p *principal, u *userState, q i
 		}
 	}
 	return nil
+}
+
+// catalogSearchType is the catalog media type a library searches ("" for
+// libraries that only search their own titles).
+func catalogSearchType(viewKey string) string {
+	switch viewKey {
+	case viewMovies:
+		return "movie"
+	case viewShows:
+		return "series"
+	}
+	return ""
 }
 
 func filterTitlesByName(titles []titleInfo, term string) []titleInfo {

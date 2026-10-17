@@ -75,3 +75,22 @@ func TestAndroidTVDirectPlayByTag(t *testing.T) {
 		t.Fatal("token-less stream by item ID was served")
 	}
 }
+
+// Plezy searches each library: /Items?SearchTerm=&ParentId=<library>. The
+// movie and show libraries search the catalog, not only their own titles.
+func TestPlezySearchPerLibrary(t *testing.T) {
+	h := newHarness(t, config.JellyfinBridgeSettings{})
+	tok := h.login("Living Room", "alice-pass")
+	views := decode[dto.QueryResult[dto.BaseItemDto]](t, h.do(http.MethodGet, "/UserViews", tok, nil))
+	found := map[string]string{}
+	for _, v := range views.Items {
+		q := url.Values{"SearchTerm": {"matrix"}, "ParentId": {v.ID}, "Recursive": {"true"}, "IncludeItemTypes": {"Movie,Series"}}
+		res := decode[dto.QueryResult[dto.BaseItemDto]](t, h.do(http.MethodGet, "/Items?"+q.Encode(), tok, nil))
+		for _, it := range res.Items {
+			found[it.Name] = v.Name
+		}
+	}
+	if found["The Matrix"] != "My Movies" || found["Game of Thrones matrix"] != "My Shows" {
+		t.Fatalf("search hits by library = %v", found)
+	}
+}
