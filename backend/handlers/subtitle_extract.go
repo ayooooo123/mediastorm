@@ -1265,6 +1265,21 @@ func (h *VideoHandler) ServeExtractedSubtitles(w http.ResponseWriter, r *http.Re
 	h.subtitleExtractManager.ServeSubtitles(w, r, session)
 }
 
+// SubtitleExtractionDone reports whether the extraction session has finished
+// (successfully or not). Unknown sessions report true so callers stop waiting.
+func (h *VideoHandler) SubtitleExtractionDone(sessionID string) bool {
+	if h.subtitleExtractManager == nil {
+		return true
+	}
+	h.subtitleExtractManager.mu.RLock()
+	session, exists := h.subtitleExtractManager.sessions[sessionID]
+	h.subtitleExtractManager.mu.RUnlock()
+	if !exists {
+		return true
+	}
+	return session.IsExtractionComplete() || session.GetExtractionError() != nil
+}
+
 // IsExtractionComplete returns whether the extraction has finished
 func (s *SubtitleExtractSession) IsExtractionComplete() bool {
 	s.mu.Lock()
