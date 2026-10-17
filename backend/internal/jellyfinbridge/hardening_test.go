@@ -1,6 +1,7 @@
 package jellyfinbridge
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -139,5 +140,61 @@ func TestBridgeDefaultsBackfilledForOldConfigs(t *testing.T) {
 	b := settings.JellyfinBridge
 	if b.Enabled || !b.UDPDiscovery || !b.PrequeueOnDetails || b.Port != 8096 || b.PlaybackInfoWaitSeconds != 20 {
 		t.Fatalf("old config bridge settings = %+v", b)
+	}
+}
+
+func TestFailedStartStopsStores(t *testing.T) {
+	h := newHarness(t, config.JellyfinBridgeSettings{})
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+	cfg := h.srv.cfg
+	cfg.Host, cfg.Port = "127.0.0.1", busy.Addr().(*net.TCPAddr).Port
+	srv := New(h.srv.deps, cfg)
+	if err := srv.Start(); err == nil {
+		t.Fatal("start on a taken port succeeded")
+	}
+	for name, done := range map[string]chan struct{}{"ids": srv.ids.stop, "prefs": srv.prefs.stop} {
+		select {
+		case <-done:
+		default:
+			t.Fatalf("%s flush loop still running after failed start", name)
+		}
+	}
+}
+
+func TestAmbiguousBareProfileNameRefusedBeforePasswordChecks(t *testing.T) {
+	h := newHarness(t, config.JellyfinBridgeSettings{})
+	for _, name := range []string{"carol", "dave", "erin"} {
+		acct, err := h.accounts.Create(name, name+"-pass")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.users.CreateForAccount(acct.ID, "Kids"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := len(h.srv.loginCandidates("Kids")); n <= loginMaxCandidates {
+		t.Fatalf("setup: %d candidates", n)
+	}
+	rec := h.do(http.MethodPost, "/Users/AuthenticateByName", "", map[string]string{"Username": "Kids", "Pw": "carol-pass"})
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("bare name over the candidate cap = %d", rec.Code)
+	}
+	h.login("carol/Kids", "carol-pass")
+}
+
+func TestQuickConnectAuthorizeLimitsWrongCodes(t *testing.T) {
+	h := newHarness(t, config.JellyfinBridgeSettings{QuickConnect: true})
+	tok := h.login("Living Room", "alice-pass")
+	for i := 0; i < loginMaxFailures; i++ {
+		if rec := h.do(http.MethodPost, "/QuickConnect/Authorize?code=000000", tok, nil); rec.Code != http.StatusNotFound {
+			t.Fatalf("guess %d = %d", i, rec.Code)
+		}
+	}
+	if rec := h.do(http.MethodPost, "/QuickConnect/Authorize?code=000000", tok, nil); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("guess past the limit = %d", rec.Code)
 	}
 }

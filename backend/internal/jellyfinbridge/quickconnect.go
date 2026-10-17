@@ -207,6 +207,13 @@ func (s *Server) handleQuickConnectAuthorize(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusForbidden, "Quick connect can only sign devices in as yourself")
 		return
 	}
+	// Codes are six digits: bound wrong guesses per account so a signed-in
+	// user cannot walk the code space and claim another household's device.
+	limitKey := "quickconnect:" + p.Session.AccountID
+	if !s.login.attempt(limitKey) {
+		writeError(w, http.StatusTooManyRequests, "Too many attempts. Try again later.")
+		return
+	}
 	code := strings.TrimSpace(queryValue(r, "code"))
 	if err := s.qc.authorize(code, p.Session.AccountID, p.Profile.ID); err != nil {
 		if err == errQuickConnectUnknown {
@@ -216,6 +223,7 @@ func (s *Server) handleQuickConnectAuthorize(w http.ResponseWriter, r *http.Requ
 		}
 		return
 	}
+	s.login.undoLast(limitKey)
 	log.Printf("[jellyfin-bridge] quick connect code approved for profile %q", p.Profile.Name)
 	writeJSON(w, http.StatusOK, true)
 }

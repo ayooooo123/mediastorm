@@ -53,7 +53,7 @@ func (s *Server) handleSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := s.sockets.add(p.Profile.ID)
+	client := s.sockets.add(p.Profile.ID, conn)
 	writerDone := make(chan struct{})
 	go func() {
 		defer close(writerDone)
@@ -72,7 +72,17 @@ func (s *Server) handleSocket(w http.ResponseWriter, r *http.Request) {
 
 	keepAlive, _ := json.Marshal(map[string]any{"MessageType": "ForceKeepAlive", "Data": 60, "MessageId": randomHex(16)})
 	client.send(0x1, keepAlive)
+	lastAuth := time.Now()
 	for {
+		// Keep-alives would hold a socket open indefinitely; drop it once
+		// its token is signed out, revoked or expired.
+		if time.Since(lastAuth) >= socketReauthInterval {
+			if _, ok := s.authenticate(r); !ok {
+				client.send(0x8, nil)
+				return
+			}
+			lastAuth = time.Now()
+		}
 		_ = conn.SetReadDeadline(time.Now().Add(3 * time.Minute))
 		opcode, payload, err := readFrame(rw.Reader)
 		if err != nil {
@@ -99,8 +109,12 @@ type socketFrame struct {
 	payload []byte
 }
 
+// socketReauthInterval is how often an open socket re-checks its token.
+var socketReauthInterval = time.Minute // var for tests
+
 type socketClient struct {
 	profileID string
+	conn      io.Closer
 	out       chan socketFrame
 }
 
@@ -121,12 +135,24 @@ type socketHub struct {
 
 func newSocketHub() *socketHub { return &socketHub{clients: map[*socketClient]bool{}} }
 
-func (h *socketHub) add(profileID string) *socketClient {
-	c := &socketClient{profileID: profileID, out: make(chan socketFrame, 32)}
+func (h *socketHub) add(profileID string, conn io.Closer) *socketClient {
+	c := &socketClient{profileID: profileID, conn: conn, out: make(chan socketFrame, 32)}
 	h.mu.Lock()
 	h.clients[c] = true
 	h.mu.Unlock()
 	return c
+}
+
+// closeAll closes every open socket's connection; each handler then sees
+// its read fail and cleans up through remove.
+func (h *socketHub) closeAll() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for c := range h.clients {
+		if c.conn != nil {
+			_ = c.conn.Close()
+		}
+	}
 }
 
 func (h *socketHub) remove(c *socketClient) {

@@ -72,3 +72,54 @@ func TestSocketPushesUserDataChanges(t *testing.T) {
 		t.Fatalf("other profile got %s", payload)
 	}
 }
+
+// readUntilClosed reads frames until the connection ends, failing if it
+// stays open past the deadline.
+func readUntilClosed(t *testing.T, conn net.Conn, br *bufio.Reader) {
+	t.Helper()
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	for {
+		op, _, err := readFrame(br)
+		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				t.Fatal("socket still open")
+			}
+			return
+		}
+		if op == 0x8 {
+			return
+		}
+	}
+}
+
+func TestShutdownClosesSockets(t *testing.T) {
+	h := newHarness(t, config.JellyfinBridgeSettings{})
+	tok := h.login("Living Room", "alice-pass")
+	srv := httptest.NewServer(h.handler)
+	defer srv.Close()
+	conn, br := openSocket(t, srv, tok)
+	if err := h.srv.Shutdown(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	readUntilClosed(t, conn, br)
+}
+
+func TestSocketClosesAfterTokenRevoked(t *testing.T) {
+	old := socketReauthInterval
+	socketReauthInterval = 0
+	defer func() { socketReauthInterval = old }()
+	h := newHarness(t, config.JellyfinBridgeSettings{})
+	tok := h.login("Living Room", "alice-pass")
+	srv := httptest.NewServer(h.handler)
+	defer srv.Close()
+	conn, br := openSocket(t, srv, tok)
+	if err := h.sessions.Revoke(tok); err != nil {
+		t.Fatal(err)
+	}
+	// The next client frame triggers the re-check.
+	w := bufio.NewWriter(conn)
+	if err := writeFrame(w, 0x9, []byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	readUntilClosed(t, conn, br)
+}

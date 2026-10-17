@@ -78,8 +78,17 @@ func (s *Server) loginCandidates(username string) []models.User {
 	return candidates
 }
 
+// loginMaxCandidates bounds the password checks one login can cost: a bare
+// profile name such as "Kids" can match a profile in every account, and each
+// candidate costs up to five bcrypt comparisons. Beyond it the name must be
+// typed as "account/profile".
+const loginMaxCandidates = 3
+
 // verifyLogin checks the password against each candidate profile.
 func (s *Server) verifyLogin(candidates []models.User, password string) (models.User, models.Account, error) {
+	if len(candidates) > loginMaxCandidates {
+		return models.User{}, models.Account{}, errAmbiguousLogin
+	}
 	var matched []models.User
 	var matchedAccount models.Account
 	for _, p := range candidates {
@@ -162,6 +171,13 @@ func (s *Server) handleAuthenticateByName(w http.ResponseWriter, r *http.Request
 	// attempt is recorded before the password check so parallel requests
 	// cannot all slip under the limit.
 	candidates := s.loginCandidates(req.Username)
+	if len(candidates) > loginMaxCandidates {
+		// Refused before any password check, and without charging the
+		// matched profiles' budgets.
+		log.Printf("[jellyfin-bridge] login for %q matches %d profiles; use \"account/profile\"", req.Username, len(candidates))
+		writeError(w, http.StatusUnauthorized, "Error processing request.")
+		return
+	}
 	keys := []string{"ip:" + ipLimitKey(ip)}
 	for _, p := range candidates {
 		keys = append(keys, "profile:"+p.ID)

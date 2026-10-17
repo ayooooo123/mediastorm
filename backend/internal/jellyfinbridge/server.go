@@ -195,6 +195,10 @@ func (s *Server) Start() error {
 	addr := fmt.Sprintf("%s:%d", s.cfg.Host, s.cfg.Port)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
+		// New started the stores' flush loops; a server that never ran is
+		// discarded, so stop them here.
+		s.ids.close()
+		s.prefs.close()
 		return fmt.Errorf("jellyfin bridge listen on %s: %w", addr, err)
 	}
 	s.httpSrv = &http.Server{
@@ -243,6 +247,8 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			_ = s.httpSrv.Close()
 		}
 	}
+	// Hijacked WebSockets are invisible to http.Server.Shutdown.
+	s.sockets.closeAll()
 	s.plays.closeAll(s)
 	s.ids.close()
 	s.prefs.close()

@@ -33,6 +33,12 @@ func (s *Server) clientLogDir() string {
 }
 
 func (s *Server) handleClientLog(w http.ResponseWriter, r *http.Request) {
+	// Anonymous: bound uploads per network so a flood cannot push real
+	// crash reports out of the newest-maxClientLogs window.
+	if !s.login.attempt("clientlog:" + ipLimitKey(s.clientIP(r))) {
+		writeError(w, http.StatusTooManyRequests, "Too many log uploads. Try again later.")
+		return
+	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxClientLogBytes))
 	if err != nil || len(body) == 0 {
 		writeError(w, http.StatusBadRequest, "Empty or oversized log")
