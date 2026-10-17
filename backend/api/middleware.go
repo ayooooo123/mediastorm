@@ -148,7 +148,8 @@ func AccountAuthMiddleware(sessionsSvc *sessions.Service, accountsSvc *accounts.
 			// Watch-party guest sessions are consumed only by the dedicated public
 			// handlers, which additionally bind the cookie to one exact room. They
 			// must never inherit the surrounding account's protected API access.
-			if session.Scope == models.SessionScopeWatchParty {
+			// Jellyfin bridge tokens are likewise only honoured by the bridge.
+			if session.Scope == models.SessionScopeWatchParty || session.Scope == models.SessionScopeJellyfin {
 				apierror.Write(w, http.StatusForbidden, apierror.CodeForbidden, "session not permitted for this endpoint")
 				return
 			}

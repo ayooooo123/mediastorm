@@ -1,0 +1,70 @@
+{{template "base" .}}
+
+{{define "title"}}Jellyfin Devices - mediastorm{{end}}
+
+{{define "styles"}}
+<style>
+.jf-toolbar { display:flex; justify-content:space-between; gap:1rem; align-items:center; margin-bottom:1rem; flex-wrap:wrap; }
+.jf-list { display:grid; gap:.75rem; }
+.jf-card { border:1px solid var(--border); border-radius:var(--radius-lg); background:var(--bg-secondary); padding:1rem; display:flex; justify-content:space-between; align-items:center; gap:1rem; flex-wrap:wrap; }
+.jf-main { min-width:0; }
+.jf-title { font-weight:700; font-size:1rem; overflow-wrap:anywhere; }
+.jf-meta { color:var(--text-secondary); font-size:.82rem; margin-top:.25rem; overflow-wrap:anywhere; }
+.jf-empty { text-align:center; color:var(--text-secondary); padding:3rem 1rem; }
+</style>
+{{end}}
+
+{{define "content"}}
+<div class="page-header">
+    <h1>Jellyfin Devices</h1>
+    <p>Apps signed in through the Jellyfin bridge. Signing a device out ends its session; the app has to sign in again.</p>
+</div>
+<div class="jf-toolbar">
+    <span style="color:var(--text-secondary);font-size:.82rem;">{{if .IsAdmin}}All accounts{{else}}Your account{{end}}</span>
+    <button class="btn btn-secondary" onclick="loadJellyfinDevices()">Refresh</button>
+</div>
+<div id="jf-devices" class="jf-list"><div class="jf-empty">Loading devices…</div></div>
+{{end}}
+
+{{define "scripts"}}
+<script>
+const escapeJF = value => String(value || '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+const formatJFTime = value => value ? new Date(value).toLocaleString() : '—';
+
+async function loadJellyfinDevices() {
+    const list = document.getElementById('jf-devices');
+    try {
+        const response = await fetch(basePath + '/api/jellyfin-devices');
+        if (!response.ok) throw new Error(await response.text());
+        const devices = await response.json();
+        if (!devices.length) {
+            list.innerHTML = '<div class="card jf-empty">No Jellyfin app is signed in.</div>';
+            return;
+        }
+        list.innerHTML = devices.map(d => `
+            <div class="jf-card">
+                <div class="jf-main">
+                    <div class="jf-title">${escapeJF(d.client || 'Unknown app')}</div>
+                    <div class="jf-meta">Profile ${escapeJF(d.profileName || d.profileId)}${d.username ? ' · account ' + escapeJF(d.username) : ''}${d.ipAddress ? ' · ' + escapeJF(d.ipAddress) : ''}</div>
+                    <div class="jf-meta">Signed in ${formatJFTime(d.createdAt)} · expires ${formatJFTime(d.expiresAt)}</div>
+                </div>
+                <button class="btn btn-danger" onclick="revokeJellyfinDevice('${encodeURIComponent(d.id)}')">Sign Out</button>
+            </div>`).join('');
+    } catch (error) {
+        list.innerHTML = '<div class="card jf-empty">Failed to load devices.</div>';
+    }
+}
+
+async function revokeJellyfinDevice(id) {
+    if (!confirm('Sign this device out of the Jellyfin bridge?')) return;
+    const response = await fetch(basePath + '/api/jellyfin-devices/' + id, {method:'DELETE'});
+    if (!response.ok) {
+        alert('Failed to sign the device out.');
+        return;
+    }
+    await loadJellyfinDevices();
+}
+
+loadJellyfinDevices();
+</script>
+{{end}}

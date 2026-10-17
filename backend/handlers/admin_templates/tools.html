@@ -655,6 +655,47 @@
         </div>
     </div>
 
+    {{if .IsAdmin}}
+    <!-- Jellyfin Bridge Section -->
+    <div class="section" id="jellyfinBridgeSection">
+        <div class="section-header" onclick="toggleSection(this)">
+            <div class="section-title">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/>
+                </svg>
+                Jellyfin Bridge
+            </div>
+            <span id="jellyfinBridgeStatusBadge" class="status-badge"></span>
+            <svg class="section-toggle" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="6 9 12 15 18 9"/>
+            </svg>
+        </div>
+        <div class="section-content">
+            <p class="text-muted jf-intro">
+                Serve a Jellyfin-compatible server so Jellyfin apps (web, Android, Android TV, Swiftfin, Findroid, Plezy, ...) can sign in with a profile name and the account password, browse and play.
+                Signed-in apps are listed under <a href="{{.BasePath}}/jellyfin-devices">Jellyfin devices</a>.
+            </p>
+            <div class="jf-group jf-enable">
+                <div class="jf-toggle-field">
+                    <div class="jf-toggle-copy">
+                        <label class="form-label" for="jellyfinBridgeEnabled">Enable Jellyfin Bridge</label>
+                        <p class="form-hint">Runs the bridge listener. Turning it off stops it at once and closes the port; signed-in apps stay signed in for when it is back.</p>
+                    </div>
+                    <label class="toggle" aria-label="Enable Jellyfin Bridge">
+                        <input id="jellyfinBridgeEnabled" type="checkbox" onchange="saveJellyfinBridge()">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+                <p id="jellyfinBridgeStatusText" class="form-hint jf-status"></p>
+            </div>
+            <div id="jellyfinBridgeFields"></div>
+            <div class="jf-actions">
+                <button class="btn btn-primary" id="jellyfinBridgeSaveBtn" onclick="saveJellyfinBridge()">Save Bridge Settings</button>
+            </div>
+        </div>
+    </div>
+    {{end}}
+
 </div>
 
 <!-- AUTOMATION CATEGORY -->
@@ -2314,6 +2355,53 @@
         text-overflow: ellipsis;
         white-space: nowrap;
     }
+    /* Jellyfin Bridge section: same layout as the Settings page (subgroup
+       cards, two-column field grid, hints under each field). */
+    #jellyfinBridgeSection .jf-intro { margin-bottom: 1rem; }
+    #jellyfinBridgeSection .jf-group {
+        margin: 0 0 1rem;
+        padding: 1rem;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: rgba(99, 102, 241, 0.08);
+    }
+    #jellyfinBridgeSection .jf-group-title { margin: 0 0 0.25rem; font-size: 0.9rem; font-weight: 600; }
+    #jellyfinBridgeSection .jf-group-description { margin: 0 0 1rem; font-size: 0.8rem; color: var(--text-secondary); }
+    #jellyfinBridgeSection .jf-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 1rem 1.5rem;
+    }
+    #jellyfinBridgeSection .form-group { margin: 0; }
+    #jellyfinBridgeSection .form-hint { margin-top: 0.3rem; line-height: 1.35; }
+    #jellyfinBridgeSection .jf-toggle-field { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+    #jellyfinBridgeSection .jf-toggle-copy { flex: 1; min-width: 0; }
+    #jellyfinBridgeSection .jf-toggle-copy .form-label { margin-bottom: 0; }
+    #jellyfinBridgeSection .jf-toggle-field .toggle { position: relative; display: inline-block; flex: 0 0 44px; width: 44px; height: 24px; margin-top: 0.1rem; cursor: pointer; }
+    #jellyfinBridgeSection .jf-toggle-field .toggle input { opacity: 0; width: 0; height: 0; position: absolute; }
+    #jellyfinBridgeSection .jf-toggle-field .toggle-slider { position: absolute; inset: 0; }
+    #jellyfinBridgeSection .jf-warning .form-hint { color: var(--danger); }
+    #jellyfinBridgeSection .jf-warning-badge {
+        margin-left: 0.4rem; padding: 0.05rem 0.4rem; border-radius: 9999px;
+        font-size: 0.68rem; font-weight: 600; color: var(--danger);
+        border: 1px solid currentColor; vertical-align: middle;
+    }
+    #jellyfinBridgeSection .jf-status { margin: 0.75rem 0 0; padding-top: 0.75rem; border-top: 1px solid var(--border); }
+    #jellyfinBridgeSection .jf-actions { display: flex; justify-content: flex-end; }
+    #jellyfinBridgeSection .jf-webclient { margin: 0 0 1rem; font-size: 0.8rem; color: var(--text-secondary); }
+    #jellyfinBridgeSection .jf-webclient-state { margin: 0 0 0.6rem; padding: 0.5rem 0.75rem; border-radius: 8px; border: 1px solid var(--border); font-weight: 500; }
+    #jellyfinBridgeSection .jf-webclient-state.found { color: var(--success, #22c55e); border-color: rgba(34, 197, 94, 0.35); }
+    #jellyfinBridgeSection .jf-webclient-state.missing { color: var(--warning, #f59e0b); border-color: rgba(245, 158, 11, 0.35); }
+    #jellyfinBridgeSection .jf-webclient summary { cursor: pointer; font-weight: 600; color: var(--text-primary); margin-bottom: 0.5rem; }
+    #jellyfinBridgeSection .jf-webclient ol { margin: 0.5rem 0 0.5rem 1.25rem; padding: 0; }
+    #jellyfinBridgeSection .jf-webclient li { margin-bottom: 0.6rem; }
+    #jellyfinBridgeSection .jf-webclient pre { margin: 0.4rem 0; padding: 0.6rem 0.75rem; border-radius: 8px; background: var(--bg-primary, rgba(0,0,0,0.3)); border: 1px solid var(--border); overflow-x: auto; }
+    #jellyfinBridgeSection .jf-webclient code { font-size: 0.78rem; }
+    #jellyfinBridgeSection.jf-off #jellyfinBridgeFields { opacity: 0.6; }
+    @media (max-width: 900px) {
+        #jellyfinBridgeSection .jf-grid { grid-template-columns: 1fr; }
+    }
+
     /* Toggle switch styling */
     .toggle-option {
         display: flex;
@@ -3019,13 +3107,208 @@
             await Promise.all([...accountLoads, loadScheduledTasks()]);
         } else if (isIntegrationsPage) {
             const accountLoads = isAdmin
-                ? [loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadScrobAccounts(), loadJellyfinAccounts()]
+                ? [loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadScrobAccounts(), loadJellyfinAccounts(), loadJellyfinBridge()]
                 : [loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadScrobAccounts(), loadJellyfinAccounts()];
             await Promise.all(accountLoads);
         } else {
             await Promise.all([loadPlexAccounts(), loadTraktAccounts(), loadMdblistAccounts(), loadSimklAccounts(), loadScrobAccounts(), loadJellyfinAccounts(), loadLocalMediaLibraries(), loadUpdateStatus(false), loadWorkers(), loadShareLogsClients()]);
         }
     });
+
+    // ========== Jellyfin Bridge ==========
+    let jellyfinBridgeState = null;
+
+    async function loadJellyfinBridge() {
+        if (!document.getElementById('jellyfinBridgeSection')) return;
+        try {
+            const response = await fetch(basePath + '/api/jellyfin-bridge');
+            if (!response.ok) throw new Error(await response.text());
+            jellyfinBridgeState = await response.json();
+            renderJellyfinBridge();
+        } catch (err) {
+            console.error('Failed to load Jellyfin bridge:', err);
+            document.getElementById('jellyfinBridgeStatusText').textContent = 'Could not load the bridge settings.';
+        }
+    }
+
+    function renderJellyfinBridgeStatus() {
+        const st = (jellyfinBridgeState && jellyfinBridgeState.status) || {};
+        const enabled = !!(jellyfinBridgeState && jellyfinBridgeState.settings.enabled);
+        const badge = document.getElementById('jellyfinBridgeStatusBadge');
+        const text = document.getElementById('jellyfinBridgeStatusText');
+        if (st.running) {
+            badge.className = 'status-badge online';
+            badge.textContent = 'Running';
+            const host = window.location.hostname;
+            text.innerHTML = 'Listening on port ' + escapeHtml(String(st.port)) + '. Add the server in a Jellyfin app as <code>http://' + escapeHtml(host) + ':' + escapeHtml(String(st.port)) + '</code>.';
+        } else if (enabled && st.error) {
+            badge.className = 'status-badge offline';
+            badge.textContent = 'Error';
+            text.textContent = 'Not running: ' + st.error;
+        } else {
+            badge.className = 'status-badge';
+            badge.textContent = 'Off';
+            text.textContent = 'The bridge is off; no port is opened.';
+        }
+    }
+
+    const jellyfinBridgeGroupDescriptions = {
+        'Connection': 'Where Jellyfin apps reach the bridge. Changing the port, host, discovery or proxies restarts the listener.',
+        'Web Client': 'The Jellyfin web interface (jellyfin-web), served at /web. Required for the Jellyfin Android app and Jellyfin Media Player, which load the server\'s own web interface, and for using Jellyfin in a browser. Native apps (Android TV, Swiftfin, Findroid, Streamyfin, Infuse, Plezy) work without it.',
+        'Sign-in': 'How profiles appear in Jellyfin apps and how they sign in.',
+        'Playback': 'How streams are prepared for Jellyfin apps.'
+    };
+
+    function jellyfinBridgeField(field, value) {
+        const id = 'jellyfinBridge_' + field.key;
+        const wrap = document.createElement('div');
+        wrap.className = 'form-group' + (field.warning ? ' jf-warning' : '');
+        const label = document.createElement('label');
+        label.className = 'form-label';
+        label.htmlFor = id;
+        label.textContent = field.label;
+        if (field.warning) {
+            const badge = document.createElement('span');
+            badge.className = 'jf-warning-badge';
+            badge.textContent = 'Security';
+            label.appendChild(badge);
+        }
+        const hint = document.createElement('p');
+        hint.className = 'form-hint';
+        hint.textContent = field.description;
+        if (field.type === 'boolean') {
+            const row = document.createElement('div');
+            row.className = 'jf-toggle-field';
+            const copy = document.createElement('div');
+            copy.className = 'jf-toggle-copy';
+            copy.append(label, hint);
+            const toggle = document.createElement('label');
+            toggle.className = 'toggle';
+            toggle.setAttribute('aria-label', field.label);
+            toggle.innerHTML = '<input type="checkbox"><span class="toggle-slider"></span>';
+            const input = toggle.querySelector('input');
+            input.id = id;
+            input.checked = !!value;
+            row.append(copy, toggle);
+            wrap.appendChild(row);
+            return wrap;
+        }
+        const input = document.createElement('input');
+        input.className = 'form-input';
+        input.id = id;
+        input.type = field.type === 'number' ? 'number' : 'text';
+        if (field.min != null) input.min = field.min;
+        if (field.max != null) input.max = field.max;
+        input.value = field.type === 'tags' ? (value || []).join(', ') : (value ?? '');
+        if (field.type === 'tags') input.placeholder = 'e.g. 172.18.0.0/16, 10.0.0.2';
+        if (field.placeholder) input.placeholder = field.placeholder;
+        wrap.append(label, input, hint);
+        return wrap;
+    }
+
+    // Setup steps for jellyfin-web, which mediastorm does not ship (it is
+    // GPL-2.0 licensed), and whether a build was found.
+    function jellyfinWebClientHelp() {
+        const wc = jellyfinBridgeState.webClient || {};
+        const box = document.createElement('div');
+        box.className = 'jf-webclient';
+        const state = document.createElement('p');
+        state.className = 'jf-webclient-state ' + (wc.found ? 'found' : 'missing');
+        state.textContent = wc.found
+            ? 'Web client found in ' + wc.dir + '. Jellyfin apps can open /web.'
+            : 'No web client found in ' + (wc.dir || '/app/jellyfin-web') + '. The Jellyfin Android app will not work; other clients might have issues.';
+        box.appendChild(state);
+        const details = document.createElement('details');
+        details.open = !wc.found;
+        details.innerHTML =
+            '<summary>How to set it up</summary>' +
+            '<p>mediastorm does not include jellyfin-web: it is a separate project under the GPL-2.0 license. Use an unmodified build from a current Jellyfin release (tested with Jellyfin 12.2).</p>' +
+            '<ol>' +
+            '<li><strong>Copy a build</strong> out of the official Jellyfin image (from the Docker host, next to your compose file):' +
+            '<pre><code>docker create --name jellyfin-web-src jellyfin/jellyfin:12\n' +
+            'docker cp jellyfin-web-src:/jellyfin/jellyfin-web ./jellyfin-web\n' +
+            'docker rm jellyfin-web-src</code></pre>' +
+            'Already running Jellyfin? The build is in <code>/jellyfin/jellyfin-web</code> (official image) or <code>/usr/share/jellyfin/web</code> (linuxserver image and Debian/Ubuntu packages).</li>' +
+            '<li><strong>Mount it</strong> into the mediastorm container, read-only, in <code>docker-compose.yml</code>:' +
+            '<pre><code>services:\n  mediastorm:\n    volumes:\n      - ./jellyfin-web:/app/jellyfin-web:ro</code></pre>' +
+            'then run <code>docker compose up -d mediastorm</code>.</li>' +
+            '<li>Leave <strong>Web Client Directory</strong> empty to use <code>/app/jellyfin-web</code>, or enter the folder you mounted. This status updates when you save.</li>' +
+            '</ol>' +
+            '<p>To update, pull the image again (<code>docker pull jellyfin/jellyfin:12</code>), repeat step 1 and reload the page in the apps; mediastorm does not need a restart. jellyfin-web source: <a href="https://github.com/jellyfin/jellyfin-web" target="_blank" rel="noopener noreferrer">github.com/jellyfin/jellyfin-web</a>.</p>';
+        box.appendChild(details);
+        return box;
+    }
+
+    function renderJellyfinBridge() {
+        const s = jellyfinBridgeState.settings;
+        document.getElementById('jellyfinBridgeEnabled').checked = !!s.enabled;
+        document.getElementById('jellyfinBridgeSection').classList.toggle('jf-off', !s.enabled);
+        renderJellyfinBridgeStatus();
+        const host = document.getElementById('jellyfinBridgeFields');
+        host.innerHTML = '';
+        const groups = [];
+        for (const field of jellyfinBridgeState.fields) {
+            let group = groups.find(g => g.name === field.group);
+            if (!group) groups.push(group = { name: field.group, fields: [] });
+            group.fields.push(field);
+        }
+        for (const group of groups) {
+            const card = document.createElement('div');
+            card.className = 'jf-group';
+            const title = document.createElement('h3');
+            title.className = 'jf-group-title';
+            title.textContent = group.name;
+            card.appendChild(title);
+            if (jellyfinBridgeGroupDescriptions[group.name]) {
+                const desc = document.createElement('p');
+                desc.className = 'jf-group-description';
+                desc.textContent = jellyfinBridgeGroupDescriptions[group.name];
+                card.appendChild(desc);
+            }
+            if (group.name === 'Web Client') card.appendChild(jellyfinWebClientHelp());
+            const grid = document.createElement('div');
+            grid.className = 'jf-grid';
+            for (const field of group.fields) grid.appendChild(jellyfinBridgeField(field, s[field.key]));
+            card.appendChild(grid);
+            host.appendChild(card);
+        }
+    }
+
+    async function saveJellyfinBridge() {
+        if (!jellyfinBridgeState) return;
+        const next = { ...jellyfinBridgeState.settings, enabled: document.getElementById('jellyfinBridgeEnabled').checked };
+        for (const field of jellyfinBridgeState.fields) {
+            const input = document.getElementById('jellyfinBridge_' + field.key);
+            if (!input) continue;
+            if (field.type === 'boolean') next[field.key] = input.checked;
+            else if (field.type === 'number') next[field.key] = Number(input.value);
+            else if (field.type === 'tags') next[field.key] = input.value.split(',').map(v => v.trim()).filter(Boolean);
+            else next[field.key] = input.value.trim();
+        }
+        const btn = document.getElementById('jellyfinBridgeSaveBtn');
+        btn.disabled = true;
+        try {
+            const response = await fetch(basePath + '/api/jellyfin-bridge', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(next)
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data.error || 'Save failed');
+            jellyfinBridgeState = data;
+            renderJellyfinBridge();
+            if (data.settings.enabled && !data.status.running) {
+                showToast('Saved, but the bridge did not start: ' + (data.status.error || 'unknown error'), 'error');
+            } else {
+                showToast(data.status.running ? 'Jellyfin bridge saved and running' : 'Jellyfin bridge turned off');
+            }
+        } catch (err) {
+            showToast(err.message, 'error');
+            document.getElementById('jellyfinBridgeEnabled').checked = !!jellyfinBridgeState.settings.enabled;
+        } finally {
+            btn.disabled = false;
+        }
+    }
 
     async function loadLocalMediaLibraries() {
         try {

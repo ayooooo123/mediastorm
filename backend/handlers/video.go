@@ -3652,6 +3652,7 @@ func composeMetadataResponse(meta *ffprobeOutput, sanitizedPath string, plan aud
 				BitRate:                  getStreamBitrate(stream.BitRate, stream.Tags),
 				PixFmt:                   strings.TrimSpace(stream.PixFmt),
 				Profile:                  strings.TrimSpace(stream.Profile),
+				Level:                    stream.Level,
 				AvgFrameRate:             strings.TrimSpace(stream.AvgFrameRate),
 				HasDolbyVision:           hasDV,
 				DolbyVisionProfile:       dvProfile,
@@ -3929,6 +3930,7 @@ type videoStreamSummary struct {
 	BitRate                  int64                            `json:"bitRate,omitempty"`
 	PixFmt                   string                           `json:"pixFmt,omitempty"`
 	Profile                  string                           `json:"profile,omitempty"`
+	Level                    int                              `json:"level,omitempty"`
 	AvgFrameRate             string                           `json:"avgFrameRate,omitempty"`
 	HasDolbyVision           bool                             `json:"hasDolbyVision"`
 	DolbyVisionProfile       string                           `json:"dolbyVisionProfile,omitempty"`
@@ -4404,7 +4406,8 @@ func (h *VideoHandler) StartHLSSession(w http.ResponseWriter, r *http.Request) {
 	videoTracef("[video] creating HLS session for path=%q dv=%v dvProfile=%q hdr=%v start=%.3fs transcodingOffset=%.3fs audioTrack=%d subtitleTrack=%d",
 		cleanPath, hasDV, dvProfile, hasHDR, startSeconds, transcodingOffset, audioTrackIndex, subtitleTrackIndex)
 
-	session, err := h.hlsManager.CreateSession(r.Context(), cleanPath, path, hasDV, dvProfile, hasHDR, forceAAC, startSeconds, transcodingOffset, audioTrackIndex, subtitleTrackIndex, profileID, profileName, getClientIP(r), castMode, "", playbackTarget, durationHint, castReceiverHost)
+	createCtx := withHLSClientCaps(r.Context(), parseHLSClientCaps(r.URL.Query().Get("clientCaps")))
+	session, err := h.hlsManager.CreateSession(createCtx, cleanPath, path, hasDV, dvProfile, hasHDR, forceAAC, startSeconds, transcodingOffset, audioTrackIndex, subtitleTrackIndex, profileID, profileName, getClientIP(r), castMode, "", playbackTarget, durationHint, castReceiverHost)
 	if err != nil {
 		log.Printf("[video] failed to create HLS session: %v", err)
 		if errors.Is(err, streaming.ErrStaleTorrent) {
