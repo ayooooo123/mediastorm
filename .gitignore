@@ -130,6 +130,8 @@ frontend/
 
 # Native tvOS client (private repo: godver3/mediastorm-tvos)
 native-tvos/
+# Its git worktrees, checked out alongside it
+native-tvos-*/
 
 # KSPlayer fork symlink (actual repo at ~/ksplayer)
 /ksplayer
