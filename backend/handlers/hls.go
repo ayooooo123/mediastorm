@@ -490,6 +490,7 @@ type HLSSession struct {
 	LiveProvider                    string             // Live TV provider identifier
 	LiveBucket                      string             // Shared stream bucket identifier for limit accounting
 	LiveTuning                      LiveTuningSettings // FFmpeg tuning settings for live sessions
+	LiveUpstreamKey                 string             // Provider connection shared with same-channel sessions ("" = private)
 	livePlaylistWindow              []livePlaylistEntry
 	livePlaylistTargetDuration      int
 	liveDiscontinuitySequence       int
@@ -2570,6 +2571,7 @@ func (m *HLSManager) CreateLiveSession(ctx context.Context, liveURL, provider, b
 		ClientIP:                clientIP,
 		PlaybackTarget:          strings.ToLower(strings.TrimSpace(playbackTarget)),
 		LiveTuning:              tuning,
+		LiveUpstreamKey:         liveUpstreamShareKey(liveURL, tuning),
 		LiveCCExtractionEnabled: liveCCExtractionEnabled,
 		subtitleExtractOffsets:  make(map[int]float64),
 	}
@@ -2629,11 +2631,14 @@ func (m *HLSManager) GetLiveUsage(provider, bucketKey string, maxStreams int) Li
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	current := 0
+	// Sessions on the same channel share one provider connection, so they use one slot.
+	countedUpstreams := make(map[string]bool)
 	for _, session := range m.sessions {
 		session.mu.RLock()
 		isCounted := session.IsLive && !session.Completed
 		sessionProvider := normalizeLiveProvider(session.LiveProvider)
 		sessionBucket := strings.TrimSpace(session.LiveBucket)
+		upstreamKey := session.LiveUpstreamKey
 		session.mu.RUnlock()
 
 		if !isCounted {
@@ -2644,6 +2649,12 @@ func (m *HLSManager) GetLiveUsage(provider, bucketKey string, maxStreams int) Li
 		}
 		if targetBucket != "" && sessionBucket != targetBucket {
 			continue
+		}
+		if upstreamKey != "" {
+			if countedUpstreams[upstreamKey] {
+				continue
+			}
+			countedUpstreams[upstreamKey] = true
 		}
 		current++
 	}
@@ -2698,7 +2709,33 @@ func (m *HLSManager) startLiveTranscoding(ctx context.Context, session *HLSSessi
 	var proxyBody io.ReadCloser
 	inputArg := session.Path
 	inputHeaders := session.LiveTuning.RequestHeaders
-	if session.LiveTuning.HDHomeRunInput {
+	sharedInput := false
+	// Share the provider connection with any other session on this channel; see
+	// live_upstream_share.go. HLS inputs are left to FFmpeg below.
+	if key := liveUpstreamShareKey(session.Path, session.LiveTuning); key != "" {
+		sub, shared, err := sharedLiveUpstreams.Subscribe(key, requestsecurity.URLForLog(session.Path), openLiveUpstream(session))
+		switch {
+		case err == nil:
+			// Idempotent; also covers any return before the stdin copier owns it.
+			defer sub.Close()
+			proxyBody = sub
+			inputArg = "pipe:0"
+			sharedInput = true
+			if shared {
+				log.Printf("[hls] live session %s: joined shared upstream connection (%d viewer(s))",
+					session.ID, sharedLiveUpstreams.Subscribers(key))
+			} else {
+				log.Printf("[hls] live session %s: opened shared upstream connection", session.ID)
+			}
+		case errors.Is(err, errLiveUpstreamNotTS):
+			log.Printf("[hls] live session %s: upstream is an HLS playlist, letting FFmpeg read it directly", session.ID)
+		case session.LiveTuning.HDHomeRunInput:
+			return fmt.Errorf("open HDHomeRun stream: %w", err)
+		default:
+			return fmt.Errorf("open live stream: %w", err)
+		}
+	}
+	if session.LiveTuning.HDHomeRunInput && proxyBody == nil {
 		var err error
 		proxyBody, err = openHDHomeRunStream(ctx, session.Path, session.LiveTuning.ProxyURL)
 		if err != nil {
@@ -2717,7 +2754,7 @@ func (m *HLSManager) startLiveTranscoding(ctx context.Context, session *HLSSessi
 		inputHeaders = nil
 		log.Printf("[hls] live session %s: using segment-normalizing HLS input relay", session.ID)
 	}
-	if proxyURL := strings.TrimSpace(session.LiveTuning.ProxyURL); proxyURL != "" && inputArg == session.Path {
+	if proxyURL := strings.TrimSpace(session.LiveTuning.ProxyURL); proxyURL != "" && inputArg == session.Path && proxyBody == nil {
 		client, err := netproxy.NewHTTPClientWithOptions(netproxy.HTTPClientOptions{ResponseHeaderTimeout: 15 * time.Second}, proxyURL)
 		if err != nil {
 			return fmt.Errorf("create proxied live client: %w", err)
@@ -2802,7 +2839,7 @@ func (m *HLSManager) startLiveTranscoding(ctx context.Context, session *HLSSessi
 		}
 	}
 
-	if session.LiveTuning.HDHomeRunInput {
+	if session.LiveTuning.HDHomeRunInput || sharedInput {
 		args = append(args, "-f", "mpegts")
 	}
 	args = append(args, "-i", inputArg)
@@ -2823,13 +2860,14 @@ func (m *HLSManager) startLiveTranscoding(ctx context.Context, session *HLSSessi
 
 	cmd := exec.CommandContext(ctx, m.ffmpegPath, args...)
 	cmd.Dir = session.OutputDir
-	if session.LiveTuning.HDHomeRunInput {
+	if proxyBody != nil {
 		// Own the copier so Cmd.Wait does not join a Read blocked on a silent
-		// tuner after the encoder exits or is killed by the watchdog. Close the
-		// tuner body before joining, releasing it before the supervisor restarts.
+		// source after the encoder exits or is killed by the watchdog. Close the
+		// body before joining, releasing the connection (or this session's share
+		// of it) before the supervisor restarts.
 		stdin, err := cmd.StdinPipe()
 		if err != nil {
-			return fmt.Errorf("create HDHomeRun input pipe: %w", err)
+			return fmt.Errorf("create live input pipe: %w", err)
 		}
 		inputDone := make(chan struct{})
 		go func() {
@@ -2842,9 +2880,6 @@ func (m *HLSManager) startLiveTranscoding(ctx context.Context, session *HLSSessi
 			_ = stdin.Close()
 			<-inputDone
 		}()
-	} else if proxyBody != nil {
-		cmd.Stdin = proxyBody
-		defer proxyBody.Close()
 	}
 
 	// Capture stderr for logging
@@ -5043,7 +5078,7 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 		if resumeSegment >= 0 {
 			session.SegmentStartNumber = resumeSegment
 		}
-		session.CreatedAt = time.Now()                   // Reset so startup timeout doesn't immediately fire
+		session.CreatedAt = time.Now() // Reset so startup timeout doesn't immediately fire
 		session.LastSegmentRequest = time.Now()
 		// Keep SegmentsCreated, BytesStreamed, SegmentRequestCount as-is for tracking
 		session.mu.Unlock()

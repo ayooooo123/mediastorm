@@ -61,6 +61,7 @@ func (h *AdminUIHandler) buildDashboardLiveUsage(isAdmin bool, scopedUsers []mod
 	bucketCurrent := map[string]int{}
 	bucketProvider := map[string]string{}
 	bucketLabel := map[string]string{}
+	countedUpstreams := map[string]bool{}
 
 	if h.hlsManager != nil {
 		h.hlsManager.mu.RLock()
@@ -77,6 +78,7 @@ func (h *AdminUIHandler) buildDashboardLiveUsage(isAdmin bool, scopedUsers []mod
 			if bucketID == "" {
 				bucketID = provider + ":default"
 			}
+			upstreamKey := session.LiveUpstreamKey
 			session.mu.RUnlock()
 
 			isDefaultProfile := strings.EqualFold(profileID, "default") || profileID == ""
@@ -88,7 +90,13 @@ func (h *AdminUIHandler) buildDashboardLiveUsage(isAdmin bool, scopedUsers []mod
 				continue
 			}
 
-			bucketCurrent[bucketID]++
+			// Same-channel sessions share one provider connection and use one slot.
+			if upstreamKey == "" || !countedUpstreams[upstreamKey] {
+				bucketCurrent[bucketID]++
+			}
+			if upstreamKey != "" {
+				countedUpstreams[upstreamKey] = true
+			}
 			bucketProvider[bucketID] = provider
 			if targets, ok := targetByProfile[profileID]; ok {
 				for _, target := range targets {
