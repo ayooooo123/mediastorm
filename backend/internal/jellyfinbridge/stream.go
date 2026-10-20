@@ -374,9 +374,22 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		s.forwardLiveStream(w, r, p, sess)
 		return
 	}
+	// The stream may still be resolving: PlaybackInfo answers after a
+	// bounded wait, and picking a release (a preset version, Auto: Avoid
+	// Video Transcoding) can take longer. Direct players such as mpv retry
+	// only briefly, so wait here as the HLS playlist does.
 	sess.mu.Lock()
-	status := sess.status
+	owner := sess.owner
 	sess.mu.Unlock()
+	status := s.awaitPrequeue(r.Context(), p, sess, resolveWaitFor(owner, lazyResolveWait))
+	if status != nil && status.Status == playback.PrequeueStatusFailed {
+		log.Printf("[jellyfin-bridge] stream for %s: %s", sess.ItemID, firstNonEmpty(status.Error, "no playable release"))
+		if r.Context().Err() == nil {
+			s.plays.remove(sess.ID)
+		}
+		writeError(w, http.StatusServiceUnavailable, "Stream not available")
+		return
+	}
 	if status == nil || status.StreamPath == "" {
 		writeError(w, http.StatusServiceUnavailable, "Stream not resolved yet")
 		return
