@@ -675,6 +675,7 @@ func (h *IndexerHandler) getSeriesSearchMetadata(ctx context.Context, query stri
 
 	// Build season -> episode count map for episode resolver
 	seasonCounts := make(map[int]int)
+	seasonNames := make(map[int]string)
 	for _, season := range details.Seasons {
 		// Skip specials (season 0) unless explicitly included
 		if season.Number > 0 {
@@ -684,11 +685,12 @@ func (h *IndexerHandler) getSeriesSearchMetadata(ctx context.Context, query stri
 				count = len(season.Episodes)
 			}
 			seasonCounts[season.Number] = count
+			seasonNames[season.Number] = season.Name
 		}
 	}
 
 	if len(seasonCounts) > 0 {
-		result.EpisodeResolver = filter.NewSeriesEpisodeResolver(seasonCounts)
+		result.EpisodeResolver = filter.NewSeriesEpisodeResolver(seasonCounts).WithSeasonNames(seasonNames)
 	}
 
 	// Look up the air date of the target episode

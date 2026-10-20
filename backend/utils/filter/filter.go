@@ -98,8 +98,9 @@ type EpisodeCountResolver interface {
 // SeriesEpisodeResolver is a concrete implementation of EpisodeCountResolver
 // that uses pre-fetched series episode data.
 type SeriesEpisodeResolver struct {
-	TotalEpisodes       int         // Total episodes across all seasons
-	SeasonEpisodeCounts map[int]int // Map of season number -> episode count
+	TotalEpisodes       int            // Total episodes across all seasons
+	SeasonEpisodeCounts map[int]int    // Map of season number -> episode count
+	SeasonNames         map[int]string // Map of season number -> metadata season name
 }
 
 // NewSeriesEpisodeResolver creates a resolver from season episode counts.
@@ -113,6 +114,16 @@ func NewSeriesEpisodeResolver(seasonCounts map[int]int) *SeriesEpisodeResolver {
 		TotalEpisodes:       total,
 		SeasonEpisodeCounts: seasonCounts,
 	}
+}
+
+// WithSeasonNames records metadata season names ("The Final Season",
+// "Entertainment District Arc"), used to place anime releases that name their
+// season instead of numbering it.
+func (r *SeriesEpisodeResolver) WithSeasonNames(names map[int]string) *SeriesEpisodeResolver {
+	if r != nil && len(names) > 0 {
+		r.SeasonNames = names
+	}
+	return r
 }
 
 func (r *SeriesEpisodeResolver) GetTotalSeriesEpisodes() int {
@@ -497,12 +508,29 @@ func ResultsWithDetails(results []models.NZBResult, opts Options) []FilteredResu
 				reject(result, reason)
 				continue
 			}
-			if !opts.IsMovie && opts.IsAnime && opts.TargetSeason == 1 && len(parsed.Seasons) == 0 {
-				if marker := laterAnimeInstallmentMarker(parsed.Title, opts.ExpectedTitle, parsed.Episodes); marker != "" {
-					reason := fmt.Sprintf("release names a later installment (%q) but target is S01", marker)
-					log.Printf("[filter] Rejecting %q: %s", result.Title, reason)
-					reject(result, reason)
-					continue
+			if !opts.IsMovie && opts.IsAnime && opts.TargetSeason > 0 && len(parsed.Seasons) == 0 {
+				if installment, ok := animeReleaseInstallment(parsed.Title, opts.ExpectedTitle, parsed.Episodes, opts.EpisodeResolver); ok {
+					reason := ""
+					switch {
+					case installment.season == 0:
+						if opts.TargetSeason == 1 {
+							reason = fmt.Sprintf("release names a later installment (%q) but target is S01", installment.marker)
+						}
+					case installment.season != opts.TargetSeason:
+						reason = fmt.Sprintf("release names season %d (%q) but target is S%02d", installment.season, installment.marker, opts.TargetSeason)
+					case installment.laterPart:
+						reason = fmt.Sprintf("release restarts numbering for a later part of season %d (%q); its offset is unknown", installment.season, installment.marker)
+					case !intSliceContains(parsed.Episodes, opts.TargetAbsoluteEpisode) || opts.TargetAbsoluteEpisode == 0:
+						// Episodes count within the named season, not from the series start.
+						parsedCopy := *parsed
+						parsedCopy.Seasons = []int{installment.season}
+						parsed = &parsedCopy
+					}
+					if reason != "" {
+						log.Printf("[filter] Rejecting %q: %s", result.Title, reason)
+						reject(result, reason)
+						continue
+					}
 				}
 			}
 			if !opts.IsMovie && !inferredAbsoluteEpisode && isSeriesPrefixExtensionMismatch(parsed.Title, matchedTitle, opts.IsAnime) {

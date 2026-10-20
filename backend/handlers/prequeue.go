@@ -3937,6 +3937,7 @@ func (h *PrequeueHandler) createEpisodeResolverAndLookupAbsoluteEp(ctx context.C
 
 	// Build season -> episode count map AND lookup absolute episode number and air date
 	seasonCounts := make(map[int]int)
+	seasonNames := make(map[int]string)
 	var foundAbsoluteEp int
 	var foundAirDate string
 	var foundCanonicalEpisode *models.SeriesEpisode
@@ -3949,6 +3950,7 @@ func (h *PrequeueHandler) createEpisodeResolverAndLookupAbsoluteEp(ctx context.C
 				count = len(season.Episodes)
 			}
 			seasonCounts[season.Number] = count
+			seasonNames[season.Number] = season.Name
 		}
 
 		// Look for the target episode's data if not already set
@@ -4054,7 +4056,7 @@ func (h *PrequeueHandler) createEpisodeResolverAndLookupAbsoluteEp(ctx context.C
 		return result
 	}
 
-	result.EpisodeResolver = filter.NewSeriesEpisodeResolver(seasonCounts)
+	result.EpisodeResolver = filter.NewSeriesEpisodeResolver(seasonCounts).WithSeasonNames(seasonNames)
 	return result
 }
 
