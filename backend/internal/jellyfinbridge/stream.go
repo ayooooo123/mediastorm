@@ -159,6 +159,7 @@ func (s *Server) addMediaMetadata(q url.Values, sess *playSession) {
 		q.Set("mediaType", "movie")
 		q.Set("title", t.Name)
 		q.Set("movieName", t.Name)
+		q.Set("itemId", t.source()) // as in progress reports: Active Streams stops by it
 		if t.Year > 0 {
 			q.Set("year", strconv.Itoa(t.Year))
 		}
@@ -169,6 +170,7 @@ func (s *Server) addMediaMetadata(q url.Values, sess *playSession) {
 	case refEpisode:
 		series := s.seriesWithArtwork(seriesInfoFromSeasonRef(ref))
 		q.Set("mediaType", "episode")
+		q.Set("itemId", ref.Source)
 		q.Set("title", series.Name)
 		q.Set("seriesName", series.Name)
 		q.Set("seriesId", series.source())
@@ -358,6 +360,11 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		// External players stream without PlaybackInfo: open a session.
 		if caller, authed := s.authenticate(r); authed {
+			if s.playbackStopped(caller.Profile.ID, itemID) {
+				// Opening a session would count as starting the item again.
+				writeError(w, http.StatusGone, "Playback was stopped by the server")
+				return
+			}
 			sess, ok = s.openStreamSession(r, caller, itemID, queryValue(r, "MediaSourceId"))
 		}
 	}
@@ -372,6 +379,10 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 	if sess.Live {
 		s.forwardLiveStream(w, r, p, sess)
+		return
+	}
+	if s.playbackStopped(p.Profile.ID, sess.ItemID) {
+		writeError(w, http.StatusGone, "Playback was stopped by the server")
 		return
 	}
 	// The stream may still be resolving: PlaybackInfo answers after a

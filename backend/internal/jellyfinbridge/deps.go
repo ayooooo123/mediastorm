@@ -139,6 +139,9 @@ type Deps struct {
 	// generation finished. Both back trickplay.
 	ThumbnailsEnabled func() bool
 	ThumbnailFrames   func(streamPath string) ([]ThumbnailFrame, bool)
+	// StopRequested reports (and consumes) a stop the Active Streams
+	// dashboard requested for a profile's playback of an item.
+	StopRequested func(profileID string, update models.PlaybackProgressUpdate) bool
 }
 
 // StreamPlan is the output plan of a mediastorm HLS session, as shown in the

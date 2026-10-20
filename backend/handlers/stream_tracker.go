@@ -686,12 +686,19 @@ func (t *StreamTracker) MarkStopPlaybackForProfileMedia(profileID, profileName, 
 }
 
 // MarkStopPlayback marks the playback tied to a tracked stream as disallowed on heartbeat.
+// A stream whose request just ended (a native player between two range
+// requests, still listed on the dashboard) can be stopped too; it then no
+// longer lingers.
 func (t *StreamTracker) MarkStopPlayback(id string) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.pruneStopSignalsLocked()
 
 	stream, ok := t.streams[id]
+	ended, lingering := t.recentlyEnded[id]
+	if !ok && lingering {
+		stream, ok = ended.stream, ended.stream != nil
+	}
 	if !ok {
 		return false
 	}
@@ -704,7 +711,23 @@ func (t *StreamTracker) MarkStopPlayback(id string) bool {
 	for _, key := range keys {
 		t.stopPlaybacks[key] = expiresAt
 	}
+	if lingering {
+		ended.terminated = true
+		t.recentlyEnded[id] = ended
+	}
 	return true
+}
+
+// GetEndedStream returns a stream whose request ended within the teardown
+// grace, as the dashboard still lists it.
+func (t *StreamTracker) GetEndedStream(id string) (*TrackedStream, bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	ended, ok := t.recentlyEnded[id]
+	if !ok || ended.stream == nil || ended.terminated || time.Since(ended.endedAt) > playbackNotificationTeardownGrace {
+		return nil, false
+	}
+	return snapshotTrackedStream(ended.stream, false), true
 }
 
 // ShouldStopPlayback reports whether the player should stop on its progress heartbeat.

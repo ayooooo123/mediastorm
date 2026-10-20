@@ -3704,6 +3704,13 @@ func (h *AdminUIHandler) TerminateStream(w http.ResponseWriter, r *http.Request)
 	}
 
 	stream, exists := tracker.GetStream(streamID)
+	lingering := false
+	if !exists {
+		// Native players read in short range requests; between two of them
+		// the dashboard lists the request that just ended.
+		stream, exists = tracker.GetEndedStream(streamID)
+		lingering = exists
+	}
 	if !exists {
 		http.Error(w, `{"error":"stream not found"}`, http.StatusNotFound)
 		return
@@ -3714,7 +3721,10 @@ func (h *AdminUIHandler) TerminateStream(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if tracker.TerminateStream(streamID) {
+	// Stop the playback, not only this request: a player that only loses
+	// its connection opens the next range request.
+	marked := tracker.MarkStopPlayback(streamID)
+	if !lingering && tracker.TerminateStream(streamID) {
 		log.Printf("[admin-ui] terminated direct stream transport %s", streamID)
 
 		w.WriteHeader(http.StatusOK)
@@ -3726,7 +3736,7 @@ func (h *AdminUIHandler) TerminateStream(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if !tracker.MarkStopPlayback(streamID) {
+	if !marked {
 		http.Error(w, `{"error":"stream cannot be controlled"}`, http.StatusBadRequest)
 		return
 	}

@@ -216,6 +216,7 @@ func (s *Server) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	itemID := normalizeID(pathVar(r, "id"))
+	s.clearStopped(p.Profile.ID, itemID) // started again after a stop
 	if v := requestedVersion(r); v != "" && req.MediaSourceID == "" {
 		// PlaybackInfo for a version item: the release on its item.
 		req.MediaSourceID = v
@@ -879,6 +880,9 @@ func (s *Server) recordProgress(ctx context.Context, p *principal, itemID string
 	}
 	if duration > 0 {
 		update.PercentWatched = position / duration * 100
+	}
+	if !ended && s.deps.StopRequested != nil && s.deps.StopRequested(p.Profile.ID, update) {
+		s.stopPlayback(ctx, p, itemID, sess)
 	}
 	if _, err := s.deps.History.UpdatePlaybackProgressContext(ctx, p.Profile.ID, update); err != nil {
 		log.Printf("[jellyfin-bridge] progress for %s: %v", ref.Source, err)

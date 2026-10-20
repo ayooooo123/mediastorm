@@ -830,3 +830,33 @@ func TestPlaybackSlotStatsAccumulatesAcrossRangeRequests(t *testing.T) {
 		t.Fatal("expired playback slot still reported")
 	}
 }
+
+// A native player between two range requests is listed through its last
+// ended request; stopping it from the dashboard must work and drop it.
+func TestMarkStopPlaybackStopsLingeringStream(t *testing.T) {
+	stream := &TrackedStream{
+		ID:            "between-ranges",
+		ProfileID:     "profile",
+		Path:          "/episode.mkv",
+		MediaMetadata: StreamMediaMetadata{MediaType: "episode", ItemID: "tmdb:tv:2004:s03e06"},
+	}
+	tracker := &StreamTracker{
+		streams:       make(map[string]*TrackedStream),
+		recentlyEnded: map[string]recentlyEndedStream{stream.ID: {stream: stream, endedAt: time.Now()}},
+	}
+	if got, ok := tracker.GetEndedStream(stream.ID); !ok || got.ProfileID != "profile" {
+		t.Fatalf("GetEndedStream() = %v, %v", got, ok)
+	}
+	if !tracker.MarkStopPlayback(stream.ID) {
+		t.Fatal("MarkStopPlayback() = false for a lingering stream")
+	}
+	if !tracker.ShouldStopPlayback("profile", models.PlaybackProgressUpdate{MediaType: "episode", ItemID: "tmdb:tv:2004:s03e06"}) {
+		t.Fatal("the player's next heartbeat is not told to stop")
+	}
+	if got := tracker.GetLingeringStreams(); len(got) != 0 {
+		t.Fatalf("stopped stream still listed: %v", streamIDs(got))
+	}
+	if _, ok := tracker.GetEndedStream(stream.ID); ok {
+		t.Fatal("GetEndedStream() still returns the stopped stream")
+	}
+}
