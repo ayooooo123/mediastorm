@@ -384,8 +384,11 @@ func localProgressIdentity(ref itemRef) (mediaType, itemID string, ok bool) {
 		series := titleInfo{MediaType: "series", ID: titleID, ExternalIDs: ref.Ctx.ExternalIDs}
 		return "episode", strings.ToLower(fmt.Sprintf("%s:s%02de%02d", series.source(), ref.Ctx.Season, ref.Ctx.Episode)), true
 	}
-	if strings.HasPrefix(titleID, "localmedia:") {
+	// Unmatched files and Plex/Jellyfin library items carry a localmedia: ID;
+	// the latter still have catalog external IDs to track progress under.
+	id := titleInfo{MediaType: "movie", ID: titleID, ExternalIDs: ref.Ctx.ExternalIDs}.source()
+	if strings.HasPrefix(id, "localmedia:") {
 		return "", "", false
 	}
-	return "movie", titleInfo{MediaType: "movie", ID: titleID, ExternalIDs: ref.Ctx.ExternalIDs}.source(), true
+	return "movie", id, true
 }
