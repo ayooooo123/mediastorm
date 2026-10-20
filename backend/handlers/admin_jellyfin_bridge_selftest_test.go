@@ -18,7 +18,7 @@ func fakeBridge(t *testing.T, webClient bool, loggedOut *atomic.Bool) *httptest.
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/System/Info/Public", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]string{"ServerName": "mediastorm", "Version": "10.11.11"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"ServerName": "mediastorm", "Version": "10.11.11", "Id": "bridge-id"})
 	})
 	mux.HandleFunc("/web/", func(w http.ResponseWriter, _ *http.Request) {
 		if !webClient {
@@ -78,7 +78,7 @@ func newSelfTestAdmin(t *testing.T, running bool, base string) *JellyfinBridgeAd
 	mgr := config.NewManager(filepath.Join(t.TempDir(), "settings.json"))
 	ctrl := &fakeBridgeController{}
 	if running {
-		ctrl.applied = []config.JellyfinBridgeSettings{{Enabled: true, Port: 8096}}
+		ctrl.applied = []config.JellyfinBridgeSettings{{Enabled: true, Port: 8096, ServerID: "bridge-id"}}
 	}
 	admin := NewJellyfinBridgeAdmin(mgr, ctrl)
 	admin.testBaseURL = base
@@ -142,5 +142,42 @@ func TestLoopbackHost(t *testing.T) {
 		if got := loopbackHost(in); got != want {
 			t.Errorf("loopbackHost(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestJellyfinBridgeSelfTestChecksAddressFromServer(t *testing.T) {
+	var loggedOut atomic.Bool
+	srv := fakeBridge(t, true, &loggedOut)
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"Id": "someone-else"})
+	}))
+	t.Cleanup(other.Close)
+	closed := httptest.NewServer(http.NotFoundHandler())
+	closed.Close()
+
+	for _, tc := range []struct {
+		name, address, want, detail string
+	}{
+		{"this bridge", srv.URL + "/", bridgeCheckOK, "This bridge answers"},
+		{"another server", other.URL, bridgeCheckFail, "different server"},
+		{"nothing listening", closed.URL, bridgeCheckFail, "publish the bridge port"},
+		{"not a URL", "ftp://host", bridgeCheckFail, "Not a valid address"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body, _ := json.Marshal(map[string]string{"address": tc.address})
+			got := runBridgeSelfTest(t, newSelfTestAdmin(t, true, srv.URL), string(body))
+			var check *jellyfinBridgeCheck
+			for i := range got.Checks {
+				if strings.HasPrefix(got.Checks[i].Name, "Reachable at ") {
+					check = &got.Checks[i]
+				}
+			}
+			if check == nil || check.Status != tc.want || !strings.Contains(check.Detail, tc.detail) {
+				t.Fatalf("checks = %+v", got.Checks)
+			}
+			if check.Name != "Reachable at "+strings.TrimRight(tc.address, "/") {
+				t.Fatalf("name = %q", check.Name)
+			}
+		})
 	}
 }

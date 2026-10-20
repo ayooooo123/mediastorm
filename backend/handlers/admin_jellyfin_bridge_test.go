@@ -23,7 +23,7 @@ func (f *fakeBridgeController) Apply(cfg config.JellyfinBridgeSettings) error {
 
 func (f *fakeBridgeController) Status() JellyfinBridgeStatus {
 	if n := len(f.applied); n > 0 && f.applied[n-1].Enabled {
-		return JellyfinBridgeStatus{Running: true, Port: f.applied[n-1].Port}
+		return JellyfinBridgeStatus{Running: true, Port: f.applied[n-1].Port, ServerID: f.applied[n-1].ServerID}
 	}
 	return JellyfinBridgeStatus{}
 }

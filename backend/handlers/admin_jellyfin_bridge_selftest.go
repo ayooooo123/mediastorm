@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -42,6 +43,10 @@ func (a *JellyfinBridgeAdmin) Test(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
+		// Address is the bridge address Jellyfin apps use, checked from the
+		// server when the admin's browser cannot reach it (an HTTPS page
+		// cannot fetch a plain HTTP address).
+		Address string `json:"address"`
 	}
 	if r.Body != nil {
 		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<14)).Decode(&in)
@@ -96,6 +101,11 @@ func (a *JellyfinBridgeAdmin) Test(w http.ResponseWriter, r *http.Request) {
 	}
 	add("Server info", bridgeCheckOK, fmt.Sprintf("Answers as \"%s\", Jellyfin %s.", info.ServerName, info.Version))
 
+	if address := strings.TrimSpace(in.Address); address != "" {
+		status, detail := checkBridgeAddress(ctx, client, address, st.ServerID)
+		add("Reachable at "+strings.TrimRight(address, "/"), status, detail)
+	}
+
 	if code, _, err := bridgeRequest(ctx, client, http.MethodGet, base+"/web/", "", nil); err == nil && code == http.StatusOK {
 		add("Web client", bridgeCheckOK, "jellyfin-web is served at /web.")
 	} else {
@@ -148,6 +158,27 @@ func (a *JellyfinBridgeAdmin) Test(w http.ResponseWriter, r *http.Request) {
 		names = append(names, v.Name)
 	}
 	add("Libraries", bridgeCheckOK, strconv.Itoa(len(names))+" libraries: "+strings.Join(names, ", ")+".")
+}
+
+// checkBridgeAddress fetches the server info at an address Jellyfin apps use
+// and confirms this bridge answers there. From inside Docker, dialing the
+// host's own address goes through the published port, so an unpublished port
+// fails here too.
+func checkBridgeAddress(ctx context.Context, client *http.Client, address, serverID string) (string, string) {
+	u, err := url.Parse(address)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return bridgeCheckFail, "Not a valid address; enter it as http://host:port or https://host."
+	}
+	base := strings.TrimRight(u.Scheme+"://"+u.Host+u.Path, "/")
+	var info struct{ ID string }
+	code, body, err := bridgeRequest(ctx, client, http.MethodGet, base+"/System/Info/Public", "", nil)
+	if err != nil || code != http.StatusOK || json.Unmarshal(body, &info) != nil {
+		return bridgeCheckFail, "No answer, checked from the server (" + describeBridgeFailure(code, err) + "). If mediastorm runs in Docker, publish the bridge port; otherwise check the firewall or reverse proxy."
+	}
+	if serverID != "" && !strings.EqualFold(info.ID, serverID) {
+		return bridgeCheckFail, "A different server answers there (server ID " + info.ID + "), not this bridge. Check the port or the reverse proxy target."
+	}
+	return bridgeCheckOK, "This bridge answers, checked from the server. Use this address in Jellyfin apps."
 }
 
 // loopbackHost is the address the self-test dials: the bind address, or

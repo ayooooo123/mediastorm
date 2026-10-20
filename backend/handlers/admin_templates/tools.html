@@ -690,8 +690,13 @@
             </div>
             <div class="jf-group jf-test">
                 <h3 class="jf-group-title">Test</h3>
-                <p class="jf-group-description">Checks the bridge the way a Jellyfin app connects to it, and whether this browser can reach its port. Enter a profile name (or account/profile) and the account password to test signing in too; the test session is signed out afterwards.</p>
+                <p class="jf-group-description">Checks the bridge the way a Jellyfin app connects to it, and whether its address is reachable (from this browser, or from the server when this page is on HTTPS and the address is plain HTTP). Enter a profile name (or account/profile) and the account password to test signing in too; the test session is signed out afterwards.</p>
                 <div class="jf-grid">
+                    <div class="form-group jf-test-address">
+                        <label class="form-label" for="jellyfinBridgeTestAddress">Server address (optional)</label>
+                        <input class="form-input" id="jellyfinBridgeTestAddress" type="text" autocomplete="off" placeholder="http://host:8096">
+                        <p class="form-hint">The address Jellyfin apps use. Leave empty for this host and the bridge port.</p>
+                    </div>
                     <div class="form-group">
                         <label class="form-label" for="jellyfinBridgeTestUser">Profile (optional)</label>
                         <input class="form-input" id="jellyfinBridgeTestUser" type="text" autocomplete="off" placeholder="e.g. Kids or household/Kids">
@@ -2416,6 +2421,7 @@
     #jellyfinBridgeSection .jf-webclient pre { margin: 0.4rem 0; padding: 0.6rem 0.75rem; border-radius: 8px; background: var(--bg-primary, rgba(0,0,0,0.3)); border: 1px solid var(--border); overflow-x: auto; }
     #jellyfinBridgeSection .jf-webclient code { font-size: 0.78rem; }
     #jellyfinBridgeSection.jf-off #jellyfinBridgeFields { opacity: 0.6; }
+    #jellyfinBridgeSection .jf-test-address { grid-column: 1 / -1; }
     #jellyfinBridgeSection .jf-test-actions { display: flex; justify-content: flex-end; margin-top: 0.75rem; }
     #jellyfinBridgeSection .jf-test-results { list-style: none; margin: 0.75rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.4rem; }
     #jellyfinBridgeSection .jf-test-results:empty { display: none; }
@@ -3321,24 +3327,38 @@
         }
     }
 
-    // The server checks the bridge over loopback; this checks the port from
-    // the admin's own device, which catches a port Docker does not publish.
-    async function checkJellyfinBridgeFromBrowser(port) {
+    function jellyfinBridgeTestAddress() {
+        const st = (jellyfinBridgeState && jellyfinBridgeState.status) || {};
+        const typed = document.getElementById('jellyfinBridgeTestAddress').value.trim().replace(/\/+$/, '');
+        if (typed) return /^https?:\/\//i.test(typed) ? typed : 'http://' + typed;
+        return st.port ? 'http://' + window.location.hostname + ':' + st.port : '';
+    }
+
+    // An HTTPS page cannot fetch a plain HTTP address (mixed content); the
+    // server checks such an address instead.
+    function jellyfinBridgeBrowserCanCheck(address) {
+        return window.location.protocol !== 'https:' || address.toLowerCase().startsWith('https:');
+    }
+
+    // The server checks the bridge over loopback; this checks the address
+    // from the admin's own device, which catches a port Docker does not
+    // publish or a firewall in the way.
+    async function checkJellyfinBridgeFromBrowser(address) {
         const name = 'Reachable from this browser';
-        if (window.location.protocol === 'https:') {
-            return { name, status: 'skip', detail: 'This page is served over HTTPS, so the browser blocks a plain HTTP check of the bridge port.' };
-        }
-        const url = 'http://' + window.location.hostname + ':' + port + '/System/Info/Public';
+        const serverId = (jellyfinBridgeState && jellyfinBridgeState.status && jellyfinBridgeState.status.serverId) || '';
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), 8000);
         try {
-            const response = await fetch(url, { signal: controller.signal, cache: 'no-store' });
+            const response = await fetch(address + '/System/Info/Public', { signal: controller.signal, cache: 'no-store' });
             if (!response.ok) throw new Error('HTTP ' + response.status);
-            await response.json();
-            return { name, status: 'ok', detail: url.replace('/System/Info/Public', '') + ' answers. Use this address in Jellyfin apps on this network.' };
+            const info = await response.json();
+            if (serverId && String(info.Id || '').toLowerCase() !== serverId.toLowerCase()) {
+                return { name, status: 'fail', detail: 'A different server answers at ' + address + ' (server ID ' + info.Id + '), not this bridge. Check the port or the reverse proxy target.' };
+            }
+            return { name, status: 'ok', detail: address + ' answers. Use this address in Jellyfin apps on this network.' };
         } catch (err) {
             const reason = err.name === 'AbortError' ? 'timed out' : err.message;
-            return { name, status: 'fail', detail: 'Could not reach ' + url.replace('/System/Info/Public', '') + ' (' + reason + '). If mediastorm runs in Docker, publish the port (e.g. "' + port + ':' + port + '"); otherwise check the firewall.' };
+            return { name, status: 'fail', detail: 'Could not reach ' + address + ' (' + reason + '). If mediastorm runs in Docker, publish the bridge port; otherwise check the firewall or reverse proxy.' };
         } finally {
             clearTimeout(timer);
         }
@@ -3349,21 +3369,23 @@
         btn.disabled = true;
         btn.textContent = 'Testing...';
         renderJellyfinBridgeTestResults([]);
+        const address = jellyfinBridgeTestAddress();
+        const browserCheck = address && jellyfinBridgeBrowserCanCheck(address);
         try {
             const response = await fetch(basePath + '/api/jellyfin-bridge/test', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     username: document.getElementById('jellyfinBridgeTestUser').value,
-                    password: document.getElementById('jellyfinBridgeTestPass').value
+                    password: document.getElementById('jellyfinBridgeTestPass').value,
+                    address: browserCheck ? '' : address
                 })
             });
             const data = await response.json().catch(() => ({}));
             if (!response.ok) throw new Error(data.error || 'Test failed');
             const checks = data.checks || [];
-            const port = jellyfinBridgeState && jellyfinBridgeState.status && jellyfinBridgeState.status.port;
-            if (checks.length && checks[0].status === 'ok' && port) {
-                checks.splice(2, 0, await checkJellyfinBridgeFromBrowser(port));
+            if (browserCheck && checks.length && checks[0].status === 'ok') {
+                checks.splice(2, 0, await checkJellyfinBridgeFromBrowser(address));
             }
             renderJellyfinBridgeTestResults(checks);
             const failed = checks.some(c => c.status === 'fail');
