@@ -134,6 +134,8 @@ native-tvos/
 native-tvos-*/
 # Native Android TV client (separate local repo, prototype)
 native-androidtv/
+# Its git worktrees, checked out alongside it
+native-androidtv-*/
 
 # KSPlayer fork symlink (actual repo at ~/ksplayer)
 /ksplayer
