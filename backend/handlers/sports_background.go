@@ -40,13 +40,6 @@ func (h *SportsHandler) RefreshBackground(ctx context.Context, links *SportsLink
 	if !enabled() {
 		return
 	}
-	syncGamesCtx, cancelSyncGames := context.WithTimeout(ctx, 10*time.Second)
-	links.SyncTeamsFromGames(syncGamesCtx, h.service.GetScoreboard(""))
-	cancelSyncGames()
-
-	if !enabled() {
-		return
-	}
 	catalogCtx, cancelCatalog := context.WithTimeout(ctx, 30*time.Second)
 	catalog, err := h.service.EnsureTeamCatalog(catalogCtx)
 	cancelCatalog()
@@ -59,4 +52,13 @@ func (h *SportsHandler) RefreshBackground(ctx context.Context, links *SportsLink
 	syncCatalogCtx, cancelSyncCatalog := context.WithTimeout(ctx, 10*time.Second)
 	links.SyncTeams(syncCatalogCtx, catalog)
 	cancelSyncCatalog()
+
+	// Scoreboard teams sync after the catalog, so a team both describe is written
+	// in its catalog form and the scoreboard only adds teams the catalog lacks.
+	if !enabled() {
+		return
+	}
+	syncGamesCtx, cancelSyncGames := context.WithTimeout(ctx, 10*time.Second)
+	links.SyncTeamsFromGames(syncGamesCtx, h.service.GetScoreboard(""))
+	cancelSyncGames()
 }

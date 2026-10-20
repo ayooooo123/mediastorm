@@ -508,9 +508,9 @@ func (h *SportsLinksHandler) Options(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// SyncTeamsFromGames upserts every team appearing in the given games into sports_teams,
-// keyed on league+ESPN team ID. This remains a fallback alongside the full team catalog,
-// and also keeps identities current from the frequently refreshed scoreboard payload.
+// SyncTeamsFromGames adds teams appearing in the given games to sports_teams, keyed on
+// league+ESPN team ID. It is a fallback for teams missing from the full team catalog:
+// teams already written (by the catalog or an earlier scoreboard) are left unchanged.
 func (h *SportsLinksHandler) SyncTeamsFromGames(ctx context.Context, games []models.SportsGame) {
 	teams := make([]models.SportsTeamRecord, 0, len(games)*2)
 	for _, game := range games {
