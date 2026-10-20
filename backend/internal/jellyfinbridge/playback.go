@@ -521,6 +521,8 @@ func (s *Server) vodMediaSource(r *http.Request, p *principal, sess *playSession
 	var runtime *int64
 	if status != nil && status.Duration > 0 {
 		runtime = int64Ptr(secondsToTicks(status.Duration))
+	} else if probe != nil && probe.DurationSeconds > 0 {
+		runtime = int64Ptr(secondsToTicks(probe.DurationSeconds))
 	} else if ref := sess.Ref; ref.Kind == refMovie || ref.Kind == refEpisode {
 		if item, ok := s.itemByID(r.Context(), p, nil, sess.ItemID, false); ok && item.RunTimeTicks != nil {
 			runtime = item.RunTimeTicks
@@ -833,10 +835,16 @@ func (s *Server) recordProgress(ctx context.Context, p *principal, itemID string
 		sess.mu.Unlock()
 	}
 	if duration <= 0 {
+		// Reports without a live session (none sent, or it idled out) use
+		// the length of the stream last played for this item.
+		duration = s.knownDuration(p.Profile.ID, itemID)
+	}
+	if duration <= 0 {
 		if item, ok := s.itemByID(ctx, p, nil, itemID, false); ok && item.RunTimeTicks != nil {
 			duration = ticksToSeconds(*item.RunTimeTicks)
 		}
 	}
+	s.rememberDuration(p.Profile.ID, itemID, duration)
 	update := models.PlaybackProgressUpdate{
 		Position:      position,
 		Duration:      duration,

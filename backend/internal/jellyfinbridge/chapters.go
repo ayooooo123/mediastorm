@@ -41,6 +41,34 @@ func (s *Server) rememberChapters(profileID, itemID string, probe *mediaProbe) {
 	s.chapters.Store(chaptersKey(profileID, itemID), chapterSet{chapters: out, at: time.Now()})
 }
 
+type knownDuration struct {
+	seconds float64
+	at      time.Time
+}
+
+// rememberDuration keeps the length of a played stream.
+func (s *Server) rememberDuration(profileID, itemID string, seconds float64) {
+	if profileID == "" || itemID == "" || seconds <= 0 {
+		return
+	}
+	s.durations.Store(chaptersKey(profileID, itemID), knownDuration{seconds: seconds, at: time.Now()})
+}
+
+// knownDuration returns the length of the stream last played for an item,
+// or 0.
+func (s *Server) knownDuration(profileID, itemID string) float64 {
+	v, ok := s.durations.Load(chaptersKey(profileID, itemID))
+	if !ok {
+		return 0
+	}
+	d := v.(knownDuration)
+	if time.Since(d.at) > playSessionTTL {
+		s.durations.Delete(chaptersKey(profileID, itemID))
+		return 0
+	}
+	return d.seconds
+}
+
 // withChapters adds known chapters to movies and episodes.
 func (s *Server) withChapters(p *principal, items []dto.BaseItemDto) {
 	for i := range items {

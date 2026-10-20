@@ -89,8 +89,14 @@ func (s *Server) probeMedia(ctx context.Context, p *principal, sess *playSession
 	probe.path = status.StreamPath
 	sess.mu.Lock()
 	sess.probe = &probe
+	if sess.duration <= 0 && probe.DurationSeconds > 0 {
+		// Direct streams often have no duration in their status, and
+		// metadata lacks many episode runtimes; progress needs one.
+		sess.duration = probe.DurationSeconds
+	}
 	sess.mu.Unlock()
 	s.rememberChapters(sess.ProfileID, sess.ItemID, &probe)
+	s.rememberDuration(sess.ProfileID, sess.ItemID, probe.DurationSeconds)
 	return &probe
 }
 

@@ -61,6 +61,9 @@ type Server struct {
 	// and item (chapterSet).
 	chapters     sync.Map
 	chapterWaits sync.Map // profile|item -> chan closed when a pending probe finished
+	// durations holds the length of the stream last played per profile and
+	// item (knownDuration), for progress reports without a live session.
+	durations    sync.Map
 	seriesCounts sync.Map // profile|series GUID -> seriesCount
 	states       userStateCache
 	proxies      []*net.IPNet
