@@ -8,7 +8,7 @@ mediastorm is a self-hosted streaming platform for movies, television, and live 
 
 Features include multi-profile watch history and recommendations, kids profiles, offline downloads, Live TV and DVR, subtitles, casting, Watch Together rooms, and encrypted Iroh connection invites for remote access.
 
-[Releases](https://github.com/godver3/mediastorm/releases) · [Android Mobile](https://github.com/godver3/mediastorm/releases/download/android-latest/mediastorm-mobile.apk) · [Android TV](https://github.com/godver3/mediastorm/releases/download/android-latest/mediastorm-tv.apk) · [iOS TestFlight](https://testflight.apple.com/join/8vCQ5gmH) · [tvOS TestFlight](https://testflight.apple.com/join/X9bE3dq6) · [Discord](https://discord.gg/kT74mwf4bu)
+[Releases](https://github.com/godver3/mediastorm/releases) · [Android Mobile](https://github.com/godver3/mediastorm/releases/download/android-latest/mediastorm-mobile.apk) · [Android TV](https://github.com/godver3/mediastorm/releases/download/android-latest/mediastorm-tv.apk) · [iOS TestFlight](https://testflight.apple.com/join/8vCQ5gmH) · [tvOS TestFlight](https://testflight.apple.com/join/X9bE3dq6) · [Native tvOS TestFlight](https://testflight.apple.com/join/6uMySrhk) · [Native Android TV](https://github.com/godver3/mediastorm/releases/download/androidtv-native-latest/mediastorm-androidtv.apk) · [Discord](https://discord.gg/kT74mwf4bu)
 
 ## Source layout
 
@@ -138,6 +138,15 @@ Incremental updates are delivered automatically through OTA updates. Native chan
 - [Versioned release history](https://github.com/godver3/mediastorm/releases)
 
 Incremental updates are delivered automatically through OTA updates. Native changes require downloading the latest APK or entering the permanent Downloader code for the device.
+
+### Native tvOS and Android TV (preview)
+
+Fully native TV clients, built separately from the apps above: SwiftUI on tvOS and Compose for TV on Android TV. They install alongside the existing apps rather than replacing them.
+
+- tvOS: [Join TestFlight](https://testflight.apple.com/join/6uMySrhk)
+- Android TV: [Download APK](https://github.com/godver3/mediastorm/releases/download/androidtv-native-latest/mediastorm-androidtv.apk) — Downloader code [`6740631`](https://aftv.news/6740631)
+
+The tvOS app updates through TestFlight. The Android TV app checks for new builds itself and offers to install them; the APK link and Downloader code always point at the latest build.
 
 ### Jellyfin Apps (Jellyfin Bridge)
 
