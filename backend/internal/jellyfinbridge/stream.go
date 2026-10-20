@@ -397,6 +397,13 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	// transmux=0: serve the original bytes with Range support; native
 	// players demux MKV/MP4 themselves.
 	q := url.Values{"path": {status.StreamPath}, "profileId": {p.Profile.ID}, "transmux": {"0"}}
+	// The same details as an HLS start, so Active Streams shows the profile
+	// and title instead of "Unknown" and the file name.
+	q.Set("profileName", p.Profile.Name)
+	if p.Client.DeviceID != "" {
+		q.Set("clientId", "jellyfin-"+p.Client.DeviceID)
+	}
+	s.addMediaMetadata(q, sess)
 	forward(w, r, p, s.deps.Handlers.Stream, "/api/video/stream?"+q.Encode(), nil)
 }
 

@@ -208,6 +208,10 @@ func TestDirectPlayForNativeClients(t *testing.T) {
 	if rec.Code != http.StatusPartialContent || fp.streamQuery.Get("transmux") != "0" || fp.streamQuery.Get("path") != "/webdav/movie.mkv" || fp.streamRange != "bytes=0-99" {
 		t.Fatalf("direct play = %d query=%v range=%q", rec.Code, fp.streamQuery, fp.streamRange)
 	}
+	// Active Streams shows who plays what, as for HLS sessions.
+	if q := fp.streamQuery; q.Get("profileName") != "Living Room" || q.Get("mediaType") != "movie" || q.Get("title") == "" || q.Get("clientId") != "jellyfin-dev-Android TV" {
+		t.Fatalf("direct play lacks dashboard details: %v", q)
+	}
 
 	// A retry with EnableDirectPlay=false (after a failed attempt) must not loop.
 	retry := decode[dto.PlaybackInfoResponse](t, h.doWithClient(http.MethodPost, "/Items/"+item+"/PlaybackInfo", tok, "Android TV", map[string]any{"EnableDirectPlay": false}))
