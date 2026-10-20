@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -898,6 +899,39 @@ func TestFetchM3UCategoriesIgnoresPlaylistBodyLimit(t *testing.T) {
 
 	if _, err := h.fetchPlaylistContents(t.Context(), playlistServer.URL, ""); err == nil {
 		t.Fatalf("fetchPlaylistContents() error = nil, want playlist size limit error")
+	}
+}
+
+func TestFetchM3UCategoriesKeepsProviderOrder(t *testing.T) {
+	playlistServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", playlistContentTypePlain)
+		_, _ = w.Write([]byte("#EXTM3U\n"))
+		for _, group := range []string{"Sports", "News", "Sports", "Kids", "Movies", "News"} {
+			_, _ = w.Write([]byte(`#EXTINF:-1 group-title="` + group + `",` + group + "\nhttp://example.test/" + group + ".ts\n"))
+		}
+	}))
+	defer playlistServer.Close()
+
+	mgr := config.NewManager(filepath.Join(t.TempDir(), "settings.json"))
+	settings := config.DefaultSettings()
+	settings.Live.PlaylistURL = playlistServer.URL
+	if err := mgr.Save(settings); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+	h := NewLiveHandler(playlistServer.Client(), false, "", 24, 0, 0, false, mgr, nil)
+
+	categories, err := h.fetchM3UCategories(t.Context(), playlistServer.URL, "")
+	if err != nil {
+		t.Fatalf("fetchM3UCategories() error = %v", err)
+	}
+	want := []CategoryInfo{{Name: "Sports", ChannelCount: 2}, {Name: "News", ChannelCount: 2}, {Name: "Kids", ChannelCount: 1}, {Name: "Movies", ChannelCount: 1}}
+	if !reflect.DeepEqual(categories, want) {
+		t.Fatalf("categories = %+v, want %+v", categories, want)
+	}
+
+	channels := parseM3UPlaylist("#EXTM3U\n#EXTINF:-1 group-title=\"Zulu\",Z\nhttp://example.test/z.ts\n#EXTINF:-1 group-title=\"Alpha\",A\nhttp://example.test/a.ts\n")
+	if got := extractCategories(channels); len(got) != 2 || got[0].Name != "Zulu" || got[1].Name != "Alpha" {
+		t.Fatalf("extractCategories() = %+v, want Zulu then Alpha", got)
 	}
 }
 

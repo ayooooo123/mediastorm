@@ -18,7 +18,6 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1442,31 +1441,41 @@ func selectLiveSourceByConfigIndex(sources []resolvedM3USource, rawIndex string)
 	return nil
 }
 
-// extractCategories extracts unique categories with their channel counts from a list of channels.
+// extractCategories extracts unique categories with their channel counts from a
+// list of channels, in the order the provider first lists them.
 func extractCategories(channels []LiveChannel) []CategoryInfo {
-	categoryMap := make(map[string]int)
+	var counts categoryCounter
 	for _, ch := range channels {
-		if ch.Group != "" {
-			categoryMap[ch.Group]++
-		}
+		counts.add(ch.Group, 1)
 	}
-
-	return categoryInfosFromCounts(categoryMap)
+	return counts.infos()
 }
 
-func categoryInfosFromCounts(categoryMap map[string]int) []CategoryInfo {
-	categories := make([]CategoryInfo, 0, len(categoryMap))
-	for name, count := range categoryMap {
-		categories = append(categories, CategoryInfo{
-			Name:         name,
-			ChannelCount: count,
-		})
+// categoryCounter counts channels per category while keeping the provider's
+// category order (first appearance) instead of re-sorting alphabetically.
+type categoryCounter struct {
+	order  []string
+	counts map[string]int
+}
+
+func (c *categoryCounter) add(name string, count int) {
+	if name == "" {
+		return
 	}
+	if c.counts == nil {
+		c.counts = make(map[string]int)
+	}
+	if _, seen := c.counts[name]; !seen {
+		c.order = append(c.order, name)
+	}
+	c.counts[name] += count
+}
 
-	sort.Slice(categories, func(i, j int) bool {
-		return categories[i].Name < categories[j].Name
-	})
-
+func (c *categoryCounter) infos() []CategoryInfo {
+	categories := make([]CategoryInfo, 0, len(c.order))
+	for _, name := range c.order {
+		categories = append(categories, CategoryInfo{Name: name, ChannelCount: c.counts[name]})
+	}
 	return categories
 }
 
@@ -1703,7 +1712,7 @@ func (h *LiveHandler) fetchM3UCategories(ctx context.Context, playlistURL, proxy
 		return nil, metadataResponseError(resp)
 	}
 
-	counts := make(map[string]int)
+	var counts categoryCounter
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	pendingGroup := ""
@@ -1732,7 +1741,7 @@ func (h *LiveHandler) fetchM3UCategories(ctx context.Context, playlistURL, proxy
 			continue
 		}
 		if pendingGroup != "" {
-			counts[pendingGroup]++
+			counts.add(pendingGroup, 1)
 			pendingGroup = ""
 		}
 	}
@@ -1740,7 +1749,7 @@ func (h *LiveHandler) fetchM3UCategories(ctx context.Context, playlistURL, proxy
 		return nil, fmt.Errorf("failed to read playlist categories: %w", err)
 	}
 
-	return categoryInfosFromCounts(counts), nil
+	return counts.infos(), nil
 }
 
 func (h *LiveHandler) liveHTTPClient(proxyURL string) *http.Client {
@@ -2592,7 +2601,7 @@ func (h *LiveHandler) AdminGetCategories(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *LiveHandler) getCategories(w http.ResponseWriter, r *http.Request, admin bool) {
-	categoryCounts := make(map[string]int)
+	var categoryCounts categoryCounter
 
 	settings, err := h.cfgManager.Load()
 	if err != nil {
@@ -2631,7 +2640,7 @@ func (h *LiveHandler) getCategories(w http.ResponseWriter, r *http.Request, admi
 				return
 			}
 			for _, category := range extractCategories(channels) {
-				categoryCounts[category.Name] += category.ChannelCount
+				categoryCounts.add(category.Name, category.ChannelCount)
 			}
 			continue
 		}
@@ -2643,7 +2652,7 @@ func (h *LiveHandler) getCategories(w http.ResponseWriter, r *http.Request, admi
 				return
 			}
 			for _, category := range extractCategories(channels) {
-				categoryCounts[category.Name] += category.ChannelCount
+				categoryCounts.add(category.Name, category.ChannelCount)
 			}
 			continue
 		}
@@ -2655,7 +2664,7 @@ func (h *LiveHandler) getCategories(w http.ResponseWriter, r *http.Request, admi
 				return
 			}
 			for _, category := range extractCategories(channels) {
-				categoryCounts[category.Name] += category.ChannelCount
+				categoryCounts.add(category.Name, category.ChannelCount)
 			}
 			continue
 		}
@@ -2666,12 +2675,12 @@ func (h *LiveHandler) getCategories(w http.ResponseWriter, r *http.Request, admi
 			return
 		}
 		for _, category := range categories {
-			categoryCounts[category.Name] += category.ChannelCount
+			categoryCounts.add(category.Name, category.ChannelCount)
 		}
 	}
 
 	response := CategoriesResponse{
-		Categories: categoryInfosFromCounts(categoryCounts),
+		Categories: categoryCounts.infos(),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
