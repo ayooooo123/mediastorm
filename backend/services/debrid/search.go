@@ -45,9 +45,13 @@ type imdbResolver interface {
 
 // SearchOptions mirrors the indexer search contract but is scoped for debrid providers.
 type SearchOptions struct {
-	Numbering             *models.EpisodeNumbering `json:"numbering,omitempty"`
-	TitleID               string
-	Query                 string
+	Numbering *models.EpisodeNumbering `json:"numbering,omitempty"`
+	TitleID   string
+	Query     string
+	// FilterQuery names the requested title and episode when Query is only a
+	// search variant (an alternate title, or an anime absolute "Title 12").
+	// Filtering and result targets use it; scrapers still search Query.
+	FilterQuery           string
 	Categories            []string
 	MaxResults            int
 	IMDBID                string                      // Optional IMDB ID to bypass metadata search
@@ -515,6 +519,13 @@ func (s *SearchService) Search(ctx context.Context, opts SearchOptions) ([]model
 		parsed.Year = opts.Year
 	}
 
+	target := parsed
+	if filterQuery := strings.TrimSpace(opts.FilterQuery); filterQuery != "" && filterQuery != strings.TrimSpace(opts.Query) {
+		target = ParseQuery(filterQuery)
+		target.MediaType = parsed.MediaType
+		target.Year = parsed.Year
+	}
+
 	log.Printf("[debrid] Search called with Query=%q, IMDBID=%q, MediaType=%q, Year=%d, UserID=%q", opts.Query, opts.IMDBID, opts.MediaType, opts.Year, opts.UserID)
 
 	if parsed.MediaType == MediaTypeSeries {
@@ -621,7 +632,7 @@ func (s *SearchService) Search(ctx context.Context, opts SearchOptions) ([]model
 		log.Printf("[debrid] %s search produced %d results for %q in %s", sr.name, len(sr.results), parsed.Title, sr.elapsed.Round(10*time.Millisecond))
 		for _, res := range sr.results {
 			nzb := normalizeScrapeResult(res)
-			decorateResultWithParsedMetadata(&nzb, req.Parsed)
+			decorateResultWithParsedMetadata(&nzb, target)
 			// Add absolute episode number if provided (for anime)
 			if opts.AbsoluteEpisodeNumber > 0 {
 				if nzb.Attributes == nil {
@@ -671,9 +682,9 @@ func (s *SearchService) Search(ctx context.Context, opts SearchOptions) ([]model
 	}
 
 	// Apply parsed-based filtering if appropriate (using per-user filter settings)
-	if !bypassFiltering && !opts.SkipFilter && ShouldFilter(parsed) {
+	if !bypassFiltering && !opts.SkipFilter && ShouldFilter(target) {
 		hasResolver := opts.EpisodeResolver != nil
-		expectedTitle := parsed.Title
+		expectedTitle := target.Title
 		alternateTitles := opts.AlternateTitles
 		if eventQuery := sportsEventSearchQuery(expectedTitle); eventQuery != "" {
 			expectedTitle = eventQuery
@@ -681,15 +692,15 @@ func (s *SearchService) Search(ctx context.Context, opts SearchOptions) ([]model
 			filterSettings.FilterOutTerms = append(append([]string{}, filterSettings.FilterOutTerms...), sportsEventSideContentFilterTerms...)
 		}
 		log.Printf("[debrid] Applying filter with title=%q, year=%d, mediaType=%s, hasEpisodeResolver=%v, targetS%02dE%02d, absoluteEp=%d",
-			expectedTitle, parsed.Year, parsed.MediaType, hasResolver, parsed.Season, parsed.Episode, opts.AbsoluteEpisodeNumber)
+			expectedTitle, target.Year, target.MediaType, hasResolver, target.Season, target.Episode, opts.AbsoluteEpisodeNumber)
 		filterOpts := FilterOptions{
 			Numbering:             opts.Numbering,
 			TitleID:               opts.TitleID,
 			ExpectedTitle:         expectedTitle,
-			ExpectedYear:          parsed.Year,
+			ExpectedYear:          target.Year,
 			EpisodeAirYear:        opts.EpisodeAirYear,
 			SeasonPremiereYear:    opts.SeasonPremiereYear,
-			MediaType:             parsed.MediaType,
+			MediaType:             target.MediaType,
 			MaxSizeMovieGB:        models.FloatVal(filterSettings.MaxSizeMovieGB, 0),
 			MaxSizeEpisodeGB:      models.FloatVal(filterSettings.MaxSizeEpisodeGB, 0),
 			MaxResolution:         models.StringVal(filterSettings.MaxResolution, ""),
@@ -699,8 +710,8 @@ func (s *SearchService) Search(ctx context.Context, opts SearchOptions) ([]model
 			FilterOutTerms:        filterSettings.FilterOutTerms,
 			TotalSeriesEpisodes:   opts.TotalSeriesEpisodes,
 			EpisodeResolver:       opts.EpisodeResolver,
-			TargetSeason:          parsed.Season,
-			TargetEpisode:         parsed.Episode,
+			TargetSeason:          target.Season,
+			TargetEpisode:         target.Episode,
 			TargetAbsoluteEpisode: opts.AbsoluteEpisodeNumber,
 			IsAnime:               opts.IsAnime,
 			IsDaily:               opts.IsDaily,

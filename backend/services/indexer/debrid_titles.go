@@ -26,6 +26,7 @@ func (s *Service) searchDebridTitles(ctx context.Context, base debrid.SearchOpti
 		wg.Go(func() {
 			search := base
 			search.Query = query
+			search.FilterQuery = base.Query
 			batches[i].results, batches[i].err = s.debrid.Search(ctx, search)
 		})
 	}

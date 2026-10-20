@@ -92,3 +92,35 @@ func TestDebridTitleDedupPreservesDifferentUntypedReleases(t *testing.T) {
 		t.Fatalf("dedup must keep distinct releases from one indexer, got %v, %v", results, err)
 	}
 }
+
+type recordingDebrid struct {
+	mu      sync.Mutex
+	queries map[string]string // query -> filter query
+}
+
+func (s *recordingDebrid) Search(_ context.Context, opts debrid.SearchOptions) ([]models.NZBResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.queries[opts.Query] = opts.FilterQuery
+	return nil, nil
+}
+
+// Every search variant, including anime absolute ones, carries the requested
+// episode query for filtering.
+func TestDebridVariantsCarryFilterQuery(t *testing.T) {
+	provider := &recordingDebrid{queries: map[string]string{}}
+	svc := &Service{debrid: provider}
+	base := debrid.SearchOptions{Query: "Dr STONE S01E01", MediaType: "series"}
+	opts := SearchOptions{Query: "Dr STONE S01E01", MediaType: "series", IsAnime: true, AbsoluteEpisodeNumber: 1}
+	if _, err := svc.searchDebridTitles(context.Background(), base, opts, []string{"Dr STONE"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := provider.queries["Dr STONE 1"]; !ok {
+		t.Fatalf("absolute variant not searched: %v", provider.queries)
+	}
+	for query, filterQuery := range provider.queries {
+		if query != base.Query && filterQuery != base.Query {
+			t.Errorf("variant %q filtered against %q, want %q", query, filterQuery, base.Query)
+		}
+	}
+}
