@@ -688,6 +688,24 @@
                 </div>
                 <p id="jellyfinBridgeStatusText" class="form-hint jf-status"></p>
             </div>
+            <div class="jf-group jf-test">
+                <h3 class="jf-group-title">Test</h3>
+                <p class="jf-group-description">Checks the bridge the way a Jellyfin app connects to it, and whether this browser can reach its port. Enter a profile name (or account/profile) and the account password to test signing in too; the test session is signed out afterwards.</p>
+                <div class="jf-grid">
+                    <div class="form-group">
+                        <label class="form-label" for="jellyfinBridgeTestUser">Profile (optional)</label>
+                        <input class="form-input" id="jellyfinBridgeTestUser" type="text" autocomplete="off" placeholder="e.g. Kids or household/Kids">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="jellyfinBridgeTestPass">Password</label>
+                        <input class="form-input" id="jellyfinBridgeTestPass" type="password" autocomplete="new-password">
+                    </div>
+                </div>
+                <div class="jf-test-actions">
+                    <button class="btn btn-secondary" id="jellyfinBridgeTestBtn" onclick="testJellyfinBridge()">Test Bridge</button>
+                </div>
+                <ul id="jellyfinBridgeTestResults" class="jf-test-results"></ul>
+            </div>
             <div id="jellyfinBridgeFields"></div>
             <div class="jf-actions">
                 <button class="btn btn-primary" id="jellyfinBridgeSaveBtn" onclick="saveJellyfinBridge()">Save Bridge Settings</button>
@@ -2398,6 +2416,16 @@
     #jellyfinBridgeSection .jf-webclient pre { margin: 0.4rem 0; padding: 0.6rem 0.75rem; border-radius: 8px; background: var(--bg-primary, rgba(0,0,0,0.3)); border: 1px solid var(--border); overflow-x: auto; }
     #jellyfinBridgeSection .jf-webclient code { font-size: 0.78rem; }
     #jellyfinBridgeSection.jf-off #jellyfinBridgeFields { opacity: 0.6; }
+    #jellyfinBridgeSection .jf-test-actions { display: flex; justify-content: flex-end; margin-top: 0.75rem; }
+    #jellyfinBridgeSection .jf-test-results { list-style: none; margin: 0.75rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.4rem; }
+    #jellyfinBridgeSection .jf-test-results:empty { display: none; }
+    #jellyfinBridgeSection .jf-test-results li { display: flex; gap: 0.6rem; align-items: baseline; font-size: 0.82rem; line-height: 1.35; }
+    #jellyfinBridgeSection .jf-test-results .jf-check-state { flex: 0 0 3.2rem; font-weight: 600; text-transform: uppercase; font-size: 0.7rem; letter-spacing: 0.03em; }
+    #jellyfinBridgeSection .jf-test-results .ok .jf-check-state { color: var(--success, #22c55e); }
+    #jellyfinBridgeSection .jf-test-results .warn .jf-check-state { color: var(--warning, #f59e0b); }
+    #jellyfinBridgeSection .jf-test-results .fail .jf-check-state { color: var(--danger); }
+    #jellyfinBridgeSection .jf-test-results .skip .jf-check-state { color: var(--text-secondary); }
+    #jellyfinBridgeSection .jf-test-results .jf-check-name { font-weight: 600; margin-right: 0.35rem; }
     @media (max-width: 900px) {
         #jellyfinBridgeSection .jf-grid { grid-template-columns: 1fr; }
     }
@@ -3271,6 +3299,80 @@
             for (const field of group.fields) grid.appendChild(jellyfinBridgeField(field, s[field.key]));
             card.appendChild(grid);
             host.appendChild(card);
+        }
+    }
+
+    function renderJellyfinBridgeTestResults(checks) {
+        const list = document.getElementById('jellyfinBridgeTestResults');
+        list.innerHTML = '';
+        for (const check of checks) {
+            const item = document.createElement('li');
+            item.className = check.status;
+            const state = document.createElement('span');
+            state.className = 'jf-check-state';
+            state.textContent = check.status;
+            const text = document.createElement('span');
+            const name = document.createElement('span');
+            name.className = 'jf-check-name';
+            name.textContent = check.name;
+            text.append(name, document.createTextNode(check.detail));
+            item.append(state, text);
+            list.appendChild(item);
+        }
+    }
+
+    // The server checks the bridge over loopback; this checks the port from
+    // the admin's own device, which catches a port Docker does not publish.
+    async function checkJellyfinBridgeFromBrowser(port) {
+        const name = 'Reachable from this browser';
+        if (window.location.protocol === 'https:') {
+            return { name, status: 'skip', detail: 'This page is served over HTTPS, so the browser blocks a plain HTTP check of the bridge port.' };
+        }
+        const url = 'http://' + window.location.hostname + ':' + port + '/System/Info/Public';
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 8000);
+        try {
+            const response = await fetch(url, { signal: controller.signal, cache: 'no-store' });
+            if (!response.ok) throw new Error('HTTP ' + response.status);
+            await response.json();
+            return { name, status: 'ok', detail: url.replace('/System/Info/Public', '') + ' answers. Use this address in Jellyfin apps on this network.' };
+        } catch (err) {
+            const reason = err.name === 'AbortError' ? 'timed out' : err.message;
+            return { name, status: 'fail', detail: 'Could not reach ' + url.replace('/System/Info/Public', '') + ' (' + reason + '). If mediastorm runs in Docker, publish the port (e.g. "' + port + ':' + port + '"); otherwise check the firewall.' };
+        } finally {
+            clearTimeout(timer);
+        }
+    }
+
+    async function testJellyfinBridge() {
+        const btn = document.getElementById('jellyfinBridgeTestBtn');
+        btn.disabled = true;
+        btn.textContent = 'Testing...';
+        renderJellyfinBridgeTestResults([]);
+        try {
+            const response = await fetch(basePath + '/api/jellyfin-bridge/test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    username: document.getElementById('jellyfinBridgeTestUser').value,
+                    password: document.getElementById('jellyfinBridgeTestPass').value
+                })
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data.error || 'Test failed');
+            const checks = data.checks || [];
+            const port = jellyfinBridgeState && jellyfinBridgeState.status && jellyfinBridgeState.status.port;
+            if (checks.length && checks[0].status === 'ok' && port) {
+                checks.splice(2, 0, await checkJellyfinBridgeFromBrowser(port));
+            }
+            renderJellyfinBridgeTestResults(checks);
+            const failed = checks.some(c => c.status === 'fail');
+            showToast(failed ? 'Bridge test found a problem' : 'Bridge test passed', failed ? 'error' : 'success');
+        } catch (err) {
+            showToast(err.message, 'error');
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Test Bridge';
         }
     }
 

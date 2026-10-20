@@ -29,6 +29,8 @@ type JellyfinBridgeController interface {
 type JellyfinBridgeAdmin struct {
 	cfg  *config.Manager
 	ctrl JellyfinBridgeController
+	// testBaseURL overrides the address the self-test dials (tests only).
+	testBaseURL string
 }
 
 func NewJellyfinBridgeAdmin(cfg *config.Manager, ctrl JellyfinBridgeController) *JellyfinBridgeAdmin {

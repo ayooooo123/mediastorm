@@ -1266,6 +1266,7 @@ func main() {
 	jellyfinBridgeAdmin := handlers.NewJellyfinBridgeAdmin(cfgManager, jellyfinBridgeController{jellyfinBridge})
 	r.HandleFunc("/admin/api/jellyfin-bridge", adminUIHandler.RequireMasterAuth(jellyfinBridgeAdmin.Get)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/jellyfin-bridge", adminUIHandler.RequireMasterAuth(jellyfinBridgeAdmin.Put)).Methods(http.MethodPut)
+	r.HandleFunc("/admin/api/jellyfin-bridge/test", adminUIHandler.RequireMasterAuth(jellyfinBridgeAdmin.Test)).Methods(http.MethodPost)
 	r.HandleFunc("/admin/api/jellyfin-devices", adminUIHandler.RequireMasterAuth(adminUIHandler.GetJellyfinDevices)).Methods(http.MethodGet)
 	r.HandleFunc("/admin/api/jellyfin-devices/{deviceID}", adminUIHandler.RequireMasterAuth(adminUIHandler.RevokeJellyfinDevice)).Methods(http.MethodDelete)
 	r.HandleFunc("/admin/notifications", adminUIHandler.RequireAuth(adminUIHandler.NotificationsPage)).Methods(http.MethodGet)
