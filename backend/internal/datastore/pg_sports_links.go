@@ -21,7 +21,9 @@ func (r *pgSportsLinksRepo) UpsertTeam(ctx context.Context, team models.SportsTe
 		INSERT INTO sports_teams (id, league, espn_team_id, name, location, nickname, abbreviation, logo_url, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
 		ON CONFLICT (id) DO UPDATE SET
-			name = $4, location = $5, nickname = $6, abbreviation = $7, logo_url = $8, updated_at = now()`,
+			name = $4, location = $5, nickname = $6, abbreviation = $7, logo_url = $8, updated_at = now()
+		WHERE (sports_teams.name, sports_teams.location, sports_teams.nickname, sports_teams.abbreviation, sports_teams.logo_url)
+			IS DISTINCT FROM (EXCLUDED.name, EXCLUDED.location, EXCLUDED.nickname, EXCLUDED.abbreviation, EXCLUDED.logo_url)`,
 		team.ID, team.League, team.EspnTeamID, team.Name, team.Location, team.Nickname, team.Abbreviation, team.LogoURL)
 	if err != nil {
 		return fmt.Errorf("upsert sports team: %w", err)
