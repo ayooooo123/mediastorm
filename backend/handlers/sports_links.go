@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/gorilla/mux"
 
@@ -25,6 +27,11 @@ type SportsLinksHandler struct {
 	links       datastore.SportsLinksRepository
 	liveHandler *LiveHandler
 	config      *config.Manager
+
+	// synced holds each team as last written, so the background refresh
+	// (every 90 s, with the whole catalog) only writes teams that changed.
+	syncedMu sync.Mutex
+	synced   map[string]models.SportsTeamRecord
 }
 
 func (h *SportsLinksHandler) SetConfigManager(manager *config.Manager) { h.config = manager }
@@ -523,12 +530,20 @@ func (h *SportsLinksHandler) SyncTeamsFromGames(ctx context.Context, games []mod
 			})
 		}
 	}
-	h.SyncTeams(ctx, teams)
+	// The catalog is the reference: scoreboard data differs slightly (logos,
+	// abbreviations), and writing both every tick made them overwrite each
+	// other. Games only add teams the catalog has not provided.
+	h.syncTeams(ctx, teams, true)
 }
 
 // SyncTeams upserts a complete league catalog (or any other batch of team identities),
 // de-duplicating it before touching the datastore.
 func (h *SportsLinksHandler) SyncTeams(ctx context.Context, teams []models.SportsTeamRecord) {
+	h.syncTeams(ctx, teams, false)
+}
+
+// syncTeams writes new and changed teams; onlyNew skips teams already written.
+func (h *SportsLinksHandler) syncTeams(ctx context.Context, teams []models.SportsTeamRecord, onlyNew bool) {
 	seen := make(map[string]struct{}, len(teams))
 	for _, team := range teams {
 		if ctx.Err() != nil {
@@ -541,12 +556,26 @@ func (h *SportsLinksHandler) SyncTeams(ctx context.Context, teams []models.Sport
 			continue
 		}
 		seen[team.ID] = struct{}{}
+		team.UpdatedAt = time.Time{}
+		h.syncedMu.Lock()
+		last, known := h.synced[team.ID]
+		h.syncedMu.Unlock()
+		if known && (onlyNew || last == team) {
+			continue
+		}
 		if err := h.links.UpsertTeam(ctx, team); err != nil {
 			if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				log.Printf("[sports-links] SyncTeams: batch interrupted: %v", err)
 				return
 			}
 			log.Printf("[sports-links] SyncTeams: upsert team %s failed: %v", team.ID, err)
+			continue
 		}
+		h.syncedMu.Lock()
+		if h.synced == nil {
+			h.synced = make(map[string]models.SportsTeamRecord)
+		}
+		h.synced[team.ID] = team
+		h.syncedMu.Unlock()
 	}
 }
