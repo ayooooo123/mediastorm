@@ -497,6 +497,14 @@ func ResultsWithDetails(results []models.NZBResult, opts Options) []FilteredResu
 				reject(result, reason)
 				continue
 			}
+			if !opts.IsMovie && opts.IsAnime && opts.TargetSeason == 1 && len(parsed.Seasons) == 0 {
+				if marker := laterAnimeInstallmentMarker(parsed.Title, opts.ExpectedTitle, parsed.Episodes); marker != "" {
+					reason := fmt.Sprintf("release names a later installment (%q) but target is S01", marker)
+					log.Printf("[filter] Rejecting %q: %s", result.Title, reason)
+					reject(result, reason)
+					continue
+				}
+			}
 			if !opts.IsMovie && !inferredAbsoluteEpisode && isSeriesPrefixExtensionMismatch(parsed.Title, matchedTitle, opts.IsAnime) {
 				reason := fmt.Sprintf("parsed title %q extends expected title %q", parsed.Title, matchedTitle)
 				log.Printf("[filter] Rejecting %q: %s", result.Title, reason)
