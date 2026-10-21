@@ -21,6 +21,7 @@ type mdblistClient struct {
 	apiKey         string
 	enabledRatings map[string]bool
 	httpClient     *http.Client
+	listHTTPClient *http.Client
 	enabled        bool
 
 	// Cache for ratings to avoid repeated API calls
@@ -35,6 +36,9 @@ type mdblistClient struct {
 	// Concurrent lookups for the same title (e.g. a details shell and bundle)
 	// share one API call instead of queueing a second one behind the limiter.
 	inflight singleflight.Group
+
+	// quota is the key's remaining API budget as reported by response headers.
+	quota mdblistQuota
 }
 
 type mdblistCacheEntry struct {
@@ -64,12 +68,7 @@ var apiSourceToInternal = map[string]string{
 
 // mdblistMediaResponse is the response from the /imdb/{type}/{id} endpoint
 type mdblistMediaResponse struct {
-	Ratings []struct {
-		Source string   `json:"source"`
-		Value  *float64 `json:"value"` // Pointer to handle null
-		Score  *float64 `json:"score"` // Pointer to handle null, can be int or float
-		Votes  *int     `json:"votes"` // Pointer to handle null
-	} `json:"ratings"`
+	Ratings []mdblistRatingEntry `json:"ratings"`
 }
 
 func newMDBListClient(apiKey string, enabledRatings []string, enabled bool, cacheTTLHours int) *mdblistClient {
@@ -86,6 +85,7 @@ func newMDBListClient(apiKey string, enabledRatings []string, enabled bool, cach
 		apiKey:         apiKey,
 		enabledRatings: enabledMap,
 		httpClient:     apiusage.TrackClient(&http.Client{Timeout: 10 * time.Second}, "MDBList", "Ratings lookup"),
+		listHTTPClient: apiusage.TrackClient(&http.Client{Timeout: 20 * time.Second}, "MDBList", "List API"),
 		enabled:        enabled,
 		cache:          make(map[string]*mdblistCacheEntry),
 		cacheTTL:       time.Duration(cacheTTLHours) * time.Hour,
@@ -178,6 +178,7 @@ func (c *mdblistClient) GetRatings(ctx context.Context, imdbID string, mediaType
 			backoff *= 2
 			continue
 		}
+		c.quota.record(resp.Header, time.Now())
 
 		// Handle rate limiting and server errors with retry
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
@@ -332,6 +333,7 @@ func (c *mdblistClient) fetchAllRatings(ctx context.Context, cacheKey, imdbID, m
 			backoff *= 2
 			continue
 		}
+		c.quota.record(resp.Header, time.Now())
 
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
 			resp.Body.Close()
@@ -364,31 +366,7 @@ func (c *mdblistClient) fetchAllRatings(ctx context.Context, cacheKey, imdbID, m
 	}
 
 	// Return ALL ratings without filtering by enabled settings
-	var ratings []models.Rating
-	for _, r := range result.Ratings {
-		if r.Value == nil || *r.Value == 0 {
-			continue
-		}
-
-		internalSource := r.Source
-		if mapped, ok := apiSourceToInternal[r.Source]; ok {
-			internalSource = mapped
-		}
-
-		sourceInfo, ok := ratingSourceInfo[r.Source]
-		if !ok {
-			sourceInfo = struct {
-				label string
-				max   float64
-			}{r.Source, 10}
-		}
-
-		ratings = append(ratings, models.Rating{
-			Source: internalSource,
-			Value:  *r.Value,
-			Max:    sourceInfo.max,
-		})
-	}
+	ratings := convertMDBListRatings(result.Ratings)
 
 	// Cache the results
 	c.cacheMu.Lock()

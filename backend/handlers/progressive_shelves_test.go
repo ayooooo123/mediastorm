@@ -114,6 +114,58 @@ func TestProgressiveShelfAdvancedSortUsesEstablishedPath(t *testing.T) {
 	}
 }
 
+// A large home row (high itemCap) uses the progressive path for both phases:
+// its complete pass enriches the page rather than the whole list.
+func TestProgressiveShelfLargeRowCardsOnly(t *testing.T) {
+	if !progressiveShelfRequest(httptest.NewRequest("GET", "/?shelfPhase=cards&limit=500", nil)) {
+		t.Fatal("large cards page should use the progressive path")
+	}
+	if !progressiveShelfRequest(httptest.NewRequest("GET", "/?shelfPhase=complete&limit=500", nil)) {
+		t.Fatal("large complete page should use page-only enrichment")
+	}
+	if progressiveShelfRequest(httptest.NewRequest("GET", "/?shelfPhase=complete", nil)) {
+		t.Fatal("an unbounded complete request keeps the full list path")
+	}
+}
+
+// A 500-item complete page enriches exactly that page once and returns every
+// title in source order with its card identity, as full enrichment would.
+func TestProgressiveShelfLargeCompletePageEnrichesOnlyThePage(t *testing.T) {
+	h := &MetadataHandler{}
+	s := &progressiveTestService{}
+	source := progressiveSource(600)
+	r := httptest.NewRequest("GET", "/?shelfPhase=complete&limit=500", nil)
+	resp, err := h.progressiveCuratedShelf(r, s, source, "test", "", false, false, 500, 0)
+	if err != nil || len(resp.Items) != 500 || resp.Total != 600 || resp.MetadataPending || resp.TotalPending {
+		t.Fatalf("resp items=%d total=%d err=%v", len(resp.Items), resp.Total, err)
+	}
+	if s.full != 500 || s.cards != 500 {
+		t.Fatalf("enriched=%d cards=%d, want 500/500", s.full, s.cards)
+	}
+	for i, item := range resp.Items {
+		if item.Title.TMDBID != int64(i+1) || item.Title.ID != fmt.Sprint(i+1) || item.Title.Genres[0] != "Drama" {
+			t.Fatalf("item %d = %+v", i, item.Title)
+		}
+	}
+}
+
+func TestStremioCatalogItemKeepsCatalogMetadata(t *testing.T) {
+	item := curatedItemFromStremioMeta(stremioMeta{ID: "tt1", Type: "movie", Name: "Catalog", Poster: "https://p/x.jpg", IMDBRating: "7.4"}, "movie")
+	if !item.CatalogMetadata || item.IMDBRating != 7.4 || item.PosterURL != "https://p/x.jpg" {
+		t.Fatalf("item = %+v", item)
+	}
+	for _, raw := range []interface{}{8.1, "8.1"} {
+		if got := stremioIMDBRating(raw); got != 8.1 {
+			t.Fatalf("rating(%v) = %v", raw, got)
+		}
+	}
+	for _, raw := range []interface{}{nil, "", "n/a", 0.0, 11.0} {
+		if got := stremioIMDBRating(raw); got != 0 {
+			t.Fatalf("rating(%v) = %v, want 0", raw, got)
+		}
+	}
+}
+
 func TestProgressiveShelfKidsFilterBeforePagePublication(t *testing.T) {
 	h := &MetadataHandler{UsersService: &fakeUsersServiceForSearch{users: map[string]models.User{"kid": {ID: "kid", IsKidsProfile: true, KidsMode: "rating", KidsMaxMovieRating: "PG"}}}}
 	s := &progressiveTestService{}

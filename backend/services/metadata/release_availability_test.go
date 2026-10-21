@@ -82,8 +82,9 @@ func TestWarmMovieReleasesAsyncBoundsAndDedupes(t *testing.T) {
 		atomic.AddInt32(&active, -1)
 		return &http.Response{
 			StatusCode: http.StatusOK,
-			Body:       io.NopCloser(bytes.NewBufferString(`{"results":[]}`)),
-			Header:     make(http.Header),
+			// Release dates arrive appended to the movie details request.
+			Body:   io.NopCloser(bytes.NewBufferString(`{"results":[],"release_dates":{"results":[]}}`)),
+			Header: make(http.Header),
 		}, nil
 	})}
 	cache := newFileCache(t.TempDir(), 24)

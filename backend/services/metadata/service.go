@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -507,9 +508,7 @@ func (s *Service) GetCacheManagerStatus() CacheManagerStatus {
 		infos := s.customListInfoFn()
 		cached := 0
 		for _, info := range infos {
-			var items []mdblistItem
-			k := cacheKey("shelf-source", "v1", resolveStreamingListURL(info.URL))
-			if ok, _ := s.cache.getWithMaxAge(k, &items, shelfSourceTTL); ok && len(items) > 0 {
+			if s.customListSourceCached(resolveStreamingListURL(info.URL)) {
 				cached++
 			}
 		}
@@ -779,7 +778,9 @@ func (s *Service) refreshTopTenCache(ctx context.Context, mediaType string, cust
 		call.err = err
 		return nil, nil, err
 	}
-	s.enrichShelfArtwork(ctx, items, len(items))
+	// The top-ten chart feeds the hero, which rotates backdrops and tints
+	// dark logos, so it keeps the analyzed artwork.
+	s.enrichShelfArtworkWithAnalysis(ctx, items, len(items), true)
 	rotatingArtwork, singleArtwork, missingArtwork := 0, 0, 0
 	for i := range items {
 		seenArtwork := make(map[string]struct{})
@@ -922,7 +923,7 @@ func (s *Service) warmRatingsForCachedItems(ctx context.Context) {
 				mt = "show"
 			}
 			// Only add if not already in disk cache
-			if s.GetMDBListAllRatingsCached(id, mt) == nil {
+			if s.mdblistFullRatingsCached(id, mt) == nil {
 				jobs = append(jobs, ratingJob{imdbID: id, mediaType: mt})
 			}
 		}
@@ -959,7 +960,7 @@ func (s *Service) warmRatingsForCachedItems(ctx context.Context) {
 			if item.MediaType == "series" {
 				mt = "show"
 			}
-			if s.GetMDBListAllRatingsCached(id, mt) == nil {
+			if s.mdblistFullRatingsCached(id, mt) == nil {
 				jobs = append(jobs, ratingJob{imdbID: id, mediaType: mt})
 			}
 		}
@@ -1088,7 +1089,25 @@ func (s *Service) GetMDBListAllRatings(ctx context.Context, imdbID, mediaType st
 }
 
 // GetMDBListAllRatingsCached returns disk-cached ratings only (no API call). Returns nil on cache miss.
+// List rows fall back to ratings seeded from an MDBList list response.
 func (s *Service) GetMDBListAllRatingsCached(imdbID, mediaType string) []models.Rating {
+	if cached := s.mdblistFullRatingsCached(imdbID, mediaType); cached != nil {
+		return cached
+	}
+	if s.ratingsCache == nil {
+		return nil
+	}
+	var seeded []models.Rating
+	if ok, _ := s.ratingsCache.get(ratingsListSeedKey(imdbID, mediaType), &seeded); ok && len(seeded) > 0 {
+		return seeded
+	}
+	return nil
+}
+
+// mdblistFullRatingsCached returns ratings cached from the per-title endpoint
+// only. Details pages and the background warmer need every source, which the
+// list-seeded subset (IMDb/TMDB) does not provide.
+func (s *Service) mdblistFullRatingsCached(imdbID, mediaType string) []models.Rating {
 	if s.ratingsCache == nil {
 		return nil
 	}
@@ -1108,7 +1127,7 @@ func (s *Service) getMDBListDisplayRatings(ctx context.Context, imdbID, mediaTyp
 		return nil, nil
 	}
 
-	if cachedAll := s.GetMDBListAllRatingsCached(imdbID, mediaType); cachedAll != nil {
+	if cachedAll := s.mdblistFullRatingsCached(imdbID, mediaType); cachedAll != nil {
 		return s.mdblist.FilterEnabledRatings(cachedAll), nil
 	}
 
@@ -1384,7 +1403,7 @@ func (s *Service) getIMDBIDForTMDB(ctx context.Context, mediaType string, tmdbID
 	if s.tmdb == nil || !s.tmdb.isConfigured() {
 		return ""
 	}
-	imdbID, err := s.tmdb.fetchExternalID(ctx, mediaType, tmdbID)
+	imdbID, err := s.imdbIDFromTMDBDetails(ctx, mediaType, tmdbID)
 	if err != nil {
 		log.Printf("[metadata] failed to fetch IMDB ID for TMDB %s/%d: %v", mediaType, tmdbID, err)
 		return ""
@@ -1398,6 +1417,30 @@ func (s *Service) getIMDBIDForTMDB(ctx context.Context, mediaType string, tmdbID
 	}
 
 	return imdbID
+}
+
+// imdbIDFromTMDBDetails reads the IMDb ID from the cached, deduped details
+// request (movies carry imdb_id; series append external_ids). List enrichment
+// fetches the same details right after, so the mapping costs no extra call.
+// The standalone external_ids endpoint remains the fallback.
+func (s *Service) imdbIDFromTMDBDetails(ctx context.Context, mediaType string, tmdbID int64) (string, error) {
+	var details *models.Title
+	var err error
+	switch mediaType {
+	case "movie":
+		details, err = s.tmdb.movieDetails(ctx, tmdbID)
+	case "tv", "series":
+		details, err = s.tmdb.seriesDetails(ctx, tmdbID)
+	default:
+		return s.tmdb.fetchExternalID(ctx, mediaType, tmdbID)
+	}
+	if err == nil && details != nil {
+		return strings.TrimSpace(details.IMDBID), nil
+	}
+	if ctx.Err() != nil || isTMDBNotFound(err) {
+		return "", err
+	}
+	return s.tmdb.fetchExternalID(ctx, mediaType, tmdbID)
 }
 
 // backfillSeriesIMDBID fills the series IMDb ID from the strongest available
@@ -2031,6 +2074,11 @@ func (s *Service) getRecentMovies() ([]models.TrendingItem, error) {
 		if movie.IMDBID != "" {
 			items[i].Title.IMDBID = movie.IMDBID
 		}
+		// The public feed's "id" is the TMDB ID; carrying it spares the release,
+		// runtime and artwork enrichers a /find lookup per title.
+		if movie.ID > 0 {
+			items[i].Title.TMDBID = int64(movie.ID)
+		}
 	}
 
 	// Enrich with TVDB data concurrently (10 parallel workers)
@@ -2076,6 +2124,7 @@ func (s *Service) getRecentMoviesLite(ctx context.Context) ([]models.TrendingIte
 			ReleaseYear: movie.ReleaseYear,
 		}
 	}
+	normalizePublicMDBListItems(items)
 	return s.enrichLiteMDBListItems(ctx, items, "trending-movie"), nil
 }
 
@@ -2120,11 +2169,13 @@ func (s *Service) enrichMovieTVDB(title *models.Title, movie mdblistMovie) {
 			found = true
 		}
 	} else {
-		remoteID := fmt.Sprintf("%d", movie.ID)
+		// The feed's "id" is a TMDB ID, which TVDB's remote_id search does not
+		// match reliably; the IMDb ID resolves through /search/remoteid.
+		remoteID := strings.TrimSpace(movie.IMDBID)
 		if searchResults, err := s.searchTVDBMovie(movie.Title, movie.ReleaseYear, remoteID); err == nil && len(searchResults) > 0 {
 			searchResult = &searchResults[0]
 			found = true
-		} else {
+		} else if remoteID != "" {
 			if searchResults, err := s.searchTVDBMovie(movie.Title, movie.ReleaseYear, ""); err == nil && len(searchResults) > 0 {
 				searchResult = &searchResults[0]
 				found = true
@@ -2216,18 +2267,15 @@ func (s *Service) enrichMovieTVDB(title *models.Title, movie mdblistMovie) {
 	}
 }
 
-// getTVDBMovieDetails fetches additional details for a movie from TVDB
+// getTVDBMovieDetails returns a movie's base fields from the cached extended
+// record, which carries everything the base /movies/{id} record does; callers
+// read artwork and translations from that same record.
 func (s *Service) getTVDBMovieDetails(tvdbID int64) (tvdbMovie, error) {
-	var resp struct {
-		Data tvdbMovie `json:"data"`
-	}
-
-	endpoint := fmt.Sprintf("https://api4.thetvdb.com/v4/movies/%d", tvdbID)
-	if err := s.client.doGET(endpoint, nil, &resp); err != nil {
+	ext, err := s.cachedMovieExtended(tvdbID, nil)
+	if err != nil {
 		return tvdbMovie{}, err
 	}
-
-	return resp.Data, nil
+	return tvdbMovie{ID: ext.ID, Name: ext.Name, Overview: ext.Overview, Year: ext.Year, Score: ext.Score}, nil
 }
 
 // getMovieDetailsFromTMDB fetches movie details directly from TMDB when TVDB lookup fails
@@ -2404,20 +2452,116 @@ func (s *Service) hydrateTMDBRatings(ctx context.Context, title *models.Title, f
 	title.Ratings = ratings
 }
 
-// searchTVDBMovie searches for a movie in TVDB by title, year, or remote ID
+// tvdbEmptySearchTTL bounds how long a TVDB search that matched nothing is
+// remembered before it is retried.
+const tvdbEmptySearchTTL = 24 * time.Hour
+
+// tvdbRemoteIDBaseRecord is the subset of a TVDB movie/series base record
+// returned by /search/remoteid that title searches would otherwise supply.
+type tvdbRemoteIDBaseRecord struct {
+	ID               int64  `json:"id"`
+	Name             string `json:"name"`
+	Image            string `json:"image"`
+	Year             string `json:"year"`
+	Overview         string `json:"overview"`
+	OriginalLanguage string `json:"originalLanguage"`
+	Status           struct {
+		Name string `json:"name"`
+	} `json:"status"`
+}
+
+type tvdbRemoteIDResult struct {
+	Series *tvdbRemoteIDBaseRecord `json:"series,omitempty"`
+	Movie  *tvdbRemoteIDBaseRecord `json:"movie,omitempty"`
+}
+
+var imdbIDPattern = regexp.MustCompile(`^tt\d+$`)
+
+// searchTVDBByIMDBID resolves an IMDb ID through TVDB's /search/remoteid and
+// returns the record of the requested type ("movie" or "series") in search
+// result form. Lookups are cached per IMDb ID for both types, and misses for
+// tvdbEmptySearchTTL. ok=false means the caller should fall back to a title
+// search (unknown ID, no record of that type, or a request error).
+func (s *Service) searchTVDBByIMDBID(imdbID, recordType string) ([]tvdbSearchResult, bool) {
+	imdbID = strings.ToLower(strings.TrimSpace(imdbID))
+	if !imdbIDPattern.MatchString(imdbID) || s.client == nil || !s.client.isConfigured() {
+		return nil, false
+	}
+	cacheID := cacheKey("tvdb", "remoteid", "v1", imdbID)
+	emptyCacheID := cacheKey("tvdb", "remoteid", "empty", "v1", imdbID)
+	var records []tvdbRemoteIDResult
+	if ok, _ := s.cache.get(cacheID, &records); !ok {
+		var empty bool
+		if ok, _ := s.cache.getWithMaxAge(emptyCacheID, &empty, tvdbEmptySearchTTL); ok && empty {
+			return nil, false
+		}
+		var resp struct {
+			Data []tvdbRemoteIDResult `json:"data"`
+		}
+		err := s.client.doGET("https://api4.thetvdb.com/v4/search/remoteid/"+url.PathEscape(imdbID), nil, &resp)
+		if err != nil && !strings.Contains(err.Error(), "failed: 404") {
+			log.Printf("[tvdb] remote id lookup failed imdbId=%s: %v", imdbID, err)
+			return nil, false
+		}
+		records = resp.Data
+		if len(records) == 0 {
+			_ = s.cache.set(emptyCacheID, true)
+			return nil, false
+		}
+		_ = s.cache.set(cacheID, records)
+	}
+	for _, record := range records {
+		base := record.Movie
+		if recordType == "series" {
+			base = record.Series
+		}
+		if base == nil || base.ID <= 0 {
+			continue
+		}
+		result := tvdbSearchResult{
+			ObjectID:        fmt.Sprintf("%s-%d", recordType, base.ID),
+			Name:            base.Name,
+			Overview:        base.Overview,
+			Year:            base.Year,
+			TVDBID:          strconv.FormatInt(base.ID, 10),
+			ImageURL:        base.Image,
+			Status:          base.Status.Name,
+			PrimaryLanguage: base.OriginalLanguage,
+		}
+		// The record was matched by this ID; title matchers accept it by IMDb.
+		result.RemoteIDs = append(result.RemoteIDs, struct {
+			ID         string `json:"id"`
+			Type       int    `json:"type"`
+			SourceName string `json:"sourceName"`
+		}{ID: imdbID, Type: 2, SourceName: "IMDB"})
+		return []tvdbSearchResult{result}, true
+	}
+	return nil, false
+}
+
+// searchTVDBMovie searches for a movie in TVDB by title, year, or remote ID.
+// An IMDb remote ID is resolved through /search/remoteid first.
 func (s *Service) searchTVDBMovie(title string, year int, remoteID string) ([]tvdbSearchResult, error) {
+	if results, ok := s.searchTVDBByIMDBID(remoteID, "movie"); ok {
+		return results, nil
+	}
 	// Create cache key from search parameters
 	yearStr := ""
 	if year > 0 {
 		yearStr = fmt.Sprintf("%d", year)
 	}
 	cacheID := cacheKey("tvdb", "search", "movie", title, yearStr, remoteID)
+	emptyCacheID := cacheKey("tvdb", "search", "movie", "empty", title, yearStr, remoteID)
 
 	// Check cache first
 	var cached []tvdbSearchResult
 	if ok, _ := s.cache.get(cacheID, &cached); ok {
 		metadataTracef("[tvdb] movie search cache hit query=%q year=%d remoteId=%q", title, year, remoteID)
 		return cached, nil
+	}
+	var empty bool
+	if ok, _ := s.cache.getWithMaxAge(emptyCacheID, &empty, tvdbEmptySearchTTL); ok && empty {
+		return nil, nil
 	}
 
 	var resp struct {
@@ -2447,9 +2591,11 @@ func (s *Service) searchTVDBMovie(title string, year int, remoteID string) ([]tv
 		return nil, err
 	}
 
-	// Cache the result
+	// Cache the result; misses are remembered for a shorter window.
 	if len(resp.Data) > 0 {
 		_ = s.cache.set(cacheID, resp.Data)
+	} else {
+		_ = s.cache.set(emptyCacheID, true)
 	}
 
 	return resp.Data, nil
@@ -2469,20 +2615,29 @@ func (s *Service) getTVDBSeriesDetails(tvdbID int64) (tvdbSeries, error) {
 	return resp.Data, nil
 }
 
-// searchTVDBSeries searches for a series in TVDB by title, year, or remote ID
+// searchTVDBSeries searches for a series in TVDB by title, year, or remote ID.
+// An IMDb remote ID is resolved through /search/remoteid first.
 func (s *Service) searchTVDBSeries(title string, year int, remoteID string) ([]tvdbSearchResult, error) {
+	if results, ok := s.searchTVDBByIMDBID(remoteID, "series"); ok {
+		return results, nil
+	}
 	// Create cache key from search parameters
 	yearStr := ""
 	if year > 0 {
 		yearStr = fmt.Sprintf("%d", year)
 	}
 	cacheID := cacheKey("tvdb", "search", "series", title, yearStr, remoteID)
+	emptyCacheID := cacheKey("tvdb", "search", "series", "empty", title, yearStr, remoteID)
 
 	// Check cache first
 	var cached []tvdbSearchResult
 	if ok, _ := s.cache.get(cacheID, &cached); ok {
 		metadataTracef("[tvdb] series search cache hit query=%q year=%d remoteId=%q", title, year, remoteID)
 		return cached, nil
+	}
+	var empty bool
+	if ok, _ := s.cache.getWithMaxAge(emptyCacheID, &empty, tvdbEmptySearchTTL); ok && empty {
+		return nil, nil
 	}
 
 	var resp struct {
@@ -2512,9 +2667,11 @@ func (s *Service) searchTVDBSeries(title string, year int, remoteID string) ([]t
 		return nil, err
 	}
 
-	// Cache the result
+	// Cache the result; misses are remembered for a shorter window.
 	if len(resp.Data) > 0 {
 		_ = s.cache.set(cacheID, resp.Data)
+	} else {
+		_ = s.cache.set(emptyCacheID, true)
 	}
 
 	return resp.Data, nil
@@ -2618,6 +2775,10 @@ func (s *Service) getTrendingSeries() ([]models.TrendingItem, error) {
 		if tvShow.IMDBID != "" {
 			items[i].Title.IMDBID = tvShow.IMDBID
 		}
+		// The public feed's "id" is the TMDB ID (see getRecentMovies).
+		if tvShow.ID > 0 {
+			items[i].Title.TMDBID = int64(tvShow.ID)
+		}
 	}
 
 	// Enrich with TVDB data concurrently (10 parallel workers)
@@ -2663,6 +2824,7 @@ func (s *Service) getTrendingSeriesLite(ctx context.Context) ([]models.TrendingI
 			ReleaseYear: tvShow.ReleaseYear,
 		}
 	}
+	normalizePublicMDBListItems(items)
 	return s.enrichLiteMDBListItems(ctx, items, "trending-series"), nil
 }
 
@@ -3996,7 +4158,11 @@ func (s *Service) resolveTMDBSeriesID(ctx context.Context, req models.SeriesDeta
 		}
 	}
 	if imdbID := strings.TrimSpace(req.IMDBID); imdbID != "" {
-		if id, err := s.tmdb.findTVByIMDBID(ctx, imdbID); err == nil && id > 0 {
+		if s.idCache != nil {
+			if id := s.getTMDBIDForIMDBTV(ctx, imdbID); id > 0 {
+				return id
+			}
+		} else if id, err := s.tmdb.findTVByIMDBID(ctx, imdbID); err == nil && id > 0 {
 			return id
 		}
 	}
@@ -4069,7 +4235,11 @@ func (s *Service) enrichTitleFromTMDB(ctx context.Context, title *models.Title) 
 			tmdbID, _ = s.tmdb.findByTVDBID(ctx, title.TVDBID, "movie")
 		}
 		if tmdbID <= 0 && strings.TrimSpace(title.IMDBID) != "" {
-			tmdbID, _ = s.tmdb.findMovieByIMDBID(ctx, title.IMDBID)
+			if s.idCache != nil {
+				tmdbID = s.getTMDBIDForIMDB(ctx, strings.TrimSpace(title.IMDBID))
+			} else {
+				tmdbID, _ = s.tmdb.findMovieByIMDBID(ctx, title.IMDBID)
+			}
 		}
 		if tmdbID <= 0 {
 			tmdbID = s.resolveTMDBMovieByTitleYear(ctx, title.Name, title.Year)
@@ -6239,7 +6409,7 @@ func (s *Service) attachCachedMovieRatings(title *models.Title, fields []string,
 		return
 	}
 
-	ratings := s.GetMDBListAllRatingsCached(imdbID, "movie")
+	ratings := s.mdblistFullRatingsCached(imdbID, "movie")
 	if len(ratings) == 0 {
 		return
 	}
@@ -6306,7 +6476,13 @@ func (s *Service) BatchMovieReleases(ctx context.Context, queries []models.Batch
 		// Check the same cache written by enrichMovieReleases.
 		cacheID := cacheKey("tmdb", "movie", "releases", "v2", strconv.FormatInt(tmdbID, 10))
 		var cached cachedReleasesWithCert
-		if ok, _ := s.cache.get(cacheID, &cached); ok && len(cached.Releases) > 0 {
+		if ok, _ := s.cache.get(cacheID, &cached); ok && len(cached.Releases) == 0 {
+			// Negative cache hit: TMDB has no release data for this movie.
+			// Report it as enrichMovieReleases would without queueing a fetch.
+			results[i].Status = models.MovieReleaseStatusUnknown
+			results[i].Error = "failed to fetch release data"
+			continue
+		} else if ok {
 			// Build a temporary title to use ensureMovieReleasePointers
 			tempTitle := &models.Title{
 				MediaType:     "movie",
@@ -7771,7 +7947,7 @@ func (s *Service) enrichMovieReleases(ctx context.Context, title *models.Title, 
 		return true
 	}
 
-	result, err := s.tmdb.movieReleaseDatesWithCert(ctx, tmdbID)
+	result, err := s.fetchMovieReleasesWithCert(ctx, tmdbID)
 	if err != nil || len(result.Releases) == 0 {
 		if err != nil {
 			log.Printf("[metadata] WARN: tmdb release dates fetch failed tmdbId=%d err=%v", tmdbID, err)
@@ -7796,6 +7972,25 @@ func (s *Service) enrichMovieReleases(ctx context.Context, title *models.Title, 
 	return true
 }
 
+// fetchMovieReleasesWithCert reads release dates through the cached, deduped
+// movie details request, which appends release_dates and stores them under the
+// releases cache key. Only a details cache hit (which does not refresh the
+// releases entry) falls back to the standalone release_dates endpoint.
+func (s *Service) fetchMovieReleasesWithCert(ctx context.Context, tmdbID int64) (*movieReleaseDatesResult, error) {
+	if s.tmdb.cache != nil {
+		cacheID := cacheKey("tmdb", "movie", "releases", "v2", strconv.FormatInt(tmdbID, 10))
+		if _, err := s.tmdb.movieDetails(ctx, tmdbID); err == nil {
+			var cached cachedReleasesWithCert
+			if ok, _ := s.tmdb.cache.get(cacheID, &cached); ok {
+				return &movieReleaseDatesResult{Releases: cached.Releases, Certification: cached.Certification}, nil
+			}
+		} else if ctx.Err() != nil || isTMDBNotFound(err) {
+			return nil, err
+		}
+	}
+	return s.tmdb.movieReleaseDatesWithCert(ctx, tmdbID)
+}
+
 // enrichTVContentRating fetches and sets the TV content rating for a series
 func (s *Service) enrichTVContentRating(ctx context.Context, title *models.Title, tmdbID int64) bool {
 	if title == nil || tmdbID <= 0 || s.tmdb == nil || !s.tmdb.isConfigured() {
@@ -7812,8 +8007,11 @@ func (s *Service) enrichTVContentRating(ctx context.Context, title *models.Title
 		return cached != ""
 	}
 
-	rating, err := s.tmdb.fetchTVContentRating(ctx, tmdbID)
-	if err != nil {
+	// The cached series details request appends content_ratings.
+	var rating string
+	if details, err := s.tmdb.seriesDetails(ctx, tmdbID); err == nil && details != nil {
+		rating = details.Certification
+	} else {
 		log.Printf("[metadata] WARN: tmdb tv content rating fetch failed tmdbId=%d err=%v", tmdbID, err)
 		return false
 	}
@@ -8806,10 +9004,21 @@ func (s *Service) singleflightCachedFetch(ctx context.Context, key string, fetch
 	return value, err
 }
 
-// cachedMovieExtended fetches TVDB movie extended data with file caching.
+// TVDB v4 accepts meta=translations on movie and series extended records and
+// meta=episodes on series; artworks, seasons and trailers are always included.
+// Callers' meta lists therefore collapse to one record per entity (requested
+// with translations, so language lookups need no separate call) plus a series
+// variant with episodes.
+const (
+	tvdbExtendedMetaTranslations = "translations"
+	tvdbExtendedMetaEpisodes     = "episodes"
+)
+
+// cachedMovieExtended fetches TVDB movie extended data with file caching. The
+// meta argument is accepted for call-site clarity; every movie variant is the
+// same record.
 func (s *Service) cachedMovieExtended(tvdbID int64, meta []string) (tvdbMovieExtendedData, error) {
-	metaKey := strings.Join(meta, ",")
-	cacheID := cacheKey("tvdb", "movie", "extended", "v1", fmt.Sprintf("%d", tvdbID), metaKey)
+	cacheID := movieExtendedCacheID(tvdbID)
 	var cached tvdbMovieExtendedData
 	if ok, _ := s.cache.get(cacheID, &cached); ok {
 		return cached, nil
@@ -8819,7 +9028,7 @@ func (s *Service) cachedMovieExtended(tvdbID int64, meta []string) (tvdbMovieExt
 		if ok, _ := s.cache.get(cacheID, &cached); ok {
 			return cached, nil
 		}
-		result, err := s.client.movieExtended(tvdbID, meta)
+		result, err := s.client.movieExtended(tvdbID, []string{tvdbExtendedMetaTranslations})
 		if err != nil {
 			return tvdbMovieExtendedData{}, err
 		}
@@ -8834,9 +9043,35 @@ func (s *Service) cachedMovieExtended(tvdbID int64, meta []string) (tvdbMovieExt
 }
 
 // cachedSeriesExtended fetches TVDB series extended data with file caching.
+// Requests naming episodes share the episodes variant; all others share the
+// translations variant, falling back to a cached episodes variant (a superset
+// apart from translations) before fetching.
 func (s *Service) cachedSeriesExtended(tvdbID int64, meta []string) (tvdbSeriesExtendedData, error) {
-	metaKey := strings.Join(meta, ",")
-	cacheID := cacheKey("tvdb", "series", "extended", "v1", fmt.Sprintf("%d", tvdbID), metaKey)
+	for _, m := range meta {
+		if strings.EqualFold(strings.TrimSpace(m), tvdbExtendedMetaEpisodes) {
+			return s.cachedSeriesExtendedVariant(tvdbID, tvdbExtendedMetaEpisodes)
+		}
+	}
+	var cached tvdbSeriesExtendedData
+	if ok, _ := s.cache.get(seriesExtendedCacheID(tvdbID, tvdbExtendedMetaTranslations), &cached); ok {
+		return cached, nil
+	}
+	if ok, _ := s.cache.get(seriesExtendedCacheID(tvdbID, tvdbExtendedMetaEpisodes), &cached); ok {
+		return cached, nil
+	}
+	return s.cachedSeriesExtendedVariant(tvdbID, tvdbExtendedMetaTranslations)
+}
+
+func movieExtendedCacheID(tvdbID int64) string {
+	return cacheKey("tvdb", "movie", "extended", "v2", fmt.Sprintf("%d", tvdbID), tvdbExtendedMetaTranslations)
+}
+
+func seriesExtendedCacheID(tvdbID int64, variant string) string {
+	return cacheKey("tvdb", "series", "extended", "v2", fmt.Sprintf("%d", tvdbID), variant)
+}
+
+func (s *Service) cachedSeriesExtendedVariant(tvdbID int64, variant string) (tvdbSeriesExtendedData, error) {
+	cacheID := seriesExtendedCacheID(tvdbID, variant)
 	var cached tvdbSeriesExtendedData
 	if ok, _ := s.cache.get(cacheID, &cached); ok {
 		return cached, nil
@@ -8846,7 +9081,7 @@ func (s *Service) cachedSeriesExtended(tvdbID int64, meta []string) (tvdbSeriesE
 		if ok, _ := s.cache.get(cacheID, &cached); ok {
 			return cached, nil
 		}
-		result, err := s.client.seriesExtended(tvdbID, meta)
+		result, err := s.client.seriesExtended(tvdbID, []string{variant})
 		if err != nil {
 			return tvdbSeriesExtendedData{}, err
 		}
@@ -8926,6 +9161,47 @@ func (s *Service) cachedFetchImages(ctx context.Context, mediaType string, tmdbI
 	return result, nil
 }
 
+// shelfImagesCacheKey stores the shelf (no image analysis) variant of
+// cachedFetchImages. Readers prefer the analyzed entry whenever it exists.
+func shelfImagesCacheKey(language, mediaType string, tmdbID int64) string {
+	return cacheKey("tmdb", "images-shelf", "v1", language, mediaType, fmt.Sprintf("%d", tmdbID))
+}
+
+// cachedShelfImages serves shelf artwork. An analyzed entry written by a
+// details page or the hero wins; otherwise the shelf variant is fetched, which
+// needs the images request only (no backdrop or logo downloads).
+func (s *Service) cachedShelfImages(ctx context.Context, mediaType string, tmdbID int64) (*tmdbImagesResult, error) {
+	if s.tmdb == nil || !s.tmdb.isConfigured() {
+		return nil, errors.New("tmdb api key not configured")
+	}
+	if cached, ok := s.cachedTMDBImagesOnly(mediaType, tmdbID); ok {
+		return cached, nil
+	}
+	if shelfArtworkDeferred(ctx) {
+		return nil, nil
+	}
+	key := shelfImagesCacheKey(s.client.language, mediaType, tmdbID)
+	value, err := s.singleflightCachedFetch(ctx, key, func() (any, error) {
+		var cached tmdbImagesResult
+		if ok, _ := s.cache.get(key, &cached); ok {
+			return &cached, nil
+		}
+		result, err := s.tmdb.fetchShelfImages(ctx, mediaType, tmdbID)
+		if err != nil {
+			return nil, err
+		}
+		if result != nil {
+			_ = s.cache.set(key, result)
+		}
+		return result, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	result, _ := value.(*tmdbImagesResult)
+	return result, nil
+}
+
 func (s *Service) cachedTMDBImagesOnly(mediaType string, tmdbID int64) (*tmdbImagesResult, bool) {
 	if s == nil || s.cache == nil || tmdbID <= 0 {
 		return nil, false
@@ -8937,6 +9213,9 @@ func (s *Service) cachedTMDBImagesOnly(mediaType string, tmdbID int64) (*tmdbIma
 	key := cacheKey("tmdb", "images", "v10", language, mediaType, fmt.Sprintf("%d", tmdbID))
 	var cached tmdbImagesResult
 	if ok, _ := s.cache.get(key, &cached); ok {
+		return &cached, true
+	}
+	if ok, _ := s.cache.get(shelfImagesCacheKey(language, mediaType, tmdbID), &cached); ok {
 		return &cached, true
 	}
 	return nil, false
@@ -9029,7 +9308,15 @@ func (s *Service) enrichShelfArtworkFromCache(items []models.TrendingItem) bool 
 	return updated
 }
 
+// enrichShelfArtwork applies shelf-variant TMDB artwork (vote-ranked, no
+// image analysis) to the first limit items.
 func (s *Service) enrichShelfArtwork(ctx context.Context, items []models.TrendingItem, limit int) {
+	s.enrichShelfArtworkWithAnalysis(ctx, items, limit, false)
+}
+
+// enrichShelfArtworkWithAnalysis uses the analyzed artwork (visually diverse
+// backdrops, logo brightness) when analyze is set, as the hero chart does.
+func (s *Service) enrichShelfArtworkWithAnalysis(ctx context.Context, items []models.TrendingItem, limit int, analyze bool) {
 	if shelfArtworkDeferred(ctx) {
 		s.enrichShelfArtworkFromCache(items)
 		return
@@ -9067,7 +9354,16 @@ func (s *Service) enrichShelfArtwork(ctx context.Context, items []models.Trendin
 			if tmdbID <= 0 {
 				return
 			}
-			s.applyCachedTMDBImages(ctx, title, mediaType, tmdbID)
+			if analyze {
+				s.applyCachedTMDBImages(ctx, title, mediaType, tmdbID)
+				return
+			}
+			images, err := s.cachedShelfImages(ctx, mediaType, tmdbID)
+			if err != nil {
+				log.Printf("[metadata] failed to fetch shelf images for %s tmdbId=%d: %v", mediaType, tmdbID, err)
+				return
+			}
+			applyTMDBImagesToTitle(title, images)
 		}(i)
 	}
 	wg.Wait()
@@ -9202,37 +9498,38 @@ func comparableArtworkURL(imageURL string) string {
 	return withoutQuery
 }
 
-// cachedMovieTranslations fetches TVDB movie translations with file caching.
+var errTVDBTranslationNotFound = errors.New("tvdb translation not found")
+
+// cachedMovieTranslations returns the movie's translation for lang from the
+// cached extended record (requested with meta=translations). The standalone
+// translation endpoint is used only when the record advertises the language
+// without embedding translation records.
 func (s *Service) cachedMovieTranslations(tvdbID int64, lang string) (*tvdbSeriesTranslation, error) {
-	cacheID := cacheKey("tvdb", "movie", "translations", "v1", fmt.Sprintf("%d", tvdbID), lang)
-	var cached tvdbSeriesTranslation
-	if ok, _ := s.cache.get(cacheID, &cached); ok {
-		return &cached, nil
-	}
-	value, err := s.singleflightCachedFetch(context.Background(), cacheID, func() (any, error) {
-		var cached tvdbSeriesTranslation
-		if ok, _ := s.cache.get(cacheID, &cached); ok {
-			return &cached, nil
-		}
-		result, err := s.client.movieTranslations(tvdbID, lang)
-		if err != nil {
-			return nil, err
-		}
-		if result != nil {
-			_ = s.cache.set(cacheID, *result)
-		}
-		return result, nil
-	})
+	ext, err := s.cachedMovieExtended(tvdbID, []string{tvdbExtendedMetaTranslations})
 	if err != nil {
 		return nil, err
 	}
-	result, _ := value.(*tvdbSeriesTranslation)
-	return result, nil
+	return s.resolveTVDBTranslation(ext.tvdbExtendedTranslations, "movie", tvdbID, lang, s.client.movieTranslations)
 }
 
-// cachedSeriesTranslations fetches TVDB series translations with file caching.
+// cachedSeriesTranslations is cachedMovieTranslations for series.
 func (s *Service) cachedSeriesTranslations(tvdbID int64, lang string) (*tvdbSeriesTranslation, error) {
-	cacheID := cacheKey("tvdb", "series", "translations", "v1", fmt.Sprintf("%d", tvdbID), lang)
+	ext, err := s.cachedSeriesExtendedVariant(tvdbID, tvdbExtendedMetaTranslations)
+	if err != nil {
+		return nil, err
+	}
+	return s.resolveTVDBTranslation(ext.tvdbExtendedTranslations, "series", tvdbID, lang, s.client.seriesTranslations)
+}
+
+func (s *Service) resolveTVDBTranslation(ext tvdbExtendedTranslations, kind string, tvdbID int64, lang string, fetch func(int64, string) (*tvdbSeriesTranslation, error)) (*tvdbSeriesTranslation, error) {
+	translation, embedded, ok := ext.translation(lang)
+	if ok {
+		return &translation, nil
+	}
+	if embedded || !ext.listsLanguage(lang) {
+		return nil, errTVDBTranslationNotFound
+	}
+	cacheID := cacheKey("tvdb", kind, "translations", "v1", fmt.Sprintf("%d", tvdbID), lang)
 	var cached tvdbSeriesTranslation
 	if ok, _ := s.cache.get(cacheID, &cached); ok {
 		return &cached, nil
@@ -9242,7 +9539,7 @@ func (s *Service) cachedSeriesTranslations(tvdbID int64, lang string) (*tvdbSeri
 		if ok, _ := s.cache.get(cacheID, &cached); ok {
 			return &cached, nil
 		}
-		result, err := s.client.seriesTranslations(tvdbID, lang)
+		result, err := fetch(tvdbID, lang)
 		if err != nil {
 			return nil, err
 		}
@@ -9376,7 +9673,25 @@ func buildLiteCustomListItem(item mdblistItem) models.TrendingItem {
 			title.ID = fmt.Sprintf("tvdb:movie:%d", *item.TVDBID)
 		}
 	}
+	applyCustomListSourceMetadata(&title, item)
 	return models.TrendingItem{Rank: item.Rank, Title: title}
+}
+
+// applyCustomListSourceMetadata copies base metadata supplied by the list
+// source (MDBList list API) so rows render before provider enrichment.
+func applyCustomListSourceMetadata(title *models.Title, item mdblistItem) {
+	if item.PosterURL != "" && title.Poster == nil {
+		title.Poster = &models.Image{URL: item.PosterURL, Type: "poster"}
+	}
+	if item.Overview != "" && title.Overview == "" {
+		title.Overview = item.Overview
+	}
+	if len(item.Genres) > 0 && len(title.Genres) == 0 {
+		title.Genres = append([]string(nil), item.Genres...)
+	}
+	if item.Runtime > 0 && title.RuntimeMinutes == 0 {
+		title.RuntimeMinutes = item.Runtime
+	}
 }
 
 func customListItemTitleID(item mdblistItem, mediaType string) string {
@@ -9753,9 +10068,11 @@ func (s *Service) enrichCustomListItem(ctx context.Context, item mdblistItem, li
 	if item.TVDBID != nil && *item.TVDBID > 0 {
 		title.TVDBID = *item.TVDBID
 	}
+	applyCustomListSourceMetadata(&title, item)
 
 	var found bool
 	gotTranslatedOverview := false
+	tmdbTried := false
 
 	// Try TVDB ID from MDBList first
 	if item.TVDBID != nil && *item.TVDBID > 0 {
@@ -9834,6 +10151,13 @@ func (s *Service) enrichCustomListItem(ctx context.Context, item mdblistItem, li
 				}
 			}
 		}
+	}
+
+	// Items carrying a TMDB or IMDb ID resolve through TMDB directly; the TVDB
+	// title searches below are reserved for items with neither ID.
+	if !found && (title.TMDBID > 0 || strings.TrimSpace(title.IMDBID) != "") && s.tmdb != nil && s.tmdb.isConfigured() {
+		tmdbTried = true
+		found = s.enrichTitleFromTMDB(ctx, &title)
 	}
 
 	// Fallback: search TVDB by title/year if no TVDB ID or direct lookup failed
@@ -9968,7 +10292,7 @@ func (s *Service) enrichCustomListItem(ctx context.Context, item mdblistItem, li
 	}
 
 	if !found {
-		if s.enrichTitleFromTMDB(ctx, &title) {
+		if !tmdbTried && s.enrichTitleFromTMDB(ctx, &title) {
 			found = true
 		} else {
 			log.Printf("[metadata] no metadata match for custom list item title=%q year=%d type=%s imdbId=%q", item.Title, item.ReleaseYear, mediaType, item.IMDBID)
@@ -10466,7 +10790,11 @@ func (s *Service) GetCustomList(ctx context.Context, listURL string, opts Custom
 		wg.Add(1)
 		go func(idx int, it mdblistItem) {
 			defer wg.Done()
-			sem <- struct{}{}
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
 			defer func() { <-sem }()
 			if opts.DeferEnrichment {
 				results[idx] = buildLiteCustomListItem(it)
@@ -10481,6 +10809,10 @@ func (s *Service) GetCustomList(ctx context.Context, listURL string, opts Custom
 		}(i, item)
 	}
 	wg.Wait()
+	// A cancelled request leaves unenriched slots; never cache or return them.
+	if err := ctx.Err(); err != nil {
+		return nil, 0, 0, err
+	}
 	s.enrichShelfArtworkForLoad(ctx, results, customListArtworkLimit(opts), opts.DeferArtwork)
 
 	// Only cache full-list results when no filtering was applied
@@ -10507,6 +10839,13 @@ type CuratedItem struct {
 	BackdropURL string   `json:"backdropUrl,omitempty"`
 	Overview    string   `json:"overview,omitempty"`
 	Genres      []string `json:"genres,omitempty"`
+	// RuntimeMinutes is optional catalog metadata (e.g. the MDBList list API).
+	RuntimeMinutes int `json:"runtimeMinutes,omitempty"`
+	// CatalogMetadata marks catalogs (Stremio add-ons) whose own artwork,
+	// name, description and genres are kept over provider enrichment.
+	CatalogMetadata bool `json:"catalogMetadata,omitempty"`
+	// IMDBRating is a catalog-supplied IMDb rating (0-10).
+	IMDBRating float64 `json:"imdbRating,omitempty"`
 }
 
 const tmdbMovieTitleYearFailureTTL = 10 * time.Minute
@@ -10564,6 +10903,10 @@ func (s *Service) GetCuratedList(ctx context.Context, items []CuratedItem, label
 
 // GetCuratedListWithOptions lets imported lists render base/cached artwork
 // without waiting for optional image requests across the whole list.
+//
+// Enrichment runs detached from ctx (bounded by curatedEnrichmentTimeout and
+// shared by concurrent requests for the same page), so a client that gives up
+// still leaves the page and its titles cached for the next request.
 func (s *Service) GetCuratedListWithOptions(ctx context.Context, items []CuratedItem, label string, opts ShelfLoadOptions) ([]models.TrendingItem, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -10573,22 +10916,139 @@ func (s *Service) GetCuratedListWithOptions(ctx context.Context, items []Curated
 	}
 	rawCacheID := s.curatedListCacheID(items)
 	if cached, ok := s.cachedCuratedList(ctx, rawCacheID, label); ok {
-		return cached, nil
+		return applyCuratedCatalogMetadata(cached, items), nil
 	}
+	flightKey := rawCacheID
+	if opts.DeferArtwork {
+		flightKey += ":deferred-artwork"
+	}
+	results, err := s.detachedCuratedEnrichment(ctx, flightKey, func(workCtx context.Context) ([]models.TrendingItem, error) {
+		return s.enrichCuratedList(workCtx, items, label, rawCacheID)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return applyCuratedCatalogMetadata(results, items), nil
+}
 
+// curatedEnrichmentTimeout bounds a detached curated-list enrichment pass.
+const curatedEnrichmentTimeout = 4 * time.Minute
+
+// curatedEnrichments holds in-flight detached passes, keyed by cache
+// directory plus page identity so language-scoped services stay separate.
+var curatedEnrichments sync.Map
+
+// detachedCuratedEnrichment runs fetch once per key on a context that keeps
+// the caller's values but not its cancellation. Waiters receive private
+// copies and may leave early without stopping the pass.
+func (s *Service) detachedCuratedEnrichment(ctx context.Context, key string, fetch func(context.Context) ([]models.TrendingItem, error)) ([]models.TrendingItem, error) {
+	flightKey := s.cache.dir + ":" + key
+	call := &cachedFetchInflightResult{done: make(chan struct{})}
+	if actual, loaded := curatedEnrichments.LoadOrStore(flightKey, call); loaded {
+		call = actual.(*cachedFetchInflightResult)
+	} else {
+		go func() {
+			defer curatedEnrichments.Delete(flightKey)
+			defer close(call.done)
+			workCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), curatedEnrichmentTimeout)
+			defer cancel()
+			results, err := fetch(workCtx)
+			call.err = err
+			if err == nil {
+				call.value, call.err = json.Marshal(results)
+			}
+		}()
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-call.done:
+		if call.err != nil {
+			return nil, call.err
+		}
+		var results []models.TrendingItem
+		if err := json.Unmarshal(call.value.([]byte), &results); err != nil {
+			return nil, err
+		}
+		return results, nil
+	}
+}
+
+// completedTitleCacheKey keys one fully enriched curated-list title, so the
+// same title on other lists, other pages and interrupted passes is reused.
+func (s *Service) completedTitleCacheKey(item CuratedItem) string {
+	raw := curatedRaw(item, 0)
+	return cacheKey("curated-title", "v1", s.client.language, raw.MediaType, customListItemTitleID(raw, raw.MediaType))
+}
+
+// cachedCompletedTitle returns a completed title for item. Catalog-supplied
+// metadata is applied by the caller; cached titles hold provider data only.
+func (s *Service) cachedCompletedTitle(item CuratedItem) (models.Title, bool) {
+	var title models.Title
+	if ok, _ := s.cache.get(s.completedTitleCacheKey(item), &title); ok && title.Poster != nil {
+		return title, true
+	}
+	return models.Title{}, false
+}
+
+// storeCompletedTitle persists a completed title under the item's identity
+// and, when enrichment resolved more IDs, under those identities too.
+func (s *Service) storeCompletedTitle(item CuratedItem, title models.Title) {
+	if title.Poster == nil {
+		return
+	}
+	keys := map[string]struct{}{s.completedTitleCacheKey(item): {}}
+	if title.IMDBID != "" {
+		keys[s.completedTitleCacheKey(CuratedItem{IMDBID: title.IMDBID, MediaType: title.MediaType})] = struct{}{}
+	}
+	if title.TMDBID > 0 {
+		keys[s.completedTitleCacheKey(CuratedItem{TMDBID: title.TMDBID, MediaType: title.MediaType})] = struct{}{}
+	}
+	for key := range keys {
+		_ = s.cache.set(key, title)
+	}
+}
+
+func curatedIdentity(mediaType, imdbID string, tmdbID, tvdbID int64, title string, year int) string {
+	switch {
+	case imdbID != "":
+		return "imdb:" + imdbID
+	case tmdbID > 0:
+		return fmt.Sprintf("tmdb:%s:%d", mediaType, tmdbID)
+	case tvdbID > 0:
+		return fmt.Sprintf("tvdb:%s:%d", mediaType, tvdbID)
+	default:
+		return fmt.Sprintf("title:%s:%d", strings.ToLower(strings.TrimSpace(title)), year)
+	}
+}
+
+// enrichCuratedList is the uncached body of GetCuratedListWithOptions.
+func (s *Service) enrichCuratedList(ctx context.Context, items []CuratedItem, label, rawCacheID string) ([]models.TrendingItem, error) {
 	// Convert CuratedItems into mdblistItems for the shared enrichment pipeline.
 	// Items may arrive identified only by TMDB ID (e.g. Letterboxd RSS) or TVDB
 	// ID (e.g. Simkl); thread those IDs through and resolve a stable IMDB ID
 	// when one is missing so the enrichment pipeline and cache key behave the
-	// same as for IMDB-keyed MDBList lists.
+	// same as for IMDB-keyed MDBList lists. Titles completed earlier (on any
+	// list) skip both resolution and enrichment.
 	mdbItems := make([]mdblistItem, len(items))
 	identities := make([]string, len(items))
+	completed := make([]*models.Title, len(items))
 	var resolveWG sync.WaitGroup
 	resolveSlots := make(chan struct{}, 6)
 	for i, ci := range items {
 		resolveWG.Add(1)
 		go func(i int, ci CuratedItem) {
 			defer resolveWG.Done()
+			mediaType := curatedItemMediaType(ci.MediaType)
+			if title, ok := s.cachedCompletedTitle(ci); ok {
+				completed[i] = &title
+				imdbID := ci.IMDBID
+				if imdbID == "" {
+					imdbID = title.IMDBID
+				}
+				identities[i] = curatedIdentity(mediaType, imdbID, firstPositive(ci.TMDBID, title.TMDBID), ci.TVDBID, ci.Title, ci.Year)
+				return
+			}
 			select {
 			case resolveSlots <- struct{}{}:
 			case <-ctx.Done():
@@ -10596,7 +11056,6 @@ func (s *Service) GetCuratedListWithOptions(ctx context.Context, items []Curated
 			}
 			defer func() { <-resolveSlots }()
 
-			mediaType := curatedItemMediaType(ci.MediaType)
 			tmdbID := ci.TMDBID
 			if tmdbID <= 0 && ci.IMDBID == "" && ci.TVDBID <= 0 && mediaType == "movie" && strings.TrimSpace(ci.Title) != "" {
 				tmdbID = s.resolveTMDBMovieByTitleYear(ctx, ci.Title, ci.Year)
@@ -10628,16 +11087,7 @@ func (s *Service) GetCuratedListWithOptions(ctx context.Context, items []Curated
 
 			// Build a per-item identity for the cache key that never collapses to
 			// an empty string (which would collide across distinct TMDB-only lists).
-			switch {
-			case imdbID != "":
-				identities[i] = "imdb:" + imdbID
-			case tmdbID > 0:
-				identities[i] = fmt.Sprintf("tmdb:%s:%d", mediaType, tmdbID)
-			case ci.TVDBID > 0:
-				identities[i] = fmt.Sprintf("tvdb:%s:%d", mediaType, ci.TVDBID)
-			default:
-				identities[i] = fmt.Sprintf("title:%s:%d", strings.ToLower(strings.TrimSpace(ci.Title)), ci.Year)
-			}
+			identities[i] = curatedIdentity(mediaType, imdbID, tmdbID, ci.TVDBID, ci.Title, ci.Year)
 		}(i, ci)
 	}
 	resolveWG.Wait()
@@ -10667,6 +11117,14 @@ func (s *Service) GetCuratedListWithOptions(ctx context.Context, items []Curated
 	results := make([]models.TrendingItem, len(mdbItems))
 
 	for i, item := range mdbItems {
+		if completed[i] != nil {
+			title := *completed[i]
+			// Popularity encodes this list's rank, not the list it was cached from.
+			title.Popularity = float64(100 - i)
+			results[i] = models.TrendingItem{Rank: i, Title: title}
+			s.incrementProgress(progressID)
+			continue
+		}
 		wg.Add(1)
 		go func(idx int, it mdblistItem) {
 			defer wg.Done()
@@ -10677,6 +11135,11 @@ func (s *Service) GetCuratedListWithOptions(ctx context.Context, items []Curated
 			}
 			defer func() { <-sem }()
 			results[idx] = s.enrichCustomListItem(ctx, it, false)
+			if ctx.Err() == nil {
+				// Saved per title as it finishes, so an interrupted pass keeps
+				// the work done so far.
+				s.storeCompletedTitle(items[idx], results[idx].Title)
+			}
 			s.incrementProgress(progressID)
 		}(i, item)
 	}
@@ -10685,11 +11148,17 @@ func (s *Service) GetCuratedListWithOptions(ctx context.Context, items []Curated
 		return nil, err
 	}
 	s.enrichShelfArtwork(ctx, results, customListShelfArtworkLimit)
-	s.finalizeTrendingReleaseStatuses(results)
-
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	// Re-save fresh titles with the artwork pass applied.
+	for i := range results {
+		if completed[i] == nil {
+			s.storeCompletedTitle(items[i], results[i].Title)
+		}
+	}
+	s.finalizeTrendingReleaseStatuses(results)
+
 	// Cache results
 	if len(results) > 0 {
 		_ = s.cache.set(cacheID, results)
@@ -10700,6 +11169,58 @@ func (s *Service) GetCuratedListWithOptions(ctx context.Context, items []Curated
 	}
 
 	return results, nil
+}
+
+func firstPositive(values ...int64) int64 {
+	for _, v := range values {
+		if v > 0 {
+			return v
+		}
+	}
+	return 0
+}
+
+// applyCuratedCatalogMetadata overlays metadata a catalog (a Stremio add-on)
+// supplies for its own items: its artwork, name, description and genres win
+// over provider data, and its IMDb rating fills a missing IMDb rating.
+// results[i] corresponds to items[i]; cached lists hold provider data only,
+// so another catalog's artwork never leaks through shared caches.
+func applyCuratedCatalogMetadata(results []models.TrendingItem, items []CuratedItem) []models.TrendingItem {
+	if len(results) != len(items) {
+		return results
+	}
+	for i := range items {
+		if items[i].CatalogMetadata {
+			applyCatalogMetadataToTitle(&results[i].Title, items[i])
+		}
+	}
+	return results
+}
+
+func applyCatalogMetadataToTitle(title *models.Title, item CuratedItem) {
+	if name := strings.TrimSpace(item.Title); name != "" {
+		title.Name = name
+	}
+	if poster := strings.TrimSpace(item.PosterURL); poster != "" {
+		title.Poster = &models.Image{URL: poster, Type: "poster"}
+	}
+	if backdrop := strings.TrimSpace(item.BackdropURL); backdrop != "" {
+		title.Backdrop = &models.Image{URL: backdrop, Type: "backdrop"}
+	}
+	if overview := strings.TrimSpace(item.Overview); overview != "" {
+		title.Overview = overview
+	}
+	if len(item.Genres) > 0 {
+		title.Genres = append([]string(nil), item.Genres...)
+	}
+	if item.IMDBRating > 0 {
+		for _, rating := range title.Ratings {
+			if rating.Source == "imdb" {
+				return
+			}
+		}
+		title.Ratings = append(title.Ratings, models.Rating{Source: "imdb", Value: item.IMDBRating, Max: 10})
+	}
 }
 
 // ytdlpCookiesPath returns the path to the yt-dlp cookies file if it exists, or empty string.

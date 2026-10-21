@@ -422,6 +422,10 @@ func curatedItemFromStremioMeta(meta stremioMeta, fallbackType string) metadatap
 		PosterURL: meta.Poster, BackdropURL: meta.Background, Overview: meta.Description, Genres: meta.Genres,
 		Year:      stremioReleaseYear(meta.ReleaseInfo),
 		MediaType: mediaType,
+		// Add-on catalogs often ship curated artwork (e.g. rating posters);
+		// enrichment fills only what the catalog leaves out.
+		CatalogMetadata: true,
+		IMDBRating:      stremioIMDBRating(meta.IMDBRating),
 	}
 	id := strings.TrimSpace(meta.ID)
 	if strings.HasPrefix(strings.ToLower(id), "tt") {
@@ -446,4 +450,26 @@ func stremioReleaseYear(value string) int {
 		}
 	}
 	return 0
+}
+
+// stremioIMDBRating reads a catalog imdbRating, which add-ons send as a
+// string ("7.4") or a number. Values outside 0-10 are ignored.
+func stremioIMDBRating(value interface{}) float64 {
+	var rating float64
+	switch v := value.(type) {
+	case float64:
+		rating = v
+	case string:
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		if err != nil {
+			return 0
+		}
+		rating = parsed
+	default:
+		return 0
+	}
+	if rating <= 0 || rating > 10 {
+		return 0
+	}
+	return rating
 }

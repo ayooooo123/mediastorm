@@ -100,13 +100,11 @@ func TestSeriesDetailsLiteUsesTMDBWhenTVDBIsUnconfigured(t *testing.T) {
 		var body string
 		switch req.URL.Path {
 		case "/3/tv/82728":
-			body = `{"id":82728,"name":"Bluey","original_name":"Bluey","first_air_date":"2018-10-01","external_ids":{"imdb_id":"tt7678620","tvdb_id":353546},"alternative_titles":{"results":[{"title":"Bluey (2018)"}]},"seasons":[{"id":123,"name":"Season 1","season_number":1,"episode_count":1}]}`
+			body = `{"id":82728,"name":"Bluey","original_name":"Bluey","first_air_date":"2018-10-01","external_ids":{"imdb_id":"tt7678620","tvdb_id":353546},"alternative_titles":{"results":[{"title":"Bluey (2018)"}]},"content_ratings":{"results":[{"iso_3166_1":"US","rating":"TV-Y"}]},"seasons":[{"id":123,"name":"Season 1","season_number":1,"episode_count":1}]}`
 		case "/3/tv/82728/season/1":
 			body = `{"id":123,"name":"Season 1","season_number":1,"episodes":[{"id":456,"name":"Magic Xylophone","season_number":1,"episode_number":1,"air_date":"2018-10-01","runtime":7}]}`
 		case "/3/tv/82728/aggregate_credits":
 			body = `{"cast":[{"id":100,"name":"David McCormack","roles":[{"character":"Bandit Heeler","episode_count":1}],"order":0,"profile_path":"/bandit.jpg"}]}`
-		case "/3/tv/82728/content_ratings":
-			body = `{"results":[{"iso_3166_1":"US","rating":"TV-Y"}]}`
 		default:
 			t.Fatalf("unexpected TMDB request: %s", req.URL)
 		}
@@ -644,7 +642,7 @@ func TestEnrichLiteCustomListItemKeepsGenres(t *testing.T) {
 		cache:  newFileCache(t.TempDir(), 24),
 	}
 
-	movieCacheID := cacheKey("tvdb", "movie", "extended", "v1", "100", "artwork")
+	movieCacheID := movieExtendedCacheID(100)
 	if err := svc.cache.set(movieCacheID, tvdbMovieExtendedData{
 		Name:   "Cached Movie",
 		Genres: []tvdbGenre{{Name: "Drama"}, {Name: "Thriller"}},
@@ -668,7 +666,7 @@ func TestEnrichLiteCustomListItemKeepsGenres(t *testing.T) {
 		t.Fatalf("movie name = %q, want Cached Movie", movie.Title.Name)
 	}
 
-	seriesCacheID := cacheKey("tvdb", "series", "extended", "v1", "200", "artworks")
+	seriesCacheID := seriesExtendedCacheID(200, tvdbExtendedMetaTranslations)
 	if err := svc.cache.set(seriesCacheID, tvdbSeriesExtendedData{
 		Name:   "Cached Series",
 		Genres: []tvdbGenre{{Name: "Comedy"}, {Name: "Mystery"}},
@@ -706,9 +704,12 @@ func TestEnrichLiteCustomListItemAppliesConfiguredLanguageTranslations(t *testin
 	}
 
 	movieTVDBID := int64(300)
-	if err := svc.cache.set(cacheKey("tvdb", "movie", "extended", "v1", "300", "artwork"), tvdbMovieExtendedData{
+	if err := svc.cache.set(movieExtendedCacheID(300), tvdbMovieExtendedData{
 		Name:     "映画原題",
 		Overview: "日本語のあらすじ",
+		// The record lists the language without embedded translation
+		// records, so the per-language translation (cached below) is used.
+		tvdbExtendedTranslations: tvdbExtendedTranslations{NameLanguages: []string{"eng"}},
 	}); err != nil {
 		t.Fatalf("set movie extended cache: %v", err)
 	}
@@ -733,18 +734,15 @@ func TestEnrichLiteCustomListItemAppliesConfiguredLanguageTranslations(t *testin
 	}
 
 	seriesTVDBID := int64(400)
-	if err := svc.cache.set(cacheKey("tvdb", "series", "extended", "v1", "400", "artworks"), tvdbSeriesExtendedData{
+	if err := svc.cache.set(seriesExtendedCacheID(400, tvdbExtendedMetaTranslations), tvdbSeriesExtendedData{
 		Name:     "番組原題",
 		Overview: "日本語の番組あらすじ",
+		tvdbExtendedTranslations: tvdbExtendedTranslations{Translations: tvdbTranslationExtended{
+			NameTranslations:     []tvdbTranslationRecord{{Language: "eng", Name: "Localized Series"}},
+			OverviewTranslations: []tvdbTranslationRecord{{Language: "eng", Overview: "Localized series overview"}},
+		}},
 	}); err != nil {
 		t.Fatalf("set series extended cache: %v", err)
-	}
-	if err := svc.cache.set(cacheKey("tvdb", "series", "translations", "v1", "400", "eng"), tvdbSeriesTranslation{
-		Language: "eng",
-		Name:     "Localized Series",
-		Overview: "Localized series overview",
-	}); err != nil {
-		t.Fatalf("set series translation cache: %v", err)
 	}
 
 	series := svc.enrichLiteCustomListItem(context.Background(), mdblistItem{
@@ -767,7 +765,7 @@ func TestEnrichLiteCustomListItemUsesFirstAiredWithoutEpisodes(t *testing.T) {
 	}
 
 	seriesTVDBID := int64(201)
-	seriesCacheID := cacheKey("tvdb", "series", "extended", "v1", "201", "artworks")
+	seriesCacheID := seriesExtendedCacheID(201, tvdbExtendedMetaTranslations)
 	if err := svc.cache.set(seriesCacheID, tvdbSeriesExtendedData{
 		Name:       "Current Year Series",
 		FirstAired: time.Now().Add(-24 * time.Hour).Format("2006-01-02"),
@@ -820,7 +818,7 @@ func TestEnrichLiteCustomListItemFallsBackToTMDBGenres(t *testing.T) {
 	}, cache)
 
 	movieTVDBID := int64(358924)
-	if err := svc.cache.set(cacheKey("tvdb", "movie", "extended", "v1", "358924", "artwork"), tvdbMovieExtendedData{
+	if err := svc.cache.set(movieExtendedCacheID(358924), tvdbMovieExtendedData{
 		Name: "Outcome",
 		RemoteIDs: []struct {
 			ID         string `json:"id"`
@@ -845,7 +843,7 @@ func TestEnrichLiteCustomListItemFallsBackToTMDBGenres(t *testing.T) {
 	}
 
 	seriesTVDBID := int64(443433)
-	if err := svc.cache.set(cacheKey("tvdb", "series", "extended", "v1", "443433", "artworks"), tvdbSeriesExtendedData{
+	if err := svc.cache.set(seriesExtendedCacheID(443433, tvdbExtendedMetaTranslations), tvdbSeriesExtendedData{
 		Name: "Your Friends & Neighbors",
 		RemoteIDs: []struct {
 			ID         string `json:"id"`
@@ -1355,7 +1353,7 @@ func TestGetCustomListFetchesTranslations(t *testing.T) {
 
 			// Handle TVDB series extended (includes name/overview/artwork/status) — primary call
 			if strings.HasPrefix(path, "/v4/series/12345/extended") {
-				body := bytes.NewBufferString(`{"data":{"id":12345,"name":"テストアニメ","overview":"これは日本語の概要です","artworks":[]}}`)
+				body := bytes.NewBufferString(`{"data":{"id":12345,"name":"テストアニメ","overview":"これは日本語の概要です","artworks":[],"nameTranslations":["eng","jpn"]}}`)
 				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(body), Header: make(http.Header)}, nil
 			}
 
@@ -1464,7 +1462,7 @@ func TestGetCustomListMovieTranslations(t *testing.T) {
 
 			// Handle TVDB movie extended (includes name/overview/artwork) — now the primary call
 			if strings.HasPrefix(path, "/v4/movies/67890/extended") {
-				body := bytes.NewBufferString(`{"data":{"id":67890,"name":"テスト映画","overview":"これは日本語の映画概要です","artworks":[]}}`)
+				body := bytes.NewBufferString(`{"data":{"id":67890,"name":"テスト映画","overview":"これは日本語の映画概要です","artworks":[],"nameTranslations":["eng","jpn"]}}`)
 				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(body), Header: make(http.Header)}, nil
 			}
 
@@ -1557,12 +1555,12 @@ func TestSeriesDetailsUpgradesCachedLiteSeasonNames(t *testing.T) {
 			}
 
 			if path == "/v4/series/12345/extended" {
-				if query.Get("meta") == "artworks" {
-					body := bytes.NewBufferString(`{"data":{"id":12345,"artworks":[]}}`)
+				if query.Get("meta") == "translations" {
+					body := bytes.NewBufferString(`{"data":{"id":12345,"artworks":[],"translations":{"nameTranslations":[{"language":"eng","name":"Test Series"}],"overviewTranslations":[{"language":"eng","overview":"Series overview"}]}}}`)
 					return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(body), Header: make(http.Header)}, nil
 				}
-				if query.Get("meta") != "episodes,seasons,artworks" {
-					t.Fatalf("unexpected meta query: %q", query.Get("meta"))
+				if query.Get("meta") != "episodes" {
+					t.Errorf("unexpected meta query: %q", query.Get("meta"))
 				}
 				body := bytes.NewBufferString(`{"data":{
 					"id":12345,
@@ -1970,8 +1968,8 @@ func TestSearchEnrichesResultsWithRequestedLanguage(t *testing.T) {
 			case "/v4/search":
 				body := `{"data":[{"type":"series","tvdb_id":"202","tmdb_id":"303","name":"English Search Title","overview":"English search overview","year":"2020","score":100}]}`
 				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewBufferString(body)), Header: make(http.Header)}, nil
-			case "/v4/series/202/translations/fra":
-				body := `{"data":{"language":"fra","name":"Titre français","overview":"Résumé français"}}`
+			case "/v4/series/202/extended":
+				body := `{"data":{"id":202,"translations":{"nameTranslations":[{"language":"fra","name":"Titre français"}],"overviewTranslations":[{"language":"fra","overview":"Résumé français"}]}}}`
 				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewBufferString(body)), Header: make(http.Header)}, nil
 			case "/3/search/tv":
 				body := `{"results":[]}`
@@ -2662,14 +2660,7 @@ func TestSimilarUsesMetadataOriginalLanguage(t *testing.T) {
 					return &http.Response{
 						StatusCode: http.StatusOK,
 						Status:     "200 OK",
-						Body:       io.NopCloser(strings.NewReader(`{"genres":[{"id":28}],"original_language":"ko","release_date":"2020-01-01"}`)),
-						Header:     make(http.Header),
-					}, nil
-				case "/3/movie/123/keywords":
-					return &http.Response{
-						StatusCode: http.StatusOK,
-						Status:     "200 OK",
-						Body:       io.NopCloser(strings.NewReader(`{"keywords":[{"id":101}]}`)),
+						Body:       io.NopCloser(strings.NewReader(`{"genres":[{"id":28}],"original_language":"ko","release_date":"2020-01-01","keywords":{"keywords":[{"id":101}]}}`)),
 						Header:     make(http.Header),
 					}, nil
 				case "/3/discover/movie":
@@ -3389,7 +3380,7 @@ func TestGetCacheManagerStatusCountsCurrentShelfSourceCache(t *testing.T) {
 		return []CustomListInfo{{URL: "https://mdblist.com/lists/test/list/json", Name: "Test List"}}
 	}
 
-	cacheID := cacheKey("shelf-source", "v1", "https://mdblist.com/lists/test/list/json")
+	cacheID := customListSourceCacheKey("public", "https://mdblist.com/lists/test/list/json")
 	if err := svc.cache.set(cacheID, []mdblistItem{{Rank: 1, Title: "Cached"}}); err != nil {
 		t.Fatalf("set custom list cache: %v", err)
 	}

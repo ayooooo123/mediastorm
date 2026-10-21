@@ -28,8 +28,11 @@ func progressiveShelfRequest(r *http.Request) bool {
 	if phase != "cards" && phase != "complete" {
 		return false
 	}
+	// Both phases serve any row size: cards read cheap shelf cards, and the
+	// complete pass enriches only the page, reusing per-title results and
+	// continuing detached when the client gives up.
 	limit, _ := parseLimitOffset(r)
-	if limit <= 0 || limit > 100 {
+	if limit <= 0 {
 		return false
 	}
 	query := parseDisplayListQuery(r)

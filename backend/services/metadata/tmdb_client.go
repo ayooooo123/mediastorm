@@ -130,6 +130,8 @@ type tmdbClient struct {
 	// In-flight singleflight map for movieDetails — holds only requests
 	// currently being fetched (bounded), not a process-lifetime cache.
 	movieCache sync.Map
+	// seriesCache is the same in-flight map for seriesDetails.
+	seriesCache sync.Map
 }
 
 func (c *tmdbClient) waitForRequestSlot(ctx context.Context) error {
@@ -429,6 +431,18 @@ type tmdbImagesResult struct {
 // fetchImages retrieves logo and textless poster for a movie or TV show from TMDB
 // Uses a single API call to get both, improving efficiency
 func (c *tmdbClient) fetchImages(ctx context.Context, mediaType string, tmdbID int64) (*tmdbImagesResult, error) {
+	return c.fetchImagesWithAnalysis(ctx, mediaType, tmdbID, true)
+}
+
+// fetchShelfImages is the shelf variant of fetchImages: the same metadata
+// request and selection, ranked by vote average alone. It skips the image
+// downloads that fingerprint alternate backdrops and measure logo brightness,
+// which only details pages and the hero need.
+func (c *tmdbClient) fetchShelfImages(ctx context.Context, mediaType string, tmdbID int64) (*tmdbImagesResult, error) {
+	return c.fetchImagesWithAnalysis(ctx, mediaType, tmdbID, false)
+}
+
+func (c *tmdbClient) fetchImagesWithAnalysis(ctx context.Context, mediaType string, tmdbID int64, analyze bool) (*tmdbImagesResult, error) {
 	if !c.isConfigured() {
 		return nil, errors.New("tmdb api key not configured")
 	}
@@ -477,7 +491,9 @@ func (c *tmdbClient) fetchImages(ctx context.Context, mediaType string, tmdbID i
 				logo.Height = selectedLogo.Height
 				logo.Language = selectedLogo.ISO6391
 				logo.IsFallbackLanguage = selectedLogo.ISO6391 != preferredLang
-				logo.IsDark = c.isImageDark(ctx, logo.URL)
+				if analyze {
+					logo.IsDark = c.isImageDark(ctx, logo.URL)
+				}
 			}
 		}()
 	}
@@ -523,7 +539,7 @@ func (c *tmdbClient) fetchImages(ctx context.Context, mediaType string, tmdbID i
 				result.TextBackdrop.IsFallbackLanguage = withText[0].ISO6391 != preferredLang
 			}
 		}
-		result.Backdrops = c.rankAlternateBackdrops(ctx, textless, result.TextlessBackdrop, result.TextBackdrop)
+		result.Backdrops = c.rankAlternateBackdropsWithAnalysis(ctx, textless, result.TextlessBackdrop, result.TextBackdrop, analyze)
 	}
 
 	// Find best textless poster (no language = textless) and best text poster (has language tag)
@@ -787,6 +803,12 @@ type rankedBackdropCandidate struct {
 }
 
 func (c *tmdbClient) rankAlternateBackdrops(ctx context.Context, items []tmdbImageItem, primary, textBackdrop *models.Image) []models.Image {
+	return c.rankAlternateBackdropsWithAnalysis(ctx, items, primary, textBackdrop, true)
+}
+
+// rankAlternateBackdropsWithAnalysis ranks by vote average, adding a visual
+// diversity score against the primary backdrop only when analyze is set.
+func (c *tmdbClient) rankAlternateBackdropsWithAnalysis(ctx context.Context, items []tmdbImageItem, primary, textBackdrop *models.Image, analyze bool) []models.Image {
 	if len(items) == 0 {
 		return nil
 	}
@@ -833,7 +855,7 @@ func (c *tmdbClient) rankAlternateBackdrops(ctx context.Context, items []tmdbIma
 
 	images := make([]*models.Image, len(candidates))
 	signatureURLs := make([]string, 0, len(candidates)+1)
-	if primary != nil {
+	if primary != nil && analyze {
 		signatureURLs = append(signatureURLs, primary.URL)
 		for i, item := range candidates {
 			if images[i] = buildTMDBImage(item.FilePath, tmdbBackdropSize, "backdrop"); images[i] != nil {
@@ -1338,6 +1360,9 @@ func (c *tmdbClient) fetchSeriesGenres(ctx context.Context, tmdbID int64) ([]str
 	return genres, nil
 }
 
+// seriesDetails mirrors movieDetails: a per-language persistent file cache plus
+// in-flight deduplication. The details request appends content_ratings, so
+// certification lookups are served from the same entry.
 func (c *tmdbClient) seriesDetails(ctx context.Context, tmdbID int64) (*models.Title, error) {
 	if !c.isConfigured() {
 		return nil, errors.New("tmdb api key not configured")
@@ -1346,6 +1371,47 @@ func (c *tmdbClient) seriesDetails(ctx context.Context, tmdbID int64) (*models.T
 		return nil, errors.New("tmdb id required")
 	}
 
+	var cacheID string
+	if c.cache != nil {
+		cacheID = cacheKey("tmdb", "tv", "details", "v1", c.language, fmt.Sprintf("%d", tmdbID))
+		var cached models.Title
+		if ok, _ := c.cache.get(cacheID, &cached); ok && cached.TMDBID > 0 {
+			// Release status is derived from the premiere date; recompute it
+			// so a cached entry does not stay "unreleased" past that date.
+			if cached.ReleaseDate != "" {
+				cached.Status = models.SeriesReleaseStatusFromDate(cached.ReleaseDate)
+			}
+			return &cached, nil
+		}
+	}
+
+	entry := &movieDetailsCacheEntry{done: make(chan struct{})}
+	if existing, loaded := c.seriesCache.LoadOrStore(tmdbID, entry); loaded {
+		e := existing.(*movieDetailsCacheEntry)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-e.done:
+		}
+		if e.result == nil {
+			return nil, e.err
+		}
+		// Callers adjust the returned title; hand each waiter its own copy.
+		copied := *e.result
+		return &copied, e.err
+	}
+	result, err := c.seriesDetailsFetch(ctx, tmdbID)
+	if err == nil && result != nil && cacheID != "" {
+		_ = c.cache.set(cacheID, result)
+	}
+	entry.result = result
+	entry.err = err
+	close(entry.done)
+	c.seriesCache.Delete(tmdbID)
+	return result, err
+}
+
+func (c *tmdbClient) seriesDetailsFetch(ctx context.Context, tmdbID int64) (*models.Title, error) {
 	endpoint, err := url.JoinPath(tmdbBaseURL, "tv", fmt.Sprintf("%d", tmdbID))
 	if err != nil {
 		return nil, err
@@ -3471,7 +3537,8 @@ type titleSeedInfo struct {
 }
 
 // fetchTitleSeedInfo fetches genre IDs, keyword IDs, original language, and
-// year for a title in parallel. Used by the custom recommendations engine.
+// year for a title in one details request with keywords appended. Used by the
+// custom recommendations engine.
 func (c *tmdbClient) fetchTitleSeedInfo(ctx context.Context, mediaType string, tmdbID int64) (titleSeedInfo, error) {
 	if !c.isConfigured() {
 		return titleSeedInfo{}, errors.New("tmdb api key not configured")
@@ -3482,89 +3549,45 @@ func (c *tmdbClient) fetchTitleSeedInfo(ctx context.Context, mediaType string, t
 		apiMediaType = "tv"
 	}
 
-	type detailsResult struct {
-		genres   []int64
-		origLang string
-		year     int
-		err      error
+	endpoint, err := url.JoinPath(tmdbBaseURL, apiMediaType, fmt.Sprintf("%d", tmdbID))
+	if err != nil {
+		return titleSeedInfo{}, err
 	}
-	type kwResult struct {
-		keywords []int64
-		err      error
-	}
-	detailsCh := make(chan detailsResult, 1)
-	kwCh := make(chan kwResult, 1)
-
-	// Fetch genres + original language + year from base details
-	go func() {
-		endpoint, e := url.JoinPath(tmdbBaseURL, apiMediaType, fmt.Sprintf("%d", tmdbID))
-		if e != nil {
-			detailsCh <- detailsResult{err: e}
-			return
-		}
-		endpoint = endpoint + "?api_key=" + c.apiKey
-		var payload struct {
-			Genres []struct {
-				ID int64 `json:"id"`
-			} `json:"genres"`
-			OriginalLanguage string `json:"original_language"`
-			FirstAirDate     string `json:"first_air_date"`
-			ReleaseDate      string `json:"release_date"`
-		}
-		if e := c.doGET(ctx, endpoint, &payload); e != nil {
-			detailsCh <- detailsResult{err: e}
-			return
-		}
-		ids := make([]int64, 0, len(payload.Genres))
-		for _, g := range payload.Genres {
-			ids = append(ids, g.ID)
-		}
-		detailsCh <- detailsResult{
-			genres:   ids,
-			origLang: payload.OriginalLanguage,
-			year:     parseTMDBYear(payload.ReleaseDate, payload.FirstAirDate),
-		}
-	}()
-
-	// Fetch keywords
-	go func() {
-		endpoint, e := url.JoinPath(tmdbBaseURL, apiMediaType, fmt.Sprintf("%d", tmdbID), "keywords")
-		if e != nil {
-			kwCh <- kwResult{err: e}
-			return
-		}
-		endpoint = endpoint + "?api_key=" + c.apiKey
-		// TMDB returns "keywords" for movies, "results" for TV
-		var payload struct {
+	endpoint = endpoint + "?api_key=" + c.apiKey + "&append_to_response=keywords"
+	var payload struct {
+		Genres []struct {
+			ID int64 `json:"id"`
+		} `json:"genres"`
+		OriginalLanguage string `json:"original_language"`
+		FirstAirDate     string `json:"first_air_date"`
+		ReleaseDate      string `json:"release_date"`
+		// TMDB nests movie keywords under "keywords" and TV keywords under "results".
+		Keywords struct {
 			Keywords []struct {
 				ID int64 `json:"id"`
 			} `json:"keywords"`
 			Results []struct {
 				ID int64 `json:"id"`
 			} `json:"results"`
-		}
-		if e := c.doGET(ctx, endpoint, &payload); e != nil {
-			kwCh <- kwResult{err: e}
-			return
-		}
-		combined := append(payload.Keywords, payload.Results...)
-		ids := make([]int64, 0, len(combined))
-		for _, k := range combined {
-			ids = append(ids, k.ID)
-		}
-		kwCh <- kwResult{keywords: ids}
-	}()
-
-	dr := <-detailsCh
-	kr := <-kwCh
-	if dr.err != nil && kr.err != nil {
-		return titleSeedInfo{}, fmt.Errorf("details: %w; keywords: %v", dr.err, kr.err)
+		} `json:"keywords"`
+	}
+	if err := c.doGET(ctx, endpoint, &payload); err != nil {
+		return titleSeedInfo{}, fmt.Errorf("details: %w", err)
+	}
+	genres := make([]int64, 0, len(payload.Genres))
+	for _, g := range payload.Genres {
+		genres = append(genres, g.ID)
+	}
+	combined := append(payload.Keywords.Keywords, payload.Keywords.Results...)
+	keywords := make([]int64, 0, len(combined))
+	for _, k := range combined {
+		keywords = append(keywords, k.ID)
 	}
 	return titleSeedInfo{
-		GenreIDs:         dr.genres,
-		KeywordIDs:       kr.keywords,
-		OriginalLanguage: dr.origLang,
-		Year:             dr.year,
+		GenreIDs:         genres,
+		KeywordIDs:       keywords,
+		OriginalLanguage: payload.OriginalLanguage,
+		Year:             parseTMDBYear(payload.ReleaseDate, payload.FirstAirDate),
 	}, nil
 }
 

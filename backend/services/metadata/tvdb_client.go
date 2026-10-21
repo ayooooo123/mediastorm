@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"novastream/internal/apiusage"
+	"novastream/models"
 )
 
 // Minimal TVDB v4 client (token auth, trending and search endpoints we need)
@@ -593,6 +594,66 @@ type tvdbSeriesExtendedData struct {
 	Type            string    `json:"type"`
 	Tags            []tvdbTag `json:"tags"`
 	OriginalCountry string    `json:"originalCountry"`
+	Score           float64   `json:"score"`
+	tvdbExtendedTranslations
+}
+
+// tvdbExtendedTranslations is the translation part of an extended record.
+// NameLanguages/OverviewLanguages are always present and list language codes;
+// Translations is only populated when the record is requested with
+// meta=translations.
+type tvdbExtendedTranslations struct {
+	NameLanguages     []string                `json:"nameTranslations"`
+	OverviewLanguages []string                `json:"overviewTranslations"`
+	Translations      tvdbTranslationExtended `json:"translations"`
+}
+
+type tvdbTranslationExtended struct {
+	NameTranslations     []tvdbTranslationRecord `json:"nameTranslations"`
+	OverviewTranslations []tvdbTranslationRecord `json:"overviewTranslations"`
+}
+
+type tvdbTranslationRecord struct {
+	Language  string `json:"language"`
+	Name      string `json:"name"`
+	Overview  string `json:"overview"`
+	IsPrimary bool   `json:"isPrimary"`
+}
+
+// translation returns the embedded translation for lang. embedded reports
+// whether the record carried translation records at all; ok whether lang
+// was among them.
+func (t tvdbExtendedTranslations) translation(lang string) (result tvdbSeriesTranslation, embedded, ok bool) {
+	embedded = len(t.Translations.NameTranslations) > 0 || len(t.Translations.OverviewTranslations) > 0
+	result.Language = lang
+	for _, record := range t.Translations.NameTranslations {
+		if strings.EqualFold(record.Language, lang) && strings.TrimSpace(record.Name) != "" {
+			result.Name = record.Name
+			result.IsPrimary = record.IsPrimary
+			ok = true
+			break
+		}
+	}
+	for _, record := range t.Translations.OverviewTranslations {
+		if strings.EqualFold(record.Language, lang) && strings.TrimSpace(record.Overview) != "" {
+			result.Overview = record.Overview
+			ok = true
+			break
+		}
+	}
+	return result, embedded, ok
+}
+
+// listsLanguage reports whether the record advertises a translation in lang.
+func (t tvdbExtendedTranslations) listsLanguage(lang string) bool {
+	for _, codes := range [][]string{t.NameLanguages, t.OverviewLanguages} {
+		for _, code := range codes {
+			if strings.EqualFold(code, lang) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type tvdbMovieExtendedData struct {
@@ -610,6 +671,8 @@ type tvdbMovieExtendedData struct {
 	} `json:"remoteIds"`
 	Tags            []tvdbTag `json:"tags"`
 	OriginalCountry string    `json:"originalCountry"`
+	Score           float64   `json:"score"`
+	tvdbExtendedTranslations
 }
 
 // tvdbTag represents a tag from TVDB's extended data.
@@ -740,6 +803,24 @@ type mdblistItem struct {
 	IMDBID      string `json:"imdb_id"`
 	MediaType   string `json:"mediatype"` // "movie" or "show"
 	ReleaseYear int    `json:"release_year"`
+	// Base metadata attached by the MDBList list API (absent from public JSON).
+	PosterURL   string          `json:"posterUrl,omitempty"`
+	Overview    string          `json:"overview,omitempty"`
+	Genres      []string        `json:"genreNames,omitempty"`
+	ReleaseDate string          `json:"releaseDate,omitempty"`
+	Runtime     int             `json:"runtimeMinutes,omitempty"`
+	Ratings     []models.Rating `json:"mdblistRatings,omitempty"`
+}
+
+// normalizePublicMDBListItems fills TMDB IDs for public list JSON, whose "id"
+// field is the TMDB ID (it never sends tmdb_id). ID is kept unchanged.
+func normalizePublicMDBListItems(items []mdblistItem) {
+	for i := range items {
+		if items[i].TMDBID == nil && items[i].ID > 0 {
+			id := int64(items[i].ID)
+			items[i].TMDBID = &id
+		}
+	}
 }
 
 // FetchMDBListCustom fetches items from a custom MDBList URL

@@ -11,14 +11,34 @@ import (
 
 const shelfSourceTTL = 10 * time.Minute
 
+// cachedCustomListSource prefers the MDBList list API (bulk posters, overviews,
+// genres and ratings) when a key is configured and falls back to public JSON.
 func (s *Service) cachedCustomListSource(ctx context.Context, listURL string) ([]mdblistItem, error) {
+	if items, ok := s.fetchCustomListFromAPI(ctx, listURL); ok {
+		return items, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	var items []mdblistItem
-	err := s.fetchShelfCached(ctx, cacheKey("shelf-source", "v1", listURL), shelfSourceTTL, &items, func(ctx context.Context) (any, error) {
+	err := s.fetchShelfCached(ctx, customListSourceCacheKey("public", listURL), shelfSourceTTL, &items, func(ctx context.Context) (any, error) {
 		var result []mdblistItem
 		err := s.client.fetchMDBListJSONContext(ctx, listURL, &result)
+		normalizePublicMDBListItems(result)
 		return result, err
 	})
 	return items, err
+}
+
+// customListSourceCached reports whether either source cache holds the list.
+func (s *Service) customListSourceCached(listURL string) bool {
+	for _, source := range []string{"api", "public"} {
+		var items []mdblistItem
+		if ok, _ := s.cache.getWithMaxAge(customListSourceCacheKey(source, listURL), &items, customListSourceTTL(source)); ok && len(items) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) GetCustomListSource(ctx context.Context, listURL string) ([]CuratedItem, error) {
@@ -28,7 +48,8 @@ func (s *Service) GetCustomListSource(ctx context.Context, listURL string) ([]Cu
 	}
 	items := make([]CuratedItem, len(raw))
 	for i, item := range raw {
-		items[i] = CuratedItem{Title: item.Title, Year: item.ReleaseYear, IMDBID: item.IMDBID, MediaType: mdblistItemMediaType(item)}
+		items[i] = CuratedItem{Title: item.Title, Year: item.ReleaseYear, IMDBID: item.IMDBID, MediaType: mdblistItemMediaType(item),
+			PosterURL: item.PosterURL, Overview: item.Overview, Genres: item.Genres, RuntimeMinutes: item.Runtime}
 		if item.TMDBID != nil {
 			items[i].TMDBID = *item.TMDBID
 		}
@@ -65,7 +86,11 @@ func (s *Service) GetShelfCards(ctx context.Context, items []CuratedItem) ([]mod
 	for i, item := range items {
 		result[i] = buildLiteCustomListItem(curatedRaw(item, i))
 		var title models.Title
-		if ok, _ := s.cache.get(s.shelfCardKey(item), &title); ok && title.Poster != nil {
+		if completed, ok := s.cachedCompletedTitle(item); ok {
+			// A complete pass finished for this title (possibly after its
+			// client gave up), so the card shows the rich metadata.
+			result[i].Title = completed
+		} else if ok, _ := s.cache.get(s.shelfCardKey(item), &title); ok && title.Poster != nil {
 			result[i].Title = title
 		} else if item.PosterURL != "" {
 			result[i].Title.Poster = &models.Image{URL: item.PosterURL, Type: "poster"}
@@ -74,6 +99,7 @@ func (s *Service) GetShelfCards(ctx context.Context, items []CuratedItem) ([]mod
 			}
 			result[i].Title.Overview = item.Overview
 			result[i].Title.Genres = item.Genres
+			result[i].Title.RuntimeMinutes = item.RuntimeMinutes
 		} else {
 			missing = append(missing, i)
 		}
@@ -150,7 +176,7 @@ func (s *Service) GetShelfCards(ctx context.Context, items []CuratedItem) ([]mod
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	return result, nil
+	return applyCuratedCatalogMetadata(result, items), nil
 }
 
 // Keep the established digital-release and first-air rules. Never infer movie
@@ -221,7 +247,9 @@ func (s *Service) CompleteShelfCards(ctx context.Context, items []CuratedItem, l
 	}
 	if len(result) == len(items) && ctx.Err() == nil {
 		for i, item := range items {
-			if result[i].Title.Poster != nil {
+			// Catalog items carry their catalog's artwork; shared per-title
+			// keys keep provider data (the completed-title cache has it).
+			if result[i].Title.Poster != nil && !item.CatalogMetadata {
 				title := result[i].Title
 				_ = s.cache.set(s.shelfCardKey(item), title)
 				if title.TMDBID > 0 {
