@@ -502,6 +502,20 @@ func ResultsWithDetails(results []models.NZBResult, opts Options) []FilteredResu
 				}
 			}
 
+			if !opts.IsMovie {
+				if episodes, ok := recoverEpisodeRange(result.Title, parsed.Episodes); ok {
+					parsedCopy := *parsed
+					parsedCopy.Episodes = episodes
+					parsed = &parsedCopy
+				}
+			}
+			if hasNonVideoMarker(result.Title, matchedTitle) {
+				reason := "result is reading material, not a video release"
+				log.Printf("[filter] Rejecting %q: %s", result.Title, reason)
+				reject(result, reason)
+				continue
+			}
+
 			if !opts.IsMovie && opts.TargetSeason > 0 && (opts.TargetEpisode > 0 || opts.TargetAbsoluteEpisode > 0) && hasEpisodeSideContentMarker(result.Title, matchedTitle) {
 				reason := "result is side content, not a regular series episode"
 				log.Printf("[filter] Rejecting %q: %s", result.Title, reason)
