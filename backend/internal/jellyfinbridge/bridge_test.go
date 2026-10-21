@@ -794,3 +794,37 @@ func TestLiveTV(t *testing.T) {
 		t.Fatal("web clients must not get direct play for live TS")
 	}
 }
+
+// Infuse fetches /Library/VirtualFolders while adding a server and fails the
+// whole add on a 404.
+func TestLibraryVirtualFolders(t *testing.T) {
+	h := newHarness(t, config.JellyfinBridgeSettings{})
+	tok := h.login("Living Room", "alice-pass")
+
+	views := decode[dto.QueryResult[dto.BaseItemDto]](t, h.do(http.MethodGet, "/UserViews", tok, nil))
+	viewIDs := map[string]string{}
+	for _, v := range views.Items {
+		viewIDs[v.Name] = v.ID
+	}
+
+	folders := decode[[]dto.VirtualFolderInfo](t, h.do(http.MethodGet, "/Library/VirtualFolders", tok, nil))
+	if len(folders) == 0 {
+		t.Fatal("no virtual folders")
+	}
+	for _, f := range folders {
+		if f.CollectionType == dto.CollectionLiveTV {
+			t.Fatalf("live TV listed as a library: %+v", f)
+		}
+		if f.ItemID == "" || f.ItemID != viewIDs[f.Name] || len(f.Locations) == 0 || f.LibraryOptions == nil {
+			t.Fatalf("folder = %+v, view ids %v", f, viewIDs)
+		}
+	}
+
+	media := decode[dto.QueryResult[dto.BaseItemDto]](t, h.do(http.MethodGet, "/Library/MediaFolders", tok, nil))
+	if media.TotalRecordCount != len(folders) {
+		t.Fatalf("media folders = %d, virtual folders = %d", media.TotalRecordCount, len(folders))
+	}
+	if rec := h.do(http.MethodGet, "/Library/VirtualFolders", "", nil); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous: %d", rec.Code)
+	}
+}

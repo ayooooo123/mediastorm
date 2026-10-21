@@ -74,16 +74,71 @@ func (s *Server) viewItem(profile models.User, def viewDef) dto.BaseItemDto {
 	}
 }
 
-func (s *Server) handleUserViews(w http.ResponseWriter, r *http.Request) {
-	p := principalFrom(r)
+// visibleViewDefs lists the profile's views, local libraries included.
+func (s *Server) visibleViewDefs(r *http.Request, p *principal) []viewDef {
 	defs := s.viewDefs(p.Profile)
-	items := make([]dto.BaseItemDto, 0, len(defs))
 	defs = append(defs, localViewDefs(s.localLibraries(r.Context(), p))...)
+	out := defs[:0]
 	for _, def := range defs {
 		// Only show Live TV when the profile actually has a channel source.
 		if def.Key == viewLiveTV && len(s.liveChannels(r.Context(), p)) == 0 {
 			continue
 		}
+		out = append(out, def)
+	}
+	return out
+}
+
+func (s *Server) handleUserViews(w http.ResponseWriter, r *http.Request) {
+	p := principalFrom(r)
+	defs := s.visibleViewDefs(r, p)
+	items := make([]dto.BaseItemDto, 0, len(defs))
+	for _, def := range defs {
+		items = append(items, s.viewItem(p.Profile, def))
+	}
+	writeJSON(w, http.StatusOK, dto.NewQueryResult(items, len(items), 0))
+}
+
+// libraryViewDefs are the views Jellyfin would list as libraries: Live TV
+// is not one.
+func (s *Server) libraryViewDefs(r *http.Request, p *principal) []viewDef {
+	var out []viewDef
+	for _, def := range s.visibleViewDefs(r, p) {
+		if def.CollectionType != dto.CollectionLiveTV {
+			out = append(out, def)
+		}
+	}
+	return out
+}
+
+// handleVirtualFolders serves /Library/VirtualFolders. Jellyfin reserves it
+// for administrators, but Infuse requests it while adding a server and gives
+// up on a 404, so every user gets their own views as libraries.
+func (s *Server) handleVirtualFolders(w http.ResponseWriter, r *http.Request) {
+	p := principalFrom(r)
+	defs := s.libraryViewDefs(r, p)
+	folders := make([]dto.VirtualFolderInfo, 0, len(defs))
+	for _, def := range defs {
+		item := s.viewItem(p.Profile, def)
+		folders = append(folders, dto.VirtualFolderInfo{
+			Name:               def.Name,
+			Locations:          []string{"/mediastorm/" + def.Key},
+			CollectionType:     def.CollectionType,
+			LibraryOptions:     map[string]any{},
+			ItemID:             item.ID,
+			PrimaryImageItemID: item.ID,
+			RefreshStatus:      "Idle",
+		})
+	}
+	writeJSON(w, http.StatusOK, folders)
+}
+
+// handleMediaFolders serves /Library/MediaFolders (libraries as items).
+func (s *Server) handleMediaFolders(w http.ResponseWriter, r *http.Request) {
+	p := principalFrom(r)
+	defs := s.libraryViewDefs(r, p)
+	items := make([]dto.BaseItemDto, 0, len(defs))
+	for _, def := range defs {
 		items = append(items, s.viewItem(p.Profile, def))
 	}
 	writeJSON(w, http.StatusOK, dto.NewQueryResult(items, len(items), 0))

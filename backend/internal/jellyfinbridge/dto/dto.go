@@ -336,6 +336,18 @@ func NewQueryResult[T any](items []T, total, start int) QueryResult[T] {
 	return QueryResult[T]{Items: items, TotalRecordCount: total, StartIndex: start}
 }
 
+// VirtualFolderInfo is one library in /Library/VirtualFolders.
+type VirtualFolderInfo struct {
+	Name               string         `json:"Name"`
+	Locations          []string       `json:"Locations"`
+	CollectionType     string         `json:"CollectionType,omitempty"`
+	LibraryOptions     map[string]any `json:"LibraryOptions"`
+	ItemID             string         `json:"ItemId"`
+	PrimaryImageItemID string         `json:"PrimaryImageItemId,omitempty"`
+	RefreshProgress    *float64       `json:"RefreshProgress"`
+	RefreshStatus      string         `json:"RefreshStatus"`
+}
+
 // MediaStream is one stream inside a MediaSource.
 type MediaStream struct {
 	Codec                  string   `json:"Codec,omitempty"`
