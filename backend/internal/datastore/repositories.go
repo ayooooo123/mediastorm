@@ -78,6 +78,14 @@ type HistorySyncSnapshotRepository interface {
 	Put(ctx context.Context, snapshot models.HistorySyncSnapshot) error
 }
 
+// UserCalendarRepository persists each profile's last built calendar
+// (kind "full" or "lite") so restarts can serve it immediately.
+type UserCalendarRepository interface {
+	List(ctx context.Context) ([]models.UserCalendarSnapshot, error)
+	Put(ctx context.Context, snap models.UserCalendarSnapshot) error
+	MarkStale(ctx context.Context, userID string) error
+}
+
 // ProfileUnlockRepository persists server-issued profile PIN unlock grants.
 type ProfileUnlockRepository interface {
 	Create(ctx context.Context, unlock *models.ProfileUnlock) error

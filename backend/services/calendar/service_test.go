@@ -877,7 +877,7 @@ func TestRefreshAll(t *testing.T) {
 	}
 
 	svc := New(meta, wl, hist, us, users)
-	svc.refreshAll()
+	svc.refreshAll(nil, 0)
 
 	cal := svc.Get("u1")
 	if cal == nil || len(cal.Items) != 1 {
@@ -902,7 +902,7 @@ func TestRefreshAll_BuildsUsersConcurrently(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		svc.refreshAll()
+		svc.refreshAll(nil, 0)
 		close(done)
 	}()
 
@@ -928,7 +928,7 @@ func TestRefreshAllLite_BuildsUsersConcurrently(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		svc.refreshAllLite()
+		svc.refreshAllLite(nil, 0)
 		close(done)
 	}()
 
@@ -1107,7 +1107,7 @@ func TestGetForHomeShelf_ReturnsRecentlyAiredWindowFromLiteCache(t *testing.T) {
 	}
 
 	svc := New(meta, wl, hist, us, users)
-	svc.buildAndCacheLiteUserCalendar("user1", true)
+	svc.buildAndCacheLiteUserCalendar("user1", true, nil)
 
 	items := svc.GetForHomeShelf("user1", time.UTC, MaxRecentDaysWindow, 14, 20)
 	if len(items) != 3 {
@@ -1137,7 +1137,7 @@ func TestGet_OnDemandBuildForUncachedUser(t *testing.T) {
 
 	// Only refresh u1 via refreshAll, leaving u2 uncached
 	users.users = []models.User{{ID: "u1"}}
-	svc.refreshAll()
+	svc.refreshAll(nil, 0)
 
 	// Restore u2 to the users list
 	users.users = []models.User{{ID: "u1"}, {ID: "u2"}}

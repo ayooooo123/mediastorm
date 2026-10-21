@@ -61,6 +61,9 @@ type buildState struct {
 	mu            sync.Mutex
 	seen          map[string]bool
 	fetchedSeries map[string]bool
+	// md overrides the service metadata source for this build (a refresh
+	// cycle's shared memo); nil means use Service.metadata directly.
+	md MetadataService
 }
 
 func newBuildState() *buildState {
@@ -113,6 +116,8 @@ type Service struct {
 	building        map[string]chan struct{}
 	liteCache       map[string]*userCalendar
 	liteBuilding    map[string]chan struct{}
+	stale           map[string]*userCalendar // pre-invalidation calendar, Home fallback while rebuilding
+	store           Store                    // optional persistence of built calendars
 	metadata        MetadataService
 	watchlist       WatchlistService
 	history         HistoryService
@@ -158,6 +163,7 @@ func New(
 		building:     make(map[string]chan struct{}),
 		liteCache:    make(map[string]*userCalendar),
 		liteBuilding: make(map[string]chan struct{}),
+		stale:        make(map[string]*userCalendar),
 		metadata:     metadata,
 		watchlist:    watchlist,
 		history:      history,
@@ -185,14 +191,18 @@ func (s *Service) StartBackgroundRefresh(interval time.Duration) {
 	s.statusMu.Unlock()
 
 	go func() {
+		// Initial population skips profiles whose persisted calendar (loaded by
+		// LoadPersisted) is younger than one refresh interval, so a restart does
+		// not force-rebuild everyone.
+		initialMemo := newCycleMetadata(s.metadata)
 		go func() {
 			log.Println("[calendar-lite] background refresh: initial population starting...")
-			s.refreshAllLite()
+			s.refreshAllLite(initialMemo, interval)
 			log.Println("[calendar-lite] background refresh: initial population complete")
 		}()
 
 		log.Println("[calendar] background refresh: initial population starting...")
-		s.doRefresh()
+		s.doRefresh(initialMemo, interval)
 		log.Println("[calendar] background refresh: initial population complete")
 
 		ticker := time.NewTicker(interval)
@@ -205,22 +215,24 @@ func (s *Service) StartBackgroundRefresh(interval time.Duration) {
 
 			select {
 			case <-ticker.C:
+				memo := newCycleMetadata(s.metadata)
 				go func() {
 					log.Println("[calendar-lite] background refresh: periodic refresh starting...")
-					s.refreshAllLite()
+					s.refreshAllLite(memo, 0)
 					log.Println("[calendar-lite] background refresh: periodic refresh complete")
 				}()
 				log.Println("[calendar] background refresh: periodic refresh starting...")
-				s.doRefresh()
+				s.doRefresh(memo, 0)
 				log.Println("[calendar] background refresh: periodic refresh complete")
 			case <-s.refreshNow:
+				memo := newCycleMetadata(s.metadata)
 				go func() {
 					log.Println("[calendar-lite] background refresh: manual refresh triggered...")
-					s.refreshAllLite()
+					s.refreshAllLite(memo, 0)
 					log.Println("[calendar-lite] background refresh: manual refresh complete")
 				}()
 				log.Println("[calendar] background refresh: manual refresh triggered...")
-				s.doRefresh()
+				s.doRefresh(memo, 0)
 				log.Println("[calendar] background refresh: manual refresh complete")
 				// Reset ticker so next auto-refresh is a full interval away
 				ticker.Reset(interval)
@@ -236,14 +248,15 @@ func (s *Service) StartBackgroundRefresh(interval time.Duration) {
 	}()
 }
 
-// doRefresh runs a full refresh with status tracking.
-func (s *Service) doRefresh() {
+// doRefresh runs a full refresh with status tracking. Profiles whose cached
+// calendar is younger than skipFresherThan are skipped (0 = rebuild all).
+func (s *Service) doRefresh(md MetadataService, skipFresherThan time.Duration) {
 	s.statusMu.Lock()
 	s.state = "refreshing"
 	s.statusMu.Unlock()
 
 	start := time.Now()
-	s.refreshAll()
+	s.refreshAll(md, skipFresherThan)
 	elapsed := time.Since(start)
 
 	s.statusMu.Lock()
@@ -329,9 +342,18 @@ func (s *Service) Invalidate(userID string) {
 		return
 	}
 	s.mu.Lock()
+	if prev := s.cache[userID]; prev != nil {
+		s.stale[userID] = prev
+	} else if prev := s.liteCache[userID]; prev != nil {
+		s.stale[userID] = prev
+	}
 	delete(s.cache, userID)
 	delete(s.liteCache, userID)
+	store := s.store
 	s.mu.Unlock()
+	if store != nil {
+		go s.markPersistedStale(store, userID)
+	}
 	log.Printf("[calendar] cache invalidated user=%s", userID)
 }
 
@@ -358,7 +380,7 @@ func (s *Service) peekLite(userID string) *userCalendar {
 func (s *Service) GetForHomeShelf(userID string, loc *time.Location, daysBack, daysForward, limit int) []models.CalendarItem {
 	cached := s.peekLite(userID)
 	if cached == nil {
-		go s.buildAndCacheLiteUserCalendar(userID, false)
+		go s.buildAndCacheLiteUserCalendar(userID, false, nil)
 		return nil
 	}
 
@@ -442,8 +464,8 @@ func LimitForHomeShelf(items []models.CalendarItem, loc *time.Location, limit in
 	return limited
 }
 
-func (s *Service) refreshAllLite() {
-	allUsers := s.users.List()
+func (s *Service) refreshAllLite(md MetadataService, skipFresherThan time.Duration) {
+	allUsers := s.usersNeedingRefresh(s.liteCache, skipFresherThan, "calendar-lite")
 	if len(allUsers) == 0 {
 		return
 	}
@@ -454,7 +476,7 @@ func (s *Service) refreshAllLite() {
 	}
 	if workers <= 1 {
 		for _, u := range allUsers {
-			s.buildAndCacheLiteUserCalendar(u.ID, true)
+			s.buildAndCacheLiteUserCalendar(u.ID, true, md)
 		}
 		return
 	}
@@ -466,7 +488,7 @@ func (s *Service) refreshAllLite() {
 		go func() {
 			defer wg.Done()
 			for userID := range userCh {
-				s.buildAndCacheLiteUserCalendar(userID, true)
+				s.buildAndCacheLiteUserCalendar(userID, true, md)
 			}
 		}()
 	}
@@ -478,9 +500,10 @@ func (s *Service) refreshAllLite() {
 	wg.Wait()
 }
 
-// refreshAll rebuilds calendar data for all users.
-func (s *Service) refreshAll() {
-	allUsers := s.users.List()
+// refreshAll rebuilds calendar data for all users (except those fresher than
+// skipFresherThan when it is positive).
+func (s *Service) refreshAll(md MetadataService, skipFresherThan time.Duration) {
+	allUsers := s.usersNeedingRefresh(s.cache, skipFresherThan, "calendar")
 	if len(allUsers) == 0 {
 		return
 	}
@@ -491,7 +514,7 @@ func (s *Service) refreshAll() {
 	}
 	if workers <= 1 {
 		for _, u := range allUsers {
-			s.buildAndCacheUserCalendar(u.ID, true)
+			s.buildAndCacheUserCalendarWith(u.ID, true, md)
 		}
 		return
 	}
@@ -503,7 +526,7 @@ func (s *Service) refreshAll() {
 		go func() {
 			defer wg.Done()
 			for userID := range userCh {
-				s.buildAndCacheUserCalendar(userID, true)
+				s.buildAndCacheUserCalendarWith(userID, true, md)
 			}
 		}()
 	}
@@ -516,6 +539,12 @@ func (s *Service) refreshAll() {
 }
 
 func (s *Service) buildAndCacheUserCalendar(userID string, force bool) *userCalendar {
+	return s.buildAndCacheUserCalendarWith(userID, force, nil)
+}
+
+// buildAndCacheUserCalendarWith is the single-flighted full build. md, when
+// non-nil, is a refresh cycle's shared metadata memo.
+func (s *Service) buildAndCacheUserCalendarWith(userID string, force bool, md MetadataService) *userCalendar {
 	for {
 		s.mu.RLock()
 		cached := s.cache[userID]
@@ -527,6 +556,8 @@ func (s *Service) buildAndCacheUserCalendar(userID string, force bool) *userCale
 		}
 		if waitCh != nil {
 			<-waitCh
+			// The build we waited on is as fresh as a forced one would be.
+			force = false
 			continue
 		}
 
@@ -548,7 +579,7 @@ func (s *Service) buildAndCacheUserCalendar(userID string, force bool) *userCale
 
 	start := time.Now()
 	log.Printf("[calendar] build start user=%s force=%t", userID, force)
-	items := s.buildUserCalendar(userID)
+	items := s.buildUserCalendarWith(userID, md)
 	uc := &userCalendar{
 		Items:       items,
 		RefreshedAt: time.Now().UTC(),
@@ -556,10 +587,16 @@ func (s *Service) buildAndCacheUserCalendar(userID string, force bool) *userCale
 
 	s.mu.Lock()
 	s.cache[userID] = uc
+	delete(s.stale, userID)
 	observer := s.releaseObserver
 	completeCh := s.building[userID]
 	delete(s.building, userID)
+	store := s.store
 	s.mu.Unlock()
+
+	if store != nil {
+		go s.persist(store, userID, kindFull, uc)
+	}
 
 	if completeCh != nil {
 		close(completeCh)
@@ -618,7 +655,7 @@ func (s *Service) observeReleases(userID string, visibleItems []models.CalendarI
 	observer.ObserveCalendar(userID, append(visibleItems, monitorItems...))
 }
 
-func (s *Service) buildAndCacheLiteUserCalendar(userID string, force bool) *userCalendar {
+func (s *Service) buildAndCacheLiteUserCalendar(userID string, force bool, md MetadataService) *userCalendar {
 	for {
 		s.mu.RLock()
 		cached := s.liteCache[userID]
@@ -630,6 +667,7 @@ func (s *Service) buildAndCacheLiteUserCalendar(userID string, force bool) *user
 		}
 		if waitCh != nil {
 			<-waitCh
+			force = false
 			continue
 		}
 
@@ -651,7 +689,7 @@ func (s *Service) buildAndCacheLiteUserCalendar(userID string, force bool) *user
 
 	start := time.Now()
 	log.Printf("[calendar-lite] build start user=%s force=%t", userID, force)
-	items := s.buildLiteUserCalendar(userID)
+	items := s.buildLiteUserCalendarWith(userID, md)
 	uc := &userCalendar{
 		Items:       items,
 		RefreshedAt: time.Now().UTC(),
@@ -661,7 +699,12 @@ func (s *Service) buildAndCacheLiteUserCalendar(userID string, force bool) *user
 	s.liteCache[userID] = uc
 	completeCh := s.liteBuilding[userID]
 	delete(s.liteBuilding, userID)
+	store := s.store
 	s.mu.Unlock()
+
+	if store != nil {
+		go s.persist(store, userID, kindLite, uc)
+	}
 
 	if completeCh != nil {
 		close(completeCh)
@@ -708,15 +751,20 @@ func (s *Service) calendarSourcesEnabled(userID string) models.CalendarSettings 
 
 // buildUserCalendar collects upcoming content from all enabled sources for a single user.
 func (s *Service) buildUserCalendar(userID string) []models.CalendarItem {
+	return s.buildUserCalendarWith(userID, nil)
+}
+
+func (s *Service) buildUserCalendarWith(userID string, md MetadataService) []models.CalendarItem {
 	ctx := context.Background()
 	now := time.Now().UTC()
 	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	windowStart := todayStart.AddDate(0, 0, -recentlyAiredDaysWindow)
 	cutoff := todayStart.AddDate(0, 0, s.maxDays)
 	state := newBuildState()
+	state.md = md
 	sources := s.calendarSourcesEnabled(userID)
 	watchlistItems, continueWatchingItems, settings := s.loadBuildInputs(userID, sources)
-	trendingMovies, trendingSeries := s.loadTrendingInputs(ctx, sources)
+	trendingMovies, trendingSeries := s.loadTrendingInputsWith(ctx, sources, s.md(state))
 	var items []models.CalendarItem
 
 	// 1. Series + movies from watchlist
@@ -763,12 +811,17 @@ func (s *Service) buildUserCalendar(userID string) []models.CalendarItem {
 }
 
 func (s *Service) buildLiteUserCalendar(userID string) []models.CalendarItem {
+	return s.buildLiteUserCalendarWith(userID, nil)
+}
+
+func (s *Service) buildLiteUserCalendarWith(userID string, md MetadataService) []models.CalendarItem {
 	ctx := context.Background()
 	now := time.Now().UTC()
 	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	windowStart := todayStart.AddDate(0, 0, -calendarLiteDaysBack)
 	cutoff := todayStart.AddDate(0, 0, calendarLiteDaysForward)
 	state := newBuildState()
+	state.md = md
 	sources := s.calendarSourcesEnabled(userID)
 	watchlistItems, continueWatchingItems, _ := s.loadBuildInputs(userID, sources)
 	watchlistMovies := sliceWatchlistByMediaType(watchlistItems, "movie", calendarLiteMovieLimit)
@@ -852,6 +905,10 @@ func (s *Service) loadBuildInputs(userID string, sources models.CalendarSettings
 }
 
 func (s *Service) loadTrendingInputs(ctx context.Context, sources models.CalendarSettings) ([]models.TrendingItem, []models.TrendingItem) {
+	return s.loadTrendingInputsWith(ctx, sources, s.metadata)
+}
+
+func (s *Service) loadTrendingInputsWith(ctx context.Context, sources models.CalendarSettings, md MetadataService) ([]models.TrendingItem, []models.TrendingItem) {
 	if !models.BoolVal(sources.TopTrending, true) && !models.BoolVal(sources.Trending, true) {
 		return nil, nil
 	}
@@ -865,7 +922,7 @@ func (s *Service) loadTrendingInputs(ctx context.Context, sources models.Calenda
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		items, err := s.metadata.Trending(ctx, "movie")
+		items, err := md.Trending(ctx, "movie")
 		if err != nil {
 			log.Printf("[calendar] trending movies error: %v", err)
 			return
@@ -874,7 +931,7 @@ func (s *Service) loadTrendingInputs(ctx context.Context, sources models.Calenda
 	}()
 	go func() {
 		defer wg.Done()
-		items, err := s.metadata.Trending(ctx, "series")
+		items, err := md.Trending(ctx, "series")
 		if err != nil {
 			log.Printf("[calendar] trending series error: %v", err)
 			return
@@ -1015,7 +1072,7 @@ func (s *Service) collectMoviesFromWatchlist(ctx context.Context, wlItems []mode
 	return s.parallelCollect(calendarMetadataConcurrency, len(movieItems), func(idx int) []models.CalendarItem {
 		wl := movieItems[idx]
 		query := buildMovieQuery(wl.Name, wl.Year, wl.ExternalIDs)
-		details, err := s.metadata.MovieDetails(ctx, query)
+		details, err := s.md(state).MovieDetails(ctx, query)
 		if err != nil || details == nil {
 			return nil
 		}
@@ -1168,7 +1225,7 @@ func (s *Service) collectFromMDBLists(
 			limit = 20
 		}
 
-		listItems, err := s.metadata.GetCustomListForCalendar(ctx, shelf.ListURL, limit, shelf.Name)
+		listItems, err := s.md(state).GetCustomListForCalendar(ctx, shelf.ListURL, limit, shelf.Name)
 		if err != nil {
 			log.Printf("[calendar] mdblist error shelf=%s url=%s: %v", shelf.ID, shelf.ListURL, err)
 			continue
@@ -1403,7 +1460,7 @@ func (s *Service) fetchUpcomingEpisodes(
 	}
 
 	query := buildSeriesQuery(seriesName, year, externalIDs)
-	details, err := s.metadata.SeriesDetailsLite(ctx, query)
+	details, err := s.md(state).SeriesDetailsLite(ctx, query)
 	if err != nil || details == nil {
 		return nil
 	}

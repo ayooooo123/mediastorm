@@ -787,6 +787,14 @@ func main() {
 
 	// Calendar service provides upcoming content from watchlist, history, and MDBList
 	calendarService := calendar.New(metadataService, watchlistService, historyService, userSettingsService, userService)
+	if store != nil {
+		// Serve the last persisted calendars immediately after a restart; the
+		// background refresh then only rebuilds profiles whose entry is old.
+		calendarService.SetStore(store.UserCalendars())
+		calendarLoadCtx, cancelCalendarLoad := context.WithTimeout(context.Background(), 20*time.Second)
+		calendarService.LoadPersisted(calendarLoadCtx)
+		cancelCalendarLoad()
+	}
 	notificationService := notifications.New(store.Notifications(), notifications.WithProfiles(userService), notifications.WithClients(clientsService))
 	defer notificationService.Close()
 	calendarService.SetReleaseObserver(notificationService)

@@ -1,5 +1,7 @@
 package models
 
+import "time"
+
 // CalendarItem represents an upcoming content event (episode airing or movie release).
 type CalendarItem struct {
 	Title           string            `json:"title"`
@@ -40,4 +42,20 @@ type CalendarResponse struct {
 	Days        int            `json:"days"`
 	RecentDays  int            `json:"recentDays"`
 	RefreshedAt string         `json:"refreshedAt"`
+	// Pending is set on home-shelf requests when no calendar has been built for
+	// the user yet; a build was started in the background and the client should
+	// retry shortly instead of treating the empty list as final.
+	Pending bool `json:"pending,omitempty"`
+}
+
+// UserCalendarSnapshot is a persisted, fully built calendar for one user.
+// Kind is "full" (the Calendar tab build) or "lite" (the fast home build).
+// Stale marks a snapshot whose inputs changed after it was built: it may still
+// be shown on Home while a rebuild runs but must not count as fresh.
+type UserCalendarSnapshot struct {
+	UserID      string
+	Kind        string
+	Items       []CalendarItem
+	RefreshedAt time.Time
+	Stale       bool
 }

@@ -554,6 +554,8 @@ func TestGetCalendarHomeLimitsCandidateWindow(t *testing.T) {
 		&calendarMockUsers{},
 	)
 	h := handlers.NewCalendarHandler(svc, &mockCalendarUserService{exists: map[string]bool{"user1": true}}, false)
+	// home=1 never builds inline; prime the cache as the background refresh would.
+	svc.Get("user1")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/users/user1/calendar?recentDays=90&days=90&home=1&limit=20", nil)
 	req = mux.SetURLVars(req, map[string]string{"userID": "user1"})

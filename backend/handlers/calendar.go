@@ -89,7 +89,16 @@ func (h *CalendarHandler) GetCalendar(w http.ResponseWriter, r *http.Request) {
 		homeLimit = 100
 	}
 
-	cached := h.Service.Get(userID)
+	// Home rows must never wait on a calendar build (a cold full build takes
+	// minutes after a restart): serve whatever is cached and report pending
+	// when nothing is, while the build runs in the background.
+	var cached *calendar.UserCalendarView
+	pending := false
+	if home {
+		cached, pending = h.Service.GetForHome(userID)
+	} else {
+		cached = h.Service.Get(userID)
+	}
 	if cached == nil {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(models.CalendarResponse{
@@ -98,6 +107,7 @@ func (h *CalendarHandler) GetCalendar(w http.ResponseWriter, r *http.Request) {
 			Timezone:   loc.String(),
 			Days:       days,
 			RecentDays: calendar.RecentDaysWindow,
+			Pending:    pending,
 		})
 		return
 	}
