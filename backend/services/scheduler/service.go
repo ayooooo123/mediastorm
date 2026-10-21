@@ -61,6 +61,9 @@ type Service struct {
 	taskMu              sync.RWMutex
 	lastFullSyncTimes   map[string]time.Time // tracks last full Trakt history sync per task ID
 	lastFullSyncTimesMu sync.Mutex
+
+	// Remote history key sets from previous bidirectional history syncs.
+	historySnapshots historySyncSnapshotStore
 }
 
 type schedulerUsersProvider interface {
@@ -779,10 +782,10 @@ func (s *Service) executePlexWatchlistSync(task config.ScheduledTask) (SyncResul
 		result, err := s.syncPlexToLocal(plexAccount.AuthToken, profileID, syncSource, deleteBehavior, dryRun)
 		return result, plexAuthError(err)
 	case "target_to_source":
-		result, err := s.syncLocalToPlex(plexAccount.AuthToken, profileID, syncSource, deleteBehavior, dryRun)
+		result, err := s.syncLocalToPlex(plexAccount.AuthToken, profileID, syncSource, deleteBehavior, watchlistSyncSince(task), dryRun)
 		return result, plexAuthError(err)
 	case "bidirectional":
-		result, err := s.syncBidirectional(plexAccount.AuthToken, profileID, syncSource, deleteBehavior, conflictResolution, dryRun)
+		result, err := s.syncBidirectional(plexAccount.AuthToken, profileID, syncSource, deleteBehavior, conflictResolution, watchlistSyncSince(task), dryRun)
 		return result, plexAuthError(err)
 	default:
 		return SyncResult{}, fmt.Errorf("unknown sync direction: %s", syncDirection)
@@ -864,6 +867,9 @@ func (s *Service) syncPlexToLocal(authToken, profileID, syncSource, deleteBehavi
 			plexItemKeys[key] = true
 		}
 		isNew := !schedulerWatchlistHasAnyKey(existingKeys, mediaType, input.ID, input.ExternalIDs)
+		if isNew && dryRun && s.watchlistService.RemovedSince(profileID, mediaType, input.ID, input.ExternalIDs, time.Time{}) {
+			isNew = false // the import skips items the user removed locally
+		}
 
 		if dryRun {
 			if isNew {
@@ -936,8 +942,11 @@ func (s *Service) syncPlexToLocal(authToken, profileID, syncSource, deleteBehavi
 	return result, nil
 }
 
-// syncLocalToPlex exports items from local watchlist to Plex watchlist
-func (s *Service) syncLocalToPlex(authToken, profileID, syncSource, deleteBehavior string, dryRun bool) (SyncResult, error) {
+// syncLocalToPlex exports items from local watchlist to Plex watchlist.
+// "mirror" removes every Plex item missing locally; "delete" removes only the
+// items the user removed locally after since.
+func (s *Service) syncLocalToPlex(authToken, profileID, syncSource, deleteBehavior string, since *time.Time, dryRun bool) (SyncResult, error) {
+	now := time.Now().UTC()
 	result := SyncResult{DryRun: dryRun}
 
 	// Get local watchlist items
@@ -1013,21 +1022,38 @@ func (s *Service) syncLocalToPlex(authToken, profileID, syncSource, deleteBehavi
 	}
 
 	// Handle deletions from Plex for delete/mirror modes
+	plexRemovalFailed := false
 	if deleteBehavior != "additive" {
+		// "delete" matches local removals by provider ID, which needs the Plex
+		// items' external IDs.
+		var plexExternalIDs []map[string]string
+		if deleteBehavior == "delete" && since != nil && len(plexItems) > 0 {
+			plexExternalIDs = s.plexClient.GetWatchlistDetailsWithProgress(authToken, plexItems, nil)
+		}
+
 		removed := 0
-		for _, plexItem := range plexItems {
+		for i, plexItem := range plexItems {
 			// Check if item exists in local watchlist
 			if localPlexIDs[plexItem.RatingKey] {
 				continue // Item in local, keep in Plex
 			}
 
-			// For "delete" mode: we can't reliably track what was synced TO Plex
-			// So we skip deletion in delete mode for target_to_source
+			// For "delete" mode: only remove items the user removed locally since
+			// the last run, leaving items that were only ever on Plex.
 			if deleteBehavior == "delete" {
-				continue
+				if since == nil {
+					continue
+				}
+				extIDs := map[string]string{}
+				if i < len(plexExternalIDs) && plexExternalIDs[i] != nil {
+					extIDs = plexExternalIDs[i]
+				}
+				extIDs["plex"] = plexItem.RatingKey
+				if !s.watchlistService.RemovedSince(profileID, plex.NormalizeMediaType(plexItem.Type), plexItem.RatingKey, extIDs, *since) {
+					continue
+				}
 			}
 
-			// For "mirror" mode: remove from Plex if not in local
 			if dryRun {
 				log.Printf("[scheduler] DRY RUN: Would remove from Plex: %s", plexItem.Title)
 				result.ToRemove = append(result.ToRemove, config.DryRunItem{
@@ -1041,6 +1067,7 @@ func (s *Service) syncLocalToPlex(authToken, profileID, syncSource, deleteBehavi
 
 			if err := s.plexClient.RemoveFromWatchlist(authToken, plexItem.RatingKey); err != nil {
 				log.Printf("[scheduler] Failed to remove %s from Plex watchlist: %v", plexItem.Title, err)
+				plexRemovalFailed = true
 				continue
 			}
 
@@ -1053,14 +1080,44 @@ func (s *Service) syncLocalToPlex(authToken, profileID, syncSource, deleteBehavi
 		}
 	}
 
+	// A failed Plex removal keeps the previous cursor so the next run retries it.
+	if !plexRemovalFailed {
+		result.Config = map[string]string{watchlistSyncCursorKey: now.Format(time.RFC3339Nano)}
+	}
+
 	result.Count = exported
 	return result, nil
 }
 
-// syncBidirectional syncs items in both directions between Plex and local
-func (s *Service) syncBidirectional(authToken, profileID, syncSource, deleteBehavior, conflictResolution string, dryRun bool) (SyncResult, error) {
+// watchlistSyncCursorKey stores when the last successful watchlist sync that
+// exports to a remote list started. Local removals newer than it are pushed to
+// the remote list.
+const watchlistSyncCursorKey = "bidirectionalDeletionCursor"
+
+// watchlistSyncSince returns the point after which local watchlist removals
+// have not yet been propagated to the remote list, or nil before the first run.
+func watchlistSyncSince(task config.ScheduledTask) *time.Time {
+	if raw := strings.TrimSpace(task.Config[watchlistSyncCursorKey]); raw != "" {
+		if parsed, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+			return &parsed
+		}
+	}
+	return task.LastRunAt
+}
+
+// syncBidirectional syncs items in both directions between Plex and local.
+//
+// With delete/mirror behavior, removals propagate too:
+//   - a local item this task has already synced (SyncSource == syncSource)
+//     that is missing from Plex was removed there, so it is removed locally;
+//   - a Plex item the user removed locally after since (a watchlist tombstone)
+//     is removed from Plex.
+//
+// since is nil before the first run, when only additions are synced.
+func (s *Service) syncBidirectional(authToken, profileID, syncSource, deleteBehavior, conflictResolution string, since *time.Time, dryRun bool) (SyncResult, error) {
 	now := time.Now().UTC()
 	result := SyncResult{DryRun: dryRun}
+	propagateDeletes := deleteBehavior != "additive"
 
 	// Get both watchlists
 	plexItems, err := s.plexClient.GetWatchlist(authToken)
@@ -1117,8 +1174,12 @@ func (s *Service) syncBidirectional(authToken, profileID, syncSource, deleteBeha
 	}
 
 	synced := 0
+	removedFromPlex := 0
+	removedFromLocal := 0
+	plexRemovalFailed := false
 
-	// Step 1: Sync Plex → Local (items in Plex not in local)
+	// Step 1: Sync Plex → Local (items in Plex not in local), or push local
+	// removals to Plex.
 	for i, plexItem := range plexItems {
 		input := resolvedPlexInputs[i]
 		mediaType := input.MediaType
@@ -1134,7 +1195,31 @@ func (s *Service) syncBidirectional(authToken, profileID, syncSource, deleteBeha
 			continue
 		}
 
+		if propagateDeletes && since != nil && s.watchlistService.RemovedSince(profileID, mediaType, input.ID, input.ExternalIDs, *since) {
+			if dryRun {
+				log.Printf("[scheduler] DRY RUN: Would remove from Plex (removed locally): %s", plexItem.Title)
+				result.ToRemove = append(result.ToRemove, config.DryRunItem{
+					Name:      plexItem.Title + " (from Plex)",
+					MediaType: mediaType,
+					ID:        plexItem.RatingKey,
+				})
+				removedFromPlex++
+				continue
+			}
+			if err := s.plexClient.RemoveFromWatchlist(authToken, plexItem.RatingKey); err != nil {
+				log.Printf("[scheduler] Failed to remove %s from Plex watchlist: %v", plexItem.Title, err)
+				plexRemovalFailed = true
+				continue
+			}
+			log.Printf("[scheduler] Removed from Plex watchlist (removed locally): %s", plexItem.Title)
+			removedFromPlex++
+			continue
+		}
+
 		if dryRun {
+			if s.watchlistService.RemovedSince(profileID, mediaType, input.ID, input.ExternalIDs, time.Time{}) {
+				continue // the import skips items the user removed locally
+			}
 			log.Printf("[scheduler] DRY RUN: Would import from Plex: %s (%s)", plexItem.Title, mediaType)
 			result.ToAdd = append(result.ToAdd, config.DryRunItem{
 				Name:      plexItem.Title + " (from Plex)",
@@ -1154,10 +1239,33 @@ func (s *Service) syncBidirectional(authToken, profileID, syncSource, deleteBeha
 		synced++
 	}
 
-	// Step 2: Sync Local → Plex (items in local not in Plex)
+	// Step 2: Sync Local → Plex (items in local not in Plex), or apply Plex
+	// removals locally.
 	for _, localItem := range localItems {
 		if schedulerWatchlistHasAnyKey(plexKeys, localItem.MediaType, localItem.ID, localItem.ExternalIDs) {
 			continue // Already in Plex
+		}
+
+		// Items this task already synced were in Plex at an earlier run, so their
+		// absence now means they were removed from Plex.
+		if propagateDeletes && localItem.SyncSource == syncSource {
+			if dryRun {
+				log.Printf("[scheduler] DRY RUN: Would remove from local (removed from Plex): %s", localItem.Name)
+				result.ToRemove = append(result.ToRemove, config.DryRunItem{
+					Name:      localItem.Name,
+					MediaType: localItem.MediaType,
+					ID:        localItem.ID,
+				})
+				removedFromLocal++
+				continue
+			}
+			if ok, err := s.watchlistService.RemoveSynced(profileID, localItem.MediaType, localItem.ID); err != nil {
+				log.Printf("[scheduler] Failed to remove watchlist item %s: %v", localItem.Name, err)
+			} else if ok {
+				log.Printf("[scheduler] Removed watchlist item no longer in Plex: %s", localItem.Name)
+				removedFromLocal++
+			}
+			continue
 		}
 
 		// Get Plex ratingKey from external IDs, resolving via discover search when
@@ -1197,20 +1305,29 @@ func (s *Service) syncBidirectional(authToken, profileID, syncSource, deleteBeha
 			continue
 		}
 
+		// Mark the item as synced so a later removal from Plex is recognised even
+		// if it happens before the next run sees it there.
+		if _, err := s.watchlistService.AddOrUpdate(profileID, models.WatchlistUpsert{
+			ID:          localItem.ID,
+			MediaType:   localItem.MediaType,
+			ExternalIDs: map[string]string{"plex": plexID},
+			SyncSource:  syncSource,
+			SyncedAt:    &now,
+		}); err != nil {
+			log.Printf("[scheduler] Failed to mark %s as synced to Plex: %v", localItem.Name, err)
+		}
+
 		log.Printf("[scheduler] Exported to Plex: %s", localItem.Name)
 		synced++
 	}
 
-	// Step 3: Handle deletions (for delete/mirror modes with bidirectional)
-	// In bidirectional mode with delete behavior:
-	// - Items removed from Plex should be removed from local (if synced)
-	// - Items removed from local should be removed from Plex (if has plex ID)
-	// This is tricky because we need to track "what was previously synced"
-	// For now, bidirectional + delete/mirror means union of both lists (no deletions)
-	// TODO: Implement proper deletion tracking for bidirectional sync
+	if removedFromPlex > 0 || removedFromLocal > 0 {
+		log.Printf("[scheduler] Bidirectional Plex sync removed %d items from Plex and %d items locally", removedFromPlex, removedFromLocal)
+	}
 
-	if deleteBehavior != "additive" {
-		log.Printf("[scheduler] Note: delete/mirror behavior in bidirectional mode currently only adds items (deletion tracking not yet implemented)")
+	// A failed Plex removal keeps the previous cursor so the next run retries it.
+	if !plexRemovalFailed {
+		result.Config = map[string]string{watchlistSyncCursorKey: now.Format(time.RFC3339Nano)}
 	}
 
 	result.Count = synced
@@ -1247,6 +1364,13 @@ func (s *Service) executeTraktListSync(task config.ScheduledTask) (SyncResult, e
 	if conflictResolution == "" {
 		conflictResolution = "source_wins"
 	}
+
+	// Only the Trakt watchlist can be written to; exporting any other list type
+	// would read and write the watchlist instead.
+	if syncDirection != "source_to_target" && listType != "watchlist" {
+		return SyncResult{}, fmt.Errorf("Trakt %s lists can only be imported; set the sync direction to Trakt → mediastorm", listType)
+	}
+
 	dryRun := task.Config["dryRun"] == "true"
 
 	if dryRun {
@@ -1285,9 +1409,9 @@ func (s *Service) executeTraktListSync(task config.ScheduledTask) (SyncResult, e
 	case "source_to_target":
 		return s.syncTraktToLocal(traktAccount, profileID, listType, task.Config["customListId"], syncSource, deleteBehavior, dryRun)
 	case "target_to_source":
-		return s.syncLocalToTrakt(traktAccount, profileID, syncSource, deleteBehavior, dryRun)
+		return s.syncLocalToTrakt(traktAccount, profileID, syncSource, deleteBehavior, watchlistSyncSince(task), dryRun)
 	case "bidirectional":
-		return s.syncTraktBidirectional(traktAccount, profileID, listType, task.Config["customListId"], syncSource, deleteBehavior, conflictResolution, dryRun)
+		return s.syncTraktBidirectional(traktAccount, profileID, listType, task.Config["customListId"], syncSource, deleteBehavior, conflictResolution, watchlistSyncSince(task), dryRun)
 	default:
 		return SyncResult{}, fmt.Errorf("unknown sync direction: %s", syncDirection)
 	}
@@ -1455,6 +1579,9 @@ func (s *Service) syncTraktToLocal(traktAccount *config.TraktAccount, profileID,
 			traktItemKeys[key] = true
 		}
 		isNew := !schedulerWatchlistHasAnyKey(existingKeys, item.MediaType, input.ID, input.ExternalIDs)
+		if isNew && dryRun && s.watchlistService.RemovedSince(profileID, item.MediaType, input.ID, input.ExternalIDs, time.Time{}) {
+			isNew = false // the import skips items the user removed locally
+		}
 
 		if dryRun {
 			if isNew {
@@ -1527,9 +1654,12 @@ func (s *Service) syncTraktToLocal(traktAccount *config.TraktAccount, profileID,
 	return result, nil
 }
 
-// syncLocalToTrakt exports items from local watchlist to Trakt watchlist
+// syncLocalToTrakt exports items from local watchlist to Trakt watchlist.
+// "mirror" removes every Trakt item missing locally; "delete" removes only the
+// items the user removed locally after since.
 // Note: Trakt only supports adding to watchlist via API, not to collection/favorites/custom lists
-func (s *Service) syncLocalToTrakt(traktAccount *config.TraktAccount, profileID, syncSource, deleteBehavior string, dryRun bool) (SyncResult, error) {
+func (s *Service) syncLocalToTrakt(traktAccount *config.TraktAccount, profileID, syncSource, deleteBehavior string, since *time.Time, dryRun bool) (SyncResult, error) {
+	now := time.Now().UTC()
 	result := SyncResult{DryRun: dryRun}
 
 	// Get local watchlist items
@@ -1694,9 +1824,9 @@ func (s *Service) syncLocalToTrakt(traktAccount *config.TraktAccount, profileID,
 				continue // Item in local, keep in Trakt
 			}
 
-			// For "delete" mode: we can't reliably track what was synced TO Trakt
-			// So we skip deletion in delete mode for target_to_source
-			if deleteBehavior == "delete" {
+			// For "delete" mode: only remove items the user removed locally since
+			// the last run, leaving items that were only ever on Trakt.
+			if deleteBehavior == "delete" && (since == nil || !s.watchlistService.RemovedSince(profileID, mediaType, itemID, extIDs, *since)) {
 				continue
 			}
 
@@ -1744,20 +1874,45 @@ func (s *Service) syncLocalToTrakt(traktAccount *config.TraktAccount, profileID,
 			s.traktClient.InvalidateListCache(traktAccount.ID)
 			if err != nil {
 				log.Printf("[scheduler] Failed to remove items from Trakt watchlist: %v", err)
-			} else {
-				log.Printf("[scheduler] Removed %d items from Trakt watchlist", removed)
+				// Keep the previous cursor so the next run retries the removals.
+				result.Count = exported
+				return result, nil
 			}
+			log.Printf("[scheduler] Removed %d items from Trakt watchlist", removed)
 		}
 	}
 
+	result.Config = map[string]string{watchlistSyncCursorKey: now.Format(time.RFC3339Nano)}
 	result.Count = exported
 	return result, nil
 }
 
-// syncTraktBidirectional syncs items in both directions between Trakt and local
-func (s *Service) syncTraktBidirectional(traktAccount *config.TraktAccount, profileID, listType, customListID, syncSource, deleteBehavior, conflictResolution string, dryRun bool) (SyncResult, error) {
+// traktSyncIDsFor returns the TMDB/IMDb identity the Trakt sync API accepts for
+// a watchlist entry, or ok=false when it has neither.
+func traktSyncIDsFor(id string, externalIDs map[string]string) (trakt.SyncIDs, bool) {
+	var ids trakt.SyncIDs
+	if externalIDs != nil {
+		ids.TMDB, _ = strconv.Atoi(externalIDs["tmdb"])
+		ids.IMDB = externalIDs["imdb"]
+	}
+	if ids.TMDB == 0 && ids.IMDB == "" {
+		ids.TMDB, _ = strconv.Atoi(id)
+	}
+	return ids, ids.TMDB != 0 || ids.IMDB != ""
+}
+
+// syncTraktBidirectional syncs items in both directions between Trakt and
+// local. Only the watchlist can be written to, so other list types are
+// rejected before this runs.
+//
+// With delete/mirror behavior, removals propagate too, as in the Plex sync:
+//   - a local item this task has already synced that is missing from Trakt
+//     was removed there, so it is removed locally;
+//   - a Trakt item the user removed locally after since is removed from Trakt.
+func (s *Service) syncTraktBidirectional(traktAccount *config.TraktAccount, profileID, listType, customListID, syncSource, deleteBehavior, conflictResolution string, since *time.Time, dryRun bool) (SyncResult, error) {
 	now := time.Now().UTC()
 	result := SyncResult{DryRun: dryRun}
+	propagateDeletes := deleteBehavior != "additive"
 
 	// Get both lists
 	traktItems, err := s.getTraktListItems(s.traktFor(traktAccount), traktAccount.AccessToken, listType, customListID)
@@ -1797,8 +1952,11 @@ func (s *Service) syncTraktBidirectional(traktAccount *config.TraktAccount, prof
 	}
 
 	synced := 0
+	var moviesToRemove []trakt.SyncMovie
+	var showsToRemove []trakt.SyncShow
 
-	// Step 1: Sync Trakt → Local (items in Trakt not in local)
+	// Step 1: Sync Trakt → Local (items in Trakt not in local), or collect
+	// local removals to push to Trakt.
 	for i, traktItem := range traktItems {
 		input := resolvedTraktInputs[i]
 		if schedulerWatchlistHasAnyKey(localKeys, traktItem.MediaType, input.ID, input.ExternalIDs) {
@@ -1810,7 +1968,34 @@ func (s *Service) syncTraktBidirectional(traktAccount *config.TraktAccount, prof
 			continue
 		}
 
+		if propagateDeletes && since != nil && s.watchlistService.RemovedSince(profileID, traktItem.MediaType, input.ID, input.ExternalIDs, *since) {
+			ids, ok := traktSyncIDsFor(input.ID, traktItem.IDs)
+			if !ok {
+				log.Printf("[scheduler] Cannot remove %s from Trakt: no TMDB/IMDb ID", traktItem.Title)
+				continue
+			}
+			if dryRun {
+				log.Printf("[scheduler] DRY RUN: Would remove from Trakt (removed locally): %s", traktItem.Title)
+				result.ToRemove = append(result.ToRemove, config.DryRunItem{
+					Name:      traktItem.Title + " (from Trakt)",
+					MediaType: traktItem.MediaType,
+					ID:        input.ID,
+				})
+				continue
+			}
+			if traktItem.MediaType == "movie" {
+				moviesToRemove = append(moviesToRemove, trakt.SyncMovie{IDs: ids})
+			} else {
+				showsToRemove = append(showsToRemove, trakt.SyncShow{IDs: ids})
+			}
+			log.Printf("[scheduler] Will remove from Trakt watchlist (removed locally): %s", traktItem.Title)
+			continue
+		}
+
 		if dryRun {
+			if s.watchlistService.RemovedSince(profileID, traktItem.MediaType, input.ID, input.ExternalIDs, time.Time{}) {
+				continue // the import skips items the user removed locally
+			}
 			log.Printf("[scheduler] DRY RUN: Would import from Trakt: %s (%s)", traktItem.Title, traktItem.MediaType)
 			result.ToAdd = append(result.ToAdd, config.DryRunItem{
 				Name:      traktItem.Title + " (from Trakt)",
@@ -1830,82 +2015,109 @@ func (s *Service) syncTraktBidirectional(traktAccount *config.TraktAccount, prof
 		synced++
 	}
 
-	// Step 2: Sync Local → Trakt (items in local not in Trakt)
-	// Note: Only supported for watchlist list type
-	if listType == "watchlist" {
-		var moviesToAdd []trakt.SyncMovie
-		var showsToAdd []trakt.SyncShow
+	// Step 2: Sync Local → Trakt (items in local not in Trakt), or apply Trakt
+	// removals locally.
+	var moviesToAdd []trakt.SyncMovie
+	var showsToAdd []trakt.SyncShow
+	var exportedItems []models.WatchlistItem
+	removedFromLocal := 0
 
-		for _, localItem := range localItems {
-			if schedulerWatchlistHasAnyKey(traktKeys, localItem.MediaType, localItem.ID, localItem.ExternalIDs) {
-				continue // Already in Trakt
-			}
+	for _, localItem := range localItems {
+		if schedulerWatchlistHasAnyKey(traktKeys, localItem.MediaType, localItem.ID, localItem.ExternalIDs) {
+			continue // Already in Trakt
+		}
 
-			// Get IDs for Trakt API
-			var tmdbID int
-			var imdbID string
-			if localItem.ExternalIDs != nil {
-				if tmdbStr, ok := localItem.ExternalIDs["tmdb"]; ok {
-					tmdbID, _ = strconv.Atoi(tmdbStr)
-				}
-				imdbID = localItem.ExternalIDs["imdb"]
-			}
-
-			if tmdbID == 0 && imdbID == "" {
-				tmdbID, _ = strconv.Atoi(localItem.ID)
-			}
-
-			if tmdbID == 0 && imdbID == "" {
-				log.Printf("[scheduler] Skipping export of %s: no valid IDs for Trakt", localItem.Name)
-				continue
-			}
-
+		// Items this task already synced were on Trakt at an earlier run, so
+		// their absence now means they were removed from Trakt.
+		if propagateDeletes && localItem.SyncSource == syncSource {
 			if dryRun {
-				log.Printf("[scheduler] DRY RUN: Would export to Trakt: %s", localItem.Name)
-				result.ToAdd = append(result.ToAdd, config.DryRunItem{
-					Name:      localItem.Name + " (to Trakt)",
+				log.Printf("[scheduler] DRY RUN: Would remove from local (removed from Trakt): %s", localItem.Name)
+				result.ToRemove = append(result.ToRemove, config.DryRunItem{
+					Name:      localItem.Name,
 					MediaType: localItem.MediaType,
 					ID:        localItem.ID,
 				})
-				synced++
 				continue
 			}
-
-			if localItem.MediaType == "movie" {
-				moviesToAdd = append(moviesToAdd, trakt.SyncMovie{
-					IDs: trakt.SyncIDs{
-						TMDB: tmdbID,
-						IMDB: imdbID,
-					},
-				})
-			} else if localItem.MediaType == "series" {
-				showsToAdd = append(showsToAdd, trakt.SyncShow{
-					IDs: trakt.SyncIDs{
-						TMDB: tmdbID,
-						IMDB: imdbID,
-					},
-				})
+			if ok, err := s.watchlistService.RemoveSynced(profileID, localItem.MediaType, localItem.ID); err != nil {
+				log.Printf("[scheduler] Failed to remove watchlist item %s: %v", localItem.Name, err)
+			} else if ok {
+				log.Printf("[scheduler] Removed watchlist item no longer in Trakt: %s", localItem.Name)
+				removedFromLocal++
 			}
+			continue
+		}
 
-			log.Printf("[scheduler] Will export to Trakt: %s", localItem.Name)
+		ids, ok := traktSyncIDsFor(localItem.ID, localItem.ExternalIDs)
+		if !ok {
+			log.Printf("[scheduler] Skipping export of %s: no valid IDs for Trakt", localItem.Name)
+			continue
+		}
+
+		if dryRun {
+			log.Printf("[scheduler] DRY RUN: Would export to Trakt: %s", localItem.Name)
+			result.ToAdd = append(result.ToAdd, config.DryRunItem{
+				Name:      localItem.Name + " (to Trakt)",
+				MediaType: localItem.MediaType,
+				ID:        localItem.ID,
+			})
 			synced++
+			continue
 		}
 
-		if !dryRun && (len(moviesToAdd) > 0 || len(showsToAdd) > 0) {
-			err := s.traktFor(traktAccount).AddToWatchlist(traktAccount.AccessToken, moviesToAdd, showsToAdd)
-			s.traktClient.InvalidateListCache(traktAccount.ID)
-			if err != nil {
-				log.Printf("[scheduler] Failed to add items to Trakt watchlist: %v", err)
-			} else {
-				log.Printf("[scheduler] Exported %d movies and %d shows to Trakt watchlist", len(moviesToAdd), len(showsToAdd))
-			}
+		if localItem.MediaType == "movie" {
+			moviesToAdd = append(moviesToAdd, trakt.SyncMovie{IDs: ids})
+		} else if localItem.MediaType == "series" {
+			showsToAdd = append(showsToAdd, trakt.SyncShow{IDs: ids})
+		} else {
+			continue
 		}
-	} else {
-		log.Printf("[scheduler] Note: Bidirectional sync to Trakt only supported for watchlist type (current: %s)", listType)
+		exportedItems = append(exportedItems, localItem)
+
+		log.Printf("[scheduler] Will export to Trakt: %s", localItem.Name)
+		synced++
 	}
 
-	if deleteBehavior != "additive" {
-		log.Printf("[scheduler] Note: delete/mirror behavior in bidirectional mode currently only adds items (deletion tracking not yet implemented)")
+	if !dryRun && (len(moviesToAdd) > 0 || len(showsToAdd) > 0) {
+		err := s.traktFor(traktAccount).AddToWatchlist(traktAccount.AccessToken, moviesToAdd, showsToAdd)
+		s.traktClient.InvalidateListCache(traktAccount.ID)
+		if err != nil {
+			log.Printf("[scheduler] Failed to add items to Trakt watchlist: %v", err)
+		} else {
+			log.Printf("[scheduler] Exported %d movies and %d shows to Trakt watchlist", len(moviesToAdd), len(showsToAdd))
+			// Mark the items as synced so a later removal from Trakt is
+			// recognised even if it happens before the next run sees them there.
+			for _, item := range exportedItems {
+				if _, err := s.watchlistService.AddOrUpdate(profileID, models.WatchlistUpsert{
+					ID:         item.ID,
+					MediaType:  item.MediaType,
+					SyncSource: syncSource,
+					SyncedAt:   &now,
+				}); err != nil {
+					log.Printf("[scheduler] Failed to mark %s as synced to Trakt: %v", item.Name, err)
+				}
+			}
+		}
+	}
+
+	traktRemovalFailed := false
+	if !dryRun && (len(moviesToRemove) > 0 || len(showsToRemove) > 0) {
+		err := s.traktFor(traktAccount).RemoveFromWatchlist(traktAccount.AccessToken, moviesToRemove, showsToRemove)
+		s.traktClient.InvalidateListCache(traktAccount.ID)
+		if err != nil {
+			log.Printf("[scheduler] Failed to remove items from Trakt watchlist: %v", err)
+			traktRemovalFailed = true
+		} else {
+			log.Printf("[scheduler] Removed %d items from Trakt watchlist (removed locally)", len(moviesToRemove)+len(showsToRemove))
+		}
+	}
+	if removedFromLocal > 0 {
+		log.Printf("[scheduler] Removed %d local items no longer in Trakt watchlist", removedFromLocal)
+	}
+
+	// A failed Trakt removal keeps the previous cursor so the next run retries it.
+	if !traktRemovalFailed {
+		result.Config = map[string]string{watchlistSyncCursorKey: now.Format(time.RFC3339Nano)}
 	}
 
 	result.Count = synced
@@ -2142,9 +2354,7 @@ func (s *Service) syncTraktHistoryToLocal(task config.ScheduledTask, traktAccoun
 	var since time.Time
 	isFullSync := false
 
-	s.lastFullSyncTimesMu.Lock()
-	lastFull, ok := s.lastFullSyncTimes[task.ID]
-	s.lastFullSyncTimesMu.Unlock()
+	lastFull, ok := s.lastFullHistorySync(task, task.ID, lastFullHistoryImportConfigKey)
 
 	if task.Config["fullSync"] == "true" {
 		// A manual full sync includes all history, including watches older than a year.
@@ -2220,9 +2430,7 @@ func (s *Service) syncTraktHistoryToLocal(task config.ScheduledTask, traktAccoun
 	}
 
 	if isFullSync {
-		s.lastFullSyncTimesMu.Lock()
-		s.lastFullSyncTimes[task.ID] = time.Now().UTC()
-		s.lastFullSyncTimesMu.Unlock()
+		s.markFullHistorySync(&result, task.ID, lastFullHistoryImportConfigKey)
 		log.Printf("[scheduler] Full Trakt history reconciliation complete, next in %v", fullSyncInterval)
 	}
 
@@ -2232,6 +2440,7 @@ func (s *Service) syncTraktHistoryToLocal(task config.ScheduledTask, traktAccoun
 // syncLocalHistoryToTrakt exports local watch history to Trakt
 func (s *Service) syncLocalHistoryToTrakt(task config.ScheduledTask, traktAccount *config.TraktAccount, profileID string, dryRun bool) (SyncResult, error) {
 	result := SyncResult{DryRun: dryRun}
+	startedAt := time.Now().UTC()
 
 	s.mu.RLock()
 	historySvc := s.historyService
@@ -2246,9 +2455,7 @@ func (s *Service) syncLocalHistoryToTrakt(task config.ScheduledTask, traktAccoun
 
 	// Reconcile older local watches periodically as well as on manual full sync.
 	exportKey := task.ID + ":trakt_export"
-	s.lastFullSyncTimesMu.Lock()
-	lastFull, haveFull := s.lastFullSyncTimes[exportKey]
-	s.lastFullSyncTimesMu.Unlock()
+	lastFull, haveFull := s.lastFullHistorySync(task, exportKey, lastFullHistoryExportConfigKey)
 	isFullExport := task.Config["fullSync"] == "true" || task.Config["fullExport"] == "true" ||
 		!haveFull || time.Since(lastFull) >= 6*time.Hour
 	var since time.Time
@@ -2299,6 +2506,17 @@ func (s *Service) syncLocalHistoryToTrakt(task config.ScheduledTask, traktAccoun
 		}
 	}
 	log.Printf("[scheduler] Found %d unique items already on Trakt history", len(alreadyOnTrakt))
+
+	// Bidirectional: a play removed on Trakt since the last sync must not be
+	// re-added by the full export. Only a full listing proves absence.
+	removals, err := s.newHistoryRemovalTracker(task, "trakt", traktAccount.ID, profileID, startedAt)
+	if err != nil {
+		return result, err
+	}
+	if since.IsZero() {
+		removals.setCompleteRemote(alreadyOnTrakt)
+	}
+	var remoteRemoved []models.WatchHistoryItem
 
 	traktHistoryByKey := make(map[string]traktHistoryState)
 	for _, ti := range deletionTraktItems {
@@ -2414,6 +2632,13 @@ func (s *Service) syncLocalHistoryToTrakt(task config.ScheduledTask, traktAccoun
 			skipped++
 			continue
 		}
+		if removals.removedRemotely(item, historyAliasKeys(item.MediaType, item.ItemID, item.ExternalIDs)) {
+			remoteRemoved = append(remoteRemoved, item)
+			if dryRun {
+				result.ToRemove = append(result.ToRemove, historyRemovalDryRunItem(item))
+			}
+			continue
+		}
 
 		if item.MediaType == "movie" {
 			var tmdbID, tvdbID int
@@ -2496,10 +2721,10 @@ func (s *Service) syncLocalHistoryToTrakt(task config.ScheduledTask, traktAccoun
 		}
 	}
 
-	log.Printf("[scheduler] Local→Trakt: %d to export, %d to remove, %d skipped (already on Trakt)", exported, removed, skipped)
+	log.Printf("[scheduler] Local→Trakt: %d to export, %d to remove, %d skipped (already on Trakt), %d removed on Trakt", exported, removed, skipped, len(remoteRemoved))
 
 	if dryRun {
-		result.Count = exported + removed
+		result.Count = exported + removed + len(remoteRemoved)
 		return result, nil
 	}
 
@@ -2580,8 +2805,17 @@ func (s *Service) syncLocalHistoryToTrakt(task config.ScheduledTask, traktAccoun
 		}
 	}
 
+	mirrored, err := s.mirrorRemoteHistoryRemovals(profileID, "Trakt", remoteRemoved)
+	result.Count += mirrored
+	if err != nil {
+		return result, err
+	}
+	if err := s.saveHistoryRemovalSnapshot(removals, alreadyOnTrakt, since.IsZero()); err != nil {
+		return result, err
+	}
+
 	if isFullExport {
-		s.recordFullHistorySync(exportKey)
+		s.markFullHistorySync(&result, exportKey, lastFullHistoryExportConfigKey)
 	}
 	return result, nil
 }
@@ -4220,6 +4454,9 @@ func (s *Service) executeJellyfinFavoritesSync(task config.ScheduledTask) (SyncR
 		}
 
 		isNew := !schedulerWatchlistHasAnyKey(existingKeys, mediaType, input.ID, input.ExternalIDs)
+		if isNew && dryRun && s.watchlistService.RemovedSince(profileID, mediaType, input.ID, input.ExternalIDs, time.Time{}) {
+			isNew = false // the import skips items the user removed locally
+		}
 
 		if dryRun {
 			if isNew {
@@ -4362,7 +4599,9 @@ func (s *Service) executeJellyfinHistorySync(task config.ScheduledTask) (SyncRes
 			continue
 		}
 
-		watchedAt := time.Now().UTC()
+		// Without a play date the import must not override local state: "now"
+		// would always beat a local unwatch and re-watch the item every run.
+		var watchedAt time.Time
 		if item.DatePlayed != nil {
 			watchedAt = *item.DatePlayed
 		}
@@ -4374,13 +4613,14 @@ func (s *Service) executeJellyfinHistorySync(task config.ScheduledTask) (SyncRes
 		extIDs["jellyfin"] = item.ID
 
 		update := models.WatchHistoryUpdate{
-			MediaType:   mediaType,
-			ItemID:      itemID,
-			Name:        item.Name,
-			Year:        item.Year,
-			Watched:     &watched,
-			WatchedAt:   watchedAt,
-			ExternalIDs: extIDs,
+			MediaType:        mediaType,
+			ItemID:           itemID,
+			Name:             item.Name,
+			Year:             item.Year,
+			Watched:          &watched,
+			WatchedAt:        watchedAt,
+			WatchedAtUnknown: item.DatePlayed == nil,
+			ExternalIDs:      extIDs,
 		}
 
 		if item.Type == "Episode" {
@@ -4429,6 +4669,13 @@ func (s *Service) executeMDBListWatchlistSync(task config.ScheduledTask) (SyncRe
 	if deleteBehavior == "" {
 		deleteBehavior = "additive"
 	}
+
+	// The MDBList watchlist is import-only; fail loudly rather than silently
+	// importing for a task configured to export.
+	if syncDirection != "source_to_target" {
+		return SyncResult{}, errors.New("MDBList watchlist sync only supports importing; set the sync direction to MDBList → mediastorm")
+	}
+
 	dryRun := task.Config["dryRun"] == "true"
 
 	settings, err := s.configManager.Load()
@@ -4561,6 +4808,9 @@ func (s *Service) syncMDBListWatchlistToLocal(account *config.MDBListAccount, pr
 			mdblistItemKeys[key] = true
 		}
 		isNew := !schedulerWatchlistHasAnyKey(existingKeys, mediaType, input.ID, input.ExternalIDs)
+		if isNew && dryRun && s.watchlistService.RemovedSince(profileID, mediaType, input.ID, input.ExternalIDs, time.Time{}) {
+			isNew = false // the import skips items the user removed locally
+		}
 
 		if dryRun {
 			if isNew {
@@ -4582,15 +4832,31 @@ func (s *Service) syncMDBListWatchlistToLocal(account *config.MDBListAccount, pr
 	}
 
 	// Handle deletions for delete/mirror modes
-	if deleteBehavior != "additive" && !dryRun {
+	if deleteBehavior != "additive" {
 		localItems, err := s.watchlistService.List(profileID)
-		if err == nil {
-			for _, item := range localItems {
-				if item.SyncSource == syncSource && !schedulerWatchlistHasAnyKey(mdblistItemKeys, item.MediaType, item.ID, item.ExternalIDs) {
-					if _, err := s.watchlistService.RemoveSynced(profileID, item.MediaType, item.ID); err != nil {
-						log.Printf("[scheduler] Failed to remove stale MDBList watchlist item: %v", err)
-					}
-				}
+		if err != nil {
+			log.Printf("[scheduler] Failed to list local items for deletion check: %v", err)
+		}
+		for _, item := range localItems {
+			if schedulerWatchlistHasAnyKey(mdblistItemKeys, item.MediaType, item.ID, item.ExternalIDs) {
+				continue // Item still in MDBList, keep it
+			}
+			// "delete" only removes items this task synced; "mirror" removes
+			// everything not in MDBList.
+			if deleteBehavior == "delete" && item.SyncSource != syncSource {
+				continue
+			}
+			if dryRun {
+				log.Printf("[scheduler] DRY RUN: Would remove from local: %s", item.Name)
+				result.ToRemove = append(result.ToRemove, config.DryRunItem{
+					Name:      item.Name,
+					MediaType: item.MediaType,
+					ID:        item.ID,
+				})
+				continue
+			}
+			if _, err := s.watchlistService.RemoveSynced(profileID, item.MediaType, item.ID); err != nil {
+				log.Printf("[scheduler] Failed to remove stale MDBList watchlist item: %v", err)
 			}
 		}
 	}

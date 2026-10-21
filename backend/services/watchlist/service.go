@@ -139,6 +139,25 @@ func (s *Service) Contains(userID, mediaType, id string, externalIDs map[string]
 	return false
 }
 
+// RemovedSince reports whether the user explicitly removed the title from
+// their watchlist after the given time. Bidirectional syncs use it to push
+// local removals to the remote list instead of treating them as unseen items.
+func (s *Service) RemovedSince(userID, mediaType, id string, externalIDs map[string]string, since time.Time) bool {
+	userID = strings.TrimSpace(userID)
+	mediaType = mediaidentity.NormalizeMediaType(mediaType)
+	externalIDs = normaliseExternalIDs(externalIDs)
+	if userID == "" || mediaType == "" || (strings.TrimSpace(id) == "" && len(externalIDs) == 0) {
+		return false
+	}
+	canonicalID := canonicalWatchlistID(mediaType, id, externalIDs)
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	tombstone, found := s.findTombstoneLocked(userID, mediaType, canonicalID, externalIDs)
+	return found && tombstone.RemovedAt.After(since)
+}
+
 // Clear removes every profile's watchlist and sync tombstones, returning the
 // number of visible watchlist entries removed.
 func (s *Service) Clear() (int, error) {
@@ -755,21 +774,26 @@ func (s *Service) upsertTombstoneLocked(userID string, item models.WatchlistItem
 }
 
 func (s *Service) isTombstonedLocked(userID, mediaType, canonicalID string, externalIDs map[string]string) bool {
+	_, found := s.findTombstoneLocked(userID, mediaType, canonicalID, externalIDs)
+	return found
+}
+
+func (s *Service) findTombstoneLocked(userID, mediaType, canonicalID string, externalIDs map[string]string) (models.WatchlistTombstone, bool) {
 	perUser, ok := s.tombstones[userID]
 	if !ok {
-		return false
+		return models.WatchlistTombstone{}, false
 	}
 	for _, key := range watchlistCandidateKeys(mediaType, canonicalID, externalIDs) {
-		if _, exists := perUser[key]; exists {
-			return true
+		if tombstone, exists := perUser[key]; exists {
+			return tombstone, true
 		}
 	}
 	for _, tombstone := range perUser {
 		if tombstoneMatchesIdentifier(tombstone, mediaType, canonicalID, externalIDs) {
-			return true
+			return tombstone, true
 		}
 	}
-	return false
+	return models.WatchlistTombstone{}, false
 }
 
 func (s *Service) clearTombstonesLocked(userID, mediaType, canonicalID string, externalIDs map[string]string) {

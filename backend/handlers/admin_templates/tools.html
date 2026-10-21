@@ -6726,8 +6726,6 @@
         } else if (taskType === 'mdblist_watchlist_sync') {
             syncDirection.innerHTML = `
                 <option value="source_to_target" selected>MDBList → mediastorm (Import from MDBList)</option>
-                <option value="target_to_source">mediastorm → MDBList (Export to MDBList)</option>
-                <option value="bidirectional">Bidirectional (Sync both ways)</option>
             `;
         } else if (taskType === 'jellyfin_favorites_sync') {
             syncDirection.innerHTML = `
@@ -7272,8 +7270,6 @@
         } else if (task.type === 'mdblist_watchlist_sync') {
             syncDirection.innerHTML = `
                 <option value="source_to_target">MDBList → mediastorm (Import from MDBList)</option>
-                <option value="target_to_source">mediastorm → MDBList (Export to MDBList)</option>
-                <option value="bidirectional">Bidirectional (Sync both ways)</option>
             `;
         } else if (task.type === 'jellyfin_favorites_sync') {
             syncDirection.innerHTML = `

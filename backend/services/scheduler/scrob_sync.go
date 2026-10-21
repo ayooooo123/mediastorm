@@ -204,6 +204,7 @@ func scrobEventToUpdate(event scrob.HistoryEvent, watched *bool) *models.WatchHi
 
 func (s *Service) syncLocalHistoryToScrob(task config.ScheduledTask, account *config.ScrobAccount, profileID string, dryRun bool) (SyncResult, error) {
 	result := SyncResult{DryRun: dryRun}
+	startedAt := time.Now().UTC()
 	s.mu.RLock()
 	client, historySvc := s.scrobClient, s.historyService
 	s.mu.RUnlock()
@@ -230,15 +231,22 @@ func (s *Service) syncLocalHistoryToScrob(task config.ScheduledTask, account *co
 			}
 		}
 	}
+	// Scrob always returns its whole history, so every bidirectional run can
+	// tell a play removed on Scrob apart from one that never reached it.
+	removals, err := s.newHistoryRemovalTracker(task, "scrob", account.ID, profileID, startedAt)
+	if err != nil {
+		return result, err
+	}
+	removals.setCompleteRemote(completedKeys)
+	var remoteRemoved []models.WatchHistoryItem
+
 	s.mu.RLock()
 	metadataSvc := s.metadataService
 	s.mu.RUnlock()
 	metadataCache := make(map[string]*models.SeriesDetails)
 
 	exportKey := task.ID + ":scrob_export"
-	s.lastFullSyncTimesMu.Lock()
-	lastFull, haveFull := s.lastFullSyncTimes[exportKey]
-	s.lastFullSyncTimesMu.Unlock()
+	lastFull, haveFull := s.lastFullHistorySync(task, exportKey, lastFullHistoryExportConfigKey)
 	isFull := task.Config["fullExport"] == "true" || task.Config["fullSync"] == "true" || !haveFull || time.Since(lastFull) >= 6*time.Hour
 	var since time.Time
 	if lastRun := historySyncLastRun(task); !isFull && lastRun != nil {
@@ -291,6 +299,14 @@ func (s *Service) syncLocalHistoryToScrob(task config.ScheduledTask, account *co
 		remoteItems := remoteByKey[candidate.key]
 		exists := len(remoteItems) > 0
 		if candidate.item.Watched && !completedKeys[candidate.key] {
+			keys := []string{candidate.key}
+			for aliasKey := range candidate.aliasKeys {
+				keys = append(keys, aliasKey)
+			}
+			if removals.removedRemotely(candidate.item, keys) {
+				remoteRemoved = append(remoteRemoved, candidate.item)
+				continue
+			}
 			changes = append(changes, candidate)
 		} else if !candidate.item.Watched && exists {
 			for _, remoteItem := range remoteItems {
@@ -322,16 +338,35 @@ func (s *Service) syncLocalHistoryToScrob(task config.ScheduledTask, account *co
 				result.ToRemove = append(result.ToRemove, d)
 			}
 		}
+		for _, item := range remoteRemoved {
+			result.ToRemove = append(result.ToRemove, historyRemovalDryRunItem(item))
+		}
 		result.Count = len(result.ToAdd) + len(result.ToRemove)
 		return result, nil
 	}
-	if len(changes) == 0 {
-		if isFull {
-			s.lastFullSyncTimesMu.Lock()
-			s.lastFullSyncTimes[exportKey] = time.Now().UTC()
-			s.lastFullSyncTimesMu.Unlock()
+	presentKeys := make(map[string]bool, len(completedKeys))
+	for key, completed := range completedKeys {
+		if completed {
+			presentKeys[key] = true
 		}
-		return result, nil
+	}
+	// Mirror Scrob-side removals and record what is on Scrob after the export.
+	finish := func() error {
+		mirrored, err := s.mirrorRemoteHistoryRemovals(profileID, "Scrob", remoteRemoved)
+		result.Count += mirrored
+		if err != nil {
+			return err
+		}
+		if err := s.saveHistoryRemovalSnapshot(removals, presentKeys, true); err != nil {
+			return err
+		}
+		if isFull {
+			s.markFullHistorySync(&result, exportKey, lastFullHistoryExportConfigKey)
+		}
+		return nil
+	}
+	if len(changes) == 0 {
+		return result, finish()
 	}
 	twoFactorCode := ""
 	if strings.TrimSpace(account.TOTPSecret) != "" {
@@ -347,15 +382,9 @@ func (s *Service) syncLocalHistoryToScrob(task config.ScheduledTask, account *co
 	failed := 0
 	firstFailureSet := false
 	firstFailureType, firstFailureName := "", ""
-	presentKeys := make(map[string]struct{}, len(remoteByKey))
-	for key, completed := range completedKeys {
-		if completed {
-			presentKeys[key] = struct{}{}
-		}
-	}
 	for _, change := range changes {
 		if change.requiresPresence != "" {
-			if _, present := presentKeys[change.requiresPresence]; !present {
+			if !presentKeys[change.requiresPresence] {
 				continue
 			}
 		}
@@ -380,7 +409,9 @@ func (s *Service) syncLocalHistoryToScrob(task config.ScheduledTask, account *co
 			continue
 		}
 		if !change.remove {
-			presentKeys[change.key] = struct{}{}
+			presentKeys[change.key] = true
+		} else if change.requiresPresence == "" {
+			delete(presentKeys, change.key)
 		}
 		result.Count++
 	}
@@ -388,12 +419,7 @@ func (s *Service) syncLocalHistoryToScrob(task config.ScheduledTask, account *co
 		log.Printf("[scheduler] Scrob export completed partially: synced=%d failed=%d total=%d", result.Count, failed, len(changes))
 		return result, scrobExportPartialError(result.Count, len(changes), failed, firstFailureType, firstFailureName)
 	}
-	if isFull {
-		s.lastFullSyncTimesMu.Lock()
-		s.lastFullSyncTimes[exportKey] = time.Now().UTC()
-		s.lastFullSyncTimesMu.Unlock()
-	}
-	return result, nil
+	return result, finish()
 }
 
 func appendUniqueScrobMedia(items []scrob.Media, candidate scrob.Media) []scrob.Media {

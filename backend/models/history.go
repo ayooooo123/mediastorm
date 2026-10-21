@@ -116,14 +116,18 @@ type WatchHistoryItem struct {
 
 // WatchHistoryUpdate represents an update to mark an item as watched/unwatched.
 type WatchHistoryUpdate struct {
-	MediaType      string            `json:"mediaType"`
-	ItemID         string            `json:"itemId"`
-	Name           string            `json:"name,omitempty"`
-	Year           int               `json:"year,omitempty"`
-	Watched        *bool             `json:"watched,omitempty"`
-	WatchedAt      time.Time         `json:"watchedAt,omitempty"` // Optional: use specific timestamp instead of now
-	WatchedSeconds float64           `json:"watchedSeconds,omitempty"`
-	ExternalIDs    map[string]string `json:"externalIds,omitempty"`
+	MediaType string    `json:"mediaType"`
+	ItemID    string    `json:"itemId"`
+	Name      string    `json:"name,omitempty"`
+	Year      int       `json:"year,omitempty"`
+	Watched   *bool     `json:"watched,omitempty"`
+	WatchedAt time.Time `json:"watchedAt,omitempty"` // Optional: use specific timestamp instead of now
+	// WatchedAtUnknown marks an import whose source has no play date. Such an
+	// update only adds items missing locally; it never overrides local state,
+	// because "now" would always look newer than a local unwatch.
+	WatchedAtUnknown bool              `json:"-"`
+	WatchedSeconds   float64           `json:"watchedSeconds,omitempty"`
+	ExternalIDs      map[string]string `json:"externalIds,omitempty"`
 
 	// Episode-specific
 	SeasonNumber  int    `json:"seasonNumber,omitempty"`

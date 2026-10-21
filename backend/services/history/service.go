@@ -4186,6 +4186,18 @@ func (s *Service) ImportWatchHistory(userID string, updates []models.WatchHistor
 			}
 		}
 
+		if exists && update.WatchedAtUnknown {
+			if existing.Watched {
+				skippedLocalNewer++
+			} else {
+				skippedManualUnwatch++
+			}
+			log.Printf("[history] import: SKIP (no play date, local state kept) %s %q itemID=%q watched=%t",
+				update.MediaType, update.Name, normalizedItemID, existing.Watched)
+			persistDedupedSkip()
+			continue
+		}
+
 		// "Most recent wins" for watched items.
 		// Also preserve a manual local unwatch when the imported event is not newer
 		// than the last known watched timestamp on the local item.

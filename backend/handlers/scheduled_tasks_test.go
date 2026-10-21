@@ -778,3 +778,25 @@ func TestRunTaskNowRejectsInvalidFullSync(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateScheduledTaskConfigRejectsUnsupportedExportDirections(t *testing.T) {
+	cases := []struct {
+		name     string
+		taskType config.ScheduledTaskType
+		cfg      map[string]string
+		wantErr  bool
+	}{
+		{"trakt collection bidirectional", config.ScheduledTaskTypeTraktListSync, map[string]string{"traktAccountId": "a", "profileId": "p", "listType": "collection", "syncDirection": "bidirectional"}, true},
+		{"trakt custom export", config.ScheduledTaskTypeTraktListSync, map[string]string{"traktAccountId": "a", "profileId": "p", "listType": "custom", "customListId": "1", "syncDirection": "target_to_source"}, true},
+		{"trakt collection import", config.ScheduledTaskTypeTraktListSync, map[string]string{"traktAccountId": "a", "profileId": "p", "listType": "collection", "syncDirection": "source_to_target"}, false},
+		{"trakt watchlist bidirectional", config.ScheduledTaskTypeTraktListSync, map[string]string{"traktAccountId": "a", "profileId": "p", "listType": "watchlist", "syncDirection": "bidirectional"}, false},
+		{"mdblist watchlist export", config.ScheduledTaskTypeMDBListWatchlistSync, map[string]string{"mdblistAccountId": "a", "profileId": "p", "syncDirection": "target_to_source"}, true},
+		{"mdblist watchlist import", config.ScheduledTaskTypeMDBListWatchlistSync, map[string]string{"mdblistAccountId": "a", "profileId": "p", "syncDirection": "source_to_target"}, false},
+	}
+	for _, tc := range cases {
+		err := validateScheduledTaskConfig(tc.taskType, tc.cfg, nil)
+		if (err != nil) != tc.wantErr {
+			t.Errorf("%s: err = %v, wantErr %v", tc.name, err, tc.wantErr)
+		}
+	}
+}

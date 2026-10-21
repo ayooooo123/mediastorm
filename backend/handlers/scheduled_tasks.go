@@ -189,6 +189,10 @@ func validateScheduledTaskConfig(taskType config.ScheduledTaskType, taskConfig m
 		if listType == "custom" && taskConfig["customListId"] == "" {
 			return fmt.Errorf("Custom list sync requires customListId in config")
 		}
+		// Trakt only exposes writes for the watchlist.
+		if listType != "watchlist" && taskConfig["syncDirection"] != "" && taskConfig["syncDirection"] != "source_to_target" {
+			return fmt.Errorf("Trakt %s lists can only be imported (Trakt → mediastorm)", listType)
+		}
 	case config.ScheduledTaskTypePlexHistorySync:
 		if err := requireProfile("plexAccountId", "Plex history sync requires plexAccountId and profileId in config"); err != nil {
 			return err
@@ -243,7 +247,12 @@ func validateScheduledTaskConfig(taskType config.ScheduledTaskType, taskConfig m
 			return errors.New("Local media scan requires libraryId in config")
 		}
 	case config.ScheduledTaskTypeMDBListWatchlistSync:
-		return requireProfile("mdblistAccountId", "MDBList watchlist sync requires mdblistAccountId and profileId in config")
+		if err := requireProfile("mdblistAccountId", "MDBList watchlist sync requires mdblistAccountId and profileId in config"); err != nil {
+			return err
+		}
+		if direction := taskConfig["syncDirection"]; direction != "" && direction != "source_to_target" {
+			return errors.New("MDBList watchlist sync only supports importing (MDBList → mediastorm)")
+		}
 	case config.ScheduledTaskTypeMDBListHistorySync:
 		if err := requireProfile("mdblistAccountId", "MDBList history sync requires mdblistAccountId and profileId in config"); err != nil {
 			return err

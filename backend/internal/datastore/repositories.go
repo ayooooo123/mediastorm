@@ -71,6 +71,13 @@ type SessionRepository interface {
 	Count(ctx context.Context) (int64, error)
 }
 
+// HistorySyncSnapshotRepository persists the remote history keys each
+// bidirectional history sync last saw, keyed by task/provider/account/profile.
+type HistorySyncSnapshotRepository interface {
+	Get(ctx context.Context, key string) (*models.HistorySyncSnapshot, error)
+	Put(ctx context.Context, snapshot models.HistorySyncSnapshot) error
+}
+
 // ProfileUnlockRepository persists server-issued profile PIN unlock grants.
 type ProfileUnlockRepository interface {
 	Create(ctx context.Context, unlock *models.ProfileUnlock) error

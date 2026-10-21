@@ -13,6 +13,7 @@ import (
 	"novastream/models"
 	"novastream/services/mdblist"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -380,6 +381,7 @@ func (s *Service) importMDBListHistoryPage(ctx context.Context, task config.Sche
 // syncLocalHistoryToMDBList exports local watch history to MDBList.
 func (s *Service) syncLocalHistoryToMDBList(task config.ScheduledTask, account *config.MDBListAccount, profileID string, dryRun bool) (SyncResult, error) {
 	result := SyncResult{DryRun: dryRun}
+	startedAt := time.Now().UTC()
 
 	s.mu.RLock()
 	historySvc := s.historyService
@@ -400,9 +402,7 @@ func (s *Service) syncLocalHistoryToMDBList(task config.ScheduledTask, account *
 	exportKey := task.ID + ":mdblist_export"
 	forceFull := task.Config["fullExport"] == "true" || task.Config["fullSync"] == "true"
 
-	s.lastFullSyncTimesMu.Lock()
-	lastFull, ok := s.lastFullSyncTimes[exportKey]
-	s.lastFullSyncTimesMu.Unlock()
+	lastFull, ok := s.lastFullHistorySync(task, exportKey, lastFullHistoryExportConfigKey)
 
 	isFullExport := forceFull || !ok || time.Since(lastFull) >= fullExportInterval
 	var since time.Time
@@ -414,10 +414,30 @@ func (s *Service) syncLocalHistoryToMDBList(task config.ScheduledTask, account *
 		removalSince = historySyncLastRun(task).Add(-5 * time.Minute)
 	}
 
-	var toSync, toRemove []models.WatchHistoryItem
+	// Bidirectional full exports list the whole MDBList watched history first so
+	// plays removed on MDBList since the last snapshot are not re-sent. The
+	// incremental import (since=) cannot prove that a play is gone.
+	removals, err := s.newHistoryRemovalTracker(task, "mdblist", account.ID, profileID, startedAt)
+	if err != nil {
+		return result, err
+	}
+	var remoteKeys map[string]bool
+	if removals != nil && since.IsZero() {
+		remoteKeys, err = s.fetchMDBListRemoteHistoryKeys(task, account)
+		if err != nil {
+			return result, err
+		}
+		removals.setCompleteRemote(remoteKeys)
+	}
+
+	var toSync, toRemove, remoteRemoved []models.WatchHistoryItem
 	for _, item := range items {
 		if item.Watched {
 			if since.IsZero() || item.WatchedAt.After(since) {
+				if removals.removedRemotely(item, mdblistLocalHistoryKeys(item)) {
+					remoteRemoved = append(remoteRemoved, item)
+					continue
+				}
 				toSync = append(toSync, item)
 			}
 		} else if task.Config["fullSync"] == "true" || (!removalSince.IsZero() && item.UpdatedAt.After(removalSince)) {
@@ -425,16 +445,25 @@ func (s *Service) syncLocalHistoryToMDBList(task config.ScheduledTask, account *
 		}
 	}
 
-	log.Printf("[scheduler] Found %d watched items to sync and %d recent unwatches to remove from MDBList (since %v fullExport=%v force=%v)",
-		len(toSync), len(toRemove), since, isFullExport, forceFull)
+	log.Printf("[scheduler] Found %d watched items to sync, %d recent unwatches to remove from MDBList and %d plays removed on MDBList (since %v fullExport=%v force=%v)",
+		len(toSync), len(toRemove), len(remoteRemoved), since, isFullExport, forceFull)
 
-	if len(toSync) == 0 && len(toRemove) == 0 {
-		if isFullExport && !dryRun {
-			s.lastFullSyncTimesMu.Lock()
-			s.lastFullSyncTimes[exportKey] = time.Now().UTC()
-			s.lastFullSyncTimesMu.Unlock()
+	// Mirror MDBList-side removals and record the listing once the export succeeds.
+	finish := func() error {
+		mirrored, err := s.mirrorRemoteHistoryRemovals(profileID, "MDBList", remoteRemoved)
+		result.Count += mirrored
+		if err != nil {
+			return err
 		}
-		return result, nil
+		if remoteKeys != nil {
+			if err := s.saveHistoryRemovalSnapshot(removals, remoteKeys, true); err != nil {
+				return err
+			}
+		}
+		if isFullExport {
+			s.markFullHistorySync(&result, exportKey, lastFullHistoryExportConfigKey)
+		}
+		return nil
 	}
 
 	if dryRun {
@@ -448,8 +477,15 @@ func (s *Service) syncLocalHistoryToMDBList(task config.ScheduledTask, account *
 		for _, item := range toRemove {
 			result.ToRemove = append(result.ToRemove, config.DryRunItem{Name: item.Name, MediaType: item.MediaType, ID: item.ItemID})
 		}
+		for _, item := range remoteRemoved {
+			result.ToRemove = append(result.ToRemove, historyRemovalDryRunItem(item))
+		}
 		result.Count = len(result.ToAdd) + len(result.ToRemove)
 		return result, nil
+	}
+
+	if len(toSync) == 0 && len(toRemove) == 0 {
+		return result, finish()
 	}
 
 	// Build MDBList sync requests batched by type.
@@ -725,14 +761,141 @@ func (s *Service) syncLocalHistoryToMDBList(task config.ScheduledTask, account *
 	log.Printf("[scheduler] Synced %d/%d changes to MDBList (skippedNoIDs=%d fullExport=%v)",
 		syncCount, len(toSync)+len(toRemove), skippedNoIDs, isFullExport)
 
-	if isFullExport && !dryRun {
-		s.lastFullSyncTimesMu.Lock()
-		s.lastFullSyncTimes[exportKey] = time.Now().UTC()
-		s.lastFullSyncTimesMu.Unlock()
+	if err := finish(); err != nil {
+		return result, err
+	}
+	if isFullExport {
 		log.Printf("[scheduler] Full MDBList history export complete, next full export in %v", fullExportInterval)
 	}
 
 	return result, nil
+}
+
+// fetchMDBListRemoteHistoryKeys pages through the full MDBList watched history
+// (no since filter) and returns the keys used to match local history.
+func (s *Service) fetchMDBListRemoteHistoryKeys(task config.ScheduledTask, account *config.MDBListAccount) (map[string]bool, error) {
+	s.mu.RLock()
+	parent := s.ctx
+	s.mu.RUnlock()
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, 30*time.Minute)
+	defer cancel()
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	keys := make(map[string]bool)
+	offset, limit := 0, 500
+	for {
+		values := url.Values{"apikey": {account.APIKey}, "limit": {strconv.Itoa(limit)}, "offset": {strconv.Itoa(offset)}}
+		resp, err := fetchMDBListHistoryPage(ctx, httpClient, "https://api.mdblist.com/sync/watched?"+values.Encode(), task.ID, offset, waitMDBListRetry)
+		if err != nil {
+			return nil, fmt.Errorf("list MDBList history for removal check: %w", err)
+		}
+		var page *struct {
+			Movies []struct {
+				LastWatchedAt string `json:"last_watched_at"`
+				Movie         struct {
+					IDs struct {
+						IMDB string `json:"imdb"`
+						TMDB int    `json:"tmdb"`
+					} `json:"ids"`
+				} `json:"movie"`
+			} `json:"movies"`
+			Episodes []struct {
+				LastWatchedAt string `json:"last_watched_at"`
+				Episode       struct {
+					Season int `json:"season"`
+					Number int `json:"number"`
+					Show   struct {
+						IDs struct {
+							IMDB string `json:"imdb"`
+							TMDB int    `json:"tmdb"`
+						} `json:"ids"`
+					} `json:"show"`
+				} `json:"episode"`
+			} `json:"episodes"`
+			Shows      []json.RawMessage `json:"shows"`
+			Seasons    []json.RawMessage `json:"seasons"`
+			Pagination struct {
+				HasMore bool `json:"has_more"`
+				Limit   int  `json:"limit"`
+			} `json:"pagination"`
+		}
+		decodeErr := json.NewDecoder(resp.Body).Decode(&page)
+		resp.Body.Close()
+		if decodeErr != nil {
+			return nil, fmt.Errorf("decode MDBList history for removal check: %w", decodeErr)
+		}
+		if page == nil {
+			return nil, errors.New("MDBList returned null instead of history")
+		}
+		for _, m := range page.Movies {
+			if m.LastWatchedAt == "" {
+				continue
+			}
+			for _, key := range mdblistHistoryKeys("movie", mdblistIDs{imdb: m.Movie.IDs.IMDB, tmdb: m.Movie.IDs.TMDB}, 0, 0) {
+				keys[key] = true
+			}
+		}
+		for _, e := range page.Episodes {
+			if e.LastWatchedAt == "" {
+				continue
+			}
+			ids := mdblistIDs{imdb: e.Episode.Show.IDs.IMDB, tmdb: e.Episode.Show.IDs.TMDB}
+			for _, key := range mdblistHistoryKeys("episode", ids, e.Episode.Season, e.Episode.Number) {
+				keys[key] = true
+			}
+		}
+		if !page.Pagination.HasMore {
+			return keys, nil
+		}
+		step := page.Pagination.Limit
+		if step <= 0 {
+			step = limit
+		}
+		if len(page.Movies)+len(page.Episodes)+len(page.Shows)+len(page.Seasons) == 0 {
+			return nil, fmt.Errorf("MDBList history returned an empty page with has_more=true (offset %d)", offset)
+		}
+		offset += step
+	}
+}
+
+// mdblistLocalHistoryKeys mirrors the IDs and coordinates the exporter sends,
+// including the hybrid absolute number used for not_found retries.
+func mdblistLocalHistoryKeys(item models.WatchHistoryItem) []string {
+	if item.MediaType == "movie" {
+		return mdblistHistoryKeys("movie", extractMDBListIDs(item.ExternalIDs), 0, 0)
+	}
+	ids := extractMDBListIDs(mediaidentity.EnrichShowExternalIDs(item.SeriesID, item.ItemID, item.ExternalIDs))
+	keys := mdblistHistoryKeys("episode", ids, item.SeasonNumber, item.EpisodeNumber)
+	if absolute := mdblist.HybridEpisodeNumber(item.EpisodeNumber, item.ExternalIDs); absolute > 0 && absolute != item.EpisodeNumber {
+		keys = append(keys, mdblistHistoryKeys("episode", ids, item.SeasonNumber, absolute)...)
+	}
+	return keys
+}
+
+func mdblistHistoryKeys(mediaType string, ids mdblistIDs, season, episode int) []string {
+	var keys []string
+	switch mediaType {
+	case "movie":
+		if ids.tmdb > 0 {
+			keys = append(keys, fmt.Sprintf("movie:tmdb:%d", ids.tmdb))
+		}
+		if imdb := strings.ToLower(strings.TrimSpace(ids.imdb)); imdb != "" {
+			keys = append(keys, "movie:imdb:"+imdb)
+		}
+	case "episode":
+		if season < 0 || episode <= 0 {
+			return nil
+		}
+		if ids.tmdb > 0 {
+			keys = append(keys, fmt.Sprintf("episode:tmdb:%d:%d:%d", ids.tmdb, season, episode))
+		}
+		if imdb := strings.ToLower(strings.TrimSpace(ids.imdb)); imdb != "" {
+			keys = append(keys, fmt.Sprintf("episode:imdb:%s:%d:%d", imdb, season, episode))
+		}
+	}
+	return keys
 }
 
 // API keys live in MDBList query strings; do not expose the URL in task errors.

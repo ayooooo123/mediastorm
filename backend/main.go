@@ -1188,6 +1188,9 @@ func main() {
 	usersHandler.SetConfigManager(cfgManager)
 	schedulerService.SetJellyfinClient(jellyfinClient)
 	schedulerService.SetLocalMediaService(localMediaService)
+	if store != nil {
+		schedulerService.SetHistorySyncSnapshotStore(store.HistorySyncSnapshots())
+	}
 	scheduledTasksHandler := handlers.NewScheduledTasksHandler(cfgManager, schedulerService, userService)
 
 	// Rate limiter for admin/account login (5/min per IP)

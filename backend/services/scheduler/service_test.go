@@ -1780,7 +1780,7 @@ func TestSyncBidirectional_ResolvesPlexIDFromExternalIDsForLocalExport(t *testin
 		watchlistService: watchlistSvc,
 	}
 
-	result, err := svc.syncBidirectional("plex-token", "profile-1", "plex:test:task", "additive", "source_wins", false)
+	result, err := svc.syncBidirectional("plex-token", "profile-1", "plex:test:task", "additive", "source_wins", nil, false)
 	if err != nil {
 		t.Fatalf("syncBidirectional() error = %v", err)
 	}
@@ -1862,7 +1862,7 @@ func TestSyncBidirectional_EnrichesPlexOnlyIdentityAndMergesDuplicate(t *testing
 		metadataService:  metadataSvc,
 	}
 
-	if _, err := svc.syncBidirectional("plex-token", "profile-1", "plex:acc:task", "additive", "source_wins", false); err != nil {
+	if _, err := svc.syncBidirectional("plex-token", "profile-1", "plex:acc:task", "additive", "source_wins", nil, false); err != nil {
 		t.Fatalf("syncBidirectional() error = %v", err)
 	}
 	items, err := watchlistSvc.List("profile-1")

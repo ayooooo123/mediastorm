@@ -157,6 +157,7 @@ func (s *Service) syncSimklHistoryToLocal(task config.ScheduledTask, simklAccoun
 // syncLocalHistoryToSimkl exports local watch history to Simkl via POST /sync/history.
 func (s *Service) syncLocalHistoryToSimkl(task config.ScheduledTask, simklAccount *config.SimklAccount, profileID string, dryRun bool) (SyncResult, error) {
 	result := SyncResult{DryRun: dryRun}
+	startedAt := time.Now().UTC()
 
 	s.mu.RLock()
 	historySvc := s.historyService
@@ -174,9 +175,7 @@ func (s *Service) syncLocalHistoryToSimkl(task config.ScheduledTask, simklAccoun
 	exportKey := task.ID + ":simkl_export"
 	forceFull := task.Config["fullExport"] == "true" || task.Config["fullSync"] == "true"
 
-	s.lastFullSyncTimesMu.Lock()
-	lastFull, ok := s.lastFullSyncTimes[exportKey]
-	s.lastFullSyncTimesMu.Unlock()
+	lastFull, ok := s.lastFullHistorySync(task, exportKey, lastFullHistoryExportConfigKey)
 
 	isFullExport := forceFull || !ok || time.Since(lastFull) >= fullExportInterval
 	var since time.Time
@@ -188,7 +187,23 @@ func (s *Service) syncLocalHistoryToSimkl(task config.ScheduledTask, simklAccoun
 		removalSince = historySyncLastRun(task).Add(-5 * time.Minute)
 	}
 
-	var toSync, toRemove []models.WatchHistoryItem
+	// Bidirectional full exports list the whole Simkl library first so plays
+	// removed on Simkl since the last snapshot are not re-sent. Incremental
+	// imports only see deltas, which cannot prove that a play is gone.
+	removals, err := s.newHistoryRemovalTracker(task, "simkl", simklAccount.ID, profileID, startedAt)
+	if err != nil {
+		return result, err
+	}
+	var remoteKeys map[string]bool
+	if removals != nil && since.IsZero() {
+		remoteKeys, err = s.fetchSimklRemoteHistoryKeys(simklAccount)
+		if err != nil {
+			return result, err
+		}
+		removals.setCompleteRemote(remoteKeys)
+	}
+
+	var toSync, toRemove, remoteRemoved []models.WatchHistoryItem
 	for _, item := range items {
 		if !item.Watched {
 			if task.Config["fullSync"] == "true" || (!removalSince.IsZero() && item.UpdatedAt.After(removalSince)) {
@@ -197,20 +212,33 @@ func (s *Service) syncLocalHistoryToSimkl(task config.ScheduledTask, simklAccoun
 			continue
 		}
 		if since.IsZero() || item.WatchedAt.After(since) {
+			if removals.removedRemotely(item, historyAliasKeys(item.MediaType, item.ItemID, item.ExternalIDs)) {
+				remoteRemoved = append(remoteRemoved, item)
+				continue
+			}
 			toSync = append(toSync, item)
 		}
 	}
 
-	log.Printf("[scheduler] Found %d watched items to sync and %d recent unwatches to remove from Simkl (since %v fullExport=%v force=%v)",
-		len(toSync), len(toRemove), since, isFullExport, forceFull)
+	log.Printf("[scheduler] Found %d watched items to sync, %d recent unwatches to remove from Simkl and %d plays removed on Simkl (since %v fullExport=%v force=%v)",
+		len(toSync), len(toRemove), len(remoteRemoved), since, isFullExport, forceFull)
 
-	if len(toSync) == 0 && len(toRemove) == 0 {
-		if isFullExport && !dryRun {
-			s.lastFullSyncTimesMu.Lock()
-			s.lastFullSyncTimes[exportKey] = time.Now().UTC()
-			s.lastFullSyncTimesMu.Unlock()
+	// Mirror Simkl-side removals and record the listing once the export succeeds.
+	finish := func() error {
+		mirrored, err := s.mirrorRemoteHistoryRemovals(profileID, "Simkl", remoteRemoved)
+		result.Count += mirrored
+		if err != nil {
+			return err
 		}
-		return result, nil
+		if remoteKeys != nil {
+			if err := s.saveHistoryRemovalSnapshot(removals, remoteKeys, true); err != nil {
+				return err
+			}
+		}
+		if isFullExport {
+			s.markFullHistorySync(&result, exportKey, lastFullHistoryExportConfigKey)
+		}
+		return nil
 	}
 
 	if dryRun {
@@ -224,8 +252,15 @@ func (s *Service) syncLocalHistoryToSimkl(task config.ScheduledTask, simklAccoun
 		for _, item := range toRemove {
 			result.ToRemove = append(result.ToRemove, config.DryRunItem{Name: item.Name, MediaType: item.MediaType, ID: item.ItemID})
 		}
+		for _, item := range remoteRemoved {
+			result.ToRemove = append(result.ToRemove, historyRemovalDryRunItem(item))
+		}
 		result.Count = len(result.ToAdd) + len(result.ToRemove)
 		return result, nil
+	}
+
+	if len(toSync) == 0 && len(toRemove) == 0 {
+		return result, finish()
 	}
 
 	var movies []simkl.SyncHistoryMovie
@@ -440,12 +475,34 @@ func (s *Service) syncLocalHistoryToSimkl(task config.ScheduledTask, simklAccoun
 	log.Printf("[scheduler] Synced %d items to Simkl (skippedNoIDs=%d fullExport=%v)",
 		syncCount, skippedNoIDs, isFullExport)
 
+	if err := finish(); err != nil {
+		return result, err
+	}
 	if isFullExport {
-		s.lastFullSyncTimesMu.Lock()
-		s.lastFullSyncTimes[exportKey] = time.Now().UTC()
-		s.lastFullSyncTimesMu.Unlock()
 		log.Printf("[scheduler] Full Simkl history export complete, next full export in %v", fullExportInterval)
 	}
 
 	return result, nil
+}
+
+// fetchSimklRemoteHistoryKeys lists every watched Simkl movie/episode and
+// returns the alias keys used to match local history.
+func (s *Service) fetchSimklRemoteHistoryKeys(simklAccount *config.SimklAccount) (map[string]bool, error) {
+	s.mu.RLock()
+	simklClient := s.simklClient
+	s.mu.RUnlock()
+	watched := true
+	keys := make(map[string]bool)
+	for _, bucket := range []string{"movies", "shows", "anime"} {
+		resp, err := simklClient.GetInitialSyncItems(simklAccount.ClientID, simklAccount.AccessToken, bucket)
+		if err != nil {
+			return nil, fmt.Errorf("fetch simkl %s history for removal check: %w", bucket, err)
+		}
+		for _, update := range s.simklAllItemsToWatchHistory(resp, &watched) {
+			for _, key := range historyAliasKeys(update.MediaType, update.ItemID, update.ExternalIDs) {
+				keys[key] = true
+			}
+		}
+	}
+	return keys, nil
 }
