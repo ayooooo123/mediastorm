@@ -8731,6 +8731,40 @@ type CustomListOptions struct {
 	HistorySvc           HistoryChecker // nil if hideWatched is false
 	Label                string         // optional display name for progress tracking (e.g. shelf name)
 	SuppressProgress     bool           // true for background/internal refreshes that should not surface in UI progress
+	// PreQuery, when set, filters and orders the list before pagination so only
+	// the requested page is enriched. It receives one row per list item (source
+	// rows built from MDBList's title, year, media type and IDs, or the cached
+	// enriched rows on a cache hit) and returns the indexes of the rows to keep,
+	// in display order. Totals reflect the rows it keeps.
+	PreQuery func(rows []models.TrendingItem) []int
+}
+
+// applyCustomListPreQuery reorders items by the indexes PreQuery returned.
+// Out-of-range and repeated indexes are ignored.
+func applyCustomListPreQuery[T any](items []T, rows []models.TrendingItem, preQuery func([]models.TrendingItem) []int) []T {
+	order := preQuery(rows)
+	result := make([]T, 0, len(order))
+	seen := make([]bool, len(items))
+	for _, idx := range order {
+		if idx < 0 || idx >= len(items) || seen[idx] {
+			continue
+		}
+		seen[idx] = true
+		result = append(result, items[idx])
+	}
+	return result
+}
+
+// SourceTitlesAreDisplayNames reports whether list source titles (MDBList's
+// English titles) can stand in for the enriched display names when sorting or
+// filtering by name. Enrichment replaces names with TVDB translations for
+// other metadata languages, so name-based queries need the enriched list there.
+func (s *Service) SourceTitlesAreDisplayNames() bool {
+	if s == nil || s.client == nil {
+		return true
+	}
+	language := strings.TrimSpace(s.client.language)
+	return language == "" || strings.EqualFold(normalizeTVDBLanguage(language), "eng")
 }
 
 const (
@@ -10313,6 +10347,9 @@ func (s *Service) GetCustomList(ctx context.Context, listURL string, opts Custom
 		if filterReleases || opts.HideWatched {
 			result = s.filterCachedCustomList(ctx, cached, opts)
 		}
+		if opts.PreQuery != nil {
+			result = applyCustomListPreQuery(result, result, opts.PreQuery)
+		}
 		total := len(result)
 		// Apply offset + limit only after request-specific filtering.
 		if opts.Offset > 0 {
@@ -10381,6 +10418,15 @@ func (s *Service) GetCustomList(ctx context.Context, listURL string, opts Custom
 		remaining = s.preFilterUnreleasedTypes(ctx, remaining, hideMovies, hideShows)
 	}
 
+	// Sort/filter on source fields before pagination so only the page is enriched.
+	if opts.PreQuery != nil {
+		rows := make([]models.TrendingItem, len(remaining))
+		for i, item := range remaining {
+			rows[i] = buildLiteCustomListItem(item)
+		}
+		remaining = applyCustomListPreQuery(remaining, rows, opts.PreQuery)
+	}
+
 	filteredTotal := len(remaining)
 
 	// Apply offset + limit to get only the items that need full enrichment
@@ -10438,7 +10484,7 @@ func (s *Service) GetCustomList(ctx context.Context, listURL string, opts Custom
 	s.enrichShelfArtworkForLoad(ctx, results, customListArtworkLimit(opts), opts.DeferArtwork)
 
 	// Only cache full-list results when no filtering was applied
-	if !opts.DeferEnrichment && !opts.HideWatched && !filterReleases && opts.Offset == 0 &&
+	if !opts.DeferEnrichment && !opts.HideWatched && !filterReleases && opts.PreQuery == nil && opts.Offset == 0 &&
 		(opts.Limit == 0 || opts.Limit >= unfilteredTotal) && len(results) > 0 {
 		_ = s.cache.set(cacheID, results)
 		log.Printf("[metadata] cached %d enriched items for custom list: %s", len(results), listURL)

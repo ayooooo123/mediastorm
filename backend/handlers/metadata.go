@@ -1260,7 +1260,15 @@ func (h *MetadataHandler) CustomList(w http.ResponseWriter, r *http.Request) {
 	// pagination. Lite display rows are not authoritative release metadata.
 	// Build options — filtering + pagination handled inside the service
 	serviceLimit, serviceOffset := limit, offset
+	service := h.serviceForUser(userID)
 	requiresFullList := query.RequiresFullList()
+	// Sorts and filters that MDBList's own rows can answer run before
+	// pagination inside the service, so only the requested page is enriched.
+	var preQuery *customListPreQuery
+	if requiresFullList && h.customListSourceQuerySupported(service, userID, query) {
+		preQuery = newCustomListPreQuery(query, sourceTitlesAreDisplayNames(service))
+		requiresFullList = false
+	}
 	if requiresFullList {
 		// Query the complete enriched list so filtering and sorting happen before
 		// pagination. GetCustomList caches this full-list representation.
@@ -1280,11 +1288,13 @@ func (h *MetadataHandler) CustomList(w http.ResponseWriter, r *http.Request) {
 		UserID:               userID,
 		Label:                strings.TrimSpace(r.URL.Query().Get("name")),
 	}
+	if preQuery != nil {
+		opts.PreQuery = preQuery.run
+	}
 	if hideWatched && userID != "" && h.HistoryService != nil {
 		opts.HistorySvc = h.HistoryService
 	}
 
-	service := h.serviceForUser(userID)
 	if svc, ok := service.(shelfCardsService); ok && progressiveShelfRequest(r) {
 		source, err := svc.GetCustomListSource(r.Context(), listURL)
 		if err != nil {
@@ -1328,6 +1338,9 @@ func (h *MetadataHandler) CustomList(w http.ResponseWriter, r *http.Request) {
 	enrichTrendingRatings(items, service)
 	genres := displayListGenres(items)
 	alphabet := displayListAlphabetBuckets(items, query)
+	if preQuery != nil && preQuery.alphabet != nil {
+		alphabet = preQuery.alphabet
+	}
 	if requiresFullList {
 		items = query.Apply(items)
 		filteredTotal = len(items)
