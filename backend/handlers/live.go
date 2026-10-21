@@ -2556,10 +2556,16 @@ func (h *LiveHandler) GetChannels(w http.ResponseWriter, r *http.Request) {
 		}
 		filteredChannels = selected
 	}
+	// A search keeps favorites pinned in the full list, but in favorites-only mode every
+	// channel is a favorite, so pinning them would make the search match everything.
+	searchPinnedIDs := requestedFavoriteIDs
+	if favoritesOnly {
+		searchPinnedIDs = nil
+	}
 	filteredChannels = filterLiveChannelsByText(
 		filteredChannels,
 		request.Filter,
-		requestedFavoriteIDs,
+		searchPinnedIDs,
 		h.epgService,
 		time.Duration(src.EPGTimeOffsetMinutes)*time.Minute,
 	)

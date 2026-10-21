@@ -488,6 +488,62 @@ http://stream.example/movie-1`))
 	}
 }
 
+func TestGetChannelsSearchesWithinFavoritesOnly(t *testing.T) {
+	playlistServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`#EXTM3U
+#EXTINF:-1 tvg-id="news-1" group-title="News",News One
+http://stream.example/news-1
+#EXTINF:-1 tvg-id="sports-1" group-title="Sports",Sports One
+http://stream.example/sports-1
+#EXTINF:-1 tvg-id="sports-2" group-title="Sports",Sports Two
+http://stream.example/sports-2`))
+	}))
+	defer playlistServer.Close()
+
+	mgr := config.NewManager(filepath.Join(t.TempDir(), "settings.json"))
+	if err := mgr.Save(config.Settings{Live: config.LiveSettings{PlaylistURL: playlistServer.URL}}); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+	h := NewLiveHandler(playlistServer.Client(), false, "", 24, 0, 0, false, mgr, nil)
+
+	search := func(favoritesOnly bool) []string {
+		t.Helper()
+		body, err := json.Marshal(liveChannelsRequest{
+			Offset:        intPointer(0),
+			Limit:         intPointer(10),
+			Filter:        "sports",
+			FavoriteIDs:   []string{"news-1", "sports-1"},
+			FavoritesOnly: favoritesOnly,
+		})
+		if err != nil {
+			t.Fatalf("marshal request: %v", err)
+		}
+		rec := httptest.NewRecorder()
+		h.GetChannels(rec, httptest.NewRequest(http.MethodPost, "/live/channels", strings.NewReader(string(body))))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+		}
+		var resp LiveChannelsResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		names := make([]string, 0, len(resp.Channels))
+		for _, channel := range resp.Channels {
+			names = append(names, channel.Name)
+		}
+		return names
+	}
+
+	// Favorites-only: the search narrows the favorites instead of matching all of them.
+	if got := search(true); len(got) != 1 || got[0] != "Sports One" {
+		t.Fatalf("favorites-only search = %v, want [Sports One]", got)
+	}
+	// The full list still keeps favorites pinned (first) through a search.
+	if got := search(false); len(got) != 3 || got[0] != "News One" || got[1] != "Sports One" || got[2] != "Sports Two" {
+		t.Fatalf("all-channels search = %v, want [News One Sports One Sports Two]", got)
+	}
+}
+
 func TestGetChannelsAppliesCategoryBeforeConfiguredChannelLimit(t *testing.T) {
 	playlistServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`#EXTM3U
