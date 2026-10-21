@@ -18,6 +18,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -2071,10 +2072,14 @@ func (h *LiveHandler) fetchXtreamChannelsUncached(ctx context.Context, host, use
 		return nil, fmt.Errorf("failed to decode categories: %w", err)
 	}
 
-	// Build category ID -> name map
+	// Build category ID -> name and ID -> panel position maps
 	categoryMap := make(map[string]string)
-	for _, cat := range categories {
+	categoryRank := make(map[string]int, len(categories))
+	for i, cat := range categories {
 		categoryMap[cat.CategoryID] = cat.CategoryName
+		if _, seen := categoryRank[cat.CategoryID]; !seen {
+			categoryRank[cat.CategoryID] = i
+		}
 	}
 
 	// Fetch streams
@@ -2119,6 +2124,11 @@ func (h *LiveHandler) fetchXtreamChannelsUncached(ctx context.Context, host, use
 		streams = append(streams, page...)
 	}
 
+	// Categories are listed in first-seen channel order, and get_live_streams is
+	// often ordered by channel number rather than by category. Group streams in
+	// the panel's get_live_categories order, keeping each category's own order.
+	sortXtreamStreamsByCategory(streams, categoryRank)
+
 	// Convert to LiveChannel format
 	// Stream URL format: http://host:port/username/password/stream_id.ts
 	channels := make([]LiveChannel, 0, len(streams))
@@ -2144,6 +2154,20 @@ func (h *LiveHandler) fetchXtreamChannelsUncached(ctx context.Context, host, use
 
 	log.Printf("[live] fetched %d channels from Xtream API", len(channels))
 	return channels, nil
+}
+
+// sortXtreamStreamsByCategory stably orders streams by their category's
+// position in get_live_categories. Streams with an unknown category go last.
+func sortXtreamStreamsByCategory(streams []XtreamStream, categoryRank map[string]int) {
+	rank := func(stream XtreamStream) int {
+		if r, ok := categoryRank[stream.CategoryID]; ok {
+			return r
+		}
+		return len(categoryRank)
+	}
+	slices.SortStableFunc(streams, func(a, b XtreamStream) int {
+		return rank(a) - rank(b)
+	})
 }
 
 // isXtreamMode checks if the current configuration is using Xtream Codes mode.

@@ -1031,6 +1031,52 @@ func TestFetchXtreamChannelsSendsUserAgent(t *testing.T) {
 	}
 }
 
+func TestFetchXtreamChannelsKeepsPanelCategoryOrder(t *testing.T) {
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("action") {
+		case "get_live_categories":
+			_, _ = w.Write([]byte(`[{"category_id":"3","category_name":"Sports"},{"category_id":"1","category_name":"News"},{"category_id":"2","category_name":"Kids"}]`))
+		case "get_live_streams":
+			// Ordered by channel number, interleaving categories.
+			_, _ = w.Write([]byte(`[
+				{"stream_id":1,"name":"News 1","stream_type":"live","category_id":"1"},
+				{"stream_id":2,"name":"Kids 1","stream_type":"live","category_id":"2"},
+				{"stream_id":3,"name":"Orphan","stream_type":"live","category_id":"9"},
+				{"stream_id":4,"name":"Sports 1","stream_type":"live","category_id":"3"},
+				{"stream_id":5,"name":"News 2","stream_type":"live","category_id":"1"},
+				{"stream_id":6,"name":"Sports 2","stream_type":"live","category_id":"3"}
+			]`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer provider.Close()
+
+	mgr := config.NewManager(filepath.Join(t.TempDir(), "settings.json"))
+	h := NewLiveHandler(provider.Client(), false, "", 24, 0, 0, false, mgr, nil)
+
+	channels, err := h.fetchXtreamChannels(context.Background(), provider.URL, "user", "pass", "")
+	if err != nil {
+		t.Fatalf("fetchXtreamChannels: %v", err)
+	}
+	var names []string
+	for _, channel := range channels {
+		names = append(names, channel.Name)
+	}
+	wantNames := []string{"Sports 1", "Sports 2", "News 1", "News 2", "Kids 1", "Orphan"}
+	if !reflect.DeepEqual(names, wantNames) {
+		t.Fatalf("channel order = %v, want %v", names, wantNames)
+	}
+	var categories []string
+	for _, category := range extractCategories(channels) {
+		categories = append(categories, category.Name)
+	}
+	wantCategories := []string{"Sports", "News", "Kids"}
+	if !reflect.DeepEqual(categories, wantCategories) {
+		t.Fatalf("categories = %v, want %v", categories, wantCategories)
+	}
+}
+
 func TestFetchXtreamChannelsCachesFailureAndRetriesAfterCooldown(t *testing.T) {
 	var failing atomic.Bool
 	failing.Store(true)
