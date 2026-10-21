@@ -1224,6 +1224,7 @@ func enrichPersonalizedArtwork(ctx context.Context, items []models.TrendingItem,
 	}
 
 	if len(deferArtwork) > 0 && deferArtwork[0] {
+		fillMissingTitleLogos(ctx, items, meta, true)
 		return
 	}
 
@@ -1249,6 +1250,7 @@ func enrichPersonalizedArtwork(ctx context.Context, items []models.TrendingItem,
 		}()
 	}
 	wg.Wait()
+	fillMissingTitleLogos(ctx, items, meta, false)
 }
 
 func personalizedArtworkURLCount(title models.Title) int {

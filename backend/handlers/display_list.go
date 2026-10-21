@@ -325,7 +325,10 @@ func (h *DisplayListHandler) get(w http.ResponseWriter, r *http.Request) {
 		if customListShelf {
 			deferArtwork := strings.EqualFold(r.URL.Query().Get("shelfPhase"), "cards") ||
 				strings.EqualFold(r.URL.Query().Get("deferArtwork"), "true")
-			metadataPending = enrichCustomListShelfTextPosters(r.Context(), trendingItems, h.metadataForUser(userID), deferArtwork)
+			metadataSvc := h.metadataForUser(userID)
+			postersPending := enrichCustomListShelfTextPosters(r.Context(), trendingItems, metadataSvc, deferArtwork)
+			logosPending := fillMissingTitleLogos(r.Context(), trendingItems, metadataSvc, deferArtwork)
+			metadataPending = postersPending || logosPending
 		}
 		responseItems = trendingItems
 	}
@@ -427,6 +430,9 @@ func watchlistItemsToTrending(items []models.WatchlistItem) []models.TrendingIte
 		}
 		if item.TextBackdropURL != "" {
 			title.TextBackdrop = &models.Image{URL: item.TextBackdropURL, Type: "backdrop"}
+		}
+		if item.LogoURL != "" {
+			title.Logo = &models.Image{URL: item.LogoURL, Type: "logo"}
 		}
 		for _, url := range item.BackdropURLs {
 			if url != "" {

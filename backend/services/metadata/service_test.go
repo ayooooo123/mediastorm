@@ -1230,6 +1230,23 @@ func TestGetCachedLogoURLReadsTMDBSeriesFallbackCache(t *testing.T) {
 	}
 }
 
+func TestGetCachedLogoURLReadsShelfImagesCache(t *testing.T) {
+	cache := newFileCache(t.TempDir(), 24)
+	svc := &Service{
+		client: &tvdbClient{language: "eng"},
+		cache:  cache,
+	}
+
+	if err := cache.set(shelfImagesCacheKey("eng", "series", 1399), tmdbImagesResult{
+		Logo: &models.Image{URL: "https://example.test/shelf-logo.png", Type: "logo"},
+	}); err != nil {
+		t.Fatalf("set shelf images cache: %v", err)
+	}
+	if got := svc.GetCachedLogoURL("series", 1399, 0); got != "https://example.test/shelf-logo.png" {
+		t.Fatalf("logo = %q, want shelf images logo", got)
+	}
+}
+
 func TestGetCachedArtworkURLsUsesMetadataLanguageForTMDBImages(t *testing.T) {
 	cache := newFileCache(t.TempDir(), 24)
 	svc := &Service{

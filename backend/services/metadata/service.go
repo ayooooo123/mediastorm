@@ -1268,6 +1268,13 @@ func (s *Service) cachedArtwork(mediaType string, tmdbID int64, tvdbID int64) ca
 			}
 		}
 	}
+	// Titles seen only on shelves have just the shelf images variant cached.
+	if tmdbID > 0 {
+		var images tmdbImagesResult
+		if ok, _ := s.cache.get(shelfImagesCacheKey(s.client.language, shelfArtworkMediaType(mediaType), tmdbID), &images); ok {
+			mergeImages(images)
+		}
+	}
 	return cachedArtworkURLs{
 		textPosterURL:   textPosterURL,
 		textBackdropURL: textBackdropURL,
@@ -9394,6 +9401,23 @@ func (s *Service) ApplyLocalizedArtwork(ctx context.Context, title *models.Title
 		return false
 	}
 	return s.applyCachedTMDBImages(ctx, title, mediaType, tmdbID)
+}
+
+// ShelfLogo returns the title's logo from the cached images, fetching the shelf
+// images variant (one TMDB request, no image downloads) when none is cached.
+func (s *Service) ShelfLogo(ctx context.Context, mediaType string, tmdbID int64) *models.Image {
+	if tmdbID <= 0 || s.tmdb == nil || !s.tmdb.isConfigured() {
+		return nil
+	}
+	images, err := s.cachedShelfImages(ctx, shelfArtworkMediaType(mediaType), tmdbID)
+	if err != nil {
+		log.Printf("[metadata] failed to fetch shelf logo for %s tmdbId=%d: %v", mediaType, tmdbID, err)
+		return nil
+	}
+	if images == nil {
+		return nil
+	}
+	return images.Logo
 }
 
 func shelfArtworkMediaType(mediaType string) string {
