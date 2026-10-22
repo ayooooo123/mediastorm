@@ -750,6 +750,8 @@ func enrichDisplayListReleases(r *http.Request, items []models.WatchlistItem, me
 		return
 	}
 
+	enrichDisplayListSeriesReleases(items, meta)
+
 	queries := make([]models.BatchMovieReleasesQuery, 0)
 	indexes := make([]int, 0)
 	for i := range items {
@@ -783,6 +785,39 @@ func enrichDisplayListReleases(r *http.Request, items []models.WatchlistItem, me
 		items[idx].HomeRelease = result.HomeRelease
 		if items[idx].Status == "" {
 			items[idx].Status = models.MovieReleaseStatusFromWindows(items[idx].Theatrical, items[idx].HomeRelease)
+		}
+	}
+}
+
+// cachedSeriesReleaseProvider is the optional cache-only series release lookup.
+type cachedSeriesReleaseProvider interface {
+	GetCachedSeriesRelease(tmdbID int64, tvdbID int64) (status string, releaseDate string)
+}
+
+// enrichDisplayListSeriesReleases refreshes series release status and premiere
+// date from cached metadata: saved items keep the status from when they were
+// added (often none), so an unreleased show would otherwise carry no badge.
+func enrichDisplayListSeriesReleases(items []models.WatchlistItem, meta metadataService) {
+	cached, ok := meta.(cachedSeriesReleaseProvider)
+	if !ok {
+		return
+	}
+	for i := range items {
+		switch strings.ToLower(strings.TrimSpace(items[i].MediaType)) {
+		case "series", "tv", "show":
+		default:
+			continue
+		}
+		tmdbID, tvdbID := watchlist.NumericIDs(items[i].ExternalIDs)
+		if tmdbID <= 0 && tvdbID <= 0 {
+			continue
+		}
+		status, releaseDate := cached.GetCachedSeriesRelease(tmdbID, tvdbID)
+		if status != "" {
+			items[i].Status = status
+		}
+		if releaseDate != "" {
+			items[i].ReleaseDate = releaseDate
 		}
 	}
 }

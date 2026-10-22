@@ -125,3 +125,54 @@ func (s *Service) warmMovieReleasesAsync(tmdbIDs []int64) {
 		}(id)
 	}
 }
+
+// GetCachedSeriesRelease returns a series' release status (released |
+// unreleased) and premiere date (YYYY-MM-DD) from cached series metadata only
+// (no upstream calls), for lists whose stored items carry no or a stale status.
+// Both are "" when nothing usable is cached.
+func (s *Service) GetCachedSeriesRelease(tmdbID int64, tvdbID int64) (status string, releaseDate string) {
+	if s == nil || s.cache == nil || s.client == nil {
+		return "", ""
+	}
+	lang := s.client.language
+	if tvdbID > 0 {
+		// The lightweight info entry first: full details hold every episode.
+		var info models.Title
+		if ok, _ := s.cache.get(cacheKey("tvdb", "series", "info", "v1", lang, strconv.FormatInt(tvdbID, 10)), &info); ok {
+			if status, date := cachedSeriesRelease(info, nil); status != "" {
+				return status, date
+			}
+		}
+		var details models.SeriesDetails
+		if ok, _ := s.cache.get(seriesDetailsCacheKey(lang, tvdbID, ""), &details); ok {
+			if status, date := cachedSeriesRelease(details.Title, details.Seasons); status != "" {
+				return status, date
+			}
+		}
+	}
+	if tmdbID > 0 {
+		var details models.SeriesDetails
+		if ok, _ := s.cache.get(cacheKey("tmdb", "series", "details-fallback", "v4", lang, strconv.FormatInt(tmdbID, 10)), &details); ok {
+			return cachedSeriesRelease(details.Title, details.Seasons)
+		}
+	}
+	return "", ""
+}
+
+// cachedSeriesRelease derives a cached series' status relative to now: the
+// premiere date (from the episodes when known) wins over a cached status that
+// may predate it.
+func cachedSeriesRelease(title models.Title, seasons []models.SeriesSeason) (string, string) {
+	date := models.SeriesPremiereDate(seasons)
+	if date == "" {
+		date = models.NormalizeReleaseDate(title.ReleaseDate)
+	}
+	status := strings.ToLower(strings.TrimSpace(title.Status))
+	if status != models.SeriesReleaseStatusReleased && status != models.SeriesReleaseStatusUnreleased {
+		status = ""
+	}
+	if date != "" && status != models.SeriesReleaseStatusReleased {
+		status = models.SeriesReleaseStatusFromDate(date)
+	}
+	return status, date
+}

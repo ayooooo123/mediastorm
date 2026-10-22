@@ -152,3 +152,42 @@ func TestMergeSearchResultsKeepsReleaseDate(t *testing.T) {
 		t.Fatalf("merged = %+v", merged)
 	}
 }
+
+func TestGetCachedSeriesReleaseReadsCacheRelativeToNow(t *testing.T) {
+	cache := newFileCache(t.TempDir(), 24)
+	svc := &Service{cache: cache, client: &tvdbClient{language: "eng"}}
+	future := time.Now().AddDate(0, 3, 0).Format("2006-01-02")
+	past := time.Now().AddDate(0, 0, -3).Format("2006-01-02")
+
+	seed := func(key string, v any) {
+		t.Helper()
+		if err := cache.set(key, v); err != nil {
+			t.Fatalf("seed cache: %v", err)
+		}
+	}
+	seed(cacheKey("tvdb", "series", "info", "v1", "eng", "1"),
+		models.Title{MediaType: "series", Status: models.SeriesReleaseStatusUnreleased, ReleaseDate: future})
+	// A status cached before the premiere passed.
+	seed(seriesDetailsCacheKey("eng", 2, ""), models.SeriesDetails{
+		Title: models.Title{MediaType: "series", Status: models.SeriesReleaseStatusUnreleased},
+		Seasons: []models.SeriesSeason{
+			{Number: 0, Episodes: []models.SeriesEpisode{{AiredDate: "2001-01-01"}}},
+			{Number: 1, Episodes: []models.SeriesEpisode{{AiredDate: past}}},
+		},
+	})
+	seed(cacheKey("tmdb", "series", "details-fallback", "v4", "eng", "3"),
+		models.SeriesDetails{Title: models.Title{MediaType: "series", Status: "Continuing"}})
+
+	if status, date := svc.GetCachedSeriesRelease(0, 1); status != models.SeriesReleaseStatusUnreleased || date != future {
+		t.Fatalf("info cache: %q %q", status, date)
+	}
+	if status, date := svc.GetCachedSeriesRelease(0, 2); status != models.SeriesReleaseStatusReleased || date != past {
+		t.Fatalf("details cache: %q %q", status, date)
+	}
+	if status, date := svc.GetCachedSeriesRelease(3, 0); status != "" || date != "" {
+		t.Fatalf("a provider lifecycle status is not a release status: %q %q", status, date)
+	}
+	if status, date := svc.GetCachedSeriesRelease(0, 99); status != "" || date != "" {
+		t.Fatalf("uncached: %q %q", status, date)
+	}
+}
