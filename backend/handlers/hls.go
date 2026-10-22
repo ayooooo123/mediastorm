@@ -550,6 +550,15 @@ type HLSSession struct {
 	HardwareFallbackAttempted bool
 	forceSoftwareEncode       bool
 
+	// Watch-while-recording (see hls_growing.go). GrowingSource is set when the
+	// session was created on a source still being written (a running
+	// recording) and never cleared: every segment stays on disk so the whole
+	// recording remains seekable. SourceGrowing is true while the current
+	// FFmpeg run follows the file; the playlist then stays EVENT with no
+	// ENDLIST.
+	GrowingSource bool
+	SourceGrowing bool
+
 	// YouTube HLS sessions are assembled from separate direct video/audio URLs.
 	YouTubeVideoURL string
 	YouTubeAudioURL string
@@ -1982,6 +1991,16 @@ func (m *HLSManager) CreateSession(ctx context.Context, path string, originalPat
 	}
 	duration = resolvedSessionDuration(duration, metadataDuration)
 
+	// A running recording is still being written: whatever duration the
+	// partial file probes to (or the schedule hints) is not its length. Keep
+	// the duration unknown so the playlist stays EVENT and FFmpeg is not cut
+	// off with -t; the session follows the file instead (hls_growing.go).
+	growingSource := m.sourceIsGrowing(ctx, path)
+	if growingSource {
+		log.Printf("[hls] session %s: source is still being written (probed duration %.2fs); following it as it grows", sessionID, duration)
+		duration = 0
+	}
+
 	if math.IsNaN(startOffset) || math.IsInf(startOffset, 0) || startOffset < 0 {
 		startOffset = 0
 	}
@@ -1998,7 +2017,11 @@ func (m *HLSManager) CreateSession(ctx context.Context, path string, originalPat
 	var copySegmentStarts []float64
 	var copyPlan stableCopyPlan
 	clientCaps := hlsClientCapsFrom(ctx)
-	if normalizedPlaybackTarget == "web-stable" {
+	if normalizedPlaybackTarget == "web-stable" && growingSource {
+		// A stable timeline needs the full duration up front; a growing
+		// recording plays as an ordinary web session that follows the file.
+		normalizedPlaybackTarget = "web"
+	} else if normalizedPlaybackTarget == "web-stable" {
 		normalizedPlaybackTarget = "web"
 		if plan, ok := stableCopyEligible(probeData, hasDV, dvProfile, hasHDR, duration, clientCaps); ok {
 			copyPlan = plan
@@ -2119,6 +2142,8 @@ func (m *HLSManager) CreateSession(ctx context.Context, path string, originalPat
 		CopySegmentStarts:       copySegmentStarts,
 		ClientCaps:              clientCaps,
 		CopyPlan:                copyPlan,
+		GrowingSource:           growingSource,
+		SourceGrowing:           growingSource,
 	}
 	if session.StableCopy {
 		// The playlist always covers the whole title; a requested start just
@@ -3541,6 +3566,19 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 		}
 	}
 
+	// Watch-while-recording: follow the local file while the recording runs.
+	session.mu.RLock()
+	growingSource := session.GrowingSource
+	session.mu.RUnlock()
+	followInput := false
+	if growingSource {
+		followInput = shouldFollowGrowingInput(growingSource, directInputPath, m.sourceIsGrowing(ctx, session.Path))
+		session.mu.Lock()
+		session.SourceGrowing = followInput
+		session.mu.Unlock()
+		log.Printf("[hls] session %s: growing source follow=%v (local input=%v)", session.ID, followInput, directInputPath != "")
+	}
+
 	if !hasDirectURL {
 		// Fall back to pipe streaming only if direct URL not available
 		providerStartTime := time.Now()
@@ -3752,6 +3790,10 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 			args = append(args, "-noaccurate_seek", "-ss", fmt.Sprintf("%.3f", session.TranscodingOffset))
 			log.Printf("[hls] session %s: using INPUT seeking to %.3fs with -noaccurate_seek", session.ID, session.TranscodingOffset)
 		}
+	}
+
+	if followInput {
+		args = append(args, growingFollowInputArgs()...)
 	}
 
 	// Add input source - use proxy URL or local direct path if available, otherwise use pipe.
@@ -4204,6 +4246,12 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 			if selected, ok := selectedAudioStream(audioStreams, session.AudioTrackIndex); ok {
 				castPlanAudioCodec = selected.Codec
 			}
+			if fmp4AACCopyNeedsADTSConversion(needsFmp4, castPlanAudioCodec, directInputPath, session.Path) {
+				// MPEG-TS carries AAC as ADTS; the fMP4 muxer refuses it
+				// ("Malformed AAC bitstream") unless converted to raw AAC.
+				args = append(args, "-bsf:a", "aac_adtstoasc")
+				log.Printf("[hls] session %s: converting copied ADTS AAC from MPEG-TS for fMP4 segments", session.ID)
+			}
 		}
 	}
 
@@ -4587,7 +4635,10 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 				inputErrorAlreadyDetected := session.InputErrorDetected
 				recoveryAttempts := session.RecoveryAttempts
 				session.mu.RUnlock()
-				if !inputErrorAlreadyDetected && recoveryAttempts < hlsMaxRecoveryAttempts && !isBitstreamError {
+				// A follow run reads a local file; its only "input error" is the
+				// deliberate stall timeout, which must end the run cleanly rather
+				// than kill it for a usenet-style recovery restart.
+				if !followInput && !inputErrorAlreadyDetected && recoveryAttempts < hlsMaxRecoveryAttempts && !isBitstreamError {
 					// Check for various input error patterns (both pipe/usenet and HTTP/debrid)
 					// Note: "Invalid data found when processing input" alone could be bitstream errors,
 					// so we only match it when NOT preceded by "Error applying bitstream filters"
@@ -4723,6 +4774,10 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 	}()
 
 	// Start idle timeout monitoring goroutine
+	idleTimeout := hlsIdleTimeout
+	if followInput {
+		idleTimeout = hlsGrowingIdleTimeout
+	}
 	idleDone := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(5 * time.Second) // Check every 5 seconds
@@ -4795,9 +4850,9 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 				}
 
 				// Enforce idle timeout if we've had at least one segment request
-				if segmentCount > 0 && idleTime > hlsIdleTimeout {
+				if segmentCount > 0 && idleTime > idleTimeout {
 					log.Printf("[hls] session %s: IDLE_TIMEOUT triggered after %v (last request %v ago, %d segments served)",
-						session.ID, hlsIdleTimeout, idleTime, segmentCount)
+						session.ID, idleTimeout, idleTime, segmentCount)
 
 					session.mu.Lock()
 					session.IdleTimeoutTriggered = true
@@ -5157,6 +5212,10 @@ func (m *HLSManager) startTranscoding(ctx context.Context, session *HLSSession, 
 	session.FinalSegmentCount = highestSegment // Track actual highest segment created
 	session.mu.Unlock()
 
+	if followInput {
+		m.settleGrowingRun(session)
+	}
+
 	if err != nil && ctx.Err() == nil && !idleTriggered {
 		log.Printf("[hls] session %s: FFmpeg failed after %v: %v", session.ID, completionTime, err)
 		return fmt.Errorf("ffmpeg wait: %w", err)
@@ -5411,6 +5470,7 @@ func (m *HLSManager) KeepAlive(w http.ResponseWriter, r *http.Request, sessionID
 	// to reach the source again — the p2p auto-seeder re-resolves it to a current
 	// URL — cannot recover it from anywhere else on this request.
 	sourcePath := session.Path
+	sourceGrowing := session.SourceGrowing
 	session.mu.Unlock()
 
 	// A receiver that accepted the load and then stalled produces no further
@@ -5457,7 +5517,9 @@ func (m *HLSManager) KeepAlive(w http.ResponseWriter, r *http.Request, sessionID
 		KeyframeDelta     float64 `json:"keyframeDelta"`
 		SegmentDuration   float64 `json:"segmentDuration"`
 		Duration          float64 `json:"duration,omitempty"`
+		Growing           bool    `json:"growing,omitempty"`
 	}{
+		Growing:           sourceGrowing,
 		Status:            "ok",
 		StartOffset:       startOffset,
 		ActualStartOffset: actualStartOffset,
@@ -5928,6 +5990,8 @@ func (m *HLSManager) ServePlaylist(w http.ResponseWriter, r *http.Request, sessi
 	stableCastMode := session.usesStableCastTimeline()
 	stableCopyMode := session.usesStableCopyTimeline()
 	sessionDuration := session.Duration
+	sourceGrowing := session.SourceGrowing
+	sessionCompleted := session.Completed
 	session.mu.RUnlock()
 
 	if stableCopyMode && sessionDuration > 0 {
@@ -5974,7 +6038,10 @@ func (m *HLSManager) ServePlaylist(w http.ResponseWriter, r *http.Request, sessi
 	// This makes iOS show a progress bar in PiP mode instead of "LIVE"
 	// We pre-generate entries for all expected segments so the player knows the full duration
 	// Segment requests for not-yet-transcoded segments will block until ready
-	if session.Duration > 0 && !strings.Contains(playlistContent, "#EXT-X-ENDLIST") {
+	// A recording still being written stays EVENT (see hls_growing.go).
+	if sourceGrowing {
+		playlistContent = growingPlaylistContent(playlistContent, sessionCompleted)
+	} else if sessionDuration > 0 && !strings.Contains(playlistContent, "#EXT-X-ENDLIST") {
 		playlistContent = strings.Replace(playlistContent, "#EXT-X-PLAYLIST-TYPE:EVENT", "#EXT-X-PLAYLIST-TYPE:VOD", 1)
 
 		// Calculate total expected segments and find highest existing segment
@@ -7682,7 +7749,13 @@ func (m *HLSManager) deleteOldSegments(session *HLSSession, justServedSegment st
 	sessionID := session.ID
 	earliestBuffered := session.EarliestBufferedSegment
 	lastServedSegment := session.LastSegmentServed
+	growingSource := session.GrowingSource
 	session.mu.RUnlock()
+	if growingSource {
+		// Watch-while-recording lists every segment from the start in its
+		// EVENT playlist so the whole recording stays seekable.
+		return
+	}
 	if stableCastMode {
 		// consulting the sender first, so every generated logical segment must
 		// remain available for backward seeking.

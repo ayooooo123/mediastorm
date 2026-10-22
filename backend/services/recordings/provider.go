@@ -82,6 +82,31 @@ func (p *StreamProvider) resolveFile(path string) (string, string, error) {
 	return filePath, filepath.Base(filePath), nil
 }
 
+// IsGrowing reports whether the recording behind path is still being
+// written, so the HLS pipeline follows the file instead of ending at its
+// current size.
+func (p *StreamProvider) IsGrowing(_ context.Context, path string) (bool, error) {
+	if p == nil || p.service == nil {
+		return false, streaming.ErrNotFound
+	}
+	id, ok := ParseStreamPath(path)
+	if !ok {
+		return false, streaming.ErrNotFound
+	}
+	recording, err := p.service.Get(id)
+	if err != nil {
+		if errors.Is(err, ErrRecordingNotFound) {
+			return false, streaming.ErrNotFound
+		}
+		return false, err
+	}
+	return recordingIsGrowing(recording.Status), nil
+}
+
+func recordingIsGrowing(status models.RecordingStatus) bool {
+	return status == models.RecordingStatusRunning || status == models.RecordingStatusStarting
+}
+
 // GetDirectURL returns the local filesystem path of the recording so FFmpeg can
 // read it directly as an input (mirrors the local media provider behaviour).
 func (p *StreamProvider) GetDirectURL(_ context.Context, path string) (string, error) {

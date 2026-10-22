@@ -4454,6 +4454,12 @@ func (h *VideoHandler) StartHLSSession(w http.ResponseWriter, r *http.Request) {
 		response["duration"] = session.Duration
 	}
 
+	// A running recording: the playlist is EVENT and grows until the recording
+	// stops, when ENDLIST is appended (see hls_growing.go).
+	if session.sessionSourceGrowing() {
+		response["growing"] = true
+	}
+
 	if session.Duration > 0 && session.StartOffset > 0 {
 		remaining := session.Duration - session.StartOffset
 		if remaining < 0 {

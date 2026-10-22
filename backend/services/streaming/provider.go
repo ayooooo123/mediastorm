@@ -58,6 +58,14 @@ type DurationProvider interface {
 	GetDuration(ctx context.Context, path string) (float64, error)
 }
 
+// GrowingSourceProvider optionally reports whether a source is still being
+// written, such as a recording that is in progress. The HLS pipeline follows
+// such a file as it grows instead of stopping at its current end.
+type GrowingSourceProvider interface {
+	Provider
+	IsGrowing(ctx context.Context, path string) (bool, error)
+}
+
 // RelatedFileProvider is an optional interface for providers that can locate a
 // companion file in the same source collection. It is used for container
 // metadata stored outside the media file, such as Blu-ray CLPI files.

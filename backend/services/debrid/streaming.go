@@ -722,6 +722,25 @@ func (c *CompositeProvider) GetDuration(ctx context.Context, path string) (float
 	return 0, streaming.ErrNotFound
 }
 
+// IsGrowing asks the provider that owns path whether the source is still
+// being written (a running recording).
+func (c *CompositeProvider) IsGrowing(ctx context.Context, path string) (bool, error) {
+	for _, provider := range c.providers {
+		growingProvider, ok := provider.(streaming.GrowingSourceProvider)
+		if !ok {
+			continue
+		}
+		growing, err := growingProvider.IsGrowing(ctx, path)
+		if err == nil {
+			return growing, nil
+		}
+		if !errors.Is(err, streaming.ErrNotFound) {
+			return false, err
+		}
+	}
+	return false, streaming.ErrNotFound
+}
+
 // StreamRelatedFile asks each capable provider for a companion file belonging
 // to the same source collection.
 func (c *CompositeProvider) StreamRelatedFile(ctx context.Context, sourcePath, relatedPath string) (*streaming.Response, error) {

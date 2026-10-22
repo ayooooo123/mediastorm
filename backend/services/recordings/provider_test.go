@@ -93,3 +93,31 @@ func TestStreamProviderStreamServesFile(t *testing.T) {
 		t.Fatalf("ContentLength = %d, want %d", resp.ContentLength, len(content))
 	}
 }
+
+func TestStreamProviderIsGrowing(t *testing.T) {
+	dir := t.TempDir()
+	repo := newFakeRecordingRepo(
+		models.Recording{ID: "running", Status: models.RecordingStatusRunning, OutputPath: filepath.Join(dir, "a.ts")},
+		models.Recording{ID: "starting", Status: models.RecordingStatusStarting, OutputPath: filepath.Join(dir, "b.ts")},
+		models.Recording{ID: "done", Status: models.RecordingStatusCompleted, OutputPath: filepath.Join(dir, "c.ts")},
+		models.Recording{ID: "failed", Status: models.RecordingStatusFailed, OutputPath: filepath.Join(dir, "d.ts")},
+	)
+	provider := NewStreamProvider(NewService(repo, "ffmpeg", dir))
+
+	for id, want := range map[string]bool{"running": true, "starting": true, "done": false, "failed": false} {
+		got, err := provider.IsGrowing(context.Background(), "recording:"+id+"/x.ts")
+		if err != nil {
+			t.Fatalf("IsGrowing(%s) error: %v", id, err)
+		}
+		if got != want {
+			t.Errorf("IsGrowing(%s) = %v, want %v", id, got, want)
+		}
+	}
+
+	if _, err := provider.IsGrowing(context.Background(), "localmedia:abc/file.mkv"); !errors.Is(err, streaming.ErrNotFound) {
+		t.Errorf("IsGrowing(non-recording) err = %v, want ErrNotFound", err)
+	}
+	if _, err := provider.IsGrowing(context.Background(), "recording:missing/x.ts"); !errors.Is(err, streaming.ErrNotFound) {
+		t.Errorf("IsGrowing(missing) err = %v, want ErrNotFound", err)
+	}
+}
