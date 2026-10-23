@@ -19,7 +19,7 @@ type regionalVariant struct {
 
 var regionalVariants = []regionalVariant{
 	{language: "fra", regions: []string{"ca", "qc"},
-		words: []string{"vfq", "quebec", "quebecois", "quebecoise", "canada", "canadian", "canadien", "canadienne"}},
+		words: []string{"vfq", "vq", "quebec", "quebecois", "quebecoise", "canada", "canadian", "canadien", "canadienne"}},
 	{language: "fra", regions: []string{"fr", "be", "ch"},
 		words: []string{"vff", "vfi", "france", "parisian"}},
 	{language: "por", regions: []string{"br"},
@@ -76,10 +76,21 @@ func (v *regionalVariant) matches(stream models.AudioStreamInfo) bool {
 		}
 	}
 	label := accentFolder.Replace(strings.ToLower(stream.Language + " " + stream.Title))
-	for _, word := range strings.FieldsFunc(label, func(r rune) bool { return r < 'a' || r > 'z' }) {
+	words := strings.FieldsFunc(label, func(r rune) bool { return r < 'a' || r > 'z' })
+	for i, word := range words {
 		for _, w := range v.words {
 			if word == w {
 				return true
+			}
+		}
+		// A region right after its language ("FR-CA", "French CA", or a
+		// "CA" title on a "fre" track); a region word elsewhere is too
+		// ambiguous to count.
+		if i > 0 && canonicalLanguageCode(words[i-1]) == v.language {
+			for _, r := range v.regions {
+				if word == r {
+					return true
+				}
 			}
 		}
 	}

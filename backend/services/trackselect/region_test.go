@@ -74,6 +74,26 @@ func TestFindAudioTrackRegionalVariant(t *testing.T) {
 			{Index: 1, Codec: "truehd", Language: "fre", Title: "French (France)"},
 			{Index: 2, Codec: "aac", Language: "fre", Title: "French (France) AD"},
 		}, "fre", 1},
+		{"VQ label", []models.AudioStreamInfo{
+			{Index: 1, Codec: "eac3", Language: "fre", Title: "VFF"},
+			{Index: 2, Codec: "eac3", Language: "fre", Title: "VQ"},
+		}, "fr-CA", 2},
+		{"FR-CA in the title", []models.AudioStreamInfo{
+			{Index: 1, Codec: "eac3", Language: "fre", Title: "FR-FR 5.1"},
+			{Index: 2, Codec: "eac3", Language: "fre", Title: "FR-CA 5.1"},
+		}, "fr-CA", 2},
+		{"French CA in the title", []models.AudioStreamInfo{
+			{Index: 1, Codec: "eac3", Language: "fre", Title: "French"},
+			{Index: 2, Codec: "eac3", Language: "fre", Title: "French CA"},
+		}, "fr-CA", 2},
+		{"CA label on a French-tagged track", []models.AudioStreamInfo{
+			{Index: 1, Codec: "eac3", Language: "fre", Title: "Stereo"},
+			{Index: 2, Codec: "eac3", Language: "fre", Title: "CA 2.0"},
+		}, "fr-CA", 2},
+		{"CA label without a French tag is not a region", []models.AudioStreamInfo{
+			{Index: 1, Codec: "eac3", Language: "fre", Title: "Stereo"},
+			{Index: 2, Codec: "eac3", Language: "", Title: "Stereo CA"},
+		}, "fr-CA", 1},
 		{"unknown region behaves as the language", frenchDubs(), "fr-XX", 2},
 	}
 	for _, tc := range cases {
