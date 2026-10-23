@@ -29,6 +29,9 @@ type playSession struct {
 	Ref           itemRef
 	Live          bool
 	ReleaseKey    string // a release the user picked as version ("" = automatic)
+	// rankGen is mediastorm's ranking generation the stream was chosen
+	// under; after a ranking settings change it is not reused.
+	rankGen uint64
 
 	mu                sync.Mutex
 	createMu          sync.Mutex // serializes HLS session creation for this play session
@@ -245,7 +248,8 @@ func (s *Server) vodPlaybackInfo(w http.ResponseWriter, r *http.Request, p *prin
 	// automatic choice.
 	rel, isRelease := s.releaseByMediaSource(p, itemID, ref, req.MediaSourceID)
 	var sess *playSession
-	if prev, ok := s.plays.latestForItem(p.Profile.ID, itemID, p.Client.DeviceID); ok && time.Since(prev.created) < 2*time.Hour && prev.ReleaseKey == rel.Key {
+	if prev, ok := s.plays.latestForItem(p.Profile.ID, itemID, p.Client.DeviceID); ok && time.Since(prev.created) < 2*time.Hour && prev.ReleaseKey == rel.Key &&
+		(prev.ReleaseKey != "" || prev.rankGen == s.rankingGeneration()) {
 		prev.mu.Lock()
 		failed := prev.status != nil && prev.status.Status == playback.PrequeueStatusFailed
 		prev.mu.Unlock()
@@ -293,6 +297,7 @@ func (s *Server) vodPlaybackInfo(w http.ResponseWriter, r *http.Request, p *prin
 				ProfileID:     p.Profile.ID,
 				DeviceID:      p.Client.DeviceID,
 				Ref:           ref,
+				rankGen:       s.rankingGeneration(),
 				status:        &playback.PrequeueStatusResponse{Status: playback.PrequeueStatusSearching},
 				owner:         p,
 				hls:           map[string]string{},
@@ -317,6 +322,7 @@ func (s *Server) vodPlaybackInfo(w http.ResponseWriter, r *http.Request, p *prin
 			ProfileID:     p.Profile.ID,
 			DeviceID:      p.Client.DeviceID,
 			Ref:           ref,
+			rankGen:       s.rankingGeneration(),
 			prequeueID:    prequeueID,
 			owner:         p,
 			hls:           map[string]string{},

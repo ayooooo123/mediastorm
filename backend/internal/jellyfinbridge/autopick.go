@@ -28,6 +28,7 @@ type autoPick struct {
 	status *playback.PrequeueStatusResponse
 	probe  *mediaProbe
 	at     time.Time
+	gen    uint64 // ranking generation it was picked under
 }
 
 type autoPicks struct {
@@ -93,9 +94,13 @@ func (s *Server) pickAuto(ctx context.Context, p *principal, itemID string, ref 
 			delete(s.autoPicks.byKey, k)
 		}
 	}
+	gen := s.rankingGeneration()
 	pick, ok := s.autoPicks.byKey[key]
+	if ok && pick.gen != gen {
+		ok = false // ranked under older settings
+	}
 	if !ok {
-		pick = &autoPick{done: make(chan struct{})}
+		pick = &autoPick{done: make(chan struct{}), gen: gen}
 		s.autoPicks.byKey[key] = pick
 		go s.runAutoPick(p, itemID, ref, caps, key, pick)
 	}
@@ -108,6 +113,14 @@ func (s *Server) pickAuto(ctx context.Context, p *principal, itemID string, ref 
 	}
 }
 
+// rankingGeneration is mediastorm's ranking generation (0 when unknown).
+func (s *Server) rankingGeneration() uint64 {
+	if s.deps.RankingGeneration == nil {
+		return 0
+	}
+	return s.deps.RankingGeneration()
+}
+
 func (s *Server) runAutoPick(p *principal, itemID string, ref itemRef, caps *hlsClientCaps, key string, pick *autoPick) {
 	ctx, cancel := context.WithTimeout(context.Background(), autoPrequeueWait+autoPickBudget)
 	defer cancel()
@@ -118,7 +131,7 @@ func (s *Server) runAutoPick(p *principal, itemID string, ref itemRef, caps *hls
 	}
 	s.autoPicks.mu.Lock()
 	pick.status, pick.probe, pick.at = status, probe, time.Now()
-	if status == nil || status.Status != playback.PrequeueStatusReady {
+	if (status == nil || status.Status != playback.PrequeueStatusReady) && s.autoPicks.byKey[key] == pick {
 		delete(s.autoPicks.byKey, key) // try again next time
 	}
 	s.autoPicks.mu.Unlock()

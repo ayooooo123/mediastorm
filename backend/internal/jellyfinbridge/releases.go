@@ -56,6 +56,7 @@ type releaseList struct {
 	done    chan struct{} // closed when the search finished
 	fetched time.Time
 	err     error
+	gen     uint64 // ranking generation the search ran under
 }
 
 type releaseCache struct {
@@ -115,8 +116,9 @@ func (s *Server) releasesWait(p *principal, itemID string, ref itemRef, wait tim
 	}
 	key := p.Profile.ID + "|" + itemID
 	s.releases.mu.Lock()
+	gen := s.rankingGeneration()
 	list, ok := s.releases.lists[key]
-	stale := ok && list.ready && time.Since(list.fetched) > list.ttl()
+	stale := ok && ((list.ready && time.Since(list.fetched) > list.ttl()) || list.gen != gen)
 	if !ok || stale {
 		for k, old := range s.releases.lists {
 			if old.ready && time.Since(old.fetched) > old.ttl() {
@@ -126,7 +128,7 @@ func (s *Server) releasesWait(p *principal, itemID string, ref itemRef, wait tim
 		if len(s.releases.versions) > 50_000 {
 			s.releases.versions = map[string]string{}
 		}
-		list = &releaseList{done: make(chan struct{})}
+		list = &releaseList{done: make(chan struct{}), gen: gen}
 		s.releases.lists[key] = list
 		go s.searchReleases(p, ref, list)
 	}

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"novastream/internal/datastore"
@@ -332,6 +333,11 @@ type PrequeueStore struct {
 
 	streamPathValidator StreamPathValidator
 	streamPathValidated map[string]time.Time
+
+	// generation counts DeleteAll calls. Everything that changes how
+	// releases rank clears the store, so callers that keep resolved streams
+	// of their own (the Jellyfin bridge) compare it to notice.
+	generation atomic.Uint64
 }
 
 // DeletedPrequeueEntry describes an entry removed from the prequeue store.
@@ -1163,6 +1169,10 @@ func (s *PrequeueStore) FindReadyByStreamPath(streamPath string) (*PrequeueEntry
 	return best, true
 }
 
+// Generation changes whenever all entries are cleared, i.e. after a change
+// to how releases rank (ranking settings).
+func (s *PrequeueStore) Generation() uint64 { return s.generation.Load() }
+
 // DeleteAll removes all prequeue entries
 func (s *PrequeueStore) DeleteAll() {
 	s.mu.Lock()
@@ -1175,6 +1185,7 @@ func (s *PrequeueStore) DeleteAll() {
 		delete(s.entries, id)
 	}
 	s.byTitleUser = make(map[string]string)
+	s.generation.Add(1)
 	s.saveToDisk()
 	log.Printf("[prequeue] Cleared all prequeue entries")
 }

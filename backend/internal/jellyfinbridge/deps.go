@@ -142,6 +142,10 @@ type Deps struct {
 	// StopRequested reports (and consumes) a stop the Active Streams
 	// dashboard requested for a profile's playback of an item.
 	StopRequested func(profileID string, update models.PlaybackProgressUpdate) bool
+	// RankingGeneration changes whenever mediastorm's release ranking changes
+	// (ranking settings); cached picks and play sessions from an
+	// older generation are not reused.
+	RankingGeneration func() uint64
 }
 
 // StreamPlan is the output plan of a mediastorm HLS session, as shown in the

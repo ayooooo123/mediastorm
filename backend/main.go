@@ -1973,6 +1973,7 @@ func main() {
 			},
 			ThumbnailsEnabled: videoHandler.ThumbnailsEnabled,
 			StopRequested:     handlers.GetStreamTracker().ShouldStopPlayback,
+			RankingGeneration: prequeueHandler.GetStore().Generation,
 			ThumbnailFrames: func(streamPath string) ([]jellyfinbridge.ThumbnailFrame, bool) {
 				frames, done := videoHandler.ThumbnailFrames(streamPath)
 				out := make([]jellyfinbridge.ThumbnailFrame, len(frames))
