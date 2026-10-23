@@ -60,7 +60,8 @@ func IsTextSubtitleCodec(codec string) bool {
 	return textSubtitleCodecs[strings.ToLower(strings.TrimSpace(codec))]
 }
 
-// IsCommentaryTrack checks if an audio track is a commentary track based on its title
+// IsCommentaryTrack checks if an audio track is a commentary or audio
+// description track (not the main mix) based on its title
 func IsCommentaryTrack(title string) bool {
 	lowerTitle := strings.ToLower(strings.TrimSpace(title))
 	commentaryIndicators := []string{
@@ -73,9 +74,21 @@ func IsCommentaryTrack(title string) bool {
 		"isolated score",
 		"music only",
 		"score only",
+		"audio description",
+		"audiodescription",
+		"audio-description",
+		"descriptive audio",
+		"described video",
+		"audiodescripción",
 	}
 	for _, indicator := range commentaryIndicators {
 		if strings.Contains(lowerTitle, indicator) {
+			return true
+		}
+	}
+	// "French (France) AD", "AD 5.1": an audio description label.
+	for _, word := range strings.FieldsFunc(lowerTitle, func(r rune) bool { return r < 'a' || r > 'z' }) {
+		if word == "ad" {
 			return true
 		}
 	}

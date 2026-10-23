@@ -14,6 +14,16 @@ func frenchDubs() []models.AudioStreamInfo {
 	}
 }
 
+// The layout of Spider-Man.Brand.New.Day.2026.MULTi.VF2.2160p.WEB.H265-SUPPLY.
+func spiderManDubs() []models.AudioStreamInfo {
+	return []models.AudioStreamInfo{
+		{Index: 1, Codec: "eac3", Language: "fre", Title: "French (France)"},
+		{Index: 2, Codec: "aac", Language: "fre", Title: "French (France) AD"},
+		{Index: 3, Codec: "eac3", Language: "fre", Title: "French (Canadien)"},
+		{Index: 4, Codec: "eac3", Language: "eng", Title: "English"},
+	}
+}
+
 func TestFindAudioTrackRegionalVariant(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -58,6 +68,12 @@ func TestFindAudioTrackRegionalVariant(t *testing.T) {
 			{Index: 1, Codec: "aac", Language: "por", Title: "Portugal"},
 			{Index: 2, Codec: "aac", Language: "por", Title: "Brazilian"},
 		}, "pt-BR", 2},
+		{"French (Canadien) label picks the Canadian dub", spiderManDubs(), "fr-CA", 3},
+		{"French (France) label for fr-FR", spiderManDubs(), "fr-FR", 1},
+		{"audio description loses to the main French mix", []models.AudioStreamInfo{
+			{Index: 1, Codec: "truehd", Language: "fre", Title: "French (France)"},
+			{Index: 2, Codec: "aac", Language: "fre", Title: "French (France) AD"},
+		}, "fre", 1},
 		{"unknown region behaves as the language", frenchDubs(), "fr-XX", 2},
 	}
 	for _, tc := range cases {
