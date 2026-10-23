@@ -428,6 +428,9 @@ func (s *Server) prefetchNextEpisode(p *principal, itemID string) {
 	for i, ep := range episodes {
 		if ep.ID == itemID && i+1 < len(episodes) {
 			s.prefetchReleases(p, episodes[i+1].ID)
+			// Resolve and probe it too: it starts sooner, and its measured
+			// length is the runtime clients see when they move on to it.
+			s.prewarm(p, episodes[i+1].ID)
 			return
 		}
 	}

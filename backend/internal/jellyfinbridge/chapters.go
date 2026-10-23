@@ -69,12 +69,19 @@ func (s *Server) knownDuration(profileID, itemID string) float64 {
 	return d.seconds
 }
 
-// withChapters adds known chapters to movies and episodes.
-func (s *Server) withChapters(p *principal, items []dto.BaseItemDto) {
+// withStreamDetails adds what is known of the stream to movies and
+// episodes: its chapters and its measured length. Metadata runtimes are
+// whole minutes, often a minute longer than the file; Plezy treats an end
+// more than 10 s before the item's runtime as a dropped stream and reloads
+// instead of moving on to the next episode.
+func (s *Server) withStreamDetails(p *principal, items []dto.BaseItemDto) {
 	for i := range items {
 		item := &items[i]
 		if item.Type != dto.KindMovie && item.Type != dto.KindEpisode {
 			continue
+		}
+		if seconds := s.knownDuration(p.Profile.ID, item.ID); seconds > 0 {
+			item.RunTimeTicks = int64Ptr(secondsToTicks(seconds))
 		}
 		v, ok := s.chapters.Load(chaptersKey(p.Profile.ID, item.ID))
 		if !ok {

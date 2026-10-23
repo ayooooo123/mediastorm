@@ -840,12 +840,14 @@ func (s *Server) recordProgress(ctx context.Context, p *principal, itemID string
 		// the length of the stream last played for this item.
 		duration = s.knownDuration(p.Profile.ID, itemID)
 	}
+	// Only a measured length is remembered (items report it as their
+	// runtime); metadata runtimes are whole minutes.
+	s.rememberDuration(p.Profile.ID, itemID, duration)
 	if duration <= 0 {
 		if item, ok := s.itemByID(ctx, p, nil, itemID, false); ok && item.RunTimeTicks != nil {
 			duration = ticksToSeconds(*item.RunTimeTicks)
 		}
 	}
-	s.rememberDuration(p.Profile.ID, itemID, duration)
 	update := models.PlaybackProgressUpdate{
 		Position:      position,
 		Duration:      duration,

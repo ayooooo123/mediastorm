@@ -112,6 +112,10 @@ func (s *Server) runAutoPick(p *principal, itemID string, ref itemRef, caps *hls
 	ctx, cancel := context.WithTimeout(context.Background(), autoPrequeueWait+autoPickBudget)
 	defer cancel()
 	status, probe := s.autoPickStream(ctx, p, itemID, ref, caps)
+	if probe != nil {
+		// The picked release's length, not that of a candidate probed last.
+		s.rememberDuration(p.Profile.ID, itemID, probe.DurationSeconds)
+	}
 	s.autoPicks.mu.Lock()
 	pick.status, pick.probe, pick.at = status, probe, time.Now()
 	if status == nil || status.Status != playback.PrequeueStatusReady {
