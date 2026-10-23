@@ -1614,7 +1614,8 @@
     }
 
     function normalizeWebLanguage(value) {
-      const raw = String(value || '').trim().toLowerCase();
+      // A regional tag (fr-CA) matches its language here; the server picks the regional dub.
+      const raw = String(value || '').trim().toLowerCase().split(/[-_]/)[0];
       if (!raw) return '';
       const aliases = { en:'eng', english:'eng', es:'spa', spanish:'spa', fr:'fra', fre:'fra', french:'fra', de:'deu', ger:'deu', german:'deu', ja:'jpn', japanese:'jpn', ko:'kor', korean:'kor', zh:'zho', chi:'zho', chinese:'zho', pt:'por', portuguese:'por', it:'ita', italian:'ita', nl:'nld', dut:'nld', dutch:'nld', pl:'pol', polish:'pol', ru:'rus', russian:'rus' };
       return aliases[raw] || raw;

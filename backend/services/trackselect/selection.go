@@ -125,12 +125,22 @@ func MatchesLanguage(language, title, normalizedPref string) bool {
 // codecs, then avoids TrueHD/DTS when multiple tracks exist.
 // Specifically avoids TrueHD/MLP unless it's the only option for the preferred language.
 // Skips commentary tracks unless they are the only option.
+// A region-tagged preference ("fr-CA", "es-419") first tries that regional
+// dub ("VFQ", "Latino") and falls back to any track of the language.
 // Returns -1 if no matching track is found.
 func FindAudioTrack(streams []models.AudioStreamInfo, preferredLanguage string) int {
 	if preferredLanguage == "" || len(streams) == 0 {
 		return -1
 	}
+	if regional := regionalStreams(streams, preferredLanguage); len(regional) > 0 {
+		if selected := findAudioTrack(regional, preferredLanguage); selected >= 0 {
+			return selected
+		}
+	}
+	return findAudioTrack(streams, preferredLanguage)
+}
 
+func findAudioTrack(streams []models.AudioStreamInfo, preferredLanguage string) int {
 	normalizedPref := strings.ToLower(strings.TrimSpace(preferredLanguage))
 
 	// Pass 1: E-AC-3 matching language, skipping commentary. Keeping DDP ahead

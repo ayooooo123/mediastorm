@@ -5122,7 +5122,8 @@
     }
 
     function normalizeLanguagePreference(value) {
-        const normalized = String(value || '').trim().toLowerCase();
+        // A regional tag (fr-CA) matches its language here; the server picks the regional dub.
+        const normalized = String(value || '').trim().toLowerCase().split(/[-_]/)[0];
         if (!normalized) return '';
         const aliases = {
             en: 'eng',
