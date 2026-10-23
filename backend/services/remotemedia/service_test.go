@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -482,5 +483,44 @@ func TestGroupItemsPreservesEpisodeVersionsAndSource(t *testing.T) {
 	}
 	if groups[0].Seasons[0].Episodes[0].Items[0].SourceType != models.MediaSourceJellyfin {
 		t.Fatalf("source tag missing")
+	}
+}
+
+func TestListGroupsAppliesKidsRatingCapsBeforePaging(t *testing.T) {
+	item := func(id, title, cert string) models.RemoteMediaItem {
+		return models.RemoteMediaItem{ID: id, LibraryID: "plex-films", LibraryType: models.LocalMediaLibraryTypeMovie,
+			Title: title, GroupKey: id, Certification: cert, FileName: title + ".mkv"}
+	}
+	repo := &fakeRemoteMediaRepo{
+		libraries: []models.RemoteMediaLibrary{{ID: "plex-films", Name: "Films", Type: models.LocalMediaLibraryTypeMovie, Provider: models.MediaSourcePlex}},
+		items: map[string][]models.RemoteMediaItem{"plex-films": {
+			item("a", "Alpha", "G"),
+			item("b", "Bravo", "R"),
+			item("c", "Charlie", ""),
+			item("d", "Delta", "PG"),
+			item("z", "Zulu", "Not Rated"),
+		}},
+	}
+	service := &Service{repo: repo}
+
+	result, err := service.ListGroups(context.Background(), "plex-films", models.LocalMediaItemListQuery{
+		Limit: 1, Sort: "name", MaxMovieRating: "PG", MaxTVRating: "TV-PG",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Total != 2 || len(result.Groups) != 1 || result.Groups[0].Title != "Alpha" {
+		t.Fatalf("expected the first of 2 allowed titles, got total=%d groups=%+v", result.Total, result.Groups)
+	}
+	if got := strings.Join(result.AlphabetBuckets, ","); got != "A,D" {
+		t.Fatalf("alphabet buckets = %q, want only allowed titles", got)
+	}
+
+	unrestricted, err := service.ListGroups(context.Background(), "plex-films", models.LocalMediaItemListQuery{Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unrestricted.Total != 5 {
+		t.Fatalf("expected every title without caps, got %d", unrestricted.Total)
 	}
 }

@@ -213,6 +213,40 @@ func FilterSearchByRatings(results []models.SearchResult, maxMovieRating, maxTVR
 	return filtered
 }
 
+// FilterLibraryGroupsByRatings removes local, Plex and Jellyfin library groups
+// that exceed a kids profile's cap for their media type. Groups whose
+// certification is unknown are removed (fail-closed) so unverifiable library
+// content is never shown to a restricted profile. A no-op when both caps are empty.
+func FilterLibraryGroupsByRatings(groups []models.LocalMediaItemGroup, maxMovieRating, maxTVRating string) []models.LocalMediaItemGroup {
+	if strings.TrimSpace(maxMovieRating) == "" && strings.TrimSpace(maxTVRating) == "" {
+		return groups
+	}
+
+	result := make([]models.LocalMediaItemGroup, 0, len(groups))
+	for _, group := range groups {
+		if IsLibraryGroupAllowed(group, maxMovieRating, maxTVRating) {
+			result = append(result, group)
+		}
+	}
+	return result
+}
+
+// IsLibraryGroupAllowed checks one library group against the cap for its media
+// type: shows use the TV cap, movies and other files the movie cap. A media type
+// with no cap configured is allowed.
+func IsLibraryGroupAllowed(group models.LocalMediaItemGroup, maxMovieRating, maxTVRating string) bool {
+	mediaType := "movie"
+	maxRating := maxMovieRating
+	if group.LibraryType == models.LocalMediaLibraryTypeShow {
+		mediaType = "series"
+		maxRating = maxTVRating
+	}
+	if strings.TrimSpace(maxRating) == "" {
+		return true
+	}
+	return IsRatingAllowed(group.Certification, maxRating, mediaType)
+}
+
 // ValidateRating checks if a rating string is valid (known MPAA or TV rating).
 func ValidateRating(rating string) bool {
 	rating = strings.ToUpper(strings.TrimSpace(rating))

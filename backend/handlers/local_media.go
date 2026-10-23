@@ -16,6 +16,7 @@ import (
 	"novastream/config"
 	"novastream/internal/auth"
 	"novastream/models"
+	"novastream/services/kids"
 	"novastream/services/libraryaccess"
 	"novastream/services/localmedia"
 	"novastream/services/remotemedia"
@@ -367,6 +368,17 @@ func (h *LocalMediaHandler) FindMatches(w http.ResponseWriter, r *http.Request) 
 				return
 			}
 			if allowed {
+				filtered = append(filtered, match)
+			}
+		}
+		matches = filtered
+	}
+	// The same kids rating caps the library listings apply, for local, Plex and
+	// Jellyfin matches alike.
+	if maxMovieRating, maxTVRating := h.kidsRatingCaps(r); maxMovieRating != "" || maxTVRating != "" {
+		filtered := matches[:0]
+		for _, match := range matches {
+			if kids.IsLibraryGroupAllowed(match.Group, maxMovieRating, maxTVRating) {
 				filtered = append(filtered, match)
 			}
 		}

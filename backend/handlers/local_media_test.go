@@ -613,3 +613,32 @@ func TestLocalMediaHandlerFindMatchesAllowsMasterProfileOnEmptyRestricted(t *tes
 		t.Fatalf("expected master profile to see empty-restricted library match, got %+v", matches)
 	}
 }
+
+func TestLocalMediaHandlerFindMatchesAppliesKidsRatingCaps(t *testing.T) {
+	handler := NewLocalMediaHandler(&fakeLocalMediaPlaybackService{
+		matches: []models.LocalMediaMatchedGroup{
+			{LibraryID: "lib1", Group: models.LocalMediaItemGroup{ID: "g-pg", LibraryType: models.LocalMediaLibraryTypeMovie, Certification: "PG"}},
+			{LibraryID: "lib1", Group: models.LocalMediaItemGroup{ID: "g-r", LibraryType: models.LocalMediaLibraryTypeMovie, Certification: "R"}},
+			{LibraryID: "lib1", Group: models.LocalMediaItemGroup{ID: "g-unrated", LibraryType: models.LocalMediaLibraryTypeMovie}},
+		},
+	}, fakeLocalMediaUsersProvider{
+		allowed: true,
+		userOK:  true,
+		user:    models.User{IsKidsProfile: true, KidsMode: "rating", KidsMaxMovieRating: "PG", KidsMaxTVRating: "TV-Y7"},
+	}, false)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/library/matches?mediaType=movie&tmdbId=123&profileId=kid1", nil)
+	rec := httptest.NewRecorder()
+	handler.FindMatches(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var matches []models.LocalMediaMatchedGroup
+	if err := json.NewDecoder(rec.Body).Decode(&matches); err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 || matches[0].Group.ID != "g-pg" {
+		t.Fatalf("expected only the PG match for a PG-capped kids profile, got %+v", matches)
+	}
+}

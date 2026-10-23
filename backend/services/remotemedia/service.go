@@ -21,6 +21,7 @@ import (
 	"novastream/internal/datastore"
 	"novastream/models"
 	"novastream/services/jellyfin"
+	"novastream/services/kids"
 	"novastream/services/plex"
 	"novastream/services/streaming"
 )
@@ -577,6 +578,9 @@ func (s *Service) ListGroups(ctx context.Context, libraryID string, query models
 		return nil, err
 	}
 	groups := groupItems(library, items, query.IncludeCards)
+	// Kids profile rating caps, as local libraries apply them: before paging, so
+	// totals and alphabet buckets only count what the profile may see.
+	groups = kids.FilterLibraryGroupsByRatings(groups, query.MaxMovieRating, query.MaxTVRating)
 	if filter := strings.TrimSpace(query.Filter); filter != "" && filter != "all" && filter != string(models.LocalMediaMatchStatusMatched) && filter != string(models.LocalMediaMatchStatusManual) {
 		groups = []models.LocalMediaItemGroup{}
 	}

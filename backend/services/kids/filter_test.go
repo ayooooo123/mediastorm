@@ -120,3 +120,47 @@ func TestValidateKidsMode_ValidModes(t *testing.T) {
 		}
 	}
 }
+
+func TestFilterLibraryGroupsByRatings(t *testing.T) {
+	groups := []models.LocalMediaItemGroup{
+		{ID: "1", Title: "G Movie", LibraryType: models.LocalMediaLibraryTypeMovie, Certification: "G"},
+		{ID: "2", Title: "R Movie", LibraryType: models.LocalMediaLibraryTypeMovie, Certification: "R"},
+		{ID: "3", Title: "Unrated Movie", LibraryType: models.LocalMediaLibraryTypeMovie},
+		{ID: "4", Title: "TV-Y Show", LibraryType: models.LocalMediaLibraryTypeShow, Certification: "TV-Y"},
+		{ID: "5", Title: "TV-MA Show", LibraryType: models.LocalMediaLibraryTypeShow, Certification: "TV-MA"},
+		{ID: "6", Title: "Plex Not Rated", LibraryType: models.LocalMediaLibraryTypeMovie, Certification: "Not Rated"},
+	}
+
+	filtered := FilterLibraryGroupsByRatings(groups, "PG", "TV-PG")
+
+	// G Movie and TV-Y Show allowed; R, unrated and unknown labels (fail-closed), TV-MA removed.
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2 groups, got %d: %+v", len(filtered), filtered)
+	}
+	if filtered[0].ID != "1" || filtered[1].ID != "4" {
+		t.Fatalf("unexpected groups: %+v", filtered)
+	}
+}
+
+func TestFilterLibraryGroupsByRatings_NoCaps(t *testing.T) {
+	groups := []models.LocalMediaItemGroup{
+		{ID: "1", LibraryType: models.LocalMediaLibraryTypeMovie, Certification: "R"},
+		{ID: "2", LibraryType: models.LocalMediaLibraryTypeMovie},
+	}
+	if got := FilterLibraryGroupsByRatings(groups, "", ""); len(got) != 2 {
+		t.Fatalf("expected no filtering without caps, got %d", len(got))
+	}
+}
+
+func TestFilterLibraryGroupsByRatings_MovieCapOnly(t *testing.T) {
+	groups := []models.LocalMediaItemGroup{
+		{ID: "1", LibraryType: models.LocalMediaLibraryTypeMovie, Certification: "R"},
+		{ID: "2", LibraryType: models.LocalMediaLibraryTypeShow, Certification: "TV-MA"},
+		{ID: "3", LibraryType: models.LocalMediaLibraryTypeOther},
+	}
+	filtered := FilterLibraryGroupsByRatings(groups, "PG", "")
+	// Shows have no cap; movies and other files use the movie cap.
+	if len(filtered) != 1 || filtered[0].ID != "2" {
+		t.Fatalf("unexpected groups: %+v", filtered)
+	}
+}

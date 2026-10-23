@@ -435,7 +435,7 @@ func (s *Service) ListGroups(ctx context.Context, libraryID string, query models
 	}
 
 	groups := buildLocalMediaGroups(filtered)
-	groups = filterLocalMediaGroupsByRating(groups, query.MaxMovieRating, query.MaxTVRating)
+	groups = kids.FilterLibraryGroupsByRatings(groups, query.MaxMovieRating, query.MaxTVRating)
 	groups = filterLocalMediaGroupsByMediaType(groups, query.MediaType)
 	alphabetBuckets := localMediaAlphabetBuckets(groups)
 	groups = filterLocalMediaGroupsByAlphabet(groups, query.Alphabet)
@@ -749,35 +749,6 @@ func buildLocalMediaGroups(items []models.LocalMediaItem) []models.LocalMediaIte
 		groups = append(groups, group)
 	}
 	return groups
-}
-
-// filterLocalMediaGroupsByRating removes groups that exceed a kids profile's
-// rating cap. Groups whose certification is unknown are removed (fail-closed)
-// so unverifiable local content is never shown to a restricted profile. A no-op
-// when both caps are empty.
-func filterLocalMediaGroupsByRating(groups []models.LocalMediaItemGroup, maxMovieRating, maxTVRating string) []models.LocalMediaItemGroup {
-	if strings.TrimSpace(maxMovieRating) == "" && strings.TrimSpace(maxTVRating) == "" {
-		return groups
-	}
-
-	result := make([]models.LocalMediaItemGroup, 0, len(groups))
-	for _, group := range groups {
-		mediaType := "movie"
-		maxRating := maxMovieRating
-		if group.LibraryType == models.LocalMediaLibraryTypeShow {
-			mediaType = "series"
-			maxRating = maxTVRating
-		}
-		// No cap configured for this media type → allow.
-		if strings.TrimSpace(maxRating) == "" {
-			result = append(result, group)
-			continue
-		}
-		if kids.IsRatingAllowed(group.Certification, maxRating, mediaType) {
-			result = append(result, group)
-		}
-	}
-	return result
 }
 
 // collectItemsFromGroups flattens all items out of a slice of built groups.
