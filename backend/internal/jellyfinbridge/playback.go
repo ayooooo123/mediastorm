@@ -29,6 +29,9 @@ type playSession struct {
 	Ref           itemRef
 	Live          bool
 	ReleaseKey    string // a release the user picked as version ("" = automatic)
+	// rankGen is mediastorm's ranking generation the stream was chosen
+	// under; after a ranking settings change it is not reused.
+	rankGen uint64
 
 	mu                sync.Mutex
 	createMu          sync.Mutex // serializes HLS session creation for this play session
@@ -216,6 +219,7 @@ func (s *Server) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	itemID := normalizeID(pathVar(r, "id"))
+	s.clearStopped(p.Profile.ID, itemID) // started again after a stop
 	if v := requestedVersion(r); v != "" && req.MediaSourceID == "" {
 		// PlaybackInfo for a version item: the release on its item.
 		req.MediaSourceID = v
@@ -244,7 +248,8 @@ func (s *Server) vodPlaybackInfo(w http.ResponseWriter, r *http.Request, p *prin
 	// automatic choice.
 	rel, isRelease := s.releaseByMediaSource(p, itemID, ref, req.MediaSourceID)
 	var sess *playSession
-	if prev, ok := s.plays.latestForItem(p.Profile.ID, itemID, p.Client.DeviceID); ok && time.Since(prev.created) < 2*time.Hour && prev.ReleaseKey == rel.Key {
+	if prev, ok := s.plays.latestForItem(p.Profile.ID, itemID, p.Client.DeviceID); ok && time.Since(prev.created) < 2*time.Hour && prev.ReleaseKey == rel.Key &&
+		(prev.ReleaseKey != "" || prev.rankGen == s.rankingGeneration()) {
 		prev.mu.Lock()
 		failed := prev.status != nil && prev.status.Status == playback.PrequeueStatusFailed
 		prev.mu.Unlock()
@@ -292,6 +297,7 @@ func (s *Server) vodPlaybackInfo(w http.ResponseWriter, r *http.Request, p *prin
 				ProfileID:     p.Profile.ID,
 				DeviceID:      p.Client.DeviceID,
 				Ref:           ref,
+				rankGen:       s.rankingGeneration(),
 				status:        &playback.PrequeueStatusResponse{Status: playback.PrequeueStatusSearching},
 				owner:         p,
 				hls:           map[string]string{},
@@ -316,6 +322,7 @@ func (s *Server) vodPlaybackInfo(w http.ResponseWriter, r *http.Request, p *prin
 			ProfileID:     p.Profile.ID,
 			DeviceID:      p.Client.DeviceID,
 			Ref:           ref,
+			rankGen:       s.rankingGeneration(),
 			prequeueID:    prequeueID,
 			owner:         p,
 			hls:           map[string]string{},
@@ -521,6 +528,8 @@ func (s *Server) vodMediaSource(r *http.Request, p *principal, sess *playSession
 	var runtime *int64
 	if status != nil && status.Duration > 0 {
 		runtime = int64Ptr(secondsToTicks(status.Duration))
+	} else if probe != nil && probe.DurationSeconds > 0 {
+		runtime = int64Ptr(secondsToTicks(probe.DurationSeconds))
 	} else if ref := sess.Ref; ref.Kind == refMovie || ref.Kind == refEpisode {
 		if item, ok := s.itemByID(r.Context(), p, nil, sess.ItemID, false); ok && item.RunTimeTicks != nil {
 			runtime = item.RunTimeTicks
@@ -833,6 +842,14 @@ func (s *Server) recordProgress(ctx context.Context, p *principal, itemID string
 		sess.mu.Unlock()
 	}
 	if duration <= 0 {
+		// Reports without a live session (none sent, or it idled out) use
+		// the length of the stream last played for this item.
+		duration = s.knownDuration(p.Profile.ID, itemID)
+	}
+	// Only a measured length is remembered (items report it as their
+	// runtime); metadata runtimes are whole minutes.
+	s.rememberDuration(p.Profile.ID, itemID, duration)
+	if duration <= 0 {
 		if item, ok := s.itemByID(ctx, p, nil, itemID, false); ok && item.RunTimeTicks != nil {
 			duration = ticksToSeconds(*item.RunTimeTicks)
 		}
@@ -871,6 +888,9 @@ func (s *Server) recordProgress(ctx context.Context, p *principal, itemID string
 	}
 	if duration > 0 {
 		update.PercentWatched = position / duration * 100
+	}
+	if !ended && s.deps.StopRequested != nil && s.deps.StopRequested(p.Profile.ID, update) {
+		s.stopPlayback(ctx, p, itemID, sess)
 	}
 	if _, err := s.deps.History.UpdatePlaybackProgressContext(ctx, p.Profile.ID, update); err != nil {
 		log.Printf("[jellyfin-bridge] progress for %s: %v", ref.Source, err)

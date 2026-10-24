@@ -159,6 +159,7 @@ func (s *Server) addMediaMetadata(q url.Values, sess *playSession) {
 		q.Set("mediaType", "movie")
 		q.Set("title", t.Name)
 		q.Set("movieName", t.Name)
+		q.Set("itemId", t.source()) // as in progress reports: Active Streams stops by it
 		if t.Year > 0 {
 			q.Set("year", strconv.Itoa(t.Year))
 		}
@@ -169,6 +170,7 @@ func (s *Server) addMediaMetadata(q url.Values, sess *playSession) {
 	case refEpisode:
 		series := s.seriesWithArtwork(seriesInfoFromSeasonRef(ref))
 		q.Set("mediaType", "episode")
+		q.Set("itemId", ref.Source)
 		q.Set("title", series.Name)
 		q.Set("seriesName", series.Name)
 		q.Set("seriesId", series.source())
@@ -358,6 +360,11 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		// External players stream without PlaybackInfo: open a session.
 		if caller, authed := s.authenticate(r); authed {
+			if s.playbackStopped(caller.Profile.ID, itemID) {
+				// Opening a session would count as starting the item again.
+				writeError(w, http.StatusGone, "Playback was stopped by the server")
+				return
+			}
 			sess, ok = s.openStreamSession(r, caller, itemID, queryValue(r, "MediaSourceId"))
 		}
 	}
@@ -374,9 +381,26 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		s.forwardLiveStream(w, r, p, sess)
 		return
 	}
+	if s.playbackStopped(p.Profile.ID, sess.ItemID) {
+		writeError(w, http.StatusGone, "Playback was stopped by the server")
+		return
+	}
+	// The stream may still be resolving: PlaybackInfo answers after a
+	// bounded wait, and picking a release (a preset version, Auto: Avoid
+	// Video Transcoding) can take longer. Direct players such as mpv retry
+	// only briefly, so wait here as the HLS playlist does.
 	sess.mu.Lock()
-	status := sess.status
+	owner := sess.owner
 	sess.mu.Unlock()
+	status := s.awaitPrequeue(r.Context(), p, sess, resolveWaitFor(owner, lazyResolveWait))
+	if status != nil && status.Status == playback.PrequeueStatusFailed {
+		log.Printf("[jellyfin-bridge] stream for %s: %s", sess.ItemID, firstNonEmpty(status.Error, "no playable release"))
+		if r.Context().Err() == nil {
+			s.plays.remove(sess.ID)
+		}
+		writeError(w, http.StatusServiceUnavailable, "Stream not available")
+		return
+	}
 	if status == nil || status.StreamPath == "" {
 		writeError(w, http.StatusServiceUnavailable, "Stream not resolved yet")
 		return
@@ -384,6 +408,13 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	// transmux=0: serve the original bytes with Range support; native
 	// players demux MKV/MP4 themselves.
 	q := url.Values{"path": {status.StreamPath}, "profileId": {p.Profile.ID}, "transmux": {"0"}}
+	// The same details as an HLS start, so Active Streams shows the profile
+	// and title instead of "Unknown" and the file name.
+	q.Set("profileName", p.Profile.Name)
+	if p.Client.DeviceID != "" {
+		q.Set("clientId", "jellyfin-"+p.Client.DeviceID)
+	}
+	s.addMediaMetadata(q, sess)
 	forward(w, r, p, s.deps.Handlers.Stream, "/api/video/stream?"+q.Encode(), nil)
 }
 

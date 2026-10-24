@@ -131,7 +131,7 @@ func (s *Server) handleItems(w http.ResponseWriter, r *http.Request) {
 	if wantsTrickplay(r) {
 		s.withTrickplay(p, page.Items)
 	}
-	s.withChapters(p, page.Items)
+	s.withStreamDetails(p, page.Items)
 	withPlayableSources(page.Items)
 	writeJSON(w, http.StatusOK, page)
 }
@@ -635,7 +635,7 @@ func (s *Server) handleItem(w http.ResponseWriter, r *http.Request) {
 	}
 	items := []dto.BaseItemDto{item}
 	s.withTrickplay(p, items)
-	s.withChapters(p, items)
+	s.withStreamDetails(p, items)
 	withPlayableSources(items)
 	if v := requestedVersion(r); v != "" {
 		asVersion(&items[0], v)
@@ -852,7 +852,7 @@ func (s *Server) handleEpisodes(w http.ResponseWriter, r *http.Request) {
 	}
 	q := itemQuery{StartIndex: parseIntDefault(queryValue(r, "StartIndex"), 0), Limit: parseIntDefault(queryValue(r, "Limit"), 0)}
 	result := s.page(items, q)
-	s.withChapters(p, result.Items)
+	s.withStreamDetails(p, result.Items)
 	withPlayableSources(result.Items)
 	if version != "" {
 		for i := range result.Items {
@@ -886,7 +886,7 @@ func (s *Server) handleNextUp(w http.ResponseWriter, r *http.Request) {
 	}
 	q := itemQuery{StartIndex: parseIntDefault(queryValue(r, "StartIndex"), 0), Limit: parseIntDefault(queryValue(r, "Limit"), 0)}
 	result := s.page(items, q)
-	s.withChapters(p, result.Items)
+	s.withStreamDetails(p, result.Items)
 	withPlayableSources(result.Items)
 	writeJSON(w, http.StatusOK, result)
 }
@@ -908,7 +908,7 @@ func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 	}
 	items = s.filterItems(s.newUserState(p.Profile.ID), q, items)
 	result := s.page(items, q)
-	s.withChapters(p, result.Items)
+	s.withStreamDetails(p, result.Items)
 	withPlayableSources(result.Items)
 	writeJSON(w, http.StatusOK, result)
 }

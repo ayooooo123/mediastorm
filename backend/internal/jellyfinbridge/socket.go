@@ -53,7 +53,7 @@ func (s *Server) handleSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := s.sockets.add(p.Profile.ID, conn)
+	client := s.sockets.add(p.Profile.ID, p.Client.DeviceID, conn)
 	writerDone := make(chan struct{})
 	go func() {
 		defer close(writerDone)
@@ -114,6 +114,7 @@ var socketReauthInterval = time.Minute // var for tests
 
 type socketClient struct {
 	profileID string
+	deviceID  string
 	conn      io.Closer
 	out       chan socketFrame
 }
@@ -135,8 +136,8 @@ type socketHub struct {
 
 func newSocketHub() *socketHub { return &socketHub{clients: map[*socketClient]bool{}} }
 
-func (h *socketHub) add(profileID string, conn io.Closer) *socketClient {
-	c := &socketClient{profileID: profileID, conn: conn, out: make(chan socketFrame, 32)}
+func (h *socketHub) add(profileID, deviceID string, conn io.Closer) *socketClient {
+	c := &socketClient{profileID: profileID, deviceID: deviceID, conn: conn, out: make(chan socketFrame, 32)}
 	h.mu.Lock()
 	h.clients[c] = true
 	h.mu.Unlock()
@@ -174,6 +175,22 @@ func (h *socketHub) broadcast(profileID, messageType string, data any) {
 	defer h.mu.Unlock()
 	for c := range h.clients {
 		if c.profileID == profileID {
+			c.send(0x1, msg)
+		}
+	}
+}
+
+// sendToDevice sends a message to the sockets of one device of a profile
+// (every socket of the profile when the device is unknown).
+func (h *socketHub) sendToDevice(profileID, deviceID, messageType string, data any) {
+	msg, err := json.Marshal(map[string]any{"MessageType": messageType, "Data": data, "MessageId": randomHex(16)})
+	if err != nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for c := range h.clients {
+		if c.profileID == profileID && (deviceID == "" || c.deviceID == deviceID) {
 			c.send(0x1, msg)
 		}
 	}

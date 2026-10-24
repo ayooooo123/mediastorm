@@ -6,6 +6,7 @@ import (
 
 	"novastream/config"
 	"novastream/internal/jellyfinbridge/dto"
+	"novastream/services/playback"
 )
 
 func TestPlaybackInfoCarriesProbedStreamDetails(t *testing.T) {
@@ -86,5 +87,34 @@ func TestParseFrameRateAndBitDepth(t *testing.T) {
 		if got := pixFmtBitDepth(pix); got != want {
 			t.Errorf("%q = %d, want %d", pix, got, want)
 		}
+	}
+}
+
+// Direct streams often report no duration and metadata lacks many episode
+// runtimes; progress then uses the probed length, also for reports that
+// carry no play session.
+func TestProgressUsesProbedDuration(t *testing.T) {
+	h := newHarness(t, config.JellyfinBridgeSettings{})
+	installFakePlayback(t, h)
+	h.srv.deps.Handlers.PrequeueStatus = func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, playback.PrequeueStatusResponse{
+			PrequeueID: "pq1", Status: playback.PrequeueStatusReady, StreamPath: "/webdav/movie.mkv",
+			SelectedAudioTrack: -1, SelectedSubtitleTrack: -1,
+		})
+	}
+	h.srv.deps.Handlers.ProbeVideo = func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"durationSeconds": 1320})
+	}
+	tok := h.login("Living Room", "alice-pass")
+	item := movieID(t, h, tok)
+
+	info := decode[dto.PlaybackInfoResponse](t, h.do(http.MethodPost, "/Items/"+item+"/PlaybackInfo", tok, map[string]any{}))
+	if rt := info.MediaSources[0].RunTimeTicks; rt == nil || *rt != 1320*ticksPerSecond {
+		t.Fatalf("runtime = %v, want the probed 1320 s", rt)
+	}
+	h.do(http.MethodPost, "/Sessions/Playing/Progress", tok, map[string]any{"ItemId": item, "PlaySessionId": info.PlaySessionID, "PositionTicks": int64(660) * ticksPerSecond})
+	h.do(http.MethodPost, "/Sessions/Playing/Progress", tok, map[string]any{"ItemId": item, "PositionTicks": int64(990) * ticksPerSecond})
+	if got := h.history.progress; len(got) != 2 || got[0].Duration != 1320 || got[0].PercentWatched != 50 || got[1].Duration != 1320 {
+		t.Fatalf("progress = %+v, want duration 1320 with and without the play session", got)
 	}
 }
