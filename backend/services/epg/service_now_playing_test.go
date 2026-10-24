@@ -64,3 +64,46 @@ func TestNowPlayingRejectsAmbiguousAliases(t *testing.T) {
 		}
 	}
 }
+
+func TestScheduleDoesNotSubstringMatchNumericChannelIDs(t *testing.T) {
+	now := time.Now().UTC()
+	service := &Service{schedule: &models.EPGSchedule{
+		Channels: map[string]models.EPGChannel{},
+		Programs: map[string][]models.EPGProgram{},
+	}}
+	for _, id := range []string{"1", "2", "3"} {
+		service.schedule.Channels[id] = models.EPGChannel{ID: id, Name: "Channel " + id}
+		service.schedule.Programs[id] = []models.EPGProgram{{ChannelID: id, Title: "Show " + id, Start: now.Add(-time.Hour), Stop: now.Add(time.Hour)}}
+	}
+	service.rebuildScheduleIndexLocked()
+
+	schedules := service.GetScheduleMultiple([]string{"1", "2", "12", "21", "30"}, now.Add(-time.Hour), now.Add(time.Hour))
+	for _, id := range []string{"1", "2"} {
+		if len(schedules[id]) != 1 || schedules[id][0].ChannelID != id {
+			t.Errorf("channel %q should resolve to its own guide entry: %+v", id, schedules[id])
+		}
+	}
+	for _, id := range []string{"12", "21", "30"} {
+		if len(schedules[id]) != 0 {
+			t.Errorf("channel %q has no guide entry but borrowed %+v", id, schedules[id])
+		}
+	}
+}
+
+func TestScheduleRejectsAmbiguousAliases(t *testing.T) {
+	now := time.Now().UTC()
+	service := &Service{schedule: &models.EPGSchedule{
+		Channels: map[string]models.EPGChannel{
+			"one": {ID: "one", Name: "SHARED"},
+			"two": {ID: "two", Name: "shared HD"},
+		},
+		Programs: map[string][]models.EPGProgram{},
+	}}
+	for _, id := range []string{"one", "two"} {
+		service.schedule.Programs[id] = []models.EPGProgram{{ChannelID: id, Start: now.Add(-time.Hour), Stop: now.Add(time.Hour)}}
+	}
+	service.rebuildScheduleIndexLocked()
+	if programs := service.GetSchedule("SHARED", now.Add(-time.Hour), now.Add(time.Hour)); len(programs) != 0 {
+		t.Fatalf("ambiguous alias resolved to %+v", programs)
+	}
+}

@@ -57,9 +57,8 @@ type Service struct {
 	// program key, for every miss) - that scan, multiplied by a caller passing many channel
 	// IDs at once (sports auto-link, live search), was slow enough to make those endpoints
 	// hang outright on a large (tens of thousands of channels) playlist. Built once whenever
-	// schedule is (re)assigned, not per lookup. The "contains" partial-match pass in
-	// findProgramsByChannelMatch is unindexed and stays a fallback for the rarer misses that
-	// don't hit either index.
+	// schedule is (re)assigned, not per lookup. Keys shared by different guide channels are
+	// left out, and there is no partial-match fallback beyond these two indexes.
 	normalizedIDIndex   map[string]string
 	normalizedNameIndex map[string]string
 }
@@ -138,24 +137,40 @@ func (s *Service) installRestoredSchedule(initial, restored *models.EPGSchedule)
 // current s.schedule. Caller must hold s.mu (write lock) - called immediately after every
 // s.schedule reassignment so the indexes never go stale relative to the data they cover.
 func (s *Service) rebuildScheduleIndexLocked() {
+	// Keys shared by different guide channels are dropped (same rule as GetNowPlaying)
+	// so a playlist channel never binds to whichever entry map iteration saw last.
 	idIndex := make(map[string]string, len(s.schedule.Programs))
+	ambiguousIDs := make(map[string]struct{})
 	for channelID := range s.schedule.Programs {
-		idIndex[normalizeChannelID(channelID)] = channelID
+		addUnambiguousIndexKey(idIndex, ambiguousIDs, normalizeChannelID(channelID), channelID)
 	}
 	nameIndex := make(map[string]string, len(s.schedule.Channels))
+	ambiguousNames := make(map[string]struct{})
 	for channelID, ch := range s.schedule.Channels {
 		if _, hasPrograms := s.schedule.Programs[channelID]; !hasPrograms {
 			continue
 		}
-		nameIndex[normalizeChannelID(ch.Name)] = channelID
-		for _, alias := range ch.Aliases {
-			if strings.TrimSpace(alias) != "" {
-				nameIndex[normalizeChannelID(alias)] = channelID
-			}
+		for _, name := range append([]string{ch.Name}, ch.Aliases...) {
+			addUnambiguousIndexKey(nameIndex, ambiguousNames, normalizeChannelID(name), channelID)
 		}
 	}
 	s.normalizedIDIndex = idIndex
 	s.normalizedNameIndex = nameIndex
+}
+
+func addUnambiguousIndexKey(index map[string]string, ambiguous map[string]struct{}, key, channelID string) {
+	if key == "" {
+		return
+	}
+	if _, isAmbiguous := ambiguous[key]; isAmbiguous {
+		return
+	}
+	if existing, exists := index[key]; exists && existing != channelID {
+		delete(index, key)
+		ambiguous[key] = struct{}{}
+		return
+	}
+	index[key] = channelID
 }
 
 // countPrograms returns total number of programs across all channels.
@@ -1144,18 +1159,8 @@ func (s *Service) findProgramsByChannelMatch(channelID string) []models.EPGProgr
 		return s.schedule.Programs[epgChannelID]
 	}
 
-	// Fallback: partial/substring matching has no cheap index (an input could be a
-	// substring of any EPG ID or vice versa) - only reached for the minority of lookups
-	// that miss both exact indexes above, not for every call.
-	for epgChannelID, programs := range s.schedule.Programs {
-		epgNorm := normalizeChannelID(epgChannelID)
-		if strings.Contains(epgNorm, normalizedInput) || strings.Contains(normalizedInput, epgNorm) {
-			if len(programs) > 0 {
-				return programs
-			}
-		}
-	}
-
+	// No substring fallback: with numeric tvg-ids (Dispatcharr's default) "12" contains
+	// "1", so a whole category bound to the first guide channels' programmes.
 	return nil
 }
 
