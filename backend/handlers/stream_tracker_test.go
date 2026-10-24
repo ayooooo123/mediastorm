@@ -860,3 +860,24 @@ func TestMarkStopPlaybackStopsLingeringStream(t *testing.T) {
 		t.Fatal("GetEndedStream() still returns the stopped stream")
 	}
 }
+
+// Stopping a native player between range requests hides its older ended
+// requests too, instead of listing the next-older one in its place.
+func TestMarkStopPlaybackHidesOlderRangeRequests(t *testing.T) {
+	metadata := StreamMediaMetadata{MediaType: "episode", ItemID: "tmdb:tv:2004:s03e06"}
+	older := &TrackedStream{ID: "range-1", ProfileID: "profile", Path: "/episode.mkv", MediaMetadata: metadata}
+	newer := &TrackedStream{ID: "range-2", ProfileID: "profile", Path: "/episode.mkv", MediaMetadata: metadata}
+	tracker := &StreamTracker{
+		streams: make(map[string]*TrackedStream),
+		recentlyEnded: map[string]recentlyEndedStream{
+			older.ID: {stream: older, endedAt: time.Now().Add(-5 * time.Second)},
+			newer.ID: {stream: newer, endedAt: time.Now()},
+		},
+	}
+	if !tracker.MarkStopPlayback(newer.ID) {
+		t.Fatal("MarkStopPlayback() = false for a lingering stream")
+	}
+	if got := tracker.GetLingeringStreams(); len(got) != 0 {
+		t.Fatalf("older range request of the stopped playback still listed: %v", streamIDs(got))
+	}
+}

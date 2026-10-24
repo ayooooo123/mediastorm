@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"novastream/config"
 	"novastream/internal/jellyfinbridge/dto"
@@ -85,8 +86,19 @@ func TestActiveStreamsStopsDirectPlayback(t *testing.T) {
 		t.Fatalf("stream with a token after stop = %d, want 410", code)
 	}
 
-	// Starting the item again lifts the block.
+	// The client reloading the cut stream right away stays stopped.
 	stop = false
+	info = decode[dto.PlaybackInfoResponse](t, h.doWithClient(http.MethodPost, "/Items/"+item+"/PlaybackInfo", tok, "Android TV", map[string]any{}))
+	src = info.MediaSources[0]
+	if code := stream("api_key=" + tok); code != http.StatusGone {
+		t.Fatalf("stream after an immediate reload = %d, want 410", code)
+	}
+
+	// Starting the item again later lifts the block.
+	h.srv.stopped.Range(func(k, _ any) bool {
+		h.srv.stopped.Store(k, time.Now().Add(-stopReloadGrace-time.Second))
+		return true
+	})
 	info = decode[dto.PlaybackInfoResponse](t, h.doWithClient(http.MethodPost, "/Items/"+item+"/PlaybackInfo", tok, "Android TV", map[string]any{}))
 	src = info.MediaSources[0]
 	if code := stream(); code != http.StatusPartialContent {

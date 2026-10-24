@@ -334,9 +334,10 @@ type PrequeueStore struct {
 	streamPathValidator StreamPathValidator
 	streamPathValidated map[string]time.Time
 
-	// generation counts DeleteAll calls. Everything that changes how
-	// releases rank clears the store, so callers that keep resolved streams
-	// of their own (the Jellyfin bridge) compare it to notice.
+	// generation counts DeleteAll and DeleteByUser calls. Everything that
+	// changes how releases rank (globally or for one profile) clears the
+	// store, so callers that keep resolved streams of their own (the
+	// Jellyfin bridge) compare it to notice.
 	generation atomic.Uint64
 }
 
@@ -1169,8 +1170,9 @@ func (s *PrequeueStore) FindReadyByStreamPath(streamPath string) (*PrequeueEntry
 	return best, true
 }
 
-// Generation changes whenever all entries are cleared, i.e. after a change
-// to how releases rank (ranking settings).
+// Generation changes whenever all entries or a user's entries are cleared,
+// i.e. after a change to how releases rank (global or profile ranking and
+// filtering settings).
 func (s *PrequeueStore) Generation() uint64 { return s.generation.Load() }
 
 // DeleteAll removes all prequeue entries
@@ -1222,6 +1224,9 @@ func (s *PrequeueStore) DeleteByUser(userID string) {
 		}
 		removed++
 	}
+	// Bumped even when nothing was queued: the user's ranking changed, and
+	// picks kept outside the store must not be reused.
+	s.generation.Add(1)
 
 	if removed == 0 {
 		return

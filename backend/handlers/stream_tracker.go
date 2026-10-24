@@ -712,10 +712,22 @@ func (t *StreamTracker) MarkStopPlayback(id string) bool {
 		t.stopPlaybacks[key] = expiresAt
 	}
 	if lingering {
-		ended.terminated = true
-		t.recentlyEnded[id] = ended
+		t.terminateEndedSlotLocked(ended.stream)
 	}
 	return true
+}
+
+// terminateEndedSlotLocked hides every ended request of a stream's playback
+// slot, so an older range request of a stopped playback does not take the
+// stopped one's place on the dashboard.
+func (t *StreamTracker) terminateEndedSlotLocked(stream *TrackedStream) {
+	key := trackedStreamSlotKey(stream)
+	for id, ended := range t.recentlyEnded {
+		if id == stream.ID || (key != "" && ended.stream != nil && trackedStreamSlotKey(ended.stream) == key) {
+			ended.terminated = true
+			t.recentlyEnded[id] = ended
+		}
+	}
 }
 
 // GetEndedStream returns a stream whose request ended within the teardown
@@ -1110,10 +1122,7 @@ func (t *StreamTracker) TerminateStream(id string) bool {
 		return false
 	}
 	t.rememberEndedStreamLocked(stream, time.Now())
-	if ended, ok := t.recentlyEnded[id]; ok {
-		ended.terminated = true
-		t.recentlyEnded[id] = ended
-	}
+	t.terminateEndedSlotLocked(stream)
 	delete(t.streams, id)
 	t.mu.Unlock()
 

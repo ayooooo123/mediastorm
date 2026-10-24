@@ -249,7 +249,7 @@ func (s *Server) vodPlaybackInfo(w http.ResponseWriter, r *http.Request, p *prin
 	rel, isRelease := s.releaseByMediaSource(p, itemID, ref, req.MediaSourceID)
 	var sess *playSession
 	if prev, ok := s.plays.latestForItem(p.Profile.ID, itemID, p.Client.DeviceID); ok && time.Since(prev.created) < 2*time.Hour && prev.ReleaseKey == rel.Key &&
-		(prev.ReleaseKey != "" || prev.rankGen == s.rankingGeneration()) {
+		(prev.ReleaseKey != "" || prev.rankGen == s.rankingGeneration() || prev.playing()) {
 		prev.mu.Lock()
 		failed := prev.status != nil && prev.status.Status == playback.PrequeueStatusFailed
 		prev.mu.Unlock()
@@ -792,6 +792,19 @@ func (s *Server) handlePlaybackReport(kind string) http.HandlerFunc {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}
+}
+
+// playingReportWindow is how recent a playback report must be for a play
+// session to count as still playing.
+const playingReportWindow = 2 * time.Minute
+
+// playing reports whether the client is still playing the session. A
+// PlaybackInfo during playback (a track switch, a seek) keeps its stream even
+// after a ranking change, so the release does not change under the player.
+func (sess *playSession) playing() bool {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return sess.state != nil && time.Since(sess.state.At) < playingReportWindow
 }
 
 // recordState keeps the client's latest report. Progress reports repeat the

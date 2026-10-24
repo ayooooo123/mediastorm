@@ -12,11 +12,16 @@ import (
 // device to stop over its socket (Jellyfin's Playstate command), and refuses
 // further stream requests for the item, since native players such as mpv
 // otherwise just open the next range request. Starting the item again
-// (PlaybackInfo) lifts the block.
+// (PlaybackInfo) lifts the block, but not right after the stop: Plezy and
+// other clients treat the cut stream as dropped and reload it at once.
 
 // stoppedPlaybackTTL bounds how long a stopped item stays blocked when the
 // client never asks for it again.
 const stoppedPlaybackTTL = 10 * time.Minute
+
+// stopReloadGrace is how long after a stop a PlaybackInfo is taken for the
+// client reloading the cut stream rather than the user starting it again.
+const stopReloadGrace = 30 * time.Second
 
 // stopPlayback ends a playback the server was asked to stop.
 func (s *Server) stopPlayback(ctx context.Context, p *principal, itemID string, sess *playSession) {
@@ -47,5 +52,9 @@ func (s *Server) playbackStopped(profileID, itemID string) bool {
 
 // clearStopped lifts the block when the profile starts the item again.
 func (s *Server) clearStopped(profileID, itemID string) {
-	s.stopped.Delete(chaptersKey(profileID, itemID))
+	key := chaptersKey(profileID, itemID)
+	if v, ok := s.stopped.Load(key); ok && time.Since(v.(time.Time)) < stopReloadGrace {
+		return // the client reloading the stream it was just cut off from
+	}
+	s.stopped.Delete(key)
 }
