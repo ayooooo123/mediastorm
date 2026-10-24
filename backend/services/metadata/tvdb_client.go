@@ -172,6 +172,11 @@ func (c *tvdbClient) doGET(u string, q url.Values, v any) error {
 			u = u + "?" + q.Encode()
 		}
 	}
+	// Without a key every attempt fails the same way; retrying only sleeps
+	// (2.1 s per call, which stalled every MDBList page enriched through TVDB).
+	if !c.isConfigured() {
+		return fmt.Errorf("tvdb api key not configured")
+	}
 	var lastErr error
 	backoff := 300 * time.Millisecond
 	for attempt := 0; attempt < 3; attempt++ {

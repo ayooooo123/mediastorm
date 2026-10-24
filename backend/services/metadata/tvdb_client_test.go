@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -27,8 +28,13 @@ func TestTVDBClientWithoutAPIKeyDoesNotMakeRequests(t *testing.T) {
 	if client.isConfigured() {
 		t.Fatal("empty TVDB key must be treated as unconfigured")
 	}
+	started := time.Now()
 	if err := client.doGET("https://api4.thetvdb.com/v4/search", url.Values{"query": {"Bluey"}}, &map[string]any{}); err == nil {
 		t.Fatal("expected an unconfigured error")
+	}
+	// No retry backoff: an unconfigured client can never succeed.
+	if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
+		t.Fatalf("unconfigured doGET took %v, want an immediate error", elapsed)
 	}
 	if got := calls.Load(); got != 0 {
 		t.Fatalf("HTTP calls = %d, want 0", got)
