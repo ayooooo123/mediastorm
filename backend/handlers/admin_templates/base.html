@@ -2370,6 +2370,18 @@
             letter-spacing: 0.05em;
         }
 
+        .admin-sidebar-notice {
+            flex: 0 0 auto;
+            margin: 0.5rem 0.75rem;
+            padding: 0.5rem 0.625rem;
+            color: var(--text-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--bg-tertiary);
+            font-size: 0.6875rem;
+            line-height: 1.4;
+        }
+
         .admin-sidebar-footer {
             flex: 0 0 auto;
             padding: 0.75rem 0.75rem calc(0.75rem + env(safe-area-inset-bottom));
@@ -2827,6 +2839,10 @@
                 </details>
                 {{end}}
             </nav>
+
+            {{if not .IsAdmin}}
+            <p class="admin-sidebar-notice" role="note">Missing options? Some settings and tools are only available when signed in as an administrator.</p>
+            {{end}}
 
             <footer class="admin-sidebar-footer">
                 <div class="admin-sidebar-user">
