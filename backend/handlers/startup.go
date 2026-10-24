@@ -75,6 +75,7 @@ type StartupHandler struct {
 	localMedia     localLibraryLister
 	prequeueStore  startupPrequeueStore
 	hiddenItems    hiddenItemsService
+	customLists    startupCustomListsService
 	displayList    *DisplayListHandler
 	clientSettings clientSettingsService
 }
@@ -110,6 +111,16 @@ func (h *StartupHandler) SetPrequeueStore(store startupPrequeueStore) {
 
 func (h *StartupHandler) SetHiddenItemsService(service hiddenItemsService) {
 	h.hiddenItems = service
+}
+
+// startupCustomListsService is the slice of the custom lists service the home
+// manifest needs to notice list edits.
+type startupCustomListsService interface {
+	ListLists(userID string) ([]models.CustomList, error)
+}
+
+func (h *StartupHandler) SetCustomListsService(service startupCustomListsService) {
+	h.customLists = service
 }
 
 func (h *StartupHandler) SetDisplayListHandler(handler *DisplayListHandler) {
@@ -166,6 +177,7 @@ type HomeManifestResponse struct {
 	WatchlistHash            string              `json:"watchlistHash"`
 	EpisodeCountsHash        string              `json:"episodeCountsHash,omitempty"`
 	HiddenItemsHash          string              `json:"hiddenItemsHash,omitempty"`
+	CustomListsHash          string              `json:"customListsHash,omitempty"`
 	WatchlistTotal           int                 `json:"watchlistTotal"`
 	Shelves                  []HomeShelfManifest `json:"shelves"`
 	GeneratedAt              time.Time           `json:"generatedAt"`
@@ -222,6 +234,7 @@ func (h *StartupHandler) GetHomeManifest(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	resp.HiddenItemsHash = h.hiddenItemsManifestHash(userID)
+	resp.CustomListsHash = h.customListsManifestHash(userID)
 
 	resp.Revision = hashForManifest(
 		resp.SettingsHash,
@@ -231,6 +244,7 @@ func (h *StartupHandler) GetHomeManifest(w http.ResponseWriter, r *http.Request)
 		resp.EpisodeCountsHash,
 		resp.WatchlistTotal,
 		resp.HiddenItemsHash,
+		resp.CustomListsHash,
 	)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -610,6 +624,26 @@ func (h *StartupHandler) hiddenItemsManifestHash(userID string) string {
 		return ""
 	}
 	return hashForManifest(items)
+}
+
+// customListsManifestHash fingerprints the profile's custom lists so adding to,
+// removing from, renaming or deleting a list changes the home revision and
+// clients reload their custom list shelves. Every item edit bumps the list's
+// UpdatedAt, so the list summaries are enough.
+func (h *StartupHandler) customListsManifestHash(userID string) string {
+	if h.customLists == nil {
+		return ""
+	}
+	lists, err := h.customLists.ListLists(userID)
+	if err != nil || len(lists) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(lists))
+	for _, list := range lists {
+		keys = append(keys, fmt.Sprintf("%s:%s:%d:%d", list.ID, list.Name, list.ItemCount, list.UpdatedAt.UnixNano()))
+	}
+	sort.Strings(keys)
+	return hashForManifest(keys)
 }
 
 func (h *StartupHandler) filterHiddenWatchlistItems(userID string, items []models.WatchlistItem) []models.WatchlistItem {

@@ -774,6 +774,7 @@ func main() {
 	startupHandler.SetUsersProvider(userService)
 	startupHandler.SetLocalMedia(localMediaService)
 	startupHandler.SetHiddenItemsService(hiddenItemsService)
+	startupHandler.SetCustomListsService(customListsService)
 	startupHandler.SetDisplayListHandler(displayListHandler)
 	startupHandler.SetClientSettingsProvider(clientSettingsService)
 

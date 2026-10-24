@@ -980,3 +980,51 @@ func TestStartupHandler_TimesOutSlowTrendingAndReturnsPartialResponse(t *testing
 		t.Fatalf("expected continue watching data to still be returned, got %+v", resp.ContinueWatching)
 	}
 }
+
+type stubStartupCustomLists struct{ lists []models.CustomList }
+
+func (s *stubStartupCustomLists) ListLists(string) ([]models.CustomList, error) { return s.lists, nil }
+
+func TestStartupHandler_HomeManifestTracksCustomLists(t *testing.T) {
+	h := handlers.NewStartupHandler(
+		&mockUserSettingsService{},
+		&mockWatchlistService{},
+		&mockHistoryService{revision: "cw:revision"},
+		&mockMetadataServiceStartup{},
+		config.NewManager(t.TempDir()+"/settings.json"),
+		&mockUserServiceStartup{exists: true},
+	)
+	updated := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	lists := &stubStartupCustomLists{lists: []models.CustomList{{ID: "l1", Name: "Faves", ItemCount: 2, UpdatedAt: updated}}}
+	h.SetCustomListsService(lists)
+
+	revision := func() (string, string) {
+		req := httptest.NewRequest(http.MethodGet, "/api/users/user1/home/manifest", nil)
+		req = mux.SetURLVars(req, map[string]string{"userID": "user1"})
+		rec := httptest.NewRecorder()
+		h.GetHomeManifest(rec, req)
+		var resp struct {
+			Revision        string `json:"revision"`
+			CustomListsHash string `json:"customListsHash"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+		return resp.Revision, resp.CustomListsHash
+	}
+
+	before, hash := revision()
+	if hash == "" {
+		t.Fatal("expected customListsHash to be populated")
+	}
+	if again, _ := revision(); again != before {
+		t.Fatalf("revision changed without a list edit: %q -> %q", before, again)
+	}
+
+	// Removing a title drops the count and bumps UpdatedAt.
+	lists.lists[0].ItemCount = 1
+	lists.lists[0].UpdatedAt = updated.Add(time.Second)
+	if after, _ := revision(); after == before {
+		t.Fatal("revision unchanged after a custom list item was removed")
+	}
+}
