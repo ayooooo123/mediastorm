@@ -208,6 +208,19 @@ func TestGroupKeyframeSegments(t *testing.T) {
 	if _, err := groupKeyframeSegments([]float64{0, 25}, 0, 30); err == nil {
 		t.Fatal("expected sparse index to be rejected")
 	}
+	// The last segment may run longer: a 2160p WEB release of a film had
+	// keyframes every 4s up to 5992.2s and ended at 6015.6s.
+	var film []float64
+	for t := 0.0; t <= 5988; t += 4 {
+		film = append(film, t)
+	}
+	film = append(film, 5992.2)
+	if starts, err := groupKeyframeSegments(film, 0, 6015.6); err != nil || starts[len(starts)-1] != 5992.2 {
+		t.Fatalf("long final segment rejected: %v", err)
+	}
+	if _, err := groupKeyframeSegments([]float64{0, 4, 8}, 0, 8+stableCopyMaxFinalSegment+1); err == nil {
+		t.Fatal("expected an over-long final segment to be rejected")
+	}
 }
 
 func TestStableCopyPlaylistAndCuts(t *testing.T) {
