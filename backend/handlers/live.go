@@ -37,7 +37,6 @@ const (
 	defaultStreamOpenTimeout = 15 * time.Second
 	defaultMaxPlaylistSize   = 50 * 1024 * 1024 // 50 MiB
 	playlistContentTypePlain = "text/plain; charset=utf-8"
-	liveStreamTimeout        = 30 * time.Minute
 	defaultCacheTTL          = 24 * time.Hour
 	defaultXtreamCacheTTL    = 30 * time.Minute
 	defaultXtreamFailureTTL  = 5 * time.Minute
@@ -524,7 +523,9 @@ func (h *LiveHandler) StreamChannel(w http.ResponseWriter, r *http.Request) {
 	targetURL, _ := url.Parse(strings.TrimSpace(r.URL.Query().Get("url")))
 	log.Printf("[live-request] id=%d resolved upstream=%s", requestID, requestsecurity.URLForLog(targetURL.String()))
 
-	ctx, cancel := context.WithTimeout(r.Context(), liveStreamTimeout)
+	// No overall deadline: a live stream lasts as long as the client watches, and the request
+	// context ends it when the client goes. A fixed cap ended every direct stream at that mark.
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
 	var stremioRequestHeaders map[string]string
@@ -708,6 +709,31 @@ func (h *LiveHandler) StreamChannel(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, stderr)
 	}()
 
+	// The status waits for FFmpeg's first output (see liveDirectFirstByteTimeout).
+	buf := make([]byte, 256*1024)
+	abortTransmux := func() {
+		_ = cmd.Process.Kill()
+		// Wait also waits for exec's copy into FFmpeg's stdin, which a silent provider body
+		// holds open until it is closed.
+		if proxyBody != nil {
+			_ = proxyBody.Close()
+		}
+	}
+	firstN, firstErr := readFirstLiveChunk(stdout, buf, liveDirectFirstByteDeadline(h.analyzeDurationSec), abortTransmux)
+	if firstN == 0 {
+		abortTransmux()
+		<-stderrDone
+		_ = cmd.Wait()
+		detail := strings.TrimSpace(string(ffmpegStderr))
+		status := http.StatusBadGateway
+		if errors.Is(firstErr, errLiveFirstByteTimeout) {
+			status = http.StatusGatewayTimeout
+		}
+		log.Printf("[live-request] id=%d end mode=transmux reason=no-first-byte status=%d error=%v stderr=%q elapsed=%s", requestID, status, firstErr, detail, time.Since(requestStartedAt).Round(time.Millisecond))
+		http.Error(w, "live stream sent no data", status)
+		return
+	}
+
 	w.Header().Set("Content-Type", "video/mp4")
 	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate")
 	w.Header().Set("Pragma", "no-cache")
@@ -720,7 +746,6 @@ func (h *LiveHandler) StreamChannel(w http.ResponseWriter, r *http.Request) {
 	defer tracker.EndStream(streamID)
 
 	flusher, _ := w.(http.Flusher)
-	buf := make([]byte, 256*1024)
 	var total int64
 	endReason := "ffmpeg-eof"
 	defer func() {
@@ -736,7 +761,12 @@ func (h *LiveHandler) StreamChannel(w http.ResponseWriter, r *http.Request) {
 		default:
 		}
 
-		n, readErr := stdout.Read(buf)
+		n, readErr := firstN, firstErr
+		if firstN > 0 {
+			firstN, firstErr = 0, nil
+		} else {
+			n, readErr = stdout.Read(buf)
+		}
 		if n > 0 {
 			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
 				endReason = "client-write-error"
@@ -814,6 +844,19 @@ func (h *LiveHandler) proxyStreamWithHTTPClient(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	// The status waits for the provider's first body bytes (see liveDirectFirstByteTimeout).
+	buf := make([]byte, 256*1024)
+	firstN, firstErr := readFirstLiveChunk(resp.Body, buf, liveDirectFirstByteTimeout, func() { _ = resp.Body.Close() })
+	if firstN == 0 {
+		status := http.StatusBadGateway
+		if errors.Is(firstErr, errLiveFirstByteTimeout) {
+			status = http.StatusGatewayTimeout
+		}
+		log.Printf("[live-request] id=%d end mode=direct-proxy reason=no-first-byte status=%d error=%v elapsed=%s", requestID, status, firstErr, time.Since(requestStartedAt).Round(time.Millisecond))
+		http.Error(w, "live stream sent no data", status)
+		return
+	}
+
 	contentType := resp.Header.Get("Content-Type")
 	if contentType == "" {
 		contentType = "video/mp2t"
@@ -829,14 +872,18 @@ func (h *LiveHandler) proxyStreamWithHTTPClient(w http.ResponseWriter, r *http.R
 	streamID, bytesCounter, activityCounter := tracker.StartStream(r, targetURL.String(), 0, 0, 0)
 	defer tracker.EndStream(streamID)
 
-	buf := make([]byte, 256*1024)
 	var total int64
 	endReason := "upstream-eof"
 	defer func() {
 		log.Printf("[live-request] id=%d end mode=direct-proxy reason=%s bytes=%d elapsed=%s", requestID, endReason, total, time.Since(requestStartedAt).Round(time.Millisecond))
 	}()
 	for {
-		n, readErr := resp.Body.Read(buf)
+		n, readErr := firstN, firstErr
+		if firstN > 0 {
+			firstN, firstErr = 0, nil
+		} else {
+			n, readErr = resp.Body.Read(buf)
+		}
 		if n > 0 {
 			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
 				endReason = "client-write-error"

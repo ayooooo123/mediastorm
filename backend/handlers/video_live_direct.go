@@ -130,7 +130,8 @@ func (h *VideoHandler) ServeLiveDirect(w http.ResponseWriter, r *http.Request) {
 	}
 	defer h.releaseLiveDirectTarget(ticket)
 
-	ctx, cancel := context.WithTimeout(r.Context(), liveStreamTimeout)
+	// No overall deadline: the request context ends the stream when the client goes.
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	client, err := netproxy.NewHTTPClientWithOptions(netproxy.HTTPClientOptions{
 		ResponseHeaderTimeout: defaultStreamOpenTimeout,
@@ -167,6 +168,19 @@ func (h *VideoHandler) ServeLiveDirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The status waits for the provider's first body bytes (see liveDirectFirstByteTimeout).
+	buffer := make([]byte, 256*1024)
+	firstN, firstErr := readFirstLiveChunk(response.Body, buffer, liveDirectFirstByteTimeout, func() { _ = response.Body.Close() })
+	if firstN == 0 {
+		status := http.StatusBadGateway
+		if errors.Is(firstErr, errLiveFirstByteTimeout) {
+			status = http.StatusGatewayTimeout
+		}
+		log.Printf("[video] live direct upstream sent no data for %s (status %d): %v", requestsecurity.URLForLog(target.URL), status, firstErr)
+		http.Error(w, "live stream sent no data", status)
+		return
+	}
+
 	contentType := strings.TrimSpace(response.Header.Get("Content-Type"))
 	if contentType == "" || strings.EqualFold(contentType, "application/octet-stream") {
 		contentType = "video/mp2t"
@@ -180,10 +194,14 @@ func (h *VideoHandler) ServeLiveDirect(w http.ResponseWriter, r *http.Request) {
 	defer tracker.EndStream(streamID)
 
 	flusher, _ := w.(http.Flusher)
-	buffer := make([]byte, 256*1024)
 	var total int64
 	for {
-		n, readErr := response.Body.Read(buffer)
+		n, readErr := firstN, firstErr
+		if firstN > 0 {
+			firstN, firstErr = 0, nil
+		} else {
+			n, readErr = response.Body.Read(buffer)
+		}
 		if n > 0 {
 			if _, writeErr := w.Write(buffer[:n]); writeErr != nil {
 				if !errors.Is(writeErr, context.Canceled) && !errors.Is(writeErr, io.EOF) && !isConnectionError(writeErr) {
