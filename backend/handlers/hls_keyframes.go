@@ -41,6 +41,10 @@ const (
 	stableCopyTargetSegment = 4.0
 	// stableCopyMaxSegment rejects indexes too sparse to seek with.
 	stableCopyMaxSegment = 20.0
+	// stableCopyMaxFinalSegment bounds the last segment instead: from the
+	// last keyframe to the end of the file it is often longer (a closing
+	// still, or audio that runs past the video), and nobody seeks into it.
+	stableCopyMaxFinalSegment = 60.0
 	// stableCopyCutTolerance lets the segment muxer cut on a keyframe whose
 	// timestamp differs slightly from the indexed one (container rounding).
 	stableCopyCutTolerance = 0.05
@@ -156,7 +160,11 @@ func groupKeyframeSegments(keyframes []float64, startTime, duration float64) ([]
 		if i+1 < len(starts) {
 			end = starts[i+1]
 		}
-		if end-starts[i] > stableCopyMaxSegment {
+		limit := stableCopyMaxSegment
+		if i == len(starts)-1 {
+			limit = stableCopyMaxFinalSegment
+		}
+		if end-starts[i] > limit {
 			return nil, fmt.Errorf("%w: %.1fs between indexed keyframes at %.1fs", errNoKeyframeIndex, end-starts[i], starts[i])
 		}
 	}
