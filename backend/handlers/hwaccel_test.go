@@ -45,8 +45,13 @@ func TestBuildVideoEncodePlanCPUTonemap(t *testing.T) {
 	if !strings.Contains(plan.Filter, "eq=brightness=0.03:contrast=1.08:saturation=1.15:gamma=0.98") {
 		t.Fatalf("expected SDR presentation correction, got %q", plan.Filter)
 	}
-	if !strings.HasSuffix(plan.Filter, "format=yuv420p") {
+	if !strings.Contains(plan.Filter, "format=yuv420p,") {
 		t.Fatalf("tonemap output should be yuv420p, got %q", plan.Filter)
+	}
+	// The SDR output must not carry the source's HDR metadata: libx264 fails
+	// to open with HDR10 content light levels.
+	if !strings.HasSuffix(plan.Filter, "sidedata=mode=delete:type=CONTENT_LIGHT_LEVEL,sidedata=mode=delete:type=MASTERING_DISPLAY_METADATA") {
+		t.Fatalf("HDR metadata must be dropped after tone mapping, got %q", plan.Filter)
 	}
 	if !strings.HasPrefix(plan.Filter, "setparams=range=tv:color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc,") {
 		t.Fatalf("tone map must normalize missing HDR input metadata before zscale, got %q", plan.Filter)

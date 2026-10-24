@@ -648,6 +648,13 @@ func buildVideoEncodePlanWithLimits(
 				"eq=brightness=0.03:contrast=1.08:saturation=1.15:gamma=0.98",
 				"format=yuv420p")
 		}
+		// The output is SDR: drop the source's HDR metadata. FFmpeg passes it
+		// on to the encoder, and libx264 refuses to open with an HDR10
+		// source's content light levels ("content light levels out of
+		// range"), so every HDR to SDR transcode failed.
+		filters = append(filters,
+			"sidedata=mode=delete:type=CONTENT_LIGHT_LEVEL",
+			"sidedata=mode=delete:type=MASTERING_DISPLAY_METADATA")
 	}
 
 	// Encoder stage. VAAPI/QSV need their frames uploaded to the device.
