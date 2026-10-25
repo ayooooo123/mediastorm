@@ -538,10 +538,10 @@ func (h *MetadataHandler) Search(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Search is intentionally cache-only: expose counts already learned from
-	// user-owned shelves without turning each debounced query into provider work.
-	if userID != "" && h.HistoryService != nil &&
-		(mediaType == "series" || mediaType == "tv" || mediaType == "show") {
+	// Search is intentionally cache-only: expose watch state from the profile's
+	// history (and series counts already learned from user-owned shelves) without
+	// turning each debounced query into provider work.
+	if userID != "" && h.HistoryService != nil && mediaType != "person" && len(results) > 0 {
 		wh, whErr := h.HistoryService.ListWatchHistory(userID)
 		if whErr == nil {
 			cw, _ := h.HistoryService.ListSeriesStates(userID)

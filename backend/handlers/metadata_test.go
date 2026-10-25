@@ -1170,6 +1170,39 @@ func TestMetadataHandler_SearchNormalUserUnfiltered(t *testing.T) {
 	}
 }
 
+func TestMetadataHandler_SearchMoviesCarryWatchState(t *testing.T) {
+	fake := &fakeMetadataService{
+		searchResp: []models.SearchResult{
+			{Score: 90, Title: models.Title{ID: "tmdb:movie:1", Name: "Watched", MediaType: "movie", TMDBID: 1}},
+			{Score: 80, Title: models.Title{ID: "tmdb:movie:2", Name: "Started", MediaType: "movie", TMDBID: 2}},
+			{Score: 70, Title: models.Title{ID: "tmdb:movie:3", Name: "Unseen", MediaType: "movie", TMDBID: 3}},
+		},
+	}
+	handler := NewMetadataHandler(fake, testConfigManager(t))
+	handler.HistoryService = &fakeMetadataHistoryService{
+		history:  []models.WatchHistoryItem{{MediaType: "movie", ItemID: "tmdb:movie:1", Watched: true}},
+		progress: []models.PlaybackProgress{{MediaType: "movie", ItemID: "tmdb:movie:2", PercentWatched: 40}},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/search?q=movie&type=movie&userId=user1", nil)
+	rec := httptest.NewRecorder()
+	handler.Search(rec, req)
+
+	var payload []models.SearchResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	want := []string{"complete", "partial", "none"}
+	if len(payload) != len(want) {
+		t.Fatalf("got %d results, want %d", len(payload), len(want))
+	}
+	for i, state := range want {
+		if payload[i].Title.WatchState != state {
+			t.Errorf("%s watchState = %q, want %q", payload[i].Title.Name, payload[i].Title.WatchState, state)
+		}
+	}
+}
+
 func TestMetadataHandler_ActorSearchRespectsKidsProfile(t *testing.T) {
 	for _, kidsProfile := range []bool{false, true} {
 		fake := &fakeMetadataService{searchResp: []models.SearchResult{
