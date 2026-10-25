@@ -8334,16 +8334,24 @@ func (s *Service) Trailers(ctx context.Context, req models.TrailerQuery) (*model
 	return resp, nil
 }
 
+// detectPrimarySeasonType picks the ordering whose season records match the
+// extended episode list's numbering: "official" (aired order) whenever the show
+// has it, else the first type listed. TVDB's season list isn't ordered by type,
+// so taking the first entry picked "absolute" on Lioness, whose lone absolute
+// Season 1 comes first; the official-numbered episodes then landed in seasons
+// with no record and an empty ID.
 func detectPrimarySeasonType(seasons []tvdbSeason) string {
+	first := ""
 	for _, season := range seasons {
-		if season.Type.Type != "" {
-			return strings.ToLower(strings.TrimSpace(season.Type.Type))
+		key := seasonTypeKey(season)
+		if key == "official" {
+			return key
 		}
-		if season.Type.Name != "" {
-			return strings.ToLower(strings.TrimSpace(season.Type.Name))
+		if first == "" {
+			first = key
 		}
 	}
-	return ""
+	return first
 }
 
 // seasonTypeKey returns the canonical lowercase key for a season's type,

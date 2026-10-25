@@ -116,3 +116,34 @@ func TestResolveSeasonType(t *testing.T) {
 		})
 	}
 }
+
+func TestDetectPrimarySeasonType(t *testing.T) {
+	t.Run("official wins when not listed first", func(t *testing.T) {
+		// Lioness: TVDB lists a lone absolute Season 1 ahead of the aired-order seasons.
+		seasons := []tvdbSeason{
+			season(1, "absolute", "Absolute Order"),
+			season(1, "official", "Aired Order"),
+			season(0, "official", "Aired Order"),
+			season(2, "official", "Aired Order"),
+		}
+		if got := detectPrimarySeasonType(seasons); got != "official" {
+			t.Fatalf("expected official, got %q", got)
+		}
+	})
+
+	t.Run("falls back to the first type without official", func(t *testing.T) {
+		seasons := []tvdbSeason{
+			season(1, "", "DVD Order"),
+			season(1, "absolute", "Absolute Order"),
+		}
+		if got := detectPrimarySeasonType(seasons); got != "dvd order" {
+			t.Fatalf("expected dvd order, got %q", got)
+		}
+	})
+
+	t.Run("empty without types", func(t *testing.T) {
+		if got := detectPrimarySeasonType([]tvdbSeason{season(1, "", "")}); got != "" {
+			t.Fatalf("expected empty, got %q", got)
+		}
+	})
+}
