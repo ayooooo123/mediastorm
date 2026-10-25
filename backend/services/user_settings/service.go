@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 
@@ -1238,6 +1239,19 @@ func (s *Service) syncToDB() error {
 		for id := range existing {
 			dbIDs[id] = true
 		}
+		// A deleted profile's row cascades away in the DB but stays in memory; upserting it
+		// would fail the users foreign key and with it every later save, so it is dropped.
+		users, err := tx.Users().List(ctx)
+		if err != nil {
+			return err
+		}
+		userIDs := make(map[string]bool, len(users))
+		for _, user := range users {
+			userIDs[user.ID] = true
+		}
+		for _, userID := range dropOrphanedSettings(s.settings, userIDs) {
+			log.Printf("[user-settings] dropping settings for deleted profile %q", userID)
+		}
 		// Upsert all in-memory settings
 		for userID, us := range s.settings {
 			settings := us
@@ -1254,4 +1268,18 @@ func (s *Service) syncToDB() error {
 		}
 		return nil
 	})
+}
+
+// dropOrphanedSettings removes settings whose profile no longer exists and
+// returns the removed profile IDs, sorted.
+func dropOrphanedSettings(settings map[string]models.UserSettings, userIDs map[string]bool) []string {
+	var dropped []string
+	for userID := range settings {
+		if !userIDs[userID] {
+			delete(settings, userID)
+			dropped = append(dropped, userID)
+		}
+	}
+	sort.Strings(dropped)
+	return dropped
 }

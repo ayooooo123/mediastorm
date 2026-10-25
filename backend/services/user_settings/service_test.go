@@ -1486,3 +1486,19 @@ func TestLoad_PreservesCustomizedShelves(t *testing.T) {
 		t.Fatal("customized profile should retain its shelf override")
 	}
 }
+
+func TestDropOrphanedSettings(t *testing.T) {
+	settings := map[string]models.UserSettings{"default": {}, "kept": {}, "deleted-b": {}, "deleted-a": {}}
+	dropped := dropOrphanedSettings(settings, map[string]bool{"default": true, "kept": true})
+	if want := []string{"deleted-a", "deleted-b"}; !reflect.DeepEqual(dropped, want) {
+		t.Fatalf("dropped = %v, want %v", dropped, want)
+	}
+	if len(settings) != 2 {
+		t.Fatalf("settings left = %v, want default and kept", settings)
+	}
+	for _, id := range []string{"default", "kept"} {
+		if _, ok := settings[id]; !ok {
+			t.Fatalf("settings for existing profile %q were dropped", id)
+		}
+	}
+}
