@@ -267,6 +267,25 @@ The main source layout is:
 - `frontend/services/` and `frontend/hooks/` — reusable client logic
 - `frontend/modules/` — native platform modules
 
+## PearTube fork maintenance
+
+The `feat/peartube` branch retains the relay `/v1` client, source discovery,
+playback archiving, and admin integration on top of upstream `master`.
+The 2026-10-26 refresh rebases those additions onto upstream `9d987aab`,
+including its direct-link playback tracking and episode-numbering fixes.
+
+The fork's Backend Image workflow publishes native amd64/arm64 builds as
+`ghcr.io/ayooooo123/mediastorm:peartube-latest` and commit-specific SHA tags.
+It uses `WEB_APP_STAGE=web-stub`, as before; native clients and the admin UI
+remain available, but the Expo `/watch` bundle is not included.
+
+Before deployment, retain the previous image and back up PostgreSQL and
+the cache configuration. This refresh advances the database from migration
+65 to 68, adding profile unlocks, history sync snapshots, and persisted
+calendars. A full rollback must account for both the image and database.
+Verify health, relay status, source discovery, and a ranged media read after
+deployment; preserve existing source credentials and audio-language settings.
+
 ## Acknowledgments
 
 Thanks to [nzbdav](https://github.com/nzbdav-dev/nzbdav) and [altmount](https://github.com/javi11/altmount) for paving the way with Usenet streaming.
