@@ -513,7 +513,7 @@ func (t *StreamTracker) StartStreamWithAccount(r *http.Request, path string, con
 		activityCounter: activityCounter,
 	}
 
-	newPlayback := !t.hasPlaybackSlotLocked(nil, trackedStreamSlotKey(stream))
+	newPlayback := !t.hasPlaybackSlotLocked(nil, nil, trackedStreamSlotKey(stream), path)
 	t.streams[id] = stream
 	if newPlayback {
 		t.observePlaybackStartLocked(stream)
