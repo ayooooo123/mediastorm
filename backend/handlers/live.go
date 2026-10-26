@@ -552,8 +552,11 @@ func (h *LiveHandler) StreamChannel(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if proxyURL := h.resolveProxyURLForStream(r, targetURL); (proxyURL != "" || hdHomeRunInput) && !isWebLiveStreamRequest(r) && !stremioHLS {
-		h.proxyStreamWithHTTPClient(w, r, ctx, targetURL, proxyURL, requestID, requestStartedAt, hdHomeRunInput)
+	// The native clients' engine demuxes the provider's transport stream itself, so it gets the
+	// original bytes: transmuxing for it re-encoded the audio to stereo AAC (no surround, no
+	// Atmos) and, on a bursty 4K channel, held the first usable bytes past the client's deadline.
+	if proxyURL := h.resolveProxyURLForStream(r, targetURL); (proxyURL != "" || hdHomeRunInput || isNativeLiveStreamRequest(r)) && !isWebLiveStreamRequest(r) && !stremioHLS {
+		h.proxyStreamWithHTTPClient(w, r, ctx, targetURL, proxyURL, stremioRequestHeaders, requestID, requestStartedAt, hdHomeRunInput)
 		return
 	}
 
@@ -563,9 +566,9 @@ func (h *LiveHandler) StreamChannel(w http.ResponseWriter, r *http.Request) {
 	// stream through the proxied Go client (which sets the User-Agent and
 	// follows redirects) and pipe it into ffmpeg's stdin instead.
 	//
-	// Note: non-web requests with a proxy are already handled above by
-	// proxyStreamWithHTTPClient and return early, so this only applies to the
-	// web transmux path.
+	// Note: native requests, and non-web requests with a proxy, are already
+	// handled above by proxyStreamWithHTTPClient and return early, so this only
+	// applies to the transmux path.
 	var proxyBody io.ReadCloser
 	inputArg := targetURL.String()
 	if stremioHLS {
@@ -809,13 +812,14 @@ func (h *LiveHandler) StreamChannel(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *LiveHandler) proxyStreamWithHTTPClient(w http.ResponseWriter, r *http.Request, ctx context.Context, targetURL *url.URL, proxyURL string, requestID uint64, requestStartedAt time.Time, hdHomeRunInput bool) {
+func (h *LiveHandler) proxyStreamWithHTTPClient(w http.ResponseWriter, r *http.Request, ctx context.Context, targetURL *url.URL, proxyURL string, requestHeaders map[string]string, requestID uint64, requestStartedAt time.Time, hdHomeRunInput bool) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL.String(), nil)
 	if err != nil {
 		http.Error(w, "failed to prepare live stream", http.StatusInternalServerError)
 		return
 	}
 	req.Header.Set("User-Agent", liveStreamUserAgent)
+	applyRequestHeaders(req.Header, requestHeaders)
 
 	var client *http.Client
 	if hdHomeRunInput {
@@ -909,6 +913,10 @@ func (h *LiveHandler) proxyStreamWithHTTPClient(w http.ResponseWriter, r *http.R
 			return
 		}
 	}
+}
+
+func isNativeLiveStreamRequest(r *http.Request) bool {
+	return strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("target")), "native")
 }
 
 func isWebLiveStreamRequest(r *http.Request) bool {

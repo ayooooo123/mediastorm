@@ -1508,3 +1508,58 @@ func TestAdminGetCategoriesIncludesProfileRestrictedGlobalSources(t *testing.T) 
 		t.Fatalf("non-admin request without profile unexpectedly saw restricted sources")
 	}
 }
+
+// A native client's engine demuxes the provider's stream itself: it gets the original bytes,
+// with no proxy configured as well as with one, and FFmpeg (which re-encoded the audio to
+// stereo AAC) is never started.
+func TestStreamChannelNativeRequestPassesProviderStreamThrough(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake ffmpeg shell script is POSIX-only")
+	}
+
+	const streamBody = "RAW-PROVIDER-TS"
+	var sawUA string
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawUA = r.Header.Get("User-Agent")
+		w.Header().Set("Content-Type", "video/mp2t")
+		_, _ = w.Write([]byte(streamBody))
+	}))
+	defer origin.Close()
+
+	// Fake ffmpeg that would replace the stream, so a transmux shows up in the body.
+	scriptPath := filepath.Join(t.TempDir(), "fake-ffmpeg.sh")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho TRANSMUXED\n"), 0o755); err != nil {
+		t.Fatalf("write fake ffmpeg: %v", err)
+	}
+
+	mgr := config.NewManager(filepath.Join(t.TempDir(), "settings.json"))
+	if err := mgr.Save(config.Settings{
+		Live: config.LiveSettings{
+			Mode:           "xtream",
+			XtreamHost:     origin.URL,
+			XtreamUsername: "user",
+			XtreamPassword: "pass",
+		},
+	}); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	h := NewLiveHandler(origin.Client(), true, scriptPath, 24, 0, 0, false, mgr, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/live/stream?target=native&url="+origin.URL+"/live/user/pass/1.ts", nil)
+	rec := httptest.NewRecorder()
+	h.StreamChannel(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != streamBody {
+		t.Fatalf("body = %q, want the provider's bytes %q", rec.Body.String(), streamBody)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "video/mp2t" {
+		t.Fatalf("Content-Type = %q, want video/mp2t", got)
+	}
+	if sawUA != liveStreamUserAgent {
+		t.Fatalf("upstream User-Agent = %q, want %q", sawUA, liveStreamUserAgent)
+	}
+}
