@@ -1731,6 +1731,9 @@ func TestDashboardStreamServiceType(t *testing.T) {
 		{name: "original debrid path", paths: []string{"https://cdn.test/file", "/debrid/realdebrid/torrent/file/0/movie.mkv"}, wanted: "debrid"},
 		{name: "legacy HTTP URL", paths: []string{"https://comet.example/playback/token"}, wanted: "usenet"},
 		{name: "usenet path", paths: []string{"/nzbs/job/movie.mkv"}, wanted: "usenet"},
+		{name: "local library path", paths: []string{"localmedia:/movies/movie.mkv"}, wanted: "local"},
+		{name: "plex library path", paths: []string{"plexmedia:12345"}, wanted: "plex"},
+		{name: "jellyfin library path", paths: []string{"jellyfinmedia:abc"}, wanted: "jellyfin"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

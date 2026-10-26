@@ -3053,7 +3053,14 @@ func dashboardStreamServiceType(isLive bool, sourceServiceType string, paths ...
 		normalized := strings.ToLower(strings.TrimSpace(sourcePath))
 		normalized = strings.TrimPrefix(normalized, "/")
 		normalized = strings.TrimPrefix(normalized, "webdav/")
-		if strings.HasPrefix(normalized, "debrid/") || strings.Contains(normalized, "/debrid/") {
+		switch {
+		case strings.HasPrefix(normalized, "localmedia:"):
+			return "local"
+		case strings.HasPrefix(normalized, "plexmedia:"):
+			return "plex"
+		case strings.HasPrefix(normalized, "jellyfinmedia:"):
+			return "jellyfin"
+		case strings.HasPrefix(normalized, "debrid/") || strings.Contains(normalized, "/debrid/"):
 			return "debrid"
 		}
 	}
