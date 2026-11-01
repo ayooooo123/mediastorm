@@ -466,6 +466,9 @@ func (t *StreamTracker) StartStream(r *http.Request, path string, contentLength 
 
 // StartStreamWithAccount is like StartStream but also records the account ID.
 func (t *StreamTracker) StartStreamWithAccount(r *http.Request, path string, contentLength int64, rangeStart, rangeEnd int64, accountID string) (string, *int64, *int64) {
+	if r != nil && r.URL != nil && r.URL.Path == "/internal/peartube/source" {
+		return "", nil, nil
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.pruneStopSignalsLocked()

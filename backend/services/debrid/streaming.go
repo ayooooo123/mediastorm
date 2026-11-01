@@ -451,6 +451,9 @@ func (p *StreamingProvider) streamWithProviderInfo(ctx context.Context, req stre
 		// Normal (non-RAR) range forwarding
 		httpReq.Header.Set("Range", req.RangeHeader)
 	}
+	if req.IfRange != "" && httpReq.Header.Get("Range") != "" {
+		httpReq.Header.Set("If-Range", req.IfRange)
+	}
 
 	// Use shared HTTP client with connection pooling — rapid seek requests
 	// reuse warm TCP+TLS connections to the CDN instead of handshaking each time

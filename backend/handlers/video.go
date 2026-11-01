@@ -6829,6 +6829,9 @@ func (h *VideoHandler) proxyExternalURL(w http.ResponseWriter, r *http.Request, 
 		}
 		if rangeValue != "" {
 			proxyReq.Header.Set("Range", rangeValue)
+			if ifRange := r.Header.Get("If-Range"); ifRange != "" {
+				proxyReq.Header.Set("If-Range", ifRange)
+			}
 		}
 		proxyReq.Header.Set("User-Agent", "VLC/3.0.18 LibVLC/3.0.18")
 		proxyReq.Header.Set("Accept", "*/*")
@@ -7061,6 +7064,7 @@ func (h *VideoHandler) proxyExternalURL(w http.ResponseWriter, r *http.Request, 
 
 	// Write status code
 	w.WriteHeader(resp.StatusCode)
+	_ = http.NewResponseController(w).Flush()
 
 	// For HEAD requests, we're done
 	if r.Method == http.MethodHead {

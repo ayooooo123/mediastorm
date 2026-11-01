@@ -100,9 +100,14 @@ func New(baseURL, secret string) (*Client, error) {
 	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return nil, errors.New("relay URL must not include credentials, a query, or a fragment")
 	}
+	parsed.Path = strings.TrimSuffix(parsed.Path, "/manifest.json")
+	base := strings.TrimRight(parsed.String(), "/")
+	if key, ok := urlOrigin(base); ok {
+		relayOrigins.Store(key, struct{}{})
+	}
 	secret = strings.TrimSpace(secret)
 	return &Client{
-		baseURL: strings.TrimRight(parsed.String(), "/"),
+		baseURL: base,
 		secret:  secret,
 		http:    &http.Client{Timeout: requestTimeout},
 	}, nil
@@ -112,11 +117,11 @@ func New(baseURL, secret string) (*Client, error) {
 func (c *Client) BaseURL() string { return c.baseURL }
 
 // streamOrigins holds every host:port an authenticated relay search returned
-// as a stream URL. The video proxy admits a private address only for these,
-// and only these count as relay streams: a relay usually shares its host with
-// other services, including MediaStorm itself.
-var streamOrigins sync.Map
-
+// as a stream URL; relayOrigins holds configured relay API origins for /v1/blob.
+var (
+	streamOrigins sync.Map
+	relayOrigins  sync.Map
+)
 func originKey(hostname, port string) string {
 	return strings.ToLower(net.JoinHostPort(hostname, port))
 }
@@ -145,8 +150,15 @@ func IsStreamURL(raw string) bool {
 	if !ok {
 		return false
 	}
-	_, ok = streamOrigins.Load(key)
-	return ok
+	if _, ok := streamOrigins.Load(key); ok {
+		return true
+	}
+	if _, ok := relayOrigins.Load(key); ok {
+		if u, err := url.Parse(raw); err == nil && strings.HasSuffix(u.Path, "/v1/blob") {
+			return true
+		}
+	}
+	return false
 }
 
 // Search lists the tracker entries for id.

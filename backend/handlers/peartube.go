@@ -2,13 +2,11 @@ package handlers
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -32,8 +30,15 @@ const (
 
 // PearTubeHandler archives what users play to the configured PearTube relay
 // and reports the relay's status.
+type pearTubeClaim struct {
+	path     string
+	title    string
+	at       time.Time
+	inflight bool
+	dirty    bool
+}
+
 type PearTubeHandler struct {
-	streams streaming.DirectURLProvider
 	sources *peartube.Sources
 
 	mu         sync.Mutex
@@ -42,24 +47,32 @@ type PearTubeHandler struct {
 	archive    bool
 	sourceBase string
 	configErr  string
-	claims     map[string]time.Time
+	claims     map[string]pearTubeClaim
 }
 
 var _ playbackArchiver = (*PearTubeHandler)(nil)
 
-// NewPearTubeHandler resolves and serves playback sources through streams.
-func NewPearTubeHandler(streams streaming.DirectURLProvider) *PearTubeHandler {
+// NewPearTubeHandler serves archived playback sources through MediaStorm's providers.
+func NewPearTubeHandler(streams streaming.Provider) *PearTubeHandler {
 	return &PearTubeHandler{
-		streams: streams,
 		sources: peartube.NewSources(streams),
-		claims:  make(map[string]time.Time),
+		claims:  make(map[string]pearTubeClaim),
 	}
 }
 
-// Sources serves peartube.SourceRoute: the relay's one-time fetches of bytes
-// only MediaStorm can read.
-func (h *PearTubeHandler) Sources() http.Handler { return h.sources }
+// SetVideoHandler attaches VideoHandler's external HTTP proxy so addon and WebDAV
+// URLs keep their headers, credentials, and redirect recovery when archived.
+func (h *PearTubeHandler) SetVideoHandler(v *VideoHandler) {
+	if v == nil {
+		return
+	}
+	h.sources.SetExternalProxy(func(w http.ResponseWriter, r *http.Request, target string) {
+		_, _ = v.proxyExternalURL(w, r, target)
+	})
+}
 
+// Sources serves peartube.SourceRoute: authenticated Range fetches for the relay.
+func (h *PearTubeHandler) Sources() http.Handler { return h.sources }
 // ApplyPearTubeSettings installs the relay configuration. It runs at startup
 // and on every settings save.
 func (h *PearTubeHandler) ApplyPearTubeSettings(settings config.Settings) {
@@ -135,17 +148,24 @@ func (h *PearTubeHandler) OnPlaybackStarted(update models.PlaybackProgressUpdate
 	}
 	path := strings.TrimSpace(update.SourcePath)
 	id := pearTubePlaybackID(update)
-	if path == "" || id == "" || peartube.IsStreamURL(path) || !h.claim(id) {
+	title := pearTubeTitle(update)
+	if path == "" || id == "" || peartube.IsStreamURL(path) || !h.claim(id, path, title) {
 		return
 	}
-	title := pearTubeTitle(update)
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), pearTubeArchiveTimeout)
-		defer cancel()
-		if err := h.archiveTitle(ctx, client, sourceBase, id, title, path); err != nil {
-			log.Printf("[peartube] archive %s failed: %v", id, err)
+	go func(path, title string) {
+		for {
+			ctx, cancel := context.WithTimeout(context.Background(), pearTubeArchiveTimeout)
+			err := h.archiveTitle(ctx, client, sourceBase, id, title, path)
+			cancel()
+			if err != nil {
+				log.Printf("[peartube] archive %s failed: %v", id, err)
+			}
+			var again bool
+			if path, title, again = h.finishClaim(id, path, err != nil); !again {
+				return
+			}
 		}
-	}()
+	}(path, title)
 }
 
 // archiveTitle asks the relay to acquire id unless it already holds it or is
@@ -165,11 +185,17 @@ func (h *PearTubeHandler) archiveTitle(ctx context.Context, client *peartube.Cli
 		return err
 	}
 	for _, job := range jobs {
-		if job.ID == id && job.Active() {
+		if job.ID != id {
+			continue
+		}
+		if job.Active() {
 			return nil
 		}
+		if job.Status == peartube.JobFailed {
+			_, _ = client.Cancel(ctx, job.JobID)
+		}
 	}
-	sourceURL, headers, err := h.archiveSource(ctx, sourceBase, path)
+	sourceURL, headers, err := h.archiveSource(sourceBase, path)
 	if err != nil {
 		return err
 	}
@@ -181,26 +207,17 @@ func (h *PearTubeHandler) archiveTitle(ctx context.Context, client *peartube.Cli
 	return nil
 }
 
-// archiveSource picks what the relay fetches: the direct URL of an HTTP or
-// debrid source, or else a one-time MediaStorm URL that streams the bytes.
-func (h *PearTubeHandler) archiveSource(ctx context.Context, sourceBase, path string) (string, map[string]string, error) {
-	if isHTTPURL(path) {
-		return directSource(path)
-	}
-	// Streaming providers key paths without the WebDAV mount prefix.
+// archiveSource routes every source through MediaStorm's SourceRoute so the relay
+// shares MediaStorm's egress IP, debrid unrestrict/403-refresh, RAR slicing, and addon headers.
+func (h *PearTubeHandler) archiveSource(sourceBase, path string) (string, map[string]string, error) {
 	for _, prefix := range []string{"/webdav/", "webdav/"} {
 		if rest, found := strings.CutPrefix(path, prefix); found {
 			path = "/" + rest
 			break
 		}
 	}
-	if isDebridStreamPath(path) && h.streams != nil {
-		if direct, err := h.streams.GetDirectURL(ctx, path); err == nil && isHTTPURL(direct) {
-			return directSource(direct)
-		}
-	}
 	if sourceBase == "" {
-		return "", nil, errors.New("set the external backend URL so the relay can fetch sources MediaStorm serves")
+		return "", nil, errors.New("set the external backend URL or PearTube sourceUrl so the relay can fetch through MediaStorm")
 	}
 	token, err := h.sources.Issue(path)
 	if err != nil {
@@ -209,37 +226,49 @@ func (h *PearTubeHandler) archiveSource(ctx context.Context, sourceBase, path st
 	return sourceBase + peartube.SourceRoute, map[string]string{"Authorization": "Bearer " + token}, nil
 }
 
-// directSource moves URL credentials into a header; the relay's fetch refuses
-// URLs that carry them.
-func directSource(rawURL string) (string, map[string]string, error) {
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		return "", nil, err
-	}
-	if parsed.User == nil {
-		return rawURL, nil, nil
-	}
-	password, _ := parsed.User.Password()
-	credentials := base64.StdEncoding.EncodeToString([]byte(parsed.User.Username() + ":" + password))
-	parsed.User = nil
-	return parsed.String(), map[string]string{"Authorization": "Basic " + credentials}, nil
-}
-
-// claim reserves id for one relay check per pearTubeClaimTTL.
-func (h *PearTubeHandler) claim(id string) bool {
+// claim serializes archive checks per id so fast playback migrations never enqueue duplicate relay jobs.
+func (h *PearTubeHandler) claim(id, path, title string) bool {
 	now := time.Now()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for key, claimed := range h.claims {
-		if now.Sub(claimed) > pearTubeClaimTTL {
+		if !claimed.inflight && now.Sub(claimed.at) > pearTubeClaimTTL {
 			delete(h.claims, key)
 		}
 	}
-	if _, held := h.claims[id]; held {
-		return false
+	if held, ok := h.claims[id]; ok {
+		if held.path == path {
+			return false
+		}
+		if held.inflight {
+			held.path, held.title, held.at, held.dirty = path, title, now, true
+			h.claims[id] = held
+			return false
+		}
 	}
-	h.claims[id] = now
+	h.claims[id] = pearTubeClaim{path: path, title: title, at: now, inflight: true}
 	return true
+}
+
+func (h *PearTubeHandler) finishClaim(id, path string, failed bool) (string, string, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	held, ok := h.claims[id]
+	if !ok {
+		return "", "", false
+	}
+	if held.dirty && held.path != path {
+		held.dirty = false
+		h.claims[id] = held
+		return held.path, held.title, true
+	}
+	if failed {
+		delete(h.claims, id)
+	} else {
+		held.inflight = false
+		h.claims[id] = held
+	}
+	return "", "", false
 }
 
 // pearTubePlaybackID is the relay id of a played movie or episode, or "" when
@@ -279,8 +308,4 @@ func pearTubeTitle(update models.PlaybackProgressUpdate) string {
 		cut--
 	}
 	return title[:cut]
-}
-
-func isHTTPURL(value string) bool {
-	return strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://")
 }

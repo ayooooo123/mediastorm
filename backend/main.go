@@ -976,9 +976,10 @@ func main() {
 	// PearTube: archive played titles to the configured relay, and serve the
 	// relay the sources only MediaStorm can read. Reconfigured on settings save.
 	pearTubeHandler := handlers.NewPearTubeHandler(compositeProvider)
+	pearTubeHandler.SetVideoHandler(videoHandler)
 	pearTubeHandler.ApplyPearTubeSettings(settings)
 	settingsHandler.SetPearTubeConfigurer(pearTubeHandler)
-	r.Handle(peartube.SourceRoute, pearTubeHandler.Sources()).Methods(http.MethodGet)
+	r.Handle(peartube.SourceRoute, pearTubeHandler.Sources()).Methods(http.MethodGet, http.MethodHead)
 	historyHandler.SetArchiver(pearTubeHandler)
 	handlers.GetStreamTracker().SetPlaybackArchiver(pearTubeHandler)
 	localMediaHandler.SetLibraryAccessService(libraryAccessService)
