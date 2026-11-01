@@ -11,11 +11,12 @@ use anyhow::{Context, Result};
 use base64::prelude::*;
 use clap::{Parser, Subcommand};
 use iroh::{
-    endpoint::{presets, Builder, Connection, RecvStream, SendStream},
+    endpoint::{presets, Builder, Connection, QuicTransportConfig, RecvStream, SendStream},
     protocol::{AcceptError, ProtocolHandler, Router},
     EndpointAddr, SecretKey,
 };
 use n0_error::StdResultExt;
+use noq_proto::congestion::Bbr3Config;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -38,7 +39,7 @@ const SPEED_CHUNK_BYTES: usize = 1024 * 1024;
 // The speed probe is reachable before a device claims its pairing. Bound one request so
 // an old invite cannot be turned into an unbounded bandwidth-amplification stream.
 const MAX_SPEED_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
-const STREAM_CHUNK_BYTES: usize = 64 * 1024;
+const STREAM_CHUNK_BYTES: usize = 256 * 1024;
 const MAX_LOG_HEADER_BYTES: usize = 128 * 1024;
 
 static HTTP_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
@@ -498,7 +499,15 @@ fn decode_invite(invite: &str) -> Result<EndpointAddr> {
 }
 
 fn relay_enabled_builder() -> Builder {
-    Builder::new(presets::N0)
+    // ponytail: server-only BBRv3 keeps pumping Master's video wet and steady through ugly
+    // WAN packet drops without touching native clients; their stock 1.25 MB receive window
+    // already swallows ~100 Mbps at 100 ms RTT—widen client stream_receive_window + server
+    // send_window together only when >50 Mbps 4K remuxes gag over 200 ms+ links.
+    Builder::new(presets::N0).transport_config(
+        QuicTransportConfig::builder()
+            .congestion_controller_factory(Arc::new(Bbr3Config::default()))
+            .build(),
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -969,5 +978,67 @@ mod tests {
         assert!(found_backup, "malformed key should be retained as a backup");
 
         tokio::fs::remove_dir_all(&dir).await.ok();
+    }
+
+    // Thrusts a multi-chunk payload (> STREAM_CHUNK_BYTES) through the real BBRv3-backed
+    // builder and loopback HTTP proxy so a broken transport config or chunk pump chokes here.
+    #[tokio::test]
+    async fn bbr_builder_proxies_multichunk_stream_end_to_end() {
+        let origin_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin_addr = origin_listener.local_addr().unwrap();
+        let payload = vec![0x5au8; STREAM_CHUNK_BYTES * 2 + 17_389];
+        let expected = payload.clone();
+        tokio::spawn(async move {
+            let (mut sock, _) = origin_listener.accept().await.unwrap();
+            let mut req = [0u8; 1024];
+            let _ = sock.read(&mut req).await.unwrap();
+            let hdr = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                payload.len()
+            );
+            sock.write_all(hdr.as_bytes()).await.unwrap();
+            sock.write_all(&payload).await.unwrap();
+        });
+
+        let host_ep = relay_enabled_builder()
+            .relay_mode(iroh::RelayMode::Disabled)
+            .clear_address_lookup()
+            .bind_addr("127.0.0.1:0")
+            .unwrap()
+            .alpns(vec![ALPN.to_vec()])
+            .bind()
+            .await
+            .unwrap();
+        let host_addr = host_ep.addr();
+        let router = Router::builder(host_ep)
+            .accept(
+                ALPN,
+                HttpProbe {
+                    origin: Some(format!("http://{origin_addr}")),
+                },
+            )
+            .spawn();
+
+        let client_ep = relay_enabled_builder()
+            .relay_mode(iroh::RelayMode::Disabled)
+            .clear_address_lookup()
+            .bind_addr("127.0.0.1:0")
+            .unwrap()
+            .bind()
+            .await
+            .unwrap();
+        let conn = client_ep.connect(host_addr, ALPN).await.unwrap();
+        let (mut send, mut recv) = conn.open_bi().await.unwrap();
+        send.write_all(b"GET /video.mkv HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            .await
+            .unwrap();
+        send.finish().unwrap();
+        let raw = recv.read_to_end(expected.len() + 4096).await.unwrap();
+        let body_start = find_header_end(&raw).unwrap();
+        assert_eq!(&raw[body_start..], expected.as_slice());
+
+        conn.close(0u32.into(), b"done");
+        client_ep.close().await;
+        router.shutdown().await.unwrap();
     }
 }

@@ -1572,6 +1572,7 @@ dependencies = [
  "iroh-dns",
  "mainline",
  "n0-error",
+ "noq-proto",
  "serde_json",
  "sha2 0.10.9",
  "tokio",
