@@ -260,3 +260,20 @@ func TestDiscoverIrohWorkDir(t *testing.T) {
 		}
 	})
 }
+
+func TestShouldLogIrohLineKeepsTracingWarnings(t *testing.T) {
+	for _, tc := range []struct {
+		line string
+		want bool
+	}{
+		{"2026-11-14T21:31:48.505031Z  WARN endpoint{id=5c25780db4}:relay-actor: Failed to connect to relay server: unable to connect: deadline has elapsed", true},
+		{"2026-11-14T21:06:58.653527Z ERROR endpoint{id=72b6b366d2}:actor: socket closed", true},
+		{"2026-11-14T21:06:58.653656Z  INFO endpoint{id=72b6b366d2}:relay-actor: home is now relay https://use1-1.relay.n0.iroh.link./, was None", false},
+		{"WARN not a tracing line", false},
+		{"accepted remote_id=abc", false},
+	} {
+		if got := shouldLogIrohLine(tc.line, false); got != tc.want {
+			t.Errorf("shouldLogIrohLine(%q) = %t, want %t", tc.line, got, tc.want)
+		}
+	}
+}

@@ -100,9 +100,11 @@ enum Command {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // The Go backend reads these lines from a pipe and filters on the plain level word.
     tracing_subscriber::fmt()
         .with_env_filter("info,iroh=info")
         .with_target(false)
+        .with_ansi(false)
         .init();
 
     match Cli::parse().command {

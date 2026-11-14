@@ -336,7 +336,26 @@ func shouldLogIrohLine(line string, isErr bool) bool {
 	if isErr && shouldRecordIrohError(line) {
 		return true
 	}
+	// The host's iroh library logs through tracing on stdout. Its WARN and ERROR lines
+	// (relay unreachable, NAT changes) explain slow or relayed remote sessions.
+	switch irohTracingLevel(line) {
+	case "WARN", "ERROR":
+		return true
+	}
 	return false
+}
+
+// irohTracingLevel returns the level of a tracing-subscriber line such as
+// "2026-11-14T21:06:58.653527Z  WARN endpoint{...}: msg", or "" for other lines.
+func irohTracingLevel(line string) string {
+	fields := strings.Fields(line)
+	if len(fields) < 2 {
+		return ""
+	}
+	if _, err := time.Parse(time.RFC3339Nano, fields[0]); err != nil {
+		return ""
+	}
+	return fields[1]
 }
 
 func shouldRecordIrohError(line string) bool {
