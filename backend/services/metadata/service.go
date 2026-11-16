@@ -1392,6 +1392,15 @@ func (s *Service) ClearCache() error {
 	return nil
 }
 
+// IMDBIDForTMDB returns the IMDb ID of a TMDB movie ("movie") or show ("tv"),
+// or "" when TMDB has none.
+func (s *Service) IMDBIDForTMDB(ctx context.Context, mediaType string, tmdbID int64) string {
+	if s == nil {
+		return ""
+	}
+	return s.getIMDBIDForTMDB(ctx, mediaType, tmdbID)
+}
+
 // getIMDBIDForTMDB returns the IMDB ID for a TMDB ID, using cache when available.
 // ID mappings are cached with a longer TTL since they rarely change.
 func (s *Service) getIMDBIDForTMDB(ctx context.Context, mediaType string, tmdbID int64) string {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -48,6 +49,15 @@ type PearTubeHandler struct {
 	sourceBase string
 	configErr  string
 	claims     map[string]pearTubeClaim
+	imdb       pearTubeIMDBResolver
+	lookups    map[string]time.Time
+}
+
+// pearTubeIMDBResolver finds the IMDb ID of a playback whose client sent none.
+// *metadata.Service implements it.
+type pearTubeIMDBResolver interface {
+	IMDBIDForTMDB(ctx context.Context, mediaType string, tmdbID int64) string
+	ResolveIMDBID(ctx context.Context, title, mediaType string, year int) string
 }
 
 var _ playbackArchiver = (*PearTubeHandler)(nil)
@@ -57,7 +67,15 @@ func NewPearTubeHandler(streams streaming.Provider) *PearTubeHandler {
 	return &PearTubeHandler{
 		sources: peartube.NewSources(streams),
 		claims:  make(map[string]pearTubeClaim),
+		lookups: make(map[string]time.Time),
 	}
+}
+
+// SetIMDBResolver lets playbacks whose client sent no IMDb ID be archived.
+func (h *PearTubeHandler) SetIMDBResolver(resolver pearTubeIMDBResolver) {
+	h.mu.Lock()
+	h.imdb = resolver
+	h.mu.Unlock()
 }
 
 // SetVideoHandler attaches VideoHandler's external HTTP proxy so addon and WebDAV
@@ -141,15 +159,43 @@ func (h *PearTubeHandler) Status(w http.ResponseWriter, r *http.Request) {
 // and does the relay work off the caller's path.
 func (h *PearTubeHandler) OnPlaybackStarted(update models.PlaybackProgressUpdate) {
 	h.mu.Lock()
-	client, archive, sourceBase := h.client, h.archive, h.sourceBase
+	client, archive, sourceBase, resolver := h.client, h.archive, h.sourceBase, h.imdb
 	h.mu.Unlock()
 	if client == nil || !archive {
 		return
 	}
 	path := strings.TrimSpace(update.SourcePath)
-	id := pearTubePlaybackID(update)
+	if path == "" || peartube.IsStreamURL(path) {
+		return
+	}
 	title := pearTubeTitle(update)
-	if path == "" || id == "" || peartube.IsStreamURL(path) || !h.claim(id, path, title) {
+	if id := pearTubePlaybackID(update, mediaidentity.NormalizeExternalIDs(update.ExternalIDs)["imdb"]); id != "" {
+		h.archivePlayback(client, sourceBase, id, path, title)
+		return
+	}
+	// Clients send no IMDb ID when their title details lack one. Look it up
+	// once per source and off the caller's path: progress heartbeats call here.
+	if !h.claimLookup(path) {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), pearTubeArchiveTimeout)
+		imdbID, via := lookupPlaybackIMDBID(ctx, resolver, update)
+		cancel()
+		id := pearTubePlaybackID(update, imdbID)
+		if id == "" {
+			log.Printf("[peartube] playback not archivable: no IMDb ID for %q (mediaType=%q itemId=%q seriesId=%q)",
+				title, update.MediaType, update.ItemID, update.SeriesID)
+			return
+		}
+		log.Printf("[peartube] client sent no IMDb ID for %q; resolved %s from %s", title, imdbID, via)
+		h.archivePlayback(client, sourceBase, id, path, title)
+	}()
+}
+
+// archivePlayback claims id and asks the relay to archive it in the background.
+func (h *PearTubeHandler) archivePlayback(client *peartube.Client, sourceBase, id, path, title string) {
+	if !h.claim(id, path, title) {
 		return
 	}
 	go func(path, title string) {
@@ -166,6 +212,68 @@ func (h *PearTubeHandler) OnPlaybackStarted(update models.PlaybackProgressUpdate
 			}
 		}
 	}(path, title)
+}
+
+// claimLookup reports whether path still needs an IMDb lookup. Each source is
+// looked up at most once per claim TTL, found or not.
+func (h *PearTubeHandler) claimLookup(path string) bool {
+	now := time.Now()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for key, at := range h.lookups {
+		if now.Sub(at) > pearTubeClaimTTL {
+			delete(h.lookups, key)
+		}
+	}
+	if _, ok := h.lookups[path]; ok {
+		return false
+	}
+	h.lookups[path] = now
+	return true
+}
+
+// lookupPlaybackIMDBID finds a playback's IMDb ID from its own IDs, then by
+// title and year as the debrid search does. It also names the source used.
+// Episode archives use the show's IMDb ID, so episodes consult show IDs only.
+func lookupPlaybackIMDBID(ctx context.Context, resolver pearTubeIMDBResolver, update models.PlaybackProgressUpdate) (string, string) {
+	if resolver == nil {
+		return "", ""
+	}
+	var tmdbType, name string
+	var ids []string
+	switch mediaidentity.NormalizeMediaType(update.MediaType) {
+	case "movie":
+		tmdbType, name = "movie", update.MovieName
+		ids = []string{mediaidentity.NormalizeExternalIDs(update.ExternalIDs)["tmdb"], update.ItemID}
+	case "episode":
+		tmdbType, name = "tv", update.SeriesName
+		ids = []string{update.SeriesID, mediaidentity.InferSeriesIDFromEpisodeItemID(update.ItemID)}
+	default:
+		return "", ""
+	}
+	for _, raw := range ids {
+		raw = strings.TrimSpace(raw)
+		provider, value := mediaidentity.SeriesProviderAndID(raw)
+		switch {
+		case provider == "imdb":
+			return value, raw
+		case provider == "" && strings.Contains(raw, ":"), provider != "" && provider != "tmdb":
+			continue
+		case provider == "":
+			value = raw
+		}
+		if tmdbID, err := strconv.ParseInt(value, 10, 64); err == nil && tmdbID > 0 {
+			if imdbID := resolver.IMDBIDForTMDB(ctx, tmdbType, tmdbID); imdbID != "" {
+				return imdbID, fmt.Sprintf("tmdb:%s:%d", tmdbType, tmdbID)
+			}
+		}
+	}
+	if name = strings.TrimSpace(name); name != "" {
+		if imdbID := resolver.ResolveIMDBID(ctx, name, update.MediaType, update.Year); imdbID != "" {
+			return imdbID, "title search"
+		}
+	}
+	return "", ""
 }
 
 // archiveTitle asks the relay to acquire id unless it already holds it or is
@@ -272,9 +380,8 @@ func (h *PearTubeHandler) finishClaim(id, path string, failed bool) (string, str
 }
 
 // pearTubePlaybackID is the relay id of a played movie or episode, or "" when
-// the playback carries no IMDb id.
-func pearTubePlaybackID(update models.PlaybackProgressUpdate) string {
-	imdbID := mediaidentity.NormalizeExternalIDs(update.ExternalIDs)["imdb"]
+// imdbID is not an IMDb ID.
+func pearTubePlaybackID(update models.PlaybackProgressUpdate, imdbID string) string {
 	switch mediaidentity.NormalizeMediaType(update.MediaType) {
 	case "movie":
 		return peartube.MediaID(imdbID, 0, 0)

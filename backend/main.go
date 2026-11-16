@@ -977,6 +977,7 @@ func main() {
 	// relay the sources only MediaStorm can read. Reconfigured on settings save.
 	pearTubeHandler := handlers.NewPearTubeHandler(compositeProvider)
 	pearTubeHandler.SetVideoHandler(videoHandler)
+	pearTubeHandler.SetIMDBResolver(metadataService)
 	pearTubeHandler.ApplyPearTubeSettings(settings)
 	settingsHandler.SetPearTubeConfigurer(pearTubeHandler)
 	r.Handle(peartube.SourceRoute, pearTubeHandler.Sources()).Methods(http.MethodGet, http.MethodHead)

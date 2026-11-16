@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -194,6 +195,98 @@ func TestPearTubeArchivesPlayedTitleOnce(t *testing.T) {
 	}
 	if len(streams.streamed) != 2 || streams.streamed[0] != "/nzbs/Movie.mkv|" || streams.streamed[1] != "/nzbs/Movie.mkv|bytes=2-" {
 		t.Fatalf("streamed paths = %v", streams.streamed)
+	}
+}
+
+// imdbLookups maps TMDB IDs and titles to IMDb IDs and counts the lookups.
+type imdbLookups struct {
+	mu     sync.Mutex
+	tmdb   map[string]string
+	titles map[string]string
+	calls  []string
+}
+
+func (l *imdbLookups) IMDBIDForTMDB(_ context.Context, mediaType string, tmdbID int64) string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	key := fmt.Sprintf("%s:%d", mediaType, tmdbID)
+	l.calls = append(l.calls, "tmdb:"+key)
+	return l.tmdb[key]
+}
+
+func (l *imdbLookups) ResolveIMDBID(_ context.Context, title, mediaType string, year int) string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	key := fmt.Sprintf("%s:%s:%d", mediaType, title, year)
+	l.calls = append(l.calls, "title:"+key)
+	return l.titles[key]
+}
+
+// Clients whose title details lack an IMDb ID stream with only a TMDB or TVDB
+// item ID. Observed live: The Dark Knight Rises (tmdb:movie:49026) and Mulan
+// played without an acquisition and without a log line.
+func TestPearTubeArchivesPlaybackWithoutClientIMDbID(t *testing.T) {
+	relay := &archiveRelay{}
+	server := httptest.NewServer(relay)
+	defer server.Close()
+	handler := NewPearTubeHandler(&archiveStreams{})
+	lookups := &imdbLookups{
+		tmdb:   map[string]string{"movie:49026": "tt1345836"},
+		titles: map[string]string{"episode:Game of Thrones:2011": "tt0944947"},
+	}
+	handler.SetIMDBResolver(lookups)
+	settings := config.Settings{TorrentScrapers: []config.TorrentScraperConfig{{
+		Type: config.TorrentScraperTypePearTube, URL: server.URL, Enabled: true,
+		Config: map[string]string{config.PearTubeConfigArchiveEnabled: "true"},
+	}}}
+	settings.Server.ExternalBackendURL = "http://mediastorm.local"
+	handler.ApplyPearTubeSettings(settings)
+
+	movie := models.PlaybackProgressUpdate{
+		MediaType: "movie", ItemID: "tmdb:movie:49026", MovieName: "The Dark Knight Rises", Year: 2012,
+		SourcePath: "/webdav/rises/rises.mkv",
+	}
+	handler.OnPlaybackStarted(movie)
+	handler.OnPlaybackStarted(movie) // a progress heartbeat for the same source
+	episode := models.PlaybackProgressUpdate{
+		MediaType: "episode", ItemID: "tvdb:series:121361:s01e02", SeriesID: "tvdb:series:121361",
+		SeriesName: "Game of Thrones", Year: 2011, SeasonNumber: 1, EpisodeNumber: 2,
+		SourcePath: "/webdav/got/got.s01e02.mkv",
+	}
+	handler.OnPlaybackStarted(episode)
+	unknown := models.PlaybackProgressUpdate{
+		MediaType: "movie", ItemID: "tvdb:movie:1", MovieName: "Nothing Known", Year: 1999,
+		SourcePath: "/webdav/unknown/unknown.mkv",
+	}
+	handler.OnPlaybackStarted(unknown)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for len(relay.acquisitions()) < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+	got := map[string]bool{}
+	for _, acquired := range relay.acquisitions() {
+		got[acquired["id"].(string)] = true
+	}
+	want := map[string]bool{"imdb:tt1345836": true, "imdb:tt0944947:s01e02": true}
+	if len(relay.acquisitions()) != len(want) || !got["imdb:tt1345836"] || !got["imdb:tt0944947:s01e02"] {
+		t.Fatalf("acquisitions = %v, want exactly %v", relay.acquisitions(), want)
+	}
+	lookups.mu.Lock()
+	defer lookups.mu.Unlock()
+	tmdbMovieLookups := 0
+	for _, call := range lookups.calls {
+		if call == "tmdb:movie:49026" {
+			tmdbMovieLookups++
+		}
+		// TVDB IDs are not TMDB IDs; only the title search may resolve them.
+		if call == "tmdb:tv:121361" || call == "tmdb:movie:1" {
+			t.Fatalf("looked up a TVDB ID as TMDB: %v", lookups.calls)
+		}
+	}
+	if tmdbMovieLookups != 1 {
+		t.Fatalf("TMDB lookups for the movie = %d (calls %v), want 1 across heartbeats", tmdbMovieLookups, lookups.calls)
 	}
 }
 
